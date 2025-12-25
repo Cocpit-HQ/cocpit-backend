@@ -14,9 +14,7 @@ router.post("/register", validate(registerSchema), authController.register);
 router.post("/login", validate(loginSchema), authController.login);
 router.post("/refresh", validate(refreshTokenSchema), authController.refreshToken);
 
-router.get("/me", requireAuth, async (req, res) => {
-  res.json({ user: req.user });
-});
+router.get("/me", requireAuth, authController.getMe);
 
 router.get("/admin", requireAuth, requireRoles(['Admin']), async (req, res) => {
   res.json({ message: "Welcome Admin!" });

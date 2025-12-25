@@ -8,7 +8,7 @@ const {
 const bcrypt = require("bcrypt");
 
 exports.register = async (req, res) => {
-  const { email, password, fullName } = req.body;
+  const { email, password, fullName, accountType } = req.body;
 
   try {
     // 1. Check if user exists
@@ -34,17 +34,19 @@ exports.register = async (req, res) => {
 
     const user = userResult.rows[0];
 
-    // 4. Assign default role
+    // 4. Assign role based on accountType
+    const roleName = accountType === 'Employer' ? 'Employer' : 'User';
+
     await pool.query(
       `INSERT INTO user_roles (user_id, role_id)
-       SELECT $1, role_id FROM roles WHERE role_name = 'User'`,
-      [user.user_id]
+       SELECT $1, role_id FROM roles WHERE role_name = $2`,
+      [user.user_id, roleName]
     );
 
-    // 5. Create empty profile
+    // 5. Create profile with accountType
     await pool.query(
-        `INSERT INTO profiles (user_id) VALUES ($1)`,
-        [user.user_id]
+        `INSERT INTO profiles (user_id, account_type) VALUES ($1, $2)`,
+        [user.user_id, accountType]
     );
 
     res.status(201).json({
@@ -269,3 +271,40 @@ exports.logout = async (req, res) => {
     res.clearCookie('refreshToken');
     res.status(200).json({ message: "Logged out successfully" });
 };
+
+exports.getMe = async (req, res) => {
+    const userId = req.user.sub;
+
+    try {
+      // 1. Get User Data
+      const userResult = await pool.query(
+        `SELECT user_id AS id, email, full_name FROM users WHERE user_id = $1`,
+        [userId]
+      );
+
+      if (userResult.rowCount === 0) {
+        return res.status(404).json({ message: "User not found" });
+      }
+
+      const user = userResult.rows[0];
+      user.roles = req.user.roles; // From token
+
+      // 2. Get Profile Data
+      const profileResult = await pool.query(
+        `SELECT account_type AS "accountType", open_to AS "openTo", availability, work_preference AS "workPreference"
+         FROM profiles
+         WHERE user_id = $1`,
+        [userId]
+      );
+
+      const profile = profileResult.rows[0] || {};
+
+      res.json({
+        user,
+        profile
+      });
+    } catch (err) {
+      console.error("GetMe error:", err);
+      res.status(500).json({ message: "Internal server error" });
+    }
+  };
