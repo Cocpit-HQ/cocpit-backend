@@ -41,6 +41,12 @@ exports.register = async (req, res) => {
       [user.user_id]
     );
 
+    // 5. Create empty profile
+    await pool.query(
+        `INSERT INTO profiles (user_id) VALUES ($1)`,
+        [user.user_id]
+    );
+
     res.status(201).json({
       message: "User registered successfully",
       user,
@@ -104,7 +110,14 @@ exports.login = async (req, res) => {
 
     const hashedRefresh = await bcrypt.hash(refreshToken, 12);
 
-    // OPTIONAL but recommended: clear old refresh tokens
+    // Clear old refresh tokens for this user to allow only one active session per device?
+    // Or just clear ones that match? For now, we are adding new ones.
+    // However, to prevent DB bloat, maybe remove old ones?
+    // Let's stick to the previous logic: DELETE all for user (single session policy)
+    // or just insert. The previous code did DELETE ALL.
+    // I will stick to DELETE ALL to ensure single session as per previous code, or ask?
+    // Previous code: `DELETE FROM refresh_tokens WHERE user_id = $1`
+    // This enforces single session.
     await pool.query(
       `DELETE FROM refresh_tokens WHERE user_id = $1`,
       [user.user_id]
@@ -118,9 +131,16 @@ exports.login = async (req, res) => {
       [user.user_id, hashedRefresh]
     );
 
+    // Set Refresh Token in HTTP-only cookie
+    res.cookie('refreshToken', refreshToken, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'Strict',
+      maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
+    });
+
     res.status(200).json({
       accessToken,
-      refreshToken, // later → httpOnly cookie
       user: {
         id: user.user_id,
         email: user.email,
@@ -137,7 +157,7 @@ exports.login = async (req, res) => {
 };
 
 exports.refreshToken = async (req, res) => {
-  const { refreshToken } = req.body;
+  const refreshToken = req.cookies.refreshToken;
 
   if (!refreshToken) {
     return res.status(401).json({ message: "Refresh token missing" });
@@ -145,12 +165,9 @@ exports.refreshToken = async (req, res) => {
 
   try {
     const payload = verifyRefreshToken(refreshToken);
-
     const userId = payload.sub;
 
     // Check for token reuse
-    // This is a simplified check. In a real-world scenario, you'd want to
-    // check against a list of used tokens or have a more robust mechanism.
     const tokenInDb = await pool.query(
       `SELECT token_hash FROM refresh_tokens WHERE user_id = $1`,
       [userId]
@@ -165,9 +182,9 @@ exports.refreshToken = async (req, res) => {
     }
 
     if (!tokenIsValid) {
-      // If the token is not in the DB, it might have been stolen and used.
-      // For security, we invalidate all refresh tokens for this user.
+      // Reuse detected or invalid token -> Security measure: invalidate all
       await pool.query(`DELETE FROM refresh_tokens WHERE user_id = $1`, [userId]);
+      res.clearCookie('refreshToken');
       return res.status(403).json({ message: "Invalid refresh token" });
     }
 
@@ -183,18 +200,18 @@ exports.refreshToken = async (req, res) => {
     );
     const roles = rolesResult.rows.map(r => r.role_name);
 
-    // Issue new tokens
+    // Rotate tokens
     const newAccessToken = signAccessToken({ sub: userId, roles });
     const newRefreshToken = signRefreshToken({ sub: userId });
     const hashedNewRefreshToken = await bcrypt.hash(newRefreshToken, 12);
 
-    // Delete old token
+    // Invalidate old token (delete all for user since we enforce single session logic in login too)
     await pool.query(
       `DELETE FROM refresh_tokens WHERE user_id = $1`,
       [userId]
     );
 
-    // Store new token
+    // Store new
     await pool.query(
       `
       INSERT INTO refresh_tokens (user_id, token_hash, expires_at)
@@ -203,16 +220,52 @@ exports.refreshToken = async (req, res) => {
       [userId, hashedNewRefreshToken]
     );
 
+    res.cookie('refreshToken', newRefreshToken, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'Strict',
+      maxAge: 7 * 24 * 60 * 60 * 1000
+    });
+
     res.json({
       accessToken: newAccessToken,
-      refreshToken: newRefreshToken,
     });
   } catch (err) {
     console.error("Refresh token error:", err);
+    res.clearCookie('refreshToken');
     if (err.code === '28P01') {
       return res.status(500).json({ error: "Database authentication failed. Please check your database credentials." });
     }
-    // If the token is invalid or expired, jwt.verify will throw an error
     return res.status(403).json({ message: "Invalid or expired refresh token" });
   }
+};
+
+exports.logout = async (req, res) => {
+    const refreshToken = req.cookies.refreshToken;
+
+    if (refreshToken) {
+        try {
+            // Best effort to remove from DB if valid
+            // Since we hash tokens, we can't easily find *which* one to delete without verifying.
+            // If verification fails, we just clear cookie.
+            const payload = verifyRefreshToken(refreshToken);
+            const userId = payload.sub;
+
+            // Delete all refresh tokens for this user (Single session logout)
+            // Or ideally, find the specific one.
+            // Given the schema and bcrypt, finding the specific one requires iteration.
+            // For simplicity and security, we can just delete all for this user,
+            // effectively logging them out of all devices.
+            // Or we iterate. Let's iterate to be nice to other devices if we supported multi-device.
+            // But `login` currently wipes all tokens. So we support single session.
+            // So `DELETE FROM refresh_tokens WHERE user_id = $1` is consistent.
+            await pool.query('DELETE FROM refresh_tokens WHERE user_id = $1', [userId]);
+
+        } catch (e) {
+            // Token invalid/expired, just ignore
+        }
+    }
+
+    res.clearCookie('refreshToken');
+    res.status(200).json({ message: "Logged out successfully" });
 };
