@@ -15,6 +15,13 @@ const registerSchema = z.object({
     fullName: z.string({
         required_error: "Full name is required",
       }),
+    accountType: z.enum(
+      ["Fresher", "Employee", "Student", "Freelancer", "Employer"],
+      {
+        required_error: "Account type is required",
+        invalid_type_error: "Invalid account type",
+      }
+    ),
   }),
 });
 

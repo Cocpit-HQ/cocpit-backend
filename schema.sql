@@ -1,0 +1,243 @@
+-- Enable pgcrypto for UUID generation
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
+-- Enums for constrained values (or use lookup tables if mutable)
+CREATE TYPE visibility_type AS ENUM ('public', 'connections', 'private');
+CREATE TYPE connection_status AS ENUM ('pending', 'connected', 'blocked');
+CREATE TYPE job_work_mode AS ENUM ('Remote', 'Hybrid', 'Onsite');
+CREATE TYPE job_company_type AS ENUM ('Startup', 'MNC', 'Product-based', 'Service-based');
+CREATE TYPE event_type AS ENUM ('Online', 'InPerson');
+CREATE TYPE sender_type AS ENUM ('me', 'other'); -- Frontend uses 'me'/'other', but DB should track user_id
+
+CREATE TABLE users (
+  user_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  email TEXT UNIQUE NOT NULL,
+  password_hash TEXT NOT NULL, -- Hashed via bcrypt/argon2 in app
+  full_name TEXT NOT NULL,
+  headline TEXT,
+  avatar_url TEXT,
+  location TEXT,
+  about_text TEXT,
+  created_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE TABLE roles (
+  role_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  role_name TEXT UNIQUE NOT NULL -- 'User', 'Recruiter', 'Admin'
+);
+
+CREATE TABLE user_roles (
+  user_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
+  role_id UUID REFERENCES roles(role_id) ON DELETE CASCADE,
+  assigned_at TIMESTAMPTZ DEFAULT now(),
+  PRIMARY KEY (user_id, role_id)
+);
+
+CREATE TABLE refresh_tokens (
+  token_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
+  token_hash TEXT NOT NULL,
+  expires_at TIMESTAMPTZ NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT now(),
+  revoked BOOLEAN DEFAULT FALSE
+);
+
+CREATE TABLE profiles (
+  profile_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID UNIQUE REFERENCES users(user_id) ON DELETE CASCADE,
+  -- Identity Chips
+  account_type TEXT NOT NULL CHECK (account_type IN ('Fresher', 'Employee', 'Student', 'Freelancer', 'Employer')),
+  open_to TEXT, -- e.g., 'Full-time', 'Freelance'
+  availability TEXT, -- e.g., 'Immediate'
+  work_preference TEXT, -- e.g., 'Remote', 'Hybrid'
+  -- Metrics
+  profile_views_count INTEGER DEFAULT 0,
+  search_appearances_count INTEGER DEFAULT 0,
+  updated_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE TABLE skills (
+  skill_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  name TEXT UNIQUE NOT NULL
+);
+
+CREATE TABLE user_skills (
+  profile_id UUID REFERENCES profiles(profile_id) ON DELETE CASCADE,
+  skill_id UUID REFERENCES skills(skill_id) ON DELETE CASCADE,
+  PRIMARY KEY (profile_id, skill_id)
+);
+
+CREATE TABLE experiences (
+  experience_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  profile_id UUID REFERENCES profiles(profile_id) ON DELETE CASCADE,
+  title TEXT NOT NULL,
+  company_name TEXT NOT NULL,
+  location TEXT,
+  start_date DATE,
+  end_date DATE, -- NULL if current
+  is_current BOOLEAN DEFAULT FALSE,
+  description TEXT,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE TABLE experience_skills (
+  experience_id UUID REFERENCES experiences(experience_id) ON DELETE CASCADE,
+  skill_id UUID REFERENCES skills(skill_id) ON DELETE CASCADE,
+  PRIMARY KEY (experience_id, skill_id)
+);
+
+CREATE TABLE educations (
+  education_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  profile_id UUID REFERENCES profiles(profile_id) ON DELETE CASCADE,
+  school_name TEXT NOT NULL,
+  degree TEXT,
+  field_of_study TEXT,
+  start_date DATE,
+  end_date DATE,
+  description TEXT,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE TABLE post_categories (
+  category_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  name TEXT UNIQUE NOT NULL -- 'Personal', 'Professional', 'Achievement'
+);
+
+CREATE TABLE posts (
+  post_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  author_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
+  category_id UUID REFERENCES post_categories(category_id),
+  content TEXT,
+  visibility visibility_type DEFAULT 'public',
+  created_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE TABLE post_media (
+  media_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  post_id UUID REFERENCES posts(post_id) ON DELETE CASCADE,
+  url TEXT NOT NULL,
+  media_type TEXT, -- 'image' or 'video'
+  aspect_ratio TEXT -- e.g., '4:5'
+);
+
+CREATE TABLE stories (
+  story_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  author_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
+  media_url TEXT NOT NULL,
+  media_type TEXT DEFAULT 'image',
+  expires_at TIMESTAMPTZ NOT NULL, -- usually created_at + 24h
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE TABLE story_views (
+  story_id UUID REFERENCES stories(story_id) ON DELETE CASCADE,
+  viewer_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
+  viewed_at TIMESTAMPTZ DEFAULT now(),
+  PRIMARY KEY (story_id, viewer_id)
+);
+
+CREATE TABLE story_reactions (
+  story_id UUID REFERENCES stories(story_id) ON DELETE CASCADE,
+  user_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
+  reaction_type TEXT, -- e.g., '❤️', '🔥'
+  created_at TIMESTAMPTZ DEFAULT now(),
+  PRIMARY KEY (story_id, user_id)
+);
+
+CREATE TABLE followers (
+  follower_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
+  following_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
+  created_at TIMESTAMPTZ DEFAULT now(),
+  PRIMARY KEY (follower_id, following_id)
+);
+
+CREATE TABLE conversations (
+  conversation_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  is_group BOOLEAN DEFAULT FALSE,
+  created_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE TABLE conversation_participants (
+  conversation_id UUID REFERENCES conversations(conversation_id) ON DELETE CASCADE,
+  user_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
+  joined_at TIMESTAMPTZ DEFAULT now(),
+  PRIMARY KEY (conversation_id, user_id)
+);
+
+CREATE TABLE messages (
+  message_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  conversation_id UUID REFERENCES conversations(conversation_id) ON DELETE CASCADE,
+  sender_id UUID REFERENCES users(user_id) ON DELETE SET NULL,
+  text_content TEXT,
+  created_at TIMESTAMPTZ DEFAULT now(),
+  read_at TIMESTAMPTZ -- NULL if unread
+);
+
+CREATE TABLE notifications (
+  notification_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
+  type TEXT NOT NULL, -- 'like', 'comment', 'view', 'job_alert'
+  text TEXT NOT NULL,
+  reference_id UUID, -- ID of the post/job/user
+  is_read BOOLEAN DEFAULT FALSE,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE TABLE jobs (
+  job_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  recruiter_id UUID REFERENCES users(user_id) ON DELETE SET NULL,
+  title TEXT NOT NULL,
+  company_name TEXT NOT NULL,
+  location TEXT,
+  description TEXT,
+  salary_range TEXT, -- Keeping as text per frontend 'Avg' logic, or use numeric range
+  work_mode job_work_mode,
+  company_type job_company_type,
+  experience_level TEXT,
+  match_score INTEGER, -- Mock score
+  is_active BOOLEAN DEFAULT TRUE,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE TABLE job_applications (
+  application_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  job_id UUID REFERENCES jobs(job_id) ON DELETE CASCADE,
+  applicant_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
+  current_status TEXT NOT NULL DEFAULT 'Applied',
+  applied_at TIMESTAMPTZ DEFAULT now(),
+  UNIQUE(job_id, applicant_id)
+);
+
+CREATE TABLE application_status_history (
+  history_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  application_id UUID REFERENCES job_applications(application_id) ON DELETE CASCADE,
+  status TEXT NOT NULL, -- 'Applied', 'Under Review', 'Interview', 'Offer'
+  changed_at TIMESTAMPTZ DEFAULT now(),
+  notes TEXT
+);
+
+CREATE TABLE events (
+  event_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  organizer_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
+  title TEXT NOT NULL,
+  description TEXT,
+  start_time TIMESTAMPTZ NOT NULL,
+  end_time TIMESTAMPTZ,
+  location TEXT,
+  event_type event_type NOT NULL,
+  max_attendees INTEGER,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE TABLE event_registrations (
+  event_id UUID REFERENCES events(event_id) ON DELETE CASCADE,
+  user_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
+  registered_at TIMESTAMPTZ DEFAULT now(),
+  PRIMARY KEY (event_id, user_id)
+);
+
+-- Seed initial roles
+INSERT INTO roles (role_name) VALUES ('User'), ('Employer'), ('Admin');
