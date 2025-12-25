@@ -1,12 +1,19 @@
 const express = require("express");
 const cors = require("cors");
+const cookieParser = require("cookie-parser");
 
 const authRoutes = require("./routes/auth.routes");
+const userRoutes = require("./routes/user.routes");
+const jobRoutes = require("./routes/job.routes");
+const contentRoutes = require("./routes/content.routes");
+const eventRoutes = require("./routes/event.routes");
+const socialRoutes = require("./routes/social.routes");
 
 const app = express();
 
 app.use(cors());
 app.use(express.json());
+app.use(cookieParser());
 
 // Middleware to normalize URL and remove trailing slashes
 app.use((req, res, next) => {
@@ -17,6 +24,12 @@ app.use((req, res, next) => {
   next();
 });
 
+// Routes
 app.use("/api/auth", authRoutes);
+app.use("/api", userRoutes); // /api/profile...
+app.use("/api/jobs", jobRoutes);
+app.use("/api", contentRoutes); // /api/feed, /api/stories... (following controller naming)
+app.use("/api/events", eventRoutes);
+app.use("/api", socialRoutes); // /api/conversations...
 
 module.exports = app;
