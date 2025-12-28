@@ -3,6 +3,8 @@ const { Pool } = require("pg");
 const isProduction = process.env.NODE_ENV === "production";
 
 // Prefer DATABASE_URL if present, else fallback to individual vars
+
+// hello this is new comment
 const poolConfig = process.env.DATABASE_URL
   ? {
       connectionString: process.env.DATABASE_URL,
