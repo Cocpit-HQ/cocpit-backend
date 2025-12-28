@@ -16,15 +16,13 @@ jobs:
       - name: Sync and Restart PM2
         shell: powershell
         run: |
-          # 1. Define paths
-          $sourcePath = "$PSCommandPath\..\" # This is where GitHub just downloaded the files
+          # 1. Define destination path
           $destPath = "C:\Users\Administrator\Desktop\COCPIT BACKEND\cocpit-backend"
-          # Added /XF .env to EXCLUDE the .env file from being deleted or overwritten
+          
+          # 2. Sync files (ONLY ONE COMMAND NEEDED)
+          # This mirrors the folder but PROTECTS the .env file from deletion
           robocopy . "$destPath" /MIR /XF .env /XD .git node_modules _work
-          # 2. Copy files from Runner folder to Desktop folder
-          # We use /MIR to mirror the directory (deletes old, adds new)
-          robocopy . "$destPath" /MIR /XD .git node_modules _work
-
+          
           # 3. Navigate to Desktop folder
           cd "$destPath"
           
