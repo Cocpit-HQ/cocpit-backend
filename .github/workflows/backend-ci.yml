@@ -25,5 +25,9 @@ jobs:
           # 3. Install fresh dependencies
           npm install --production
           
-          # 4. Restart the app
-          pm2 reload cocpit-backend --update-env || pm2 start src/server.js --name cocpit-backend
+          # 4. Restart the app using PowerShell-safe logic
+          # Try to reload. If it fails (app not in list), then start it.
+          pm2 reload cocpit-backend --update-env
+          if (-not $?) {
+              pm2 start src/server.js --name cocpit-backend
+          }
