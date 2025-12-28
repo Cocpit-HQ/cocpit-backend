@@ -19,7 +19,8 @@ jobs:
           # 1. Define paths
           $sourcePath = "$PSCommandPath\..\" # This is where GitHub just downloaded the files
           $destPath = "C:\Users\Administrator\Desktop\COCPIT BACKEND\cocpit-backend"
-          
+          # Added /XF .env to EXCLUDE the .env file from being deleted or overwritten
+          robocopy . "$destPath" /MIR /XF .env /XD .git node_modules _work
           # 2. Copy files from Runner folder to Desktop folder
           # We use /MIR to mirror the directory (deletes old, adds new)
           robocopy . "$destPath" /MIR /XD .git node_modules _work
