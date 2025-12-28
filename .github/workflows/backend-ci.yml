@@ -8,6 +8,7 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    environment: deploy_env
 
     steps:
       - name: Checkout code
@@ -21,6 +22,7 @@ jobs:
       - name: Deploy to Server
         run: |
           ssh -o StrictHostKeyChecking=no \
+          -p ${{ secrets.SERVER_PORT }} \
           ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }} << 'EOF'
           
           cd C:/apps/cocpit-backend
