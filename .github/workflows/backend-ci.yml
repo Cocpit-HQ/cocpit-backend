@@ -7,7 +7,7 @@ on:
 
 jobs:
   deploy:
-    runs-on: self-hosted # Tells GitHub to use your physical server
+    runs-on: self-hosted 
 
     steps:
       - name: Checkout code
