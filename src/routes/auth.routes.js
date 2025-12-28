@@ -14,7 +14,7 @@ const {
 // Rate limiters
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 5, // 5 attempts per window for sensitive auth operations
+  max: 15, // 5 attempts per window for sensitive auth operations
   message: "Too many login/register attempts, please try again later."
 });
 
