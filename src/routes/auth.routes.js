@@ -21,11 +21,12 @@ const authLimiter = rateLimit({
 router.post("/register", authLimiter, validate(registerSchema), authController.register);
 router.post("/login", authLimiter, validate(loginSchema), authController.login);
 router.post("/refresh", validate(refreshTokenSchema), authController.refreshToken);
+router.post("/logout", requireAuth, authController.logout);
 
 router.get("/me", requireAuth, authController.getMe);
 
-router.get("/admin", requireAuth, requireRoles(['Admin']), async (req, res) => {
-  res.json({ message: "Welcome Admin!" });
+router.get("/admin", requireAuth, requireRoles(['Employer','Admin']), async (req, res) => {
+  res.json({ message: "Welcome Special user!" }); //user
 });
 
 module.exports = router;

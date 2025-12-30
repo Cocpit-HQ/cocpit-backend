@@ -21,7 +21,7 @@ exports.register = async (req, res) => {
       return res.status(409).json({ message: "Email already registered" });
     }
 
-    // 2. Hash password
+    // 2.convert password to Hash password
     const passwordHash = await hashPassword(password);
 
     // 3. Create user
@@ -77,7 +77,7 @@ exports.login = async (req, res) => {
     );
 
     if (userResult.rowCount === 0) {
-      return res.status(401).json({ message: "Invalid credentials" });
+      return res.status(401).json({ message: "user not found" });
     }
 
     const user = userResult.rows[0];
@@ -101,11 +101,13 @@ exports.login = async (req, res) => {
     const roles = rolesResult.rows.map(r => r.role_name);
 
     // Generate tokens
+
     const accessToken = signAccessToken({
       sub: user.user_id,
       roles,
     });
 
+    
     const refreshToken = signRefreshToken({
       sub: user.user_id,
     });
@@ -120,18 +122,85 @@ exports.login = async (req, res) => {
     // I will stick to DELETE ALL to ensure single session as per previous code, or ask?
     // Previous code: `DELETE FROM refresh_tokens WHERE user_id = $1`
     // This enforces single session.
+
+
     await pool.query(
       `DELETE FROM refresh_tokens WHERE user_id = $1`,
       [user.user_id]
     );
 
-    await pool.query(
+     await pool.query(
       `
       INSERT INTO refresh_tokens (user_id, token_hash, expires_at)
       VALUES ($1, $2, now() + interval '7 days')
       `,
       [user.user_id, hashedRefresh]
     );
+
+    //get user agent and ip address 
+  /*// MAX devices allowed per user
+const MAX_DEVICES = 3;
+
+// get client info
+const userAgent = req.headers["user-agent"];
+const ipAddress = req.ip;
+
+// hash refresh token already generated
+// const hashedRefresh = ...
+
+await pool.query("BEGIN");
+
+try {
+  // 1️⃣ Count active sessions
+  const { rows } = await pool.query(
+    `
+    SELECT COUNT(*)::int AS count
+    FROM refresh_tokens
+    WHERE user_id = $1
+      AND revoked = FALSE
+      AND expires_at > now()
+    `,
+    [user.user_id]
+  );
+
+  const activeDevices = rows[0].count;
+
+  // 2️⃣ Revoke oldest session IF limit exceeded
+  if (activeDevices >= MAX_DEVICES) {
+    await pool.query(
+      `
+      UPDATE refresh_tokens
+      SET revoked = TRUE
+      WHERE token_id = (
+        SELECT token_id
+        FROM refresh_tokens
+        WHERE user_id = $1
+          AND revoked = FALSE
+          AND expires_at > now()
+        ORDER BY created_at ASC
+        LIMIT 1
+      )
+      `,
+      [user.user_id]
+    );
+  }
+
+  // 3️⃣ Insert new refresh token (new device)
+  await pool.query(
+    `
+    INSERT INTO refresh_tokens
+    (user_id, token_hash, expires_at, user_agent, ip_address)
+    VALUES ($1, $2, now() + interval '7 days', $3, $4)
+    `,
+    [user.user_id, hashedRefresh, userAgent, ipAddress]
+  );
+
+  await pool.query("COMMIT");
+} catch (err) {
+  await pool.query("ROLLBACK");
+  throw err;
+}
+ */
 
     // Set Refresh Token in HTTP-only cookie
     res.cookie('refreshToken', refreshToken, {
@@ -142,7 +211,8 @@ exports.login = async (req, res) => {
     });
 
     res.status(200).json({
-      accessToken,
+     "accessToken":  accessToken,
+     "refreshToken": refreshToken,
       user: {
         id: user.user_id,
         email: user.email,
@@ -175,6 +245,8 @@ exports.refreshToken = async (req, res) => {
       [userId]
     );
 
+    //user agent , ip_address put in above select query
+
     let tokenIsValid = false;
     for (const row of tokenInDb.rows) {
       if (await bcrypt.compare(refreshToken, row.token_hash)) {
@@ -185,7 +257,7 @@ exports.refreshToken = async (req, res) => {
 
     if (!tokenIsValid) {
       // Reuse detected or invalid token -> Security measure: invalidate all
-      await pool.query(`DELETE FROM refresh_tokens WHERE user_id = $1`, [userId]);
+      await pool.query(`DELETE FROM refresh_tokens WHERE user_id = $1`, [userId]); // add user_agent , ip address
       res.clearCookie('refreshToken');
       return res.status(403).json({ message: "Invalid refresh token" });
     }
@@ -261,10 +333,15 @@ exports.logout = async (req, res) => {
             // Or we iterate. Let's iterate to be nice to other devices if we supported multi-device.
             // But `login` currently wipes all tokens. So we support single session.
             // So `DELETE FROM refresh_tokens WHERE user_id = $1` is consistent.
+      
+            await pool.query('UPDATE  refresh_tokens set revoked = true WHERE user_id = $1', [userId]);
+
             await pool.query('DELETE FROM refresh_tokens WHERE user_id = $1', [userId]);
 
         } catch (e) {
-            // Token invalid/expired, just ignore
+            // Token invalid/expired, just ignore 
+    res.status(400);
+
         }
     }
 

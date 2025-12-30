@@ -11,6 +11,6 @@ router.get("/:id", jobController.getJobById);
 // Protected routes
 router.post("/", requireAuth, requireRoles(['Recruiter', 'Admin']), jobController.createJob);
 router.post("/:id/apply", requireAuth, jobController.applyJob);
-router.get("/applications/me", requireAuth, jobController.getMyApplications);
+router.get("/applicationsme", requireAuth, jobController.getMyApplications);
 
 module.exports = router;

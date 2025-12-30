@@ -19,7 +19,7 @@ CREATE TABLE users (
   location TEXT,
   about_text TEXT,
   created_at TIMESTAMPTZ DEFAULT now(),
-  updated_at TIMESTAMPTZ DEFAULT now()
+  updated_at TIMESTAMPTZ DEFAULT now(),
 );
 
 CREATE TABLE roles (
@@ -40,8 +40,15 @@ CREATE TABLE refresh_tokens (
   token_hash TEXT NOT NULL,
   expires_at TIMESTAMPTZ NOT NULL,
   created_at TIMESTAMPTZ DEFAULT now(),
-  revoked BOOLEAN DEFAULT FALSE
+  revoked BOOLEAN DEFAULT FALSE,
+
+
+
+
 );
+/*   user_agent TEXT,
+  ip_address INET
+  user agent and ip address added for multiple login*/
 
 CREATE TABLE profiles (
   profile_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -124,9 +131,11 @@ CREATE TABLE post_media (
 
 CREATE TABLE stories (
   story_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  author_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
+  author_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+  --title TEXT 
   media_url TEXT NOT NULL,
-  media_type TEXT DEFAULT 'image',
+  media_type TEXT CHECK (media_type IN ('image', 'video')) DEFAULT 'image'
+  -- description TEXT
   expires_at TIMESTAMPTZ NOT NULL, -- usually created_at + 24h
   created_at TIMESTAMPTZ DEFAULT now()
 );
@@ -140,7 +149,7 @@ CREATE TABLE story_views (
 
 CREATE TABLE story_reactions (
   story_id UUID REFERENCES stories(story_id) ON DELETE CASCADE,
-  user_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
+  user_id UUID REFERENCES users(user_id) ON DELETE CASCADE, --sender_id instead of user id 
   reaction_type TEXT, -- e.g., '❤️', '🔥'
   created_at TIMESTAMPTZ DEFAULT now(),
   PRIMARY KEY (story_id, user_id)
@@ -171,7 +180,9 @@ CREATE TABLE messages (
   message_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   conversation_id UUID REFERENCES conversations(conversation_id) ON DELETE CASCADE,
   sender_id UUID REFERENCES users(user_id) ON DELETE SET NULL,
+  --  receiver_id UUID REFERENCES users(user_id),
   text_content TEXT,
+  --story_id UUID REFERENCES stories(story_id),
   created_at TIMESTAMPTZ DEFAULT now(),
   read_at TIMESTAMPTZ -- NULL if unread
 );
