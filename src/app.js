@@ -3,7 +3,7 @@ const cors = require("cors");
 const cookieParser = require("cookie-parser");
 
 const authRoutes = require("./routes/auth.routes");
-const userRoutes = require("./routes/user.routes");
+const profileRoutes = require("./routes/profile.routes");
 const jobRoutes = require("./routes/job.routes");
 const contentRoutes = require("./routes/content.routes");
 const eventRoutes = require("./routes/event.routes");
@@ -26,7 +26,7 @@ app.use((req, res, next) => {
 
 // Routes
 app.use("/api/auth", authRoutes);
-app.use("/api", userRoutes); // /api/profile...
+app.use("/api", profileRoutes); // /api/profile...
 app.use("/api/jobs", jobRoutes);
 app.use("/api", contentRoutes); // /api/feed, /api/stories... (following controller naming)
 app.use("/api/events", eventRoutes);
