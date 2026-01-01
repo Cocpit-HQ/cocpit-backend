@@ -9,6 +9,10 @@ const jobRoutes = require("./routes/job.routes");
 const contentRoutes = require("./routes/content.routes");
 const eventRoutes = require("./routes/event.routes");
 const socialRoutes = require("./routes/social.routes");
+const healthRoutes = require("./routes/health.routes");
+
+const swaggerUi = require("swagger-ui-express");
+const swaggerSpecs = require("./config/swagger");
 
 const app = express();
 
@@ -33,5 +37,9 @@ app.use("/api/jobs", jobRoutes);
 app.use("/api", contentRoutes); // /api/feed, /api/stories... (following controller naming)
 app.use("/api/events", eventRoutes);
 app.use("/api", socialRoutes); // /api/conversations...
+app.use("/api/health", healthRoutes);
+
+// Swagger Documentation
+app.use("/api-docs", swaggerUi.serve, swaggerUi.setup(swaggerSpecs));
 
 module.exports = app;
