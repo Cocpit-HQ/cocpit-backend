@@ -41,9 +41,8 @@ CREATE TABLE refresh_tokens (
   expires_at TIMESTAMPTZ NOT NULL,
   created_at TIMESTAMPTZ DEFAULT now(),
   revoked BOOLEAN DEFAULT FALSE,
-
-
-
+  user_agent TEXT,
+  ip_address INET
 
 );
 /*   user_agent TEXT,

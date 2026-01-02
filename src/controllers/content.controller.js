@@ -99,32 +99,50 @@ exports.createPost = async (req, res) => {
 
 exports.getPostById= async(req,res)=>{
     const postId = req.params.id;
-    const userId = req.user.sub;
+    // const userId = req.user.sub;
 
     try{
         const postResult = await pool.query(
-            `select * from posts where post_id =$1 and author_id = $2`,[postId]);
+            `select * from posts where post_id =$1 `,[postId,userId]);
 
-        if(!postResult){
+        if(postResult.rows.length === 0){
             return res.status(404).json({message:"post not found"})
         }else{
             res.status(200).json(postResult.rows[0]);
         }
     }catch(err){
         console.error("Get post by id error:", err);
-        res.status(401).json({ message: "Internal server error" });
+        res.status(500).json({ message: "Internal server error" });
     }
 
 }
-// exports.deletePost = async (req, res) => {
-//     const postId = req.params.id;
-//     const userId = req.user.sub;
 
-//     try {
-//         // Check if post exists 
+exports.deletePost = async (req, res) => {
+    const postId = req.params.id;
+    const userId = req.user.sub;
+
+    if (!postId || !userId) {
+        return res.status(400).json({ message: "postId and userId are required" });
+    }
+
+    try {
+        const post = await pool.query(
+            `delete from posts where post_id = $1 and author_id = $2`,
+            [postId, userId]
+        );
+        if (post.rowCount === 0) {
+            return res.status(404).json({ message: "Post not found" });
+        }
+
+        res.status(200).json({ message: "Post deleted" });
+    }catch(err){
+        console.error("Delete post error:", err)
+        res.status(500).json({message:"Internal server error"})
+    }
+
+}
 
 
-// }
 exports.createPostCategory = async (req, res) => {
     const category = req.body.category;
 
@@ -147,15 +165,19 @@ exports.createPostCategory = async (req, res) => {
     }
 }
 
-exports.handlePostMedia = async (req, res) => {
+
+
+exports.createPostMedia = async (req, res) => {
          const post_id = req.params.id;      // ✅ correct param
   const { url, media_type } = req.body;
 
-  if (!url || !media_type) {
-    return res.status(400).json({ message: "url and media_type are required" });
-  }
+if (!url?.trim() || !media_type?.trim()) {
+  return res.status(400).json({ message: "url and media_type are required" });
+}
+
 
         try{
+
             await pool.query(
                 `Insert into post_media (post_id,url,media_type) values($1,$2,$3)`,
                 [post_id,url,media_type]
@@ -212,6 +234,11 @@ exports.viewStory = async (req, res) => {
 
     const { id } = req.params;
     const viewer_id = req.user.sub;
+
+    if(!id && !viewer_id){
+        return res.status(400).json({message:"id and viewer_id are required"})
+    }
+
     try {
         await pool.query(
             `INSERT INTO story_views (  story_id, viewer_id)  VALUES ($1, $2)
