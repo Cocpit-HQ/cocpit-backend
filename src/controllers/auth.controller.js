@@ -126,9 +126,7 @@ exports.login = async (req, res) => {
       );
 
       if (existingDevice.rowCount > 0) {
-        // 🔁 Same device login → UPDATE token
-        console.log("existing device", existingDevice.rowCount)
-
+        //  Same device login → UPDATE token
         await pool.query(
           ` UPDATE refresh_tokens
       SET token_hash = $1,
@@ -139,8 +137,7 @@ exports.login = async (req, res) => {
         );
       }
       else {
-        console.log("no extra device", existingDevice.rowCount)
-        // 1️⃣ Count active sessions
+        //  Count active sessions
         const { rows } = await pool.query(
           ` SELECT COUNT(*)::int AS count
     FROM refresh_tokens
@@ -151,8 +148,8 @@ exports.login = async (req, res) => {
         );
 
         const activeDevices = rows[0].count;
-        // 2️⃣ Revoke oldest session IF limit exceeded
-        if (activeDevices > MAX_DEVICES) {
+        //  Revoke oldest session IF limit exceeded
+        if (activeDevices >= MAX_DEVICES) {
           await pool.query(
             `delete from refresh_tokens where  token_id = (
         SELECT token_id
@@ -166,12 +163,12 @@ exports.login = async (req, res) => {
           );
         }
 
-        //  3️⃣ Insert new refresh token (new device)
+        //   Insert new refresh token (new device)
         await pool.query(
           `INSERT INTO refresh_tokens
     (user_id, token_hash, expires_at, user_agent, ip_address)
     VALUES ($1, $2, now() + interval '7 days', $3, $4)
-    `,  [user.user_id, hashedRefresh, userAgent, ipAddress]
+    `, [user.user_id, hashedRefresh, userAgent, ipAddress]
         );
       }
 
@@ -191,7 +188,8 @@ exports.login = async (req, res) => {
 
     res.status(200).json({
       "accessToken": accessToken,
-      user:{
+      "refreshToken": refreshToken,
+      user: {
         "id": user.user_id,
         "email": user.email,
         "fullName": user.full_name,
@@ -221,107 +219,129 @@ exports.refreshToken = async (req, res) => {
     const userId = payload.sub;
     const userAgent = req.headers["user-agent"];
     const ipAddress = req.ip;
-    // Check for token reuse
-    const tokenInDb = await pool.query(
-      `SELECT token_hash FROM refresh_tokens WHERE user_id = $1 and user_agent = $2 and ip_address = $3 `,
-      [userId,userAgent,ipAddress]
-    );
-  
-    let tokenIsValid = false;
-    for (const row of tokenInDb.rows) {
-      if (await bcrypt.compare(refreshToken, row.token_hash)) {
-        tokenIsValid = true;
-        break;
-      }
-    }
 
-    if (!tokenIsValid) {
-      // Reuse detected or invalid token -> Security measure: invalidate all
-      await pool.query(`DELETE FROM refresh_tokens WHERE user_id = $1 and user_agent = $2 and ip_address = $3`, [userId,userAgent,ipAddress]); // add user_agent , ip address
-      res.clearCookie('refreshToken');
+    //  Fetch stored token for SAME device
+    const tokenResult = await pool.query(
+      `  SELECT token_id, token_hash
+      FROM refresh_tokens
+      WHERE user_id = $1
+        AND user_agent = $2
+        AND ip_address = $3
+        AND expires_at > now()
+      `, [userId, userAgent, ipAddress]
+    );
+
+    if (tokenResult.rowCount === 0) {
+      res.clearCookie("refreshToken");
       return res.status(403).json({ message: "Invalid refresh token" });
     }
 
-    // Fetch roles
+    const { token_id, token_hash } = tokenResult.rows[0];
+    //  Compare hashed token
+    const isValid = await bcrypt.compare(refreshToken, token_hash);
+    if (!isValid) {
+      await pool.query(
+        `DELETE FROM refresh_tokens
+        WHERE token_id = $1`,
+        [token_id]
+      );
+
+      res.clearCookie("refreshToken");
+      return res.status(403).json({ message: "Invalid refresh token" });
+    }
+
+    //  Fetch roles
     const rolesResult = await pool.query(
-      `
-      SELECT r.role_name
+      ` SELECT r.role_name
       FROM user_roles ur
       JOIN roles r ON r.role_id = ur.role_id
       WHERE ur.user_id = $1
-      `,
-      [userId]
+      `, [userId]
     );
     const roles = rolesResult.rows.map(r => r.role_name);
-    // Rotate tokens
-    const newAccessToken = signAccessToken({ sub: userId, roles });
-    const newRefreshToken = signRefreshToken({ sub: userId });
+
+    //  Generate new tokens
+    const newAccessToken = signAccessToken({
+      sub: userId,
+      roles,
+    });
+    const newRefreshToken = signRefreshToken({
+      sub: userId,
+    });
     const hashedNewRefreshToken = await bcrypt.hash(newRefreshToken, 12);
 
-    // Invalidate old token (delete all for user since we enforce single session logic in login too)
+    //  Rotate refresh token for SAME device (UPDATE, not DELETE)
     await pool.query(
-      `DELETE FROM refresh_tokens WHERE user_id = $1`,
-      [userId]
+      `UPDATE refresh_tokens
+      SET token_hash = $1,
+          expires_at = now() + interval '7 days',
+          created_at = now()
+      WHERE token_id = $2
+      `, [hashedNewRefreshToken, token_id]
     );
 
-    // Store new
-    await pool.query(
-      `INSERT INTO refresh_tokens (user_id, token_hash, expires_at,user_agent,ip_address)
-      VALUES ($1, $2, now() + interval '7 days',$3,$4)
-      `, [userId, hashedNewRefreshToken,userAgent,ipAddress]
-    );
-
-    res.cookie('refreshToken', newRefreshToken, {
+    // Set new refresh token cookie
+    res.cookie("refreshToken", newRefreshToken, {
       httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'Strict',
-      maxAge: 7 * 24 * 60 * 60 * 1000
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "Strict",
+      maxAge: 7 * 24 * 60 * 60 * 1000,
     });
 
-    res.json({
+    res.status(200).json({
       accessToken: newAccessToken,
-      userAgent: userAgent,
-      ipAddress: ipAddress
+      refreshToken: newRefreshToken,
     });
+
   } catch (err) {
     console.error("Refresh token error:", err);
-    res.clearCookie('refreshToken');
-    if (err.code === '28P01') {
-      return res.status(500).json({ error: "Database authentication failed. Please check your database credentials." });
-    }
+    res.clearCookie("refreshToken");
     return res.status(403).json({ message: "Invalid or expired refresh token" });
   }
 };
 
+
 exports.logout = async (req, res) => {
   const refreshToken = req.cookies.refreshToken;
 
-  if (refreshToken) {
-    try {
-      // Best effort to remove from DB if valid
-      // Since we hash tokens, we can't easily find *which* one to delete without verifying.
-      // If verification fails, we just clear cookie.
-      const payload = verifyRefreshToken(refreshToken);
-      const userId = payload.sub;
+  if (!refreshToken) {
+    return res.status(200).json({ message: "already Logged out " })
+  }
 
-      // Delete all refresh tokens for this user (Single session logout)
-      // Or ideally, find the specific one.
-      // Given the schema and bcrypt, finding the specific one requires iteration.
-      // For simplicity and security, we can just delete all for this user,
-      // effectively logging them out of all devices.
-      // Or we iterate. Let's iterate to be nice to other devices if we supported multi-device.
-      // But `login` currently wipes all tokens. So we support single session.
-      // So `DELETE FROM refresh_tokens WHERE user_id = $1` is consistent.
+  try {
+    const payload = verifyRefreshToken(refreshToken);
+    const userId = payload.sub;
+    const userAgent = req.headers["user-agent"];
+    const ipAddress = req.ip;
 
-      await pool.query('UPDATE  refresh_tokens set revoked = true WHERE user_id = $1', [userId]);
+    //  Fetch stored token for SAME device
+    const tokenResult = await pool.query(
+      `  SELECT token_id, token_hash
+      FROM refresh_tokens
+      WHERE user_id = $1
+        AND user_agent = $2
+        AND ip_address = $3
+        AND expires_at > now()
+      `, [userId, userAgent, ipAddress]
+    );
 
-      await pool.query('DELETE FROM refresh_tokens WHERE user_id = $1', [userId]);
-
-    } catch (e) {
-      // Token invalid/expired, just ignore 
-      res.status(400);
-
+    if (tokenResult.rowCount === 0) {
+      res.clearCookie("refreshToken");
+      return res.status(200).json({ message: "Logged out" });
     }
+
+    const { token_id, token_hash } = tokenResult.rows[0];
+
+    const isValid = await bcrypt.compare(refreshToken, token_hash);
+    if (isValid) {
+      await pool.query(
+        `DELETE FROM refresh_tokens WHERE token_id = $1`,
+        [token_id]
+      );
+    }
+
+  } catch (e) {
+    res.status(500).json({ message: "Internal server error" });
   }
 
   res.clearCookie('refreshToken');
