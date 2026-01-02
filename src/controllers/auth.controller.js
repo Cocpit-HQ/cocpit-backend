@@ -6,6 +6,7 @@ const {
   verifyRefreshToken,
 } = require("../utils/jwt");
 const bcrypt = require("bcrypt");
+const { use } = require("../app");
 
 exports.register = async (req, res) => {
   const { email, password, fullName, accountType } = req.body;
@@ -21,10 +22,7 @@ exports.register = async (req, res) => {
       return res.status(409).json({ message: "Email already registered" });
     }
 
-    // 2.convert password to Hash password
     const passwordHash = await hashPassword(password);
-
-    // 3. Create user
     const userResult = await pool.query(
       `INSERT INTO users (email, password_hash, full_name)
        VALUES ($1, $2, $3)
@@ -34,7 +32,6 @@ exports.register = async (req, res) => {
 
     const user = userResult.rows[0];
 
-    // 4. Assign role based on accountType
     const roleName = accountType === 'Admin' ? 'Admin' : 'User';
 
     await pool.query(
@@ -63,10 +60,8 @@ exports.register = async (req, res) => {
 };
 
 exports.login = async (req, res) => {
-
   const { email, password } = req.body;
   const normalizedEmail = email.toLowerCase();
-
   try {
     const userResult = await pool.query(
       `
@@ -102,44 +97,31 @@ exports.login = async (req, res) => {
     const roles = rolesResult.rows.map(r => r.role_name);
 
     // Generate tokens
-
     const accessToken = signAccessToken({
       sub: user.user_id,
       roles,
     });
 
-
     const refreshToken = signRefreshToken({
       sub: user.user_id,
     });
-
     const hashedRefresh = await bcrypt.hash(refreshToken, 12);
-
-
 
     const MAX_DEVICES = 2;
     const userAgent = req.headers["user-agent"];
     const ipAddress = req.ip;
-
-
-
-
-    // hash refresh token already generated
-    // const hashedRefresh = ...
 
     await pool.query("BEGIN");
 
     try {
 
       const existingDevice = await pool.query(
-        `
-    SELECT token_id
+        `SELECT token_id
     FROM refresh_tokens
     WHERE user_id = $1
       AND user_agent = $2
       AND ip_address = $3
-      AND expires_at > now()
-    `,
+      AND expires_at > now()`,
         [user.user_id, userAgent, ipAddress]
       );
 
@@ -148,42 +130,30 @@ exports.login = async (req, res) => {
         console.log("existing device", existingDevice.rowCount)
 
         await pool.query(
-          `
-      UPDATE refresh_tokens
+          ` UPDATE refresh_tokens
       SET token_hash = $1,
           expires_at = now() + interval '7 days',
           created_at = now()
-      WHERE token_id = $2
-      `,
+      WHERE token_id = $2`,
           [hashedRefresh, existingDevice.rows[0].token_id]
         );
-
-
-
       }
       else {
         console.log("no extra device", existingDevice.rowCount)
-
-
-
         // 1️⃣ Count active sessions
         const { rows } = await pool.query(
-          `
-    SELECT COUNT(*)::int AS count
+          ` SELECT COUNT(*)::int AS count
     FROM refresh_tokens
     WHERE user_id = $1
       AND revoked = FALSE
-      AND expires_at > now()
-    `,
+      AND expires_at > now() `,
           [user.user_id]
         );
 
         const activeDevices = rows[0].count;
-
         // 2️⃣ Revoke oldest session IF limit exceeded
         if (activeDevices > MAX_DEVICES) {
           await pool.query(
-
             `delete from refresh_tokens where  token_id = (
         SELECT token_id
         FROM refresh_tokens
@@ -191,22 +161,17 @@ exports.login = async (req, res) => {
           AND revoked = FALSE
           AND expires_at > now()
         ORDER BY created_at ASC
-        LIMIT 1
-    )
-        
-      `,
+        LIMIT 1 ) `,
             [user.user_id]
           );
         }
 
         //  3️⃣ Insert new refresh token (new device)
         await pool.query(
-          `
-    INSERT INTO refresh_tokens
+          `INSERT INTO refresh_tokens
     (user_id, token_hash, expires_at, user_agent, ip_address)
     VALUES ($1, $2, now() + interval '7 days', $3, $4)
-    `,
-          [user.user_id, hashedRefresh, userAgent, ipAddress]
+    `,  [user.user_id, hashedRefresh, userAgent, ipAddress]
         );
       }
 
@@ -215,7 +180,6 @@ exports.login = async (req, res) => {
       await pool.query("ROLLBACK");
       throw err;
     }
-
 
     // Set Refresh Token in HTTP-only cookie
     res.cookie('refreshToken', refreshToken, {
@@ -227,6 +191,15 @@ exports.login = async (req, res) => {
 
     res.status(200).json({
       "accessToken": accessToken,
+      user:{
+        "id": user.user_id,
+        "email": user.email,
+        "fullName": user.full_name,
+        "roles": roles,
+        "userAgent": userAgent,
+        "ipAddress": ipAddress
+
+      }
     });
   } catch (err) {
     console.error("Login error:", err);
@@ -239,7 +212,6 @@ exports.login = async (req, res) => {
 
 exports.refreshToken = async (req, res) => {
   const refreshToken = req.cookies.refreshToken;
-
   if (!refreshToken) {
     return res.status(401).json({ message: "Refresh token missing" });
   }
@@ -247,15 +219,14 @@ exports.refreshToken = async (req, res) => {
   try {
     const payload = verifyRefreshToken(refreshToken);
     const userId = payload.sub;
-
+    const userAgent = req.headers["user-agent"];
+    const ipAddress = req.ip;
     // Check for token reuse
     const tokenInDb = await pool.query(
-      `SELECT token_hash FROM refresh_tokens WHERE user_id = $1`,
-      [userId]
+      `SELECT token_hash FROM refresh_tokens WHERE user_id = $1 and user_agent = $2 and ip_address = $3 `,
+      [userId,userAgent,ipAddress]
     );
-
-    //user agent , ip_address put in above select query
-
+  
     let tokenIsValid = false;
     for (const row of tokenInDb.rows) {
       if (await bcrypt.compare(refreshToken, row.token_hash)) {
@@ -266,7 +237,7 @@ exports.refreshToken = async (req, res) => {
 
     if (!tokenIsValid) {
       // Reuse detected or invalid token -> Security measure: invalidate all
-      await pool.query(`DELETE FROM refresh_tokens WHERE user_id = $1`, [userId]); // add user_agent , ip address
+      await pool.query(`DELETE FROM refresh_tokens WHERE user_id = $1 and user_agent = $2 and ip_address = $3`, [userId,userAgent,ipAddress]); // add user_agent , ip address
       res.clearCookie('refreshToken');
       return res.status(403).json({ message: "Invalid refresh token" });
     }
@@ -282,7 +253,6 @@ exports.refreshToken = async (req, res) => {
       [userId]
     );
     const roles = rolesResult.rows.map(r => r.role_name);
-
     // Rotate tokens
     const newAccessToken = signAccessToken({ sub: userId, roles });
     const newRefreshToken = signRefreshToken({ sub: userId });
@@ -296,11 +266,9 @@ exports.refreshToken = async (req, res) => {
 
     // Store new
     await pool.query(
-      `
-      INSERT INTO refresh_tokens (user_id, token_hash, expires_at)
-      VALUES ($1, $2, now() + interval '7 days')
-      `,
-      [userId, hashedNewRefreshToken]
+      `INSERT INTO refresh_tokens (user_id, token_hash, expires_at,user_agent,ip_address)
+      VALUES ($1, $2, now() + interval '7 days',$3,$4)
+      `, [userId, hashedNewRefreshToken,userAgent,ipAddress]
     );
 
     res.cookie('refreshToken', newRefreshToken, {
@@ -312,6 +280,8 @@ exports.refreshToken = async (req, res) => {
 
     res.json({
       accessToken: newAccessToken,
+      userAgent: userAgent,
+      ipAddress: ipAddress
     });
   } catch (err) {
     console.error("Refresh token error:", err);
