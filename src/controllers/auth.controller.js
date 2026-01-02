@@ -35,7 +35,7 @@ exports.register = async (req, res) => {
     const user = userResult.rows[0];
 
     // 4. Assign role based on accountType
-    const roleName = accountType === 'Employer' ? 'Employer' : 'User';
+    const roleName = accountType === 'Admin' ? 'Admin' : 'User';
 
     await pool.query(
       `INSERT INTO user_roles (user_id, role_id)
@@ -45,8 +45,8 @@ exports.register = async (req, res) => {
 
     // 5. Create profile with accountType
     await pool.query(
-        `INSERT INTO profiles (user_id, account_type) VALUES ($1, $2)`,
-        [user.user_id, accountType]
+      `INSERT INTO profiles (user_id, account_type) VALUES ($1, $2)`,
+      [user.user_id, accountType]
     );
 
     res.status(201).json({
@@ -63,6 +63,7 @@ exports.register = async (req, res) => {
 };
 
 exports.login = async (req, res) => {
+
   const { email, password } = req.body;
   const normalizedEmail = email.toLowerCase();
 
@@ -107,71 +108,83 @@ exports.login = async (req, res) => {
       roles,
     });
 
-    
+
     const refreshToken = signRefreshToken({
       sub: user.user_id,
     });
 
     const hashedRefresh = await bcrypt.hash(refreshToken, 12);
 
-    // Clear old refresh tokens for this user to allow only one active session per device?
-    // Or just clear ones that match? For now, we are adding new ones.
-    // However, to prevent DB bloat, maybe remove old ones?
-    // Let's stick to the previous logic: DELETE all for user (single session policy)
-    // or just insert. The previous code did DELETE ALL.
-    // I will stick to DELETE ALL to ensure single session as per previous code, or ask?
-    // Previous code: `DELETE FROM refresh_tokens WHERE user_id = $1`
-    // This enforces single session.
 
 
-    await pool.query(
-      `DELETE FROM refresh_tokens WHERE user_id = $1`,
-      [user.user_id]
-    );
+    const MAX_DEVICES = 2;
+    const userAgent = req.headers["user-agent"];
+    const ipAddress = req.ip;
 
-     await pool.query(
-      `
-      INSERT INTO refresh_tokens (user_id, token_hash, expires_at)
-      VALUES ($1, $2, now() + interval '7 days')
+
+
+
+    // hash refresh token already generated
+    // const hashedRefresh = ...
+
+    await pool.query("BEGIN");
+
+    try {
+
+      const existingDevice = await pool.query(
+        `
+    SELECT token_id
+    FROM refresh_tokens
+    WHERE user_id = $1
+      AND user_agent = $2
+      AND ip_address = $3
+      AND expires_at > now()
+    `,
+        [user.user_id, userAgent, ipAddress]
+      );
+
+      if (existingDevice.rowCount > 0) {
+        // 🔁 Same device login → UPDATE token
+        console.log("existing device", existingDevice.rowCount)
+
+        await pool.query(
+          `
+      UPDATE refresh_tokens
+      SET token_hash = $1,
+          expires_at = now() + interval '7 days',
+          created_at = now()
+      WHERE token_id = $2
       `,
-      [user.user_id, hashedRefresh]
-    );
+          [hashedRefresh, existingDevice.rows[0].token_id]
+        );
 
-    //get user agent and ip address 
-  /*// MAX devices allowed per user
-const MAX_DEVICES = 3;
 
-// get client info
-const userAgent = req.headers["user-agent"];
-const ipAddress = req.ip;
 
-// hash refresh token already generated
-// const hashedRefresh = ...
+      }
+      else {
+        console.log("no extra device", existingDevice.rowCount)
 
-await pool.query("BEGIN");
 
-try {
-  // 1️⃣ Count active sessions
-  const { rows } = await pool.query(
-    `
+
+        // 1️⃣ Count active sessions
+        const { rows } = await pool.query(
+          `
     SELECT COUNT(*)::int AS count
     FROM refresh_tokens
     WHERE user_id = $1
       AND revoked = FALSE
       AND expires_at > now()
     `,
-    [user.user_id]
-  );
+          [user.user_id]
+        );
 
-  const activeDevices = rows[0].count;
+        const activeDevices = rows[0].count;
 
-  // 2️⃣ Revoke oldest session IF limit exceeded
-  if (activeDevices >= MAX_DEVICES) {
-    await pool.query(
-      `
-      UPDATE refresh_tokens
-      SET revoked = TRUE
-      WHERE token_id = (
+        // 2️⃣ Revoke oldest session IF limit exceeded
+        if (activeDevices > MAX_DEVICES) {
+          await pool.query(
+
+            `delete from refresh_tokens where  token_id = (
         SELECT token_id
         FROM refresh_tokens
         WHERE user_id = $1
@@ -179,28 +192,30 @@ try {
           AND expires_at > now()
         ORDER BY created_at ASC
         LIMIT 1
-      )
+    )
+        
       `,
-      [user.user_id]
-    );
-  }
+            [user.user_id]
+          );
+        }
 
-  // 3️⃣ Insert new refresh token (new device)
-  await pool.query(
-    `
+        //  3️⃣ Insert new refresh token (new device)
+        await pool.query(
+          `
     INSERT INTO refresh_tokens
     (user_id, token_hash, expires_at, user_agent, ip_address)
     VALUES ($1, $2, now() + interval '7 days', $3, $4)
     `,
-    [user.user_id, hashedRefresh, userAgent, ipAddress]
-  );
+          [user.user_id, hashedRefresh, userAgent, ipAddress]
+        );
+      }
 
-  await pool.query("COMMIT");
-} catch (err) {
-  await pool.query("ROLLBACK");
-  throw err;
-}
- */
+      await pool.query("COMMIT");
+    } catch (err) {
+      await pool.query("ROLLBACK");
+      throw err;
+    }
+
 
     // Set Refresh Token in HTTP-only cookie
     res.cookie('refreshToken', refreshToken, {
@@ -211,13 +226,7 @@ try {
     });
 
     res.status(200).json({
-     "accessToken":  accessToken,
-     "refreshToken": refreshToken,
-      user: {
-        id: user.user_id,
-        email: user.email,
-        roles,
-      },
+      "accessToken": accessToken,
     });
   } catch (err) {
     console.error("Login error:", err);
@@ -315,73 +324,73 @@ exports.refreshToken = async (req, res) => {
 };
 
 exports.logout = async (req, res) => {
-    const refreshToken = req.cookies.refreshToken;
+  const refreshToken = req.cookies.refreshToken;
 
-    if (refreshToken) {
-        try {
-            // Best effort to remove from DB if valid
-            // Since we hash tokens, we can't easily find *which* one to delete without verifying.
-            // If verification fails, we just clear cookie.
-            const payload = verifyRefreshToken(refreshToken);
-            const userId = payload.sub;
+  if (refreshToken) {
+    try {
+      // Best effort to remove from DB if valid
+      // Since we hash tokens, we can't easily find *which* one to delete without verifying.
+      // If verification fails, we just clear cookie.
+      const payload = verifyRefreshToken(refreshToken);
+      const userId = payload.sub;
 
-            // Delete all refresh tokens for this user (Single session logout)
-            // Or ideally, find the specific one.
-            // Given the schema and bcrypt, finding the specific one requires iteration.
-            // For simplicity and security, we can just delete all for this user,
-            // effectively logging them out of all devices.
-            // Or we iterate. Let's iterate to be nice to other devices if we supported multi-device.
-            // But `login` currently wipes all tokens. So we support single session.
-            // So `DELETE FROM refresh_tokens WHERE user_id = $1` is consistent.
-      
-            await pool.query('UPDATE  refresh_tokens set revoked = true WHERE user_id = $1', [userId]);
+      // Delete all refresh tokens for this user (Single session logout)
+      // Or ideally, find the specific one.
+      // Given the schema and bcrypt, finding the specific one requires iteration.
+      // For simplicity and security, we can just delete all for this user,
+      // effectively logging them out of all devices.
+      // Or we iterate. Let's iterate to be nice to other devices if we supported multi-device.
+      // But `login` currently wipes all tokens. So we support single session.
+      // So `DELETE FROM refresh_tokens WHERE user_id = $1` is consistent.
 
-            await pool.query('DELETE FROM refresh_tokens WHERE user_id = $1', [userId]);
+      await pool.query('UPDATE  refresh_tokens set revoked = true WHERE user_id = $1', [userId]);
 
-        } catch (e) {
-            // Token invalid/expired, just ignore 
-    res.status(400);
+      await pool.query('DELETE FROM refresh_tokens WHERE user_id = $1', [userId]);
 
-        }
+    } catch (e) {
+      // Token invalid/expired, just ignore 
+      res.status(400);
+
     }
+  }
 
-    res.clearCookie('refreshToken');
-    res.status(200).json({ message: "Logged out successfully" });
+  res.clearCookie('refreshToken');
+  res.status(200).json({ message: "Logged out successfully" });
 };
 
 exports.getMe = async (req, res) => {
-    const userId = req.user.sub;
+  const userId = req.user.sub;
 
-    try {
-      // 1. Get User Data
-      const userResult = await pool.query(
-        `SELECT user_id AS id, email, full_name FROM users WHERE user_id = $1`,
-        [userId]
-      );
+  try {
+    // 1. Get User Data
+    const userResult = await pool.query(
+      `SELECT user_id AS id, email, full_name FROM users WHERE user_id = $1`,
+      [userId]
+    );
 
-      if (userResult.rowCount === 0) {
-        return res.status(404).json({ message: "User not found" });
-      }
+    if (userResult.rowCount === 0) {
+      return res.status(404).json({ message: "User not found" });
+    }
 
-      const user = userResult.rows[0];
-      user.roles = req.user.roles; // From token
+    const user = userResult.rows[0];
+    user.roles = req.user.roles; // From token
 
-      // 2. Get Profile Data
-      const profileResult = await pool.query(
-        `SELECT account_type AS "accountType", open_to AS "openTo", availability, work_preference AS "workPreference"
+    // 2. Get Profile Data
+    const profileResult = await pool.query(
+      `SELECT account_type AS "accountType", open_to AS "openTo", availability, work_preference AS "workPreference"
          FROM profiles
          WHERE user_id = $1`,
-        [userId]
-      );
+      [userId]
+    );
 
-      const profile = profileResult.rows[0] || {};
+    const profile = profileResult.rows[0] || {};
 
-      res.json({
-        user,
-        profile
-      });
-    } catch (err) {
-      console.error("GetMe error:", err);
-      res.status(500).json({ message: "Internal server error" });
-    }
-  };
+    res.json({
+      user,
+      profile
+    });
+  } catch (err) {
+    console.error("GetMe error:", err);
+    res.status(500).json({ message: "Internal server error" });
+  }
+};

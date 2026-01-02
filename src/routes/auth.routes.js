@@ -25,8 +25,8 @@ router.post("/logout", requireAuth, authController.logout);
 
 router.get("/me", requireAuth, authController.getMe);
 
-router.get("/admin", requireAuth, requireRoles(['Employer','Admin']), async (req, res) => {
-  res.json({ message: "Welcome Special user!" }); //user
+router.get("/admin", requireAuth, requireRoles(['Admin']), async (req, res) => {
+  res.json({ message: "Welcome Admin!" }); //user
 });
 
 module.exports = router;

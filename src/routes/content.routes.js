@@ -9,14 +9,14 @@ router.get("/feed", requireAuth, contentController.getFeed);
 // Posts
 router.post("/posts", requireAuth, contentController.createPost);
 router.get("/posts/:id", requireAuth, contentController.getPostById);
-// router.delete("/posts/:id", requireAuth, contentController.deletePost);
+router.delete("/posts/:id", requireAuth, contentController.deletePost);
 
 // Categories
 // router.get("/categories", requireAuth, contentController.getCategories);
 router.post("/categories", requireAuth, contentController.createPostCategory);
 
 // Media
-router.post("/posts/:id/media", requireAuth, contentController.handlePostMedia);
+router.post("/posts/:id/media", requireAuth, contentController.createPostMedia);
 // router.delete("/media/:id", requireAuth, contentController.deletePostMedia);
 
 
