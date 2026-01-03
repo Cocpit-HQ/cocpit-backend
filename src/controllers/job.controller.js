@@ -148,3 +148,48 @@ exports.getMyApplications = async (req, res) => {
     res.status(500).json({ message: "Internal server error" });
   }
 };
+exports.getMyJobs = async (req, res) => {
+  const recruiterId = req.user.sub; // logged-in recruiter
+  const { title, location, work_mode, company_type } = req.query;
+
+  try {
+    let query = `
+      SELECT j.*, u.full_name AS recruiter_name
+      FROM jobs j
+      LEFT JOIN users u ON j.recruiter_id = u.user_id
+      WHERE j.recruiter_id = $1
+    `;
+    const params = [recruiterId];
+    let paramCount = 2;
+
+    // Optional filters
+    if (title) {
+      query += ` AND j.title ILIKE $${paramCount}`;
+      params.push(`%${title}%`);
+      paramCount++;
+    }
+    if (location) {
+      query += ` AND j.location ILIKE $${paramCount}`;
+      params.push(`%${location}%`);
+      paramCount++;
+    }
+    if (work_mode) {
+      query += ` AND j.work_mode = $${paramCount}`;
+      params.push(work_mode);
+      paramCount++;
+    }
+    if (company_type) {
+      query += ` AND j.company_type = $${paramCount}`;
+      params.push(company_type);
+      paramCount++;
+    }
+
+    query += ` ORDER BY j.created_at DESC`;
+
+    const result = await pool.query(query, params);
+    res.json(result.rows);
+  } catch (err) {
+    console.error("Get my jobs error:", err);
+    res.status(500).json({ message: "Internal server error" });
+  }
+};
