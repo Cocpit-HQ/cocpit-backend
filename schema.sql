@@ -110,27 +110,68 @@ CREATE TABLE posts (
   post_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   author_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
   category_id UUID REFERENCES post_categories(category_id),
+  Ttile TEXT,
   content TEXT,
   visibility visibility_type DEFAULT 'public',
   created_at TIMESTAMPTZ DEFAULT now(),
-  updated_at TIMESTAMPTZ DEFAULT now()
+  updated_at TIMESTAMPTZ DEFAULT now(),
+  post_type NOT NULL
 );
+
+/*-- Define the only 4 allowed types
+CREATE TYPE post_type AS ENUM ('image', 'video', 'article', 'poll');
+
+-- Update the table to use this strict type
+ALTER TABLE public.posts 
+ADD COLUMN post_type post_type NOT NULL;*/
+
+CREATE TABLE post_polls (
+  poll_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  post_id UUID NOT NULL UNIQUE
+    REFERENCES posts(post_id) ON DELETE CASCADE,
+  duration INTERVAL NOT NULL DEFAULT INTERVAL '7 days',
+  allow_multiple_votes BOOLEAN DEFAULT false,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE TABLE poll_options (
+  option_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  poll_id UUID NOT NULL
+    REFERENCES post_polls(poll_id) ON DELETE CASCADE,
+  option_text TEXT NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE TABLE poll_votes (
+    vote_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    poll_id UUID NOT NULL
+        REFERENCES post_polls(poll_id) ON DELETE CASCADE,
+    option_id UUID NOT NULL
+        REFERENCES poll_options(option_id) ON DELETE CASCADE,
+    voter_id UUID NOT NULL
+        REFERENCES users(user_id) ON DELETE CASCADE,
+    created_at TIMESTAMPTZ DEFAULT now(),
+    -- one vote per poll per user (single-choice)
+    UNIQUE (poll_id, voter_id)
+);
+
+
 
 CREATE TABLE post_media (
   media_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   post_id UUID REFERENCES posts(post_id) ON DELETE CASCADE,
   url TEXT NOT NULL,
-  media_type TEXT, -- 'image' or 'video'
+  media_type TEXT, -- 'image' or 'video' or article or poll
   aspect_ratio TEXT -- e.g., '4:5'
 );
 
 CREATE TABLE stories (
   story_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   author_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
-  --title TEXT 
+  title TEXT ,
   media_url TEXT NOT NULL,
-  media_type TEXT CHECK (media_type IN ('image', 'video')) DEFAULT 'image'
-  -- description TEXT
+  media_type TEXT CHECK (media_type IN ('image', 'video')) DEFAULT 'image',
+  description TEXT
   expires_at TIMESTAMPTZ NOT NULL, -- usually created_at + 24h
   created_at TIMESTAMPTZ DEFAULT now()
 );
