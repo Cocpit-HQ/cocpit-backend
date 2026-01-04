@@ -41,13 +41,9 @@ CREATE TABLE refresh_tokens (
   expires_at TIMESTAMPTZ NOT NULL,
   created_at TIMESTAMPTZ DEFAULT now(),
   revoked BOOLEAN DEFAULT FALSE,
-  user_agent TEXT,
-  ip_address INET
-
+  user_agent TEXT NOT NULL,
+  ip_address INET NOT NULL
 );
-/*   user_agent TEXT,
-  ip_address INET
-  user agent and ip address added for multiple login*/
 
 CREATE TABLE profiles (
   profile_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

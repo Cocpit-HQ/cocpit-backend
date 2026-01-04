@@ -2,6 +2,7 @@ const express = require("express");
 const router = express.Router();
 const authController = require("../controllers/auth.controller");
 const { requireAuth } = require("../middlewares/auth.middleware");
+const { requireRefreshTokenAuth } = require("../middlewares/auth.middleware");
 const { requireRoles } = require("../middlewares/role.middleware");
 const { validate } = require("../middlewares/validation.middleware");
 const rateLimit = require("../middlewares/rateLimit.middleware");
@@ -21,7 +22,7 @@ const authLimiter = rateLimit({
 router.post("/register", authLimiter, validate(registerSchema), authController.register);
 router.post("/login", authLimiter, validate(loginSchema), authController.login);
 router.post("/refresh", validate(refreshTokenSchema), authController.refreshToken);
-router.post("/logout", requireAuth, authController.logout);
+router.post("/logout",  authController.logout);
 
 
 router.get("/me", requireAuth, authController.getMe);
