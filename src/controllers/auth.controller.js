@@ -485,7 +485,7 @@ exports.login = async (req, res) => {
       res.cookie("refreshToken", refreshToken, {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
-      sameSite: "Strict",
+      sameSite: "Lax",
       path: "/",
       maxAge: 7 * 24 * 60 * 60 * 1000,
     });
@@ -613,7 +613,7 @@ exports.refreshToken = async (req, res) => {
     res.cookie("refreshToken", newRefreshToken, {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
-      sameSite: "Strict",
+      sameSite: "Lax",
       path: "/",
       maxAge: 7 * 24 * 60 * 60 * 1000,
     });
@@ -646,7 +646,7 @@ exports.logout = async (req, res) => {
     }
 
     const accessToken = authHeader.split(" ")[1];
-    const { sub: userId, sid: sessionId } = verifyAccessToken(accessToken);
+    const { sub: userId, sid: sessionId } = verifyAccessToken(accessToken, { ignoreExpiration: true });
 
     console.log("👤 [BE] Logout requested for user:", userId);
     console.log("🆔 [BE] Session ID:", sessionId);

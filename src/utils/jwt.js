@@ -12,8 +12,8 @@ const signRefreshToken = (payload) =>
     algorithm: "HS256",
   });
 
-const verifyAccessToken = (token) =>
-  jwt.verify(token, process.env.JWT_ACCESS_SECRET);
+const verifyAccessToken = (token, options = {}) =>
+  jwt.verify(token, process.env.JWT_ACCESS_SECRET, options);
 
 const verifyRefreshToken = (token) =>
   jwt.verify(token, process.env.JWT_REFRESH_SECRET);

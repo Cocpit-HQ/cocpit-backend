@@ -12,8 +12,12 @@ const socialRoutes = require("./routes/social.routes");
 
 const app = express();
 
+const allowedOrigins = process.env.ALLOWED_ORIGINS
+  ? process.env.ALLOWED_ORIGINS.split(',').map(origin => origin.trim())
+  : ["http://localhost:3000"];
+
 const corsOptions = {
-  origin: "http://localhost:3000", // Array of allowed origins
+  origin: allowedOrigins, // Array of allowed origins
   methods: 'GET,POST,PUT,DELETE', // Allowed HTTP methods
   allowedHeaders: ['Content-Type', 'Authorization'], // Allowed headers
   credentials: true // Enables cookies/authorization headers to be sent
