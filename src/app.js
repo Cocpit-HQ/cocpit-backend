@@ -14,7 +14,9 @@ const app = express();
 
 const allowedOrigins = process.env.ALLOWED_ORIGINS
   ? process.env.ALLOWED_ORIGINS.split(',').map(origin => origin.trim())
-  : ["http://localhost:3000"];
+  : ["http://localhost:3000",
+    "http://192.168.1.8:3000"
+  ];
 
 const corsOptions = {
   origin: allowedOrigins, // Array of allowed origins

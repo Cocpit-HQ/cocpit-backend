@@ -517,7 +517,7 @@ exports.login = async (req, res) => {
 };
  
 exports.refreshToken = async (req, res) => {
-  const refreshToken = req.cookies.refreshToken;
+  const refreshToken = req.cookies?.refreshToken || req.body?.refreshToken;
 
   console.log("refresh token : ", refreshToken)
   if (!refreshToken) {
@@ -646,7 +646,9 @@ exports.logout = async (req, res) => {
     }
 
     const accessToken = authHeader.split(" ")[1];
-    const { sub: userId, sid: sessionId } = verifyAccessToken(accessToken, { ignoreExpiration: true });
+    const { sub: userId, sid: sessionId } = verifyAccessToken(accessToken, {
+      ignoreExpiration: true,
+    });
 
     console.log("👤 [BE] Logout requested for user:", userId);
     console.log("🆔 [BE] Session ID:", sessionId);
