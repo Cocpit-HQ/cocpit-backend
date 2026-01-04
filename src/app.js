@@ -12,8 +12,15 @@ const socialRoutes = require("./routes/social.routes");
 
 const app = express();
 
+const corsOptions = {
+  origin: "http://localhost:3000", // Array of allowed origins
+  methods: 'GET,POST,PUT,DELETE', // Allowed HTTP methods
+  allowedHeaders: ['Content-Type', 'Authorization'], // Allowed headers
+  credentials: true // Enables cookies/authorization headers to be sent
+}
+
 app.use(helmet());
-app.use(cors());
+app.use(cors(corsOptions));
 app.use(express.json());
 app.use(cookieParser());
 

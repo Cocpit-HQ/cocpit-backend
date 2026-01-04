@@ -4,6 +4,7 @@ const {
   signAccessToken,
   signRefreshToken,
   verifyRefreshToken,
+  verifyAccessToken
 } = require("../utils/jwt");
 const bcrypt = require("bcrypt");
 const { use } = require("../app");
@@ -59,10 +60,324 @@ exports.register = async (req, res) => {
   }
 };
 
+// exports.login = async (req, res) => {
+//   const { email, password } = req.body;
+//   const normalizedEmail = email.toLowerCase();
+//   try {
+//     const userResult = await pool.query(
+//       `
+//       SELECT user_id, email, password_hash
+//       FROM users
+//       WHERE email = $1
+//       `,
+//       [normalizedEmail]
+//     );
+
+//     if (userResult.rowCount === 0) {
+//       return res.status(401).json({ message: "user not found" });
+//     }
+
+//     const user = userResult.rows[0];
+
+//     const isValid = await comparePassword(password, user.password_hash);
+//     if (!isValid) {
+//       return res.status(401).json({ message: "Invalid credentials" });
+//     }
+
+//     // Fetch roles
+//     const rolesResult = await pool.query(
+//       `
+//       SELECT r.role_name
+//       FROM user_roles ur
+//       JOIN roles r ON r.role_id = ur.role_id
+//       WHERE ur.user_id = $1
+//       `,
+//       [user.user_id]
+//     );
+
+//     const roles = rolesResult.rows.map(r => r.role_name);
+//     const MAX_DEVICES = 2;
+//     const userAgent = req.headers["user-agent"];
+//     const ipAddress = req.ip;
+//     const authHeader = req.headers.authorization;
+//     if (!authHeader) {
+//       return res.status(401).json({ message: "Missing token" });
+//     }
+//     const oldAccessToken = authHeader.split(" ")[1];
+//     const payload = verifyAccessToken(accessToken);
+
+//     const { sid: sessionId } = payload;
+//     const existingSessionId = sessionId;
+//     const newSessionId = existingSessionId===null?crypto.randomUUID():existingSessionId;
+
+//     // Generate tokens
+//     const accessToken = signAccessToken({
+//       sub: user.user_id,
+//       roles,
+//       sid: newSessionId,
+//     });
+
+//     const refreshToken = signRefreshToken({
+//       sub: user.user_id,
+//     });
+//     const hashedRefresh = await bcrypt.hash(refreshToken, 12);
+
+//     await pool.query("BEGIN");
+//     try {
+
+//       const existingDevice = await pool.query(
+//         `SELECT token_id
+//     FROM refresh_tokens
+//     WHERE user_id = $1
+//       AND session_id = $2
+//       AND ip_address = $3
+//       AND expires_at > now()`,
+//         [user.user_id, sessionId, ipAddress]
+//       );
+
+//       if (existingDevice.rowCount > 0) {
+//         //  Same device login → UPDATE token
+//         await pool.query(
+//           ` UPDATE refresh_tokens
+//       SET token_hash = $1,
+//           expires_at = now() + interval '7 days',
+//           created_at = now()
+//       WHERE token_id = $2`,
+//           [hashedRefresh, existingDevice.rows[0].token_id]
+//         );
+//       }
+//       else {
+//         //  Count active sessions
+//         const { rows } = await pool.query(
+//           ` SELECT COUNT(*)::int AS count
+//     FROM refresh_tokens
+//     WHERE user_id = $1
+//       AND revoked = FALSE
+//       AND expires_at > now() `,
+//           [user.user_id]
+//         );
+
+//         const activeDevices = rows[0].count;
+//         //  Revoke oldest session IF limit exceeded
+//         if (activeDevices >= MAX_DEVICES) {
+//           await pool.query(
+//             `delete from refresh_tokens where  token_id = (
+//         SELECT token_id
+//         FROM refresh_tokens
+//         WHERE user_id = $1
+//           AND revoked = FALSE
+//           AND expires_at > now()
+//         ORDER BY created_at ASC
+//         LIMIT 1 ) `,
+//             [user.user_id]
+//           );
+//         }
+
+//         await pool.query(
+//           `INSERT INTO refresh_tokens
+//   (session_id, user_id, token_hash, expires_at, user_agent,ip_address)
+//   VALUES ($1, $2, $3, now() + interval '7 days', $4,$5)
+//   `, [sessionId, user.user_id, hashedRefresh, userAgent, ipAddress]
+//         );
+//       }
+
+//       await pool.query("COMMIT");
+//     } catch (err) {
+//       await pool.query("ROLLBACK");
+//       throw err;
+//     }
+//     // Set Refresh Token in HTTP-only cookie
+//     res.cookie('refreshToken', refreshToken, {
+//       httpOnly: false,
+//       secure: process.env.NODE_ENV === 'production',
+//       sameSite: 'Lax',
+//       maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
+//     });
+//     console.log("login done : ", normalizedEmail, "accessToken", accessToken, "refreshToken", refreshToken);
+
+//     //  res.set("Authorization", `Bearer ${accessToken}`);
+//     res.status(200).json({
+//       "accessToken": accessToken,
+//       "refreshToken": refreshToken,
+//       user: {
+//         "id": user.user_id,
+//         "email": user.email,
+//         "fullName": user.full_name,
+//         "roles": roles,
+//         "sessionId": sessionId,
+//         "userAgent": userAgent,
+//         "ipAddress": ipAddress
+
+//       }
+//     });
+//   } catch (err) {
+//     if (err.code === '28P01') {
+//       return res.status(500).json({ error: "Database authentication failed. Please check your database credentials." });
+//     }
+//     res.status(500).json({ message: "Internal server error" });
+//   }
+// };
+
+// exports.refreshToken = async (req, res) => {
+//   const authHeader = req.headers.authorization;
+//   if (!authHeader) {
+//     return res.status(401).json({ message: "Missing token" });
+//   }
+//   const accessToken = authHeader.split(" ")[1];
+//   const payload = verifyAccessToken(accessToken);
+
+//   try {
+//     const { sub: userId, sid: sessionId } = payload;
+//     const ipAddress = req.ip;
+
+//     //  Fetch stored token for SAME device
+//     const tokenResult = await pool.query(
+//       `  SELECT token_id, token_hash
+//       FROM refresh_tokens
+//       WHERE user_id = $1
+//         AND session_id = $2
+//         AND ip_address = $3
+//         AND expires_at > now()
+//       `, [userId, sessionId, ipAddress]
+//     );
+
+//     if (tokenResult.rowCount === 0) {
+//       res.clearCookie("refreshToken");
+//       return res.status(403).json({ message: "Invalid refresh token" });
+//     }
+
+//     const { token_id, token_hash } = tokenResult.rows[0];
+
+//     const isValid = await bcrypt.compare(refreshToken, token_hash);
+//     if (!isValid) {
+//       await pool.query(
+//         `DELETE FROM refresh_tokens
+//         WHERE token_id = $1`,
+//         [token_id]
+//       );
+
+//       res.clearCookie("refreshToken");
+//       return res.status(403).json({ message: "Invalid refresh token" });
+//     }
+
+//     // Fetch roles
+//     const rolesResult = await pool.query(
+//       ` SELECT r.role_name
+//       FROM user_roles ur
+//       JOIN roles r ON r.role_id = ur.role_id
+//       WHERE ur.user_id = $1
+//       `, [userId]
+//     );
+//     const roles = rolesResult.rows.map(r => r.role_name);
+
+//     //  Generate new tokens
+//     const newAccessToken = signAccessToken({
+//       sub: userId,
+//       roles,
+//       sid: sessionId
+//     });
+//     const newRefreshToken = signRefreshToken({
+//       sub: userId,
+//     });
+
+//     const hashedNewRefreshToken = await bcrypt.hash(newRefreshToken, 12);
+
+//     //  Rotate refresh token for SAME device (UPDATE, not DELETE)
+//     await pool.query(
+//       `UPDATE refresh_tokens
+//       SET token_hash = $1,
+//           expires_at = now() + interval '7 days',
+//           created_at = now()
+//       WHERE token_id = $2
+//       `, [hashedNewRefreshToken, token_id]
+//     );
+
+//     // Set new refresh token cookie
+//     res.cookie("refreshToken", newRefreshToken, {
+//       httpOnly: false,
+//       secure: process.env.NODE_ENV === "production",
+//       sameSite: "Lax",
+//       maxAge: 7 * 24 * 60 * 60 * 1000,
+//     });
+
+//     res.status(200).json({
+//       accessToken: newAccessToken,
+//       refreshToken: newRefreshToken,
+//     });
+
+//   } catch (err) {
+//     console.error("Refresh token error:", err);
+//     res.clearCookie("refreshToken");
+//     return res.status(403).json({ message: "Invalid or expired refresh token" });
+//   }
+// };
+
+// exports.logout = async (req, res) => {
+//   const authHeader = req.headers.authorization;
+//   if (!authHeader) {
+//     return res.status(401).json({ message: "Missing token" });
+//   }
+//   const accessToken = authHeader.split(" ")[1];
+//   const payload = verifyAccessToken(accessToken);
+
+//   try {
+
+//     const { sub: userId, sid: sessionId } = payload;
+//     const userAgent = req.headers["user-agent"];
+//     const ipAddress = req.ip;
+
+//     //  Fetch stored token for SAME device
+//     const tokenResult = await pool.query(
+//       `SELECT token_id, token_hash
+//       FROM refresh_tokens
+//       WHERE user_id = $1
+//         AND session_id = $2
+//         AND ip_address = $3
+//         AND expires_at > now()
+//       `, [userId, sessionId, ipAddress]
+//     );
+
+//     if (tokenResult.rowCount === 0) {
+//       res.clearCookie("refreshToken");
+
+//       await pool.query(
+//         `DELETE FROM refresh_tokens WHERE token_id = $1`,
+//         [token_id]
+//       );
+//       return res.status(200).json({ message: "logged out" });
+//     }
+
+//     const { token_id, token_hash } = tokenResult.rows[0];
+//     const isValid = await bcrypt.compare(accessToken, token_hash);
+//     if (isValid) {
+//       await pool.query(
+//         `DELETE FROM refresh_tokens WHERE token_id = $1`,
+//         [token_id]
+//       );
+//     }
+//     console.log("logout donnee : ", accessToken);
+//     res.clearCookie('refreshToken');
+//     res.status(200).json({ message: "Logged out successfully" });
+
+//   } catch (e) {
+//     res.status(500).json({ message: "Internal server error" });
+//   }
+
+
+// };
+
 exports.login = async (req, res) => {
   const { email, password } = req.body;
+  const userAgent = req.headers["user-agent"] || "unknown";
+ const ipAddress = req.ip || "unknown";
+
   const normalizedEmail = email.toLowerCase();
+  const sessionId = crypto.randomUUID();
+
   try {
+    /* ---------------------------------------------------------
+       1️⃣ Fetch user
+    --------------------------------------------------------- */
     const userResult = await pool.query(
       `
       SELECT user_id, email, password_hash
@@ -73,7 +388,7 @@ exports.login = async (req, res) => {
     );
 
     if (userResult.rowCount === 0) {
-      return res.status(401).json({ message: "user not found" });
+      return res.status(401).json({ message: "User not found" });
     }
 
     const user = userResult.rows[0];
@@ -83,7 +398,9 @@ exports.login = async (req, res) => {
       return res.status(401).json({ message: "Invalid credentials" });
     }
 
-    // Fetch roles
+    /* ---------------------------------------------------------
+       2️⃣ Fetch roles
+    --------------------------------------------------------- */
     const rolesResult = await pool.query(
       `
       SELECT r.role_name
@@ -96,81 +413,65 @@ exports.login = async (req, res) => {
 
     const roles = rolesResult.rows.map(r => r.role_name);
 
-    // Generate tokens
+    /* ---------------------------------------------------------
+       3️⃣ Generate tokens (SESSION-BASED)
+    --------------------------------------------------------- */
     const accessToken = signAccessToken({
       sub: user.user_id,
+      sid: sessionId,
       roles,
     });
 
     const refreshToken = signRefreshToken({
       sub: user.user_id,
+      sid: sessionId,
     });
+
     const hashedRefresh = await bcrypt.hash(refreshToken, 12);
 
+    /* ---------------------------------------------------------
+       4️⃣ Enforce MAX_DEVICES (by SESSION)
+    --------------------------------------------------------- */
     const MAX_DEVICES = 2;
-    const userAgent = req.headers["user-agent"];
-    const ipAddress = req.ip;
 
     await pool.query("BEGIN");
 
     try {
-
-      const existingDevice = await pool.query(
-        `SELECT token_id
-    FROM refresh_tokens
-    WHERE user_id = $1
-      AND user_agent = $2
-      AND ip_address = $3
-      AND expires_at > now()`,
-        [user.user_id, userAgent, ipAddress]
-      );
-
-      if (existingDevice.rowCount > 0) {
-        //  Same device login → UPDATE token
-        await pool.query(
-          ` UPDATE refresh_tokens
-      SET token_hash = $1,
-          expires_at = now() + interval '7 days',
-          created_at = now()
-      WHERE token_id = $2`,
-          [hashedRefresh, existingDevice.rows[0].token_id]
-        );
-      }
-      else {
-        //  Count active sessions
-        const { rows } = await pool.query(
-          ` SELECT COUNT(*)::int AS count
-    FROM refresh_tokens
-    WHERE user_id = $1
-      AND revoked = FALSE
-      AND expires_at > now() `,
-          [user.user_id]
-        );
-
-        const activeDevices = rows[0].count;
-        //  Revoke oldest session IF limit exceeded
-        if (activeDevices >= MAX_DEVICES) {
-          await pool.query(
-            `delete from refresh_tokens where  token_id = (
-        SELECT token_id
+      const activeSessions = await pool.query(
+        `
+        SELECT session_id
         FROM refresh_tokens
         WHERE user_id = $1
-          AND revoked = FALSE
           AND expires_at > now()
         ORDER BY created_at ASC
-        LIMIT 1 ) `,
-            [user.user_id]
-          );
-        }
+        `,
+        [user.user_id]
+      );
 
-        //   Insert new refresh token (new device)
+      if (activeSessions.rowCount >= MAX_DEVICES) {
+        // Remove OLDEST session
         await pool.query(
-          `INSERT INTO refresh_tokens
-    (user_id, token_hash, expires_at, user_agent, ip_address)
-    VALUES ($1, $2, now() + interval '7 days', $3, $4)
-    `, [user.user_id, hashedRefresh, userAgent, ipAddress]
+          `
+          DELETE FROM refresh_tokens
+          WHERE session_id = $1
+          `,
+          [activeSessions.rows[0].session_id]
         );
       }
+
+      /* ---------------------------------------------------------
+         5️⃣ Insert NEW session
+      --------------------------------------------------------- */
+      await pool.query(
+  `
+  INSERT INTO refresh_tokens
+    (session_id, user_id, token_hash, expires_at, user_agent, ip_address)
+  VALUES
+    ($1, $2, $3, now() + interval '7 days', $4, $5)
+  `,
+  [sessionId, user.user_id, hashedRefresh, userAgent, ipAddress]
+);
+
 
       await pool.query("COMMIT");
     } catch (err) {
@@ -178,119 +479,150 @@ exports.login = async (req, res) => {
       throw err;
     }
 
-    // Set Refresh Token in HTTP-only cookie
-    res.cookie('refreshToken', refreshToken, {
+    /* ---------------------------------------------------------
+       6️⃣ Set refresh token cookie
+    --------------------------------------------------------- */
+      res.cookie("refreshToken", refreshToken, {
       httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'Strict',
-      maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "Strict",
+      path: "/",
+      maxAge: 7 * 24 * 60 * 60 * 1000,
     });
 
-    res.status(200).json({
-      "accessToken": accessToken,
-      "refreshToken": refreshToken,
+    console.log(
+      "✅ Login successful:",
+      normalizedEmail,
+      "session:",
+      sessionId
+    );
+
+    /* ---------------------------------------------------------
+       7️⃣ Respond
+    --------------------------------------------------------- */
+    return res.status(200).json({
+      accessToken,
+      refreshToken,
       user: {
-        "id": user.user_id,
-        "email": user.email,
-        "fullName": user.full_name,
-        "roles": roles,
-        "userAgent": userAgent,
-        "ipAddress": ipAddress
-
-      }
+        id: user.user_id,
+        email: user.email,
+        roles,
+      },
     });
+
   } catch (err) {
-    console.error("Login error:", err);
-    if (err.code === '28P01') {
-      return res.status(500).json({ error: "Database authentication failed. Please check your database credentials." });
-    }
-    res.status(500).json({ message: "Internal server error" });
+    console.error("❌ Login error:", err);
+    return res.status(500).json({ message: "Internal server error" });
   }
 };
-
+ 
 exports.refreshToken = async (req, res) => {
   const refreshToken = req.cookies.refreshToken;
+
+  console.log("refresh token : ", refreshToken)
   if (!refreshToken) {
-    return res.status(401).json({ message: "Refresh token missing" });
+    return res.status(401).json({ message: "Refresh token missing" ,refreshToken:refreshToken });
   }
 
   try {
-    const payload = verifyRefreshToken(refreshToken);
-    const userId = payload.sub;
-    const userAgent = req.headers["user-agent"];
-    const ipAddress = req.ip;
+    /* ---------------------------------------------------------
+       1️⃣ Verify refresh token and extract session
+    --------------------------------------------------------- */
+    const { sub: userId, sid: sessionId } = verifyRefreshToken(refreshToken);
 
-    //  Fetch stored token for SAME device
-    const tokenResult = await pool.query(
-      `  SELECT token_id, token_hash
+    /* ---------------------------------------------------------
+       2️⃣ Fetch EXACT session (no user-wide lookup)
+    --------------------------------------------------------- */
+    const sessionResult = await pool.query(
+      `
+      SELECT token_id, token_hash
       FROM refresh_tokens
       WHERE user_id = $1
-        AND user_agent = $2
-        AND ip_address = $3
+        AND session_id = $2
         AND expires_at > now()
-      `, [userId, userAgent, ipAddress]
+      `,
+      [userId, sessionId]
     );
 
-    if (tokenResult.rowCount === 0) {
+    if (sessionResult.rowCount === 0) {
       res.clearCookie("refreshToken");
-      return res.status(403).json({ message: "Invalid refresh token" });
+      return res.status(403).json({ message: "Session not found" });
     }
 
-    const { token_id, token_hash } = tokenResult.rows[0];
-    //  Compare hashed token
+    const { token_id, token_hash } = sessionResult.rows[0];
+
+    /* ---------------------------------------------------------
+       3️⃣ Validate refresh token
+    --------------------------------------------------------- */
     const isValid = await bcrypt.compare(refreshToken, token_hash);
     if (!isValid) {
+      // Token reuse or tampering → kill this session
       await pool.query(
-        `DELETE FROM refresh_tokens
-        WHERE token_id = $1`,
-        [token_id]
+        `DELETE FROM refresh_tokens WHERE session_id = $1`,
+        [sessionId]
       );
 
       res.clearCookie("refreshToken");
       return res.status(403).json({ message: "Invalid refresh token" });
     }
 
-    //  Fetch roles
+    /* ---------------------------------------------------------
+       4️⃣ Fetch roles
+    --------------------------------------------------------- */
     const rolesResult = await pool.query(
-      ` SELECT r.role_name
+      `
+      SELECT r.role_name
       FROM user_roles ur
       JOIN roles r ON r.role_id = ur.role_id
       WHERE ur.user_id = $1
-      `, [userId]
+      `,
+      [userId]
     );
+
     const roles = rolesResult.rows.map(r => r.role_name);
 
-    //  Generate new tokens
+    /* ---------------------------------------------------------
+       5️⃣ Rotate tokens (UPDATE, not INSERT)
+    --------------------------------------------------------- */
     const newAccessToken = signAccessToken({
       sub: userId,
+      sid: sessionId,
       roles,
     });
+
     const newRefreshToken = signRefreshToken({
       sub: userId,
+      sid: sessionId,
     });
+
     const hashedNewRefreshToken = await bcrypt.hash(newRefreshToken, 12);
 
-    //  Rotate refresh token for SAME device (UPDATE, not DELETE)
     await pool.query(
-      `UPDATE refresh_tokens
+      `
+      UPDATE refresh_tokens
       SET token_hash = $1,
-          expires_at = now() + interval '7 days',
-          created_at = now()
-      WHERE token_id = $2
-      `, [hashedNewRefreshToken, token_id]
+          expires_at = now() + interval '7 days'
+      WHERE session_id = $2
+      `,
+      [hashedNewRefreshToken, sessionId]
     );
 
-    // Set new refresh token cookie
+    /* ---------------------------------------------------------
+       6️⃣ Set refreshed cookie
+    --------------------------------------------------------- */
     res.cookie("refreshToken", newRefreshToken, {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
       sameSite: "Strict",
+      path: "/",
       maxAge: 7 * 24 * 60 * 60 * 1000,
     });
 
-    res.status(200).json({
+    /* ---------------------------------------------------------
+       7️⃣ Return new access token
+    --------------------------------------------------------- */
+    return res.status(200).json({
       accessToken: newAccessToken,
-      refreshToken: newRefreshToken,
     });
 
   } catch (err) {
@@ -300,52 +632,61 @@ exports.refreshToken = async (req, res) => {
   }
 };
 
-
 exports.logout = async (req, res) => {
-  const refreshToken = req.cookies.refreshToken;
-
-  if (!refreshToken) {
-    return res.status(200).json({ message: "already Logged out " })
-  }
+  console.log("🚪 [BE] Logout endpoint HIT");
 
   try {
-    const payload = verifyRefreshToken(refreshToken);
-    const userId = payload.sub;
-    const userAgent = req.headers["user-agent"];
-    const ipAddress = req.ip;
+    /* ---------------------------------------------------------
+       1️⃣ Validate access token
+    --------------------------------------------------------- */
+    const authHeader = req.headers.authorization;
+    if (!authHeader?.startsWith("Bearer ")) {
+      console.warn("⚠️ [BE] Missing Authorization header");
+      return res.status(401).json({ message: "Missing access token" });
+    }
 
-    //  Fetch stored token for SAME device
-    const tokenResult = await pool.query(
-      `  SELECT token_id, token_hash
-      FROM refresh_tokens
+    const accessToken = authHeader.split(" ")[1];
+    const { sub: userId, sid: sessionId } = verifyAccessToken(accessToken);
+
+    console.log("👤 [BE] Logout requested for user:", userId);
+    console.log("🆔 [BE] Session ID:", sessionId);
+
+    /* ---------------------------------------------------------
+       2️⃣ Delete EXACT session (no UA / IP guessing)
+    --------------------------------------------------------- */
+    const result = await pool.query(
+      `
+      DELETE FROM refresh_tokens
       WHERE user_id = $1
-        AND user_agent = $2
-        AND ip_address = $3
-        AND expires_at > now()
-      `, [userId, userAgent, ipAddress]
+        AND session_id = $2
+      RETURNING token_id
+      `,
+      [userId, sessionId]
     );
 
-    if (tokenResult.rowCount === 0) {
-      res.clearCookie("refreshToken");
-      return res.status(200).json({ message: "Logged out" });
+    if (result.rowCount === 0) {
+      console.warn("⚠️ [BE] No session found (already logged out)");
+    } else {
+      console.log("🗑️ [BE] Session deleted:", result.rows[0].token_id);
     }
 
-    const { token_id, token_hash } = tokenResult.rows[0];
+    /* ---------------------------------------------------------
+       3️⃣ Clear refresh cookie
+    --------------------------------------------------------- */
+    res.clearCookie("refreshToken", {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "Lax",
+      path: "/",
+    });
 
-    const isValid = await bcrypt.compare(refreshToken, token_hash);
-    if (isValid) {
-      await pool.query(
-        `DELETE FROM refresh_tokens WHERE token_id = $1`,
-        [token_id]
-      );
-    }
+    console.log("✅ [BE] Logout completed");
+    return res.status(200).json({ message: "Logged out successfully" });
 
-  } catch (e) {
-    res.status(500).json({ message: "Internal server error" });
+  } catch (err) {
+    console.error("❌ [BE] Logout error:", err);
+    return res.status(401).json({ message: "Invalid or expired token" });
   }
-
-  res.clearCookie('refreshToken');
-  res.status(200).json({ message: "Logged out successfully" });
 };
 
 exports.getMe = async (req, res) => {
