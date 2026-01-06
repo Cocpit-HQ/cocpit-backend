@@ -7,7 +7,7 @@ const {
   verifyAccessToken
 } = require("../utils/jwt");
 const bcrypt = require("bcrypt");
-const { use } = require("../app");
+const crypto = require("crypto");
 
 exports.register = async (req, res) => {
   const { email, password, fullName, accountType } = req.body;

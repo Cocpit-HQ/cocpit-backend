@@ -12,7 +12,7 @@ exports.searchUsers = async (req, res) => {
     return res.status(400).json({ message: "Search query 'q' is required" });
   }
 
-  const searchTerm = q.trim();
+  const searchTerm = q.trim().replace(/^['"]|['"]$/g, '');
 
   try {
     // Construct the query dynamically based on optional filters
