@@ -9,6 +9,7 @@ const jobRoutes = require("./routes/job.routes");
 const contentRoutes = require("./routes/content.routes");
 const eventRoutes = require("./routes/event.routes");
 const socialRoutes = require("./routes/social.routes");
+const userRoutes = require("./routes/user.routes");
 
 const app = express();
 
@@ -46,5 +47,6 @@ app.use("/api/jobs", jobRoutes);
 app.use("/api", contentRoutes); // /api/feed, /api/stories... (following controller naming)
 app.use("/api/events", eventRoutes);
 app.use("/api", socialRoutes); // /api/conversations...
+app.use("/api/users", userRoutes);
 
 module.exports = app;
