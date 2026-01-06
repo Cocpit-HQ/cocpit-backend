@@ -18,15 +18,16 @@ router.delete("/post/:id", requireAuth, contentController.deletePost);
 router.post("/post/:id/poll/vote", requireAuth, contentController.voteInPoll);
 
 // --- SOCIAL ENGAGEMENT ---
-// New: Essential for LinkedIn-style networking
-// router.post("/posts/:id/like", requireAuth, contentController.toggleLike);
-// router.post("/posts/:id/comments", requireAuth, contentController.addComment);
-// router.get("/posts/:id/comments", requireAuth, contentController.getComments);
+router.post("/post/:id/like", requireAuth, contentController.toggleLike);
+router.post("/post/:id/comments", requireAuth, contentController.addComment);
+router.put("/post/comments/:comment_id", requireAuth, contentController.updateComment);
+router.delete("/post/comments/:comment_id", requireAuth, contentController.deleteComment)
+router.get("/post/:id/comments", requireAuth, contentController.getComments);
 
 // --- STORIES ---
 router.get("/stories", requireAuth, contentController.getStories);
-router.post("/stories", requireAuth, contentController.createStory);
-// router.delete("/stories/:id", requireAuth, contentController.deleteStory);
+router.post("/story", requireAuth, contentController.createStory);
+router.delete("/stories/:id", requireAuth, contentController.deleteStory);
 router.post("/stories/:id/react", requireAuth, contentController.reactToStory);
 router.post("/stories/:id/view", requireAuth, contentController.viewStory);
 

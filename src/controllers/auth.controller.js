@@ -432,7 +432,7 @@ exports.login = async (req, res) => {
     /* ---------------------------------------------------------
        4️⃣ Enforce MAX_DEVICES (by SESSION)
     --------------------------------------------------------- */
-    const MAX_DEVICES = 2;
+    const MAX_DEVICES = 10;
 
     await pool.query("BEGIN");
 
