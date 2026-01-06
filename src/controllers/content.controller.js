@@ -3,32 +3,52 @@ const pool = require("../db/pool");
 
 // --- Feed / Posts ---
 exports.getPublicFeed = async (req, res) => {
-
+    // cursor is the 'created_at' timestamp of the last post currently on the user's screen
+    const { cursor } = req.query; 
+    const limit = 10;
 
     try {
         let query = `
             SELECT p.*, u.full_name as author_name, u.avatar_url as author_avatar, pc.name as category_name,
             COALESCE((SELECT json_agg(pm) FROM post_media pm WHERE pm.post_id = p.post_id), '[]'::json) AS media,
-            (SELECT json_build_object('poll_id', pp.poll_id,
-            'duration', pp.duration,
-            'total_votes', (SELECT COUNT(*) FROM poll_votes pv WHERE pv.poll_id = pp.poll_id),
-             'options', 
-                COALESCE((SELECT json_agg(json_build_object(
-                                    'option_id', po.option_id,
-                                    'option_text', po.option_text,
-                                    -- Calculate vote count for this specific option
-                                    'vote_count', (SELECT COUNT(*) FROM poll_votes pv WHERE pv.option_id = po.option_id)
-                                )) FROM poll_options po WHERE po.poll_id = pp.poll_id), '[]'::json))
-             FROM post_polls pp WHERE pp.post_id = p.post_id) AS poll
+            (SELECT json_build_object(
+                'poll_id', pp.poll_id,
+                'total_votes', (SELECT COUNT(*) FROM poll_votes pv WHERE pv.poll_id = pp.poll_id),
+                'options', COALESCE((
+                    SELECT json_agg(json_build_object(
+                        'option_id', po.option_id,
+                        'option_text', po.option_text,
+                        'vote_count', (SELECT COUNT(*) FROM poll_votes pv WHERE pv.option_id = po.option_id)
+                    )) FROM poll_options po WHERE po.poll_id = pp.poll_id
+                ), '[]'::json)
+            ) FROM post_polls pp WHERE pp.post_id = p.post_id) AS poll
             FROM posts p
             JOIN users u ON p.author_id = u.user_id
             LEFT JOIN post_categories pc ON p.category_id = pc.category_id
-            WHERE p.visibility = 'public' ORDER BY p.created_at DESC
+            WHERE p.visibility = 'public'
         `;
 
+        const params = [limit];
 
-        const result = await pool.query(query);
-        res.json(result.rows);
+        // If cursor exists, only get posts OLDER than the cursor
+        if (cursor) {
+            query += ` AND p.created_at < $2`;
+            params.push(cursor);
+        }
+
+        query += ` ORDER BY p.created_at DESC LIMIT $1`;
+
+        const result = await pool.query(query, params);
+        
+        // Define the next cursor as the timestamp of the last item in the result
+        const nextCursor = result.rows.length === limit 
+            ? result.rows[result.rows.length - 1].created_at 
+            : null;
+
+        res.json({
+            posts: result.rows,
+            nextCursor: nextCursor // Frontend sends this back in the next request
+        });
     } catch (err) {
         console.error("Get feed error:", err);
         res.status(500).json({ message: "Internal server error" });
@@ -37,23 +57,33 @@ exports.getPublicFeed = async (req, res) => {
 
 exports.getPersonalizedFeed = async (req, res) => {
     const userId = req.user.sub;
-    const { category } = req.query;
+    const { category, cursor } = req.query; // 1. Extract cursor from URL
+    const limit = 10;
 
     try {
         let query = `
             SELECT p.*, u.full_name as author_name, u.avatar_url as author_avatar, pc.name as category_name,
+            -- Media
             COALESCE((SELECT json_agg(pm) FROM post_media pm WHERE pm.post_id = p.post_id), '[]'::json) AS media,
-            (SELECT json_build_object('poll_id', pp.poll_id,
-            'duration', pp.duration,
-            'total_votes', (SELECT COUNT(*) FROM poll_votes pv WHERE pv.poll_id = pp.poll_id),
-             'options', 
-                COALESCE((SELECT json_agg(json_build_object(
-                                    'option_id', po.option_id,
-                                    'option_text', po.option_text,
-                                    -- Calculate vote count for this specific option
-                                    'vote_count', (SELECT COUNT(*) FROM poll_votes pv WHERE pv.option_id = po.option_id)
-                                )) FROM poll_options po WHERE po.poll_id = pp.poll_id), '[]'::json))
-             FROM post_polls pp WHERE pp.post_id = p.post_id) AS poll
+            
+            -- Interaction Counts
+            (SELECT COUNT(*) FROM post_likes pl WHERE pl.post_id = p.post_id) as like_count,
+            (SELECT COUNT(*) FROM post_comments pc_inner WHERE pc_inner.post_id = p.post_id) as comment_count,
+            
+            -- Poll Data
+            (SELECT json_build_object(
+                'poll_id', pp.poll_id,
+                'duration', pp.duration,
+                'total_votes', (SELECT COUNT(*) FROM poll_votes pv WHERE pv.poll_id = pp.poll_id),
+                'options', COALESCE((
+                    SELECT json_agg(json_build_object(
+                        'option_id', po.option_id,
+                        'option_text', po.option_text,
+                        'vote_count', (SELECT COUNT(*) FROM poll_votes pv WHERE pv.option_id = po.option_id)
+                    )) FROM poll_options po WHERE po.poll_id = pp.poll_id
+                ), '[]'::json)
+            ) FROM post_polls pp WHERE pp.post_id = p.post_id) AS poll
+            
             FROM posts p
             JOIN users u ON p.author_id = u.user_id
             LEFT JOIN post_categories pc ON p.category_id = pc.category_id
@@ -61,20 +91,44 @@ exports.getPersonalizedFeed = async (req, res) => {
         `;
 
         const params = [userId];
+        let paramCount = 2;
+
+        // 2. Filter by Category if provided
         if (category) {
-            query += ` AND pc.name = $2`;
+            query += ` AND pc.name = $${paramCount}`;
             params.push(category);
+            paramCount++;
         }
-        query += ` ORDER BY p.created_at DESC`;
+
+        // 3. Apply Cursor for Infinite Scroll
+        if (cursor) {
+            query += ` AND p.created_at < $${paramCount}`;
+            params.push(cursor);
+            paramCount++;
+        }
+
+        // 4. Order and Limit
+        query += ` ORDER BY p.created_at DESC LIMIT $${paramCount}`;
+        params.push(limit);
 
         const result = await pool.query(query, params);
-        res.json(result.rows);
+
+        // 5. Calculate next cursor for the frontend
+        const nextCursor = result.rows.length === limit 
+            ? result.rows[result.rows.length - 1].created_at 
+            : null;
+
+        res.json({
+            posts: result.rows,
+            nextCursor: nextCursor
+        });
     } catch (err) {
-        console.error("Get feed error:", err);
+        console.error("Get personalized feed error:", err);
         res.status(500).json({ message: "Internal server error" });
     }
 };
 
+//--post integration ----
 exports.createPost = async (req, res) => {
     const userId = req.user.sub;
     const { content, category, visibility, media_urls, post_type, title, poll_options, poll_duration } = req.body; // category is name, media_urls is array
@@ -151,11 +205,11 @@ exports.getPostById = async (req, res) => {
     const postId = req.params.id;
 
     try {
-        const query = `
-           SELECT     p.*, 
+        const query = `SELECT 
+    p.*, 
     c.name AS category_name,
 
-    --  Media (array)
+    -- Media (array)
     COALESCE(
         (
             SELECT json_agg(
@@ -171,7 +225,7 @@ exports.getPostById = async (req, res) => {
         '[]'::json
     ) AS media,
 
-    --  Poll (object or null)
+    -- Poll (object or null)
     (
         SELECT json_build_object(
             'poll_id', pp.poll_id,
@@ -182,8 +236,9 @@ exports.getPostById = async (req, res) => {
                     SELECT json_agg(
                         json_build_object(
                             'option_id', po.option_id,
-                            'option_text', po.option_text
-                            'vote_count', COUNT(pv.vote_id)
+                            'option_text', po.option_text,
+                            -- FIX: Subquery to count votes for this specific option
+                            'vote_count', (SELECT COUNT(*) FROM poll_votes pv WHERE pv.option_id = po.option_id)
                         )
                     )
                     FROM poll_options po
@@ -198,8 +253,7 @@ exports.getPostById = async (req, res) => {
 FROM posts p
 LEFT JOIN post_categories c ON p.category_id = c.category_id
 WHERE p.post_id = $1;
-
-        `;
+`
 
         const result = await pool.query(query, [postId]);
 
@@ -362,6 +416,7 @@ exports.deletePost = async (req, res) => {
 
 }
 
+// --- POLL INTERACTION ---
 exports.voteInPoll = async (req, res) => {
     const voterId = req.user.sub;
     const { id: postId } = req.params;
@@ -401,6 +456,188 @@ exports.voteInPoll = async (req, res) => {
     }
 }
 
+// --- SOCIAL ENGAGEMENT ---
+exports.toggleLike = async (req, res) => {
+    const userId = req.user.sub;
+    const postId = req.params.id;
+
+    try {
+        // 1️⃣ Check if already liked
+        const alreadyLiked = await pool.query(
+            "SELECT 1 FROM post_likes WHERE post_id = $1 AND user_id = $2",
+            [postId, userId]
+        );
+
+        let liked;
+
+        if (alreadyLiked.rowCount > 0) {
+            // 2️⃣ Unlike
+            await pool.query(
+                "DELETE FROM post_likes WHERE post_id = $1 AND user_id = $2",
+                [postId, userId]
+            );
+            liked = false;
+        } else {
+            // 3️⃣ Like
+            await pool.query(
+                "INSERT INTO post_likes (post_id, user_id) VALUES ($1, $2)",
+                [postId, userId]
+            );
+            liked = true;
+        }
+
+        // 4️⃣ Get UPDATED count
+        const countResult = await pool.query(
+            "SELECT COUNT(*) FROM post_likes WHERE post_id = $1",
+            [postId]
+        );
+
+        const likeCount = Number(countResult.rows[0].count);
+
+        return res.status(200).json({
+            postId,
+            liked,
+            likeCount
+        });
+
+    } catch (err) {
+        console.error("Toggle like error:", err);
+        return res.status(500).json({ message: "Internal server error" });
+    }
+};
+
+exports.addComment = async (req, res) => {
+    const userId = req.user.sub;
+    const postId = req.params.id;
+    const { content } = req.body;
+
+    if (!postId || !userId || !content.trim()) {
+        return res.status(400).json({ message: "all fields are required" })
+    }
+
+    try {
+        const post = await pool.query(`select post_id from posts where post_id = $1`, [postId])
+
+        if (post.rowCount === 0) {
+            return res.status(404).json({ message: "Post not found" })
+        }
+
+        const result = await pool.query(
+            `INSERT INTO post_comments (post_id, author_id, content)
+   VALUES ($1, $2, $3)
+   RETURNING comment_id,author_id, content, created_at`,
+            [postId, userId, content.trim()]
+        );
+
+        return res.status(200).json({
+            message: "comment added",
+            comment: result.rows[0]
+        })
+
+    } catch (err) {
+        return res.status(500).json({ message: "Internal server error" })
+    }
+}
+
+exports.updateComment = async (req, res) => {
+  const userId = req.user.sub;
+  const commentId = req.params.comment_id;
+  const { content } = req.body;
+
+  if (!commentId) {
+    return res.status(400).json({ message: "commentId is required" });
+  }
+
+  if (!content || !content.trim()) {
+    return res.status(400).json({ message: "Content is required" });
+  }
+
+  try {
+    const result = await pool.query(
+      `
+      UPDATE post_comments
+      SET content = $1, created_at = NOW()
+      WHERE comment_id = $2 AND author_id = $3
+      RETURNING comment_id, content, created_at
+      `,
+      [content.trim(), commentId, userId]
+    );
+    const temp = await pool.query(`select * from post_comments where comment_id = $1 and author_id = $2`, [commentId, userId])
+
+    if (result.rowCount === 0) {
+      // Either comment doesn't exist OR user is not the author
+      return res.status(403).json({ message: "Not allowed or comment not found" });
+    }
+
+    return res.status(200).json({
+      message: "Comment updated",
+      comment: result.rows[0]
+    });
+
+  } catch (err) {
+    console.error("Update comment error:", err);
+    return res.status(500).json({ message: "Internal server error" });
+  }
+};
+
+exports.deleteComment = async (req, res) => {
+    const userId = req.user.sub;
+    const commentId = req.params.comment_id;
+
+    if(!userId || !commentId){
+        return res.status(400).json({ message: "userId and commentId are required" })
+    }
+
+    try{
+        const result = await pool.query(
+            `delete from post_comments where comment_id = $1 and author_id = $2 RETURNING comment_id`,
+            [commentId, userId]
+        );
+        if(result.rowCount === 0){
+            return res.status(404).json({ message: "Comment not found", commentId, userId });
+        }
+        res.status(200).json({ message: "Comment deleted", deletedCommentId: commentId });
+    }catch(err){
+        return res.status(500).json({ message: "Internal server error" })
+    }
+}
+
+exports.getComments = async (req, res) => {
+    const postId = req.params.id;
+
+    if (!postId) {
+        return res.status(400).json({ message: "postId is required" })
+    }
+    try {
+        const post = await pool.query(`select post_id from posts where post_id = $1`, [postId])
+        console.log(post)
+        if (post.rowCount === 0) {
+            return res.status(404).json({ message: "Post not found" })
+        }
+        console.log(postId)
+        const comments = await pool.query(
+            `
+      SELECT 
+        c.comment_id,
+        c.content,
+        c.created_at,
+        u.user_id AS author_id,
+        u.full_name,
+        u.avatar_url,
+        u.headline
+      FROM post_comments c
+      JOIN users u ON c.author_id = u.user_id
+      WHERE c.post_id = $1
+      ORDER BY c.created_at desc
+      `,
+            [postId]
+        );
+        return res.status(200).json(comments.rows);
+    } catch (err) {
+        return res.status(500).json({ message: "Internal server error" })
+    }
+}
+
 exports.getStories = async (req, res) => {
     // Return stories that are not expired
     try {
@@ -422,26 +659,27 @@ exports.getStories = async (req, res) => {
 
 exports.createStory = async (req, res) => {
     const userId = req.user.sub;
-    const {title, media_url,description } = req.body; // description field need to add and  title also
+    const { title, media_url, description } = req.body; // description field need to add and  title also
 
     try {
-         let type;
-            type = media_url.toLowerCase().match(/\.(mp4|webm|mov)$/) ? 'video' : 'image';
+        let type;
+        type = media_url.toLowerCase().match(/\.(mp4|webm|mov)$/) ? 'video' : 'image';
         await pool.query(
             `
             INSERT INTO stories (author_id,title, description, media_url, media_type, expires_at)
             VALUES ($1, $2, $3, $4, $5, now() + interval '24 hours')
             `,
-                
-            [userId,title, description, media_url, type || 'image'] 
+
+            [userId, title, description, media_url, type || 'image']
         );
-        res.status(201).json({ message: "Story created" ,
-            userId:userId,
-            title:title,
-            description:description,
-            media_url:media_url,
-            media_type:type,
-            
+        res.status(201).json({
+            message: "Story created",
+            userId: userId,
+            title: title,
+            description: description,
+            media_url: media_url,
+            media_type: type,
+
         });
     } catch (err) {
         console.error("Create story error:", err);
@@ -449,23 +687,26 @@ exports.createStory = async (req, res) => {
     }
 };
 
+exports.deleteStory = async (req, res) => {
+    const storyId = req.params.id;
+    const userId = req.user.sub;
+}
 exports.viewStory = async (req, res) => {
 
-    const { id } = req.params;
+    const story_id = req.params.id;
     const viewer_id = req.user.sub;
 
-    if (!id && !viewer_id) {
+    if (!story_id && !viewer_id) {
         return res.status(400).json({ message: "id and viewer_id are required" })
     }
 
     try {
         await pool.query(
             `INSERT INTO story_views (  story_id, viewer_id)  VALUES ($1, $2)
-  ON CONFLICT (story_id, viewer_id) DO NOTHING`, [id, viewer_id]
+  ON CONFLICT (story_id, viewer_id) DO NOTHING`, [story_id, viewer_id]
         );
         res.status(200).json({ message: "story viewed" });
     } catch (err) {
-        console.error("View story error:", err);
         res.status(500).json({ message: "Internal server error" });
     }
 
@@ -473,21 +714,33 @@ exports.viewStory = async (req, res) => {
 
 exports.reactToStory = async (req, res) => {
     const userId = req.user.sub;
-    const { id } = req.params; // story_id
+    const story_id = req.params.id; // story_id
     const { reaction } = req.body;
 
+    if (!story_id || !userId) {
+    return res.status(400).json({ message: "story_id and userId are required" });
+  }
+
+  if (typeof reaction !== "boolean") {
+    return res.status(400).json({ message: "reaction must be true or false" });
+  }
+
     try {
-        await pool.query(
+        const result = await pool.query(
             `
             INSERT INTO story_reactions (story_id, user_id, reaction_type)
             VALUES ($1, $2, $3)
             ON CONFLICT (story_id, user_id) DO UPDATE SET reaction_type = $3
             `,
-            [id, userId, reaction]
+            [story_id, userId, reaction]
         );
-        res.status(200).json({ message: "Reacted to story" });
+
+        if(result.rowCount === 0) {
+            return res.status(404).json({ message: "Story not found" });
+        }
+
+      return res.status(200).json({ message: reaction ? "story liked" : "story unliked" });
     } catch (err) {
-        console.error("Story reaction error:", err);
         res.status(500).json({ message: "Internal server error" });
     }
 };
