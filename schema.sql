@@ -258,6 +258,19 @@ CREATE TABLE job_applications (
   UNIQUE(job_id, applicant_id)
 );
 
+CREATE TABLE job_saves (
+  user_id UUID NOT NULL
+    REFERENCES users(user_id) ON DELETE CASCADE,
+
+  job_id UUID NOT NULL
+    REFERENCES jobs(job_id) ON DELETE CASCADE,
+
+  saved_at TIMESTAMPTZ DEFAULT now(),
+
+  PRIMARY KEY (user_id, job_id)
+);
+
+
 CREATE TABLE application_status_history (
   history_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   application_id UUID REFERENCES job_applications(application_id) ON DELETE CASCADE,
@@ -285,6 +298,18 @@ CREATE TABLE event_registrations (
   registered_at TIMESTAMPTZ DEFAULT now(),
   PRIMARY KEY (event_id, user_id)
 );
+CREATE TABLE event_saves (
+  user_id UUID NOT NULL
+    REFERENCES users(user_id) ON DELETE CASCADE,
+
+  event_id UUID NOT NULL
+    REFERENCES events(event_id) ON DELETE CASCADE,
+
+  saved_at TIMESTAMPTZ DEFAULT now(),
+
+  PRIMARY KEY (user_id, event_id)
+);
+
 
 -- Seed initial roles
 INSERT INTO roles (role_name) VALUES ('User'), ('Employer'), ('Admin');
