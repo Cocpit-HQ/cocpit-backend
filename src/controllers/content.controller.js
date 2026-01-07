@@ -1,10 +1,10 @@
-const { ur } = require("zod/locales");
+const { ur, vi } = require("zod/locales");
 const pool = require("../db/pool");
 
 // --- Feed / Posts ---
 exports.getPublicFeed = async (req, res) => {
     // cursor is the 'created_at' timestamp of the last post currently on the user's screen
-    const { cursor } = req.query; 
+    const { cursor } = req.query;
     const limit = 10;
 
     try {
@@ -39,10 +39,10 @@ exports.getPublicFeed = async (req, res) => {
         query += ` ORDER BY p.created_at DESC LIMIT $1`;
 
         const result = await pool.query(query, params);
-        
+
         // Define the next cursor as the timestamp of the last item in the result
-        const nextCursor = result.rows.length === limit 
-            ? result.rows[result.rows.length - 1].created_at 
+        const nextCursor = result.rows.length === limit
+            ? result.rows[result.rows.length - 1].created_at
             : null;
 
         res.json({
@@ -114,8 +114,8 @@ exports.getPersonalizedFeed = async (req, res) => {
         const result = await pool.query(query, params);
 
         // 5. Calculate next cursor for the frontend
-        const nextCursor = result.rows.length === limit 
-            ? result.rows[result.rows.length - 1].created_at 
+        const nextCursor = result.rows.length === limit
+            ? result.rows[result.rows.length - 1].created_at
             : null;
 
         res.json({
@@ -128,7 +128,7 @@ exports.getPersonalizedFeed = async (req, res) => {
     }
 };
 
-//--post integration ----
+//--- POST INTEGRATION ---
 exports.createPost = async (req, res) => {
     const userId = req.user.sub;
     const { content, category, visibility, media_urls, post_type, title, poll_options, poll_duration } = req.body; // category is name, media_urls is array
@@ -540,64 +540,64 @@ exports.addComment = async (req, res) => {
 }
 
 exports.updateComment = async (req, res) => {
-  const userId = req.user.sub;
-  const commentId = req.params.comment_id;
-  const { content } = req.body;
+    const userId = req.user.sub;
+    const commentId = req.params.comment_id;
+    const { content } = req.body;
 
-  if (!commentId) {
-    return res.status(400).json({ message: "commentId is required" });
-  }
+    if (!commentId) {
+        return res.status(400).json({ message: "commentId is required" });
+    }
 
-  if (!content || !content.trim()) {
-    return res.status(400).json({ message: "Content is required" });
-  }
+    if (!content || !content.trim()) {
+        return res.status(400).json({ message: "Content is required" });
+    }
 
-  try {
-    const result = await pool.query(
-      `
+    try {
+        const result = await pool.query(
+            `
       UPDATE post_comments
       SET content = $1, created_at = NOW()
       WHERE comment_id = $2 AND author_id = $3
       RETURNING comment_id, content, created_at
       `,
-      [content.trim(), commentId, userId]
-    );
-    const temp = await pool.query(`select * from post_comments where comment_id = $1 and author_id = $2`, [commentId, userId])
+            [content.trim(), commentId, userId]
+        );
+        const temp = await pool.query(`select * from post_comments where comment_id = $1 and author_id = $2`, [commentId, userId])
 
-    if (result.rowCount === 0) {
-      // Either comment doesn't exist OR user is not the author
-      return res.status(403).json({ message: "Not allowed or comment not found" });
+        if (result.rowCount === 0) {
+            // Either comment doesn't exist OR user is not the author
+            return res.status(403).json({ message: "Not allowed or comment not found" });
+        }
+
+        return res.status(200).json({
+            message: "Comment updated",
+            comment: result.rows[0]
+        });
+
+    } catch (err) {
+        console.error("Update comment error:", err);
+        return res.status(500).json({ message: "Internal server error" });
     }
-
-    return res.status(200).json({
-      message: "Comment updated",
-      comment: result.rows[0]
-    });
-
-  } catch (err) {
-    console.error("Update comment error:", err);
-    return res.status(500).json({ message: "Internal server error" });
-  }
 };
 
 exports.deleteComment = async (req, res) => {
     const userId = req.user.sub;
     const commentId = req.params.comment_id;
 
-    if(!userId || !commentId){
+    if (!userId || !commentId) {
         return res.status(400).json({ message: "userId and commentId are required" })
     }
 
-    try{
+    try {
         const result = await pool.query(
             `delete from post_comments where comment_id = $1 and author_id = $2 RETURNING comment_id`,
             [commentId, userId]
         );
-        if(result.rowCount === 0){
+        if (result.rowCount === 0) {
             return res.status(404).json({ message: "Comment not found", commentId, userId });
         }
         res.status(200).json({ message: "Comment deleted", deletedCommentId: commentId });
-    }catch(err){
+    } catch (err) {
         return res.status(500).json({ message: "Internal server error" })
     }
 }
@@ -638,18 +638,36 @@ exports.getComments = async (req, res) => {
     }
 }
 
+//--- STORIES INTEGRATION ---
 exports.getStories = async (req, res) => {
-    // Return stories that are not expired
+    const userId = req.user.sub;
     try {
         const result = await pool.query(
             `
-            SELECT s.*, u.full_name, u.avatar_url
+            SELECT 
+                s.*, 
+                u.full_name AS author_name, 
+                u.avatar_url AS author_avatar,
+                -- 1. Check if the current user has viewed this story
+                EXISTS (
+                    SELECT 1 FROM story_views sv 
+                    WHERE sv.story_id = s.story_id AND sv.viewer_id = $1
+                ) AS has_viewed,
+                -- 2. Check if the current user has liked this story
+                EXISTS (
+                    SELECT 1 FROM story_reactions sr 
+                    WHERE sr.story_id = s.story_id AND sr.user_id = $1 AND sr.reaction_type = 'true'
+                ) AS has_liked,
+                -- 3. Identity flag for UI changes
+                (s.author_id = $1) AS is_author
             FROM stories s
             JOIN users u ON s.author_id = u.user_id
             WHERE s.expires_at > now()
             ORDER BY s.created_at DESC
-            `
+            `,
+            [userId]
         );
+
         res.json(result.rows);
     } catch (err) {
         console.error("Get stories error:", err);
@@ -691,56 +709,153 @@ exports.deleteStory = async (req, res) => {
     const storyId = req.params.id;
     const userId = req.user.sub;
 }
-exports.viewStory = async (req, res) => {
 
+exports.viewStory = async (req, res) => {
     const story_id = req.params.id;
     const viewer_id = req.user.sub;
 
-    if (!story_id && !viewer_id) {
-        return res.status(400).json({ message: "id and viewer_id are required" })
-    }
-
     try {
-        await pool.query(
-            `INSERT INTO story_views (  story_id, viewer_id)  VALUES ($1, $2)
-  ON CONFLICT (story_id, viewer_id) DO NOTHING`, [story_id, viewer_id]
+        const storyRes = await pool.query(
+            `SELECT author_id FROM stories WHERE story_id = $1`, [story_id]
         );
-        res.status(200).json({ message: "story viewed" });
+
+        if (storyRes.rowCount === 0) {
+            return res.status(404).json({ message: "Story not found" });
+        }
+
+        const author_id = storyRes.rows[0].author_id;
+
+        // Only insert if the viewer is NOT the author
+        if (viewer_id !== author_id) {
+            await pool.query(
+                `INSERT INTO story_views (story_id, viewer_id) 
+                 VALUES ($1, $2)
+                 ON CONFLICT (story_id, viewer_id) DO NOTHING`,
+                [story_id, viewer_id]
+            );
+        }
+
+        res.status(200).json({
+            message: viewer_id === author_id ? "Author viewing (not counted)" : "View recorded",
+            story_id: story_id
+        });
+
     } catch (err) {
+        console.error("View story error:", err);
+        // We still send a 500 if the DB is actually down
         res.status(500).json({ message: "Internal server error" });
     }
-
 };
 
 exports.reactToStory = async (req, res) => {
     const userId = req.user.sub;
-    const story_id = req.params.id; // story_id
+    const story_id = req.params.id;
     const { reaction } = req.body;
 
-    if (!story_id || !userId) {
-    return res.status(400).json({ message: "story_id and userId are required" });
-  }
+    try {
+        const storyRes = await pool.query(`SELECT author_id FROM stories WHERE story_id = $1`, [story_id]);
+        if (storyRes.rowCount === 0) return res.status(404).json({ message: "Story not found" });
 
-  if (typeof reaction !== "boolean") {
-    return res.status(400).json({ message: "reaction must be true or false" });
-  }
+        const author_id = storyRes.rows[0].author_id;
+         let liked;
+        if (author_id !== userId) {
+
+            const alreadyLiked = await pool.query(`select * from story_reactions 
+                where story_id = $1 and user_id = $2`, [story_id, userId])
+           
+
+            if (alreadyLiked.rowCount > 0) {
+                // 2️⃣ Unlike
+                await pool.query(
+                    "DELETE FROM story_reactions WHERE story_id = $1 AND user_id = $2",
+                    [story_id, userId]
+                );
+                liked = false;
+            } else {
+                // 3️⃣ Like
+                await pool.query(
+                `INSERT INTO story_reactions (story_id, user_id, reaction_type)
+             VALUES ($1, $2, $3)
+             ON CONFLICT (story_id, user_id) DO UPDATE SET reaction_type = $3`,
+                [story_id, userId, reaction.toString()]
+            );
+
+            await pool.query(
+                `INSERT INTO story_views (story_id, viewer_id)
+             VALUES ($1, $2) ON CONFLICT (story_id, viewer_id) DO NOTHING`,
+                [story_id, userId]
+            );
+                liked = true;
+            }         
+        }
+
+        return res.status(200).json({
+            message: userId === author_id ? "Author not reacting" : "reaction recorded",
+            liked: liked? "Story liked" : "story disliked",
+            is_liked: liked,
+            story_id
+        });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ message: "Internal server error" });
+    }
+};
+
+exports.getStoryDetailsById = async (req, res) => {
+    const userId = req.user.sub;
+    const storyId = req.params.id;
+
+    if (!storyId || !userId) {
+        return res.status(400).json({ message: "storyId and userId are required" });
+    }
 
     try {
-        const result = await pool.query(
-            `
-            INSERT INTO story_reactions (story_id, user_id, reaction_type)
-            VALUES ($1, $2, $3)
-            ON CONFLICT (story_id, user_id) DO UPDATE SET reaction_type = $3
-            `,
-            [story_id, userId, reaction]
+        const permission = await pool.query(
+            `SELECT author_id FROM stories WHERE story_id = $1`,
+            [storyId]
         );
 
-        if(result.rowCount === 0) {
+        if (permission.rowCount === 0) {
             return res.status(404).json({ message: "Story not found" });
         }
 
-      return res.status(200).json({ message: reaction ? "story liked" : "story unliked" });
+
+        if (permission.rows[0].author_id !== userId) {
+            return res.status(403).json({ message: "You don't have permission to view these details" });
+        }
+
+        const result = await pool.query(`
+            SELECT 
+                u.user_id,
+                u.full_name, 
+                u.avatar_url, 
+                sr.reaction_type, 
+                sv.viewed_at
+            FROM story_views sv 
+            JOIN users u ON sv.viewer_id = u.user_id
+            -- Left Join ensures we still get the viewer even if there is no reaction
+            LEFT JOIN story_reactions sr ON sv.story_id = sr.story_id AND sv.viewer_id = sr.user_id
+            WHERE sv.story_id = $1
+            ORDER BY sv.viewed_at DESC
+        `, [storyId]);
+
+
+        if (result.rowCount === 0) {
+            return res.status(200).json({
+                viewerCount: 0,
+                viewers: [],
+                message: "No one has viewed this story yet"
+            });
+        }
+
+
+        return res.status(200).json({
+            viewerCount: result.rowCount,
+            viewers: result.rows
+        });
+
     } catch (err) {
-        res.status(500).json({ message: "Internal server error" });
+        console.error(err);
+        return res.status(500).json({ message: "Internal server error" });
     }
 };

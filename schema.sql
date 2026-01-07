@@ -118,13 +118,6 @@ CREATE TABLE posts (
   post_type  AS ENUM ('image', 'video', 'article', 'poll') NOT NULL
 );
 
-/*-- Define the only 4 allowed types
-CREATE TYPE post_type AS ENUM ('image', 'video', 'article', 'poll');
-
--- Update the table to use this strict type
-ALTER TABLE public.posts 
-ADD COLUMN post_type post_type NOT NULL;*/
-
 CREATE TABLE post_polls (
   poll_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   post_id UUID NOT NULL UNIQUE
@@ -201,7 +194,7 @@ CREATE TABLE story_views (
 CREATE TABLE story_reactions (
   story_id UUID REFERENCES stories(story_id) ON DELETE CASCADE,
   user_id UUID REFERENCES users(user_id) ON DELETE CASCADE, --sender_id instead of user id 
-  reaction_type TEXT, 
+  reaction_type BOOLEAN, 
   created_at TIMESTAMPTZ DEFAULT now(),
   PRIMARY KEY (story_id, user_id)
 );
