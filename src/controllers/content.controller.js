@@ -109,78 +109,275 @@ exports.getPublicFeed = async (req, res) => {
   }
 };
 
-exports.getPersonalizedFeed = async (req, res) => {
-    const userId = req.user.sub;
-    const { category, cursor } = req.query; // 1. Extract cursor from URL
-    const limit = 10;
+exports.getMyPosts = async (req, res) => {
+  const userId = req.user.sub;
+  const {
+    category,
+    cursorCreatedAt,
+    cursorPostId,
+    limit = 10,
+  } = req.query;
 
-    try {
-        let query = `
-            SELECT p.*, u.full_name as author_name, u.avatar_url as author_avatar, pc.name as category_name,
-            -- Media
-            COALESCE((SELECT json_agg(pm) FROM post_media pm WHERE pm.post_id = p.post_id), '[]'::json) AS media,
-            
-            -- Interaction Counts
-            (SELECT COUNT(*) FROM post_likes pl WHERE pl.post_id = p.post_id) as like_count,
-            (SELECT COUNT(*) FROM post_comments pc_inner WHERE pc_inner.post_id = p.post_id) as comment_count,
-            
-            -- Poll Data
-            (SELECT json_build_object(
-                'poll_id', pp.poll_id,
-                'duration', pp.duration,
-                'total_votes', (SELECT COUNT(*) FROM poll_votes pv WHERE pv.poll_id = pp.poll_id),
-                'options', COALESCE((
-                    SELECT json_agg(json_build_object(
-                        'option_id', po.option_id,
-                        'option_text', po.option_text,
-                        'vote_count', (SELECT COUNT(*) FROM poll_votes pv WHERE pv.option_id = po.option_id)
-                    )) FROM poll_options po WHERE po.poll_id = pp.poll_id
-                ), '[]'::json)
-            ) FROM post_polls pp WHERE pp.post_id = p.post_id) AS poll
-            
-            FROM posts p
-            JOIN users u ON p.author_id = u.user_id
-            LEFT JOIN post_categories pc ON p.category_id = pc.category_id
-            WHERE (p.visibility = 'public' OR p.author_id = $1)
-        `;
+  try {
+    const params = [userId];
+    let idx = 2;
+    let whereClause = `WHERE p.author_id = $1`;
 
-        const params = [userId];
-        let paramCount = 2;
-
-        // 2. Filter by Category if provided
-        if (category) {
-            query += ` AND pc.name = $${paramCount}`;
-            params.push(category);
-            paramCount++;
-        }
-
-        // 3. Apply Cursor for Infinite Scroll
-        if (cursor) {
-            query += ` AND p.created_at < $${paramCount}`;
-            params.push(cursor);
-            paramCount++;
-        }
-
-        // 4. Order and Limit
-        query += ` ORDER BY p.created_at DESC LIMIT $${paramCount}`;
-        params.push(limit);
-
-        const result = await pool.query(query, params);
-
-        // 5. Calculate next cursor for the frontend
-        const nextCursor = result.rows.length === limit
-            ? result.rows[result.rows.length - 1].created_at
-            : null;
-
-        res.json({
-            posts: result.rows,
-            nextCursor: nextCursor
-        });
-    } catch (err) {
-        console.error("Get personalized feed error:", err);
-        res.status(500).json({ message: "Internal server error" });
+    // ✅ Category filter (skip if "All")
+    if (category && category !== "All") {
+      whereClause += ` AND pc.name = $${idx}`;
+      params.push(category);
+      idx++;
     }
+
+    // ✅ Cursor-based pagination (stable)
+    if (cursorCreatedAt && cursorPostId) {
+      whereClause += `
+        AND (p.created_at, p.post_id) < ($${idx}, $${idx + 1})
+      `;
+      params.push(cursorCreatedAt, cursorPostId);
+      idx += 2;
+    }
+
+    // ✅ LIMIT
+    params.push(limit);
+
+    const query = `
+      SELECT
+        p.post_id,
+        p.content,
+        p.created_at,
+        p.visibility,
+
+        u.user_id AS author_id,
+        u.full_name AS author_name,
+        u.avatar_url AS author_avatar,
+
+        pc.name AS category_name,
+
+        COALESCE(pm.media, '[]'::json) AS media,
+        COALESCE(lc.like_count, 0) AS like_count,
+        COALESCE(cc.comment_count, 0) AS comment_count,
+
+        pp.poll
+
+      FROM posts p
+      JOIN users u ON u.user_id = p.author_id
+      LEFT JOIN post_categories pc ON pc.category_id = p.category_id
+
+      -- ✅ MEDIA
+      LEFT JOIN (
+        SELECT
+          pm.post_id,
+          json_agg(
+            json_build_object(
+              'media_id', pm.media_id,
+              'url', pm.url,
+              'media_type', pm.media_type,
+              'aspect_ratio', pm.aspect_ratio
+            )
+          ) AS media
+        FROM post_media pm
+        GROUP BY pm.post_id
+      ) pm ON pm.post_id = p.post_id
+
+      -- ✅ LIKE COUNT
+      LEFT JOIN (
+        SELECT post_id, COUNT(*) AS like_count
+        FROM post_likes
+        GROUP BY post_id
+      ) lc ON lc.post_id = p.post_id
+
+      -- ✅ COMMENT COUNT
+      LEFT JOIN (
+        SELECT post_id, COUNT(*) AS comment_count
+        FROM post_comments
+        GROUP BY post_id
+      ) cc ON cc.post_id = p.post_id
+
+      -- ✅ POLL
+      LEFT JOIN (
+        SELECT
+          pp.post_id,
+          json_build_object(
+            'poll_id', pp.poll_id,
+            'duration', pp.duration,
+            'total_votes', COALESCE(pv.total_votes, 0),
+            'options', COALESCE(po.options, '[]'::json)
+          ) AS poll
+        FROM post_polls pp
+
+        LEFT JOIN (
+          SELECT
+            t.poll_id,
+            json_agg(
+              json_build_object(
+                'option_id', t.option_id,
+                'option_text', t.option_text,
+                'vote_count', t.vote_count
+              )
+            ) AS options
+          FROM (
+            SELECT
+              po.option_id,
+              po.poll_id,
+              po.option_text,
+              COUNT(pv.vote_id) AS vote_count
+            FROM poll_options po
+            LEFT JOIN poll_votes pv ON pv.option_id = po.option_id
+            GROUP BY po.option_id, po.poll_id, po.option_text
+          ) t
+          GROUP BY t.poll_id
+        ) po ON po.poll_id = pp.poll_id
+
+        LEFT JOIN (
+          SELECT poll_id, COUNT(*) AS total_votes
+          FROM poll_votes
+          GROUP BY poll_id
+        ) pv ON pv.poll_id = pp.poll_id
+      ) pp ON pp.post_id = p.post_id
+
+      ${whereClause}
+      ORDER BY p.created_at DESC, p.post_id DESC
+      LIMIT $${idx};
+    `;
+
+    const { rows } = await pool.query(query, params);
+    const last = rows[rows.length - 1];
+
+    res.json({
+      posts: rows,
+      nextCursor: last
+        ? {
+            cursorCreatedAt: last.created_at,
+            cursorPostId: last.post_id,
+          }
+        : null,
+    });
+  } catch (err) {
+    console.error("Get user posts error:", err);
+    res.status(500).json({ message: "Internal server error" });
+  }
 };
+
+//   const userId = req.user.sub;
+//   const { category, cursorCreatedAt, cursorPostId } = req.query;
+//   const limit = 10;
+
+//   try {
+//     const params = [userId];
+//     let cursorCondition = "";
+//     let idx = 2;
+
+//     let query = `
+//       SELECT
+//         p.post_id,
+//         p.content,
+//         p.created_at,
+//         p.visibility,
+
+//         u.user_id AS author_id,
+//         u.full_name AS author_name,
+//         COALESCE(u.avatar_url, 'https://default-avatar.png') AS author_avatar,
+
+//         pc.name AS category_name,
+
+//         COALESCE(pm.media, '[]') AS media,
+
+//         COALESCE(lc.like_count, 0)::int AS like_count,
+//         COALESCE(cc.comment_count, 0)::int AS comment_count,
+
+//         pp.poll
+//       FROM posts p
+//       JOIN users u ON u.user_id = p.author_id
+//       LEFT JOIN post_categories pc ON pc.category_id = p.category_id
+
+//       LEFT JOIN (
+//         SELECT post_id, json_agg(pm.* ORDER BY pm.created_at) AS media
+//         FROM post_media pm
+//         GROUP BY post_id
+//       ) pm ON pm.post_id = p.post_id
+
+//       LEFT JOIN (
+//         SELECT post_id, COUNT(*) AS like_count
+//         FROM post_likes
+//         GROUP BY post_id
+//       ) lc ON lc.post_id = p.post_id
+
+//       LEFT JOIN (
+//         SELECT post_id, COUNT(*) AS comment_count
+//         FROM post_comments
+//         GROUP BY post_id
+//       ) cc ON cc.post_id = p.post_id
+
+//       LEFT JOIN (
+//         SELECT
+//           pp.post_id,
+//           json_build_object(
+//             'poll_id', pp.poll_id,
+//             'duration', pp.duration,
+//             'total_votes', COALESCE(pv.total_votes, 0),
+//             'options', COALESCE(po.options, '[]')
+//           ) AS poll
+//         FROM post_polls pp
+//         LEFT JOIN (
+//           SELECT poll_id,
+//                  json_agg(
+//                    json_build_object(
+//                      'option_id', option_id,
+//                      'option_text', option_text,
+//                      'vote_count', vote_count
+//                    )
+//                  ) AS options
+//           FROM (
+//             SELECT po.option_id, po.poll_id, po.option_text,
+//                    COUNT(pv.vote_id) AS vote_count
+//             FROM poll_options po
+//             LEFT JOIN poll_votes pv ON pv.option_id = po.option_id
+//             GROUP BY po.option_id
+//           ) t
+//           GROUP BY poll_id
+//         ) po ON po.poll_id = pp.poll_id
+//         LEFT JOIN (
+//           SELECT poll_id, COUNT(*) AS total_votes
+//           FROM poll_votes
+//           GROUP BY poll_id
+//         ) pv ON pv.poll_id = pp.poll_id
+//       ) pp ON pp.post_id = p.post_id
+
+//       WHERE p.author_id = $1
+//     `;
+
+//     if (category) {
+//       query += ` AND pc.name = $${idx}`;
+//       params.push(category);
+//       idx++;
+//     }
+
+//     if (cursorCreatedAt && cursorPostId) {
+//       query += ` AND (p.created_at, p.post_id) < ($${idx}, $${idx + 1})`;
+//       params.push(cursorCreatedAt, cursorPostId);
+//       idx += 2;
+//     }
+
+//     query += ` ORDER BY p.created_at DESC, p.post_id DESC LIMIT $${idx}`;
+//     params.push(limit);
+
+//     const { rows } = await pool.query(query, params);
+//     const last = rows[rows.length - 1];
+
+//     res.json({
+//       posts: rows,
+//       nextCursor: last
+//         ? { cursorCreatedAt: last.created_at, cursorPostId: last.post_id }
+//         : null,
+//     });
+
+//   } catch (err) {
+//     console.error("Get my posts error:", err);
+//     res.status(500).json({ message: "Internal server error" });
+//   }
+// };
 
 //--- POST INTEGRATION ---
 exports.createPost = async (req, res) => {

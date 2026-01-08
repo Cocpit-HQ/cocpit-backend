@@ -57,8 +57,18 @@ The system uses a **Dual-Token** authentication mechanism (JWT Access Token + Re
 
 | Method | Endpoint | Description | Auth Required | Body |
 | :--- | :--- | :--- | :--- | :--- |
-| `GET` | `/feed` | Get posts feed | Yes | Query Params: `?category=...` |
-| `POST` | `/posts` | Create a post | Yes | `{ content, category, visibility, media_urls: [] }` |
+| `GET` | `/All/feeds` | Get public posts feed | No | Query Params: `?cursorCreatedAt=...&cursorPostId=...` |
+| `GET` | `/feed` | Get current user's personalized feed | Yes | Query Params: `?category=...&cursor=...` |
+| `POST` | `/post` | Create a post | Yes | `{ content, category, visibility, media_urls: [] }` |
+| `GET` | `/post/:id` | Get a specific post by ID | Yes | - |
+| `PUT` | `/post/:id` | Update a post | Yes | `{ content, category, visibility, media_urls: [] }` |
+| `DELETE` | `/post/:id` | Delete a post | Yes | - |
+| `POST` | `/post/:id/like` | Like or unlike a post | Yes | - |
+| `POST` | `/post/:id/comments` | Add a comment to a post | Yes | `{ content }` |
+| `PUT` | `/post/comments/:comment_id` | Update a comment | Yes | `{ content }` |
+| `DELETE` | `/post/comments/:comment_id` | Delete a comment | Yes | - |
+| `GET` | `/post/:id/comments` | Get all comments for a post | Yes | - |
+| `POST` | `/post/:id/poll/vote` | Vote in a poll on a post | Yes | `{ option_id }` |
 | `GET` | `/stories` | Get active stories | Yes | - |
 | `POST` | `/stories` | Create a story | Yes | `{ media_url, media_type }` |
 | `POST` | `/stories/:id/react` | React to a story | Yes | `{ reaction }` |
