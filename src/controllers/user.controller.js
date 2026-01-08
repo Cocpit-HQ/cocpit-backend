@@ -151,6 +151,73 @@ exports.getUserProfile = async (req, res) => {
   }
 };
 
+exports.getPublicProfilePosts = async (req, res) => {
+  const { id } = req.params;
+  const { category } = req.body;
+
+  const uuidRegex =
+    /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+  if (!uuidRegex.test(id)) {
+    return res.status(400).json({ message: "Invalid user ID format" });
+  }
+
+  try {
+    let categoryId = null;
+    let result = null;
+    if (!category.trim()) {
+      return res.status(400).json({ message: "Category is required" });
+    }
+    else {
+      const catRes = await pool.query(`SELECT category_id FROM post_categories WHERE name = $1`, [category.trim()]);
+      if (catRes.rowCount > 0) {
+        categoryId = catRes.rows[0].category_id;
+      } else {
+        return res.status(400).json({ message: "Invalid category" });
+      }
+    }
+
+    if (category.trim() === 'All') {
+      result = await pool.query(
+        `select p.post_id,
+          u.full_name,
+          u.headline,
+          u.avatar_url,
+          p.title,
+          p.category_id,
+          p.content,
+          p.created_at 
+          from posts p join users u on u.user_id = p.author_id
+          where p.author_id = $1
+          order by p.created_at desc`,
+        [id]
+      )
+    } else {
+      result = await pool.query(
+        `select p.post_id,
+          u.full_name,
+          u.headline,
+          u.avatar_url,
+          p.title,
+          p.category_id,
+          p.content,
+          p.created_at 
+          from posts p join users u on u.user_id = p.author_id
+          where p.author_id = $1 AND (p.category_id = $2 )
+          order by p.created_at desc`,
+        [id, categoryId]
+      )
+    }
+
+    res.status(200).json({
+      category: category,
+      posts: result.rows
+    });
+  } catch (err) {
+    console.error("Get public profile posts error:", err);
+    return res.status(500).json({ message: "Internal server error" });
+  }
+
+}
 /*
 Manual Testing Notes:
 
