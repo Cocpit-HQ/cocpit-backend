@@ -189,3 +189,71 @@ exports.getMyCreatedEvents = async (req, res) => {
         res.status(500).json({ message: "Internal server error" });
     }
 };
+exports.saveEvent = async (req, res) => {
+    const userId = req.user.sub;
+    const eventId = req.params.id;
+
+    try {
+        // Insert into event_saves, ignore if already saved
+        await pool.query(
+            `
+            INSERT INTO event_saves (user_id, event_id)
+            VALUES ($1, $2)
+            ON CONFLICT DO NOTHING
+            `,
+            [userId, eventId]
+        );
+
+        res.status(201).json({ message: "Event saved successfully" });
+    } catch (err) {
+        console.error("Save event error:", err);
+        res.status(500).json({ message: "Internal server error" });
+    }
+};
+
+exports.unsaveEvent = async (req, res) => {
+    const userId = req.user.sub;
+    const eventId = req.params.id;
+
+    try {
+        const result = await pool.query(
+            `
+            DELETE FROM event_saves
+            WHERE user_id = $1 AND event_id = $2
+            `,
+            [userId, eventId]
+        );
+
+        if (result.rowCount === 0) {
+            return res.status(400).json({ message: "Event was not saved" });
+        }
+
+        res.json({ message: "Event removed from saved list" });
+    } catch (err) {
+        console.error("Unsave event error:", err);
+        res.status(500).json({ message: "Internal server error" });
+    }
+};
+
+exports.getMySavedEvents = async (req, res) => {
+    const userId = req.user.sub;
+
+    try {
+        const result = await pool.query(
+            `
+            SELECT e.*, u.full_name AS organizer_name
+            FROM event_saves es
+            JOIN events e ON es.event_id = e.event_id
+            JOIN users u ON e.organizer_id = u.user_id
+            WHERE es.user_id = $1
+            ORDER BY es.saved_at DESC
+            `,
+            [userId]
+        );
+
+        res.json(result.rows);
+    } catch (err) {
+        console.error("Get saved events error:", err);
+        res.status(500).json({ message: "Internal server error" });
+    }
+};

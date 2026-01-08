@@ -30,6 +30,7 @@ router.post("/story", requireAuth, contentController.createStory);
 router.delete("/stories/:id", requireAuth, contentController.deleteStory);
 router.post("/stories/:id/react", requireAuth, contentController.reactToStory);
 router.post("/stories/:id/view", requireAuth, contentController.viewStory);
+router.get('/stories/:id', requireAuth, contentController.getStoryDetailsById)
 
 
 

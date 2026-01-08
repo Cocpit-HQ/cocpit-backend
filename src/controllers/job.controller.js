@@ -1,17 +1,28 @@
 const pool = require("../db/pool");
 
 exports.getAllJobs = async (req, res) => {
-  const { title, location, type, mode } = req.query; // Filters
+  const { title, location } = req.query;
+  const userId = req.user?.sub; // optional (works for guest also)
 
   try {
     let query = `
-      SELECT j.*, u.full_name as recruiter_name
+      SELECT 
+        j.*,
+        u.full_name AS recruiter_name,
+        ${userId ? '(js.user_id IS NOT NULL) AS "isSaved"' : 'FALSE AS "isSaved"'}
       FROM jobs j
       LEFT JOIN users u ON j.recruiter_id = u.user_id
+      ${userId ? 'LEFT JOIN job_saves js ON js.job_id = j.job_id AND js.user_id = $1' : ''}
       WHERE j.is_active = TRUE
     `;
+
     const params = [];
     let paramCount = 1;
+
+    if (userId) {
+      params.push(userId);
+      paramCount++;
+    }
 
     if (title) {
       query += ` AND j.title ILIKE $${paramCount}`;
@@ -25,8 +36,6 @@ exports.getAllJobs = async (req, res) => {
       paramCount++;
     }
 
-    // Add other filters as needed
-
     query += ` ORDER BY j.created_at DESC`;
 
     const result = await pool.query(query, params);
@@ -39,15 +48,21 @@ exports.getAllJobs = async (req, res) => {
 
 exports.getJobById = async (req, res) => {
   const { id } = req.params;
+  const userId = req.user?.sub; // optional
+
   try {
     const result = await pool.query(
       `
-      SELECT j.*, u.full_name as recruiter_name
+      SELECT 
+        j.*,
+        u.full_name AS recruiter_name,
+        ${userId ? '(js.user_id IS NOT NULL) AS "isSaved"' : 'FALSE AS "isSaved"'}
       FROM jobs j
       LEFT JOIN users u ON j.recruiter_id = u.user_id
+      ${userId ? 'LEFT JOIN job_saves js ON js.job_id = j.job_id AND js.user_id = $2' : ''}
       WHERE j.job_id = $1
       `,
-      [id]
+      userId ? [id, userId] : [id]
     );
 
     if (result.rowCount === 0) {
@@ -61,18 +76,20 @@ exports.getJobById = async (req, res) => {
   }
 };
 
+
 exports.createJob = async (req, res) => {
   const recruiterId = req.user.sub;
-  const { title, company_name, location, description, salary_range, work_mode, company_type } = req.body;
+  const { title, company_name, location, description, salary_range, work_mode, company_type, is_offer = false } = req.body;
 
   try {
     const result = await pool.query(
       `
-      INSERT INTO jobs (recruiter_id, title, company_name, location, description, salary_range, work_mode, company_type)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      INSERT INTO jobs 
+        (recruiter_id, title, company_name, location, description, salary_range, work_mode, company_type, is_offer)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
       RETURNING *
       `,
-      [recruiterId, title, company_name, location, description, salary_range, work_mode, company_type]
+      [recruiterId, title, company_name, location, description, salary_range, work_mode, company_type, is_offer]
     );
 
     res.status(201).json(result.rows[0]);
@@ -81,6 +98,7 @@ exports.createJob = async (req, res) => {
     res.status(500).json({ message: "Internal server error" });
   }
 };
+
 
 exports.applyJob = async (req, res) => {
   const { id } = req.params; // job_id
@@ -123,6 +141,133 @@ exports.applyJob = async (req, res) => {
     res.status(201).json({ message: "Application submitted successfully", applicationId: appId });
   } catch (err) {
     console.error("Apply job error:", err);
+    res.status(500).json({ message: "Internal server error" });
+  }
+};
+exports.getJobOffers = async (req, res) => {
+  const { title, location } = req.query;
+  const userId = req.user?.sub; // optional, if user is logged in
+
+  try {
+    // Base query
+    let query = `
+      SELECT 
+        j.*,
+        u.full_name AS recruiter_name,
+        ${userId ? '(js.user_id IS NOT NULL) AS "isSaved"' : 'FALSE AS "isSaved"'}
+      FROM jobs j
+      LEFT JOIN users u ON j.recruiter_id = u.user_id
+      ${userId ? 'LEFT JOIN job_saves js ON js.job_id = j.job_id AND js.user_id = $1' : ''}
+      WHERE j.is_active = TRUE AND j.is_offer = TRUE
+    `;
+
+    const params = [];
+    let paramCount = 1;
+
+    // If user is logged in, add userId for isSaved check
+    if (userId) {
+      params.push(userId);
+      paramCount++;
+    }
+
+    // Optional filters
+    if (title) {
+      query += ` AND j.title ILIKE $${paramCount}`;
+      params.push(`%${title}%`);
+      paramCount++;
+    }
+
+    if (location) {
+      query += ` AND j.location ILIKE $${paramCount}`;
+      params.push(`%${location}%`);
+      paramCount++;
+    }
+
+    // Order by newest first
+    query += ` ORDER BY j.created_at DESC`;
+
+    const result = await pool.query(query, params);
+
+    res.status(200).json(result.rows);
+  } catch (err) {
+    console.error("Get job offers error:", err);
+    res.status(500).json({ message: "Internal server error" });
+  }
+};
+
+exports.saveJob = async (req, res) => {
+  const userId = req.user.sub;
+  const jobId = req.params.id;
+
+  try {
+    const result = await pool.query(
+      `
+      INSERT INTO job_saves (user_id, job_id)
+      SELECT $1, $2
+      WHERE EXISTS (
+        SELECT 1 FROM jobs 
+        WHERE job_id = $2 AND is_active = TRUE
+      )
+      ON CONFLICT DO NOTHING
+      `,
+      [userId, jobId]
+    );
+
+    if (result.rowCount === 0) {
+      return res.status(200).json({ message: "Job already saved or inactive" });
+    }
+
+    res.status(201).json({ message: "Job saved successfully" });
+  } catch (err) {
+    console.error("Save job error:", err);
+    res.status(500).json({ message: "Internal server error" });
+  }
+};
+
+
+exports.unsaveJob = async (req, res) => {
+  const userId = req.user.sub;
+  const jobId = req.params.id;
+
+  try {
+    const result = await pool.query(
+      `
+      DELETE FROM job_saves
+      WHERE user_id = $1 AND job_id = $2
+      `,
+      [userId, jobId]
+    );
+
+    if (result.rowCount === 0) {
+      return res.status(404).json({ message: "Job not found in saved list" });
+    }
+
+    res.json({ message: "Job removed from saved list" });
+  } catch (err) {
+    console.error("Unsave job error:", err);
+    res.status(500).json({ message: "Internal server error" });
+  }
+};
+
+exports.getMySavedJobs = async (req, res) => {
+  const userId = req.user.sub;
+
+  try {
+    const result = await pool.query(
+      `
+      SELECT j.*, u.full_name AS recruiter_name, TRUE AS "isSaved"
+      FROM job_saves js
+      JOIN jobs j ON js.job_id = j.job_id
+      LEFT JOIN users u ON j.recruiter_id = u.user_id
+      WHERE js.user_id = $1 AND j.is_active = TRUE
+      ORDER BY js.saved_at DESC
+      `,
+      [userId]
+    );
+
+    res.json(result.rows);
+  } catch (err) {
+    console.error("Get saved jobs error:", err);
     res.status(500).json({ message: "Internal server error" });
   }
 };
