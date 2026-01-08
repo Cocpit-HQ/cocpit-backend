@@ -6,43 +6,92 @@ exports.getPublicFeed = async (req, res) => {
   const { cursorCreatedAt, cursorPostId } = req.query;
   const limit = 10;
 
-    try {
-        let query = `
-            SELECT p.*, u.full_name as author_name, u.avatar_url as author_avatar, pc.name as category_name,
-            COALESCE((SELECT json_agg(pm) FROM post_media pm WHERE pm.post_id = p.post_id), '[]'::json) AS media,
-            (SELECT json_build_object(
-                'poll_id', pp.poll_id,
-                'total_votes', (SELECT COUNT(*) FROM poll_votes pv WHERE pv.poll_id = pp.poll_id),
-                'options', COALESCE((
-                    SELECT json_agg(json_build_object(
-                        'option_id', po.option_id,
-                        'option_text', po.option_text,
-                        'vote_count', (SELECT COUNT(*) FROM poll_votes pv WHERE pv.option_id = po.option_id)
-                    )) FROM poll_options po WHERE po.poll_id = pp.poll_id
-                ), '[]'::json)
-            ) FROM post_polls pp WHERE pp.post_id = p.post_id) AS poll
-            FROM posts p
-            JOIN users u ON p.author_id = u.user_id
-            LEFT JOIN post_categories pc ON p.category_id = pc.category_id
-            WHERE p.visibility = 'public'
-        `;
+  try {
+    const params = [];
+    let cursorCondition = "";
 
-        const params = [limit];
+    if (cursorCreatedAt && cursorPostId) {
+      params.push(cursorCreatedAt, cursorPostId);
+      cursorCondition = `
+        AND (p.created_at, p.post_id) < ($1, $2)
+      `;
+    }
 
-        // If cursor exists, only get posts OLDER than the cursor
-        if (cursor) {
-            query += ` AND p.created_at < $2`;
-            params.push(cursor);
-        }
+    params.push(limit);
 
-        query += ` ORDER BY p.created_at DESC LIMIT $1`;
+    const query = `
+      SELECT
+        p.post_id,
+        p.content,
+        p.created_at,
+        p.visibility,
 
-        const result = await pool.query(query, params);
-        
-        // Define the next cursor as the timestamp of the last item in the result
-        const nextCursor = result.rows.length === limit 
-            ? result.rows[result.rows.length - 1].created_at 
-            : null;
+        u.user_id AS author_id,
+        u.full_name AS author_name,
+        u.avatar_url AS author_avatar,
+
+        pc.name AS category_name,
+
+        COALESCE(pm.media, '[]') AS media,
+        pp.poll
+
+      FROM posts p
+      JOIN users u ON u.user_id = p.author_id
+      LEFT JOIN post_categories pc ON pc.category_id = p.category_id
+
+      LEFT JOIN (
+        SELECT post_id, json_agg(pm.*) AS media
+        FROM post_media pm
+        GROUP BY post_id
+      ) pm ON pm.post_id = p.post_id
+
+      LEFT JOIN (
+        SELECT
+          pp.post_id,
+          json_build_object(
+            'poll_id', pp.poll_id,
+            'options', COALESCE(po.options, '[]'),
+            'total_votes', COALESCE(pv.total_votes, 0)
+          ) AS poll
+        FROM post_polls pp
+        LEFT JOIN (
+          SELECT poll_id,
+                 json_agg(
+                   json_build_object(
+                     'option_id', option_id,
+                     'option_text', option_text,
+                     'vote_count', vote_count
+                   )
+                 ) AS options
+          FROM (
+            SELECT
+              po.option_id,
+              po.poll_id,
+              po.option_text,
+              COUNT(pv.vote_id) AS vote_count
+            FROM poll_options po
+            LEFT JOIN poll_votes pv ON pv.option_id = po.option_id
+            GROUP BY po.option_id
+          ) t
+          GROUP BY poll_id
+        ) po ON po.poll_id = pp.poll_id
+        LEFT JOIN (
+          SELECT poll_id, COUNT(*) AS total_votes
+          FROM poll_votes
+          GROUP BY poll_id
+        ) pv ON pv.poll_id = pp.poll_id
+      ) pp ON pp.post_id = p.post_id
+
+      WHERE p.visibility = 'public'
+      ${cursorCondition}
+
+      ORDER BY p.created_at DESC, p.post_id DESC
+      LIMIT $${params.length}
+    `;
+
+    const { rows } = await pool.query(query, params);
+
+    const last = rows[rows.length - 1];
 
     res.json({
       posts: rows,
