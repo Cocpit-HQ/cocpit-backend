@@ -4,7 +4,7 @@ const contentController = require("../controllers/content.controller");
 const { requireAuth } = require("../middlewares/auth.middleware");
 
 // --- FEED & DISCOVERY ---
-router.get("/All/feeds", requireAuth, contentController.getPublicFeed);
+router.get("/All/feeds", contentController.getPublicFeed);
 router.get("/Personal/feed", requireAuth, contentController.getPersonalizedFeed);
 
 // --- POSTS (Handles Image, Video, Article, Poll) ---
