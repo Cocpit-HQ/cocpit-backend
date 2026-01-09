@@ -1,12 +1,10 @@
-const { is } = require("zod/locales");
 const pool = require("../db/pool");
 
 exports.getProfile = async (req, res) => {
-  const userId = req.params.id === 'me' ? req.user.sub : req.params.id;
-  const isMe = userId === req.user.sub;
+  const userId = req.params.id === "me" ? req.user.sub : req.params.id;
 
   try {
-    // 1. Get User & Profile Data
+    // 1️⃣ Get User & Profile
     const userResult = await pool.query(
       `
       SELECT u.user_id, u.full_name, u.headline, u.avatar_url, u.location, u.about_text, u.email,
@@ -18,47 +16,70 @@ exports.getProfile = async (req, res) => {
       [userId]
     );
 
-    if (userResult.rowCount === 0) {
+    if (!userResult.rowCount) {
       return res.status(404).json({ message: "User not found" });
     }
 
-    const user = userResult.rows[0];
-    const profileId = user.profile_id;
+    const u = userResult.rows[0];
+    const profileId = u.profile_id;
 
-    if (!profileId) {
-        // Should not happen if registered correctly, but handle it
-        return res.status(200).json({ user, experiences: [], educations: [], skills: [] });
-    }
+    // 2️⃣ Get experiences
+    const experiences = profileId
+      ? await pool.query(
+          `SELECT * FROM experiences WHERE profile_id = $1 ORDER BY start_date DESC`,
+          [profileId]
+        )
+      : { rows: [] };
 
-    // 2. Get Experiences
-    const experiencesResult = await pool.query(
-      `SELECT * FROM experiences WHERE profile_id = $1 ORDER BY start_date DESC`,
-      [profileId]
-    );
+    // 3️⃣ Get educations
+    const educations = profileId
+      ? await pool.query(
+          `SELECT * FROM educations WHERE profile_id = $1 ORDER BY start_date DESC`,
+          [profileId]
+        )
+      : { rows: [] };
 
-    // 3. Get Educations
-    const educationsResult = await pool.query(
-      `SELECT * FROM educations WHERE profile_id = $1 ORDER BY start_date DESC`,
-      [profileId]
-    );
+    // 4️⃣ Get skills
+    const skills = profileId
+      ? await pool.query(
+          `
+          SELECT s.skill_id, s.name
+          FROM user_skills us
+          JOIN skills s ON us.skill_id = s.skill_id
+          WHERE us.profile_id = $1
+          `,
+          [profileId]
+        )
+      : { rows: [] };
 
-    // 4. Get Skills
-    const skillsResult = await pool.query(
-      `
-      SELECT s.skill_id, s.name
-      FROM user_skills us
-      JOIN skills s ON us.skill_id = s.skill_id
-      WHERE us.profile_id = $1
-      `,
-      [profileId]
-    );
+    // 5️⃣ Get latest education (for top-level display like LinkedIn)
+    const latestEducation = educations.rows[0]
+      ? {
+          school: educations.rows[0].school_name,
+          degree: educations.rows[0].degree,
+        }
+      : null;
 
+    // 6️⃣ Send response
     res.json({
-      user,
-      isself :isMe,
-      experiences: experiencesResult.rows,
-      educations: educationsResult.rows,
-      skills: skillsResult.rows,
+      user: {
+        id: u.user_id,
+        name: u.full_name,
+        headline: u.headline,
+        avatar: u.avatar_url,
+        location: u.location,
+        about: u.about_text,
+        email: u.email,
+        profile_views: u.profile_views_count,
+        search_appearances: u.search_appearances_count,
+        open_to: u.open_to,
+        availability: u.availability,
+        work_preference: u.work_preference,
+        latest_education: latestEducation, // ✅ added
+      },
+      experiences: experiences.rows,
+      educations: educations.rows,
+      skills: skills.rows,
     });
   } catch (err) {
     console.error("Get profile error:", err);
@@ -68,58 +89,152 @@ exports.getProfile = async (req, res) => {
 
 exports.updateProfile = async (req, res) => {
   const userId = req.user.sub;
+
   const {
-    full_name, headline, location, about_text, // User table
-    open_to, availability, work_preference // Profile table
+    full_name,
+    headline,
+    job_title,
+    company_name,
+    school,
+    degree,
+    location,
+    about_text
   } = req.body;
 
+  // ================= VALIDATIONS =================
+  if (full_name && full_name.trim().length < 3) {
+    return res.status(400).json({ message: "Full name must be at least 3 characters" });
+  }
+
+  if (headline && headline.length > 120) {
+    return res.status(400).json({ message: "Headline cannot exceed 120 characters" });
+  }
+
+  if (job_title && job_title.length > 80) {
+    return res.status(400).json({ message: "Job title cannot exceed 80 characters" });
+  }
+
+  if (company_name && company_name.length > 80) {
+    return res.status(400).json({ message: "Company name cannot exceed 80 characters" });
+  }
+
+  if (school && school.length > 100) {
+    return res.status(400).json({ message: "School cannot exceed 100 characters" });
+  }
+
+  if (degree && degree.length > 100) {
+    return res.status(400).json({ message: "Degree cannot exceed 100 characters" });
+  }
+
+  if (location && location.length > 150) {
+    return res.status(400).json({ message: "Location cannot exceed 150 characters" });
+  }
+
+  if (about_text && about_text.length > 500) {
+    return res.status(400).json({ message: "About section cannot exceed 500 characters" });
+  }
+
+  // ================= DATABASE UPDATE =================
   try {
-    // Start transaction
-    await pool.query('BEGIN');
+    await pool.query("BEGIN");
 
-    // Update User
-    if (full_name || headline || location || about_text) {
-        await pool.query(
-            `
-            UPDATE users
-            SET full_name = COALESCE($1, full_name),
-                headline = COALESCE($2, headline),
-                location = COALESCE($3, location),
-                about_text = COALESCE($4, about_text),
-                updated_at = now()
-            WHERE user_id = $5
-            `,
-            [full_name, headline, location, about_text, userId]
-        );
-    }
+    await pool.query(
+      `
+      UPDATE users
+      SET 
+        full_name    = COALESCE($1, full_name),
+        headline     = COALESCE($2, headline),
+        job_title    = COALESCE($3, job_title),
+        company_name = COALESCE($4, company_name),
+        school       = COALESCE($5, school),
+        degree       = COALESCE($6, degree),
+        location     = COALESCE($7, location),
+        about_text   = COALESCE($8, about_text),
+        updated_at   = now()
+      WHERE user_id = $9
+      `,
+      [
+        full_name,
+        headline,
+        job_title,
+        company_name,
+        school,
+        degree,
+        location,
+        about_text,
+        userId
+      ]
+    );
 
-    // Update Profile
-    if (open_to || availability || work_preference) {
-        await pool.query(
-            `
-            UPDATE profiles
-            SET open_to = COALESCE($1, open_to),
-                availability = COALESCE($2, availability),
-                work_preference = COALESCE($3, work_preference),
-                updated_at = now()
-            WHERE user_id = $4
-            `,
-            [open_to, availability, work_preference, userId]
-        );
-    }
+    await pool.query("COMMIT");
 
-    await pool.query('COMMIT');
     res.json({ message: "Profile updated successfully" });
+
   } catch (err) {
-    await pool.query('ROLLBACK');
+    await pool.query("ROLLBACK");
     console.error("Update profile error:", err);
     res.status(500).json({ message: "Internal server error" });
   }
 };
+
 exports.getMyProfile = async (req, res) => {
   req.params.id = 'me';
   return exports.getProfile(req, res);
 }
+// GET /profile/identity
+exports.getIdentity = async (req, res) => {
+  const userId = req.user.sub;
+  try {
+    const result = await pool.query(
+      `SELECT open_to, availability, work_preference 
+       FROM profiles 
+       WHERE user_id = $1`,
+      [userId]
+    );
+    if (result.rowCount === 0) {
+      return res.status(404).json({ message: "Profile not found" });
+    }
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error("Get identity error:", err);
+    res.status(500).json({ message: "Internal server error" });
+  }
+};
+
+// PUT /profile/identity
+exports.updateIdentity = async (req, res) => {
+  const userId = req.user.sub;
+  const { open_to, availability, work_preference } = req.body;
+
+  const allowedOpenTo = ["Full-time", "Freelance", "Mentorship"];
+  const allowedAvailability = ["Immediate", "30 Days", "Casual Networking"];
+  const allowedWorkPreference = ["Remote", "Hybrid", "Onsite"];
+
+  if (!allowedOpenTo.includes(open_to) ||
+      !allowedAvailability.includes(availability) ||
+      !allowedWorkPreference.includes(work_preference)) {
+    return res.status(400).json({ message: "Invalid identity values" });
+  }
+
+  try {
+    const result = await pool.query(
+      `UPDATE profiles
+       SET open_to = $1, availability = $2, work_preference = $3, updated_at = now()
+       WHERE user_id = $4
+       RETURNING *`,
+      [open_to, availability, work_preference, userId]
+    );
+
+    if (result.rowCount === 0) {
+      return res.status(404).json({ message: "Profile not found" });
+    }
+
+    res.json({ message: "Professional identity updated successfully", identity: result.rows[0] });
+  } catch (err) {
+    console.error("Update identity error:", err);
+    res.status(500).json({ message: "Internal server error" });
+  }
+};
 
 // --- Experiences ---
 
@@ -463,139 +578,207 @@ exports.deleteEducation = async (req, res) => {
   }
 };
 // --- Skills ---
-exports.addSkill = async (req, res) => {
+exports.addSkills = async (req, res) => {
   const userId = req.user.sub;
-  const { name } = req.body; // skill name
+  const { name } = req.body;
 
-  if (!name) {
-    return res.status(400).json({ message: "Skill name is required" });
+  // 1. Validation
+  if (!Array.isArray(name) || name.length === 0) {
+    return res.status(400).json({
+      message: "Name must be a non-empty array",
+    });
   }
 
+  // 2. Normalize & clean skills
+  const skillList = [...new Set(
+    name
+      .filter(s => typeof s === "string")
+      .map(s =>
+        s
+          .trim()
+          .toLowerCase()
+          .replace(/\s+/g, " ")
+          .split(" ")
+          .map(w => w.charAt(0).toUpperCase() + w.slice(1))
+          .join(" ")
+      )
+      .filter(Boolean)
+  )];
+
+  if (!skillList.length) {
+    return res.status(400).json({
+      message: "No valid skills provided",
+    });
+  }
+
+  const client = await pool.connect();
+
   try {
-    // 1. Get profile_id
-    const profileResult = await pool.query(
+    await client.query("BEGIN");
+
+    // 3. Get profile
+    const { rows } = await client.query(
       `SELECT profile_id FROM profiles WHERE user_id = $1`,
       [userId]
     );
 
-    if (profileResult.rowCount === 0) {
-      return res.status(404).json({ message: "Profile not found" });
+    if (!rows.length) {
+      throw new Error("PROFILE_NOT_FOUND");
     }
 
-    const profileId = profileResult.rows[0].profile_id;
+    const profileId = rows[0].profile_id;
 
-    // 2. Get or create skill
-    let skillId;
-    const skillCheck = await pool.query(
-      `SELECT skill_id FROM skills WHERE name = $1`,
-      [name.trim()]
+    // 4. Insert skills in batch
+    const insertSkillsQuery = `
+      INSERT INTO skills (name)
+      SELECT UNNEST($1::text[])
+      ON CONFLICT (name) DO NOTHING
+      RETURNING skill_id, name
+    `;
+
+    await client.query(insertSkillsQuery, [skillList]);
+
+    // 5. Fetch all skills (new + existing)
+    const { rows: skills } = await client.query(
+      `SELECT skill_id, name 
+       FROM skills 
+       WHERE name = ANY($1)`,
+      [skillList]
     );
 
-    if (skillCheck.rowCount > 0) {
-      skillId = skillCheck.rows[0].skill_id;
-    } else {
-      const newSkill = await pool.query(
-        `INSERT INTO skills (name) VALUES ($1) RETURNING skill_id`,
-        [name.trim()]
-      );
-      skillId = newSkill.rows[0].skill_id;
-    }
+    // 6. Map user_skills
+    const values = skills
+      .map(
+        (s, i) =>
+          `($1, $${i + 2})`
+      )
+      .join(",");
 
-    // 3. Link skill to profile (avoid duplicates)
-    const linkResult = await pool.query(
+    await client.query(
       `
       INSERT INTO user_skills (profile_id, skill_id)
-      VALUES ($1, $2)
+      VALUES ${values}
       ON CONFLICT DO NOTHING
-      RETURNING *
       `,
-      [profileId, skillId]
+      [profileId, ...skills.map(s => s.skill_id)]
     );
 
-    if (linkResult.rowCount === 0) {
-      return res.status(409).json({ message: "Skill already added" });
-    }
+    await client.query("COMMIT");
 
     res.status(201).json({
-      message: "Skill added successfully",
-      skill: {
-        skill_id: skillId,
-        name: name.trim(),
-      },
+      message: "Skills added successfully",
+      skills,
     });
+
   } catch (err) {
-    console.error("Add skill error:", err);
-    res.status(500).json({ message: "Internal server error" });
+    await client.query("ROLLBACK");
+
+    if (err.message === "PROFILE_NOT_FOUND") {
+      return res.status(404).json({
+        message: "Profile not found",
+      });
+    }
+
+    console.error("Add skills error:", err);
+    res.status(500).json({
+      message: "Internal server error",
+    });
+
+  } finally {
+    client.release();
   }
 };
+
 // Update skill
 exports.updateSkill = async (req, res) => {
-  const userId = req.user.sub;    // Logged-in user
-  const skillId = req.params.id;  // Skill ID from URL
-  const { name } = req.body;      // New skill name
+  const userId = req.user.sub; // Logged-in user
+  const skillId = req.params.id; // Skill ID from URL
+  const { name } = req.body;
 
-  if (!name) {
+  if (!name || !name.trim()) {
     return res.status(400).json({ message: "Skill name is required" });
   }
 
+  const newSkillName = name.trim();
+
+  const client = await pool.connect(); // Use a client for transaction
   try {
+    await client.query('BEGIN');
+
     // 1️⃣ Get profile_id of logged-in user
-    const profileResult = await pool.query(
+    const profileResult = await client.query(
       `SELECT profile_id FROM profiles WHERE user_id = $1`,
       [userId]
     );
 
     if (profileResult.rowCount === 0) {
+      await client.query('ROLLBACK');
       return res.status(404).json({ message: "Profile not found" });
     }
 
     const profileId = profileResult.rows[0].profile_id;
 
     // 2️⃣ Ensure the skill exists and is linked to this profile
-    const userSkillCheck = await pool.query(
+    const userSkillCheck = await client.query(
       `SELECT * FROM user_skills WHERE profile_id = $1 AND skill_id = $2`,
       [profileId, skillId]
     );
 
     if (userSkillCheck.rowCount === 0) {
+      await client.query('ROLLBACK');
       return res.status(404).json({
         message: "Skill not found or not authorized to update",
       });
     }
 
-    // 3️⃣ Check if the new skill name already exists in skills table
-    const skillExists = await pool.query(
-      `SELECT skill_id FROM skills WHERE name = $1`,
-      [name.trim()]
+    // 3️⃣ Check if the new skill name already exists (case-insensitive)
+    const skillExists = await client.query(
+      `SELECT skill_id, name FROM skills WHERE LOWER(name) = LOWER($1)`,
+      [newSkillName]
     );
 
     let finalSkillId;
-    if (skillExists.rowCount > 0) {
-      // Skill with new name exists, just link to profile
-      finalSkillId = skillExists.rows[0].skill_id;
+    let finalSkillName;
 
-      // Update mapping to new skill_id
-      await pool.query(
+    if (skillExists.rowCount > 0) {
+      // Skill already exists → link to this skill
+      finalSkillId = skillExists.rows[0].skill_id;
+      finalSkillName = skillExists.rows[0].name;
+
+      // Update user mapping
+      await client.query(
         `UPDATE user_skills SET skill_id = $1 WHERE profile_id = $2 AND skill_id = $3`,
         [finalSkillId, profileId, skillId]
       );
     } else {
-      // Skill name doesn't exist → update the name in skills table
-      const updatedSkill = await pool.query(
-        `UPDATE skills SET name = $1 WHERE skill_id = $2 RETURNING *`,
-        [name.trim(), skillId]
+      // Skill doesn't exist → create a new skill
+      const newSkill = await client.query(
+        `INSERT INTO skills (name) VALUES ($1) RETURNING skill_id, name`,
+        [newSkillName]
       );
-      finalSkillId = updatedSkill.rows[0].skill_id;
+
+      finalSkillId = newSkill.rows[0].skill_id;
+      finalSkillName = newSkill.rows[0].name;
+
+      // Update user mapping to point to new skill
+      await client.query(
+        `UPDATE user_skills SET skill_id = $1 WHERE profile_id = $2 AND skill_id = $3`,
+        [finalSkillId, profileId, skillId]
+      );
     }
+
+    await client.query('COMMIT');
 
     res.json({
       message: "Skill updated successfully",
-      skill: { skill_id: finalSkillId, name: name.trim() },
+      skill: { skill_id: finalSkillId, name: finalSkillName },
     });
-
   } catch (err) {
+    await client.query('ROLLBACK');
     console.error("Update skill error:", err);
     res.status(500).json({ message: "Internal server error" });
+  } finally {
+    client.release();
   }
 };
 
@@ -642,4 +825,3 @@ exports.deleteSkill = async (req, res) => {
     res.status(500).json({ message: "Internal server error" });
   }
 };
-

@@ -58,6 +58,15 @@ CREATE TABLE profiles (
   search_appearances_count INTEGER DEFAULT 0,
   updated_at TIMESTAMPTZ DEFAULT now()
 );
+CREATE TABLE user_resumes (
+    resume_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
+    file_name TEXT NOT NULL,
+    file_url TEXT NOT NULL,
+    file_type TEXT,
+    file_size INTEGER,
+    uploaded_at TIMESTAMPTZ DEFAULT now()
+);
 
 CREATE TABLE skills (
   skill_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
