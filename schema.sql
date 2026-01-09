@@ -103,7 +103,7 @@ CREATE TABLE educations (
 
 CREATE TABLE post_categories (
   category_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  name TEXT UNIQUE NOT NULL -- 'Personal', 'Professional', 'Achievement'
+  name TEXT UNIQUE NOT NULL -- 'Personal', 'Professional', 'Achievement' ,'All'
 );
 
 CREATE TABLE posts (
@@ -205,6 +205,33 @@ CREATE TABLE followers (
   created_at TIMESTAMPTZ DEFAULT now(),
   PRIMARY KEY (follower_id, following_id)
 );
+
+CREATE TABLE connection_requests (
+  request_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  sender_id UUID NOT NULL
+    REFERENCES users(user_id) ON DELETE CASCADE,
+  receiver_id UUID NOT NULL
+    REFERENCES users(user_id) ON DELETE CASCADE,
+  status connection_status DEFAULT 'pending',
+  -- pending | connected | rejected
+  created_at TIMESTAMPTZ DEFAULT now(),
+  responded_at TIMESTAMPTZ,
+  UNIQUE (sender_id, receiver_id),
+  CHECK (sender_id <> receiver_id)
+);
+
+CREATE TABLE connections (
+  connection_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL
+    REFERENCES users(user_id) ON DELETE CASCADE,
+  connected_user_id UUID NOT NULL
+    REFERENCES users(user_id) ON DELETE CASCADE,
+  created_at TIMESTAMPTZ DEFAULT now(),
+  UNIQUE (user_id, connected_user_id),
+  CHECK (user_id <> connected_user_id)
+);
+
+
 
 CREATE TABLE conversations (
   conversation_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

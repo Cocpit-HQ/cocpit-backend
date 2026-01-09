@@ -3,41 +3,51 @@ const router = express.Router();
 const socialController = require("../controllers/social.controller");
 const { requireAuth } = require("../middlewares/auth.middleware");
 
-// ----------------- FOLLOW -----------------
+/* =====================================================
+   FOLLOW (One-way)
+   ===================================================== */
+router.post("/users/:id/follow", requireAuth, socialController.followUser);
+router.delete("/users/:id/unfollow", requireAuth, socialController.unfollowUser);
+router.get("/users/:id/followers/count",  socialController.getFollowersCount);
+router.get("/users/:id/followers", socialController.getFollowers);
+// router.get("/users/:id/following", socialController.getFollowing);
 
-// Follow another user
-router.post("/users/:id/follow", requireAuth, socialController.followUser); // Add logged-in user as follower
+/* =====================================================
+   CONNECTIONS (Two-way – LinkedIn style)
+   ===================================================== */
+router.post("/users/:id/connect", requireAuth, socialController.sendConnectionRequest);
+router.get("/connections/requests", requireAuth, socialController.getPendingRequests);
+router.patch("/connections/:requestId", requireAuth, socialController.handleConnectionRequest); // accept / reject
+router.get("/my/connections", requireAuth, socialController.getMyConnections);                // NEW
+router.delete("/connections/:requestId", requireAuth, socialController.cancelConnectionRequest); // NEW
+router.delete("/connections/user/:id", requireAuth, socialController.removeConnection);   // NEW
+router.get("/users/:id/connections/count",  socialController.getConnectionCount);
 
-// Unfollow a user
-router.delete("/users/:id/unfollow", requireAuth, socialController.unfollowUser); // Remove logged-in user from followers
 
-// ----------------- CONVERSATIONS -----------------
+/* =====================================================
+   RELATIONSHIP STATUS (Frontend decision helper)
+   ===================================================== */
+// router.get("/users/:id/relationship", requireAuth, socialController.getRelationshipStatus); // NEW
 
-// Get all conversations of logged-in user
-router.get("/conversations", requireAuth, socialController.getConversations); // List user's conversations
+/* =====================================================
+   CONVERSATIONS
+   ===================================================== */
+router.get("/conversations", requireAuth, socialController.getConversations);
+router.delete("/conversations/:id", requireAuth, socialController.deleteConversation);
 
-// Start a new 1-on-1 conversation
-router.post("/conversations", requireAuth, socialController.startConversation); // Create new conversation if not exists
+/* =====================================================
+   MESSAGES
+   ===================================================== */
+router.post("/messages", requireAuth, socialController.sendMessage);
+router.get("/conversations/:id/messages", requireAuth, socialController.getMessages);
+router.delete("/messages/:id", requireAuth, socialController.deleteMessage);
+// router.patch("/messages/:id/read", requireAuth, socialController.markMessageRead);
 
-// ----------------- MESSAGES -----------------
-
-// Send a message to a user (auto-create 1-on-1 conversation if needed)
-router.post("/messages", requireAuth, socialController.sendMessage); 
-// Body: { "targetUserId": "123", "text_content": "Hello!" }
-
-// Get all messages in a conversation
-router.get("/conversations/:id/messages", requireAuth, socialController.getMessages); // Get messages for conversation
-
-// Delete a message sent by logged-in user
-router.delete("/messages/:id", requireAuth, socialController.deleteMessage); // Delete specific message
-
-// ----------------- NOTIFICATIONS -----------------
-
-// Get all notifications for logged-in user
-router.get("/notifications", requireAuth, socialController.getNotifications); // Fetch notifications
-
-// Mark a notification as read
-router.patch("/notifications/:id/read", requireAuth, socialController.markNotificationRead); // Mark notification read
+/* =====================================================
+   NOTIFICATIONS
+   ===================================================== */
+// router.get("/notifications", requireAuth, socialController.getNotifications);
+// router.patch("/notifications/:id/read", requireAuth, socialController.markNotificationRead);
+// router.patch("/notifications/read-all", requireAuth, socialController.markAllNotificationsRead);
 
 module.exports = router;
-

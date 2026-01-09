@@ -12,4 +12,7 @@ router.get("/search", userController.searchUsers);
 // Get public profile
 router.get("/:id", userController.getUserProfile);
 
+//Get public profile post
+router.get("/:id/posts",userController.getPublicProfilePosts)
+
 module.exports = router;

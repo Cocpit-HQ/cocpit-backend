@@ -1,7 +1,9 @@
+const { is } = require("zod/locales");
 const pool = require("../db/pool");
 
 exports.getProfile = async (req, res) => {
   const userId = req.params.id === 'me' ? req.user.sub : req.params.id;
+  const isMe = userId === req.user.sub;
 
   try {
     // 1. Get User & Profile Data
@@ -53,6 +55,7 @@ exports.getProfile = async (req, res) => {
 
     res.json({
       user,
+      isself :isMe,
       experiences: experiencesResult.rows,
       educations: educationsResult.rows,
       skills: skillsResult.rows,
