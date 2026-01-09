@@ -152,103 +152,160 @@ exports.getUserProfile = async (req, res) => {
 };
 
 exports.getPublicProfilePosts = async (req, res) => {
-  const { id } = req.params;
-  const { category } = req.body;
+  const { id: userId } = req.params;
+  const {
+    category,
+    cursorCreatedAt,
+    cursorPostId,
+    limit = 10,
+  } = req.query;
 
+  // ✅ Validate UUID
   const uuidRegex =
     /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
-  if (!uuidRegex.test(id)) {
+
+  if (!uuidRegex.test(userId)) {
     return res.status(400).json({ message: "Invalid user ID format" });
   }
 
   try {
-    let categoryId = null;
-    let result = null;
-    if (!category.trim()) {
-      return res.status(400).json({ message: "Category is required" });
-    }
-    else {
-      const catRes = await pool.query(`SELECT category_id FROM post_categories WHERE name = $1`, [category.trim()]);
-      if (catRes.rowCount > 0) {
-        categoryId = catRes.rows[0].category_id;
-      } else {
-        return res.status(400).json({ message: "Invalid category" });
-      }
+    const params = [userId];
+    let idx = 2;
+    let whereClause = `WHERE p.author_id = $1`;
+
+    // ✅ Category filter (skip "All")
+    if (category && category !== "All") {
+      whereClause += ` AND pc.name = $${idx}`;
+      params.push(category);
+      idx++;
     }
 
-    if (category.trim() === 'All') {
-      result = await pool.query(
-        `select p.post_id,
-          u.full_name,
-          u.headline,
-          u.avatar_url,
-          p.title,
-          p.category_id,
-          p.content,
-          p.created_at 
-          from posts p join users u on u.user_id = p.author_id
-          where p.author_id = $1
-          order by p.created_at desc`,
-        [id]
-      )
-    } else {
-      result = await pool.query(
-        `select p.post_id,
-          u.full_name,
-          u.headline,
-          u.avatar_url,
-          p.title,
-          p.category_id,
-          p.content,
-          p.created_at 
-          from posts p join users u on u.user_id = p.author_id
-          where p.author_id = $1 AND (p.category_id = $2 )
-          order by p.created_at desc`,
-        [id, categoryId]
-      )
+    // ✅ Cursor-based pagination (stable ordering)
+    if (cursorCreatedAt && cursorPostId) {
+      whereClause += `
+        AND (p.created_at, p.post_id) < ($${idx}, $${idx + 1})
+      `;
+      params.push(cursorCreatedAt, cursorPostId);
+      idx += 2;
     }
 
-    res.status(200).json({
-      category: category,
-      posts: result.rows
+    // ✅ LIMIT
+    params.push(limit);
+
+    const query = `
+      SELECT
+        p.post_id,
+        p.content,
+        p.created_at,
+        p.visibility,
+
+        u.user_id AS author_id,
+        u.full_name AS author_name,
+        u.avatar_url AS author_avatar,
+
+        pc.name AS category_name,
+
+        COALESCE(pm.media, '[]'::json) AS media,
+        COALESCE(lc.like_count, 0) AS like_count,
+        COALESCE(cc.comment_count, 0) AS comment_count,
+
+        pp.poll
+
+      FROM posts p
+      JOIN users u ON u.user_id = p.author_id
+      LEFT JOIN post_categories pc ON pc.category_id = p.category_id
+
+      -- MEDIA
+      LEFT JOIN (
+        SELECT
+          pm.post_id,
+          json_agg(
+            json_build_object(
+              'media_id', pm.media_id,
+              'url', pm.url,
+              'media_type', pm.media_type,
+              'aspect_ratio', pm.aspect_ratio
+            )
+          ) AS media
+        FROM post_media pm
+        GROUP BY pm.post_id
+      ) pm ON pm.post_id = p.post_id
+
+      -- LIKE COUNT
+      LEFT JOIN (
+        SELECT post_id, COUNT(*) AS like_count
+        FROM post_likes
+        GROUP BY post_id
+      ) lc ON lc.post_id = p.post_id
+
+      -- COMMENT COUNT
+      LEFT JOIN (
+        SELECT post_id, COUNT(*) AS comment_count
+        FROM post_comments
+        GROUP BY post_id
+      ) cc ON cc.post_id = p.post_id
+
+      -- POLL
+      LEFT JOIN (
+        SELECT
+          pp.post_id,
+          json_build_object(
+            'poll_id', pp.poll_id,
+            'duration', pp.duration,
+            'total_votes', COALESCE(pv.total_votes, 0),
+            'options', COALESCE(po.options, '[]'::json)
+          ) AS poll
+        FROM post_polls pp
+
+        LEFT JOIN (
+          SELECT
+            t.poll_id,
+            json_agg(
+              json_build_object(
+                'option_id', t.option_id,
+                'option_text', t.option_text,
+                'vote_count', t.vote_count
+              )
+            ) AS options
+          FROM (
+            SELECT
+              po.option_id,
+              po.poll_id,
+              po.option_text,
+              COUNT(pv.vote_id) AS vote_count
+            FROM poll_options po
+            LEFT JOIN poll_votes pv ON pv.option_id = po.option_id
+            GROUP BY po.option_id, po.poll_id, po.option_text
+          ) t
+          GROUP BY t.poll_id
+        ) po ON po.poll_id = pp.poll_id
+
+        LEFT JOIN (
+          SELECT poll_id, COUNT(*) AS total_votes
+          FROM poll_votes
+          GROUP BY poll_id
+        ) pv ON pv.poll_id = pp.poll_id
+      ) pp ON pp.post_id = p.post_id
+
+      ${whereClause}
+      ORDER BY p.created_at DESC, p.post_id DESC
+      LIMIT $${idx};
+    `;
+
+    const { rows } = await pool.query(query, params);
+    const last = rows[rows.length - 1];
+
+    res.json({
+      posts: rows,
+      nextCursor: last
+        ? {
+            cursorCreatedAt: last.created_at,
+            cursorPostId: last.post_id,
+          }
+        : null,
     });
   } catch (err) {
     console.error("Get public profile posts error:", err);
-    return res.status(500).json({ message: "Internal server error" });
+    res.status(500).json({ message: "Internal server error" });
   }
-
-}
-/*
-Manual Testing Notes:
-
-1. Search Users:
-   GET /api/users/search?q=john
-   Headers: Authorization: Bearer <access_token>
-
-   Expected:
-   [
-     {
-       "id": "uuid...",
-       "full_name": "John Doe",
-       "headline": "Software Engineer",
-       "avatar_url": "http://...",
-       "account_type": "Employee"
-     },
-     ...
-   ]
-
-2. Get User Profile:
-   GET /api/users/<uuid>
-   Headers: Authorization: Bearer <access_token>
-
-   Expected:
-   {
-     "id": "uuid...",
-     "full_name": "Jane Smith",
-     "headline": "Product Manager",
-     ...
-     "experiences": [...],
-     "educations": [...],
-     "skills": ["JavaScript", "Leadership"]
-   }
-*/
+};
