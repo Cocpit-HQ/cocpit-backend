@@ -4,7 +4,7 @@ exports.getProfile = async (req, res) => {
   const userId = req.params.id === "me" ? req.user.sub : req.params.id;
 
   try {
-    // 1️⃣ Get User & Profile
+   
     const userResult = await pool.query(
       `
       SELECT u.user_id, u.full_name, u.headline, u.avatar_url, u.location, u.about_text, u.email,
@@ -23,7 +23,7 @@ exports.getProfile = async (req, res) => {
     const u = userResult.rows[0];
     const profileId = u.profile_id;
 
-    // 2️⃣ Get experiences
+    
     const experiences = profileId
       ? await pool.query(
           `SELECT * FROM experiences WHERE profile_id = $1 ORDER BY start_date DESC`,
@@ -31,7 +31,7 @@ exports.getProfile = async (req, res) => {
         )
       : { rows: [] };
 
-    // 3️⃣ Get educations
+    
     const educations = profileId
       ? await pool.query(
           `SELECT * FROM educations WHERE profile_id = $1 ORDER BY start_date DESC`,
@@ -39,7 +39,7 @@ exports.getProfile = async (req, res) => {
         )
       : { rows: [] };
 
-    // 4️⃣ Get skills
+    
     const skills = profileId
       ? await pool.query(
           `
@@ -52,7 +52,7 @@ exports.getProfile = async (req, res) => {
         )
       : { rows: [] };
 
-    // 5️⃣ Get latest education (for top-level display like LinkedIn)
+    
     const latestEducation = educations.rows[0]
       ? {
           school: educations.rows[0].school_name,
@@ -60,7 +60,7 @@ exports.getProfile = async (req, res) => {
         }
       : null;
 
-    // 6️⃣ Send response
+    
     res.json({
       user: {
         id: u.user_id,
@@ -101,7 +101,7 @@ exports.updateProfile = async (req, res) => {
     about_text
   } = req.body;
 
-  // ================= VALIDATIONS =================
+  
   if (full_name && full_name.trim().length < 3) {
     return res.status(400).json({ message: "Full name must be at least 3 characters" });
   }
@@ -134,7 +134,7 @@ exports.updateProfile = async (req, res) => {
     return res.status(400).json({ message: "About section cannot exceed 500 characters" });
   }
 
-  // ================= DATABASE UPDATE =================
+  
   try {
     await pool.query("BEGIN");
 
@@ -181,6 +181,73 @@ exports.getMyProfile = async (req, res) => {
   req.params.id = 'me';
   return exports.getProfile(req, res);
 }
+// Upload or replace profile picture
+// Upload or replace profile picture
+exports.uploadOrReplaceAvatar = async (req, res) => {
+  try {
+    const userId = req.user.sub;
+    console.log("req.file:", req.file);
+
+    if (!req.file) {
+      return res.status(400).json({ message: "No file uploaded" });
+    }
+
+    // Use Cloudinary URL
+    const avatarUrl = req.file.path || req.file.secure_url;
+
+    await pool.query(
+      "UPDATE users SET avatar_url = $1 WHERE user_id = $2",
+      [avatarUrl, userId]
+    );
+
+    res.json({ message: "Profile picture updated successfully", avatarUrl });
+  } catch (err) {
+    console.error("Avatar upload error:", err);
+    res.status(500).json({ message: "Internal server error" });
+  }
+};
+
+// Get profile picture
+exports.getAvatar = async (req, res) => {
+  try {
+    const userId = req.user.sub;
+
+    const result = await pool.query(
+      "SELECT avatar_url FROM users WHERE user_id = $1",
+      [userId]
+    );
+
+    if (!result.rows[0] || !result.rows[0].avatar_url) {
+      return res.status(404).json({ message: "No profile picture found" });
+    }
+
+    res.json({ avatarUrl: result.rows[0].avatar_url });
+  } catch (err) {
+    console.error("Get avatar error:", err);
+    res.status(500).json({ message: "Internal server error" });
+  }
+};
+
+// Delete profile picture
+exports.deleteAvatar = async (req, res) => {
+  try {
+    const userId = req.user.sub;
+
+    // Optional: delete from Cloudinary here if needed
+
+    await pool.query(
+      "UPDATE users SET avatar_url = NULL WHERE user_id = $1",
+      [userId]
+    );
+
+    res.json({ message: "Profile picture deleted successfully" });
+  } catch (err) {
+    console.error("Delete avatar error:", err);
+    res.status(500).json({ message: "Internal server error" });
+  }
+};
+
+
 // GET /profile/identity
 exports.getIdentity = async (req, res) => {
   const userId = req.user.sub;
@@ -235,6 +302,93 @@ exports.updateIdentity = async (req, res) => {
     res.status(500).json({ message: "Internal server error" });
   }
 };
+// --- Upload or Replace Resume ---
+exports.uploadOrReplaceResume = async (req, res) => {
+  const userId = req.user.sub;
+  const file = req.file;
+
+  if (!file) {
+    return res.status(400).json({ message: "Resume file is required" });
+  }
+
+  try {
+    // Delete old resume if it exists
+    await pool.query(
+      `DELETE FROM user_resumes WHERE user_id = $1`,
+      [userId]
+    );
+
+    // Insert new resume
+    const result = await pool.query(
+      `
+      INSERT INTO user_resumes
+        (user_id, file_name, file_url, file_type, file_size)
+      VALUES ($1, $2, $3, $4, $5)
+      RETURNING *
+      `,
+      [
+        userId,
+        file.originalname,
+        file.path,
+        file.mimetype,
+        file.size
+      ]
+    );
+
+    res.status(201).json({
+      message: "Resume uploaded successfully",
+      resume: result.rows[0]
+    });
+
+  } catch (err) {
+    console.error("Upload/Replace resume error:", err);
+    res.status(500).json({ message: "Failed to upload resume" });
+  }
+};
+
+// --- Get Resume ---
+exports.getResume = async (req, res) => {
+  const userId = req.user.sub;
+
+  try {
+    const result = await pool.query(
+      `SELECT * FROM user_resumes WHERE user_id = $1`,
+      [userId]
+    );
+
+    if (result.rowCount === 0) {
+      return res.status(404).json({ message: "No resume found" });
+    }
+
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error("Get resume error:", err);
+    res.status(500).json({ message: "Failed to fetch resume" });
+  }
+};
+
+// --- Delete Resume ---
+exports.deleteResume = async (req, res) => {
+  const userId = req.user.sub;
+
+  try {
+    const result = await pool.query(
+      `DELETE FROM user_resumes WHERE user_id = $1 RETURNING *`,
+      [userId]
+    );
+
+    if (result.rowCount === 0) {
+      return res.status(404).json({ message: "No resume found to delete" });
+    }
+
+    res.json({ message: "Resume deleted successfully", resume: result.rows[0] });
+  } catch (err) {
+    console.error("Delete resume error:", err);
+    res.status(500).json({ message: "Failed to delete resume" });
+  }
+};
+
+
 
 // --- Experiences ---
 

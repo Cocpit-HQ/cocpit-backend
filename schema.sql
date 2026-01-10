@@ -12,15 +12,20 @@ CREATE TYPE sender_type AS ENUM ('me', 'other'); -- Frontend uses 'me'/'other', 
 CREATE TABLE users (
   user_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   email TEXT UNIQUE NOT NULL,
-  password_hash TEXT NOT NULL, -- Hashed via bcrypt/argon2 in app
+  password_hash TEXT NOT NULL,       -- Hashed via bcrypt/argon2 in app
   full_name TEXT NOT NULL,
   headline TEXT,
   avatar_url TEXT,
+  job_title TEXT,
+  company_name TEXT,
+  school TEXT,
+  degree TEXT,
   location TEXT,
   about_text TEXT,
   created_at TIMESTAMPTZ DEFAULT now(),
-  updated_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ DEFAULT now()
 );
+
 
 CREATE TABLE roles (
   role_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -284,14 +289,25 @@ CREATE TABLE jobs (
   company_name TEXT NOT NULL,
   location TEXT,
   description TEXT,
-  salary_range TEXT, -- Keeping as text per frontend 'Avg' logic, or use numeric range
-  work_mode job_work_mode,
-  company_type job_company_type,
+  salary_range TEXT, -- frontend format
+  job_type TEXT, -- Full-time, Part-time, Contract etc.
+  work_mode job_work_mode, -- Remote | Hybrid | Onsite
+  company_type job_company_type, -- Startup | MNC etc.
   experience_level TEXT,
-  match_score INTEGER, -- Mock score
+  about_company TEXT,
+  easy_apply BOOLEAN DEFAULT false,
+  actively_hiring BOOLEAN DEFAULT false,
+  match_score INTEGER, -- optional / mock
   is_active BOOLEAN DEFAULT TRUE,
   created_at TIMESTAMPTZ DEFAULT now()
 );
+
+CREATE TABLE job_skills (
+  job_id UUID REFERENCES jobs(job_id) ON DELETE CASCADE,
+  skill_id UUID REFERENCES skills(skill_id) ON DELETE CASCADE,
+  PRIMARY KEY (job_id, skill_id)
+);
+
 
 CREATE TABLE job_applications (
   application_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

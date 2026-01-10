@@ -79,23 +79,90 @@ exports.getJobById = async (req, res) => {
 
 exports.createJob = async (req, res) => {
   const recruiterId = req.user.sub;
-  const { title, company_name, location, description, salary_range, work_mode, company_type, is_offer = false } = req.body;
+
+  const {
+    title,
+    company_name,
+    location,
+    description,
+    salary_range,
+    job_type,
+    work_mode,
+    company_type,
+    experience_level,
+    about_company,
+    easy_apply = false,
+    actively_hiring = false,
+    skills = []
+  } = req.body;
+
+  const client = await pool.connect();
 
   try {
-    const result = await pool.query(
+    await client.query("BEGIN");
+
+    // 1. Insert job
+    const jobRes = await client.query(
       `
-      INSERT INTO jobs 
-        (recruiter_id, title, company_name, location, description, salary_range, work_mode, company_type, is_offer)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+      INSERT INTO jobs
+      (
+        recruiter_id, title, company_name, location,
+        description, salary_range, job_type,
+        work_mode, company_type, experience_level,
+        about_company, easy_apply, actively_hiring
+      )
+      VALUES
+      ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
       RETURNING *
       `,
-      [recruiterId, title, company_name, location, description, salary_range, work_mode, company_type, is_offer]
+      [
+        recruiterId, title, company_name, location,
+        description, salary_range, job_type,
+        work_mode, company_type, experience_level,
+        about_company, easy_apply, actively_hiring
+      ]
     );
 
-    res.status(201).json(result.rows[0]);
+    const job = jobRes.rows[0];
+
+    // 2. Handle skills
+    for (let skill of skills) {
+
+      const skillRes = await client.query(
+        `
+        INSERT INTO skills(name)
+        VALUES ($1)
+        ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name
+        RETURNING skill_id
+        `,
+        [skill]
+      );
+
+      const skillId = skillRes.rows[0].skill_id;
+
+      await client.query(
+        `
+        INSERT INTO job_skills(job_id, skill_id)
+        VALUES ($1,$2)
+        ON CONFLICT DO NOTHING
+        `,
+        [job.job_id, skillId]
+      );
+    }
+
+    await client.query("COMMIT");
+
+    res.status(201).json({
+      message: "Job posted successfully",
+      job
+    });
+
   } catch (err) {
-    console.error("Create job error:", err);
+    await client.query("ROLLBACK");
+    console.error(err);
     res.status(500).json({ message: "Internal server error" });
+  } finally {
+    client.release();
   }
 };
 
