@@ -727,3 +727,32 @@ exports.getMe = async (req, res) => {
     res.status(500).json({ message: "Internal server error" });
   }
 };
+//const pool = require("../db/pool");
+
+exports.getMySessionCount = async (req, res) => {
+  try {
+    const userId = req.user.sub; // from access token
+
+    const result = await pool.query(
+      `
+      SELECT COUNT(*) 
+      FROM refresh_tokens
+      WHERE user_id = $1
+      AND expires_at > NOW()
+      AND revoked = FALSE
+      `,
+      [userId]
+    );
+
+    res.json({
+      my_session_count: Number(result.rows[0].count)
+    });
+
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({
+      message: "Unable to fetch your session count"
+    });
+  }
+};
+

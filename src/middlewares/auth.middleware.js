@@ -9,8 +9,6 @@ exports.requireAuth = (req, res, next) => {
 
   const token = authHeader.split(" ")[1];
 
-  console.log("access token : ",token)
-  
   try {
     req.user = verifyAccessToken(token);
     next();

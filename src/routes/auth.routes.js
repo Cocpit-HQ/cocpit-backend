@@ -6,6 +6,7 @@ const { requireRefreshTokenAuth } = require("../middlewares/auth.middleware");
 const { requireRoles } = require("../middlewares/role.middleware");
 const { validate } = require("../middlewares/validation.middleware");
 const rateLimit = require("../middlewares/rateLimit.middleware");
+const { getMySessionCount } = require("../controllers/auth.controller");
 const {
   registerSchema,
   loginSchema,
@@ -22,6 +23,8 @@ const authLimiter = rateLimit({
 router.post("/register", authLimiter, validate(registerSchema), authController.register);
 router.post("/login", authLimiter, validate(loginSchema), authController.login);
 router.post("/refresh", validate(refreshTokenSchema), authController.refreshToken);
+router.get("/sessions/count",requireAuth,getMySessionCount );
+
 router.post("/logout",  authController.logout);
 
 

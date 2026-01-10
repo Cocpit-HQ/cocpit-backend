@@ -1,22 +1,49 @@
 const pool = require("../db/pool");
 
 exports.getEvents = async (req, res) => {
-    try {
-        const result = await pool.query(
-            `
-            SELECT e.*, u.full_name as organizer_name
-            FROM events e
-            JOIN users u ON e.organizer_id = u.user_id
-            WHERE e.start_time > now()
-            ORDER BY e.start_time ASC
-            `
-        );
-        res.json(result.rows);
-    } catch (err) {
-        console.error("Get events error:", err);
-        res.status(500).json({ message: "Internal server error" });
+  const { location, type, date } = req.query;
+
+  try {
+
+    if (date && isNaN(Date.parse(date))) {
+      return res.status(400).json({ message: "Invalid date format" });
     }
+
+    let query = `
+      SELECT e.*, u.full_name as organizer_name
+      FROM events e
+      JOIN users u ON e.organizer_id = u.user_id
+      WHERE e.start_time > now()
+    `;
+
+    const values = [];
+
+    if (location) {
+      values.push(location);
+      query += ` AND e.location = $${values.length}`;
+    }
+
+    if (type) {
+      values.push(type);
+      query += ` AND e.event_type = $${values.length}`;
+    }
+
+    if (date) {
+      values.push(date);
+      query += ` AND DATE(e.start_time) = $${values.length}`;
+    }
+
+    query += ` ORDER BY e.start_time ASC`;
+
+    const result = await pool.query(query, values);
+    res.json(result.rows);
+
+  } catch (err) {
+    console.error("Get events error:", err);
+    res.status(500).json({ message: "Internal server error" });
+  }
 };
+
 exports.getEventById = async (req, res) => {
     try {
         const { id } = req.params;         // get the id from URL
@@ -54,6 +81,26 @@ exports.createEvent = async (req, res) => {
     const userId = req.user.sub;
     const { title, description, start_time, end_time, location, event_type, max_attendees } = req.body;
 
+    
+    if (!title || !start_time || !end_time) {
+        return res.status(400).json({
+            message: "Title, start time and end time are required"
+        });
+    }
+
+    if (new Date(start_time) >= new Date(end_time)) {
+        return res.status(400).json({
+            message: "End time must be after start time"
+        });
+    }
+
+    if (max_attendees && max_attendees < 1) {
+        return res.status(400).json({
+            message: "Max attendees must be greater than 0"
+        });
+    }
+    // ✅ VALIDATION ENDS HERE
+
     try {
         const result = await pool.query(
             `
@@ -63,6 +110,7 @@ exports.createEvent = async (req, res) => {
             `,
             [userId, title, description, start_time, end_time, location, event_type, max_attendees]
         );
+
         res.status(201).json(result.rows[0]);
     } catch (err) {
         console.error("Create event error:", err);
@@ -75,31 +123,51 @@ exports.registerForEvent = async (req, res) => {
     const { id } = req.params; // event_id
 
     try {
-        // Check capacity
-        const eventRes = await pool.query(`SELECT max_attendees FROM events WHERE event_id = $1`, [id]);
-        if (eventRes.rowCount === 0) return res.status(404).json({ message: "Event not found" });
+        
+        const eventRes = await pool.query(
+            `SELECT max_attendees FROM events WHERE event_id = $1`,
+            [id]
+        );
 
-        const max = eventRes.rows[0].max_attendees;
-        if (max) {
-             const countRes = await pool.query(`SELECT COUNT(*) FROM event_registrations WHERE event_id = $1`, [id]);
-             if (parseInt(countRes.rows[0].count) >= max) {
-                 return res.status(409).json({ message: "Event is full" });
-             }
+        if (eventRes.rowCount === 0) {
+            return res.status(404).json({ message: "Event not found" });
         }
 
-        await pool.query(
-            `INSERT INTO event_registrations (event_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+        const max = eventRes.rows[0].max_attendees;
+
+        if (max) {
+            const countRes = await pool.query(
+                `SELECT COUNT(*) FROM event_registrations WHERE event_id = $1`,
+                [id]
+            );
+
+            if (parseInt(countRes.rows[0].count) >= max) {
+                return res.status(409).json({ message: "Event is full" });
+            }
+        }
+
+        const result = await pool.query(
+            `INSERT INTO event_registrations (event_id, user_id)
+             VALUES ($1, $2)
+             ON CONFLICT DO NOTHING`,
             [id, userId]
         );
+
+        
+        if (result.rowCount === 0) {
+            return res.status(409).json({ message: "Already registered" });
+        }
         res.status(200).json({ message: "Registered successfully" });
+
     } catch (err) {
         console.error("Register event error:", err);
         res.status(500).json({ message: "Internal server error" });
     }
 };
+
 exports.unregisterFromEvent = async (req, res) => {
     const eventId = req.params.id;
-    const userId = req.user.id; // from requireAuth
+    const userId = req.user.sub; // from requireAuth
 
     try {
         // Check if registration exists
@@ -194,7 +262,15 @@ exports.saveEvent = async (req, res) => {
     const eventId = req.params.id;
 
     try {
-        // Insert into event_saves, ignore if already saved
+        const event = await pool.query(
+            "SELECT 1 FROM events WHERE event_id = $1",
+            [eventId]
+        );
+
+        if (event.rowCount === 0) {
+            return res.status(404).json({ message: "Event not found" });
+        }
+
         await pool.query(
             `
             INSERT INTO event_saves (user_id, event_id)
@@ -205,17 +281,26 @@ exports.saveEvent = async (req, res) => {
         );
 
         res.status(201).json({ message: "Event saved successfully" });
+
     } catch (err) {
         console.error("Save event error:", err);
         res.status(500).json({ message: "Internal server error" });
     }
 };
-
 exports.unsaveEvent = async (req, res) => {
     const userId = req.user.sub;
     const eventId = req.params.id;
 
     try {
+        const event = await pool.query(
+            "SELECT 1 FROM events WHERE event_id = $1",
+            [eventId]
+        );
+
+        if (event.rowCount === 0) {
+            return res.status(404).json({ message: "Event not found" });
+        }
+
         const result = await pool.query(
             `
             DELETE FROM event_saves
@@ -229,6 +314,7 @@ exports.unsaveEvent = async (req, res) => {
         }
 
         res.json({ message: "Event removed from saved list" });
+
     } catch (err) {
         console.error("Unsave event error:", err);
         res.status(500).json({ message: "Internal server error" });

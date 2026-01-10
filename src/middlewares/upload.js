@@ -18,3 +18,53 @@ const storage = new CloudinaryStorage({
 const upload = multer({ storage });
 
 module.exports = upload;
+const resumeStorage = new CloudinaryStorage({
+  cloudinary,
+  params: {
+    folder: "resumes",
+    resource_type: "raw",  // IMPORTANT for PDF/DOC
+    public_id: () => `resume-${Date.now()}`,
+  },
+});
+
+const uploadResume = multer({
+  storage: resumeStorage,
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB
+  fileFilter: (req, file, cb) => {
+    const allowed = [
+      "application/pdf",
+      "application/msword",
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    ];
+
+    if (!allowed.includes(file.mimetype)) {
+      return cb(new Error("Only PDF/DOC/DOCX allowed"));
+    }
+
+    cb(null, true);
+  }
+});
+module.exports.uploadResume = uploadResume;
+// --- Profile Avatar Upload ---
+const avatarStorage = new CloudinaryStorage({
+  cloudinary,
+  params: {
+    folder: "avatars",
+    resource_type: "image", // only images
+    public_id: () => `avatar-${Date.now()}`,
+  },
+});
+
+const uploadAvatar = multer({
+  storage: avatarStorage,
+  limits: { fileSize: 2 * 1024 * 1024 }, // 2MB limit
+  fileFilter: (req, file, cb) => {
+    const allowed = ["image/jpeg", "image/png", "image/webp"];
+    if (!allowed.includes(file.mimetype)) {
+      return cb(new Error("Only JPEG/PNG/WebP allowed"));
+    }
+    cb(null, true);
+  },
+});
+module.exports.uploadAvatar = uploadAvatar;
+
