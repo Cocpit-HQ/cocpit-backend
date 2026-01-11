@@ -3,6 +3,7 @@ const pool = require("../db/pool");
 const { connected } = require("node:process");
 const { formatDistanceToNow } = require('date-fns');
 const timeAgo = require("./../utils/timeAgo")
+const { getIO } = require("../utils/socket");
 
 // Follow another user
 exports.followUser = async (req, res) => {
@@ -367,13 +368,13 @@ exports.getMyConnections = async (req, res) => {
                 join users u on c.connected_user_id = u.user_id where c.user_id = $1`, [userId])
 
         const formattedConnections = result.rows.map(row => {
-          const timeAgo = formatDistanceToNow(new Date(row.updated_at), {
+            const timeAgo = formatDistanceToNow(new Date(row.updated_at), {
                 addSuffix: true
             }).replace(/^about\s+/i, '');
 
             return {
                 ...row,
-                timeAgo: timeAgo            
+                timeAgo: timeAgo
             }
         });
 
@@ -451,7 +452,7 @@ WHERE cp.user_id = $1;
         }
 
         const conversationsWithUnread = result.rows.map(c => ({
-              ...c,
+            ...c,
             timeAgo: timeAgo(c.updated_at),
             unread_count: unreadMap[c.conversation_id] || 0
 
@@ -486,7 +487,7 @@ exports.deleteConversation = async (req, res) => {
             return res.status(404).json({ message: "Conversation not found or access denied" });
         }
 
-        res.status(200).json({ message: "Conversation deleted successfully" ,userId: userId,conversationId: conversationId});
+        res.status(200).json({ message: "Conversation deleted successfully", userId: userId, conversationId: conversationId });
     } catch (err) {
         console.error("Delete conversation error:", err);
         res.status(500).json({ message: "Internal server error" });
@@ -543,6 +544,14 @@ exports.sendMessage = async (req, res) => {
             [conversationId]
         );
         await pool.query('COMMIT');
+        const io = getIO();
+        io.to(`user_${targetUserId}`).emit("newMessage", msgRes.rows[0]);
+
+        io.to(`user_${targetUserId}`).emit("notification", {
+            type: "message",
+            from: senderId,
+            conversationId,
+        });
 
         res.status(201).json({
             conversationId,
@@ -594,6 +603,15 @@ exports.deleteMessage = async (req, res) => {
 
         if (result.rowCount === 0)
             return res.status(404).json({ message: "Message not found" });
+        const { conversation_id } = result.rows[0];
+
+        const io = getIO();
+
+        // 🔥 Notify all participants
+        io.to(`conversation_${conversation_id}`).emit("messageDeleted", {
+            messageId: message_id,
+            conversationId: conversation_id,
+        });
 
         res.json({ message: "Message deleted successfully" });
     } catch (err) {
@@ -619,21 +637,33 @@ exports.getNotifications = async (req, res) => {
 
 // Mark a notification as read
 exports.markNotificationRead = async (req, res) => {
-    const userId = req.user.sub;
-    const { id } = req.params;
+  const userId = req.user.sub;
+  const { id } = req.params;
 
-    try {
-        const result = await pool.query(
-            `UPDATE notifications SET is_read = TRUE WHERE notification_id = $1 AND user_id = $2 RETURNING *`,
-            [id, userId]
-        );
+  try {
+    const result = await pool.query(
+      `UPDATE notifications 
+       SET is_read = TRUE 
+       WHERE notification_id = $1 AND user_id = $2 
+       RETURNING *`,
+      [id, userId]
+    );
 
-        if (result.rowCount === 0)
-            return res.status(404).json({ message: "Notification not found" });
+    if (result.rowCount === 0)
+      return res.status(404).json({ message: "Notification not found" });
 
-        res.json({ message: "Notification marked as read", notification: result.rows[0] });
-    } catch (err) {
-        console.error("Mark notification read error:", err);
-        res.status(500).json({ message: "Internal server error" });
-    }
+    const io = getIO();
+
+    io.to(`user_${userId}`).emit("notificationRead", {
+      notificationId: id,
+    });
+
+    res.json({
+      message: "Notification marked as read",
+      notification: result.rows[0],
+    });
+  } catch (err) {
+    res.status(500).json({ message: "Internal server error" });
+  }
 };
+
