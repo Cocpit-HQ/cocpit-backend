@@ -1,37 +1,5 @@
-// const { Server } = require("socket.io");
-
-// let io;
-
-// module.exports.initSocket = (httpServer) => {
-//   io = new Server(httpServer, {
-//     cors: {
-//       origin: "*", // set frontend URL in production
-//     },
-//   });
-
-//   io.on("connection", (socket) => {
-//     console.log("User connected:", socket.id);
-
-//     // Join personal room (userId)
-//     socket.on("join", (userId) => {
-//       socket.join(`user_${userId}`);
-//     });
-
-//     socket.on("disconnect", () => {
-//       console.log("User disconnected:", socket.id);
-//     });
-//   });
-
-//   return io;
-// };
-
-// module.exports.getIO = () => {
-//   if (!io) throw new Error("Socket.io not initialized");
-//   return io;
-// };
-
 const { Server } = require("socket.io");
-const jwt = require("jsonwebtoken");
+const { verifyAccessToken } = require("./jwt");
 
 let io;
 const onlineUsers = new Set();
@@ -41,16 +9,22 @@ module.exports.initSocket = (httpServer) => {
     cors: { origin: "*" },
   });
 
-  // 🔐 JWT AUTH FOR SOCKET
-  io.use((socket, next) => {
+  // JWT AUTH FOR SOCKET (ACCESS TOKEN ONLY)
+  io.use(async (socket, next) => {
     const token = socket.handshake.auth?.token;
     if (!token) return next(new Error("Authentication error"));
 
     try {
-      const decoded = jwt.verify(token, process.env.JWT_SECRET);
+      // verifyAccessToken already knows the secret internally
+      const decoded = await verifyAccessToken(token);
+
       socket.userId = decoded.sub;
+      socket.sessionId = decoded.sid;
+      socket.roles = decoded.roles || [];
+
       next();
-    } catch {
+    } catch (err) {
+      console.error("Socket auth error:", err.message);
       next(new Error("Authentication error"));
     }
   });
@@ -59,7 +33,7 @@ module.exports.initSocket = (httpServer) => {
     const userId = socket.userId;
     console.log("User connected:", userId);
 
-    // ✅ Personal room (for notifications, presence)
+    // Personal room (notifications, presence)
     socket.join(`user_${userId}`);
     onlineUsers.add(userId);
 
@@ -68,16 +42,14 @@ module.exports.initSocket = (httpServer) => {
       status: "online",
     });
 
-    // ✅ Conversation room (for messages, deletes, typing)
+    // Conversation room (messages, typing, deletes)
     socket.on("joinConversation", (conversationId) => {
       socket.join(`conversation_${conversationId}`);
-      console.log(
-        `User ${userId} joined conversation ${conversationId}`
-      );
+      console.log(`User ${userId} joined conversation ${conversationId}`);
     });
 
-    // ✍️ Typing indicator
-    socket.on("typing", ({ receiverId, conversationId }) => {
+    //  Typing indicator
+    socket.on("typing", ({ conversationId }) => {
       io.to(`conversation_${conversationId}`).emit("isTyping", {
         senderId: userId,
         conversationId,
@@ -92,10 +64,12 @@ module.exports.initSocket = (httpServer) => {
 
     socket.on("disconnect", () => {
       onlineUsers.delete(userId);
+
       io.emit("userStatusChanged", {
         userId,
         status: "offline",
       });
+
       console.log("User disconnected:", userId);
     });
   });
@@ -105,5 +79,6 @@ module.exports.getIO = () => {
   if (!io) throw new Error("Socket.io not initialized");
   return io;
 };
+
 
 

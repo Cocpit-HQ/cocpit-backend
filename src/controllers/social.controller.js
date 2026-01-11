@@ -564,6 +564,41 @@ exports.sendMessage = async (req, res) => {
     }
 };
 
+exports.markConversationRead = async (req, res) => {
+  const userId = req.user.sub;
+  const { conversationId } = req.params;
+
+  try {
+    const result = await pool.query(
+      `
+      UPDATE messages
+      SET read_at = NOW()
+      WHERE conversation_id = $1
+        AND sender_id != $2
+        AND read_at IS NULL
+      RETURNING message_id
+      `,
+      [conversationId, userId]
+    );
+
+    // 🔔 Emit read receipt
+    const io = getIO();
+    io.to(`conversation_${conversationId}`).emit("messagesRead", {
+      conversationId,
+      readerId: userId,
+      messageIds: result.rows.map(r => r.message_id),
+    });
+
+    res.json({
+      message: "Messages marked as read",
+      count: result.rowCount,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "Internal server error" });
+  }
+};
+
 // Get all messages in a conversation
 exports.getMessages = async (req, res) => {
     const userId = req.user.sub;
