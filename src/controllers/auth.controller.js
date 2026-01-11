@@ -41,7 +41,6 @@ exports.register = async (req, res) => {
       [user.user_id, roleName]
     );
 
-    // 5. Create profile with accountType
     await pool.query(
       `INSERT INTO profiles (user_id, account_type) VALUES ($1, $2)`,
       [user.user_id, accountType]

@@ -171,7 +171,9 @@ exports.getPublicProfilePosts = async (req, res) => {
   try {
     const params = [userId];
     let idx = 2;
-    let whereClause = `WHERE p.author_id = $1`;
+    let whereClause = `WHERE p.author_id = $1
+  AND p.visibility = 'public'
+`;
 
     // ✅ Category filter (skip "All")
     if (category && category !== "All") {
