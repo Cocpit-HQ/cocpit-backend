@@ -41,6 +41,9 @@ router.delete("/conversations/:id", requireAuth, socialController.deleteConversa
 router.post("/messages", requireAuth, socialController.sendMessage);
 router.get("/conversations/:id/messages", requireAuth, socialController.getMessages);
 router.delete("/messages/:id", requireAuth, socialController.deleteMessage);
+router.patch("/conversations/:conversationId/read",requireAuth,socialController.markConversationRead
+);
+
 // router.patch("/messages/:id/read", requireAuth, socialController.markMessageRead);
 
 /* =====================================================
