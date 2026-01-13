@@ -3,7 +3,7 @@ const pool = require("../db/pool");
 const { connected } = require("node:process");
 const { formatDistanceToNow } = require('date-fns');
 const timeAgo = require("./../utils/timeAgo")
-const { getIO } = require("../utils/socket");
+const socketService = require("../services/socket.service");
 
 // Follow another user
 exports.followUser = async (req, res) => {
@@ -544,10 +544,10 @@ exports.sendMessage = async (req, res) => {
             [conversationId]
         );
         await pool.query('COMMIT');
-        const io = getIO();
-        io.to(`user_${targetUserId}`).emit("newMessage", msgRes.rows[0]);
 
-        io.to(`user_${targetUserId}`).emit("notification", {
+        // Notify target user via service
+        socketService.notifyUser(targetUserId, "newMessage", msgRes.rows[0]);
+        socketService.notifyUser(targetUserId, "notification", {
             type: "message",
             from: senderId,
             conversationId,
@@ -582,8 +582,7 @@ exports.markConversationRead = async (req, res) => {
     );
 
     // 🔔 Emit read receipt
-    const io = getIO();
-    io.to(`conversation_${conversationId}`).emit("messagesRead", {
+    socketService.notifyConversation(conversationId, "messagesRead", {
       conversationId,
       readerId: userId,
       messageIds: result.rows.map(r => r.message_id),
@@ -640,10 +639,8 @@ exports.deleteMessage = async (req, res) => {
             return res.status(404).json({ message: "Message not found" });
         const { conversation_id } = result.rows[0];
 
-        const io = getIO();
-
         // 🔥 Notify all participants
-        io.to(`conversation_${conversation_id}`).emit("messageDeleted", {
+        socketService.notifyConversation(conversation_id, "messageDeleted", {
             messageId: message_id,
             conversationId: conversation_id,
         });
@@ -687,9 +684,7 @@ exports.markNotificationRead = async (req, res) => {
     if (result.rowCount === 0)
       return res.status(404).json({ message: "Notification not found" });
 
-    const io = getIO();
-
-    io.to(`user_${userId}`).emit("notificationRead", {
+    socketService.notifyUser(userId, "notificationRead", {
       notificationId: id,
     });
 
