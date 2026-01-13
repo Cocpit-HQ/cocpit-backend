@@ -182,11 +182,9 @@ exports.getMyProfile = async (req, res) => {
   return exports.getProfile(req, res);
 }
 // Upload or replace profile picture
-// Upload or replace profile picture
 exports.uploadOrReplaceAvatar = async (req, res) => {
   try {
     const userId = req.user.sub;
-    console.log("req.file:", req.file);
 
     if (!req.file) {
       return res.status(400).json({ message: "No file uploaded" });
@@ -246,7 +244,6 @@ exports.deleteAvatar = async (req, res) => {
     res.status(500).json({ message: "Internal server error" });
   }
 };
-
 
 // GET /profile/identity
 exports.getIdentity = async (req, res) => {

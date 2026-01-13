@@ -17,13 +17,14 @@ const storage = new CloudinaryStorage({
 
 const upload = multer({ storage });
 
-module.exports = upload;
+
+// --- Resume Upload ---
 const resumeStorage = new CloudinaryStorage({
   cloudinary,
   params: {
     folder: "resumes",
-    resource_type: "raw",  // IMPORTANT for PDF/DOC
-    public_id: () => `resume-${Date.now()}`,
+    resource_type: "raw", // IMPORTANT for PDF/DOC
+    public_id: (req, file) => `resume-${req.user.id}-${Date.now()}`,
   },
 });
 
@@ -34,7 +35,7 @@ const uploadResume = multer({
     const allowed = [
       "application/pdf",
       "application/msword",
-      "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     ];
 
     if (!allowed.includes(file.mimetype)) {
@@ -42,16 +43,16 @@ const uploadResume = multer({
     }
 
     cb(null, true);
-  }
+  },
 });
-module.exports.uploadResume = uploadResume;
+
 // --- Profile Avatar Upload ---
 const avatarStorage = new CloudinaryStorage({
   cloudinary,
   params: {
     folder: "avatars",
     resource_type: "image", // only images
-    public_id: () => `avatar-${Date.now()}`,
+    public_id: (req, file) => `avatar-${req.user.id}-${Date.now()}`,
   },
 });
 
@@ -66,5 +67,10 @@ const uploadAvatar = multer({
     cb(null, true);
   },
 });
-module.exports.uploadAvatar = uploadAvatar;
+
+module.exports = {
+  upload,
+  uploadResume,
+  uploadAvatar,
+};
 
