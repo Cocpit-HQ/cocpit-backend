@@ -5,16 +5,18 @@ const { requireAuth } = require("../middlewares/auth.middleware");
 const { requireRoles } = require("../middlewares/role.middleware");
 
 // Public routes (or authenticated but open to all)
+//search
+// Get all jobs
 router.get("/", jobController.getAllJobs); // /api/jobs
 router.get("/offers", jobController.getJobOffers);
 
-// Get jobs posted by logged-in recruiter
-router.get("/my",requireAuth,requireRoles(['Recruiter', 'Admin']),jobController.getMyJobs);
+// Get jobs posted by logged-in all user
+router.get("/my",requireAuth,jobController.getMyJobs);//
 
-router.get("/applications/me", requireAuth, jobController.getMyApplications);
+router.get("/applications/me", requireAuth, jobController.getMyApplications); // in progress, applied, in past
 router.get("/:id", jobController.getJobById);
 // Protected routes
-router.post("/", requireAuth, requireRoles(['Recruiter', 'Admin']), jobController.createJob);
+router.post("/", requireAuth, jobController.createJob); //
 router.post("/:id/apply", requireAuth, jobController.applyJob);
 
 router.post("/:id/save",requireAuth,jobController.saveJob); //save job

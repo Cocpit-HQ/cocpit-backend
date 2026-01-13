@@ -1,5 +1,5 @@
 const pool = require("../db/pool");
-
+const current_user = require("../controllers/profile.controller")
 /**
  * GET /api/users/search
  * Purpose: Real-time user discovery
@@ -72,6 +72,12 @@ exports.searchUsers = async (req, res) => {
  */
 exports.getUserProfile = async (req, res) => {
   const { id } = req.params;
+  const currentUserId = req.user.sub;
+
+  if(id === currentUserId){
+   return current_user.getMyProfile(req, res);
+  }
+
 
   // Basic validation for UUID
   const uuidRegex =
@@ -95,6 +101,7 @@ exports.getUserProfile = async (req, res) => {
         p.open_to,
         p.availability,
         p.work_preference
+       
       FROM users u
       LEFT JOIN profiles p ON u.user_id = p.user_id
       WHERE u.user_id = $1
@@ -136,12 +143,21 @@ exports.getUserProfile = async (req, res) => {
     `;
     const skillsResult = await pool.query(skillsQuery, [id]);
 
+    //5.is Following 
+    const isFollowingQuery = ` select count(*) from followers 
+        where (follower_id = $1 and following_id = $2 )
+              or 
+              (follower_id = $2 and following_id = $1) `;
+    const isFollowingResult = await pool.query(isFollowingQuery, [id,currentUserId]);
+
+
     // Assemble response
     const responseData = {
       ...user,
       experiences: experiencesResult.rows,
       educations: educationsResult.rows,
       skills: skillsResult.rows.map((row) => row.name),
+      isFollowing : isFollowingResult.rows[0].count > 0 ? true : false,
     };
 
     return res.status(200).json(responseData);

@@ -76,9 +76,8 @@ exports.getJobById = async (req, res) => {
   }
 };
 
-
 exports.createJob = async (req, res) => {
-  const recruiterId = req.user.sub;
+  const userId = req.user.sub;
 
   const {
     title,
@@ -91,6 +90,7 @@ exports.createJob = async (req, res) => {
     company_type,
     experience_level,
     about_company,
+    industry,
     easy_apply = false,
     actively_hiring = false,
     skills = []
@@ -109,17 +109,17 @@ exports.createJob = async (req, res) => {
         recruiter_id, title, company_name, location,
         description, salary_range, job_type,
         work_mode, company_type, experience_level,
-        about_company, easy_apply, actively_hiring
+        about_company,industry, easy_apply, actively_hiring
       )
       VALUES
-      ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+      ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
       RETURNING *
       `,
       [
-        recruiterId, title, company_name, location,
+        userId, title, company_name, location,
         description, salary_range, job_type,
         work_mode, company_type, experience_level,
-        about_company, easy_apply, actively_hiring
+        about_company,industry, easy_apply, actively_hiring
       ]
     );
 
@@ -166,7 +166,6 @@ exports.createJob = async (req, res) => {
   }
 };
 
-
 exports.applyJob = async (req, res) => {
   const { id } = req.params; // job_id
   const userId = req.user.sub;
@@ -211,6 +210,7 @@ exports.applyJob = async (req, res) => {
     res.status(500).json({ message: "Internal server error" });
   }
 };
+
 exports.getJobOffers = async (req, res) => {
   const { title, location } = req.query;
   const userId = req.user?.sub; // optional, if user is logged in
@@ -291,7 +291,6 @@ exports.saveJob = async (req, res) => {
   }
 };
 
-
 exports.unsaveJob = async (req, res) => {
   const userId = req.user.sub;
   const jobId = req.params.id;
@@ -341,25 +340,72 @@ exports.getMySavedJobs = async (req, res) => {
 
 exports.getMyApplications = async (req, res) => {
   const userId = req.user.sub;
+  const status = req.query.status?.toLowerCase();
+
+  const allowedStatus = ['applied', 'in progress', 'in past', 'saved'];
+
+  if (!allowedStatus.includes(status)) {
+    return res.status(400).json({ message: "Invalid status" });
+  }
+
+  if (status === 'saved') {
+    return exports.getMySavedJobs(req, res);
+  }
 
   try {
-    const result = await pool.query(
-      `
-      SELECT ja.*, j.title, j.company_name, j.location, j.work_mode
-      FROM job_applications ja
-      JOIN jobs j ON ja.job_id = j.job_id
-      WHERE ja.applicant_id = $1
-      ORDER BY ja.applied_at DESC
-      `,
-      [userId]
-    );
+    let result;
 
-    res.json(result.rows);
+    if (status === 'in past') {
+      // Closed / inactive jobs
+      result = await pool.query(
+        `
+        SELECT ja.*, j.title, j.company_name, j.location, j.work_mode
+        FROM job_applications ja
+        JOIN jobs j ON ja.job_id = j.job_id
+        WHERE ja.applicant_id = $1
+          AND j.is_active = false
+        ORDER BY ja.applied_at DESC
+        `,
+        [userId]
+      );
+
+    } else if (status === 'in progress') {
+      // Under Review + Interview
+      result = await pool.query(
+        `
+        SELECT ja.*, j.title, j.company_name, j.location, j.work_mode
+        FROM job_applications ja
+        JOIN jobs j ON ja.job_id = j.job_id
+        WHERE ja.applicant_id = $1
+          AND ja.current_status = ANY($2)
+        ORDER BY ja.applied_at DESC
+        `,
+        [userId, ['Under Review', 'Interview']]
+      );
+
+    } else {
+      // Applied
+      result = await pool.query(
+        `
+        SELECT ja.*, j.title, j.company_name, j.location, j.work_mode
+        FROM job_applications ja
+        JOIN jobs j ON ja.job_id = j.job_id
+        WHERE ja.applicant_id = $1
+          AND ja.current_status = 'Applied'
+        ORDER BY ja.applied_at DESC
+        `,
+        [userId]
+      );
+    }
+
+    return res.json(result.rows);
+
   } catch (err) {
     console.error("Get my applications error:", err);
     res.status(500).json({ message: "Internal server error" });
   }
 };
+
 exports.getMyJobs = async (req, res) => {
   const recruiterId = req.user.sub; // logged-in recruiter
   const { title, location, work_mode, company_type } = req.query;

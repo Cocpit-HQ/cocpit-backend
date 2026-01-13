@@ -295,6 +295,7 @@ CREATE TABLE jobs (
   company_type job_company_type, -- Startup | MNC etc.
   experience_level TEXT,
   about_company TEXT,
+  industry TEXT NOT NULL , --new field
   easy_apply BOOLEAN DEFAULT false,
   actively_hiring BOOLEAN DEFAULT false,
   match_score INTEGER, -- optional / mock
