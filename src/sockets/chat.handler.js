@@ -5,29 +5,45 @@ module.exports.registerChatHandlers = (io, socket) => {
   const userId = socket.userId;
 
   // Join Conversation with Security Check
-  socket.on("joinConversation", async (conversationId) => {
+  socket.on("joinConversation", async (payload) => {
+  try {
+    const conversationId =
+      typeof payload === "string"
+        ? payload
+        : payload?.conversationId;
+
     if (!conversationId) return;
 
-    try {
-      // Validate participation in DB
-      const result = await pool.query(
-        "SELECT 1 FROM conversation_participants WHERE conversation_id = $1 AND user_id = $2",
-        [conversationId, userId]
-      );
+    // Optional but strongly recommended UUID validation
+    const uuidRegex =
+      /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
 
-      if (result.rowCount > 0) {
-        const room = getConversationRoom(conversationId);
-        socket.join(room);
-        console.log(`User ${userId} securely joined conversation ${conversationId}`);
-      } else {
-        console.warn(`Unauthorized join attempt by ${userId} for conversation ${conversationId}`);
-        // Optionally emit an error event back to client
-        socket.emit("error", { message: "Unauthorized access to conversation" });
-      }
-    } catch (err) {
-      console.error("Error joining conversation:", err);
+    if (!uuidRegex.test(conversationId)) {
+      socket.emit("error", { message: "Invalid conversation ID" });
+      return;
     }
-  });
+
+    const result = await pool.query(
+      `
+      SELECT 1 
+      FROM conversation_participants 
+      WHERE conversation_id = $1 AND user_id = $2
+      `,
+      [conversationId, userId]
+    );
+
+    if (result.rowCount > 0) {
+      const room = getConversationRoom(conversationId);
+      socket.join(room);
+      console.log(`User ${userId} joined conversation ${conversationId}`);
+    } else {
+      socket.emit("error", { message: "Unauthorized access to conversation" });
+    }
+  } catch (err) {
+    console.error("Error joining conversation:", err);
+  }
+});
+
 
   // Typing Indicator
   socket.on("typing", ({ conversationId }) => {

@@ -1,42 +1,69 @@
 const pool = require("../db/pool");
-const socketService = require("../services/socket.service");
+// const pool = require("../config/db");
+const SocketService = require("../services/socket.service");
 
-async function getRelatedUsers(userId) {
-  try {
-    // 1. Friends from 'connections' (bidirectional)
-    // - If I am user_id, my friend is connected_user_id
-    // - If I am connected_user_id, my friend is user_id
-    // 2. Followers (people who follow me)
-    // - If I am following_id, the follower is follower_id
+/**
+ * Fetch followers + following users for presence updates
+ */
+async function getRelatedUserIds(userId) {
+  const followersRes = await pool.query(
+    `SELECT follower_id FROM followers WHERE following_id = $1`,
+    [userId]
+  );
 
-    const query = `
-      SELECT connected_user_id AS user_id FROM connections WHERE user_id = $1
-      UNION
-      SELECT user_id FROM connections WHERE connected_user_id = $1
-      UNION
-      SELECT follower_id AS user_id FROM followers WHERE following_id = $1
-    `;
+  const followingRes = await pool.query(
+    `SELECT following_id FROM followers WHERE follower_id = $1`,
+    [userId]
+  );
 
-    const { rows } = await pool.query(query, [userId]);
-    return rows.map((r) => r.user_id);
-  } catch (err) {
-    console.error("Error fetching related users for status update:", err);
-    return [];
-  }
+  const ids = new Set();
+
+  followersRes.rows.forEach(r => ids.add(r.follower_id));
+  followingRes.rows.forEach(r => ids.add(r.following_id));
+
+  return [...ids];
 }
 
+/**
+ * User comes online
+ */
 module.exports.handleConnection = async (socket) => {
-  const userId = socket.userId;
-  const relatedUserIds = await getRelatedUsers(userId);
+  try {
+    const recipientIds = await getRelatedUserIds(socket.userId);
 
-  // Notify friends that I am online
-  socketService.broadcastStatus(userId, "online", relatedUserIds);
+    console.log("🟢 STATUS ONLINE:", {
+      userId: socket.userId,
+      recipients: recipientIds,
+    });
+
+    SocketService.broadcastStatus(
+      socket.userId,
+      "online",
+      recipientIds
+    );
+  } catch (err) {
+    console.error("Status connect error:", err);
+  }
 };
 
+/**
+ * User goes offline
+ */
 module.exports.handleDisconnect = async (socket) => {
-  const userId = socket.userId;
-  const relatedUserIds = await getRelatedUsers(userId);
+  try {
+    const recipientIds = await getRelatedUserIds(socket.userId);
 
-  // Notify friends that I am offline
-  socketService.broadcastStatus(userId, "offline", relatedUserIds);
+    console.log("🔴 STATUS OFFLINE:", {
+      userId: socket.userId,
+      recipients: recipientIds,
+    });
+
+    SocketService.broadcastStatus(
+      socket.userId,
+      "offline",
+      recipientIds
+    );
+  } catch (err) {
+    console.error("Status disconnect error:", err);
+  }
 };
