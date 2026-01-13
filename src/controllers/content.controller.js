@@ -569,8 +569,10 @@ exports.updatePostById = async (req, res) => {
                 [category]
             );
             categoryId = catRes.rows[0]?.category_id;
-            updates.push(`category_id = $${index++}`);
-            values.push(categoryId);
+            if (catRes.rows.length > 0) {
+                updates.push(`category_id = $${index++}`);
+                values.push(catRes.rows[0].category_id);
+            }
         }
 
         if (updates.length === 0 && !media_urls) {
@@ -578,19 +580,19 @@ exports.updatePostById = async (req, res) => {
         }
 
         // 3. Update main post content
-     if (updates.length > 0) {
-    // Add the ID and UserID to the values array
-    values.push(postId);
-    const postIndex = values.length; // The index of postId
-    values.push(userId);
-    const userIndex = values.length; // The index of userId
+        if (updates.length > 0) {
+            // Add the ID and UserID to the values array
+            values.push(postId);
+            const postIndex = values.length; // The index of postId
+            values.push(userId);
+            const userIndex = values.length; // The index of userId
 
-    const updateQuery = `
+            const updateQuery = `
         UPDATE posts
         SET ${updates.join(", ")}, updated_at = NOW()
         WHERE post_id = $${postIndex} AND author_id = $${userIndex}
     `;
-    const postUpdate = await client.query(updateQuery, values);
+            const postUpdate = await client.query(updateQuery, values);
 
             if (postUpdate.rowCount === 0) {
                 await client.query("ROLLBACK");
