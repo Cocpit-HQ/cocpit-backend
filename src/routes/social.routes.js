@@ -49,8 +49,8 @@ router.patch("/conversations/:conversationId/read",requireAuth,socialController.
 /* =====================================================
    NOTIFICATIONS
    ===================================================== */
-// router.get("/notifications", requireAuth, socialController.getNotifications);
-// router.patch("/notifications/:id/read", requireAuth, socialController.markNotificationRead);
+ router.get("/notifications", requireAuth, socialController.getNotifications);
+ router.patch("/notifications/:id/read", requireAuth, socialController.markNotificationRead);
 // router.patch("/notifications/read-all", requireAuth, socialController.markAllNotificationsRead);
 
 module.exports = router;

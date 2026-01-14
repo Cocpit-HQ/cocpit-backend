@@ -765,4 +765,43 @@ exports.getMySessionCount = async (req, res) => {
     });
   }
 };
+exports.removeSession = async (req, res) => {
+  try {
+    const userId = req.user.sub;      // from access token
+    const { sessionId } = req.params; // session to remove
+
+    if (!sessionId) {
+      return res.status(400).json({
+        message: "sessionId is required"
+      });
+    }
+
+    const result = await pool.query(
+      `
+      DELETE FROM refresh_tokens
+      WHERE user_id = $1
+        AND session_id = $2
+      RETURNING session_id
+      `,
+      [userId, sessionId]
+    );
+
+    if (result.rowCount === 0) {
+      return res.status(404).json({
+        message: "Session not found"
+      });
+    }
+
+    return res.json({
+      message: "Session removed successfully",
+      removedSession: result.rows[0].session_id
+    });
+
+  } catch (err) {
+    console.error("Remove session error:", err);
+    res.status(500).json({
+      message: "Failed to remove session"
+    });
+  }
+};
 

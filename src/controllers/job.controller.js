@@ -279,6 +279,9 @@ exports.applyJob = async (req, res) => {
   const { id } = req.params; // job_id
   const userId = req.user.sub;
 
+  // Take other fields from request body
+  const { full_name, email, phone, cover_note } = req.body;
+
   try {
     // Check if job exists
     const jobCheck = await pool.query(`SELECT 1 FROM jobs WHERE job_id = $1`, [id]);
@@ -295,14 +298,19 @@ exports.applyJob = async (req, res) => {
       return res.status(409).json({ message: "Already applied to this job" });
     }
 
+    // Resume file URL from Cloudinary
+    if (!req.file) {
+      return res.status(400).json({ message: "Resume is required" });
+    }
+    const resume_url = req.file.path;
+
     // Create application
     const appResult = await pool.query(
-      `
-      INSERT INTO job_applications (job_id, applicant_id)
-      VALUES ($1, $2)
-      RETURNING application_id
-      `,
-      [id, userId]
+      `INSERT INTO job_applications 
+       (job_id, applicant_id, full_name, email, phone, resume_url, cover_note)
+       VALUES ($1,$2,$3,$4,$5,$6,$7)
+       RETURNING application_id`,
+      [id, userId, full_name, email, phone, resume_url, cover_note]
     );
 
     const appId = appResult.rows[0].application_id;

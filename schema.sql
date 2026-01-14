@@ -17,6 +17,7 @@ CREATE TABLE users (
   email TEXT UNIQUE NOT NULL,
   password_hash TEXT NOT NULL,       -- Hashed via bcrypt/argon2 in app
   full_name TEXT NOT NULL,
+  mobile_number TEXT,
   headline TEXT,
   avatar_url TEXT,
   job_title TEXT,
@@ -26,7 +27,8 @@ CREATE TABLE users (
   location TEXT,
   about_text TEXT,
   created_at TIMESTAMPTZ DEFAULT now(),
-  updated_at TIMESTAMPTZ DEFAULT now()
+  updated_at TIMESTAMPTZ DEFAULT now(),
+  CONSTRAINT mobile_format CHECK (mobile_number ~ '^[0-9]{10}$')
 );
 
 
@@ -318,6 +320,11 @@ CREATE TABLE job_applications (
   application_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   job_id UUID REFERENCES jobs(job_id) ON DELETE CASCADE,
   applicant_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
+  full_name TEXT NOT NULL,
+  email TEXT NOT NULL,
+  phone TEXT,
+  resume_url TEXT NOT NULL,
+  cover_note TEXT,
   current_status TEXT NOT NULL DEFAULT 'Applied',
   applied_at TIMESTAMPTZ DEFAULT now(),
   UNIQUE(job_id, applicant_id)
@@ -351,18 +358,31 @@ CREATE TABLE events (
   description TEXT,
   start_time TIMESTAMPTZ NOT NULL,
   end_time TIMESTAMPTZ,
-  location TEXT,
   event_type event_type NOT NULL,
+  location TEXT,
+  virtual_link TEXT,
+  virtual_link_visible_at TIMESTAMPTZ,
+  banner_url TEXT,
   max_attendees INTEGER,
+  waitlist_enabled BOOLEAN DEFAULT false,
+  registration_deadline TIMESTAMPTZ,
   created_at TIMESTAMPTZ DEFAULT now()
 );
+
 
 CREATE TABLE event_registrations (
   event_id UUID REFERENCES events(event_id) ON DELETE CASCADE,
   user_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  email TEXT NOT NULL,
+  mobile_number TEXT NOT NULL,
+  company_name TEXT,
+  job_title TEXT,
   registered_at TIMESTAMPTZ DEFAULT now(),
-  PRIMARY KEY (event_id, user_id)
+  PRIMARY KEY (event_id, user_id),
+  CONSTRAINT mobile_format CHECK (mobile_number ~ '^[0-9]{10}$')
 );
+
 CREATE TABLE event_saves (
   user_id UUID NOT NULL
     REFERENCES users(user_id) ON DELETE CASCADE,
