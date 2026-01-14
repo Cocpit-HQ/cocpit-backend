@@ -68,3 +68,16 @@ const uploadAvatar = multer({
 });
 module.exports.uploadAvatar = uploadAvatar;
 
+// Event Banner Upload
+const eventBannerStorage = new CloudinaryStorage({
+  cloudinary,
+  params: {
+    folder: "events",       // store event banners separately
+    resource_type: "image", // only images for banner
+    public_id: (req, file) => `banner-${Date.now()}-${file.originalname}`
+  }
+});
+
+const uploadEventBanner = multer({ storage: eventBannerStorage, limits: { fileSize: 5 * 1024 * 1024 } }); // 5MB limit
+
+module.exports.uploadEventBanner = uploadEventBanner;

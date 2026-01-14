@@ -4,9 +4,13 @@ exports.getEvents = async (req, res) => {
   const { location, type, date } = req.query;
 
   try {
-
-    if (date && isNaN(Date.parse(date))) {
-      return res.status(400).json({ message: "Invalid date format" });
+    if (date) {
+        const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+        if (!dateRegex.test(date)) {
+            return res.status(400).json({
+                message: "Date must be in YYYY-MM-DD format"
+            });
+        }
     }
 
     let query = `
@@ -43,7 +47,6 @@ exports.getEvents = async (req, res) => {
     res.status(500).json({ message: "Internal server error" });
   }
 };
-
 exports.getEventById = async (req, res) => {
     try {
         const { id } = req.params;         // get the id from URL
@@ -76,101 +79,125 @@ exports.getEventById = async (req, res) => {
         res.status(500).json({ message: "Internal server error" });
     }
 };
-
 exports.createEvent = async (req, res) => {
-    const userId = req.user.sub;
-    const { title, description, start_time, end_time, location, event_type, max_attendees } = req.body;
+  try {
+    const { title, description, eventType, virtualLink, location, startTime, endTime, maxAttendees, registrationDeadline, waitlist } = req.body;
+    if (!title || !description || !startTime) return res.status(400).json({ message: "Please fill all required fields" });
+    if (eventType === "Online" && !virtualLink) return res.status(400).json({ message: "Virtual link is required for online events" });
+    const bannerUrl = req.file ? req.file.path : null;
 
-    
-    if (!title || !start_time || !end_time) {
-        return res.status(400).json({
-            message: "Title, start time and end time are required"
-        });
-    }
+    const result = await pool.query(
+      `INSERT INTO events (
+        title,
+        description,
+        event_type,
+        location,
+        virtual_link,
+        start_time,
+        end_time,
+        banner_url,
+        max_attendees,
+        waitlist_enabled,
+        registration_deadline,
+        organizer_id
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+      RETURNING event_id`,
+      [
+        title,
+        description,
+        eventType,
+        eventType === "InPerson" ? location : null,
+        eventType === "Online" ? virtualLink : null,
+        startTime,
+        endTime,
+        bannerUrl,
+        maxAttendees ? Number(maxAttendees) : null,
+        Boolean(waitlist),
+        registrationDeadline,
+        req.user.user_id
+      ]
+    );
+    const eventId = result.rows[0].event_id;
 
-    if (new Date(start_time) >= new Date(end_time)) {
-        return res.status(400).json({
-            message: "End time must be after start time"
-        });
-    }
-
-    if (max_attendees && max_attendees < 1) {
-        return res.status(400).json({
-            message: "Max attendees must be greater than 0"
-        });
-    }
-    // ✅ VALIDATION ENDS HERE
-
-    try {
-        const result = await pool.query(
-            `
-            INSERT INTO events (organizer_id, title, description, start_time, end_time, location, event_type, max_attendees)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-            RETURNING event_id
-            `,
-            [userId, title, description, start_time, end_time, location, event_type, max_attendees]
-        );
-
-        res.status(201).json(result.rows[0]);
-    } catch (err) {
-        console.error("Create event error:", err);
-        res.status(500).json({ message: "Internal server error" });
-    }
+    res.status(201).json({ message: "Event created successfully", eventId });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: "Error creating event" });
+  }
 };
-
 exports.registerForEvent = async (req, res) => {
-    const userId = req.user.sub;
-    const { id } = req.params; // event_id
+  const userId = req.user.sub;
+  const eventId = req.params.id;
 
-    try {
-        
-        const eventRes = await pool.query(
-            `SELECT max_attendees FROM events WHERE event_id = $1`,
-            [id]
-        );
+  const { name, email, mobile_number, company_name, job_title } = req.body;
 
-        if (eventRes.rowCount === 0) {
-            return res.status(404).json({ message: "Event not found" });
-        }
+  
+  if (!name || !email || !mobile_number) {
+    return res.status(400).json({
+      message: "Name, email, and mobile number are required",
+    });
+  }
 
-        const max = eventRes.rows[0].max_attendees;
+  try {
+    const check = await pool.query(
+      `SELECT 1 FROM event_registrations 
+       WHERE event_id=$1 AND user_id=$2`,
+      [eventId, userId]
+    );
 
-        if (max) {
-            const countRes = await pool.query(
-                `SELECT COUNT(*) FROM event_registrations WHERE event_id = $1`,
-                [id]
-            );
-
-            if (parseInt(countRes.rows[0].count) >= max) {
-                return res.status(409).json({ message: "Event is full" });
-            }
-        }
-
-        const result = await pool.query(
-            `INSERT INTO event_registrations (event_id, user_id)
-             VALUES ($1, $2)
-             ON CONFLICT DO NOTHING`,
-            [id, userId]
-        );
-
-        
-        if (result.rowCount === 0) {
-            return res.status(409).json({ message: "Already registered" });
-        }
-        res.status(200).json({ message: "Registered successfully" });
-
-    } catch (err) {
-        console.error("Register event error:", err);
-        res.status(500).json({ message: "Internal server error" });
+    if (check.rowCount > 0) {
+      return res.status(400).json({
+        message: "You are already registered"
+      });
     }
-};
+     const countRes = await pool.query(
+      `SELECT COUNT(*) 
+       FROM event_registrations 
+       WHERE event_id=$1`,
+      [eventId]
+    );
+    const eventRes = await pool.query(
+      `SELECT max_attendees, waitlist_enabled 
+       FROM events 
+       WHERE event_id=$1`,
+      [eventId]
+    );
+    const total = Number(countRes.rows[0].count);
+    const { max_attendees, waitlist_enabled } = eventRes.rows[0];
 
+    if (max_attendees && total >= max_attendees) {
+      if (!waitlist_enabled) {
+        return res.status(400).json({
+          message: "Event is full"
+        });
+      }
+
+      return res.status(200).json({
+        message: "Event full, added to waitlist"
+      });
+    }
+    await pool.query(
+      `INSERT INTO event_registrations
+       (event_id,user_id,name,email,mobile_number,company_name,job_title)
+       VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+      [eventId, userId, name, email, mobile_number, company_name, job_title]
+    );
+
+    res.status(201).json({
+      message: "Registered successfully"
+    });
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "Server error" });
+  }
+};
 exports.unregisterFromEvent = async (req, res) => {
     const eventId = req.params.id;
     const userId = req.user.sub; // from requireAuth
 
     try {
-        // Check if registration exists
+        
         const registration = await pool.query(
             "SELECT * FROM event_registrations WHERE event_id = $1 AND user_id = $2",
             [eventId, userId]
@@ -179,8 +206,6 @@ exports.unregisterFromEvent = async (req, res) => {
         if (registration.rowCount === 0) {
             return res.status(400).json({ message: "You are not registered for this event" });
         }
-
-        // Delete registration
         await pool.query(
             "DELETE FROM event_registrations WHERE event_id = $1 AND user_id = $2",
             [eventId, userId]

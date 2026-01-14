@@ -3,6 +3,8 @@ const router = express.Router();
 const jobController = require("../controllers/job.controller");
 const { requireAuth } = require("../middlewares/auth.middleware");
 const { requireRoles } = require("../middlewares/role.middleware");
+const { uploadResume } = require("../middlewares/upload");
+
 
 // Public routes (or authenticated but open to all)
 router.get("/", jobController.getAllJobs); // /api/jobs
@@ -15,7 +17,8 @@ router.get("/applications/me", requireAuth, jobController.getMyApplications);
 router.get("/:id", jobController.getJobById);
 // Protected routes
 router.post("/", requireAuth, requireRoles(['Recruiter', 'Admin']), jobController.createJob);
-router.post("/:id/apply", requireAuth, jobController.applyJob);
+router.post("/:id/apply",requireAuth,uploadResume.single("resume"),jobController.applyJob);
+
 
 router.post("/:id/save",requireAuth,jobController.saveJob); //save job
 router.delete("/:id/save",requireAuth,jobController.unsaveJob); //unsave job

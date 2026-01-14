@@ -24,6 +24,8 @@ router.post("/register", authLimiter, validate(registerSchema), authController.r
 router.post("/login", authLimiter, validate(loginSchema), authController.login);
 router.post("/refresh", validate(refreshTokenSchema), authController.refreshToken);
 router.get("/sessions/count",requireAuth,getMySessionCount );
+router.delete("/sessions/:sessionId", requireAuth,authController.removeSession);
+
 
 router.post("/logout",  authController.logout);
 
