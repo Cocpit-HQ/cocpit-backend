@@ -378,3 +378,12 @@ CREATE TABLE event_saves (
 
 -- Seed initial roles
 INSERT INTO roles (role_name) VALUES ('User'), ('Employer'), ('Admin');
+
+--14/01/2026 -- Unique Account Names and Onboarding Status
+ALTER TABLE users
+ADD COLUMN account_name VARCHAR(30),
+ADD COLUMN is_onboarding_complete BOOLEAN DEFAULT FALSE;
+
+CREATE UNIQUE INDEX users_account_name_unique
+ON users (LOWER(account_name))
+WHERE account_name IS NOT NULL;

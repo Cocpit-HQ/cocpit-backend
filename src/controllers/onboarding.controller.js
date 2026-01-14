@@ -22,7 +22,7 @@ exports.completeOnboarding = async (req, res) => {
   const userId = req.user.sub;
 
   // 1. Check if file is uploaded
-  if (!req.file) {
+  if (!req.files || req.files.length === 0) {
     return res.status(400).json({ message: "Avatar image is required" });
   }
 
@@ -52,7 +52,7 @@ exports.completeOnboarding = async (req, res) => {
     }
 
     // 4. Update user
-    const avatarUrl = req.file.path;
+    const avatarUrl = req.files[0].path;
 
     await pool.query(
       `UPDATE users

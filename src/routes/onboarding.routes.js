@@ -16,7 +16,7 @@ router.get(
 router.post(
   "/complete",
   requireAuth,
-  uploadAvatar.single("avatar"),
+  uploadAvatar.any(),
   validate(completeOnboardingSchema),
   onboardingController.completeOnboarding
 );
