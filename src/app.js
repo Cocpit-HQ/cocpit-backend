@@ -1,3 +1,4 @@
+// require("newrelic");
 const express = require("express");
 const cors = require("cors");
 const helmet = require("helmet");
@@ -11,6 +12,7 @@ const eventRoutes = require("./routes/event.routes");
 const socialRoutes = require("./routes/social.routes");
 const userRoutes = require("./routes/user.routes");
 const uploadRoutes = require("./routes/upload.routes");
+const onboardingRoutes = require("./routes/onboarding.routes");
 
 const app = express();
 
@@ -21,12 +23,13 @@ const allowedOrigins = process.env.ALLOWED_ORIGINS
     "http://192.168.1.13:3000",
     "http://192.168.1.6:3000",
     "http://192.168.1.2:3000",
-    "http://192.168.1.3:3000"
+    "http://192.168.1.3:3000",
+    "https://frontend.cocpit.in",
     ];
 
 const corsOptions = {
   origin: allowedOrigins, // Array of allowed origins
-  methods: 'GET,POST,PUT,DELETE', // Allowed HTTP methods
+  methods: 'GET,POST,PUT,DELETE,PATCH', // Allowed HTTP methods
   allowedHeaders: ['Content-Type', 'Authorization'], // Allowed headers
   credentials: true // Enables cookies/authorization headers to be sent
 }
@@ -54,5 +57,6 @@ app.use("/api/events", eventRoutes);
 app.use("/api", socialRoutes); // /api/conversations...
 app.use("/api/users", userRoutes);
 app.use("/api", uploadRoutes);
+app.use("/api/onboarding", onboardingRoutes);
 
 module.exports = app;

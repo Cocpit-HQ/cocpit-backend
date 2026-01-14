@@ -41,7 +41,6 @@ exports.register = async (req, res) => {
       [user.user_id, roleName]
     );
 
-    // 5. Create profile with accountType
     await pool.query(
       `INSERT INTO profiles (user_id, account_type) VALUES ($1, $2)`,
       [user.user_id, accountType]
@@ -380,7 +379,7 @@ exports.login = async (req, res) => {
     --------------------------------------------------------- */
     const userResult = await pool.query(
       `
-      SELECT user_id, email, password_hash
+      SELECT user_id, email, password_hash, is_onboarding_complete, account_name
       FROM users
       WHERE email = $1
       `,
@@ -420,6 +419,7 @@ exports.login = async (req, res) => {
       sub: user.user_id,
       sid: sessionId,
       roles,
+      onboarding_complete: user.is_onboarding_complete,
     });
 
     const refreshToken = signRefreshToken({
@@ -507,6 +507,8 @@ exports.login = async (req, res) => {
         id: user.user_id,
         email: user.email,
         roles,
+        onboarding_complete: user.is_onboarding_complete,
+        account_name: user.account_name,
       },
     });
 
@@ -581,6 +583,13 @@ exports.refreshToken = async (req, res) => {
 
     const roles = rolesResult.rows.map(r => r.role_name);
 
+    // Fetch user status for onboarding check
+    const userStatusResult = await pool.query(
+      `SELECT is_onboarding_complete FROM users WHERE user_id = $1`,
+      [userId]
+    );
+    const onboardingComplete = userStatusResult.rows[0]?.is_onboarding_complete || false;
+
     /* ---------------------------------------------------------
        5️⃣ Rotate tokens (UPDATE, not INSERT)
     --------------------------------------------------------- */
@@ -588,6 +597,7 @@ exports.refreshToken = async (req, res) => {
       sub: userId,
       sid: sessionId,
       roles,
+      onboarding_complete: onboardingComplete,
     });
 
     const newRefreshToken = signRefreshToken({
@@ -697,7 +707,7 @@ exports.getMe = async (req, res) => {
   try {
     // 1. Get User Data
     const userResult = await pool.query(
-      `SELECT user_id AS id, email, full_name FROM users WHERE user_id = $1`,
+      `SELECT user_id AS id, email, full_name, is_onboarding_complete, account_name FROM users WHERE user_id = $1`,
       [userId]
     );
 

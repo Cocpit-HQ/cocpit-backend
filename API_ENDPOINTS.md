@@ -42,6 +42,9 @@ The system uses a **Dual-Token** authentication mechanism (JWT Access Token + Re
 | `POST` | `/profile/experiences` | Add experience | Yes | `{ title, company_name, location, start_date, end_date, is_current, description }` |
 | `POST` | `/profile/educations` | Add education | Yes | `{ school_name, degree, field_of_study, start_date, end_date, description }` |
 | `POST` | `/profile/skills` | Add/link a skill | Yes | `{ name }` |
+| `POST` | `/profile/avatar` | Upload or replace avatar | Yes | `FormData` with `avatar` field |
+| `GET` | `/profile/avatar` | Get current user's avatar URL | Yes | - |
+| `DELETE` | `/profile/avatar` | Delete current user's avatar | Yes | - |
 
 ### 3. Jobs (`/api/jobs`)
 

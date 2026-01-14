@@ -9,6 +9,9 @@ CREATE TYPE job_company_type AS ENUM ('Startup', 'MNC', 'Product-based', 'Servic
 CREATE TYPE event_type AS ENUM ('Online', 'InPerson');
 CREATE TYPE sender_type AS ENUM ('me', 'other'); -- Frontend uses 'me'/'other', but DB should track user_id
 
+ALTER TABLE jobs
+ADD CONSTRAINT salary_valid CHECK (salary_min <= salary_max);
+
 CREATE TABLE users (
   user_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   email TEXT UNIQUE NOT NULL,
@@ -291,12 +294,14 @@ CREATE TABLE jobs (
   company_name TEXT NOT NULL,
   location TEXT,
   description TEXT,
-  salary_range TEXT, -- frontend format
+  salary_min INTEGER NOT NULL,
+  salary_max INTEGER NOT NULL,
   job_type TEXT, -- Full-time, Part-time, Contract etc.
   work_mode job_work_mode, -- Remote | Hybrid | Onsite
   company_type job_company_type, -- Startup | MNC etc.
   experience_level TEXT,
   about_company TEXT,
+  industry TEXT NOT NULL , --new field
   easy_apply BOOLEAN DEFAULT false,
   actively_hiring BOOLEAN DEFAULT false,
   match_score INTEGER, -- optional / mock
@@ -393,3 +398,12 @@ CREATE TABLE event_saves (
 
 -- Seed initial roles
 INSERT INTO roles (role_name) VALUES ('User'), ('Employer'), ('Admin');
+
+--14/01/2026 -- Unique Account Names and Onboarding Status
+ALTER TABLE users
+ADD COLUMN account_name VARCHAR(30),
+ADD COLUMN is_onboarding_complete BOOLEAN DEFAULT FALSE;
+
+CREATE UNIQUE INDEX users_account_name_unique
+ON users (LOWER(account_name))
+WHERE account_name IS NOT NULL;

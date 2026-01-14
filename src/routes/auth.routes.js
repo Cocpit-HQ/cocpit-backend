@@ -29,7 +29,6 @@ router.delete("/sessions/:sessionId", requireAuth,authController.removeSession);
 
 router.post("/logout",  authController.logout);
 
-
 router.get("/me", requireAuth, authController.getMe);
 
 router.get("/admin", requireAuth, requireRoles(['Admin']), async (req, res) => {

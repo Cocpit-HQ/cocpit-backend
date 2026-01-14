@@ -12,7 +12,8 @@ router.post("/post", requireAuth, contentController.createPost);
 router.get("/post/:id", requireAuth, contentController.getPostById);
 router.put("/post/:id", requireAuth, contentController.updatePostById);
 router.delete("/post/:id", requireAuth, contentController.deletePost);
-
+// router.post("/post/:id/share", requireAuth, contentController.sharePost);
+// post share story share
 
 // --- POLL INTERACTION ---
 router.post("/post/:id/poll/vote", requireAuth, contentController.voteInPoll);
@@ -31,8 +32,5 @@ router.delete("/stories/:id", requireAuth, contentController.deleteStory);
 router.post("/stories/:id/react", requireAuth, contentController.reactToStory);
 router.post("/stories/:id/view", requireAuth, contentController.viewStory);
 router.get('/stories/:id', requireAuth, contentController.getStoryDetailsById)
-
-
-
 
 module.exports = router;
