@@ -29,7 +29,7 @@ const allowedOrigins = process.env.ALLOWED_ORIGINS
 
 const corsOptions = {
   origin: allowedOrigins, // Array of allowed origins
-  methods: 'GET,POST,PUT,DELETE', // Allowed HTTP methods
+  methods: 'GET,POST,PUT,DELETE,PATCH', // Allowed HTTP methods
   allowedHeaders: ['Content-Type', 'Authorization'], // Allowed headers
   credentials: true // Enables cookies/authorization headers to be sent
 }

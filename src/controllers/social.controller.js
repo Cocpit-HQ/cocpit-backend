@@ -416,6 +416,7 @@ SELECT
     -- Get the other participant's info
     u.full_name AS other_user_name,
     u.avatar_url AS other_user_avatar,
+    u.user_id AS other_user_id,
     -- Get the most recent message
     m.text_content AS last_message_text
 FROM conversations c
@@ -495,75 +496,101 @@ exports.deleteConversation = async (req, res) => {
 };
 // Send a message to a user (auto-create 1-on-1 conversation if needed)
 exports.sendMessage = async (req, res) => {
-    const senderId = req.user.sub;
-    const { targetUserId, text_content } = req.body;
-
-    if (senderId === targetUserId)
-        return res.status(400).json({ message: "Cannot send message to yourself" });
-
-    try {
-        await pool.query('BEGIN');
-        let conversationId;
-
-        // Check if 1-on-1 conversation exists
-        const existingConv = await pool.query(
-            `SELECT c.conversation_id
-             FROM conversations c
-             JOIN conversation_participants cp1 ON c.conversation_id = cp1.conversation_id AND cp1.user_id = $1
-             JOIN conversation_participants cp2 ON c.conversation_id = cp2.conversation_id AND cp2.user_id = $2
-             WHERE c.is_group = FALSE`,
-            [senderId, targetUserId]
-        );
-
-        if (existingConv.rowCount > 0) {
-            conversationId = existingConv.rows[0].conversation_id;
-        } else {
-            // Create new 1-on-1 conversation in a transaction
-
-            const convRes = await pool.query(
-                `INSERT INTO conversations (is_group) VALUES (FALSE) RETURNING conversation_id`
-            );
-            conversationId = convRes.rows[0].conversation_id;
-
-            await pool.query(
-                `INSERT INTO conversation_participants (conversation_id, user_id) VALUES ($1, $2), ($1, $3)`,
-                [conversationId, senderId, targetUserId]
-            );
+            const senderId = req.user.sub;
+        const { targetUserId, text_content } = req.body;
+    
+        if (!targetUserId || !text_content) {
+            return res.status(400).json({ message: "targetUserId and text_content are required" });
         }
+    
+        if (senderId === targetUserId)
+            return res.status(400).json({ message: "Cannot send message to yourself" });
+    
+        const client = await pool.connect();
+        try {
+            // Verify sender and target users exist
+            const senderExists = await client.query(
+                `SELECT 1 FROM users WHERE user_id = $1`,
+                [senderId]
+            );
+            if (senderExists.rowCount === 0) {
+                await client.query('ROLLBACK');
+                return res.status(404).json({ message: "Sender not found." });
+            }
 
-        // Insert the message
-        const msgRes = await pool.query(
-            `INSERT INTO messages (conversation_id, sender_id, text_content)
-             VALUES ($1, $2, $3) RETURNING *`,
-            [conversationId, senderId, text_content]
-        );
+            const targetUserExists = await client.query(
+                `SELECT 1 FROM users WHERE user_id = $1`,
+                [targetUserId]
+            );
+            if (targetUserExists.rowCount === 0) {
+                await client.query('ROLLBACK');
+                return res.status(400).json({ message: "Target user not found." });
+            }
 
-        // Update conversation timestamp
-        await pool.query(
-            `UPDATE conversations SET updated_at = now() WHERE conversation_id = $1`,
-            [conversationId]
-        );
-        await pool.query('COMMIT');
-
-        // Notify target user via service
-        socketService.notifyUser(targetUserId, "newMessage", msgRes.rows[0]);
-        socketService.notifyUser(targetUserId, "notification", {
-            type: "message",
-            from: senderId,
-            conversationId,
-        });
-
-        res.status(201).json({
-            conversationId,
-            message: "Message sent successfully",
-            data: msgRes.rows[0]
-        });
-    } catch (err) {
-        await pool.query('ROLLBACK');
-        res.status(500).json({ message: "Internal server error" });
-    }
-};
-
+            await client.query('BEGIN');
+            let conversationId;
+    
+            // Check if 1-on-1 conversation exists
+            const existingConv = await client.query(
+                `SELECT c.conversation_id
+                 FROM conversations c
+                 JOIN conversation_participants cp1 ON c.conversation_id = cp1.conversation_id AND cp1.user_id = $1
+                 JOIN conversation_participants cp2 ON c.conversation_id = cp2.conversation_id AND cp2.user_id = $2
+                 WHERE c.is_group = FALSE`,
+                [senderId, targetUserId]
+            );
+    
+            if (existingConv.rowCount > 0) {
+                conversationId = existingConv.rows[0].conversation_id;
+            } else {
+                // Create new 1-on-1 conversation in a transaction
+    
+                const convRes = await client.query(
+                    `INSERT INTO conversations (is_group) VALUES (FALSE) RETURNING conversation_id`
+                );
+                conversationId = convRes.rows[0].conversation_id;
+    
+                await client.query(
+                    `INSERT INTO conversation_participants (conversation_id, user_id) VALUES ($1, $2), ($1, $3)`,
+                    [conversationId, senderId, targetUserId]
+                );
+            }
+    
+            // Insert the message
+            const msgRes = await client.query(
+                `INSERT INTO messages (conversation_id, sender_id, text_content)
+                 VALUES ($1, $2, $3) RETURNING *`,
+                [conversationId, senderId, text_content]
+            );
+    
+            // Update conversation timestamp
+            await client.query(
+                `UPDATE conversations SET updated_at = now() WHERE conversation_id = $1`,
+                [conversationId]
+            );
+            await client.query('COMMIT');
+    
+            // Notify target user via service
+            socketService.notifyUser(targetUserId, "newMessage", msgRes.rows[0]);
+            socketService.notifyUser(targetUserId, "notification", {
+                type: "message",
+                from: senderId,
+                conversationId,
+            });
+    
+            res.status(201).json({
+                conversationId,
+                message: "Message sent successfully",
+                data: msgRes.rows[0]
+            });
+        } catch (err) {
+            await client.query('ROLLBACK');
+            console.error("Error in sendMessage:", err); // Added error logging
+            res.status(500).json({ message: "Internal server error" });
+        } finally {
+            client.release();
+        }
+    };
 exports.markConversationRead = async (req, res) => {
   const userId = req.user.sub;
   const { conversationId } = req.params;
