@@ -47,14 +47,23 @@ const uploadResume = multer({
 });
 
 // --- Profile Avatar Upload ---
-const avatarStorage = new CloudinaryStorage({
-  cloudinary,
-  params: {
-    folder: "avatars",
-    resource_type: "image", // only images
-    public_id: (req, file) => `avatar-${req.user.id}-${Date.now()}`,
-  },
-});
+let avatarStorage;
+if (process.env.CLOUDINARY_CLOUD_NAME) {
+  avatarStorage = new CloudinaryStorage({
+    cloudinary,
+    params: {
+      folder: "avatars",
+      resource_type: "image", // only images
+      public_id: (req, file) => `avatar-${req.user.id}-${Date.now()}`,
+    },
+  });
+} else {
+  // Fallback for dev/test without Cloudinary
+  avatarStorage = multer.diskStorage({
+    destination: (req, file, cb) => cb(null, '/tmp'),
+    filename: (req, file, cb) => cb(null, `avatar-${Date.now()}.png`), // Simple mock
+  });
+}
 
 const uploadAvatar = multer({
   storage: avatarStorage,

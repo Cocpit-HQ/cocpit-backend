@@ -12,6 +12,7 @@ const eventRoutes = require("./routes/event.routes");
 const socialRoutes = require("./routes/social.routes");
 const userRoutes = require("./routes/user.routes");
 const uploadRoutes = require("./routes/upload.routes");
+const onboardingRoutes = require("./routes/onboarding.routes");
 
 const app = express();
 
@@ -56,5 +57,6 @@ app.use("/api/events", eventRoutes);
 app.use("/api", socialRoutes); // /api/conversations...
 app.use("/api/users", userRoutes);
 app.use("/api", uploadRoutes);
+app.use("/api/onboarding", onboardingRoutes);
 
 module.exports = app;
