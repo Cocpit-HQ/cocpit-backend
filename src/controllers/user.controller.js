@@ -87,6 +87,38 @@ exports.getUserProfile = async (req, res) => {
   }
 
   try {
+    // --- View Counting Logic ---
+    if (id !== currentUserId) {
+      const viewCheck = await pool.query(
+        `SELECT view_id FROM profile_views 
+         WHERE viewer_id = $1 AND profile_owner_id = $2 
+         AND viewed_at > NOW() - INTERVAL '24 hours'`,
+        [currentUserId, id]
+      );
+
+      if (viewCheck.rowCount === 0) {
+        const client = await pool.connect();
+        try {
+          await client.query('BEGIN');
+          await client.query(
+            `INSERT INTO profile_views (viewer_id, profile_owner_id) VALUES ($1, $2)`,
+            [currentUserId, id]
+          );
+          await client.query(
+            `UPDATE profiles SET profile_views_count = COALESCE(profile_views_count, 0) + 1 WHERE user_id = $1`,
+            [id]
+          );
+          await client.query('COMMIT');
+        } catch (e) {
+          await client.query('ROLLBACK');
+          console.error("View count update failed", e);
+        } finally {
+          client.release();
+        }
+      }
+    }
+    // ---------------------------
+
     // 1. Fetch User & Profile Data
     const userQuery = `
       SELECT

@@ -407,3 +407,15 @@ ADD COLUMN is_onboarding_complete BOOLEAN DEFAULT FALSE;
 CREATE UNIQUE INDEX users_account_name_unique
 ON users (LOWER(account_name))
 WHERE account_name IS NOT NULL;
+
+--16/01/2026 --profile view count 
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+
+CREATE TABLE IF NOT EXISTS profile_views (
+    view_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    viewer_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    profile_owner_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    viewed_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE INDEX idx_profile_views_lookup ON profile_views(viewer_id, profile_owner_id, viewed_at);
