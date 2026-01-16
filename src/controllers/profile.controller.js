@@ -4,7 +4,7 @@ exports.getProfile = async (req, res) => {
   const userId = req.params.id === "me" ? req.user.sub : req.params.id;
 
   try {
-   
+
     const userResult = await pool.query(
       `
       SELECT u.user_id, u.full_name, u.headline, u.avatar_url, u.location, u.about_text, u.email,
@@ -23,44 +23,61 @@ exports.getProfile = async (req, res) => {
     const u = userResult.rows[0];
     const profileId = u.profile_id;
 
-    
+
     const experiences = profileId
       ? await pool.query(
-          `SELECT * FROM experiences WHERE profile_id = $1 ORDER BY start_date DESC`,
-          [profileId]
-        )
+        `SELECT * FROM experiences WHERE profile_id = $1 ORDER BY start_date DESC`,
+        [profileId]
+      )
       : { rows: [] };
 
-    
+
     const educations = profileId
       ? await pool.query(
-          `SELECT * FROM educations WHERE profile_id = $1 ORDER BY start_date DESC`,
-          [profileId]
-        )
+        `SELECT * FROM educations WHERE profile_id = $1 ORDER BY start_date DESC`,
+        [profileId]
+      )
       : { rows: [] };
 
-    
+
     const skills = profileId
       ? await pool.query(
-          `
+        `
           SELECT s.skill_id, s.name
           FROM user_skills us
           JOIN skills s ON us.skill_id = s.skill_id
           WHERE us.profile_id = $1
           `,
-          [profileId]
-        )
+        [profileId]
+      )
       : { rows: [] };
 
-    
+
     const latestEducation = educations.rows[0]
       ? {
-          school: educations.rows[0].school_name,
-          degree: educations.rows[0].degree,
-        }
+        school: educations.rows[0].school_name,
+        degree: educations.rows[0].degree,
+      }
       : null;
 
-    
+
+    // Check is_following if user is authenticated
+    let isFollowing = false;
+    // We can't access req.user directly here reliably without knowing middleware stack, 
+    // but usually in this project req.user is set if auth middleware ran.
+    // However, getProfile might be public. 
+    // Let's check if there is an auth header or if req.user is populated.
+    // Assuming the route might be protected or semi-protected. 
+    // If req.user exists and it's not "me" (already handled above), check db.
+
+    if (req.user && req.user.sub && req.user.sub !== u.user_id) {
+      const followCheck = await pool.query(
+        `SELECT 1 FROM followers WHERE follower_id = $1 AND following_id = $2`,
+        [req.user.sub, u.user_id]
+      );
+      isFollowing = followCheck.rowCount > 0;
+    }
+
     res.json({
       user: {
         id: u.user_id,
@@ -75,7 +92,8 @@ exports.getProfile = async (req, res) => {
         open_to: u.open_to,
         availability: u.availability,
         work_preference: u.work_preference,
-        latest_education: latestEducation, // ✅ added
+        latest_education: latestEducation,
+        is_following: isFollowing, // ✅ Added
       },
       experiences: experiences.rows,
       educations: educations.rows,
@@ -101,7 +119,7 @@ exports.updateProfile = async (req, res) => {
     about_text
   } = req.body;
 
-  
+
   if (full_name && full_name.trim().length < 3) {
     return res.status(400).json({ message: "Full name must be at least 3 characters" });
   }
@@ -134,7 +152,7 @@ exports.updateProfile = async (req, res) => {
     return res.status(400).json({ message: "About section cannot exceed 500 characters" });
   }
 
-  
+
   try {
     await pool.query("BEGIN");
 
@@ -275,8 +293,8 @@ exports.updateIdentity = async (req, res) => {
   const allowedWorkPreference = ["Remote", "Hybrid", "Onsite"];
 
   if (!allowedOpenTo.includes(open_to) ||
-      !allowedAvailability.includes(availability) ||
-      !allowedWorkPreference.includes(work_preference)) {
+    !allowedAvailability.includes(availability) ||
+    !allowedWorkPreference.includes(work_preference)) {
     return res.status(400).json({ message: "Invalid identity values" });
   }
 

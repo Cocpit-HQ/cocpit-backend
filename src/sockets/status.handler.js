@@ -41,6 +41,16 @@ module.exports.handleConnection = async (socket) => {
       "online",
       recipientIds
     );
+
+    // FIX: Send the online status of friends TO the new user
+    recipientIds.forEach(friendId => {
+      if (SocketService.isUserOnline(friendId)) {
+        socket.emit("userStatusChanged", {
+          userId: friendId,
+          status: "online"
+        });
+      }
+    });
   } catch (err) {
     console.error("Status connect error:", err);
   }

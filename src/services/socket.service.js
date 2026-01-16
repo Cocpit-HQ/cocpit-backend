@@ -62,6 +62,17 @@ class SocketService {
       });
     });
   }
+  /**
+   * Check if a user is online
+   * @param {string} userId
+   * @returns {boolean}
+   */
+  isUserOnline(userId) {
+    if (!this.io) return false;
+    const room = getUserRoom(userId);
+    // io.sockets.adapter.rooms is a Map where key is room name and value is Set of socket IDs
+    return this.io.sockets.adapter.rooms.has(room);
+  }
 }
 
 module.exports = new SocketService();
