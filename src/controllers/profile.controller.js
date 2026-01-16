@@ -801,17 +801,18 @@ exports.addSkills = async (req, res) => {
     const insertSkillsQuery = `
       INSERT INTO skills (name)
       SELECT UNNEST($1::text[])
-      ON CONFLICT (name) DO NOTHING
+      ON CONFLICT (lower(name)) DO NOTHING
       RETURNING skill_id, name
     `;
 
     await client.query(insertSkillsQuery, [skillList]);
 
     // 5. Fetch all skills (new + existing)
+    // Use case-insensitive matching to find existing skills that might differ in case
     const { rows: skills } = await client.query(
       `SELECT skill_id, name 
        FROM skills 
-       WHERE name = ANY($1)`,
+       WHERE lower(name) IN (SELECT lower(unnest($1::text[])))`,
       [skillList]
     );
 
