@@ -280,6 +280,7 @@ CREATE TABLE messages (
 CREATE TABLE notifications (
   notification_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
+  sender_id UUID REFERENCES users(user_id) ON DELETE CASCADE, -- Actor who triggered notification
   type TEXT NOT NULL, -- 'like', 'comment', 'view', 'job_alert'
   text TEXT NOT NULL,
   reference_id UUID, -- ID of the post/job/user

@@ -14,12 +14,43 @@ exports.followUser = async (req, res) => {
         return res.status(400).json({ message: "Cannot follow yourself" });
 
     try {
-        await pool.query(
-            `INSERT INTO followers (follower_id, following_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+        const result = await pool.query(
+            `INSERT INTO followers (follower_id, following_id) VALUES ($1, $2) ON CONFLICT DO NOTHING RETURNING *`,
             [followerId, id]
         );
+
+        if (result.rowCount > 0) {
+            // Get follower info for notification
+            const followerRes = await pool.query(
+                `SELECT full_name, avatar_url FROM users WHERE user_id = $1`,
+                [followerId]
+            );
+            const follower = followerRes.rows[0];
+
+            const notificationData = {
+                type: "follow",
+                text: `${follower.full_name} started following you`,
+                from: followerId,
+                senderName: follower.full_name,
+                senderAvatar: follower.avatar_url,
+                referenceId: followerId, // Link to profile
+                time: "Just now"
+            };
+
+            // Notify via socket
+            socketService.notifyUser(id, "notification", notificationData);
+
+            // Persist notification
+            await pool.query(
+                `INSERT INTO notifications (user_id, sender_id, type, text, reference_id) 
+                 VALUES ($1, $2, $3, $4, $5)`,
+                [id, followerId, "follow", notificationData.text, followerId]
+            );
+        }
+
         res.status(200).json({ message: "Followed successfully" });
     } catch (err) {
+        console.error("Follow user error:", err);
         res.status(500).json({ message: "Internal server error" });
     }
 };
@@ -689,7 +720,13 @@ exports.getNotifications = async (req, res) => {
 
     try {
         const result = await pool.query(
-            `SELECT * FROM notifications WHERE user_id = $1 ORDER BY created_at DESC`,
+            `SELECT n.*, 
+                    u.full_name as actor_name, 
+                    u.avatar_url as actor_avatar 
+             FROM notifications n 
+             LEFT JOIN users u ON n.sender_id = u.user_id 
+             WHERE n.user_id = $1 
+             ORDER BY n.created_at DESC`,
             [userId]
         );
         res.json(result.rows);

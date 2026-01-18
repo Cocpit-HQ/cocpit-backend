@@ -1,5 +1,6 @@
 const { ur, vi } = require("zod/locales");
 const pool = require("../db/pool");
+const socketService = require("../services/socket.service");
 
 // --- Feed / Posts ---
 exports.getPublicFeed = async (req, res) => {
@@ -474,11 +475,20 @@ exports.createPost = async (req, res) => {
 
 exports.getPostById = async (req, res) => {
     const postId = req.params.id;
+    const userId = req.user ? req.user.sub : null;
 
     try {
         const query = `SELECT 
     p.*, 
+    u.full_name AS author_name,
+    u.avatar_url AS author_avatar,
     c.name AS category_name,
+
+    -- Like Count
+    COALESCE(lc.like_count, 0)::int AS like_count,
+
+    -- Is Liked (Fix for stale state)
+    COALESCE(il.is_liked, false) AS is_liked,
 
     -- Media (array)
     COALESCE(
@@ -508,7 +518,6 @@ exports.getPostById = async (req, res) => {
                         json_build_object(
                             'option_id', po.option_id,
                             'option_text', po.option_text,
-                            -- FIX: Subquery to count votes for this specific option
                             'vote_count', (SELECT COUNT(*) FROM poll_votes pv WHERE pv.option_id = po.option_id)
                         )
                     )
@@ -522,11 +531,22 @@ exports.getPostById = async (req, res) => {
         WHERE pp.post_id = p.post_id
     ) AS poll
 FROM posts p
+JOIN users u ON u.user_id = p.author_id
 LEFT JOIN post_categories c ON p.category_id = c.category_id
+LEFT JOIN (
+    SELECT post_id, COUNT(*) AS like_count
+    FROM post_likes
+    GROUP BY post_id
+) lc ON lc.post_id = p.post_id
+LEFT JOIN (
+    SELECT post_id, true AS is_liked
+    FROM post_likes
+    WHERE user_id = $2
+) il ON il.post_id = p.post_id
 WHERE p.post_id = $1;
 `
 
-        const result = await pool.query(query, [postId]);
+        const result = await pool.query(query, [postId, userId]);
 
         if (result.rows.length === 0) {
             return res.status(404).json({ message: "Post not found" });
@@ -796,15 +816,19 @@ exports.toggleLike = async (req, res) => {
                     const liker = userRes.rows[0];
 
                     // Emit real-time
-                    // socketService.notifyUser(authorId, "notification", {
-                    //    type: "like",
-                    //     senderName: liker.full_name,
-                    //     senderAvatar: liker.avatar_url,
-                    //    postId
-                    // });
+                    socketService.notifyUser(authorId, "notification", {
+                        type: "like",
+                        senderName: liker.full_name,
+                        senderAvatar: liker.avatar_url,
+                        postId
+                    });
 
-                    // Persist notification (Optional - assuming notification table exists)
-                    // await pool.query("INSERT INTO notifications ...");
+                    // Persist notification
+                    await pool.query(
+                        `INSERT INTO notifications (user_id, sender_id, type, text, reference_id) 
+                         VALUES ($1, $2, $3, $4, $5)`,
+                        [authorId, userId, "like", `${liker.full_name} liked your post`, postId]
+                    );
                 }
             }
         }
