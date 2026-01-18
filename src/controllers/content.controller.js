@@ -33,6 +33,8 @@ exports.getPublicFeed = async (req, res) => {
         pc.name AS category_name,
 
         COALESCE(pm.media, '[]') AS media,
+        COALESCE(lc.like_count, 0)::int AS like_count,
+        COALESCE(il.is_liked, false) AS is_liked,
         pp.poll
 
       FROM posts p
@@ -44,6 +46,18 @@ exports.getPublicFeed = async (req, res) => {
         FROM post_media pm
         GROUP BY post_id
       ) pm ON pm.post_id = p.post_id
+
+      LEFT JOIN (
+        SELECT post_id, COUNT(*) AS like_count
+        FROM post_likes
+        GROUP BY post_id
+      ) lc ON lc.post_id = p.post_id
+
+      LEFT JOIN (
+          SELECT post_id, true AS is_liked
+          FROM post_likes
+          WHERE user_id = $${params.length + 1}
+      ) il ON il.post_id = p.post_id
 
       LEFT JOIN (
         SELECT
@@ -88,6 +102,12 @@ exports.getPublicFeed = async (req, res) => {
       ORDER BY p.created_at DESC, p.post_id DESC
       LIMIT $${params.length}
     `;
+
+        if (req.user) {
+            params.push(req.user.sub);
+        } else {
+            params.push(null); // or -1, something that won't match a user_id
+        }
 
         const { rows } = await pool.query(query, params);
 
@@ -765,6 +785,28 @@ exports.toggleLike = async (req, res) => {
                 [postId, userId]
             );
             liked = true;
+
+            // 🔔 Notify Author
+            // Fetch post author
+            const postRes = await pool.query("SELECT author_id FROM posts WHERE post_id = $1", [postId]);
+            if (postRes.rowCount > 0) {
+                const authorId = postRes.rows[0].author_id;
+                if (authorId !== userId) {
+                    const userRes = await pool.query("SELECT full_name, avatar_url FROM users WHERE user_id = $1", [userId]);
+                    const liker = userRes.rows[0];
+
+                    // Emit real-time
+                    // socketService.notifyUser(authorId, "notification", {
+                    //    type: "like",
+                    //     senderName: liker.full_name,
+                    //     senderAvatar: liker.avatar_url,
+                    //    postId
+                    // });
+
+                    // Persist notification (Optional - assuming notification table exists)
+                    // await pool.query("INSERT INTO notifications ...");
+                }
+            }
         }
 
         // 4️⃣ Get UPDATED count

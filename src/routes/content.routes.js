@@ -1,10 +1,10 @@
 const express = require("express");
 const router = express.Router();
 const contentController = require("../controllers/content.controller");
-const { requireAuth } = require("../middlewares/auth.middleware");
+const { requireAuth, optionalAuth } = require("../middlewares/auth.middleware");
 
 // --- FEED & DISCOVERY ---
-router.get("/All/feeds", contentController.getPublicFeed);
+router.get("/All/feeds", optionalAuth, contentController.getPublicFeed);
 router.get("/users/me/posts", requireAuth, contentController.getMyPosts);
 
 // --- POSTS (Handles Image, Video, Article, Poll) ---
