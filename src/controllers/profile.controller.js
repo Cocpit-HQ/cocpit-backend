@@ -288,7 +288,7 @@ exports.updateIdentity = async (req, res) => {
   const userId = req.user.sub;
   const { open_to, availability, work_preference } = req.body;
 
-  const allowedOpenTo = ["Full-time", "Freelance", "Mentorship"];
+  const allowedOpenTo = ["Full-time", "Freelance", "Mentorship", "Consulting"];
   const allowedAvailability = ["Immediate", "30 Days", "Casual Networking"];
   const allowedWorkPreference = ["Remote", "Hybrid", "Onsite"];
 
