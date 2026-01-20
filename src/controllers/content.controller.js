@@ -66,7 +66,10 @@ exports.getPublicFeed = async (req, res) => {
           json_build_object(
             'poll_id', pp.poll_id,
             'options', COALESCE(po.options, '[]'),
-            'total_votes', COALESCE(pv.total_votes, 0)
+            'total_votes', COALESCE(pv.total_votes, 0),
+            'duration', COALESCE(pp.duration, '1 day'),
+            'user_vote', (SELECT pv_u.option_id FROM poll_votes pv_u WHERE pv_u.poll_id = pp.poll_id AND pv_u.voter_id = $${params.length + 1}),
+            'is_active', (pp.created_at + COALESCE(pp.duration, '1 day')::interval > NOW())
           ) AS poll
         FROM post_polls pp
         LEFT JOIN (
@@ -222,9 +225,11 @@ exports.getMyPosts = async (req, res) => {
           pp.post_id,
           json_build_object(
             'poll_id', pp.poll_id,
-            'duration', pp.duration,
+            'duration', COALESCE(pp.duration, '1 day'),
             'total_votes', COALESCE(pv.total_votes, 0),
-            'options', COALESCE(po.options, '[]'::json)
+            'user_vote', (SELECT pv_u.option_id FROM poll_votes pv_u WHERE pv_u.poll_id = pp.poll_id AND pv_u.voter_id = $1),
+            'options', COALESCE(po.options, '[]'::json),
+            'is_active', (pp.created_at + COALESCE(pp.duration, '1 day')::interval > NOW())
           ) AS poll
         FROM post_polls pp
 
@@ -336,7 +341,7 @@ exports.getMyPosts = async (req, res) => {
 //           pp.post_id,
 //           json_build_object(
 //             'poll_id', pp.poll_id,
-//             'duration', pp.duration,
+//             'duration', COALESCE(pp.duration, '1 day'),
 //             'total_votes', COALESCE(pv.total_votes, 0),
 //             'options', COALESCE(po.options, '[]')
 //           ) AS poll
@@ -435,12 +440,19 @@ exports.createPost = async (req, res) => {
                 `INSERT INTO post_polls (post_id, duration) VALUES ($1, $2) RETURNING poll_id`,
                 [postId, poll_duration || '1 days'] // e.g., '1 day', '1 week'
             );
+
             pollId = pollRes.rows[0].poll_id;
 
-            // Insert each option
+            // Insert each option and collect them
+            const insertedOptions = [];
             for (const opt of poll_options) {
-                await pool.query(`INSERT INTO poll_options (poll_id, option_text) VALUES ($1, $2)`, [pollId, opt]);
+                const optRes = await pool.query(
+                    `INSERT INTO poll_options (poll_id, option_text) VALUES ($1, $2) RETURNING option_id, option_text`,
+                    [pollId, opt]
+                );
+                insertedOptions.push(optRes.rows[0]);
             }
+            poll_options = insertedOptions; // Replace string array with object array
         }
 
         let type;
@@ -464,7 +476,8 @@ exports.createPost = async (req, res) => {
             poll: {
                 poll_id: pollId,
                 duration: poll_duration,
-                options: poll_options
+                is_active: true,
+                options: poll_options // Now contains objects with option_id
             }
         });
     } catch (err) {
@@ -510,7 +523,9 @@ exports.getPostById = async (req, res) => {
     (
         SELECT json_build_object(
             'poll_id', pp.poll_id,
-            'duration', pp.duration,
+            'duration', COALESCE(pp.duration, '1 day'),
+            'user_vote', (SELECT pv_u.option_id FROM poll_votes pv_u WHERE pv_u.poll_id = pp.poll_id AND pv_u.voter_id = $2),
+            'is_active', (pp.created_at + COALESCE(pp.duration, '1 day')::interval > NOW()),
             'options',
             COALESCE(
                 (
@@ -676,7 +691,7 @@ SELECT
     -- Corrected Poll Subquery
     (SELECT json_build_object(
         'poll_id', pp.poll_id,
-        'duration', pp.duration,
+        'duration', COALESCE(pp.duration, '1 day'),
         'options', COALESCE(
             (SELECT json_agg(opt) FROM (
                 SELECT 
@@ -745,13 +760,16 @@ exports.voteInPoll = async (req, res) => {
 
     try {
         // 1. Check if poll exists and if it's still active using DB logic
+
+
         const pollRes = await pool.query(
             `SELECT pp.poll_id, 
-             (pp.created_at + pp.duration > NOW()) as is_active 
+             (pp.created_at + COALESCE(pp.duration, '1 day')::interval > NOW()) as is_active 
              FROM post_polls pp 
              WHERE pp.post_id = $1`,
             [postId]
         );
+
         if (pollRes.rowCount === 0) return res.status(404).json({ message: "Poll not found" });
 
         const { poll_id, is_active } = pollRes.rows[0];
@@ -776,6 +794,36 @@ exports.voteInPoll = async (req, res) => {
         return res.status(500).json({ message: "Internal server error" });
     }
 }
+
+exports.removeVote = async (req, res) => {
+    const voterId = req.user.sub;
+    const { id: postId } = req.params;
+
+    try {
+        const pollRes = await pool.query(
+            `SELECT poll_id, (created_at + COALESCE(duration, '1 day')::interval > NOW()) as is_active 
+             FROM post_polls WHERE post_id = $1`,
+            [postId]
+        );
+
+        if (pollRes.rowCount === 0) return res.status(404).json({ message: "Poll not found" });
+        const { poll_id, is_active } = pollRes.rows[0];
+
+        if (!is_active) {
+            return res.status(403).json({ message: "Cannot change votes on an ended poll" });
+        }
+
+        await pool.query(
+            `DELETE FROM poll_votes WHERE voter_id = $1 AND poll_id = $2`,
+            [voterId, poll_id]
+        );
+
+        res.status(200).json({ message: "Vote removed successfully" });
+    } catch (err) {
+        console.error("Remove vote error:", err);
+        return res.status(500).json({ message: "Internal server error" });
+    }
+};
 
 // --- SOCIAL ENGAGEMENT ---
 exports.toggleLike = async (req, res) => {
