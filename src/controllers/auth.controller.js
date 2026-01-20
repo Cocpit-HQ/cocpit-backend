@@ -13,10 +13,12 @@ exports.register = async (req, res) => {
   const { email, password, fullName, accountType } = req.body;
 
   try {
+    const normalizedEmail = email.toLowerCase();
+
     // 1. Check if user exists
     const exists = await pool.query(
       "SELECT 1 FROM users WHERE email = $1",
-      [email]
+      [normalizedEmail]
     );
 
     if (exists.rowCount > 0) {
@@ -28,7 +30,7 @@ exports.register = async (req, res) => {
       `INSERT INTO users (email, password_hash, full_name)
        VALUES ($1, $2, $3)
        RETURNING user_id, email, full_name`,
-      [email, passwordHash, fullName]
+      [normalizedEmail, passwordHash, fullName]
     );
 
     const user = userResult.rows[0];
@@ -368,7 +370,7 @@ exports.register = async (req, res) => {
 exports.login = async (req, res) => {
   const { email, password } = req.body;
   const userAgent = req.headers["user-agent"] || "unknown";
- const ipAddress = req.ip || "unknown";
+  const ipAddress = req.ip || "unknown";
 
   const normalizedEmail = email.toLowerCase();
   const sessionId = crypto.randomUUID();
@@ -463,14 +465,14 @@ exports.login = async (req, res) => {
          5️⃣ Insert NEW session
       --------------------------------------------------------- */
       await pool.query(
-  `
+        `
   INSERT INTO refresh_tokens
     (session_id, user_id, token_hash, expires_at, user_agent, ip_address)
   VALUES
     ($1, $2, $3, now() + interval '7 days', $4, $5)
   `,
-  [sessionId, user.user_id, hashedRefresh, userAgent, ipAddress]
-);
+        [sessionId, user.user_id, hashedRefresh, userAgent, ipAddress]
+      );
 
 
       await pool.query("COMMIT");
@@ -482,7 +484,7 @@ exports.login = async (req, res) => {
     /* ---------------------------------------------------------
        6️⃣ Set refresh token cookie
     --------------------------------------------------------- */
-      res.cookie("refreshToken", refreshToken, {
+    res.cookie("refreshToken", refreshToken, {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
       sameSite: "Lax",
@@ -517,13 +519,13 @@ exports.login = async (req, res) => {
     return res.status(500).json({ message: "Internal server error" });
   }
 };
- 
+
 exports.refreshToken = async (req, res) => {
   const refreshToken = req.cookies?.refreshToken || req.body?.refreshToken;
 
   console.log("refresh token : ", refreshToken)
   if (!refreshToken) {
-    return res.status(401).json({ message: "Refresh token missing" ,refreshToken:refreshToken });
+    return res.status(401).json({ message: "Refresh token missing", refreshToken: refreshToken });
   }
 
   try {
