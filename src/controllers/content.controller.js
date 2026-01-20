@@ -409,7 +409,7 @@ exports.getMyPosts = async (req, res) => {
 //--- POST INTEGRATION ---
 exports.createPost = async (req, res) => {
     const userId = req.user.sub;
-    const { content, category, visibility, media_urls, post_type, title, poll_options, poll_duration } = req.body; // category is name, media_urls is array
+    let { content, category, visibility, media_urls, post_type, title, poll_options, poll_duration } = req.body; // category is name, media_urls is array
 
     try {
         // 1. Get Category ID

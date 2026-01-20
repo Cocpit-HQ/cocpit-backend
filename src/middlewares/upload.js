@@ -2,31 +2,96 @@ const multer = require("multer");
 const { CloudinaryStorage } = require("multer-storage-cloudinary");
 const cloudinary = require("../config/cloudinary");
 
-const storage = new CloudinaryStorage({
-  cloudinary,
-  params: async (req, file) => {
-    const isVideo = file.mimetype.startsWith("video");
+// --- Profile Avatar Upload ---
+const fs = require('fs');
+const path = require('path');
 
-    return {
-      folder: "posts",
-      resource_type: isVideo ? "video" : "image",
-      public_id: `${Date.now()}-${file.originalname}`,
-    };
-  },
-});
+// Ensure uploads directories exist
+const createDir = (dir) => {
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+};
+
+const uploadsDir = 'uploads';
+createDir(path.join(uploadsDir, 'avatars'));
+createDir(path.join(uploadsDir, 'posts'));
+createDir(path.join(uploadsDir, 'resumes'));
+createDir(path.join(uploadsDir, 'events'));
+
+let storage;
+let avatarStorage;
+let resumeStorage;
+
+const hasCloudinary = process.env.CLOUDINARY_CLOUD_NAME && process.env.CLOUDINARY_API_KEY && process.env.CLOUDINARY_API_SECRET;
+
+if (hasCloudinary) {
+  storage = new CloudinaryStorage({
+    cloudinary,
+    params: async (req, file) => {
+      const isVideo = file.mimetype.startsWith("video");
+      return {
+        folder: "posts",
+        resource_type: isVideo ? "video" : "image",
+        public_id: `${Date.now()}-${file.originalname}`,
+      };
+    },
+  });
+
+  avatarStorage = new CloudinaryStorage({
+    cloudinary,
+    params: {
+      folder: "avatars",
+      resource_type: "image", // only images
+      public_id: (req, file) => `avatar-${req.user.id}-${Date.now()}`,
+    },
+  });
+
+  resumeStorage = new CloudinaryStorage({
+    cloudinary,
+    params: {
+      folder: "resumes",
+      resource_type: "raw", // IMPORTANT for PDF/DOC
+      public_id: (req, file) => `resume-${req.user.id}-${Date.now()}`,
+    },
+  });
+} else {
+  // Local Storage Fallback
+  storage = multer.diskStorage({
+    destination: (req, file, cb) => {
+      cb(null, 'uploads/posts/');
+    },
+    filename: (req, file, cb) => {
+      const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+      const ext = path.extname(file.originalname);
+      cb(null, file.fieldname + '-' + uniqueSuffix + ext);
+    }
+  });
+
+  avatarStorage = multer.diskStorage({
+    destination: (req, file, cb) => {
+      cb(null, 'uploads/avatars/');
+    },
+    filename: (req, file, cb) => {
+      const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+      const ext = path.extname(file.originalname);
+      cb(null, 'avatar-' + uniqueSuffix + ext);
+    }
+  });
+
+  resumeStorage = multer.diskStorage({
+    destination: (req, file, cb) => {
+      cb(null, 'uploads/resumes/');
+    },
+    filename: (req, file, cb) => {
+      const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+      const ext = path.extname(file.originalname);
+      cb(null, 'resume-' + uniqueSuffix + ext);
+    }
+  });
+}
 
 const upload = multer({ storage });
-
-
-// --- Resume Upload ---
-const resumeStorage = new CloudinaryStorage({
-  cloudinary,
-  params: {
-    folder: "resumes",
-    resource_type: "raw", // IMPORTANT for PDF/DOC
-    public_id: (req, file) => `resume-${req.user.id}-${Date.now()}`,
-  },
-});
 
 const uploadResume = multer({
   storage: resumeStorage,
@@ -45,25 +110,6 @@ const uploadResume = multer({
     cb(null, true);
   },
 });
-
-// --- Profile Avatar Upload ---
-let avatarStorage;
-if (process.env.CLOUDINARY_CLOUD_NAME) {
-  avatarStorage = new CloudinaryStorage({
-    cloudinary,
-    params: {
-      folder: "avatars",
-      resource_type: "image", // only images
-      public_id: (req, file) => `avatar-${req.user.id}-${Date.now()}`,
-    },
-  });
-} else {
-  // Fallback for dev/test without Cloudinary
-  avatarStorage = multer.diskStorage({
-    destination: (req, file, cb) => cb(null, '/tmp'),
-    filename: (req, file, cb) => cb(null, `avatar-${Date.now()}.png`), // Simple mock
-  });
-}
 
 const uploadAvatar = multer({
   storage: avatarStorage,

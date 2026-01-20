@@ -381,7 +381,7 @@ exports.login = async (req, res) => {
     --------------------------------------------------------- */
     const userResult = await pool.query(
       `
-      SELECT user_id, email, password_hash, is_onboarding_complete, account_name
+      SELECT user_id, email, password_hash, is_onboarding_complete, account_name, full_name, avatar_url
       FROM users
       WHERE email = $1
       `,
@@ -508,6 +508,8 @@ exports.login = async (req, res) => {
       user: {
         id: user.user_id,
         email: user.email,
+        full_name: user.full_name,
+        avatar_url: user.avatar_url,
         roles,
         onboarding_complete: user.is_onboarding_complete,
         account_name: user.account_name,
