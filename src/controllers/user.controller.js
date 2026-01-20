@@ -260,6 +260,7 @@ exports.getPublicProfilePosts = async (req, res) => {
         COALESCE(pm.media, '[]'::json) AS media,
         COALESCE(lc.like_count, 0) AS like_count,
         COALESCE(cc.comment_count, 0) AS comment_count,
+        COALESCE(il.is_liked, false) AS is_liked,
 
         pp.poll
 
@@ -290,6 +291,13 @@ exports.getPublicProfilePosts = async (req, res) => {
         GROUP BY post_id
       ) lc ON lc.post_id = p.post_id
 
+      -- IS LIKED BY CURRENT USER
+      LEFT JOIN (
+        SELECT post_id, true AS is_liked
+        FROM post_likes
+        WHERE user_id = $${params.length + 1}
+      ) il ON il.post_id = p.post_id
+
       -- COMMENT COUNT
       LEFT JOIN (
         SELECT post_id, COUNT(*) AS comment_count
@@ -303,8 +311,10 @@ exports.getPublicProfilePosts = async (req, res) => {
           pp.post_id,
           json_build_object(
             'poll_id', pp.poll_id,
-            'duration', pp.duration,
+            'duration', COALESCE(pp.duration, '1 day'),
             'total_votes', COALESCE(pv.total_votes, 0),
+            'user_vote', (SELECT pv_u.option_id FROM poll_votes pv_u WHERE pv_u.poll_id = pp.poll_id AND pv_u.voter_id = $${params.length + 1}),
+            'is_active', (pp.created_at + COALESCE(pp.duration, '1 day')::interval > NOW()),
             'options', COALESCE(po.options, '[]'::json)
           ) AS poll
         FROM post_polls pp
@@ -343,6 +353,9 @@ exports.getPublicProfilePosts = async (req, res) => {
       ORDER BY p.created_at DESC, p.post_id DESC
       LIMIT $${idx};
     `;
+
+    // Add current user ID to params for is_liked check and user_vote check
+    params.push(req.user.sub);
 
     const { rows } = await pool.query(query, params);
     const last = rows[rows.length - 1];
