@@ -181,6 +181,7 @@ exports.getMyPosts = async (req, res) => {
 
         COALESCE(pm.media, '[]'::json) AS media,
         COALESCE(lc.like_count, 0) AS like_count,
+        EXISTS (SELECT 1 FROM post_likes pl WHERE pl.post_id = p.post_id AND pl.user_id = $1) AS is_liked,
         COALESCE(cc.comment_count, 0) AS comment_count,
 
         pp.poll
@@ -1251,6 +1252,75 @@ exports.getStoryDetailsById = async (req, res) => {
 
     } catch (err) {
         console.error(err);
+        return res.status(500).json({ message: "Internal server error" });
+    }
+};
+
+exports.getPollAnalytics = async (req, res) => {
+    const userId = req.user.sub;
+    const { id: postId } = req.params;
+
+    try {
+        // 1. Verify ownership
+        const postRes = await pool.query(
+            `SELECT author_id FROM posts WHERE post_id = $1`,
+            [postId]
+        );
+
+        if (postRes.rowCount === 0) return res.status(404).json({ message: "Post not found" });
+        if (postRes.rows[0].author_id !== userId) {
+            return res.status(403).json({ message: "Only the poll author can view analytics" });
+        }
+
+        // 2. Fetch Analytics
+        const query = `
+            SELECT 
+                pp.poll_id,
+                pp.duration,
+                pp.created_at,
+                (pp.created_at + COALESCE(pp.duration, '1 day')::interval > NOW()) as is_active,
+                (SELECT COUNT(*) FROM poll_votes pv WHERE pv.poll_id = pp.poll_id) as total_votes,
+                
+                -- Options with counts only (NO voter details)
+                (
+                    SELECT json_agg(
+                        json_build_object(
+                            'option_id', po.option_id,
+                            'option_text', po.option_text,
+                            'vote_count', (SELECT COUNT(*) FROM poll_votes pv WHERE pv.option_id = po.option_id)
+                        )
+                    )
+                    FROM poll_options po
+                    WHERE po.poll_id = pp.poll_id
+                ) as options,
+
+                -- All voters in a single list (anonymized choice)
+                (
+                    SELECT COALESCE(json_agg(
+                        json_build_object(
+                            'user_id', u.user_id,
+                            'full_name', u.full_name,
+                            'avatar_url', u.avatar_url,
+                            'headline', u.headline
+                        )
+                    ), '[]'::json)
+                    FROM poll_votes pv
+                    JOIN users u ON u.user_id = pv.voter_id
+                    WHERE pv.poll_id = pp.poll_id
+                ) as voters
+
+            FROM post_polls pp
+            WHERE pp.post_id = $1
+        `;
+
+        const result = await pool.query(query, [postId]);
+
+        if (result.rowCount === 0) return res.status(404).json({ message: "Poll not found for this post" });
+
+        res.status(200).json(result.rows[0]);
+
+    } catch (err) {
+        console.error("Get poll analytics error:", err);
         return res.status(500).json({ message: "Internal server error" });
     }
 };
