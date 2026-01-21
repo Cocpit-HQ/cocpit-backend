@@ -420,3 +420,16 @@ CREATE TABLE IF NOT EXISTS profile_views (
 );
 
 CREATE INDEX idx_profile_views_lookup ON profile_views(viewer_id, profile_owner_id, viewed_at);
+
+--20-01-26 -- student account type added 
+ALTER TABLE profiles
+DROP CONSTRAINT profiles_account_type_check;
+
+ALTER TABLE profiles
+ADD CONSTRAINT profiles_account_type_check
+CHECK (account_type IN (
+  'Employer',
+  'Admin',
+  'Fresher',
+  'Student'
+));

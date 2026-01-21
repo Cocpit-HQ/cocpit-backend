@@ -623,9 +623,19 @@ exports.addEducation = async (req, res) => {
       ]
     );
 
+    const profile = await pool.query(
+      `SELECT * FROM users WHERE user_id = $1`,
+      [profileId]
+    );
+
+
+
+    console.log("Education added successfully:", result.rows[0], profile.rows[0],);
+
     res.status(201).json({
       message: "Education added successfully",
       education: result.rows[0],
+      profile: profile.rows[0],
     });
   } catch (err) {
     console.error("Add education error:", err);
@@ -737,6 +747,9 @@ exports.deleteEducation = async (req, res) => {
       });
     }
 
+    console.log("Education deleted successfully:", deleteResult.rows[0]);
+
+
     res.json({
       message: "Education deleted successfully",
       education: deleteResult.rows[0],
@@ -746,6 +759,7 @@ exports.deleteEducation = async (req, res) => {
     res.status(500).json({ message: "Internal server error" });
   }
 };
+
 // --- Skills ---
 exports.addSkills = async (req, res) => {
   const userId = req.user.sub;
@@ -784,6 +798,7 @@ exports.addSkills = async (req, res) => {
 
   try {
     await client.query("BEGIN");
+    console.log("start")
 
     // 3. Get profile
     const { rows } = await client.query(
@@ -834,6 +849,8 @@ exports.addSkills = async (req, res) => {
     );
 
     await client.query("COMMIT");
+
+    console.log("Skills added successfully:", skills);
 
     res.status(201).json({
       message: "Skills added successfully",
