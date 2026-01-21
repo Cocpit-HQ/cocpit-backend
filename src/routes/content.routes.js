@@ -16,7 +16,10 @@ router.delete("/post/:id", requireAuth, contentController.deletePost);
 // post share story share
 
 // --- POLL INTERACTION ---
+// --- POLL INTERACTION ---
 router.post("/post/:id/poll/vote", requireAuth, contentController.voteInPoll);
+router.delete("/post/:id/poll/vote", requireAuth, contentController.removeVote);
+router.get("/post/:id/poll/analytics", requireAuth, contentController.getPollAnalytics);
 
 // --- SOCIAL ENGAGEMENT ---
 router.post("/post/:id/like", requireAuth, contentController.toggleLike);

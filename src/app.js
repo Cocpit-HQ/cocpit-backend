@@ -25,7 +25,7 @@ const allowedOrigins = process.env.ALLOWED_ORIGINS
     "http://192.168.1.2:3000",
     "http://192.168.1.3:3000",
     "https://frontend.cocpit.in",
-    ];
+  ];
 
 const corsOptions = {
   origin: allowedOrigins, // Array of allowed origins
@@ -38,6 +38,7 @@ app.use(helmet());
 app.use(cors(corsOptions));
 app.use(express.json());
 app.use(cookieParser());
+app.use("/uploads", express.static("uploads"));
 
 // Middleware to normalize URL and remove trailing slashes
 app.use((req, res, next) => {
