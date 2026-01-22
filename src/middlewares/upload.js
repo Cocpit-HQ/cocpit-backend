@@ -115,9 +115,10 @@ const uploadAvatar = multer({
   storage: avatarStorage,
   limits: { fileSize: 2 * 1024 * 1024 }, // 2MB limit
   fileFilter: (req, file, cb) => {
-    const allowed = ["image/jpeg", "image/png", "image/webp"];
+    const allowed = ["image/jpeg","image/jpg", "image/png", "image/webp" ,"image/heic",
+  "image/heif",];
     if (!allowed.includes(file.mimetype)) {
-      return cb(new Error("Only JPEG/PNG/WebP allowed"));
+      return cb(new Error(" not supported file format"));
     }
     cb(null, true);
   },

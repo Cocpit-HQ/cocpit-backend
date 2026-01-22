@@ -433,3 +433,20 @@ CHECK (account_type IN (
   'Fresher',
   'Student'
 ));
+
+--22/01/26  category column added in events table with their fixed values
+ALTER TABLE events
+ADD COLUMN category VARCHAR(30)
+CHECK (category IN (
+  'Tech',
+  'Business',
+  'Networking',
+  'Workshop',
+  'Summit',
+  'Conference',
+  'Masterclass'
+));
+
+ALTER TABLE events
+ALTER COLUMN category SET NOT NULL;
+

@@ -95,6 +95,7 @@ exports.getProfile = async (req, res) => {
         latest_education: latestEducation,
         is_following: isFollowing, // ✅ Added
       },
+      //is_connected  want to add ...
       experiences: experiences.rows,
       educations: educations.rows,
       skills: skills.rows,
@@ -216,6 +217,8 @@ exports.uploadOrReplaceAvatar = async (req, res) => {
       [avatarUrl, userId]
     );
 
+    console.log("Avatar URL:", avatarUrl);
+
     res.json({ message: "Profile picture updated successfully", avatarUrl });
   } catch (err) {
     console.error("Avatar upload error:", err);
@@ -236,6 +239,8 @@ exports.getAvatar = async (req, res) => {
     if (!result.rows[0] || !result.rows[0].avatar_url) {
       return res.status(404).json({ message: "No profile picture found" });
     }
+
+    console.log("Avatar URL:", result.rows[0].avatar_url);
 
     res.json({ avatarUrl: result.rows[0].avatar_url });
   } catch (err) {

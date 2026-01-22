@@ -81,15 +81,18 @@ exports.getEventById = async (req, res) => {
 };
 exports.createEvent = async (req, res) => {
   try {
-    const { title, description, eventType, virtualLink, location, startTime, endTime, maxAttendees, registrationDeadline, waitlist } = req.body;
+    const userId = req.user.sub;
+    const { title, description,category, eventType, virtualLink, location, startTime, endTime, maxAttendees, registrationDeadline, waitlist } = req.body;
     if (!title || !description || !startTime) return res.status(400).json({ message: "Please fill all required fields" });
     if (eventType === "Online" && !virtualLink) return res.status(400).json({ message: "Virtual link is required for online events" });
     const bannerUrl = req.file ? req.file.path : null;
 
     const result = await pool.query(
       `INSERT INTO events (
+        organizer_id,
         title,
         description,
+        category,
         event_type,
         location,
         virtual_link,
@@ -98,13 +101,14 @@ exports.createEvent = async (req, res) => {
         banner_url,
         max_attendees,
         waitlist_enabled,
-        registration_deadline,
-        organizer_id
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+        registration_deadline
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
       RETURNING event_id`,
       [
+        userId,
         title,
         description,
+        category,
         eventType,
         eventType === "InPerson" ? location : null,
         eventType === "Online" ? virtualLink : null,
@@ -114,10 +118,12 @@ exports.createEvent = async (req, res) => {
         maxAttendees ? Number(maxAttendees) : null,
         Boolean(waitlist),
         registrationDeadline,
-        req.user.user_id
+       
       ]
     );
     const eventId = result.rows[0].event_id;
+
+    console.log("Event created with ID:", eventId);
 
     res.status(201).json({ message: "Event created successfully", eventId });
   } catch (error) {
