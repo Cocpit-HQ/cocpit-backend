@@ -1055,7 +1055,10 @@ exports.getStories = async (req, res) => {
                     WHERE sr.story_id = s.story_id AND sr.user_id = $1 AND sr.reaction_type = 'true'
                 ) AS has_liked,
                 -- 3. Identity flag for UI changes
-                (s.author_id = $1) AS is_author
+                (s.author_id = $1) AS is_author,
+                -- 4. Counts
+                (SELECT COUNT(*) FROM story_views sv WHERE sv.story_id = s.story_id)::int AS view_count,
+                (SELECT COUNT(*) FROM story_reactions sr WHERE sr.story_id = s.story_id AND sr.reaction_type = 'true')::int AS like_count
             FROM stories s
             JOIN users u ON s.author_id = u.user_id
             WHERE s.expires_at > now()
@@ -1071,6 +1074,131 @@ exports.getStories = async (req, res) => {
     }
 };
 
+exports.getGroupedStories = async (req, res) => {
+    const userId = req.user.sub;
+    try {
+        // 1. Fetch current user details (for empty state)
+        const userRes = await pool.query(
+            `SELECT user_id, full_name, avatar_url FROM users WHERE user_id = $1`,
+            [userId]
+        );
+        const currentUser = userRes.rows[0];
+
+        // 2. Fetch all active stories with author details
+        const result = await pool.query(
+            `
+            SELECT 
+                s.*, 
+                u.full_name AS author_name, 
+                u.avatar_url AS author_avatar,
+                -- Check if viewed/liked
+                EXISTS (
+                    SELECT 1 FROM story_views sv 
+                    WHERE sv.story_id = s.story_id AND sv.viewer_id = $1
+                ) AS has_viewed,
+                EXISTS (
+                    SELECT 1 FROM story_reactions sr 
+                    WHERE sr.story_id = s.story_id AND sr.user_id = $1 AND sr.reaction_type = 'true'
+                ) AS has_liked,
+                (s.author_id = $1) AS is_author,
+                -- Aggregate counts
+                (SELECT COUNT(*) FROM story_views sv WHERE sv.story_id = s.story_id)::int AS view_count,
+                (SELECT COUNT(*) FROM story_reactions sr WHERE sr.story_id = s.story_id AND sr.reaction_type = 'true')::int AS like_count
+            FROM stories s
+            JOIN users u ON s.author_id = u.user_id
+            WHERE s.expires_at > now()
+            ORDER BY s.created_at ASC
+            `,
+            [userId]
+        );
+
+        const stories = result.rows;
+        const groupsMap = new Map();
+
+        // Initialize Current User Group always
+        if (currentUser) {
+            groupsMap.set(currentUser.user_id, {
+                author: {
+                    id: currentUser.user_id,
+                    name: "You", // UI expects "You" or we can infer it
+                    avatar: currentUser.avatar_url
+                },
+                is_current_user: true,
+                latest_story_at: null, // Will update if stories exist
+                stories: []
+            });
+        }
+
+        // Group stories
+        for (const story of stories) {
+            const authorId = story.author_id;
+
+            if (!groupsMap.has(authorId)) {
+                groupsMap.set(authorId, {
+                    author: {
+                        id: authorId,
+                        name: story.author_name,
+                        avatar: story.author_avatar
+                    },
+                    is_current_user: authorId === userId,
+                    latest_story_at: story.created_at,
+                    stories: []
+                });
+            }
+
+            const group = groupsMap.get(authorId);
+            // Update latest_story_at if this story is newer
+            // (Since we iterate, we can just keep checking or sort later. 
+            // Query was ordered by created_at ASC, so last one is latest)
+            group.latest_story_at = story.created_at;
+
+            // Map story to simpler structure if needed, or keep raw
+            group.stories.push({
+                story_id: story.story_id,
+                title: story.title,
+                description: story.description,
+                media_url: story.media_url,
+                media_type: story.media_type,
+                created_at: story.created_at,
+                expires_at: story.expires_at,
+                is_author: story.is_author,
+                has_viewed: story.has_viewed,
+                has_liked: story.has_liked,
+                // Add counts if needed, query didn't fetch them in simple select but can add
+                view_count: story.view_count || 0,
+                like_count: story.like_count || 0
+            });
+        }
+
+        // Convert to array
+        const groups = Array.from(groupsMap.values());
+
+        // Sort Groups
+        groups.sort((a, b) => {
+            // 1. Current user always first
+            if (a.is_current_user) return -1;
+            if (b.is_current_user) return 1;
+
+            // 2. Latest story DESC
+            if (a.latest_story_at && b.latest_story_at) {
+                return new Date(b.latest_story_at) - new Date(a.latest_story_at);
+            }
+            return 0;
+        });
+
+        // Ensure current user name is correct if they have stories
+        if (groups.length > 0 && groups[0].is_current_user) {
+            groups[0].author.name = "You";
+        }
+
+        res.json(groups);
+
+    } catch (err) {
+        console.error("Get grouped stories error:", err);
+        res.status(500).json({ message: "Internal server error" });
+    }
+};
+
 exports.createStory = async (req, res) => {
     const userId = req.user.sub;
     const { title, media_url, description } = req.body; // description field need to add and  title also
@@ -1078,22 +1206,27 @@ exports.createStory = async (req, res) => {
     try {
         let type;
         type = media_url.toLowerCase().match(/\.(mp4|webm|mov)$/) ? 'video' : 'image';
-        await pool.query(
+
+        const result = await pool.query(
             `
             INSERT INTO stories (author_id,title, description, media_url, media_type, expires_at)
             VALUES ($1, $2, $3, $4, $5, now() + interval '24 hours')
+            RETURNING story_id, created_at
             `,
-
             [userId, title, description, media_url, type || 'image']
         );
+
+        const { story_id, created_at } = result.rows[0];
+
         res.status(201).json({
             message: "Story created",
+            story_id: story_id,
             userId: userId,
             title: title,
             description: description,
             media_url: media_url,
             media_type: type,
-
+            created_at: created_at
         });
     } catch (err) {
         console.error("Create story error:", err);
@@ -1104,7 +1237,27 @@ exports.createStory = async (req, res) => {
 exports.deleteStory = async (req, res) => {
     const storyId = req.params.id;
     const userId = req.user.sub;
-}
+
+    if (!storyId) {
+        return res.status(400).json({ message: "storyId is required" });
+    }
+
+    try {
+        const result = await pool.query(
+            `DELETE FROM stories WHERE story_id = $1 AND author_id = $2 RETURNING story_id`,
+            [storyId, userId]
+        );
+
+        if (result.rowCount === 0) {
+            return res.status(404).json({ message: "Story not found or unauthorized", storyId, userId });
+        }
+
+        res.status(200).json({ message: "Story deleted", deletedStoryId: storyId });
+    } catch (err) {
+        console.error("Delete story error:", err);
+        res.status(500).json({ message: "Internal server error" });
+    }
+};
 
 exports.viewStory = async (req, res) => {
     const story_id = req.params.id;
@@ -1143,16 +1296,18 @@ exports.viewStory = async (req, res) => {
     }
 };
 
+
+
 exports.reactToStory = async (req, res) => {
     const userId = req.user.sub;
     const story_id = req.params.id;
     const { reaction } = req.body;
 
     try {
-        const storyRes = await pool.query(`SELECT author_id FROM stories WHERE story_id = $1`, [story_id]);
+        const storyRes = await pool.query(`SELECT author_id, media_url FROM stories WHERE story_id = $1`, [story_id]);
         if (storyRes.rowCount === 0) return res.status(404).json({ message: "Story not found" });
 
-        const author_id = storyRes.rows[0].author_id;
+        const { author_id, media_url } = storyRes.rows[0];
         let liked;
         if (author_id !== userId) {
 
@@ -1182,6 +1337,31 @@ exports.reactToStory = async (req, res) => {
                     [story_id, userId]
                 );
                 liked = true;
+
+                // 🔔 Notify Author (if not self)
+                const actorRes = await pool.query(`SELECT full_name, avatar_url FROM users WHERE user_id = $1`, [userId]);
+                const actor = actorRes.rows[0];
+
+                const notificationData = {
+                    type: "story_like",
+                    text: `${actor.full_name} liked your story`,
+                    from: userId,
+                    senderName: actor.full_name,
+                    senderAvatar: actor.avatar_url,
+                    referenceId: story_id,
+                    mediaUrl: media_url,
+                    time: "Just now"
+                };
+
+                // Notify via socket
+                socketService.notifyUser(author_id, "notification", notificationData);
+
+                // Persist to DB
+                await pool.query(
+                    `INSERT INTO notifications (user_id, sender_id, type, text, reference_id) 
+                     VALUES ($1, $2, $3, $4, $5)`,
+                    [author_id, userId, "story_like", notificationData.text, story_id]
+                );
             }
         }
 

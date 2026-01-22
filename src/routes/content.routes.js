@@ -29,6 +29,7 @@ router.delete("/post/comments/:comment_id", requireAuth, contentController.delet
 router.get("/post/:id/comments", requireAuth, contentController.getComments);
 
 // --- STORIES ---
+router.get("/stories/grouped", requireAuth, contentController.getGroupedStories);
 router.get("/stories", requireAuth, contentController.getStories);
 router.post("/story", requireAuth, contentController.createStory);
 router.delete("/stories/:id", requireAuth, contentController.deleteStory);
