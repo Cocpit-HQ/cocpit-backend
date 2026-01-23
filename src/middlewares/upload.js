@@ -43,7 +43,7 @@ if (hasCloudinary) {
     params: {
       folder: "avatars",
       resource_type: "image", // only images
-      public_id: (req, file) => `avatar-${req.user.id}-${Date.now()}`,
+      public_id: (req, file) => `avatar-${req.user.sub}-${Date.now()}`,
     },
   });
 
@@ -52,7 +52,8 @@ if (hasCloudinary) {
     params: {
       folder: "resumes",
       resource_type: "raw", // IMPORTANT for PDF/DOC
-      public_id: (req, file) => `resume-${req.user.id}-${Date.now()}`,
+      // Append extension for raw files so they have correct type when downloaded/viewed
+      public_id: (req, file) => `resume-${req.user.sub}-${Date.now()}${path.extname(file.originalname)}`,
     },
   });
 } else {
@@ -115,8 +116,8 @@ const uploadAvatar = multer({
   storage: avatarStorage,
   limits: { fileSize: 2 * 1024 * 1024 }, // 2MB limit
   fileFilter: (req, file, cb) => {
-    const allowed = ["image/jpeg","image/jpg", "image/png", "image/webp" ,"image/heic",
-  "image/heif",];
+    const allowed = ["image/jpeg", "image/jpg", "image/png", "image/webp", "image/heic",
+      "image/heif",];
     if (!allowed.includes(file.mimetype)) {
       return cb(new Error(" not supported file format"));
     }

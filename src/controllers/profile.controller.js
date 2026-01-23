@@ -7,7 +7,7 @@ exports.getProfile = async (req, res) => {
 
     const userResult = await pool.query(
       `
-      SELECT u.user_id, u.full_name, u.headline, u.avatar_url, u.location, u.about_text, u.email,
+      SELECT u.user_id, u.full_name, u.headline, u.avatar_url, u.location, u.about_text, u.email, u.mobile_number,
              p.profile_id, p.open_to, p.availability, p.work_preference, p.profile_views_count, p.search_appearances_count
       FROM users u
       LEFT JOIN profiles p ON u.user_id = p.user_id
@@ -52,6 +52,15 @@ exports.getProfile = async (req, res) => {
       )
       : { rows: [] };
 
+    const resumeResult = await pool.query(
+      `SELECT file_name, file_url FROM user_resumes WHERE user_id = $1 ORDER BY uploaded_at DESC LIMIT 1`,
+      [userId]
+    );
+    const resume = resumeResult.rows[0] ? {
+      originalName: resumeResult.rows[0].file_name,
+      url: resumeResult.rows[0].file_url
+    } : null;
+
 
     const latestEducation = educations.rows[0]
       ? {
@@ -87,6 +96,7 @@ exports.getProfile = async (req, res) => {
         location: u.location,
         about: u.about_text,
         email: u.email,
+        phone: u.mobile_number,
         profile_views: u.profile_views_count,
         search_appearances: u.search_appearances_count,
         open_to: u.open_to,
@@ -99,6 +109,7 @@ exports.getProfile = async (req, res) => {
       experiences: experiences.rows,
       educations: educations.rows,
       skills: skills.rows,
+      resume: resume
     });
   } catch (err) {
     console.error("Get profile error:", err);

@@ -313,11 +313,18 @@ exports.applyJob = async (req, res) => {
       return res.status(409).json({ message: "Already applied to this job" });
     }
 
-    // Resume file URL from Cloudinary
-    if (!req.file) {
+    // Resume file URL from Cloudinary or existing profile resume
+    let resume_url = null;
+
+    if (req.file) {
+      resume_url = req.file.path;
+    } else if (req.body.resume_url) {
+      resume_url = req.body.resume_url;
+    }
+
+    if (!resume_url) {
       return res.status(400).json({ message: "Resume is required" });
     }
-    const resume_url = req.file.path;
 
     // Create application
     const appResult = await pool.query(
@@ -578,10 +585,16 @@ exports.getMySavedJobs = async (req, res) => {
 
   try {
     let query = `
-      SELECT j.*, u.full_name AS recruiter_name, TRUE AS "isSaved"
+      SELECT 
+        j.*, 
+        u.full_name AS recruiter_name, 
+        TRUE AS "isSaved",
+        (ja.application_id IS NOT NULL) AS "hasApplied",
+        ja.current_status AS "applicationStatus"
       FROM job_saves js
       JOIN jobs j ON js.job_id = j.job_id
       LEFT JOIN users u ON j.recruiter_id = u.user_id
+      LEFT JOIN job_applications ja ON ja.job_id = j.job_id AND ja.applicant_id = $1
       WHERE js.user_id = $1 AND j.is_active = TRUE
       `;
     const params = [userId];
@@ -884,7 +897,10 @@ exports.getMyJobs = async (req, res) => {
 
   try {
     let query = `
-      SELECT j.*, u.full_name AS recruiter_name
+      SELECT 
+        j.*, 
+        u.full_name AS recruiter_name,
+        (SELECT COUNT(*) FROM job_applications ja WHERE ja.job_id = j.job_id) as applicants_count
       FROM jobs j
       LEFT JOIN users u ON j.recruiter_id = u.user_id
       WHERE j.recruiter_id = $1
@@ -992,6 +1008,135 @@ exports.getMyJobs = async (req, res) => {
       });
     }
     console.error("Get my jobs error:", err);
+    res.status(500).json({ message: "Internal server error" });
+  }
+};
+
+exports.getDashboardStats = async (req, res) => {
+  const userId = req.user.sub;
+
+  try {
+    const stats = await pool.query(`
+      SELECT
+        COUNT(j.job_id) FILTER (WHERE j.is_active = TRUE) as "activeJobs",
+        COUNT(j.job_id) as "totalJobs",
+        (
+           SELECT COUNT(*) 
+           FROM job_applications ja 
+           JOIN jobs j2 ON ja.job_id = j2.job_id 
+           WHERE j2.recruiter_id = $1
+        ) as "totalApplicants"
+      FROM jobs j
+      WHERE j.recruiter_id = $1
+    `, [userId]);
+
+    const data = stats.rows[0];
+
+    res.json({
+      totalJobs: parseInt(data.totalJobs || 0),
+      activeJobs: parseInt(data.activeJobs || 0),
+      totalApplicants: parseInt(data.totalApplicants || 0)
+    });
+
+  } catch (err) {
+    console.error("Dashboard stats error:", err);
+    res.status(500).json({ message: "Internal server error" });
+  }
+};
+
+exports.getJobApplicants = async (req, res) => {
+  const { id } = req.params; // job_id
+  const userId = req.user.sub;
+
+  try {
+    // 1. Verify ownership
+    const jobCheck = await pool.query(
+      `SELECT 1 FROM jobs WHERE job_id = $1 AND recruiter_id = $2`,
+      [id, userId]
+    );
+
+    if (jobCheck.rowCount === 0) {
+      return res.status(403).json({ message: "Not authorized to view applicants for this job" });
+    }
+
+    // 2. Fetch applicants with profile details
+    const result = await pool.query(`
+      SELECT 
+        ja.application_id,
+        ja.applicant_id,
+        ja.full_name as name,
+        ja.email,
+        ja.phone,
+        ja.resume_url, 
+        ja.current_status as status,
+        ja.applied_at as "appliedAt",
+        u.avatar_url,
+        u.headline,
+        u.location,
+        u.about_text as about,
+        -- Aggregate skills
+        COALESCE((
+          SELECT array_agg(s.name)
+          FROM user_skills us
+          JOIN skills s ON us.skill_id = s.skill_id
+          JOIN profiles p ON us.profile_id = p.profile_id
+          WHERE p.user_id = ja.applicant_id
+        ), '{}') as skills,
+        -- Get latest experience (simplified for list view)
+        (
+            SELECT json_agg(json_build_object(
+                'role', e.title,
+                'company', e.company_name,
+                'duration', TO_CHAR(e.start_date, 'YYYY') || ' - ' || COALESCE(TO_CHAR(e.end_date, 'YYYY'), 'Present')
+            ))
+            FROM experiences e
+            JOIN profiles p ON e.profile_id = p.profile_id
+            WHERE p.user_id = ja.applicant_id
+            LIMIT 2
+        ) as experience,
+         -- Get latest education
+        (
+            SELECT json_agg(json_build_object(
+                'degree', ed.degree,
+                'school', ed.school_name,
+                'year', TO_CHAR(ed.end_date, 'YYYY')
+            ))
+            FROM educations ed
+            JOIN profiles p ON ed.profile_id = p.profile_id
+            WHERE p.user_id = ja.applicant_id
+            LIMIT 1
+        ) as education
+
+      FROM job_applications ja
+      LEFT JOIN users u ON ja.applicant_id = u.user_id
+      WHERE ja.job_id = $1
+      ORDER BY ja.applied_at DESC
+    `, [id]);
+
+    const applicants = result.rows.map(row => ({
+      id: row.applicant_id, // or application_id depending on frontend need
+      applicationId: row.application_id,
+      name: row.name,
+      headline: row.headline || "No headline",
+      location: row.location || "Unknown",
+      email: row.email,
+      phone: row.phone,
+      about: row.about,
+      skills: row.skills || [],
+      experience: row.experience || [],
+      education: row.education || [],
+      resumeUrl: row.resume_url,
+      resumeName: row.resume_url ? row.resume_url.split('/').pop() : "Resume.pdf",
+      status: row.status,
+      initials: row.name ? row.name.split(' ').map(n => n[0]).join('').substring(0, 2).toUpperCase() : "??",
+      color: "bg-blue-500", // random color logic could be here
+      appliedAt: row.appliedAt
+    }));
+
+    res.json(applicants);
+
+  } catch (err) {
+    console.error("Get job applicants error:", err);
     res.status(500).json({ message: "Internal server error" });
   }
 };

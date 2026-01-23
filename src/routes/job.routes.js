@@ -12,9 +12,11 @@ router.get("/", optionalAuth, jobController.getAllJobs); // /api/jobs
 
 // IMPORTANT: Specific routes MUST come before /:id catch-all
 router.get("/offers", optionalAuth, jobController.getJobOffers);
+router.get("/stats", requireAuth, jobController.getDashboardStats);
 router.get("/applications/me", requireAuth, jobController.getMyApplications); // in progress, applied, in past
 router.get("/saved/me", requireAuth, jobController.getMySavedJobs); //get saved job 
 router.get("/my", requireAuth, jobController.getMyJobs);
+router.get("/:id/applicants", requireAuth, jobController.getJobApplicants);
 
 // Catch-all route - MUST be last among GET routes
 router.get("/:id", optionalAuth, jobController.getJobById);
