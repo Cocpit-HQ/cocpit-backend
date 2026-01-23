@@ -1,29 +1,28 @@
 const express = require("express");
 const router = express.Router();
 const jobController = require("../controllers/job.controller");
-const { requireAuth } = require("../middlewares/auth.middleware");
+const { requireAuth, optionalAuth } = require("../middlewares/auth.middleware");
 const { requireRoles } = require("../middlewares/role.middleware");
 const { uploadResume } = require("../middlewares/upload");
 
 
 // Public routes (or authenticated but open to all)
-//search
 // Get all jobs
-router.get("/", jobController.getAllJobs); // /api/jobs
-router.get("/offers", jobController.getJobOffers);
+router.get("/", optionalAuth, jobController.getAllJobs); // /api/jobs
 
-// Get jobs posted by logged-in all user
-router.get("/my",requireAuth,jobController.getMyJobs);//
-
+// IMPORTANT: Specific routes MUST come before /:id catch-all
+router.get("/offers", optionalAuth, jobController.getJobOffers);
 router.get("/applications/me", requireAuth, jobController.getMyApplications); // in progress, applied, in past
-router.get("/:id", jobController.getJobById);
+router.get("/saved/me", requireAuth, jobController.getMySavedJobs); //get saved job 
+router.get("/my", requireAuth, jobController.getMyJobs);
+
+// Catch-all route - MUST be last among GET routes
+router.get("/:id", optionalAuth, jobController.getJobById);
+
 // Protected routes
 router.post("/", requireAuth, requireRoles(['Recruiter', 'Admin']), jobController.createJob);
-router.post("/:id/apply",requireAuth,uploadResume.single("resume"),jobController.applyJob);
-
-
-router.post("/:id/save",requireAuth,jobController.saveJob); //save job
-router.delete("/:id/save",requireAuth,jobController.unsaveJob); //unsave job
-router.get("/saved/me", requireAuth, jobController.getMySavedJobs); //get saved job 
+router.post("/:id/apply", requireAuth, uploadResume.single("resume"), jobController.applyJob);
+router.post("/:id/save", requireAuth, jobController.saveJob); //save job
+router.delete("/:id/save", requireAuth, jobController.unsaveJob); //unsave job
 
 module.exports = router;

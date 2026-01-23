@@ -23,13 +23,25 @@ exports.getAllJobs = async (req, res) => {
         j.*,
         u.full_name AS recruiter_name,
         ${userId
-        ? '(js.user_id IS NOT NULL) AS "isSaved"'
-        : 'FALSE AS "isSaved"'
+        ? '(js.user_id IS NOT NULL) AS "isSaved",'
+        : 'FALSE AS "isSaved",'
+      }
+        ${userId
+        ? '(ja.application_id IS NOT NULL) AS "hasApplied",'
+        : 'FALSE AS "hasApplied",'
+      }
+        ${userId
+        ? 'ja.current_status AS "applicationStatus"'
+        : 'NULL AS "applicationStatus"'
       }
       FROM jobs j
       LEFT JOIN users u ON j.recruiter_id = u.user_id
       ${userId
         ? "LEFT JOIN job_saves js ON js.job_id = j.job_id AND js.user_id = $1"
+        : ""
+      }
+      ${userId
+        ? "LEFT JOIN job_applications ja ON ja.job_id = j.job_id AND ja.applicant_id = $1"
         : ""
       }
       WHERE j.is_active = TRUE
@@ -158,10 +170,13 @@ exports.getJobById = async (req, res) => {
       SELECT 
         j.*,
         u.full_name AS recruiter_name,
-        ${userId ? '(js.user_id IS NOT NULL) AS "isSaved"' : 'FALSE AS "isSaved"'}
+        ${userId ? '(js.user_id IS NOT NULL) AS "isSaved",' : 'FALSE AS "isSaved",'}
+        ${userId ? '(ja.application_id IS NOT NULL) AS "hasApplied",' : 'FALSE AS "hasApplied",'}
+        ${userId ? 'ja.current_status AS "applicationStatus"' : 'NULL AS "applicationStatus"'}
       FROM jobs j
       LEFT JOIN users u ON j.recruiter_id = u.user_id
       ${userId ? 'LEFT JOIN job_saves js ON js.job_id = j.job_id AND js.user_id = $2' : ''}
+      ${userId ? 'LEFT JOIN job_applications ja ON ja.job_id = j.job_id AND ja.applicant_id = $2' : ''}
       WHERE j.job_id = $1
       `,
       userId ? [id, userId] : [id]
@@ -220,7 +235,7 @@ exports.createJob = async (req, res) => {
       `,
       [
         userId, title, company_name, location,
-        description, salary_min, salary_max, job_type,
+        description, minSalary, maxSalary, job_type,
         work_mode, company_type, experience_level,
         about_company, industry, easy_apply, actively_hiring
       ]
@@ -352,13 +367,25 @@ exports.getJobOffers = async (req, res) => {
         j.*,
         u.full_name AS recruiter_name,
         ${userId
-        ? '(js.user_id IS NOT NULL) AS "isSaved"'
-        : 'FALSE AS "isSaved"'
+        ? '(js.user_id IS NOT NULL) AS "isSaved",'
+        : 'FALSE AS "isSaved",'
+      }
+        ${userId
+        ? '(ja.application_id IS NOT NULL) AS "hasApplied",'
+        : 'FALSE AS "hasApplied",'
+      }
+        ${userId
+        ? 'ja.current_status AS "applicationStatus"'
+        : 'NULL AS "applicationStatus"'
       }
       FROM jobs j
       LEFT JOIN users u ON j.recruiter_id = u.user_id
       ${userId
         ? "LEFT JOIN job_saves js ON js.job_id = j.job_id AND js.user_id = $1"
+        : ""
+      }
+      ${userId
+        ? "LEFT JOIN job_applications ja ON ja.job_id = j.job_id AND ja.applicant_id = $1"
         : ""
       }
       WHERE j.is_active = TRUE AND j.is_offer = TRUE
@@ -560,7 +587,7 @@ exports.getMySavedJobs = async (req, res) => {
     const params = [userId];
     let paramCount = 2;
 
-     if (location) {
+    if (location) {
       query += ` AND j.location ILIKE $${paramCount}`;
       params.push(`%${location}%`);
       paramCount++;
@@ -694,8 +721,12 @@ exports.getMyApplications = async (req, res) => {
     let baseQuery = `
         FROM job_applications ja
         JOIN jobs j ON ja.job_id = j.job_id
+        LEFT JOIN users u ON j.recruiter_id = u.user_id
+        LEFT JOIN job_saves js ON j.job_id = js.job_id AND js.user_id = $1
         WHERE ja.applicant_id = $1
     `;
+
+    // ... (filters logic remains same, just append to baseQuery) ...
 
     if (status) {
       if (status.toLowerCase() === 'in past') {
@@ -708,7 +739,21 @@ exports.getMyApplications = async (req, res) => {
       }
     }
 
- if (location) {
+    // ... (rest of filtering logic) ...
+
+    query = `
+        SELECT 
+          j.*, 
+          u.full_name AS recruiter_name,
+          (js.user_id IS NOT NULL) AS "isSaved",
+          TRUE AS "hasApplied",
+          ja.current_status AS "applicationStatus",
+          ja.applied_at
+        ${baseQuery}
+        ORDER BY ja.applied_at DESC
+    `;
+
+    if (location) {
       baseQuery += ` AND j.location ILIKE $${paramCount}`;
       params.push(`%${location}%`);
       paramCount++;
@@ -792,7 +837,13 @@ exports.getMyApplications = async (req, res) => {
     }
 
     query = `
-        SELECT ja.*, j.title, j.company_name, j.location, j.work_mode
+        SELECT 
+          j.*, 
+          u.full_name AS recruiter_name,
+          (js.user_id IS NOT NULL) AS "isSaved",
+          TRUE AS "hasApplied",
+          ja.current_status AS "applicationStatus",
+          ja.applied_at
         ${baseQuery}
         ORDER BY ja.applied_at DESC
     `;
