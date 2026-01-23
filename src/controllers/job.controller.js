@@ -703,7 +703,7 @@ exports.getMyApplications = async (req, res) => {
     industry,
   } = req.query;
 
-  const allowedStatus = ['applied', 'in progress', 'in past', 'saved'];
+  const allowedStatus = ['applied', 'in progress', 'in past', 'saved', 'in-progress', 'in-past'];
 
   if (status && !allowedStatus.includes(status.toLowerCase())) {
     return res.status(400).json({ message: "Invalid status" });
@@ -729,12 +729,13 @@ exports.getMyApplications = async (req, res) => {
     // ... (filters logic remains same, just append to baseQuery) ...
 
     if (status) {
-      if (status.toLowerCase() === 'in past') {
+      const s = status.toLowerCase();
+      if (s === 'in past' || s === 'in-past') {
         baseQuery += ` AND j.is_active = false`;
-      } else if (status.toLowerCase() === 'in progress') {
+      } else if (s === 'in progress' || s === 'in-progress') {
         baseQuery += ` AND ja.current_status = ANY($${paramCount++})`;
         params.push(['Under Review', 'Interview']);
-      } else if (status.toLowerCase() === 'applied') {
+      } else if (s === 'applied') {
         baseQuery += ` AND ja.current_status = 'Applied'`;
       }
     }
