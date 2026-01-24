@@ -4,18 +4,19 @@ const eventController = require("../controllers/event.controller");
 const { requireAuth } = require("../middlewares/auth.middleware");
 const { uploadEventBanner } = require("../middlewares/upload");
 
-router.get("/:id/registration-status", requireAuth, eventController.checkRegistrationStatus); // Registration status
-router.post("/:id/register", requireAuth, eventController.registerForEvent); // Register event
-router.delete("/:id/register", requireAuth, eventController.unregisterFromEvent); // Unregister event
-router.get("/me/events/registered", requireAuth, eventController.getMyRegisteredEvents); // My registered events
-router.get("/me/events/created", requireAuth, eventController.getMyCreatedEvents); // My created events
+router.get("/me/events/created", requireAuth, eventController.getMyCreatedEvents);
+router.get("/me/events/registered", requireAuth, eventController.getMyRegisteredEvents);
+router.get("/me/events/saved", requireAuth, eventController.getMySavedEvents);
 
-router.get("/", requireAuth, eventController.getEvents); // All events
-router.get("/:id", requireAuth, eventController.getEventById); // Event details
-router.post("/", requireAuth, uploadEventBanner.single('banner'), eventController.createEvent); // Create event
+router.get("/:id/registration-status", requireAuth, eventController.checkRegistrationStatus);
+router.post("/:id/register", requireAuth, eventController.registerForEvent);
+router.delete("/:id/register", requireAuth, eventController.unregisterFromEvent);
+router.post("/:id/save", requireAuth, eventController.saveEvent);
+router.delete("/:id/save", requireAuth, eventController.unsaveEvent);
 
-router.post("/:id/save", requireAuth, eventController.saveEvent); // Save / bookmark event
-router.delete("/:id/save", requireAuth, eventController.unsaveEvent); // Unsave / remove bookmark
-router.get("/me/events/saved", requireAuth, eventController.getMySavedEvents); // Get saved events
+router.get("/:id", requireAuth, eventController.getEventById);
+
+router.get("/", requireAuth, eventController.getEvents);
+router.post("/", requireAuth, uploadEventBanner.single('banner'), eventController.createEvent);
+
 module.exports = router;
-

@@ -7,7 +7,7 @@ exports.getProfile = async (req, res) => {
 
     const userResult = await pool.query(
       `
-      SELECT u.user_id, u.full_name, u.headline, u.avatar_url, u.location, u.about_text, u.email, u.mobile_number,
+      SELECT u.user_id, u.full_name, u.headline, u.avatar_url, u.cover_image_url, u.location, u.about_text, u.email, u.mobile_number,
              p.profile_id, p.open_to, p.availability, p.work_preference, p.profile_views_count, p.search_appearances_count
       FROM users u
       LEFT JOIN profiles p ON u.user_id = p.user_id
@@ -93,6 +93,7 @@ exports.getProfile = async (req, res) => {
         name: u.full_name,
         headline: u.headline,
         avatar: u.avatar_url,
+        cover_image: u.cover_image_url,
         location: u.location,
         about: u.about_text,
         email: u.email,
@@ -275,6 +276,48 @@ exports.deleteAvatar = async (req, res) => {
     res.json({ message: "Profile picture deleted successfully" });
   } catch (err) {
     console.error("Delete avatar error:", err);
+    res.status(500).json({ message: "Internal server error" });
+  }
+};
+
+// Upload or replace cover photo
+exports.uploadOrReplaceCoverPhoto = async (req, res) => {
+  try {
+    const userId = req.user.sub;
+
+    if (!req.file) {
+      return res.status(400).json({ message: "No file uploaded" });
+    }
+
+    const coverUrl = req.file.path || req.file.secure_url;
+
+    await pool.query(
+      "UPDATE users SET cover_image_url = $1 WHERE user_id = $2",
+      [coverUrl, userId]
+    );
+
+    console.log("Cover URL:", coverUrl);
+
+    res.json({ message: "Cover photo updated successfully", coverUrl });
+  } catch (err) {
+    console.error("Cover upload error:", err);
+    res.status(500).json({ message: "Internal server error" });
+  }
+};
+
+// Delete cover photo
+exports.deleteCoverPhoto = async (req, res) => {
+  try {
+    const userId = req.user.sub;
+
+    await pool.query(
+      "UPDATE users SET cover_image_url = NULL WHERE user_id = $1",
+      [userId]
+    );
+
+    res.json({ message: "Cover photo deleted successfully" });
+  } catch (err) {
+    console.error("Delete cover error:", err);
     res.status(500).json({ message: "Internal server error" });
   }
 };
