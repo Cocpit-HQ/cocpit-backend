@@ -149,16 +149,26 @@ if (hasCloudinary) {
   storyStorage = new CloudinaryStorage({
     cloudinary,
     params: async (req, file) => {
-      return {
-        folder: "stories",
-        resource_type: "video",
-        allowed_formats: ["mp4", "mov", "webm"],
-        eager: [
-          { streaming_profile: "hd", format: "m3u8" }, // HLS Playlist
-          { width: 720, aspectRatio: "9:16", crop: "fill", format: "jpg" } // Thumbnail
-        ],
-        eager_async: true, // Don't block upload on processing
-      };
+      const isVideo = file.mimetype.startsWith("video");
+      if (isVideo) {
+        return {
+          folder: "stories",
+          resource_type: "video",
+          allowed_formats: ["mp4", "mov", "webm"],
+          eager: [
+            { streaming_profile: "hd", format: "m3u8" }, // HLS Playlist
+            { width: 720, aspectRatio: "9:16", crop: "fill", format: "jpg" } // Thumbnail
+          ],
+          eager_async: true,
+        };
+      } else {
+        return {
+          folder: "stories",
+          resource_type: "image",
+          // allowed_formats: ["jpg", "png", "jpeg", "webp"], // Optional restriction
+          transformation: [{ width: 1080, height: 1920, crop: "fit" }] // Standardize story size?
+        };
+      }
     },
   });
 } else {

@@ -25,19 +25,34 @@ router.post(
   (req, res) => {
     if (!req.file) return res.status(400).json({ message: "No file uploaded" });
 
-    // Cloudinary returns the eager transformations in the response, but often we just need the basics first
-    // If local storage, req.file.path is the file path
-    const isCloudinary = !!req.file.filename; // Cloudinary exposes filename as public_id usually in storage engine
+    try {
+      // Cloudinary returns the eager transformations in the response, but often we just need the basics first
+      // If local storage, req.file.path is the file path
+      const isCloudinary = !!req.file.filename; // Cloudinary exposes filename as public_id usually in storage engine
+      console.log("Upload Story File:", req.file);
 
-    res.json({
-      url: req.file.path,
-      public_id: req.file.filename || req.file.originalname,
-      media_type: 'video',
-      // Generate secure thumbnail URL if Cloudinary, else standard path
-      thumbnail_url: isCloudinary && cloudinary.url ?
-        cloudinary.url(req.file.filename, { resource_type: 'video', format: 'jpg', transformation: [{ width: 720, aspectRatio: "9:16", crop: "fill" }] }) :
-        req.file.path
-    });
+      let thumbnailUrl = req.file.path;
+      if (isCloudinary && cloudinary.url) {
+        try {
+          thumbnailUrl = cloudinary.url(req.file.filename, { resource_type: 'video', format: 'jpg', transformation: [{ width: 720, aspectRatio: "9:16", crop: "fill" }] });
+        } catch (e) {
+          console.error("Error generating thumbnail URL:", e);
+          // Fallback to path (which is likely the video URL, potentially raw)
+        }
+      }
+
+      const mediaType = req.file.mimetype.startsWith('video') ? 'video' : 'image';
+
+      res.json({
+        url: req.file.path,
+        public_id: req.file.filename || req.file.originalname,
+        media_type: mediaType,
+        thumbnail_url: thumbnailUrl
+      });
+    } catch (err) {
+      console.error("Story Upload Handler Error:", err);
+      res.status(500).json({ message: "Internal server error during story processing", error: err.message });
+    }
   }
 );
 
