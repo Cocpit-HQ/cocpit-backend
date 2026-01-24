@@ -45,7 +45,10 @@ module.exports.initSocket = async (httpServer) => {
   // Auth Middleware
   io.use(async (socket, next) => {
     const token = socket.handshake.auth?.token || socket.handshake.headers?.authorization?.split(" ")[1];
-    if (!token) return next(new Error("Authentication error: No token provided"));
+
+    if (!token) {
+      return next(new Error("Authentication error: No token provided"));
+    }
 
     try {
       const decoded = await verifyAccessToken(token);
@@ -54,7 +57,6 @@ module.exports.initSocket = async (httpServer) => {
       socket.roles = decoded.roles || [];
       next();
     } catch (err) {
-      console.error("Socket auth error:", err.message);
       next(new Error("Authentication error: Invalid token"));
     }
   });

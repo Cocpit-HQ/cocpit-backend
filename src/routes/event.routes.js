@@ -1,7 +1,7 @@
 const express = require("express");
 const router = express.Router();
 const eventController = require("../controllers/event.controller");
-const { requireAuth } = require("../middlewares/auth.middleware");
+const { requireAuth, optionalAuth } = require("../middlewares/auth.middleware");
 const { uploadEventBanner } = require("../middlewares/upload");
 
 router.get("/me/events/created", requireAuth, eventController.getMyCreatedEvents);
@@ -14,9 +14,9 @@ router.delete("/:id/register", requireAuth, eventController.unregisterFromEvent)
 router.post("/:id/save", requireAuth, eventController.saveEvent);
 router.delete("/:id/save", requireAuth, eventController.unsaveEvent);
 
-router.get("/:id", requireAuth, eventController.getEventById);
+router.get("/:id", optionalAuth, eventController.getEventById);
 
-router.get("/", requireAuth, eventController.getEvents);
+router.get("/", optionalAuth, eventController.getEvents);
 router.post("/", requireAuth, uploadEventBanner.single('banner'), eventController.createEvent);
 
 module.exports = router;

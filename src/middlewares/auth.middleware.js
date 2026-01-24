@@ -12,7 +12,7 @@ exports.requireAuth = (req, res, next) => {
   try {
     req.user = verifyAccessToken(token);
     next();
-  } catch {
+  } catch (err) {
     res.status(401).json({ message: "Invalid or expired token" });
   }
 };
@@ -23,8 +23,6 @@ exports.requireRefreshTokenAuth = (req, res, next) => {
   if (!cookieToken) {
     return res.status(401).json({ message: "Missing token" });
   }
-
-  // const token = authHeader.split(" ")[1];
 
   try {
     req.user = verifyRefreshToken(cookieToken);
