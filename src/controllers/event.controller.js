@@ -59,6 +59,7 @@ exports.getEventById = async (req, res) => {
     const { id } = req.params;         // get the id from URL
     const trimmedId = id.trim();       // optional: remove extra spaces
 
+
     const result = await pool.query(
       `
             SELECT 
