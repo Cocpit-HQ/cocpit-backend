@@ -20,6 +20,7 @@ CREATE TABLE users (
   mobile_number TEXT,
   headline TEXT,
   avatar_url TEXT,
+  cover_image_url TEXT,
   job_title TEXT,
   company_name TEXT,
   school TEXT,

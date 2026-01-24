@@ -188,10 +188,53 @@ if (hasCloudinary) {
 
 const uploadStory = multer({ storage: storyStorage });
 
+// --- Cover Photo Upload ---
+let coverStorage;
+
+if (hasCloudinary) {
+  coverStorage = new CloudinaryStorage({
+    cloudinary,
+    params: {
+      folder: "covers",
+      resource_type: "image",
+      public_id: (req, file) => `cover-${req.user.sub}-${Date.now()}`,
+    },
+  });
+} else {
+  coverStorage = multer.diskStorage({
+    destination: (req, file, cb) => {
+      cb(null, 'uploads/covers/');
+    },
+    filename: (req, file, cb) => {
+      const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+      const ext = path.extname(file.originalname);
+      cb(null, 'cover-' + uniqueSuffix + ext);
+    }
+  });
+}
+// Ensure directory exists for local
+if (!hasCloudinary) {
+  createDir(path.join(uploadsDir, 'covers'));
+}
+
+
+const uploadCover = multer({
+  storage: coverStorage,
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB limit (larger than avatar)
+  fileFilter: (req, file, cb) => {
+    const allowed = ["image/jpeg", "image/jpg", "image/png", "image/webp", "image/heic", "image/heif"];
+    if (!allowed.includes(file.mimetype)) {
+      return cb(new Error("Format not supported"));
+    }
+    cb(null, true);
+  },
+});
+
 module.exports = {
   upload,
   uploadResume,
   uploadAvatar,
   uploadEventBanner,
-  uploadStory
+  uploadStory,
+  uploadCover
 };
