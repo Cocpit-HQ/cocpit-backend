@@ -143,4 +143,45 @@ const eventBannerStorage = new CloudinaryStorage({
 
 const uploadEventBanner = multer({ storage: eventBannerStorage, limits: { fileSize: 5 * 1024 * 1024 } }); // 5MB limit
 
-module.exports.uploadEventBanner = uploadEventBanner;
+// --- Story Upload Optimization ---
+let storyStorage;
+if (hasCloudinary) {
+  storyStorage = new CloudinaryStorage({
+    cloudinary,
+    params: async (req, file) => {
+      return {
+        folder: "stories",
+        resource_type: "video",
+        allowed_formats: ["mp4", "mov", "webm"],
+        eager: [
+          { streaming_profile: "hd", format: "m3u8" }, // HLS Playlist
+          { width: 720, aspectRatio: "9:16", crop: "fill", format: "jpg" } // Thumbnail
+        ],
+        eager_async: true, // Don't block upload on processing
+      };
+    },
+  });
+} else {
+  // Fallback for local dev without Cloudinary
+  storyStorage = multer.diskStorage({
+    destination: (req, file, cb) => {
+      createDir(path.join(uploadsDir, 'stories'));
+      cb(null, 'uploads/stories/');
+    },
+    filename: (req, file, cb) => {
+      const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+      const ext = path.extname(file.originalname);
+      cb(null, 'story-' + uniqueSuffix + ext);
+    }
+  });
+}
+
+const uploadStory = multer({ storage: storyStorage });
+
+module.exports = {
+  upload,
+  uploadResume,
+  uploadAvatar,
+  uploadEventBanner,
+  uploadStory
+};

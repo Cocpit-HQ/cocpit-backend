@@ -1201,19 +1201,24 @@ exports.getGroupedStories = async (req, res) => {
 
 exports.createStory = async (req, res) => {
     const userId = req.user.sub;
-    const { title, media_url, description } = req.body; // description field need to add and  title also
+    const { title, media_url, description, media_type, public_id, media_status } = req.body;
 
     try {
-        let type;
-        type = media_url.toLowerCase().match(/\.(mp4|webm|mov)$/) ? 'video' : 'image';
+        let type = media_type || (media_url.toLowerCase().match(/\.(mp4|webm|mov)$/) ? 'video' : 'image');
+
+        // Default status: 'ready' for images, 'processing' for videos unless specified
+        let status = media_status || (type === 'video' ? 'processing' : 'ready');
+
+        // If it's an image, it's always ready immediately
+        if (type === 'image') status = 'ready';
 
         const result = await pool.query(
             `
-            INSERT INTO stories (author_id,title, description, media_url, media_type, expires_at)
-            VALUES ($1, $2, $3, $4, $5, now() + interval '24 hours')
+            INSERT INTO stories (author_id, title, description, media_url, media_type, expires_at, media_status, cld_public_id)
+            VALUES ($1, $2, $3, $4, $5, now() + interval '24 hours', $6, $7)
             RETURNING story_id, created_at
             `,
-            [userId, title, description, media_url, type || 'image']
+            [userId, title, description, media_url, type, status, public_id]
         );
 
         const { story_id, created_at } = result.rows[0];
@@ -1226,6 +1231,7 @@ exports.createStory = async (req, res) => {
             description: description,
             media_url: media_url,
             media_type: type,
+            media_status: status,
             created_at: created_at
         });
     } catch (err) {
