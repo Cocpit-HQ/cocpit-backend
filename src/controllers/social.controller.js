@@ -425,7 +425,7 @@ exports.getConnectionCount = async (req, res) => {
             `SELECT COUNT(*) FROM connections WHERE user_id = $1`,
             [userId]
         );
-        console.log("connection count : ",result.rows[0]);
+        console.log("connection count : ", result.rows[0]);
         res.status(200).json({
             connection_count: result.rows[0].count,
             userId: userId
@@ -531,10 +531,10 @@ exports.deleteConversation = async (req, res) => {
 // Send a message to a user (auto-create 1-on-1 conversation if needed)
 exports.sendMessage = async (req, res) => {
     const senderId = req.user.sub;
-    const { targetUserId, text_content } = req.body;
+    const { targetUserId, text_content, shared_post_id } = req.body;
 
-    if (!targetUserId || !text_content) {
-        return res.status(400).json({ message: "targetUserId and text_content are required" });
+    if (!targetUserId || (!text_content && !shared_post_id)) {
+        return res.status(400).json({ message: "targetUserId and content (text or shared post) are required" });
     }
 
     if (senderId === targetUserId)
@@ -593,10 +593,25 @@ exports.sendMessage = async (req, res) => {
 
         // Insert the message
         const msgRes = await client.query(
-            `INSERT INTO messages (conversation_id, sender_id, text_content)
-                 VALUES ($1, $2, $3) RETURNING *`,
-            [conversationId, senderId, text_content]
+            `INSERT INTO messages (conversation_id, sender_id, text_content, shared_post_id)
+                 VALUES ($1, $2, $3, $4) RETURNING *`,
+            [conversationId, senderId, text_content || '', shared_post_id || null]
         );
+
+        // Fetch shared post details if applicable for immediate socket update
+        let sharedPostData = null;
+        if (shared_post_id) {
+            const spRes = await client.query(`
+                SELECT 
+                    p.post_id, p.content, p.created_at, 
+                    json_build_object('full_name', u.full_name, 'avatar_url', u.avatar_url) as author,
+                    (SELECT json_agg(json_build_object('url', url, 'media_type', media_type)) FROM post_media WHERE post_id = p.post_id) as media
+                FROM posts p
+                JOIN users u ON p.author_id = u.user_id
+                WHERE p.post_id = $1
+            `, [shared_post_id]);
+            if (spRes.rowCount > 0) sharedPostData = spRes.rows[0];
+        }
 
         // Update conversation timestamp
         await client.query(
@@ -605,8 +620,10 @@ exports.sendMessage = async (req, res) => {
         );
         await client.query('COMMIT');
 
+        const messageData = { ...msgRes.rows[0], shared_post: sharedPostData };
+
         // Notify target user via service
-        socketService.notifyUser(targetUserId, "newMessage", msgRes.rows[0]);
+        socketService.notifyUser(targetUserId, "newMessage", messageData);
         socketService.notifyUser(targetUserId, "notification", {
             type: "message",
             from: senderId,
@@ -677,7 +694,21 @@ exports.getMessages = async (req, res) => {
             return res.status(403).json({ message: "Not a participant" });
 
         const result = await pool.query(
-            `SELECT * FROM messages WHERE conversation_id = $1 ORDER BY created_at ASC`,
+            `SELECT 
+                m.*,
+                CASE WHEN m.shared_post_id IS NOT NULL THEN
+                    json_build_object(
+                        'post_id', sp.post_id,
+                        'content', sp.content,
+                        'author', json_build_object('full_name', au.full_name, 'avatar_url', au.avatar_url),
+                        'media', (SELECT json_agg(json_build_object('url', url, 'media_type', media_type)) FROM post_media WHERE post_id = sp.post_id)
+                    )
+                ELSE NULL END AS shared_post
+             FROM messages m
+             LEFT JOIN posts sp ON m.shared_post_id = sp.post_id
+             LEFT JOIN users au ON sp.author_id = au.user_id
+             WHERE m.conversation_id = $1 
+             ORDER BY m.created_at ASC`,
             [conversation_id]
         );
 
@@ -767,3 +798,123 @@ exports.markNotificationRead = async (req, res) => {
     }
 };
 
+// Batch share post to multiple conversations
+exports.sharePostToConversations = async (req, res) => {
+    const senderId = req.user.sub;
+    const { postId, targetUserIds, message } = req.body;
+
+    if (!postId || !targetUserIds || !Array.isArray(targetUserIds) || targetUserIds.length === 0) {
+        return res.status(400).json({ message: "postId and targetUserIds (array) are required" });
+    }
+
+    const client = await pool.connect();
+
+    try {
+        await client.query('BEGIN');
+
+        // 1. Fetch sender info once
+        const senderRes = await client.query(
+            `SELECT full_name, avatar_url FROM users WHERE user_id = $1`,
+            [senderId]
+        );
+        if (senderRes.rowCount === 0) {
+            await client.query('ROLLBACK');
+            return res.status(404).json({ message: "Sender not found" });
+        }
+        const { full_name: senderName, avatar_url: senderAvatar } = senderRes.rows[0];
+
+        // 2. Fetch shared post details once
+        let sharedPostData = null;
+        const spRes = await client.query(`
+            SELECT 
+                p.post_id, p.content, p.created_at, 
+                json_build_object('full_name', u.full_name, 'avatar_url', u.avatar_url) as author,
+                (SELECT json_agg(json_build_object('url', url, 'media_type', media_type)) FROM post_media WHERE post_id = p.post_id) as media
+            FROM posts p
+            JOIN users u ON p.author_id = u.user_id
+            WHERE p.post_id = $1
+        `, [postId]);
+
+        if (spRes.rowCount === 0) {
+            await client.query('ROLLBACK');
+            return res.status(404).json({ message: "Shared post not found" });
+        }
+        sharedPostData = spRes.rows[0];
+
+        const results = [];
+
+        // 3. Process each target user
+        for (const targetUserId of targetUserIds) {
+            if (targetUserId === senderId) continue; // Skip self
+
+            // A. Check/Create Conversation
+            let conversationId;
+            const existingConv = await client.query(
+                `SELECT c.conversation_id
+                 FROM conversations c
+                 JOIN conversation_participants cp1 ON c.conversation_id = cp1.conversation_id AND cp1.user_id = $1
+                 JOIN conversation_participants cp2 ON c.conversation_id = cp2.conversation_id AND cp2.user_id = $2
+                 WHERE c.is_group = FALSE`,
+                [senderId, targetUserId]
+            );
+
+            if (existingConv.rowCount > 0) {
+                conversationId = existingConv.rows[0].conversation_id;
+            } else {
+                const convRes = await client.query(
+                    `INSERT INTO conversations (is_group) VALUES (FALSE) RETURNING conversation_id`
+                );
+                conversationId = convRes.rows[0].conversation_id;
+
+                await client.query(
+                    `INSERT INTO conversation_participants (conversation_id, user_id) VALUES ($1, $2), ($1, $3)`,
+                    [conversationId, senderId, targetUserId]
+                );
+            }
+
+            // B. Insert Message
+            const msgRes = await client.query(
+                `INSERT INTO messages (conversation_id, sender_id, text_content, shared_post_id)
+                  VALUES ($1, $2, $3, $4) RETURNING *`,
+                [conversationId, senderId, message || '', postId]
+            );
+
+            // C. Update Conversation Timestamp
+            await client.query(
+                `UPDATE conversations SET updated_at = now() WHERE conversation_id = $1`,
+                [conversationId]
+            );
+
+            // D. Notify (Fire and forget, but keep data for it)
+            const mData = { ...msgRes.rows[0], shared_post: sharedPostData };
+            results.push({ targetUserId, conversationId, messageData: mData });
+        }
+
+        await client.query('COMMIT');
+
+        // 4. Send socket notifications (after commit)
+        results.forEach(({ targetUserId, conversationId, messageData }) => {
+            socketService.notifyUser(targetUserId, "newMessage", messageData);
+            socketService.notifyUser(targetUserId, "notification", {
+                type: "message",
+                from: senderId,
+                senderName,
+                senderAvatar,
+                conversationId,
+                text: "Shared a post"
+            });
+        });
+
+        res.status(200).json({
+            message: "Shared successfully",
+            sentCount: results.length
+        });
+
+    } catch (err) {
+        await client.query('ROLLBACK');
+        console.error("Batch share error:", err);
+        res.status(500).json({ message: "Internal server error" });
+    } finally {
+        client.release();
+    }
+};

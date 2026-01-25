@@ -8,7 +8,7 @@ const { requireAuth } = require("../middlewares/auth.middleware");
    ===================================================== */
 router.post("/users/:id/follow", requireAuth, socialController.followUser);
 router.delete("/users/:id/unfollow", requireAuth, socialController.unfollowUser);
-router.get("/users/:id/followers/count",  socialController.getFollowersCount);
+router.get("/users/:id/followers/count", socialController.getFollowersCount);
 router.get("/users/:id/followers", socialController.getFollowers);
 // router.get("/users/:id/following", socialController.getFollowing);
 
@@ -21,7 +21,7 @@ router.patch("/connections/:requestId", requireAuth, socialController.handleConn
 router.get("/my/connections", requireAuth, socialController.getMyConnections);                // NEW
 router.delete("/connections/:requestId", requireAuth, socialController.cancelConnectionRequest); // NEW
 router.delete("/connections/user/:id", requireAuth, socialController.removeConnection);   // NEW
-router.get("/users/:id/connections/count",  socialController.getConnectionCount);
+router.get("/users/:id/connections/count", socialController.getConnectionCount);
 
 
 /* =====================================================
@@ -39,9 +39,10 @@ router.delete("/conversations/:id", requireAuth, socialController.deleteConversa
    MESSAGES
    ===================================================== */
 router.post("/messages", requireAuth, socialController.sendMessage);
+router.post("/social/share", requireAuth, socialController.sharePostToConversations); // Batch Share
 router.get("/conversations/:id/messages", requireAuth, socialController.getMessages);
 router.delete("/messages/:id", requireAuth, socialController.deleteMessage);
-router.patch("/conversations/:conversationId/read",requireAuth,socialController.markConversationRead
+router.patch("/conversations/:conversationId/read", requireAuth, socialController.markConversationRead
 );
 
 // router.patch("/messages/:id/read", requireAuth, socialController.markMessageRead);
@@ -49,8 +50,8 @@ router.patch("/conversations/:conversationId/read",requireAuth,socialController.
 /* =====================================================
    NOTIFICATIONS
    ===================================================== */
- router.get("/notifications", requireAuth, socialController.getNotifications);
- router.patch("/notifications/:id/read", requireAuth, socialController.markNotificationRead);
+router.get("/notifications", requireAuth, socialController.getNotifications);
+router.patch("/notifications/:id/read", requireAuth, socialController.markNotificationRead);
 // router.patch("/notifications/read-all", requireAuth, socialController.markAllNotificationsRead);
 
 module.exports = router;

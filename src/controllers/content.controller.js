@@ -36,11 +36,35 @@ exports.getPublicFeed = async (req, res) => {
         COALESCE(pm.media, '[]') AS media,
         COALESCE(lc.like_count, 0)::int AS like_count,
         COALESCE(il.is_liked, false) AS is_liked,
-        pp.poll
+        pp.poll,
+
+        -- Shared Post Data
+        CASE WHEN p.shared_post_id IS NOT NULL THEN
+            json_build_object(
+                'post_id', sp.post_id,
+                'content', sp.content,
+                'created_at', sp.created_at,
+                'author', json_build_object(
+                    'user_id', sp_u.user_id,
+                    'full_name', sp_u.full_name,
+                    'avatar_url', sp_u.avatar_url
+                ),
+                'media', COALESCE(sp_media.media, '[]'::json)
+            )
+        ELSE NULL END AS shared_post
 
       FROM posts p
       JOIN users u ON u.user_id = p.author_id
       LEFT JOIN post_categories pc ON pc.category_id = p.category_id
+
+      -- Shared Post Joins
+      LEFT JOIN posts sp ON p.shared_post_id = sp.post_id
+      LEFT JOIN users sp_u ON sp.author_id = sp_u.user_id
+      LEFT JOIN (
+          SELECT post_id, json_agg(json_build_object('url', url, 'media_type', media_type)) as media
+          FROM post_media
+          GROUP BY post_id
+      ) sp_media ON sp.post_id = sp_media.post_id
 
       LEFT JOIN (
         SELECT post_id, json_agg(pm.*) AS media
@@ -184,11 +208,35 @@ exports.getMyPosts = async (req, res) => {
         EXISTS (SELECT 1 FROM post_likes pl WHERE pl.post_id = p.post_id AND pl.user_id = $1) AS is_liked,
         COALESCE(cc.comment_count, 0) AS comment_count,
 
-        pp.poll
+        pp.poll,
+
+        -- Shared Post Data
+        CASE WHEN p.shared_post_id IS NOT NULL THEN
+            json_build_object(
+                'post_id', sp.post_id,
+                'content', sp.content,
+                'created_at', sp.created_at,
+                'author', json_build_object(
+                    'user_id', sp_u.user_id,
+                    'full_name', sp_u.full_name,
+                    'avatar_url', sp_u.avatar_url
+                ),
+                'media', COALESCE(sp_media.media, '[]'::json)
+            )
+        ELSE NULL END AS shared_post
 
       FROM posts p
       JOIN users u ON u.user_id = p.author_id
       LEFT JOIN post_categories pc ON pc.category_id = p.category_id
+
+      -- Shared Post Joins
+      LEFT JOIN posts sp ON p.shared_post_id = sp.post_id
+      LEFT JOIN users sp_u ON sp.author_id = sp_u.user_id
+      LEFT JOIN (
+          SELECT post_id, json_agg(json_build_object('url', url, 'media_type', media_type)) as media
+          FROM post_media
+          GROUP BY post_id
+      ) sp_media ON sp.post_id = sp_media.post_id
 
       -- ✅ MEDIA
       LEFT JOIN (
@@ -428,10 +476,10 @@ exports.createPost = async (req, res) => {
 
         // 2. Insert Post
         const postResult = await pool.query(
-            ` INSERT INTO posts (author_id, category_id, content, visibility,post_type,title)
-      VALUES ($1, $2, $3, $4,$5,$6)
+            ` INSERT INTO posts (author_id, category_id, content, visibility,post_type,title, shared_post_id)
+      VALUES ($1, $2, $3, $4,$5,$6, $7)
       RETURNING post_id, created_at
-      `, [userId, categoryId, content, visibility || 'public', post_type, title]
+      `, [userId, categoryId, content, visibility || 'public', post_type, title, req.body.shared_post_id || null]
         );
 
         const postId = postResult.rows[0].post_id;
@@ -1091,6 +1139,19 @@ exports.getGroupedStories = async (req, res) => {
                 s.*, 
                 u.full_name AS author_name, 
                 u.avatar_url AS author_avatar,
+                -- Shared Post Data
+                CASE WHEN s.shared_post_id IS NOT NULL THEN
+                    json_build_object(
+                        'post_id', sp.post_id,
+                        'content', sp.content,
+                        'author', json_build_object(
+                            'full_name', sp_u.full_name, 
+                            'avatar_url', sp_u.avatar_url
+                        ),
+                        'media', (SELECT json_agg(json_build_object('url', url, 'media_type', media_type)) FROM post_media WHERE post_id = sp.post_id)
+                    )
+                ELSE NULL END AS shared_post,
+
                 -- Check if viewed/liked
                 EXISTS (
                     SELECT 1 FROM story_views sv 
@@ -1106,6 +1167,8 @@ exports.getGroupedStories = async (req, res) => {
                 (SELECT COUNT(*) FROM story_reactions sr WHERE sr.story_id = s.story_id AND sr.reaction_type = 'true')::int AS like_count
             FROM stories s
             JOIN users u ON s.author_id = u.user_id
+            LEFT JOIN posts sp ON s.shared_post_id = sp.post_id
+            LEFT JOIN users sp_u ON sp.author_id = sp_u.user_id
             WHERE s.expires_at > now()
             ORDER BY s.created_at ASC
             `,
@@ -1166,7 +1229,8 @@ exports.getGroupedStories = async (req, res) => {
                 has_liked: story.has_liked,
                 // Add counts if needed, query didn't fetch them in simple select but can add
                 view_count: story.view_count || 0,
-                like_count: story.like_count || 0
+                like_count: story.like_count || 0,
+                shared_post: story.shared_post
             });
         }
 
@@ -1201,7 +1265,7 @@ exports.getGroupedStories = async (req, res) => {
 
 exports.createStory = async (req, res) => {
     const userId = req.user.sub;
-    const { title, media_url, description, media_type, public_id, media_status } = req.body;
+    const { title, media_url, description, media_type, public_id, media_status, shared_post_id } = req.body;
 
     try {
         let type = media_type || (media_url.toLowerCase().match(/\.(mp4|webm|mov)$/) ? 'video' : 'image');
@@ -1214,11 +1278,11 @@ exports.createStory = async (req, res) => {
 
         const result = await pool.query(
             `
-            INSERT INTO stories (author_id, title, description, media_url, media_type, expires_at, media_status, cld_public_id)
-            VALUES ($1, $2, $3, $4, $5, now() + interval '24 hours', $6, $7)
+            INSERT INTO stories (author_id, title, description, media_url, media_type, expires_at, media_status, cld_public_id, shared_post_id)
+            VALUES ($1, $2, $3, $4, $5, now() + interval '24 hours', $6, $7, $8)
             RETURNING story_id, created_at
             `,
-            [userId, title, description, media_url, type, status, public_id]
+            [userId, title, description, media_url, type, status, public_id, shared_post_id || null]
         );
 
         const { story_id, created_at } = result.rows[0];
