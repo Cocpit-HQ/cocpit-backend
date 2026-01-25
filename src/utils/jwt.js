@@ -13,7 +13,7 @@ const signRefreshToken = (payload) =>
   });
 
 const verifyAccessToken = (token, options = {}) =>
-  jwt.verify(token, process.env.JWT_ACCESS_SECRET, options);
+  jwt.verify(token, process.env.JWT_ACCESS_SECRET, { ...options, clockTolerance: 30 });
 
 const verifyRefreshToken = (token) =>
   jwt.verify(token, process.env.JWT_REFRESH_SECRET);
