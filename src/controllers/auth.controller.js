@@ -189,9 +189,9 @@ exports.register = async (req, res) => {
 //     }
 //     // Set Refresh Token in HTTP-only cookie
 //     res.cookie('refreshToken', refreshToken, {
-//       httpOnly: false,
-//       secure: process.env.NODE_ENV === 'production',
-//       sameSite: 'Lax',
+//       httpOnly: true, // Changed to true for security, original was false
+//       secure: true, // Always true for None
+//       sameSite: 'None',
 //       maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
 //     });
 //     console.log("login done : ", normalizedEmail, "accessToken", accessToken, "refreshToken", refreshToken);
@@ -486,8 +486,8 @@ exports.login = async (req, res) => {
     --------------------------------------------------------- */
     res.cookie("refreshToken", refreshToken, {
       httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: "Lax",
+      secure: true,
+      sameSite: "None",
       path: "/",
       maxAge: 7 * 24 * 60 * 60 * 1000,
     });
@@ -626,8 +626,8 @@ exports.refreshToken = async (req, res) => {
     --------------------------------------------------------- */
     res.cookie("refreshToken", newRefreshToken, {
       httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: "Lax",
+      secure: true,
+      sameSite: "None",
       path: "/",
       maxAge: 7 * 24 * 60 * 60 * 1000,
     });
@@ -691,8 +691,8 @@ exports.logout = async (req, res) => {
     --------------------------------------------------------- */
     res.clearCookie("refreshToken", {
       httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: "Lax",
+      secure: true,
+      sameSite: "None",
       path: "/",
     });
 

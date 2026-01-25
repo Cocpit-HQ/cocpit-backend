@@ -52,7 +52,6 @@ exports.getEvents = async (req, res) => {
     query += ` ORDER BY e.start_time ASC`;
 
     const result = await pool.query(query, values);
-    console.log("Query result rows:", result.rows);
     res.json(result.rows);
 
   } catch (err) {
@@ -81,7 +80,6 @@ exports.getEventById = async (req, res) => {
       [trimmedId]                     // now this variable exists
     );
 
-    console.log("Query result rows:", result.rows);
 
     if (result.rowCount === 0) {
       return res.status(404).json({ message: "Event not found" });
