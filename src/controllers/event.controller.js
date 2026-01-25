@@ -1,23 +1,16 @@
 const pool = require("../db/pool");
 
 exports.getEvents = async (req, res) => {
-  const { location, type, date } = req.query;
+  const { location, type, date, startDate, endDate, category, q, cursor, limit = 10 } = req.query;
 
   try {
-    if (date) {
-      const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
-      if (!dateRegex.test(date)) {
-        return res.status(400).json({
-          message: "Date must be in YYYY-MM-DD format"
-        });
-      }
-    }
-
     const userId = req.user ? req.user.sub : null;
     const values = [];
 
+    // Base Query - Selecting events and resolving saved status properly
     let query = `
       SELECT e.*, u.full_name as organizer_name,
+      (SELECT COUNT(*)::int FROM event_registrations er WHERE er.event_id = e.event_id) AS registered_count,
       CASE 
         WHEN es.event_id IS NOT NULL THEN true
         ELSE false
@@ -25,34 +18,110 @@ exports.getEvents = async (req, res) => {
       FROM events e
       JOIN users u ON e.organizer_id = u.user_id
       LEFT JOIN event_saves es 
-        ON es.event_id = e.event_id AND es.user_id = $${values.length + 1}
-      WHERE e.start_time > now()
+        ON es.event_id = e.event_id AND es.user_id = $1
+      WHERE 1=1
     `;
 
-    // Add userId as the first parameter
-    values.push(userId);
+    values.push(userId); // $1 is always userId (can be null)
 
-    // ... continue with other filters ...
+    /* ---------------------------------------------------------
+       🔍 Search & Filtering
+    --------------------------------------------------------- */
 
-    if (location) {
-      values.push(location);
-      query += ` AND e.location = $${values.length}`;
+    // 1. Text Search (using ILIKE for case-insensitive partial match)
+    if (q) {
+      values.push(`%${q}%`);
+      const idx = values.length;
+      query += ` AND (e.title ILIKE $${idx} OR e.description ILIKE $${idx} OR e.location ILIKE $${idx})`;
     }
 
+    // 2. Location (Exact or Partial?) - Keeping existing logic but safer if we want partial
+    // Ideally 'location' filter might be strict if from dropdown, or partial if from search.
+    // If 'location' param is passed distinct from 'q', treat as filter.
+    if (location) {
+      values.push(`%${location}%`); // Changed to ILIKE for flexibility
+      query += ` AND e.location ILIKE $${values.length}`;
+    }
+
+    // 3. Category
+    if (category) {
+      values.push(`%${category}%`);
+      query += ` AND e.category ILIKE $${values.length}`;
+    }
+
+    // 4. Event Type (Online/InPerson)
     if (type) {
       values.push(type);
       query += ` AND e.event_type = $${values.length}`;
     }
 
+    // 5. Dates
+    // Specific Date (YYYY-MM-DD)
     if (date) {
       values.push(date);
       query += ` AND DATE(e.start_time) = $${values.length}`;
     }
 
-    query += ` ORDER BY e.start_time ASC`;
+    // Date Range (Start)
+    if (startDate) {
+      values.push(startDate);
+      query += ` AND e.start_time >= $${values.length}`;
+    }
+
+    // Date Range (End)
+    if (endDate) {
+      values.push(endDate);
+      query += ` AND e.start_time <= $${values.length}`;
+    }
+
+    /* ---------------------------------------------------------
+       📄 Pagination (Cursor-based)
+    --------------------------------------------------------- */
+    if (cursor) {
+      try {
+        const decoded = Buffer.from(cursor, 'base64').toString('ascii');
+        const [cursorTime, cursorId] = decoded.split('_');
+
+        if (cursorTime && cursorId) {
+          values.push(cursorTime);
+          const timeIdx = values.length;
+          values.push(cursorId);
+          const idIdx = values.length;
+
+          // (start_time > cursTime) OR (start_time = cursTime AND event_id > cursId)
+          query += ` AND (e.start_time > $${timeIdx} OR (e.start_time = $${timeIdx} AND e.event_id > $${idIdx}))`;
+        }
+      } catch (e) {
+        // Ignore invalid cursor
+      }
+    }
+
+    query += ` ORDER BY e.start_time ASC, e.event_id ASC`;
+
+    // Limit + 1 for hasMore check
+    const limitNum = parseInt(limit) || 10;
+    values.push(limitNum + 1);
+    query += ` LIMIT $${values.length}`;
 
     const result = await pool.query(query, values);
-    res.json(result.rows);
+
+    const items = result.rows;
+    let nextCursor = null;
+    let hasMore = false;
+
+    if (items.length > limitNum) {
+      hasMore = true;
+      items.pop();
+      const lastItem = items[items.length - 1];
+      const rawCursor = `${lastItem.start_time.toISOString()}_${lastItem.event_id}`;
+      nextCursor = Buffer.from(rawCursor).toString('base64');
+    }
+
+    res.json({
+      items,
+      nextCursor,
+      hasMore
+    });
 
   } catch (err) {
     console.error("Get events error:", err);
@@ -272,6 +341,7 @@ exports.getMyRegisteredEvents = async (req, res) => {
     const result = await pool.query(
       `
             SELECT e.*, u.full_name AS organizer_name,
+            (SELECT COUNT(*)::int FROM event_registrations er WHERE er.event_id = e.event_id) AS registered_count,
             CASE 
     WHEN es.event_id IS NOT NULL THEN true
     ELSE false
@@ -303,6 +373,7 @@ exports.getMyCreatedEvents = async (req, res) => {
         SELECT 
   e.*,
   u.full_name AS organizer_name,
+  (SELECT COUNT(*)::int FROM event_registrations er WHERE er.event_id = e.event_id) AS registered_count,
   CASE 
     WHEN es.event_id IS NOT NULL THEN true
     ELSE false
@@ -396,7 +467,8 @@ exports.getMySavedEvents = async (req, res) => {
   try {
     const result = await pool.query(
       `
-            SELECT e.*, u.full_name AS organizer_name
+            SELECT e.*, u.full_name AS organizer_name,
+            (SELECT COUNT(*)::int FROM event_registrations er WHERE er.event_id = e.event_id) AS registered_count
             FROM event_saves es
             JOIN events e ON es.event_id = e.event_id
             JOIN users u ON e.organizer_id = u.user_id
