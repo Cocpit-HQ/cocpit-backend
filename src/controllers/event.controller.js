@@ -13,20 +13,26 @@ exports.getEvents = async (req, res) => {
       }
     }
 
+    const userId = req.user ? req.user.sub : null;
+    const values = [];
+
     let query = `
       SELECT e.*, u.full_name as organizer_name,
       CASE 
-    WHEN es.event_id IS NOT NULL THEN true
-    ELSE false
+        WHEN es.event_id IS NOT NULL THEN true
+        ELSE false
       END AS "isSaved"
       FROM events e
       JOIN users u ON e.organizer_id = u.user_id
-     LEFT JOIN event_saves es 
-     ON es.event_id = e.event_id 
+      LEFT JOIN event_saves es 
+        ON es.event_id = e.event_id AND es.user_id = $${values.length + 1}
       WHERE e.start_time > now()
     `;
 
-    const values = [];
+    // Add userId as the first parameter
+    values.push(userId);
+
+    // ... continue with other filters ...
 
     if (location) {
       values.push(location);
@@ -143,8 +149,16 @@ exports.registerForEvent = async (req, res) => {
   const userId = req.user.sub;
   const eventId = req.params.id;
 
-  const { name, email, mobile_number, company_name, job_title } = req.body;
+  let { name, email, mobile_number, company_name, job_title } = req.body;
 
+  if (mobile_number) {
+    // Sanitize: remove non-digits
+    mobile_number = mobile_number.replace(/\D/g, '');
+    // If starting with 0 and length is 11, remove leading 0
+    if (mobile_number.length === 11 && mobile_number.startsWith('0')) {
+      mobile_number = mobile_number.substring(1);
+    }
+  }
 
   if (!name || !email || !mobile_number) {
     return res.status(400).json({
