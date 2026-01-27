@@ -39,19 +39,87 @@ exports.getPublicFeed = async (req, res) => {
         pp.poll,
 
         -- Shared Post Data
-        CASE WHEN p.shared_post_id IS NOT NULL THEN
-            json_build_object(
-                'post_id', sp.post_id,
-                'content', sp.content,
-                'created_at', sp.created_at,
+        CASE 
+            WHEN p.shared_post_id IS NULL THEN NULL
+            WHEN (
+                -- 1. Private: Author only
+                (sp.visibility = 'private' AND sp.author_id = $${params.length + 1})
+                OR
+                -- 2. Public + Personal: Connections only
+                (sp.visibility = 'public' AND sp_cat.name = 'Personal' AND (
+                    sp.author_id = $${params.length + 1}
+                    OR EXISTS (
+                        SELECT 1 FROM followers f1 
+                        JOIN followers f2 ON f1.follower_id = f2.following_id AND f1.following_id = f2.follower_id 
+                        WHERE f1.follower_id = $${params.length + 1} AND f1.following_id = sp.author_id
+                    )
+                ))
+                OR
+                -- 3. Public + Other: Everyone
+                (sp.visibility = 'public' AND (sp_cat.name != 'Personal' OR sp_cat.name IS NULL))
+            ) THEN
+                json_build_object(
+                    'is_accessible', true,
+                    'post_id', sp.post_id,
+                    'content', sp.content,
+                    'created_at', sp.created_at,
+                    'author', json_build_object(
+                        'user_id', sp_u.user_id,
+                        'full_name', sp_u.full_name,
+                        'avatar_url', sp_u.avatar_url
+                    ),
+                    'media', COALESCE(sp_media.media, '[]'::json),
+                    'like_count', (SELECT COUNT(*) FROM post_likes pl WHERE pl.post_id = sp.post_id)::int,
+                    'comment_count', (SELECT COUNT(*) FROM post_comments pc WHERE pc.post_id = sp.post_id)::int,
+                    'poll', (
+                        SELECT json_build_object(
+                            'poll_id', pp.poll_id,
+                            'duration', COALESCE(pp.duration, '1 day'),
+                            'total_votes', (SELECT COUNT(*) FROM poll_votes pv WHERE pv.poll_id = pp.poll_id)::int,
+                            'user_vote', (SELECT pv_u.option_id FROM poll_votes pv_u WHERE pv_u.poll_id = pp.poll_id AND pv_u.voter_id = $${params.length + 1}),
+                            'is_active', (pp.created_at + COALESCE(pp.duration, '1 day')::interval > NOW()),
+                            'options',
+                            COALESCE(
+                                (
+                                    SELECT json_agg(
+                                        json_build_object(
+                                            'option_id', po.option_id,
+                                            'option_text', po.option_text,
+                                            'vote_count', (SELECT COUNT(*) FROM poll_votes pv WHERE pv.option_id = po.option_id)
+                                        )
+                                    )
+                                    FROM poll_options po
+                                    WHERE po.poll_id = pp.poll_id
+                                ),
+                                '[]'::json
+                            )
+                        )
+                        FROM post_polls pp
+                        WHERE pp.post_id = sp.post_id
+                    )
+                )
+            -- Failure Analysis
+            WHEN sp.visibility = 'private' THEN json_build_object(
+                'is_accessible', false, 
+                'reason', 'private',
                 'author', json_build_object(
                     'user_id', sp_u.user_id,
                     'full_name', sp_u.full_name,
                     'avatar_url', sp_u.avatar_url
-                ),
-                'media', COALESCE(sp_media.media, '[]'::json)
+                )
             )
-        ELSE NULL END AS shared_post
+            WHEN (sp.visibility = 'public' AND sp_cat.name = 'Personal') THEN json_build_object(
+                'is_accessible', false, 
+                'reason', 'personal_connection',
+                'author', json_build_object(
+                    'user_id', sp_u.user_id,
+                    'full_name', sp_u.full_name,
+                    'avatar_url', sp_u.avatar_url
+                )
+            )
+            ELSE 
+                json_build_object('is_accessible', false, 'reason', 'unknown')
+        END AS shared_post
 
       FROM posts p
       JOIN users u ON u.user_id = p.author_id
@@ -60,6 +128,7 @@ exports.getPublicFeed = async (req, res) => {
       -- Shared Post Joins
       LEFT JOIN posts sp ON p.shared_post_id = sp.post_id
       LEFT JOIN users sp_u ON sp.author_id = sp_u.user_id
+      LEFT JOIN post_categories sp_cat ON sp.category_id = sp_cat.category_id
       LEFT JOIN (
           SELECT post_id, json_agg(json_build_object('url', url, 'media_type', media_type)) as media
           FROM post_media
@@ -513,6 +582,41 @@ exports.createPost = async (req, res) => {
             }
         }
 
+        // 4. Handle Repost Notification
+        if (req.body.shared_post_id) {
+            const originalPostRes = await pool.query(`SELECT author_id FROM posts WHERE post_id = $1`, [req.body.shared_post_id]);
+            if (originalPostRes.rowCount > 0) {
+                const originalAuthorId = originalPostRes.rows[0].author_id;
+
+                // Don't notify if reposting own post
+                if (originalAuthorId !== userId) {
+                    // Get reposter details for notification
+                    const reposterRes = await pool.query(`SELECT full_name, avatar_url FROM users WHERE user_id = $1`, [userId]);
+                    const reposter = reposterRes.rows[0];
+
+                    const notificationText = `${reposter.full_name} reposted your post`;
+
+                    // Insert notification
+                    await pool.query(
+                        `INSERT INTO notifications (user_id, sender_id, type, text, reference_id) 
+                          VALUES ($1, $2, $3, $4, $5)`,
+                        [originalAuthorId, userId, "repost", notificationText, postId] // reference_id is the NEW post
+                    );
+
+                    // Emit socket event
+                    socketService.notifyUser(originalAuthorId, "notification", {
+                        type: "repost",
+                        text: notificationText,
+                        from: userId,
+                        senderName: reposter.full_name,
+                        senderAvatar: reposter.avatar_url,
+                        referenceId: postId,
+                        time: "Just now"
+                    });
+                }
+            }
+        }
+
         res.status(201).json({
             message: "Post created", postId,
             "title": title,
@@ -545,6 +649,7 @@ exports.getPostById = async (req, res) => {
     u.full_name AS author_name,
     u.avatar_url AS author_avatar,
     c.name AS category_name,
+    c.name AS category_name,
 
     -- Like Count
     COALESCE(lc.like_count, 0)::int AS like_count,
@@ -573,6 +678,7 @@ exports.getPostById = async (req, res) => {
         SELECT json_build_object(
             'poll_id', pp.poll_id,
             'duration', COALESCE(pp.duration, '1 day'),
+            'total_votes', (SELECT COUNT(*) FROM poll_votes pv WHERE pv.poll_id = pp.poll_id)::int,
             'user_vote', (SELECT pv_u.option_id FROM poll_votes pv_u WHERE pv_u.poll_id = pp.poll_id AND pv_u.voter_id = $2),
             'is_active', (pp.created_at + COALESCE(pp.duration, '1 day')::interval > NOW()),
             'options',
@@ -593,10 +699,105 @@ exports.getPostById = async (req, res) => {
         )
         FROM post_polls pp
         WHERE pp.post_id = p.post_id
-    ) AS poll
+    ) AS poll,
+
+    -- Shared Post Data
+    CASE 
+        WHEN p.shared_post_id IS NULL THEN NULL
+        WHEN (
+            -- 1. Private: Author only
+            (sp.visibility = 'private' AND sp.author_id = $2)
+            OR
+            -- 2. Public + Personal: Connections only
+            (sp.visibility = 'public' AND sp_cat.name = 'Personal' AND (
+                sp.author_id = $2
+                OR EXISTS (
+                    SELECT 1 FROM followers f1 
+                    JOIN followers f2 ON f1.follower_id = f2.following_id AND f1.following_id = f2.follower_id 
+                    WHERE f1.follower_id = $2 AND f1.following_id = sp.author_id
+                )
+            ))
+            OR
+            -- 3. Public + Other: Everyone
+            (sp.visibility = 'public' AND (sp_cat.name != 'Personal' OR sp_cat.name IS NULL))
+        ) THEN
+            json_build_object(
+                'is_accessible', true,
+                'post_id', sp.post_id,
+                'content', sp.content,
+                'created_at', sp.created_at,
+                'author', json_build_object(
+                    'user_id', sp_u.user_id,
+                    'full_name', sp_u.full_name,
+                    'avatar_url', sp_u.avatar_url
+                ),
+                'media', COALESCE(sp_media.media, '[]'::json),
+                'like_count', (SELECT COUNT(*) FROM post_likes pl WHERE pl.post_id = sp.post_id)::int,
+                'comment_count', (SELECT COUNT(*) FROM post_comments pc WHERE pc.post_id = sp.post_id)::int,
+                'poll', (
+                    SELECT json_build_object(
+                        'poll_id', pp.poll_id,
+                        'duration', COALESCE(pp.duration, '1 day'),
+                        'total_votes', (SELECT COUNT(*) FROM poll_votes pv WHERE pv.poll_id = pp.poll_id)::int,
+                        'user_vote', (SELECT pv_u.option_id FROM poll_votes pv_u WHERE pv_u.poll_id = pp.poll_id AND pv_u.voter_id = $2),
+                        'is_active', (pp.created_at + COALESCE(pp.duration, '1 day')::interval > NOW()),
+                        'options',
+                        COALESCE(
+                            (
+                                SELECT json_agg(
+                                    json_build_object(
+                                        'option_id', po.option_id,
+                                        'option_text', po.option_text,
+                                        'vote_count', (SELECT COUNT(*) FROM poll_votes pv WHERE pv.option_id = po.option_id)
+                                    )
+                                )
+                                FROM poll_options po
+                                WHERE po.poll_id = pp.poll_id
+                            ),
+                            '[]'::json
+                        )
+                    )
+                    FROM post_polls pp
+                    WHERE pp.post_id = sp.post_id
+                )
+            )
+        -- Failure Analysis
+        WHEN sp.visibility = 'private' THEN json_build_object(
+            'is_accessible', false, 
+            'reason', 'private',
+            'author', json_build_object(
+                'user_id', sp_u.user_id,
+                'full_name', sp_u.full_name,
+                'avatar_url', sp_u.avatar_url
+            )
+        )
+        WHEN (sp.visibility = 'public' AND sp_cat.name = 'Personal') THEN json_build_object(
+            'is_accessible', false, 
+            'reason', 'personal_connection',
+            'author', json_build_object(
+                'user_id', sp_u.user_id,
+                'full_name', sp_u.full_name,
+                'avatar_url', sp_u.avatar_url
+            )
+        )
+        ELSE 
+            json_build_object('is_accessible', false, 'reason', 'unknown')
+    END AS shared_post
+
 FROM posts p
 JOIN users u ON u.user_id = p.author_id
 LEFT JOIN post_categories c ON p.category_id = c.category_id
+
+-- Shared Post Joins
+LEFT JOIN posts sp ON p.shared_post_id = sp.post_id
+LEFT JOIN users sp_u ON sp.author_id = sp_u.user_id
+LEFT JOIN post_categories sp_cat ON sp.category_id = sp_cat.category_id
+LEFT JOIN (
+    SELECT post_id, json_agg(json_build_object('url', url, 'media_type', media_type)) as media
+    FROM post_media
+    GROUP BY post_id
+) sp_media ON sp.post_id = sp_media.post_id
+
 LEFT JOIN (
     SELECT post_id, COUNT(*) AS like_count
     FROM post_likes
