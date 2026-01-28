@@ -14,6 +14,9 @@ router.delete("/:id/register", requireAuth, eventController.unregisterFromEvent)
 router.post("/:id/save", requireAuth, eventController.saveEvent);
 router.delete("/:id/save", requireAuth, eventController.unsaveEvent);
 
+router.put("/:id", requireAuth, uploadEventBanner.single('banner'), eventController.updateEvent);
+router.delete("/:id", requireAuth, eventController.deleteEvent);
+
 router.get("/:id", optionalAuth, eventController.getEventById);
 
 router.get("/", optionalAuth, eventController.getEvents);
