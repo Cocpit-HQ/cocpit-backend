@@ -36,5 +36,8 @@ router.delete("/stories/:id", requireAuth, contentController.deleteStory);
 router.post("/stories/:id/react", requireAuth, contentController.reactToStory);
 router.post("/stories/:id/view", requireAuth, contentController.viewStory);
 router.get('/stories/:id', requireAuth, contentController.getStoryDetailsById)
+router.post("/stories/:id/comments", requireAuth, contentController.addStoryComment);
+router.get("/stories/:id/comments", requireAuth, contentController.getStoryComments);
+router.delete("/stories/comments/:comment_id", requireAuth, contentController.deleteStoryComment);
 
 module.exports = router;

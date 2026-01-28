@@ -1341,17 +1341,60 @@ exports.getGroupedStories = async (req, res) => {
                 u.full_name AS author_name, 
                 u.avatar_url AS author_avatar,
                 -- Shared Post Data
-                CASE WHEN s.shared_post_id IS NOT NULL THEN
-                    json_build_object(
-                        'post_id', sp.post_id,
-                        'content', sp.content,
+                -- Shared Post Data
+                CASE 
+                    WHEN s.shared_post_id IS NULL THEN NULL
+                    WHEN (
+                        -- 1. Private: Author only
+                        (sp.visibility = 'private' AND sp.author_id = $1)
+                        OR
+                        -- 2. Public + Personal: Connections only
+                        (sp.visibility = 'public' AND sp_cat.name = 'Personal' AND (
+                            sp.author_id = $1
+                            OR EXISTS (
+                                SELECT 1 FROM followers f1 
+                                JOIN followers f2 ON f1.follower_id = f2.following_id AND f1.following_id = f2.follower_id 
+                                WHERE f1.follower_id = $1 AND f1.following_id = sp.author_id
+                            )
+                        ))
+                        OR
+                        -- 3. Public + Other: Everyone
+                        (sp.visibility = 'public' AND (sp_cat.name != 'Personal' OR sp_cat.name IS NULL))
+                    ) THEN
+                        json_build_object(
+                            'is_accessible', true,
+                            'post_id', sp.post_id,
+                            'content', sp.content,
+                            'author', json_build_object(
+                                'user_id', sp_u.user_id,
+                                'full_name', sp_u.full_name,
+                                'avatar_url', sp_u.avatar_url
+                            ),
+                            'media', (SELECT json_agg(json_build_object('url', url, 'media_type', media_type)) FROM post_media WHERE post_id = sp.post_id)
+                        )
+                    -- Failure Analysis
+                    WHEN sp.visibility = 'private' THEN json_build_object(
+                        'is_accessible', false, 
+                        'reason', 'private',
                         'author', json_build_object(
-                            'full_name', sp_u.full_name, 
+                            'user_id', sp_u.user_id,
+                            'full_name', sp_u.full_name,
                             'avatar_url', sp_u.avatar_url
-                        ),
-                        'media', (SELECT json_agg(json_build_object('url', url, 'media_type', media_type)) FROM post_media WHERE post_id = sp.post_id)
+                        )
                     )
-                ELSE NULL END AS shared_post,
+                    WHEN (sp.visibility = 'public' AND sp_cat.name = 'Personal') THEN json_build_object(
+                        'is_accessible', false, 
+                        'reason', 'personal_connection',
+                        'author', json_build_object(
+                            'user_id', sp_u.user_id,
+                            'full_name', sp_u.full_name,
+                            'avatar_url', sp_u.avatar_url
+                        )
+                    )
+                    ELSE 
+                        json_build_object('is_accessible', false, 'reason', 'unknown')
+                END AS shared_post,
+                s.story_metadata,
 
                 -- Check if viewed/liked
                 EXISTS (
@@ -1370,6 +1413,7 @@ exports.getGroupedStories = async (req, res) => {
             JOIN users u ON s.author_id = u.user_id
             LEFT JOIN posts sp ON s.shared_post_id = sp.post_id
             LEFT JOIN users sp_u ON sp.author_id = sp_u.user_id
+            LEFT JOIN post_categories sp_cat ON sp.category_id = sp_cat.category_id
             WHERE s.expires_at > now()
             ORDER BY s.created_at ASC
             `,
@@ -1431,7 +1475,8 @@ exports.getGroupedStories = async (req, res) => {
                 // Add counts if needed, query didn't fetch them in simple select but can add
                 view_count: story.view_count || 0,
                 like_count: story.like_count || 0,
-                shared_post: story.shared_post
+                shared_post: story.shared_post,
+                story_metadata: story.story_metadata
             });
         }
 
@@ -1466,10 +1511,10 @@ exports.getGroupedStories = async (req, res) => {
 
 exports.createStory = async (req, res) => {
     const userId = req.user.sub;
-    const { title, media_url, description, media_type, public_id, media_status, shared_post_id } = req.body;
+    const { title, media_url, description, media_type, public_id, media_status, shared_post_id, story_metadata } = req.body;
 
     try {
-        let type = media_type || (media_url.toLowerCase().match(/\.(mp4|webm|mov)$/) ? 'video' : 'image');
+        let type = media_type || (media_url && media_url.toLowerCase().match(/\.(mp4|webm|mov)$/) ? 'video' : 'image');
 
         // Default status: 'ready' for images, 'processing' for videos unless specified
         let status = media_status || (type === 'video' ? 'processing' : 'ready');
@@ -1479,11 +1524,11 @@ exports.createStory = async (req, res) => {
 
         const result = await pool.query(
             `
-            INSERT INTO stories (author_id, title, description, media_url, media_type, expires_at, media_status, cld_public_id, shared_post_id)
-            VALUES ($1, $2, $3, $4, $5, now() + interval '24 hours', $6, $7, $8)
+            INSERT INTO stories (author_id, title, description, media_url, media_type, expires_at, media_status, cld_public_id, shared_post_id, story_metadata)
+            VALUES ($1, $2, $3, $4, $5, now() + interval '24 hours', $6, $7, $8, $9)
             RETURNING story_id, created_at
             `,
-            [userId, title, description, media_url, type, status, public_id, shared_post_id || null]
+            [userId, title, description, media_url, type, status, public_id, shared_post_id || null, story_metadata || {}]
         );
 
         const { story_id, created_at } = result.rows[0];
@@ -1497,7 +1542,8 @@ exports.createStory = async (req, res) => {
             media_url: media_url,
             media_type: type,
             media_status: status,
-            created_at: created_at
+            created_at: created_at,
+            story_metadata: story_metadata || {}
         });
     } catch (err) {
         console.error("Create story error:", err);
@@ -1775,3 +1821,121 @@ exports.getPollAnalytics = async (req, res) => {
         return res.status(500).json({ message: "Internal server error" });
     }
 };
+
+// --- STORY COMMENTS ---
+exports.addStoryComment = async (req, res) => {
+    const userId = req.user.sub;
+    const storyId = req.params.id;
+    const { content } = req.body;
+
+    if (!storyId || !userId || !content || !content.trim()) {
+        return res.status(400).json({ message: "all fields are required" })
+    }
+
+    try {
+        const story = await pool.query(`select story_id, author_id, media_url from stories where story_id = $1`, [storyId])
+
+        if (story.rowCount === 0) {
+            return res.status(404).json({ message: "Story not found" })
+        }
+
+        const result = await pool.query(
+            `INSERT INTO story_comments (story_id, author_id, content)
+             VALUES ($1, $2, $3)
+             RETURNING comment_id, author_id, content, created_at`,
+            [storyId, userId, content.trim()]
+        );
+
+        const newComment = result.rows[0];
+
+        // Notify Author (if not self)
+        const authorId = story.rows[0].author_id;
+        if (authorId !== userId) {
+            const userRes = await pool.query(`SELECT full_name, avatar_url FROM users WHERE user_id = $1`, [userId]);
+            const commenter = userRes.rows[0];
+
+            socketService.notifyUser(authorId, "notification", {
+                type: "story_comment",
+                text: `${commenter.full_name} commented on your story`,
+                from: userId,
+                senderName: commenter.full_name,
+                senderAvatar: commenter.avatar_url,
+                referenceId: storyId,
+                mediaUrl: story.rows[0].media_url,
+                time: "Just now"
+            });
+
+            await pool.query(
+                `INSERT INTO notifications (user_id, sender_id, type, text, reference_id) 
+                  VALUES ($1, $2, $3, $4, $5)`,
+                [authorId, userId, "story_comment", `${commenter.full_name} commented on your story`, storyId]
+            );
+        }
+
+        return res.status(200).json({
+            message: "comment added",
+            comment: newComment
+        })
+
+    } catch (err) {
+        console.error("Add story comment error", err);
+        return res.status(500).json({ message: "Internal server error" })
+    }
+}
+
+exports.getStoryComments = async (req, res) => {
+    const storyId = req.params.id;
+
+    if (!storyId) {
+        return res.status(400).json({ message: "storyId is required" })
+    }
+    try {
+        const comments = await pool.query(
+            `
+            SELECT 
+                c.comment_id,
+                c.content,
+                c.created_at,
+                u.user_id AS author_id,
+                u.full_name,
+                u.avatar_url,
+                u.headline
+            FROM story_comments c
+            JOIN users u ON c.author_id = u.user_id
+            WHERE c.story_id = $1
+            ORDER BY c.created_at asc
+            `,
+            [storyId]
+        );
+        return res.status(200).json(comments.rows);
+    } catch (err) {
+        console.error("Get story comments error", err);
+        return res.status(500).json({ message: "Internal server error" })
+    }
+}
+
+exports.deleteStoryComment = async (req, res) => {
+    const userId = req.user.sub;
+    const commentId = req.params.comment_id;
+
+    if (!userId || !commentId) {
+        return res.status(400).json({ message: "userId and commentId are required" })
+    }
+
+    try {
+        // Allow author of comment OR author of story to delete
+        // For simplicity, let's start with author of comment
+        const result = await pool.query(
+            `DELETE FROM story_comments WHERE comment_id = $1 AND author_id = $2 RETURNING comment_id`,
+            [commentId, userId]
+        );
+
+        if (result.rowCount === 0) {
+            // Check if user is story owner? Maybe later.
+            return res.status(404).json({ message: "Comment not found or unauthorized" });
+        }
+        res.status(200).json({ message: "Comment deleted", deletedCommentId: commentId });
+    } catch (err) {
+        return res.status(500).json({ message: "Internal server error" })
+    }
+}
