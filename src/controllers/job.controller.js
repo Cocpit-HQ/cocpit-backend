@@ -248,10 +248,18 @@ exports.createJob = async (req, res) => {
 
       const skillRes = await client.query(
         `
-        INSERT INTO skills(name)
-        VALUES ($1)
-        ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name
-        RETURNING skill_id
+        WITH s AS (
+            SELECT skill_id FROM skills WHERE lower(name) = lower($1)
+        ),
+        i AS (
+            INSERT INTO skills (name)
+            SELECT $1
+            WHERE NOT EXISTS (SELECT 1 FROM s)
+            RETURNING skill_id
+        )
+        SELECT skill_id FROM s
+        UNION ALL
+        SELECT skill_id FROM i
         `,
         [skill]
       );
@@ -903,7 +911,7 @@ exports.getMyJobs = async (req, res) => {
         (SELECT COUNT(*) FROM job_applications ja WHERE ja.job_id = j.job_id) as applicants_count
       FROM jobs j
       LEFT JOIN users u ON j.recruiter_id = u.user_id
-      WHERE j.recruiter_id = $1
+      WHERE j.recruiter_id = $1 AND j.is_active = TRUE
     `;
     const params = [recruiterId];
     let paramCount = 2;
@@ -1140,3 +1148,154 @@ exports.getJobApplicants = async (req, res) => {
     res.status(500).json({ message: "Internal server error" });
   }
 };
+
+exports.deleteJob = async (req, res) => {
+  const { id } = req.params;
+  const userId = req.user.sub;
+
+  try {
+    // Check ownership and existence
+    const jobCheck = await pool.query(
+      `SELECT 1 FROM jobs WHERE job_id = $1 AND recruiter_id = $2`,
+      [id, userId]
+    );
+
+    if (jobCheck.rowCount === 0) {
+      return res.status(403).json({ message: "Not authorized to delete this job or job does not exist" });
+    }
+
+    // Soft delete by setting is_active = FALSE
+    await pool.query(
+      `UPDATE jobs SET is_active = FALSE WHERE job_id = $1`,
+      [id]
+    );
+
+    res.json({ message: "Job deleted successfully" });
+  } catch (err) {
+    console.error("Delete job error:", err);
+    res.status(500).json({ message: "Internal server error" });
+  }
+};
+
+
+exports.updateJob = async (req, res) => {
+  const { id } = req.params;
+  const userId = req.user.sub;
+
+  const {
+    title,
+    company_name,
+    location,
+    description,
+    minSalary,
+    maxSalary,
+    job_type,
+    work_mode,
+    company_type,
+    experience_level,
+    about_company,
+    industry,
+    easy_apply,
+    actively_hiring,
+    skills = []
+  } = req.body;
+
+  // Sanitize integer fields - default to 0 if empty because DB has NOT NULL constraint
+  const safeMinSalary = (minSalary === "" || minSalary === null || minSalary === undefined) ? 0 : parseInt(minSalary);
+  const safeMaxSalary = (maxSalary === "" || maxSalary === null || maxSalary === undefined) ? 0 : parseInt(maxSalary);
+
+  const client = await pool.connect();
+
+  try {
+    await client.query("BEGIN");
+
+    // 1. Check ownership
+    const checkRes = await client.query(
+      `SELECT 1 FROM jobs WHERE job_id = $1 AND recruiter_id = $2`,
+      [id, userId]
+    );
+
+    if (checkRes.rowCount === 0) {
+      await client.query("ROLLBACK");
+      return res.status(403).json({ message: "Not authorized to update this job" });
+    }
+
+    // 2. Update job details
+    const updateRes = await client.query(
+      `
+      UPDATE jobs
+      SET 
+        title = $1, company_name = $2, location = $3,
+        description = $4, salary_min = $5, salary_max = $6,
+        job_type = $7, work_mode = $8, company_type = $9,
+        experience_level = $10, about_company = $11, industry = $12,
+        easy_apply = $13, actively_hiring = $14
+      WHERE job_id = $15
+      RETURNING *
+      `,
+      [
+        title, company_name, location,
+        description, safeMinSalary, safeMaxSalary,
+        job_type, work_mode, company_type,
+        experience_level, about_company, industry,
+        easy_apply, actively_hiring, id
+      ]
+    );
+
+    const job = updateRes.rows[0];
+
+    // 3. Update skills (delete all and re-insert for simplicity)
+    await client.query(`DELETE FROM job_skills WHERE job_id = $1`, [id]);
+
+    for (let skill of skills) {
+      const skillRes = await client.query(
+        `
+        WITH s AS (
+            SELECT skill_id FROM skills WHERE lower(name) = lower($1)
+        ),
+        i AS (
+            INSERT INTO skills (name)
+            SELECT $1
+            WHERE NOT EXISTS (SELECT 1 FROM s)
+            RETURNING skill_id
+        )
+        SELECT skill_id FROM s
+        UNION ALL
+        SELECT skill_id FROM i
+        `,
+        [skill]
+      );
+      const skillId = skillRes.rows[0].skill_id;
+
+      await client.query(
+        `
+        INSERT INTO job_skills(job_id, skill_id)
+        VALUES ($1, $2)
+        ON CONFLICT DO NOTHING
+        `,
+        [id, skillId]
+      );
+    }
+
+    await client.query("COMMIT");
+
+    res.json({
+      message: "Job updated successfully",
+      job
+    });
+
+  } catch (err) {
+    await client.query("ROLLBACK");
+    if (err.code === '23514' && err.constraint === 'salary_valid') {
+      return res.status(400).json({
+        field: "salary",
+        message: "Minimum salary cannot be greater than maximum salary"
+      });
+    }
+    console.error("Update job error:", err);
+    res.status(500).json({ message: "Internal server error" });
+  } finally {
+    client.release();
+  }
+};
+

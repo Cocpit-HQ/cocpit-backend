@@ -1,7 +1,20 @@
 const pool = require("../db/pool");
 
 exports.getEvents = async (req, res) => {
-  const { location, type, date, startDate, endDate, category, q, cursor, limit = 10 } = req.query;
+  const {
+    q, // General search
+    title,
+    location,
+    type, // event_type
+    category,
+    date,
+    startDate,
+    endDate,
+    organizer,
+    cursor,
+    userId: filterUserId, // Explicitly allow filtering by a specific user ID (e.g. for "My Events" search)
+    limit = 10
+  } = req.query;
 
   try {
     const userId = req.user ? req.user.sub : null;
@@ -25,37 +38,53 @@ exports.getEvents = async (req, res) => {
     values.push(userId); // $1 is always userId (can be null)
 
     /* ---------------------------------------------------------
-       🔍 Search & Filtering
+       🔍 Search & Filtering (Granular Pattern)
     --------------------------------------------------------- */
 
-    // 1. Text Search (using ILIKE for case-insensitive partial match)
+    // 0. Filter by specific Organizer ID (e.g. for "My Events" search)
+    if (filterUserId) {
+      values.push(filterUserId);
+      query += ` AND e.organizer_id = $${values.length}`;
+    }
+
+    // 1. General Search (q) - Searches multiple fields
     if (q) {
       values.push(`%${q}%`);
       const idx = values.length;
-      query += ` AND (e.title ILIKE $${idx} OR e.description ILIKE $${idx} OR e.location ILIKE $${idx})`;
+      query += ` AND (e.title ILIKE $${idx} OR e.description ILIKE $${idx} OR e.location ILIKE $${idx} OR u.full_name ILIKE $${idx})`;
     }
 
-    // 2. Location (Exact or Partial?) - Keeping existing logic but safer if we want partial
-    // Ideally 'location' filter might be strict if from dropdown, or partial if from search.
-    // If 'location' param is passed distinct from 'q', treat as filter.
+    // 2. Specific Title Filter
+    if (title) {
+      values.push(`%${title}%`);
+      query += ` AND e.title ILIKE $${values.length}`;
+    }
+
+    // 3. Location Filter
     if (location) {
-      values.push(`%${location}%`); // Changed to ILIKE for flexibility
+      values.push(`%${location}%`);
       query += ` AND e.location ILIKE $${values.length}`;
     }
 
-    // 3. Category
+    // 4. Category Filter
     if (category) {
       values.push(`%${category}%`);
       query += ` AND e.category ILIKE $${values.length}`;
     }
 
-    // 4. Event Type (Online/InPerson)
+    // 5. Organizer Filter (Name)
+    if (organizer) {
+      values.push(`%${organizer}%`);
+      query += ` AND u.full_name ILIKE $${values.length}`;
+    }
+
+    // 6. Event Type (Online/InPerson)
     if (type) {
       values.push(type);
       query += ` AND e.event_type = $${values.length}`;
     }
 
-    // 5. Dates
+    // 7. Dates
     // Specific Date (YYYY-MM-DD)
     if (date) {
       values.push(date);
@@ -481,6 +510,90 @@ exports.getMySavedEvents = async (req, res) => {
     res.json(result.rows);
   } catch (err) {
     console.error("Get saved events error:", err);
+    res.status(500).json({ message: "Internal server error" });
+  }
+};
+
+exports.updateEvent = async (req, res) => {
+  const userId = req.user.sub;
+  const eventId = req.params.id;
+  const { title, description, category, eventType, virtualLink, location, startTime, endTime, maxAttendees, registrationDeadline, waitlist } = req.body;
+  const bannerUrl = req.file ? req.file.path : undefined; // Only update if file provided
+
+  try {
+    // Check ownership
+    const eventCheck = await pool.query("SELECT organizer_id, banner_url FROM events WHERE event_id = $1", [eventId]);
+    if (eventCheck.rowCount === 0) return res.status(404).json({ message: "Event not found" });
+    if (eventCheck.rows[0].organizer_id !== userId) return res.status(403).json({ message: "Not authorized to update this event" });
+
+    const currentBanner = eventCheck.rows[0].banner_url;
+
+    // Construct Update Query dynamically
+    const updates = [];
+    const values = [];
+    let idx = 1;
+
+    const addUpdate = (col, val) => {
+      updates.push(`${col} = $${idx}`);
+      values.push(val);
+      idx++;
+    };
+
+    if (title) addUpdate('title', title);
+    if (description) addUpdate('description', description);
+    if (category) addUpdate('category', category);
+    if (eventType) {
+      addUpdate('event_type', eventType);
+      if (eventType === 'Online') {
+        addUpdate('virtual_link', virtualLink);
+        addUpdate('location', null);
+      } else {
+        addUpdate('virtual_link', null);
+        addUpdate('location', location);
+      }
+    }
+    if (startTime) addUpdate('start_time', startTime);
+    if (endTime) addUpdate('end_time', endTime);
+    if (maxAttendees) addUpdate('max_attendees', Number(maxAttendees));
+    if (registrationDeadline) addUpdate('registration_deadline', registrationDeadline);
+    if (waitlist !== undefined) addUpdate('waitlist_enabled', Boolean(waitlist));
+    if (bannerUrl) addUpdate('banner_url', bannerUrl);
+
+    if (updates.length === 0) return res.json({ message: "No changes provided" });
+
+    values.push(eventId);
+    const query = `UPDATE events SET ${updates.join(', ')} WHERE event_id = $${idx} RETURNING *`;
+
+    const result = await pool.query(query, values);
+
+    res.json({ message: "Event updated successfully", event: result.rows[0] });
+
+  } catch (err) {
+    console.error("Update event error:", err);
+    res.status(500).json({ message: "Internal server error" });
+  }
+};
+
+exports.deleteEvent = async (req, res) => {
+  const userId = req.user.sub;
+  const eventId = req.params.id;
+
+  try {
+    // Check ownership
+    const eventCheck = await pool.query("SELECT organizer_id FROM events WHERE event_id = $1", [eventId]);
+    if (eventCheck.rowCount === 0) return res.status(404).json({ message: "Event not found" });
+    if (eventCheck.rows[0].organizer_id !== userId) return res.status(403).json({ message: "Not authorized to delete this event" });
+
+    // Delete (Assuming cascade for related tables or manual cleanup if needed)
+    // We should probably delete registrations and saves first if no cascade
+    await pool.query("DELETE FROM event_registrations WHERE event_id = $1", [eventId]);
+    await pool.query("DELETE FROM event_saves WHERE event_id = $1", [eventId]);
+
+    await pool.query("DELETE FROM events WHERE event_id = $1", [eventId]);
+
+    res.json({ message: "Event deleted successfully" });
+  } catch (err) {
+    console.error("Delete event error:", err);
     res.status(500).json({ message: "Internal server error" });
   }
 };

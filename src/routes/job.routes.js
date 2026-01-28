@@ -26,5 +26,7 @@ router.post("/", requireAuth, requireRoles(['Recruiter', 'Admin']), jobControlle
 router.post("/:id/apply", requireAuth, uploadResume.single("resume"), jobController.applyJob);
 router.post("/:id/save", requireAuth, jobController.saveJob); //save job
 router.delete("/:id/save", requireAuth, jobController.unsaveJob); //unsave job
+router.put("/:id", requireAuth, requireRoles(['Recruiter', 'Admin']), jobController.updateJob);
+router.delete("/:id", requireAuth, requireRoles(['Recruiter', 'Admin']), jobController.deleteJob);
 
 module.exports = router;
