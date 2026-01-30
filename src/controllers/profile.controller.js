@@ -1,13 +1,33 @@
 const pool = require("../db/pool");
 
 exports.getProfile = async (req, res) => {
-  const userId = req.params.id === "me" ? req.user.sub : req.params.id;
+  let userId = req.params.id === "me" ? req.user.sub : req.params.id;
+let isUsernameLookup = false;
+
+  // Check if userId is a valid UUID
+  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  if (!uuidRegex.test(userId) && userId !== "me") {
+    isUsernameLookup = true;
+  }
 
   try {
+    let userResult;
 
-    const userResult = await pool.query(
+    if (isUsernameLookup) {
+      userResult = await pool.query(
+        `
+          SELECT u.user_id, u.full_name, u.headline, u.avatar_url, u.cover_image_url, u.location, u.about_text, u.email, u.mobile_number, u.account_name,
+                 p.profile_id, p.open_to, p.availability, p.work_preference, p.profile_views_count, p.search_appearances_count
+          FROM users u
+          LEFT JOIN profiles p ON u.user_id = p.user_id
+          WHERE LOWER(u.account_name) = LOWER($1)
+          `,
+        [userId]
+      );
+    } else {
+      userResult = await pool.query(
       `
-      SELECT u.user_id, u.full_name, u.headline, u.avatar_url, u.cover_image_url, u.location, u.about_text, u.email, u.mobile_number,
+      SELECT u.user_id, u.full_name, u.headline, u.avatar_url, u.cover_image_url, u.location, u.about_text, u.email, u.mobile_number, u.account_name,
              p.profile_id, p.open_to, p.availability, p.work_preference, p.profile_views_count, p.search_appearances_count
       FROM users u
       LEFT JOIN profiles p ON u.user_id = p.user_id
