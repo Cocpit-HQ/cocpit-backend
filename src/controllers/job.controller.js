@@ -1,150 +1,49 @@
 const pool = require("../db/pool");
+const { buildJobFilters } = require("../utils/jobQueryBuilder");
 
 exports.getAllJobs = async (req, res) => {
-  const {
-    title,
-    location,
-    easyApply,
-    activelyHiring,
-    experienceLevel,
-    minSalary,
-    maxSalary,
-    datePosted,
-    jobType,
-    workMode,
-    companyType,
-    industry,
-  } = req.query;
-  const userId = req.user?.sub; // optional (works for guest also)
+  const { limit = 10, cursor } = req.query;
+  const userId = req.user?.sub;
 
   try {
-    let query = `
+    const { conditions, values, nextIndex } = buildJobFilters(req.query, userId ? 2 : 1);
+
+    // Base params
+    const params = userId ? [userId] : [];
+
+    // Merge filter values
+    params.push(...values);
+
+    let paramCount = nextIndex;
+
+    // Pagination (Cursor-based on created_at)
+    if (cursor) {
+      conditions.push(`j.created_at < $${paramCount}`);
+      params.push(new Date(cursor));
+      paramCount++;
+    }
+
+    const limitClause = `LIMIT $${paramCount}`;
+    params.push(Number(limit));
+
+    const whereClause = conditions.length > 0 ? `WHERE j.is_active = TRUE AND ${conditions.join(" AND ")}` : `WHERE j.is_active = TRUE`;
+
+    const query = `
       SELECT 
         j.*,
         u.full_name AS recruiter_name,
-        ${userId
-        ? '(js.user_id IS NOT NULL) AS "isSaved",'
-        : 'FALSE AS "isSaved",'
-      }
-        ${userId
-        ? '(ja.application_id IS NOT NULL) AS "hasApplied",'
-        : 'FALSE AS "hasApplied",'
-      }
-        ${userId
-        ? 'ja.current_status AS "applicationStatus"'
-        : 'NULL AS "applicationStatus"'
-      }
+        ${userId ? '(js.user_id IS NOT NULL) AS "isSaved",' : 'FALSE AS "isSaved",'}
+        ${userId ? '(ja.application_id IS NOT NULL) AS "hasApplied",' : 'FALSE AS "hasApplied",'}
+        ${userId ? 'ja.current_status AS "applicationStatus",' : 'NULL AS "applicationStatus",'}
+        (SELECT COUNT(*)::int FROM job_applications ja_count WHERE ja_count.job_id = j.job_id) as applicants
       FROM jobs j
       LEFT JOIN users u ON j.recruiter_id = u.user_id
-      ${userId
-        ? "LEFT JOIN job_saves js ON js.job_id = j.job_id AND js.user_id = $1"
-        : ""
-      }
-      ${userId
-        ? "LEFT JOIN job_applications ja ON ja.job_id = j.job_id AND ja.applicant_id = $1"
-        : ""
-      }
-      WHERE j.is_active = TRUE
+      ${userId ? "LEFT JOIN job_saves js ON js.job_id = j.job_id AND js.user_id = $1" : ""}
+      ${userId ? "LEFT JOIN job_applications ja ON ja.job_id = j.job_id AND ja.applicant_id = $1" : ""}
+      ${whereClause}
+      ORDER BY j.created_at DESC
+      ${limitClause}
     `;
-
-    const params = [];
-    let paramCount = 1;
-
-    if (userId) {
-      params.push(userId);
-      paramCount++;
-    }
-
-    if (title) {
-      query += ` AND j.title ILIKE $${paramCount}`;
-      params.push(`%${title}%`);
-      paramCount++;
-    }
-    if (location) {
-      query += ` AND j.location ILIKE $${paramCount}`;
-      params.push(`%${location}%`);
-      paramCount++;
-    }
-    if (easyApply === "true") {
-      query += ` AND j.easy_apply = TRUE`;
-    }
-    if (activelyHiring === "true") {
-      query += ` AND j.actively_hiring = TRUE`;
-    }
-    if (experienceLevel) {
-      query += ` AND j.experience_level = $${paramCount}`;
-      params.push(experienceLevel);
-      paramCount++;
-    }
-
-    const min = Number(minSalary);
-    const max = Number(maxSalary);
-
-    if (!isNaN(min) && !isNaN(max)) {
-      if (min > max) {
-        return res.status(400).json({
-          field: "salary",
-          message: "Minimum salary cannot be greater than maximum salary"
-        });
-      }
-
-      query += `
-    AND j.salary_max >= $${paramCount}
-    AND j.salary_min <= $${paramCount + 1}
-  `;
-      params.push(min, max);
-      paramCount += 2;
-
-    } else if (!isNaN(min)) {
-      query += ` AND j.salary_max >= $${paramCount}`;
-      params.push(min);
-      paramCount++;
-
-    } else if (!isNaN(max)) {
-      query += ` AND j.salary_min <= $${paramCount}`;
-      params.push(max);
-      paramCount++;
-    }
-
-
-
-    if (datePosted) {
-      let fromDate;
-      if (datePosted === "Past 24 hours") {
-        fromDate = new Date(new Date().setDate(new Date().getDate() - 1));
-      } else if (datePosted === "Past week") {
-        fromDate = new Date(new Date().setDate(new Date().getDate() - 7));
-      } else if (datePosted === "Past month") {
-        fromDate = new Date(new Date().setMonth(new Date().getMonth() - 1));
-      }
-      if (fromDate) {
-        query += ` AND j.created_at >= $${paramCount}`;
-        params.push(fromDate);
-        paramCount++;
-      }
-    }
-    if (jobType) {
-      query += ` AND j.job_type = $${paramCount}`;
-      params.push(jobType);
-      paramCount++;
-    }
-    if (workMode) {
-      query += ` AND j.work_mode = $${paramCount}`;
-      params.push(workMode);
-      paramCount++;
-    }
-    if (companyType) {
-      query += ` AND j.company_type = $${paramCount}`;
-      params.push(companyType);
-      paramCount++;
-    }
-    if (industry) {
-      query += ` AND j.industry = $${paramCount}`;
-      params.push(industry);
-      paramCount++;
-    }
-
-    query += ` ORDER BY j.created_at DESC`;
 
     const result = await pool.query(query, params);
     res.json(result.rows);
@@ -172,7 +71,8 @@ exports.getJobById = async (req, res) => {
         u.full_name AS recruiter_name,
         ${userId ? '(js.user_id IS NOT NULL) AS "isSaved",' : 'FALSE AS "isSaved",'}
         ${userId ? '(ja.application_id IS NOT NULL) AS "hasApplied",' : 'FALSE AS "hasApplied",'}
-        ${userId ? 'ja.current_status AS "applicationStatus"' : 'NULL AS "applicationStatus"'}
+        ${userId ? 'ja.current_status AS "applicationStatus",' : 'NULL AS "applicationStatus",'}
+        (SELECT COUNT(*)::int FROM job_applications ja_count WHERE ja_count.job_id = j.job_id) as applicants
       FROM jobs j
       LEFT JOIN users u ON j.recruiter_id = u.user_id
       ${userId ? 'LEFT JOIN job_saves js ON js.job_id = j.job_id AND js.user_id = $2' : ''}
@@ -359,158 +259,52 @@ exports.applyJob = async (req, res) => {
 };
 
 exports.getJobOffers = async (req, res) => {
-  const {
-    title,
-    location,
-    easyApply,
-    activelyHiring,
-    experienceLevel,
-    minSalary,
-    maxSalary,
-    datePosted,
-    jobType,
-    workMode,
-    companyType,
-    industry,
-  } = req.query;
+  const { limit = 10, cursor } = req.query;
   const userId = req.user?.sub; // optional, if user is logged in
 
   try {
-    // Base query
-    let query = `
+    // Use the builder
+    const { conditions, values, nextIndex } = buildJobFilters(req.query, userId ? 2 : 1);
+
+    // Offers specific condition
+    conditions.push('j.is_offer = TRUE');
+
+    const params = userId ? [userId] : [];
+    params.push(...values);
+    let paramCount = nextIndex;
+
+    // Pagination (Cursor-based on created_at)
+    if (cursor) {
+      conditions.push(`j.created_at < $${paramCount}`);
+      params.push(new Date(cursor));
+      paramCount++;
+    }
+
+    const limitClause = `LIMIT $${paramCount}`;
+    params.push(Number(limit));
+
+    const whereClause = conditions.length > 0 ? `WHERE j.is_active = TRUE AND ${conditions.join(" AND ")}` : `WHERE j.is_active = TRUE`;
+
+    const query = `
       SELECT 
         j.*,
         u.full_name AS recruiter_name,
-        ${userId
-        ? '(js.user_id IS NOT NULL) AS "isSaved",'
-        : 'FALSE AS "isSaved",'
-      }
-        ${userId
-        ? '(ja.application_id IS NOT NULL) AS "hasApplied",'
-        : 'FALSE AS "hasApplied",'
-      }
-        ${userId
-        ? 'ja.current_status AS "applicationStatus"'
-        : 'NULL AS "applicationStatus"'
-      }
+        ${userId ? '(js.user_id IS NOT NULL) AS "isSaved",' : 'FALSE AS "isSaved",'}
+        ${userId ? '(ja.application_id IS NOT NULL) AS "hasApplied",' : 'FALSE AS "hasApplied",'}
+        ${userId ? 'ja.current_status AS "applicationStatus",' : 'NULL AS "applicationStatus",'}
+        (SELECT COUNT(*)::int FROM job_applications ja_count WHERE ja_count.job_id = j.job_id) as applicants
       FROM jobs j
       LEFT JOIN users u ON j.recruiter_id = u.user_id
-      ${userId
-        ? "LEFT JOIN job_saves js ON js.job_id = j.job_id AND js.user_id = $1"
-        : ""
-      }
-      ${userId
-        ? "LEFT JOIN job_applications ja ON ja.job_id = j.job_id AND ja.applicant_id = $1"
-        : ""
-      }
-      WHERE j.is_active = TRUE AND j.is_offer = TRUE
+      ${userId ? "LEFT JOIN job_saves js ON js.job_id = j.job_id AND js.user_id = $1" : ""}
+      ${userId ? "LEFT JOIN job_applications ja ON ja.job_id = j.job_id AND ja.applicant_id = $1" : ""}
+      ${whereClause}
+      ORDER BY j.created_at DESC
+      ${limitClause}
     `;
 
-    const params = [];
-    let paramCount = 1;
-
-    // If user is logged in, add userId for isSaved check
-    if (userId) {
-      params.push(userId);
-      paramCount++;
-    }
-
-    // Optional filters
-    if (title) {
-      query += ` AND j.title ILIKE $${paramCount}`;
-      params.push(`%${title}%`);
-      paramCount++;
-    }
-    if (location) {
-      query += ` AND j.location ILIKE $${paramCount}`;
-      params.push(`%${location}%`);
-      paramCount++;
-    }
-    if (easyApply === "true") {
-      query += ` AND j.easy_apply = TRUE`;
-    }
-    if (activelyHiring === "true") {
-      query += ` AND j.actively_hiring = TRUE`;
-    }
-    if (experienceLevel) {
-      query += ` AND j.experience_level = $${paramCount}`;
-      params.push(experienceLevel);
-      paramCount++;
-    }
-    const min = Number(minSalary);
-    const max = Number(maxSalary);
-
-    if (!isNaN(min) && !isNaN(max)) {
-      if (min > max) {
-        return res.status(400).json({
-          field: "salary",
-          message: "Minimum salary cannot be greater than maximum salary"
-        });
-      }
-
-      query += `
-    AND j.salary_max >= $${paramCount}
-    AND j.salary_min <= $${paramCount + 1}
-  `;
-      params.push(min, max);
-      paramCount += 2;
-
-    } else if (!isNaN(min)) {
-      query += ` AND j.salary_max >= $${paramCount}`;
-      params.push(min);
-      paramCount++;
-
-    } else if (!isNaN(max)) {
-      query += ` AND j.salary_min <= $${paramCount}`;
-      params.push(max);
-      paramCount++;
-    }
-
-
-    if (datePosted) {
-      let fromDate;
-      if (datePosted === "Past 24 hours") {
-        fromDate = new Date(new Date().setDate(new Date().getDate() - 1));
-      } else if (datePosted === "Past week") {
-        fromDate = new Date(new Date().setDate(new Date().getDate() - 7));
-      } else if (datePosted === "Past month") {
-        fromDate = new Date(new Date().setMonth(new Date().getMonth() - 1));
-      }
-      if (fromDate) {
-        query += ` AND j.created_at >= $${paramCount}`;
-        params.push(fromDate);
-        paramCount++;
-      }
-    }
-    if (jobType) {
-      query += ` AND j.job_type = $${paramCount}`;
-      params.push(jobType);
-      paramCount++;
-    }
-    if (workMode) {
-      query += ` AND j.work_mode = $${paramCount}`;
-      params.push(workMode);
-      paramCount++;
-    }
-    if (companyType) {
-      query += ` AND j.company_type = $${paramCount}`;
-      params.push(companyType);
-      paramCount++;
-    }
-    if (industry) {
-      query += ` AND j.industry = $${paramCount}`;
-      params.push(industry);
-      paramCount++;
-    }
-
-    // Order by newest first
-    query += ` ORDER BY j.created_at DESC`;
-
     const result = await pool.query(query, params);
-
     res.status(200).json(result.rows);
   } catch (err) {
-
     if (err.code === '23514' && err.constraint === 'salary_valid') {
       return res.status(400).json({
         field: "salary",
@@ -577,123 +371,47 @@ exports.unsaveJob = async (req, res) => {
 
 exports.getMySavedJobs = async (req, res) => {
   const userId = req.user.sub;
-  const {
-    location,
-    easyApply,
-    activelyHiring,
-    experienceLevel,
-    minSalary,
-    maxSalary,
-    datePosted,
-    jobType,
-    workMode,
-    companyType,
-    industry,
-  } = req.query;
+  const { limit = 10, cursor } = req.query;
 
   try {
+    const { conditions, values, nextIndex } = buildJobFilters(req.query, 2);
+
     let query = `
       SELECT 
         j.*, 
         u.full_name AS recruiter_name, 
         TRUE AS "isSaved",
         (ja.application_id IS NOT NULL) AS "hasApplied",
-        ja.current_status AS "applicationStatus"
+        ja.current_status AS "applicationStatus",
+        (SELECT COUNT(*)::int FROM job_applications ja_count WHERE ja_count.job_id = j.job_id) as applicants,
+        js.saved_at
       FROM job_saves js
       JOIN jobs j ON js.job_id = j.job_id
       LEFT JOIN users u ON j.recruiter_id = u.user_id
       LEFT JOIN job_applications ja ON ja.job_id = j.job_id AND ja.applicant_id = $1
       WHERE js.user_id = $1 AND j.is_active = TRUE
       `;
-    const params = [userId];
-    let paramCount = 2;
 
-    if (location) {
-      query += ` AND j.location ILIKE $${paramCount}`;
-      params.push(`%${location}%`);
-      paramCount++;
+    if (conditions.length > 0) {
+      query += ` AND ${conditions.join(" AND ")}`;
     }
-    if (easyApply === "true") {
-      query += ` AND j.easy_apply = TRUE`;
-    }
-    if (activelyHiring === "true") {
-      query += ` AND j.actively_hiring = TRUE`;
-    }
-    if (experienceLevel) {
-      query += ` AND j.experience_level = $${paramCount}`;
-      params.push(experienceLevel);
-      paramCount++;
-    }
-    const min = Number(minSalary);
-    const max = Number(maxSalary);
 
-    if (!isNaN(min) && !isNaN(max)) {
-      if (min > max) {
-        return res.status(400).json({
-          field: "salary",
-          message: "Minimum salary cannot be greater than maximum salary"
-        });
-      }
+    const params = [userId, ...values];
+    let paramCount = nextIndex;
 
-      query += `
-    AND j.salary_max >= $${paramCount}
-    AND j.salary_min <= $${paramCount + 1}
-  `;
-      params.push(min, max);
-      paramCount += 2;
-
-    } else if (!isNaN(min)) {
-      query += ` AND j.salary_max >= $${paramCount}`;
-      params.push(min);
-      paramCount++;
-
-    } else if (!isNaN(max)) {
-      query += ` AND j.salary_min <= $${paramCount}`;
-      params.push(max);
+    // Pagination (Cursor-based on saved_at)
+    if (cursor) {
+      query += ` AND js.saved_at < $${paramCount}`;
+      params.push(new Date(cursor));
       paramCount++;
     }
 
+    const limitClause = `LIMIT $${paramCount}`;
+    params.push(Number(limit));
 
-    if (datePosted) {
-      let fromDate;
-      if (datePosted === "Past 24 hours") {
-        fromDate = new Date(new Date().setDate(new Date().getDate() - 1));
-      } else if (datePosted === "Past week") {
-        fromDate = new Date(new Date().setDate(new Date().getDate() - 7));
-      } else if (datePosted === "Past month") {
-        fromDate = new Date(new Date().setMonth(new Date().getMonth() - 1));
-      }
-      if (fromDate) {
-        query += ` AND j.created_at >= $${paramCount}`;
-        params.push(fromDate);
-        paramCount++;
-      }
-    }
-    if (jobType) {
-      query += ` AND j.job_type = $${paramCount}`;
-      params.push(jobType);
-      paramCount++;
-    }
-    if (workMode) {
-      query += ` AND j.work_mode = $${paramCount}`;
-      params.push(workMode);
-      paramCount++;
-    }
-    if (companyType) {
-      query += ` AND j.company_type = $${paramCount}`;
-      params.push(companyType);
-      paramCount++;
-    }
-    if (industry) {
-      query += ` AND j.industry = $${paramCount}`;
-      params.push(industry);
-      paramCount++;
-    }
-
-    query += ` ORDER BY js.saved_at DESC`;
+    query += ` ORDER BY js.saved_at DESC ${limitClause}`;
 
     const result = await pool.query(query, params);
-
     res.json(result.rows);
   } catch (err) {
     if (err.code === '23514' && err.constraint === 'salary_valid') {
@@ -709,20 +427,7 @@ exports.getMySavedJobs = async (req, res) => {
 
 exports.getMyApplications = async (req, res) => {
   const userId = req.user.sub;
-  const {
-    status,
-    location,
-    easyApply,
-    activelyHiring,
-    experienceLevel,
-    minSalary,
-    maxSalary,
-    datePosted,
-    jobType,
-    workMode,
-    companyType,
-    industry,
-  } = req.query;
+  const { limit = 10, cursor, status } = req.query;
 
   const allowedStatus = ['applied', 'in progress', 'in past', 'saved', 'in-progress', 'in-past'];
 
@@ -735,9 +440,11 @@ exports.getMyApplications = async (req, res) => {
   }
 
   try {
-    let query;
-    const params = [userId];
-    let paramCount = 2;
+    const { conditions, values, nextIndex } = buildJobFilters(req.query, 2);
+
+    // Base params: userId is $1
+    const params = [userId, ...values];
+    let paramCount = nextIndex;
 
     let baseQuery = `
         FROM job_applications ja
@@ -747,8 +454,12 @@ exports.getMyApplications = async (req, res) => {
         WHERE ja.applicant_id = $1
     `;
 
-    // ... (filters logic remains same, just append to baseQuery) ...
+    // Add built filters
+    if (conditions.length > 0) {
+      baseQuery += ` AND ${conditions.join(" AND ")}`;
+    }
 
+    // Status Filters
     if (status) {
       const s = status.toLowerCase();
       if (s === 'in past' || s === 'in-past') {
@@ -761,119 +472,35 @@ exports.getMyApplications = async (req, res) => {
       }
     }
 
-    // ... (rest of filtering logic) ...
+    // Pagination (Cursor-based on applied_at)
+    let paginationClause = "";
+    if (cursor) {
+      paginationClause = `AND ja.applied_at < $${paramCount}`;
+      params.push(new Date(cursor));
+      paramCount++;
+    }
 
-    query = `
+    const limitClause = `LIMIT $${paramCount}`;
+    params.push(Number(limit));
+
+    const query = `
         SELECT 
           j.*, 
           u.full_name AS recruiter_name,
           (js.user_id IS NOT NULL) AS "isSaved",
           TRUE AS "hasApplied",
           ja.current_status AS "applicationStatus",
+          (SELECT COUNT(*)::int FROM job_applications ja_count WHERE ja_count.job_id = j.job_id) as applicants,
           ja.applied_at
         ${baseQuery}
+        ${paginationClause}
         ORDER BY ja.applied_at DESC
-    `;
-
-    if (location) {
-      baseQuery += ` AND j.location ILIKE $${paramCount}`;
-      params.push(`%${location}%`);
-      paramCount++;
-    }
-
-    if (easyApply === "true") {
-      baseQuery += ` AND j.easy_apply = TRUE`;
-    }
-    if (activelyHiring === "true") {
-      baseQuery += ` AND j.actively_hiring = TRUE`;
-    }
-    if (experienceLevel) {
-      baseQuery += ` AND j.experience_level = $${paramCount}`;
-      params.push(experienceLevel);
-      paramCount++;
-    }
-    const min = Number(minSalary);
-    const max = Number(maxSalary);
-
-    if (!isNaN(min) && !isNaN(max)) {
-      if (min > max) {
-        return res.status(400).json({
-          field: "salary",
-          message: "Minimum salary cannot be greater than maximum salary"
-        });
-      }
-
-      baseQuery += `
-    AND j.salary_max >= $${paramCount}
-    AND j.salary_min <= $${paramCount + 1}
-  `;
-      params.push(min, max);
-      paramCount += 2;
-
-    } else if (!isNaN(min)) {
-      baseQuery += ` AND j.salary_max >= $${paramCount}`;
-      params.push(min);
-      paramCount++;
-
-    } else if (!isNaN(max)) {
-      baseQuery += ` AND j.salary_min <= $${paramCount}`;
-      params.push(max);
-      paramCount++;
-    }
-
-
-    if (datePosted) {
-      let fromDate;
-      if (datePosted === "Past 24 hours") {
-        fromDate = new Date(new Date().setDate(new Date().getDate() - 1));
-      } else if (datePosted === "Past week") {
-        fromDate = new Date(new Date().setDate(new Date().getDate() - 7));
-      } else if (datePosted === "Past month") {
-        fromDate = new Date(new Date().setMonth(new Date().getMonth() - 1));
-      }
-      if (fromDate) {
-        baseQuery += ` AND j.created_at >= $${paramCount}`;
-        params.push(fromDate);
-        paramCount++;
-      }
-    }
-    if (jobType) {
-      baseQuery += ` AND j.job_type = $${paramCount}`;
-      params.push(jobType);
-      paramCount++;
-    }
-    if (workMode) {
-      baseQuery += ` AND j.work_mode = $${paramCount}`;
-      params.push(workMode);
-      paramCount++;
-    }
-    if (companyType) {
-      baseQuery += ` AND j.company_type = $${paramCount}`;
-      params.push(companyType);
-      paramCount++;
-    }
-    if (industry) {
-      baseQuery += ` AND j.industry = $${paramCount}`;
-      params.push(industry);
-      paramCount++;
-    }
-
-    query = `
-        SELECT 
-          j.*, 
-          u.full_name AS recruiter_name,
-          (js.user_id IS NOT NULL) AS "isSaved",
-          TRUE AS "hasApplied",
-          ja.current_status AS "applicationStatus",
-          ja.applied_at
-        ${baseQuery}
-        ORDER BY ja.applied_at DESC
+        ${limitClause}
     `;
 
     const result = await pool.query(query, params);
 
-    return res.json(result.rows);
-
+    res.json(result.rows);
   } catch (err) {
     if (err.code === '23514' && err.constraint === 'salary_valid') {
       return res.status(400).json({
@@ -908,7 +535,7 @@ exports.getMyJobs = async (req, res) => {
       SELECT 
         j.*, 
         u.full_name AS recruiter_name,
-        (SELECT COUNT(*) FROM job_applications ja WHERE ja.job_id = j.job_id) as applicants_count
+        (SELECT COUNT(*)::int FROM job_applications ja_count WHERE ja_count.job_id = j.job_id) as applicants_count
       FROM jobs j
       LEFT JOIN users u ON j.recruiter_id = u.user_id
       WHERE j.recruiter_id = $1 AND j.is_active = TRUE
@@ -1298,4 +925,3 @@ exports.updateJob = async (req, res) => {
     client.release();
   }
 };
-
