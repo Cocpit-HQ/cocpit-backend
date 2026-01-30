@@ -2,37 +2,23 @@ const pool = require("../db/pool");
 
 exports.getProfile = async (req, res) => {
   let userId = req.params.id === "me" ? req.user.sub : req.params.id;
-let isUsernameLookup = false;
-
   // Check if userId is a valid UUID
   const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-  if (!uuidRegex.test(userId) && userId !== "me") {
-    isUsernameLookup = true;
+
+  // If not "me" and not valid UUID, return 400 or 404 immediately (since we reverted username support)
+  if (userId !== "me" && !uuidRegex.test(userId)) {
+    return res.status(400).json({ message: "Invalid user ID" });
   }
 
   try {
-    let userResult;
-
-    if (isUsernameLookup) {
-      userResult = await pool.query(
-        `
+    let userResult = await pool.query(
+      `
           SELECT u.user_id, u.full_name, u.headline, u.avatar_url, u.cover_image_url, u.location, u.about_text, u.email, u.mobile_number, u.account_name,
                  p.profile_id, p.open_to, p.availability, p.work_preference, p.profile_views_count, p.search_appearances_count
           FROM users u
           LEFT JOIN profiles p ON u.user_id = p.user_id
-          WHERE LOWER(u.account_name) = LOWER($1)
+          WHERE u.user_id = $1
           `,
-        [userId]
-      );
-    } else {
-      userResult = await pool.query(
-      `
-      SELECT u.user_id, u.full_name, u.headline, u.avatar_url, u.cover_image_url, u.location, u.about_text, u.email, u.mobile_number, u.account_name,
-             p.profile_id, p.open_to, p.availability, p.work_preference, p.profile_views_count, p.search_appearances_count
-      FROM users u
-      LEFT JOIN profiles p ON u.user_id = p.user_id
-      WHERE u.user_id = $1
-      `,
       [userId]
     );
 
@@ -42,6 +28,9 @@ let isUsernameLookup = false;
 
     const u = userResult.rows[0];
     const profileId = u.profile_id;
+
+    // Update userId to the actual UUID found, so subsequent queries work
+    userId = u.user_id;
 
 
     const experiences = profileId
@@ -117,7 +106,7 @@ let isUsernameLookup = false;
         location: u.location,
         about: u.about_text,
         email: u.email,
-        phone: u.mobile_number,
+        mobile_number: u.mobile_number,
         profile_views: u.profile_views_count,
         search_appearances: u.search_appearances_count,
         open_to: u.open_to,
@@ -149,7 +138,8 @@ exports.updateProfile = async (req, res) => {
     school,
     degree,
     location,
-    about_text
+    about_text,
+    mobile_number
   } = req.body;
 
 
@@ -186,6 +176,8 @@ exports.updateProfile = async (req, res) => {
   }
 
 
+
+
   try {
     await pool.query("BEGIN");
 
@@ -201,8 +193,10 @@ exports.updateProfile = async (req, res) => {
         degree       = COALESCE($6, degree),
         location     = COALESCE($7, location),
         about_text   = COALESCE($8, about_text),
+
+        mobile_number = COALESCE($9, mobile_number),
         updated_at   = now()
-      WHERE user_id = $9
+      WHERE user_id = $10
       `,
       [
         full_name,
@@ -213,6 +207,7 @@ exports.updateProfile = async (req, res) => {
         degree,
         location,
         about_text,
+        mobile_number,
         userId
       ]
     );
