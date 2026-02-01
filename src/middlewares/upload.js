@@ -102,7 +102,7 @@ const uploadResume = multer({
       "application/pdf",
       "application/msword",
       "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      
+
     ];
 
     const allowed_img = [
@@ -236,11 +236,116 @@ const uploadCover = multer({
   },
 });
 
+// --- Audio Upload (Voice Pitch) ---
+let audioStorage;
+if (hasCloudinary) {
+  audioStorage = new CloudinaryStorage({
+    cloudinary,
+    params: {
+      folder: "audio_pitches",
+      resource_type: "video", // Cloudinary treats audio as video resource type usually for streaming
+      public_id: (req, file) => `pitch-${req.user.sub}-${Date.now()}`,
+    },
+  });
+} else {
+  audioStorage = multer.diskStorage({
+    destination: (req, file, cb) => {
+      createDir(path.join(uploadsDir, 'audio'));
+      cb(null, 'uploads/audio/');
+    },
+    filename: (req, file, cb) => {
+      const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+      const ext = path.extname(file.originalname);
+      cb(null, 'pitch-' + uniqueSuffix + ext);
+    }
+  });
+  if (!hasCloudinary) createDir(path.join(uploadsDir, 'audio'));
+}
+
+const uploadApplicationFiles = multer({
+  storage: hasCloudinary ? new CloudinaryStorage({
+    cloudinary,
+    params: async (req, file) => {
+      if (file.fieldname === 'resume') {
+        return {
+          folder: "resumes",
+          resource_type: "raw",
+          public_id: `resume-${req.user.sub}-${Date.now()}${path.extname(file.originalname)}`
+        };
+
+      }
+    }
+  }) : multer.diskStorage({
+    destination: (req, file, cb) => {
+      if (file.fieldname === 'resume') {
+        cb(null, 'uploads/resumes/');
+
+      }
+    },
+    filename: (req, file, cb) => {
+      const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+      const ext = path.extname(file.originalname);
+      cb(null, file.fieldname + '-' + uniqueSuffix + ext);
+    }
+  }),
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB total buffer safety
+  fileFilter: (req, file, cb) => {
+    if (file.fieldname === 'resume') {
+      const allowed = [
+        "application/pdf",
+        "application/msword",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "image/png", "image/jpeg", "image/jpg"
+      ];
+      if (!allowed.includes(file.mimetype)) return cb(new Error("Invalid resume format"));
+
+    }
+    cb(null, true);
+  }
+}).single('resume');
+
+const uploadTaskSubmission = multer({
+  storage: hasCloudinary ? new CloudinaryStorage({
+    cloudinary,
+    params: async (req, file) => {
+      // Use video resource type for audio/video submissions for better streaming/transcoding support
+      return {
+        folder: "task_submissions",
+        resource_type: "video",
+        public_id: `task-${req.user.sub}-${Date.now()}`
+      };
+    }
+  }) : multer.diskStorage({
+    destination: (req, file, cb) => {
+      createDir(path.join(uploadsDir, 'tasks'));
+      cb(null, 'uploads/tasks/');
+    },
+    filename: (req, file, cb) => {
+      const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+      const ext = path.extname(file.originalname) || '.webm';
+      cb(null, 'task-' + uniqueSuffix + ext);
+    }
+  }),
+  limits: { fileSize: 50 * 1024 * 1024 }, // 50MB limit as per frontend check
+  fileFilter: (req, file, cb) => {
+    const allowed = [
+      "audio/webm", "audio/mp4", "audio/mpeg", "audio/wav", "audio/ogg",
+      "video/webm", "video/mp4", "video/quicktime"
+    ];
+    if (!allowed.includes(file.mimetype)) {
+      return cb(new Error("Invalid file format. Please upload video or audio."));
+    }
+    cb(null, true);
+  }
+}).single('file'); // Matches frontend field name
+
 module.exports = {
   upload,
   uploadResume,
   uploadAvatar,
   uploadEventBanner,
   uploadStory,
-  uploadCover
+  uploadCover,
+  uploadApplicationFiles,
+  uploadTaskSubmission
 };

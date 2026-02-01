@@ -72,6 +72,11 @@ exports.getJobById = async (req, res) => {
         ${userId ? '(js.user_id IS NOT NULL) AS "isSaved",' : 'FALSE AS "isSaved",'}
         ${userId ? '(ja.application_id IS NOT NULL) AS "hasApplied",' : 'FALSE AS "hasApplied",'}
         ${userId ? 'ja.current_status AS "applicationStatus",' : 'NULL AS "applicationStatus",'}
+        ${userId ? 'ja.application_id AS "applicationId",' : 'NULL AS "applicationId",'}
+        ${userId ? 'ja.screening_required AS "screeningRequired",' : 'NULL AS "screeningRequired",'}
+        ${userId ? 'ja.screening_type AS "screeningType",' : 'NULL AS "screeningType",'}
+        ${userId ? 'ja.screening_question AS "screeningQuestion",' : 'NULL AS "screeningQuestion",'}
+        ${userId ? 'ja.screening_submitted_at AS "screeningSubmittedAt",' : 'NULL AS "screeningSubmittedAt",'}
         (SELECT COUNT(*)::int FROM job_applications ja_count WHERE ja_count.job_id = j.job_id) as applicants
       FROM jobs j
       LEFT JOIN users u ON j.recruiter_id = u.user_id
@@ -111,6 +116,7 @@ exports.createJob = async (req, res) => {
     industry,
     easy_apply = false,
     actively_hiring = false,
+
     skills = []
   } = req.body;
 
@@ -127,17 +133,17 @@ exports.createJob = async (req, res) => {
         recruiter_id, title, company_name, location,
         description, salary_min,salary_max, job_type,
         work_mode, company_type, experience_level,
-        about_company,industry, easy_apply, actively_hiring
+        about_company,industry, easy_apply, actively_hiring, voice_pitch_req
       )
       VALUES
-      ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+      ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
       RETURNING *
       `,
       [
         userId, title, company_name, location,
         description, minSalary, maxSalary, job_type,
         work_mode, company_type, experience_level,
-        about_company, industry, easy_apply, actively_hiring
+        about_company, industry, easy_apply, actively_hiring, voice_pitch_req
       ]
     );
 
@@ -207,10 +213,11 @@ exports.applyJob = async (req, res) => {
 
   try {
     // Check if job exists
-    const jobCheck = await pool.query(`SELECT 1 FROM jobs WHERE job_id = $1`, [id]);
+    const jobCheck = await pool.query(`SELECT 1, voice_pitch_req FROM jobs WHERE job_id = $1`, [id]);
     if (jobCheck.rowCount === 0) {
       return res.status(404).json({ message: "Job not found" });
     }
+    const voiceReq = 'optional';
 
     // Check if already applied
     const existing = await pool.query(
@@ -223,10 +230,22 @@ exports.applyJob = async (req, res) => {
 
     // Resume file URL from Cloudinary or existing profile resume
     let resume_url = null;
+    let audio_pitch_url = null;
 
-    if (req.file) {
+    // Handle Multer .fields() output
+    if (req.files) {
+      if (req.files['resume'] && req.files['resume'][0]) {
+        resume_url = req.files['resume'][0].path;
+      }
+
+    }
+    // Fallback for single file upload if still supported (legacy)
+    else if (req.file) {
       resume_url = req.file.path;
-    } else if (req.body.resume_url) {
+    }
+
+    // Fallback to body URL if not uploaded
+    if (!resume_url && req.body.resume_url) {
       resume_url = req.body.resume_url;
     }
 
@@ -234,13 +253,15 @@ exports.applyJob = async (req, res) => {
       return res.status(400).json({ message: "Resume is required" });
     }
 
+
+
     // Create application
     const appResult = await pool.query(
       `INSERT INTO job_applications 
-       (job_id, applicant_id, full_name, email, phone, resume_url, cover_note)
-       VALUES ($1,$2,$3,$4,$5,$6,$7)
+       (job_id, applicant_id, full_name, email, phone, resume_url, cover_note, audio_pitch_url)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
        RETURNING application_id`,
-      [id, userId, full_name, email, phone, resume_url, cover_note]
+      [id, userId, full_name, email, phone, resume_url, cover_note, audio_pitch_url]
     );
 
     const appId = appResult.rows[0].application_id;
@@ -463,12 +484,11 @@ exports.getMyApplications = async (req, res) => {
     if (status) {
       const s = status.toLowerCase();
       if (s === 'in past' || s === 'in-past') {
-        baseQuery += ` AND j.is_active = false`;
-      } else if (s === 'in progress' || s === 'in-progress') {
-        baseQuery += ` AND ja.current_status = ANY($${paramCount++})`;
-        params.push(['Under Review', 'Interview']);
+        // Include: Closed jobs OR Rejected applications OR Submitted Tasks
+        baseQuery += ` AND (j.is_active = FALSE OR ja.current_status = 'Rejected' OR ja.screening_submitted_at IS NOT NULL)`;
       } else if (s === 'applied') {
-        baseQuery += ` AND ja.current_status = 'Applied'`;
+        // Include: Active jobs AND Not Rejected AND Task Not Submitted (or not required)
+        baseQuery += ` AND j.is_active = TRUE AND ja.current_status != 'Rejected' AND ja.screening_submitted_at IS NULL`;
       }
     }
 
@@ -490,6 +510,11 @@ exports.getMyApplications = async (req, res) => {
           (js.user_id IS NOT NULL) AS "isSaved",
           TRUE AS "hasApplied",
           ja.current_status AS "applicationStatus",
+          ja.application_id AS "applicationId",
+          ja.screening_required AS "screeningRequired",
+          ja.screening_type AS "screeningType",
+          ja.screening_question AS "screeningQuestion",
+          ja.screening_submitted_at AS "screeningSubmittedAt",
           (SELECT COUNT(*)::int FROM job_applications ja_count WHERE ja_count.job_id = j.job_id) as applicants,
           ja.applied_at
         ${baseQuery}
@@ -703,12 +728,18 @@ exports.getJobApplicants = async (req, res) => {
         ja.email,
         ja.phone,
         ja.resume_url, 
+
         ja.current_status as status,
         ja.applied_at as "appliedAt",
         u.avatar_url,
         u.headline,
         u.location,
         u.about_text as about,
+        ja.screening_required as "screeningRequired",
+        ja.screening_type as "screeningType",
+        ja.screening_question as "screeningQuestion",
+        ja.screening_submitted_at as "screeningSubmittedAt",
+        ja.screening_response_url as "screeningResponseUrl",
         -- Aggregate skills
         COALESCE((
           SELECT array_agg(s.name)
@@ -762,6 +793,14 @@ exports.getJobApplicants = async (req, res) => {
       education: row.education || [],
       resumeUrl: row.resume_url,
       resumeName: row.resume_url ? row.resume_url.split('/').pop() : "Resume.pdf",
+
+      screening: row.screeningRequired ? {
+        required: true,
+        type: row.screeningType,
+        question: row.screeningQuestion,
+        submittedAt: row.screeningSubmittedAt,
+        responseUrl: row.screeningResponseUrl
+      } : null,
       status: row.status,
       initials: row.name ? row.name.split(' ').map(n => n[0]).join('').substring(0, 2).toUpperCase() : "??",
       color: "bg-blue-500", // random color logic could be here
@@ -824,6 +863,7 @@ exports.updateJob = async (req, res) => {
     industry,
     easy_apply,
     actively_hiring,
+    voice_pitch_req,
     skills = []
   } = req.body;
 
@@ -856,8 +896,8 @@ exports.updateJob = async (req, res) => {
         description = $4, salary_min = $5, salary_max = $6,
         job_type = $7, work_mode = $8, company_type = $9,
         experience_level = $10, about_company = $11, industry = $12,
-        easy_apply = $13, actively_hiring = $14
-      WHERE job_id = $15
+        easy_apply = $13, actively_hiring = $14, voice_pitch_req = $15
+      WHERE job_id = $16
       RETURNING *
       `,
       [
@@ -865,7 +905,7 @@ exports.updateJob = async (req, res) => {
         description, safeMinSalary, safeMaxSalary,
         job_type, work_mode, company_type,
         experience_level, about_company, industry,
-        easy_apply, actively_hiring, id
+        easy_apply, actively_hiring, voice_pitch_req, id
       ]
     );
 
@@ -925,3 +965,132 @@ exports.updateJob = async (req, res) => {
     client.release();
   }
 };
+
+exports.getRecruiterStats = async (req, res) => {
+  const { id } = req.params; // recruiter_id
+
+  try {
+    const stats = await pool.query(
+      `
+      SELECT 
+        COUNT(*) as total_applications,
+        COUNT(*) FILTER (WHERE ja.current_status != 'Applied') as responded_count
+      FROM job_applications ja
+      JOIN jobs j ON ja.job_id = j.job_id
+      LEFT JOIN users u ON j.recruiter_id = u.user_id
+      WHERE j.recruiter_id = $1
+      GROUP BY u.user_id
+      `,
+      [id]
+    );
+
+    const data = stats.rows[0] || { total_applications: 0, responded_count: 0 };
+    const total = parseInt(data.total_applications);
+    const responded = parseInt(data.responded_count);
+    const rate = total > 0 ? Math.round((responded / total) * 100) : 0;
+
+    res.json({
+      responseRate: rate,
+      totalApplicants: total,
+      typicallyRespondsIn: "2 days",
+      isActive: true
+    });
+
+  } catch (err) {
+    res.status(500).json({ message: "Internal server error" });
+  }
+};
+
+exports.updateApplicationStatus = async (req, res) => {
+  const { id } = req.params; // application_id
+  const { status, screening } = req.body; // screening: { required, type, question }
+  const userId = req.user.sub;
+
+  try {
+    // 1. Verify ownership of the job associated with this application
+    const check = await pool.query(`
+      SELECT j.recruiter_id, ja.job_id 
+      FROM job_applications ja
+      JOIN jobs j ON ja.job_id = j.job_id
+      WHERE ja.application_id = $1
+    `, [id]);
+
+    if (check.rowCount === 0) return res.status(404).json({ message: "Application not found" });
+    if (check.rows[0].recruiter_id !== userId) return res.status(403).json({ message: "Not authorized" });
+
+    // 2. Build Update Query
+    let query = `UPDATE job_applications SET current_status = $1`;
+    const params = [status, id];
+    let paramCount = 3; // $2 is id
+
+    if (status === 'Shortlisted' && screening && screening.required) {
+      query += `, screening_required = TRUE, screening_type = $${paramCount++}, screening_question = $${paramCount++}`;
+      params.push(screening.type, screening.question);
+    } else if (status === 'Shortlisted') {
+      // If just shortlisting without task, ensure flags are false (or keep existing? Assuming reset or fresh shortlist)
+      // For now, let's assume if they don't send screening, we don't enable it.
+      // But if they are re-shortlisting, careful not to wipe if not intended.
+      // Frontend should send explicit false if disabling.
+      // Let's stick to: if screening.required is explicitly true, set it.
+    }
+
+    query += ` WHERE application_id = $2 RETURNING *`;
+
+    // Log history
+    await pool.query(
+      `INSERT INTO application_status_history (application_id, status) VALUES ($1, $2) ON CONFLICT DO NOTHING`, // simple log
+      [id, status]
+    );
+
+    const result = await pool.query(query, params);
+
+    // Notify candidate logic could go here (Socket/Email)
+
+    res.json({ message: "Status updated", application: result.rows[0] });
+
+  } catch (err) {
+    console.error("Update status error:", err);
+    res.status(500).json({ message: "Internal server error" });
+  }
+};
+
+exports.submitTask = async (req, res) => {
+  const { id } = req.params; // application_id
+  const userId = req.user.sub;
+
+  try {
+    // Verify applicant
+    const check = await pool.query(`SELECT applicant_id FROM job_applications WHERE application_id = $1`, [id]);
+    if (check.rowCount === 0) return res.status(404).json({ message: "Application not found" });
+    if (check.rows[0].applicant_id !== userId) return res.status(403).json({ message: "Not authorized" });
+
+    let responseUrl = null;
+    if (req.file) {
+      responseUrl = req.file.path;
+    } else if (req.body.responseUrl) {
+      responseUrl = req.body.responseUrl;
+    }
+
+    if (!responseUrl) return res.status(400).json({ message: "No file or URL provided" });
+
+    await pool.query(`
+      UPDATE job_applications 
+      SET screening_submitted_at = NOW(), screening_response_url = $1
+      WHERE application_id = $2
+    `, [responseUrl, id]);
+
+    res.json({ message: "Task submitted successfully" });
+
+  } catch (err) {
+    console.error("Submit task error:", err);
+    res.status(500).json({ message: "Internal server error" });
+  }
+};
+
+exports.reviewApplication = async (req, res) => {
+  // Wrapper for status update but specifically for Review flow (Approve/Reject)
+  // currently updateApplicationStatus handles it well enough if generic.
+  // We can alias or reuse it.
+  return exports.updateApplicationStatus(req, res);
+};
+

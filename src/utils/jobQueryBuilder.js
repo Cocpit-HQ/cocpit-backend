@@ -34,7 +34,7 @@ const buildJobFilters = (params, paramCountStart = 1) => {
     if (activelyHiring === "true") {
         conditions.push(`j.actively_hiring = TRUE`);
     }
-    if (experienceLevel) {
+    if (experienceLevel && experienceLevel !== "All Levels") {
         conditions.push(`j.experience_level = $${currentIndex}`);
         values.push(experienceLevel);
         currentIndex++;

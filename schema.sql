@@ -451,3 +451,14 @@ CHECK (category IN (
 ALTER TABLE events
 ALTER COLUMN category SET NOT NULL;
 
+-- Search Optimization (From 001_user_search_indexes.sql)
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+
+CREATE INDEX IF NOT EXISTS idx_users_full_name_trgm
+ON users USING GIN (full_name gin_trgm_ops);
+
+CREATE INDEX IF NOT EXISTS idx_users_email_trgm
+ON users USING GIN (email gin_trgm_ops);
+
+ANALYZE users;
+

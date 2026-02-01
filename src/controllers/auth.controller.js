@@ -35,7 +35,10 @@ exports.register = async (req, res) => {
 
     const user = userResult.rows[0];
 
-    const roleName = accountType === 'Admin' ? 'Admin' : 'Student';
+    let roleName;
+    if (accountType === 'Admin') roleName = 'Admin';
+    else if (accountType === 'Employer') roleName = 'Employer';
+    else roleName = 'Student';
 
     await pool.query(
       `INSERT INTO user_roles (user_id, role_id)
