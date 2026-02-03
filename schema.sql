@@ -180,9 +180,26 @@ CREATE TABLE post_comments (
   comment_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   post_id UUID REFERENCES posts(post_id) ON DELETE CASCADE,
   author_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
+  parent_id UUID NULL REFERENCES post_comments(comment_id) ON DELETE SET NULL,
   content TEXT NOT NULL,
-  created_at TIMESTAMPTZ DEFAULT now()
+  created_at TIMESTAMPTZ DEFAULT now(),
+  is_pinned BOOLEAN DEFAULT false,
+  pinned_at TIMESTAMPTZ NULL,
+  pinned_by UUID NULL REFERENCES users(user_id) ON DELETE SET NULL
 );
+
+CREATE INDEX idx_post_comments_parent_id ON post_comments(parent_id);
+CREATE INDEX idx_post_comments_is_pinned ON post_comments(is_pinned, pinned_at DESC);
+
+CREATE TABLE comment_likes (
+  user_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
+  comment_id UUID REFERENCES post_comments(comment_id) ON DELETE CASCADE,
+  created_at TIMESTAMPTZ DEFAULT now(),
+  PRIMARY KEY (user_id, comment_id)
+);
+
+CREATE INDEX idx_comment_likes_comment_id ON comment_likes(comment_id);
+CREATE INDEX idx_comment_likes_user_id ON comment_likes(user_id);
 
 
 CREATE TABLE post_media (
@@ -285,6 +302,7 @@ CREATE TABLE notifications (
   type TEXT NOT NULL, -- 'like', 'comment', 'view', 'job_alert'
   text TEXT NOT NULL,
   reference_id UUID, -- ID of the post/job/user
+  metadata JSONB DEFAULT '{}'::jsonb, -- Additional data (e.g., comment_id, reply_id)
   is_read BOOLEAN DEFAULT FALSE,
   created_at TIMESTAMPTZ DEFAULT now()
 );

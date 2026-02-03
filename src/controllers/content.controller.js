@@ -53,6 +53,7 @@ exports.getPublicFeed = async (req, res) => {
             ) AS media,
 
             (SELECT COUNT(*) FROM post_likes pl WHERE pl.post_id = p.post_id)::int AS like_count,
+            (SELECT COUNT(*) FROM post_comments pc WHERE pc.post_id = p.post_id)::int AS comment_count,
 
             (pl_me.post_id IS NOT NULL) AS is_liked,
 
@@ -609,6 +610,9 @@ exports.getPostById = async (req, res) => {
     -- Like Count
     COALESCE(lc.like_count, 0)::int AS like_count,
 
+    -- Comment Count
+    (SELECT COUNT(*) FROM post_comments pc WHERE pc.post_id = p.post_id)::int AS comment_count,
+
     -- Is Liked (Fix for stale state)
     COALESCE(il.is_liked, false) AS is_liked,
 
@@ -1109,32 +1113,176 @@ exports.toggleLike = async (req, res) => {
 exports.addComment = async (req, res) => {
     const userId = req.user.sub;
     const postId = req.params.id;
-    const { content } = req.body;
+    const { content, parent_id } = req.body; // Added parent_id
 
-    if (!postId || !userId || !content.trim()) {
+    if (!postId || !userId || !content || !content.trim()) {
+        console.error('[addComment] Missing required fields', { postId, userId, hasContent: !!content });
         return res.status(400).json({ message: "all fields are required" })
     }
 
+    if (content.length > 1000) {
+        console.error('[addComment] Comment too long', { length: content.length });
+        return res.status(400).json({ message: "Comment too long (max 1000 characters)" })
+    }
+
     try {
-        const post = await pool.query(`select post_id from posts where post_id = $1`, [postId])
+        const post = await pool.query(`select post_id, author_id from posts where post_id = $1`, [postId])
 
         if (post.rowCount === 0) {
             return res.status(404).json({ message: "Post not found" })
         }
 
+        // Validate parent_id if provided
+        if (parent_id) {
+            // 1. Verify parent comment exists
+            const parentComment = await pool.query(
+                `SELECT comment_id, post_id, parent_id FROM post_comments WHERE comment_id = $1`,
+                [parent_id]
+            );
+
+            if (parentComment.rowCount === 0) {
+                return res.status(404).json({ message: "Parent comment not found" });
+            }
+
+            // 2. Verify parent belongs to same post
+            if (parentComment.rows[0].post_id.toString() !== postId.toString()) {
+                console.error('[addComment] Parent comment belongs to different post', {
+                    parentPostId: parentComment.rows[0].post_id,
+                    currentPostId: postId
+                });
+                return res.status(400).json({ message: "Parent comment belongs to different post" });
+            }
+
+            // 3. Prevent nested replies (Instagram-style: no reply-to-reply)
+            if (parentComment.rows[0].parent_id !== null) {
+                console.error('[addComment] Attempted to reply to a reply', {
+                    parentId: parent_id,
+                    parentOfParent: parentComment.rows[0].parent_id
+                });
+                return res.status(400).json({ message: "Cannot reply to a reply. Please reply to the root comment." });
+            }
+        }
+
         const result = await pool.query(
-            `INSERT INTO post_comments (post_id, author_id, content)
-   VALUES ($1, $2, $3)
-   RETURNING comment_id,author_id, content, created_at`,
-            [postId, userId, content.trim()]
+            `INSERT INTO post_comments (post_id, author_id, content, parent_id)
+   VALUES ($1, $2, $3, $4)
+   RETURNING comment_id, author_id, content, parent_id, created_at`,
+            [postId, userId, content.trim(), parent_id || null]
         );
+
+        const newComment = result.rows[0];
+
+        // --- NOTIFICATIONS & SOCKETS ---
+
+        const postAuthorId = post.rows[0].author_id;
+
+        // Fetch current user details for notification text
+        const actorRes = await pool.query(`SELECT full_name, avatar_url FROM users WHERE user_id = $1`, [userId]);
+        const actor = actorRes.rows[0];
+
+        // Regex for mentions: @Username (simple alphanumeric + underscore)
+        // Adjust regex to match your frontend logic
+        const mentionMatches = content.match(/@(\w+)/g);
+        const mentionedUsernames = mentionMatches ? mentionMatches.map(m => m.substring(1)) : [];
+
+        // Notify Post Owner
+        if (postAuthorId !== userId) {
+            const notificationText = `${actor.full_name} commented on your post`;
+            await pool.query(
+                `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata) 
+                 VALUES ($1, $2, $3, $4, $5, $6)`,
+                [postAuthorId, userId, 'comment', notificationText, postId, JSON.stringify({ comment_id: newComment.comment_id })]
+            );
+
+            socketService.notifyUser(postAuthorId, "notification", {
+                type: 'comment',
+                text: notificationText,
+                from: userId,
+                senderName: actor.full_name,
+                senderAvatar: actor.avatar_url,
+                referenceId: postId,
+                metadata: { comment_id: newComment.comment_id },
+                time: "Just now"
+            });
+        }
+
+        if (parent_id) {
+            // Get parent comment author
+            const parentAuthorRes = await pool.query(
+                `SELECT author_id FROM post_comments WHERE comment_id = $1`,
+                [parent_id]
+            );
+
+            if (parentAuthorRes.rowCount > 0) {
+                const parentAuthorId = parentAuthorRes.rows[0].author_id;
+
+                // Notify parent author (if not self and not post owner already notified)
+                if (parentAuthorId !== userId && parentAuthorId !== postAuthorId) {
+                    const replyText = `${actor.full_name} replied to your comment`;
+                    await pool.query(
+                        `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata) 
+                         VALUES ($1, $2, $3, $4, $5, $6)`,
+                        [parentAuthorId, userId, 'reply', replyText, postId, JSON.stringify({ comment_id: newComment.comment_id, parent_id })]
+                    );
+
+                    socketService.notifyUser(parentAuthorId, "notification", {
+                        type: 'reply',
+                        text: replyText,
+                        from: userId,
+                        senderName: actor.full_name,
+                        senderAvatar: actor.avatar_url,
+                        referenceId: postId,
+                        metadata: { comment_id: newComment.comment_id, parent_id },
+                        time: "Just now"
+                    });
+                }
+            }
+        }
+
+        if (mentionedUsernames.length > 0) {
+            // Find user IDs for these usernames
+            // Assuming 'full_name' or 'username' column? Frontend uses 'name'.
+            // Let's assume 'full_name' (or 'username' if distinct). 
+            // NOTE: Matching exact name is tricky if spaces allowed.
+            // Frontend regex was /@([^\s]+)/.
+
+            for (const handle of mentionedUsernames) {
+                // Resolve handle (account_name) to user_id
+                const userRes = await pool.query(`SELECT user_id FROM users WHERE LOWER(account_name) = LOWER($1)`, [handle]);
+                if (userRes.rowCount > 0) {
+                    const mentionedUserId = userRes.rows[0].user_id;
+
+                    // Don't notify if self or post owner
+                    if (mentionedUserId !== userId && mentionedUserId !== postAuthorId) {
+                        const notifText = `${actor.full_name} mentioned you in a comment`;
+                        await pool.query(
+                            `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata) 
+                             VALUES ($1, $2, $3, $4, $5, $6)`,
+                            [mentionedUserId, userId, 'mention', notifText, postId, JSON.stringify({ comment_id: newComment.comment_id })]
+                        );
+
+                        socketService.notifyUser(mentionedUserId, "notification", {
+                            type: 'mention',
+                            text: notifText,
+                            from: userId,
+                            senderName: actor.full_name,
+                            senderAvatar: actor.avatar_url,
+                            referenceId: postId,
+                            metadata: { comment_id: newComment.comment_id },
+                            time: "Just now"
+                        });
+                    }
+                }
+            }
+        }
 
         return res.status(200).json({
             message: "comment added",
-            comment: result.rows[0]
+            comment: newComment
         })
 
     } catch (err) {
+        console.error("Add comment error:", err);
         return res.status(500).json({ message: "Internal server error" })
     }
 }
@@ -1152,21 +1300,29 @@ exports.updateComment = async (req, res) => {
         return res.status(400).json({ message: "Content is required" });
     }
 
+    if (content.length > 1000) {
+        return res.status(400).json({ message: "Comment too long (max 1000 characters)" })
+    }
+
     try {
         const result = await pool.query(
             `
       UPDATE post_comments
-      SET content = $1, created_at = NOW()
+      SET content = $1
       WHERE comment_id = $2 AND author_id = $3
       RETURNING comment_id, content, created_at
       `,
             [content.trim(), commentId, userId]
         );
-        const temp = await pool.query(`select * from post_comments where comment_id = $1 and author_id = $2`, [commentId, userId])
 
         if (result.rowCount === 0) {
             // Either comment doesn't exist OR user is not the author
-            return res.status(403).json({ message: "Not allowed or comment not found" });
+            // Double check existence to give better error
+            const check = await pool.query(`select * from post_comments where comment_id = $1`, [commentId])
+            if (check.rowCount === 0) {
+                return res.status(404).json({ message: "Comment not found" });
+            }
+            return res.status(403).json({ message: "Not authorized to edit this comment" });
         }
 
         return res.status(200).json({
@@ -1185,25 +1341,159 @@ exports.deleteComment = async (req, res) => {
     const commentId = req.params.comment_id;
 
     if (!userId || !commentId) {
-        return res.status(400).json({ message: "userId and commentId are required" })
+        return res.status(400).json({ message: "userId and commentId are required" });
     }
 
     try {
-        const result = await pool.query(
-            `delete from post_comments where comment_id = $1 and author_id = $2 RETURNING comment_id`,
-            [commentId, userId]
-        );
-        if (result.rowCount === 0) {
-            return res.status(404).json({ message: "Comment not found", commentId, userId });
+        const commentCheck = await pool.query(`SELECT * FROM post_comments WHERE comment_id = $1`, [commentId]);
+        if (commentCheck.rowCount === 0) {
+            return res.status(404).json({ message: "Comment not found" });
         }
+        const comment = commentCheck.rows[0];
+
+        const postCheck = await pool.query(`SELECT author_id FROM posts WHERE post_id = $1`, [comment.post_id]);
+        let postOwnerId = postCheck.rowCount > 0 ? postCheck.rows[0].author_id : null;
+
+        const canDelete = (String(comment.author_id) === String(userId)) || (String(postOwnerId) === String(userId));
+
+        if (!canDelete) {
+            return res.status(403).json({ message: "Not authorized to delete this comment" });
+        }
+
+        await pool.query(`DELETE FROM post_comments WHERE comment_id = $1`, [commentId]);
+
         res.status(200).json({ message: "Comment deleted", deletedCommentId: commentId });
     } catch (err) {
-        return res.status(500).json({ message: "Internal server error" })
+        console.error("Delete comment error:", err);
+        return res.status(500).json({ message: "Internal server error" });
     }
-}
+};
+
+exports.toggleCommentLike = async (req, res) => {
+    const userId = req.user.sub;
+    const { commentId } = req.params;
+
+    if (!commentId || !userId) {
+        return res.status(400).json({ message: "Comment ID and user ID are required" });
+    }
+
+    try {
+        // Check if comment exists
+        const commentCheck = await pool.query(
+            `SELECT comment_id FROM post_comments WHERE comment_id = $1`,
+            [commentId]
+        );
+
+        if (commentCheck.rowCount === 0) {
+            return res.status(404).json({ message: "Comment not found" });
+        }
+
+        // Check if user already liked this comment
+        const existingLike = await pool.query(
+            `SELECT * FROM comment_likes WHERE user_id = $1 AND comment_id = $2`,
+            [userId, commentId]
+        );
+
+        let liked;
+        if (existingLike.rowCount > 0) {
+            // Unlike: Remove the like
+            await pool.query(
+                `DELETE FROM comment_likes WHERE user_id = $1 AND comment_id = $2`,
+                [userId, commentId]
+            );
+            liked = false;
+        } else {
+            // Like: Add the like
+            await pool.query(
+                `INSERT INTO comment_likes (user_id, comment_id) VALUES ($1, $2)`,
+                [userId, commentId]
+            );
+            liked = true;
+        }
+
+        // Get updated like count
+        const likeCountResult = await pool.query(
+            `SELECT COUNT(*)::int as like_count FROM comment_likes WHERE comment_id = $1`,
+            [commentId]
+        );
+
+        const likeCount = likeCountResult.rows[0].like_count;
+
+        res.status(200).json({
+            liked,
+            likeCount,
+            message: liked ? "Comment liked" : "Comment unliked"
+        });
+    } catch (err) {
+        console.error("Toggle comment like error:", err);
+        res.status(500).json({ message: "Internal server error" });
+    }
+};
+
+// Toggle pin on a comment (post owner only)
+exports.toggleCommentPin = async (req, res) => {
+    const userId = req.user.sub;
+    const { commentId } = req.params;
+
+    if (!commentId || !userId) {
+        return res.status(400).json({ message: "Comment ID and user ID are required" });
+    }
+
+    try {
+        // Get comment and verify it exists
+        const commentResult = await pool.query(
+            `SELECT c.comment_id, c.post_id, c.is_pinned, p.author_id as post_author_id
+             FROM post_comments c
+             JOIN posts p ON c.post_id = p.post_id
+             WHERE c.comment_id = $1`,
+            [commentId]
+        );
+
+        if (commentResult.rowCount === 0) {
+            return res.status(404).json({ message: "Comment not found" });
+        }
+
+        const comment = commentResult.rows[0];
+
+        // Verify user is the post owner
+        if (comment.post_author_id.toString() !== userId.toString()) {
+            return res.status(403).json({ message: "Only post owner can pin comments" });
+        }
+
+        let pinned;
+        if (comment.is_pinned) {
+            // Unpin: Remove pin
+            await pool.query(
+                `UPDATE post_comments 
+                 SET is_pinned = false, pinned_at = NULL, pinned_by = NULL
+                 WHERE comment_id = $1`,
+                [commentId]
+            );
+            pinned = false;
+        } else {
+            // Pin: Add pin
+            await pool.query(
+                `UPDATE post_comments 
+                 SET is_pinned = true, pinned_at = NOW(), pinned_by = $1
+                 WHERE comment_id = $2`,
+                [userId, commentId]
+            );
+            pinned = true;
+        }
+
+        res.status(200).json({
+            pinned,
+            message: pinned ? "Comment pinned" : "Comment unpinned"
+        });
+    } catch (err) {
+        console.error("Toggle comment pin error:", err);
+        res.status(500).json({ message: "Internal server error" });
+    }
+};
 
 exports.getComments = async (req, res) => {
     const postId = req.params.id;
+    const userId = req.user ? req.user.sub : null; // Optional auth
 
     if (!postId) {
         return res.status(400).json({ message: "postId is required" })
@@ -1220,20 +1510,37 @@ exports.getComments = async (req, res) => {
       SELECT 
         c.comment_id,
         c.content,
+        c.parent_id,
         c.created_at,
+        c.is_pinned,
+        c.pinned_at,
+        c.pinned_by,
         u.user_id AS author_id,
         u.full_name,
+        u.account_name,
         u.avatar_url,
-        u.headline
+        u.headline,
+        COALESCE(
+          (SELECT COUNT(*)::int FROM comment_likes cl WHERE cl.comment_id = c.comment_id),
+          0
+        ) AS like_count,
+        COALESCE(
+          (SELECT EXISTS(SELECT 1 FROM comment_likes cl WHERE cl.comment_id = c.comment_id AND cl.user_id = $2)),
+          false
+        ) AS is_liked
       FROM post_comments c
       JOIN users u ON c.author_id = u.user_id
       WHERE c.post_id = $1
-      ORDER BY c.created_at desc
+      ORDER BY 
+        c.is_pinned DESC NULLS LAST,
+        c.pinned_at DESC NULLS LAST,
+        c.created_at DESC
       `,
-            [postId]
+            [postId, userId]
         );
         return res.status(200).json(comments.rows);
     } catch (err) {
+        console.error("Get comments error:", err);
         return res.status(500).json({ message: "Internal server error" })
     }
 }

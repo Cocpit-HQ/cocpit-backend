@@ -24,6 +24,8 @@ router.get("/post/:id/poll/analytics", requireAuth, contentController.getPollAna
 // --- SOCIAL ENGAGEMENT ---
 router.post("/post/:id/like", requireAuth, contentController.toggleLike);
 router.post("/post/:id/comments", requireAuth, contentController.addComment);
+router.post("/comments/:commentId/like", requireAuth, contentController.toggleCommentLike);
+router.post("/comments/:commentId/pin", requireAuth, contentController.toggleCommentPin);
 router.put("/post/comments/:comment_id", requireAuth, contentController.updateComment);
 router.delete("/post/comments/:comment_id", requireAuth, contentController.deleteComment)
 router.get("/post/:id/comments", requireAuth, contentController.getComments);

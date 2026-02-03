@@ -1,8 +1,9 @@
 const pool = require("../db/pool");
-const current_user = require("../controllers/profile.controller")
+const current_user = require("../controllers/profile.controller");
+
 /**
  * GET /api/users/search
- * Purpose: Real-time user discovery
+ * Purpose: Real-time user discovery and mention autocomplete
  */
 exports.searchUsers = async (req, res) => {
   const { q, accountType } = req.query;
@@ -12,7 +13,7 @@ exports.searchUsers = async (req, res) => {
     return res.status(400).json({ message: "Search query 'q' is required" });
   }
 
-  const searchTerm = q.trim().replace(/^['"]|['"]$/g, '');
+  const searchTerm = q.trim().replace(/^['\"]|['\"]$/g, '');
 
   try {
     // Construct the query dynamically based on optional filters
@@ -20,6 +21,7 @@ exports.searchUsers = async (req, res) => {
       SELECT
         u.user_id AS id,
         u.full_name,
+        u.account_name,
         u.headline,
         u.avatar_url,
         p.account_type
@@ -31,12 +33,8 @@ exports.searchUsers = async (req, res) => {
     const queryParams = [currentUserId];
     let paramIndex = 2;
 
-    // Add search condition (ILIKE for partial match, or trigram similarity)
-    // Using ILIKE with wildcards for simple "contains" logic which benefits from GIN trgm index
-    // OR we can use similarity(u.full_name, $2) > 0.3 for fuzzy matching.
-    // The prompt requested "ILIKE + trigram similarity".
-    // We'll use ILIKE for the filter and strict matching, ordered by similarity.
-    queryText += ` AND (u.full_name ILIKE $${paramIndex})`;
+    // Add search condition - search by both full_name and account_name
+    queryText += ` AND (u.full_name ILIKE $${paramIndex} OR u.account_name ILIKE $${paramIndex})`;
     queryParams.push(`%${searchTerm}%`);
     paramIndex++;
 
@@ -48,14 +46,15 @@ exports.searchUsers = async (req, res) => {
     }
 
     // Order by similarity (closest match first)
-    // We calculate similarity on the fly for ordering.
-    // Note: To use SIMILARITY() in ORDER BY, pg_trgm must be enabled.
+    // Prioritize account_name exact matches, then similarity
     queryText += `
-      ORDER BY SIMILARITY(u.full_name, $${paramIndex}) DESC
-      LIMIT 15
+      ORDER BY 
+        CASE WHEN u.account_name ILIKE $${paramIndex} THEN 0 ELSE 1 END,
+        SIMILARITY(u.full_name, $${paramIndex + 1}) DESC
+      LIMIT 10
     `;
-    // Pass the raw search term again for the similarity function
-    queryParams.push(searchTerm);
+    // Pass the search term for exact match check and similarity
+    queryParams.push(`${searchTerm}`, searchTerm);
 
     const result = await pool.query(queryText, queryParams);
 
@@ -82,18 +81,34 @@ exports.getUserProfile = async (req, res) => {
   // Basic validation for UUID
   const uuidRegex =
     /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+
+  let targetUserId = id;
+
   if (!uuidRegex.test(id)) {
-    return res.status(400).json({ message: "Invalid user ID format" });
+    // If not a UUID, try to resolve as account_name
+    try {
+      const resolveResult = await pool.query(
+        "SELECT user_id FROM users WHERE account_name = $1",
+        [id]
+      );
+      if (resolveResult.rowCount === 0) {
+        return res.status(404).json({ message: "User handle not found" });
+      }
+      targetUserId = resolveResult.rows[0].user_id;
+    } catch (err) {
+      console.error("Handle resolution error:", err);
+      return res.status(500).json({ message: "Internal server error during handle resolution" });
+    }
   }
 
   try {
     // --- View Counting Logic ---
-    if (id !== currentUserId) {
+    if (targetUserId !== currentUserId) {
       const viewCheck = await pool.query(
         `SELECT view_id FROM profile_views 
          WHERE viewer_id = $1 AND profile_owner_id = $2 
          AND viewed_at > NOW() - INTERVAL '24 hours'`,
-        [currentUserId, id]
+        [currentUserId, targetUserId]
       );
 
       if (viewCheck.rowCount === 0) {
@@ -102,11 +117,11 @@ exports.getUserProfile = async (req, res) => {
           await client.query('BEGIN');
           await client.query(
             `INSERT INTO profile_views (viewer_id, profile_owner_id) VALUES ($1, $2)`,
-            [currentUserId, id]
+            [currentUserId, targetUserId]
           );
           await client.query(
             `UPDATE profiles SET profile_views_count = COALESCE(profile_views_count, 0) + 1 WHERE user_id = $1`,
-            [id]
+            [targetUserId]
           );
           await client.query('COMMIT');
         } catch (e) {
@@ -138,7 +153,7 @@ exports.getUserProfile = async (req, res) => {
       LEFT JOIN profiles p ON u.user_id = p.user_id
       WHERE u.user_id = $1
     `;
-    const userResult = await pool.query(userQuery, [id]);
+    const userResult = await pool.query(userQuery, [targetUserId]);
 
     if (userResult.rowCount === 0) {
       return res.status(404).json({ message: "User not found" });
@@ -154,7 +169,7 @@ exports.getUserProfile = async (req, res) => {
       WHERE profile_id = (SELECT profile_id FROM profiles WHERE user_id = $1)
       ORDER BY start_date DESC
     `;
-    const experiencesResult = await pool.query(experiencesQuery, [id]);
+    const experiencesResult = await pool.query(experiencesQuery, [targetUserId]);
 
     // 3. Fetch Educations
     const educationsQuery = `
@@ -164,7 +179,7 @@ exports.getUserProfile = async (req, res) => {
       WHERE profile_id = (SELECT profile_id FROM profiles WHERE user_id = $1)
       ORDER BY start_date DESC
     `;
-    const educationsResult = await pool.query(educationsQuery, [id]);
+    const educationsResult = await pool.query(educationsQuery, [targetUserId]);
 
     // 4. Fetch Skills
     const skillsQuery = `
@@ -173,7 +188,7 @@ exports.getUserProfile = async (req, res) => {
       JOIN skills s ON us.skill_id = s.skill_id
       WHERE us.profile_id = (SELECT profile_id FROM profiles WHERE user_id = $1)
     `;
-    const skillsResult = await pool.query(skillsQuery, [id]);
+    const skillsResult = await pool.query(skillsQuery, [targetUserId]);
 
     // 5. Check if I am following them
     // $1 = profileUser (them), $2 = currentUser (me)
@@ -182,7 +197,7 @@ exports.getUserProfile = async (req, res) => {
       FROM followers 
       WHERE follower_id = $2 AND following_id = $1
     `;
-    const isFollowingResult = await pool.query(isFollowingQuery, [id, currentUserId]);
+    const isFollowingResult = await pool.query(isFollowingQuery, [targetUserId, currentUserId]);
 
 
     // Assemble response
@@ -214,12 +229,27 @@ exports.getPublicProfilePosts = async (req, res) => {
   const uuidRegex =
     /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
 
+  let targetUserId = userId;
+
   if (!uuidRegex.test(userId)) {
-    return res.status(400).json({ message: "Invalid user ID format" });
+    // If not a UUID, try to resolve as account_name
+    try {
+      const resolveResult = await pool.query(
+        "SELECT user_id FROM users WHERE account_name = $1",
+        [userId]
+      );
+      if (resolveResult.rowCount === 0) {
+        return res.status(404).json({ message: "User handle not found" });
+      }
+      targetUserId = resolveResult.rows[0].user_id;
+    } catch (err) {
+      console.error("Handle resolution error in posts:", err);
+      return res.status(500).json({ message: "Internal server error during handle resolution" });
+    }
   }
 
   try {
-    const params = [userId];
+    const params = [targetUserId];
     let idx = 2;
     let whereClause = `WHERE p.author_id = $1
   AND p.visibility = 'public'
