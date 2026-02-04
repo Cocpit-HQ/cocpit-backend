@@ -180,7 +180,7 @@ CREATE TABLE post_comments (
   comment_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   post_id UUID REFERENCES posts(post_id) ON DELETE CASCADE,
   author_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
-  parent_id UUID NULL REFERENCES post_comments(comment_id) ON DELETE SET NULL,
+  parent_id UUID NULL REFERENCES post_comments(comment_id) ON DELETE CASCADE,
   content TEXT NOT NULL,
   created_at TIMESTAMPTZ DEFAULT now(),
   is_pinned BOOLEAN DEFAULT false,

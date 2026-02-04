@@ -1274,7 +1274,7 @@ exports.addComment = async (req, res) => {
 
 exports.updateComment = async (req, res) => {
     const userId = req.user.sub;
-    const commentId = req.params.comment_id;
+    const commentId = req.params.commentId;
     const { content } = req.body;
 
     if (!commentId) {
@@ -1323,7 +1323,7 @@ exports.updateComment = async (req, res) => {
 
 exports.deleteComment = async (req, res) => {
     const userId = req.user.sub;
-    const commentId = req.params.comment_id;
+    const commentId = req.params.commentId;
 
     if (!userId || !commentId) {
         return res.status(400).json({ message: "userId and commentId are required" });
