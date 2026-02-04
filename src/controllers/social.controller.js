@@ -444,24 +444,42 @@ exports.getConversations = async (req, res) => {
             `
 SELECT 
     c.*,
-    -- Get the other participant's info
-    u.full_name AS other_user_name,
-    u.avatar_url AS other_user_avatar,
+    -- Name logic: Use group name if group, else other user's name
+    CASE 
+        WHEN c.is_group THEN c.conversation_name 
+        ELSE u.full_name 
+    END AS other_user_name,
+    
+    -- Avatar logic: Use group avatar if group, else other user's avatar
+    CASE 
+        WHEN c.is_group THEN c.group_avatar 
+        ELSE u.avatar_url 
+    END AS other_user_avatar,
+    
+    -- Other user ID (only for 1-on-1)
     u.user_id AS other_user_id,
     u.headline AS other_user_headline,
+    
     -- Get the most recent message
     m.text_content AS last_message_text
 FROM conversations c
 JOIN conversation_participants cp ON c.conversation_id = cp.conversation_id
-JOIN conversation_participants cp_other ON c.conversation_id = cp_other.conversation_id 
-    AND cp_other.user_id != $1 -- $1 is the Logged-in User ID
-JOIN users u ON cp_other.user_id = u.user_id
+-- For 1-on-1, join the other participant. For groups, this might return multiple or we skip via logic.
+-- Using LEFT JOIN and conditional checks.
+LEFT JOIN conversation_participants cp_other ON c.conversation_id = cp_other.conversation_id 
+    AND cp_other.user_id != $1 AND c.is_group = FALSE
+LEFT JOIN users u ON cp_other.user_id = u.user_id
+
 LEFT JOIN LATERAL (
     SELECT text_content FROM messages 
     WHERE conversation_id = c.conversation_id 
     ORDER BY created_at DESC LIMIT 1
 ) m ON true
+
 WHERE cp.user_id = $1
+-- Ensure distinct conversations (fix for potential multiple rows if join logic leaks)
+-- Actually, if is_group=FALSE, cp_other matches 1 row (unless multi-party DM which we don't support yet).
+-- If is_group=TRUE, cp_other is NULL due to condition.
 ORDER BY c.updated_at DESC;
   `, [userId]
         );
@@ -619,7 +637,12 @@ exports.sendMessage = async (req, res) => {
         );
         await client.query('COMMIT');
 
-        const messageData = { ...msgRes.rows[0], shared_post: sharedPostData };
+        const messageData = {
+            ...msgRes.rows[0],
+            shared_post: sharedPostData,
+            sender_name: senderName,
+            sender_avatar: senderAvatar
+        };
 
         // Notify target user via service
         socketService.notifyUser(targetUserId, "newMessage", messageData);
@@ -684,17 +707,26 @@ exports.getMessages = async (req, res) => {
     const conversation_id = req.params.id;
 
     try {
+        // 1. Check participation AND get joined_at + is_group
         const partCheck = await pool.query(
-            `SELECT 1 FROM conversation_participants WHERE conversation_id = $1 AND user_id = $2`,
+            `SELECT cp.joined_at, c.is_group 
+             FROM conversation_participants cp
+             JOIN conversations c ON cp.conversation_id = c.conversation_id
+             WHERE cp.conversation_id = $1 AND cp.user_id = $2`,
             [conversation_id, userId]
         );
 
         if (partCheck.rowCount === 0)
             return res.status(403).json({ message: "Not a participant" });
 
+        const { joined_at, is_group } = partCheck.rows[0];
+
+        // 2. Fetch messages (Filtered by join time if group)
         const result = await pool.query(
             `SELECT 
                 m.*,
+                u.full_name as sender_name,
+                u.avatar_url as sender_avatar,
                 CASE WHEN m.shared_post_id IS NOT NULL THEN
                     json_build_object(
                         'post_id', sp.post_id,
@@ -704,11 +736,13 @@ exports.getMessages = async (req, res) => {
                     )
                 ELSE NULL END AS shared_post
              FROM messages m
+             LEFT JOIN users u ON m.sender_id = u.user_id
              LEFT JOIN posts sp ON m.shared_post_id = sp.post_id
              LEFT JOIN users au ON sp.author_id = au.user_id
              WHERE m.conversation_id = $1 
+             AND ($2::boolean = false OR m.created_at >= $3)
              ORDER BY m.created_at ASC`,
-            [conversation_id]
+            [conversation_id, is_group, joined_at]
         );
 
         res.json(result.rows);
