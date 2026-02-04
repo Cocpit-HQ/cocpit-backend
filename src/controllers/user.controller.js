@@ -274,6 +274,8 @@ exports.getPublicProfilePosts = async (req, res) => {
     // ✅ LIMIT
     params.push(limit);
 
+    const userParamIdx = params.length + 1; // Index for current user (will be pushed later)
+
     const query = `
       SELECT
         p.post_id,
@@ -287,99 +289,137 @@ exports.getPublicProfilePosts = async (req, res) => {
 
         pc.name AS category_name,
 
-        COALESCE(pm.media, '[]'::json) AS media,
-        COALESCE(lc.like_count, 0) AS like_count,
-        COALESCE(cc.comment_count, 0) AS comment_count,
-        COALESCE(il.is_liked, false) AS is_liked,
+        COALESCE(
+          (SELECT json_agg(json_build_object('url', pm.url, 'media_type', pm.media_type)) 
+           FROM post_media pm WHERE pm.post_id = p.post_id),
+          '[]'::json
+        ) AS media,
 
-        pp.poll
+        (SELECT COUNT(*) FROM post_likes pl WHERE pl.post_id = p.post_id)::int AS like_count,
+        (SELECT COUNT(*) FROM post_comments pc WHERE pc.post_id = p.post_id)::int AS comment_count,
+
+        EXISTS(SELECT 1 FROM post_likes pl WHERE pl.post_id = p.post_id AND pl.user_id = $${userParamIdx}) AS is_liked,
+
+        (
+          SELECT json_build_object(
+            'poll_id', pp.poll_id,
+            'duration', COALESCE(pp.duration, '1 day'),
+            'total_votes', (SELECT COUNT(*) FROM poll_votes pv WHERE pv.poll_id = pp.poll_id)::int,
+            'user_vote', (SELECT pv_u.option_id FROM poll_votes pv_u WHERE pv_u.poll_id = pp.poll_id AND pv_u.voter_id = $${userParamIdx}),
+            'is_active', (pp.created_at + COALESCE(pp.duration, '1 day')::interval > NOW()),
+            'options', COALESCE(
+              (SELECT json_agg(json_build_object('option_id', po.option_id, 'option_text', po.option_text, 'vote_count', (SELECT COUNT(*) FROM poll_votes pv WHERE pv.option_id = po.option_id))) FROM poll_options po WHERE po.poll_id = pp.poll_id),
+              '[]'::json
+            )
+          )
+          FROM post_polls pp WHERE pp.post_id = p.post_id
+        ) AS poll,
+
+        --Shared Post Data
+        CASE 
+          WHEN p.shared_post_id IS NULL THEN NULL
+          WHEN sp.post_id IS NULL THEN 
+            json_build_object('is_accessible', false, 'reason', 'deleted')
+          WHEN (
+            --1. Private: Author only
+            (sp.visibility = 'private' AND sp.author_id = $${userParamIdx})
+            OR
+            --2. Public + Personal: Connections only
+            (sp.visibility = 'public' AND sp_cat.name = 'Personal' AND (
+              sp.author_id = $${userParamIdx}
+              OR EXISTS(
+                  SELECT 1 FROM followers f1 
+                  JOIN followers f2 ON f1.follower_id = f2.following_id AND f1.following_id = f2.follower_id 
+                  WHERE f1.follower_id = $${userParamIdx} AND f1.following_id = sp.author_id
+              )
+            ))
+            OR
+            --3. Public + Other: Everyone
+            (sp.visibility = 'public' AND (sp_cat.name != 'Personal' OR sp_cat.name IS NULL))
+          ) THEN
+            json_build_object(
+              'is_accessible', true,
+              'post_id', sp.post_id,
+              'content', sp.content,
+              'created_at', sp.created_at,
+              'author', json_build_object(
+                'user_id', sp_u.user_id,
+                'full_name', sp_u.full_name,
+                'avatar_url', sp_u.avatar_url
+              ),
+              'media', COALESCE((SELECT json_agg(json_build_object('url', pm.url, 'media_type', pm.media_type)) FROM post_media pm WHERE pm.post_id = sp.post_id), '[]'::json),
+              'like_count', (SELECT COUNT(*) FROM post_likes pl WHERE pl.post_id = sp.post_id)::int,
+              'comment_count', (SELECT COUNT(*) FROM post_comments pc WHERE pc.post_id = sp.post_id)::int,
+              'is_liked', EXISTS(SELECT 1 FROM post_likes pl WHERE pl.post_id = sp.post_id AND pl.user_id = $${userParamIdx}),
+              'poll', (
+                SELECT json_build_object(
+                  'poll_id', pp.poll_id,
+                  'duration', COALESCE(pp.duration, '1 day'),
+                  'total_votes', (SELECT COUNT(*) FROM poll_votes pv WHERE pv.poll_id = pp.poll_id)::int,
+                  'user_vote', (SELECT pv_u.option_id FROM poll_votes pv_u WHERE pv_u.poll_id = pp.poll_id AND pv_u.voter_id = $${userParamIdx}),
+                  'is_active', (pp.created_at + COALESCE(pp.duration, '1 day')::interval > NOW()),
+                  'options', COALESCE(
+                    (SELECT json_agg(json_build_object('option_id', po.option_id, 'option_text', po.option_text, 'vote_count', (SELECT COUNT(*) FROM poll_votes pv WHERE pv.option_id = po.option_id))) FROM poll_options po WHERE po.poll_id = pp.poll_id),
+                    '[]'::json
+                  )
+                )
+                FROM post_polls pp WHERE pp.post_id = sp.post_id
+              )
+            )
+          --Failure Analysis
+          WHEN sp.visibility = 'private' THEN json_build_object(
+            'is_accessible', false,
+            'reason', 'private',
+            'author', json_build_object(
+              'user_id', sp_u.user_id,
+              'full_name', sp_u.full_name,
+              'avatar_url', sp_u.avatar_url
+            )
+          )
+          WHEN (sp.visibility = 'public' AND sp_cat.name = 'Personal') THEN json_build_object(
+            'is_accessible', false,
+            'reason', 'personal_connection',
+            'author', json_build_object(
+              'user_id', sp_u.user_id,
+              'full_name', sp_u.full_name,
+              'avatar_url', sp_u.avatar_url
+            )
+          )
+          ELSE
+            json_build_object('is_accessible', false, 'reason', 'unknown')
+        END AS shared_post
 
       FROM posts p
       JOIN users u ON u.user_id = p.author_id
       LEFT JOIN post_categories pc ON pc.category_id = p.category_id
-
-      -- MEDIA
-      LEFT JOIN (
-        SELECT
-          pm.post_id,
-          json_agg(
-            json_build_object(
-              'media_id', pm.media_id,
-              'url', pm.url,
-              'media_type', pm.media_type,
-              'aspect_ratio', pm.aspect_ratio
-            )
-          ) AS media
-        FROM post_media pm
-        GROUP BY pm.post_id
-      ) pm ON pm.post_id = p.post_id
-
-      -- LIKE COUNT
-      LEFT JOIN (
-        SELECT post_id, COUNT(*) AS like_count
-        FROM post_likes
-        GROUP BY post_id
-      ) lc ON lc.post_id = p.post_id
-
-      -- IS LIKED BY CURRENT USER
-      LEFT JOIN (
-        SELECT post_id, true AS is_liked
-        FROM post_likes
-        WHERE user_id = $${params.length + 1}
-      ) il ON il.post_id = p.post_id
-
-      -- COMMENT COUNT
-      LEFT JOIN (
-        SELECT post_id, COUNT(*) AS comment_count
-        FROM post_comments
-        GROUP BY post_id
-      ) cc ON cc.post_id = p.post_id
-
-      -- POLL
-      LEFT JOIN (
-        SELECT
-          pp.post_id,
-          json_build_object(
-            'poll_id', pp.poll_id,
-            'duration', COALESCE(pp.duration, '1 day'),
-            'total_votes', COALESCE(pv.total_votes, 0),
-            'user_vote', (SELECT pv_u.option_id FROM poll_votes pv_u WHERE pv_u.poll_id = pp.poll_id AND pv_u.voter_id = $${params.length + 1}),
-            'is_active', (pp.created_at + COALESCE(pp.duration, '1 day')::interval > NOW()),
-            'options', COALESCE(po.options, '[]'::json)
-          ) AS poll
-        FROM post_polls pp
-
-        LEFT JOIN (
-          SELECT
-            t.poll_id,
-            json_agg(
-              json_build_object(
-                'option_id', t.option_id,
-                'option_text', t.option_text,
-                'vote_count', t.vote_count
-              )
-            ) AS options
-          FROM (
-            SELECT
-              po.option_id,
-              po.poll_id,
-              po.option_text,
-              COUNT(pv.vote_id) AS vote_count
-            FROM poll_options po
-            LEFT JOIN poll_votes pv ON pv.option_id = po.option_id
-            GROUP BY po.option_id, po.poll_id, po.option_text
-          ) t
-          GROUP BY t.poll_id
-        ) po ON po.poll_id = pp.poll_id
-
-        LEFT JOIN (
-          SELECT poll_id, COUNT(*) AS total_votes
-          FROM poll_votes
-          GROUP BY poll_id
-        ) pv ON pv.poll_id = pp.poll_id
-      ) pp ON pp.post_id = p.post_id
+      LEFT JOIN posts sp ON p.shared_post_id = sp.post_id
+      LEFT JOIN users sp_u ON sp.author_id = sp_u.user_id
+      LEFT JOIN post_categories sp_cat ON sp.category_id = sp_cat.category_id
 
       ${whereClause}
+      
+      -- Privacy Escalation: Hide reposts if original post's privacy tightened
+      AND (
+          p.shared_post_id IS NULL 
+          OR sp.post_id IS NULL -- Still show if deleted (but with 'deleted' reason above)
+          OR (
+              -- Accessible if:
+              -- 1. Original is Public + Not personal
+              (sp.visibility = 'public' AND (sp_cat.name != 'Personal' OR sp_cat.name IS NULL))
+              -- 2. Original is Public + Personal and connected
+              OR (sp.visibility = 'public' AND sp_cat.name = 'Personal' AND (
+                  sp.author_id = $${userParamIdx}
+                  OR EXISTS(
+                      SELECT 1 FROM followers f1 
+                      JOIN followers f2 ON f1.follower_id = f2.following_id AND f1.following_id = f2.follower_id 
+                      WHERE f1.follower_id = $${userParamIdx} AND f1.following_id = sp.author_id
+                  )
+              ))
+              -- 3. Original is Private and viewer is author
+              OR (sp.visibility = 'private' AND sp.author_id = $${userParamIdx})
+          )
+      )
+
       ORDER BY p.created_at DESC, p.post_id DESC
       LIMIT $${idx};
     `;

@@ -70,6 +70,8 @@ exports.getPublicFeed = async (req, res) => {
             --Shared Post Data
             CASE 
                 WHEN p.shared_post_id IS NULL THEN NULL
+                WHEN sp.post_id IS NULL THEN 
+                    json_build_object('is_accessible', false, 'reason', 'deleted')
                 WHEN (
                     --1. Private: Author only
                     (sp.visibility = 'private' AND sp.author_id = $${userParamIdx})
@@ -100,6 +102,7 @@ exports.getPublicFeed = async (req, res) => {
                         'media', COALESCE((SELECT json_agg(json_build_object('url', pm.url, 'media_type', pm.media_type)) FROM post_media pm WHERE pm.post_id = sp.post_id), '[]'::json),
                         'like_count', (SELECT COUNT(*) FROM post_likes pl WHERE pl.post_id = sp.post_id)::int,
                         'comment_count', (SELECT COUNT(*) FROM post_comments pc WHERE pc.post_id = sp.post_id)::int,
+                        'is_liked', EXISTS(SELECT 1 FROM post_likes pl WHERE pl.post_id = sp.post_id AND pl.user_id = $${userParamIdx}),
                         'poll', (
                             SELECT json_build_object(
                                 'poll_id', pp.poll_id,
@@ -151,6 +154,27 @@ exports.getPublicFeed = async (req, res) => {
         LEFT JOIN post_categories sp_cat ON sp.category_id = sp_cat.category_id
 
         WHERE p.visibility = 'public'
+        -- Privacy Escalation: Hide reposts if original post's privacy tightened
+        AND (
+            p.shared_post_id IS NULL 
+            OR sp.post_id IS NULL -- Still show if deleted (but with 'deleted' reason above)
+            OR (
+                -- Accessible if:
+                -- 1. Original is Public + Not personal
+                (sp.visibility = 'public' AND (sp_cat.name != 'Personal' OR sp_cat.name IS NULL))
+                -- 2. Original is Public + Personal and connected
+                OR (sp.visibility = 'public' AND sp_cat.name = 'Personal' AND (
+                    sp.author_id = $${userParamIdx}
+                    OR EXISTS(
+                        SELECT 1 FROM followers f1 
+                        JOIN followers f2 ON f1.follower_id = f2.following_id AND f1.following_id = f2.follower_id 
+                        WHERE f1.follower_id = $${userParamIdx} AND f1.following_id = sp.author_id
+                    )
+                ))
+                -- 3. Original is Private and viewer is author
+                OR (sp.visibility = 'private' AND sp.author_id = $${userParamIdx})
+            )
+        )
         ${cursorCondition}
 
         ORDER BY p.created_at DESC, p.post_id DESC
@@ -230,20 +254,65 @@ exports.getMyPosts = async (req, res) => {
 
                                             pp.poll,
 
-                                            --Shared Post Data
-        CASE WHEN p.shared_post_id IS NOT NULL THEN
-        json_build_object(
-            'post_id', sp.post_id,
-            'content', sp.content,
-            'created_at', sp.created_at,
-            'author', json_build_object(
-                'user_id', sp_u.user_id,
-                'full_name', sp_u.full_name,
-                'avatar_url', sp_u.avatar_url
-            ),
-            'media', COALESCE(sp_media.media, '[]':: json)
-        )
-        ELSE NULL END AS shared_post
+                                             --Shared Post Data
+                                            CASE 
+                                                WHEN p.shared_post_id IS NULL THEN NULL
+                                                WHEN sp.post_id IS NULL THEN 
+                                                    json_build_object('is_accessible', false, 'reason', 'deleted')
+                                                WHEN (
+                                                    -- 1. Private: Author only
+                                                    (sp.visibility = 'private' AND sp.author_id = $1)
+                                                    OR
+                                                    -- 2. Public + Personal: Connections only
+                                                    (sp.visibility = 'public' AND sp_cat.name = 'Personal' AND (
+                                                        sp.author_id = $1
+                                                        OR EXISTS (
+                                                            SELECT 1 FROM followers f1 
+                                                            JOIN followers f2 ON f1.follower_id = f2.following_id AND f1.following_id = f2.follower_id 
+                                                            WHERE f1.follower_id = $1 AND f1.following_id = sp.author_id
+                                                        )
+                                                    ))
+                                                    OR
+                                                    -- 3. Public + Other: Everyone
+                                                    (sp.visibility = 'public' AND (sp_cat.name != 'Personal' OR sp_cat.name IS NULL))
+                                                ) THEN
+                                                    json_build_object(
+                                                        'is_accessible', true,
+                                                        'post_id', sp.post_id,
+                                                        'content', sp.content,
+                                                        'created_at', sp.created_at,
+                                                        'author', json_build_object(
+                                                            'user_id', sp_u.user_id,
+                                                            'full_name', sp_u.full_name,
+                                                            'avatar_url', sp_u.avatar_url
+                                                        ),
+                                                        'media', COALESCE(sp_media.media, '[]'::json),
+                                                        'like_count', (SELECT COUNT(*) FROM post_likes pl WHERE pl.post_id = sp.post_id)::int,
+                                                        'comment_count', (SELECT COUNT(*) FROM post_comments pc WHERE pc.post_id = sp.post_id)::int,
+                                                        'is_liked', EXISTS(SELECT 1 FROM post_likes pl WHERE pl.post_id = sp.post_id AND pl.user_id = $1)
+                                                    )
+                                                -- Failure Analysis
+                                                WHEN sp.visibility = 'private' THEN json_build_object(
+                                                    'is_accessible', false, 
+                                                    'reason', 'private',
+                                                    'author', json_build_object(
+                                                        'user_id', sp_u.user_id,
+                                                        'full_name', sp_u.full_name,
+                                                        'avatar_url', sp_u.avatar_url
+                                                    )
+                                                )
+                                                WHEN (sp.visibility = 'public' AND sp_cat.name = 'Personal') THEN json_build_object(
+                                                    'is_accessible', false, 
+                                                    'reason', 'personal_connection',
+                                                    'author', json_build_object(
+                                                        'user_id', sp_u.user_id,
+                                                        'full_name', sp_u.full_name,
+                                                        'avatar_url', sp_u.avatar_url
+                                                    )
+                                                )
+                                                ELSE
+                                                    json_build_object('is_accessible', false, 'reason', 'unknown')
+                                            END AS shared_post
 
       FROM posts p
       JOIN users u ON u.user_id = p.author_id
@@ -252,6 +321,7 @@ exports.getMyPosts = async (req, res) => {
         --Shared Post Joins
       LEFT JOIN posts sp ON p.shared_post_id = sp.post_id
       LEFT JOIN users sp_u ON sp.author_id = sp_u.user_id
+      LEFT JOIN post_categories sp_cat ON sp.category_id = sp_cat.category_id
       LEFT JOIN(
             SELECT post_id, json_agg(json_build_object('url', url, 'media_type', media_type)) as media
           FROM post_media
@@ -480,6 +550,29 @@ exports.createPost = async (req, res) => {
     let { content, category, visibility, media_urls, post_type, title, poll_options, poll_duration } = req.body; // category is name, media_urls is array
 
     try {
+        // 0. If reposting, check if original is Personal or already reposted
+        if (req.body.shared_post_id) {
+            // Check if Personal
+            const originalPostCheck = await pool.query(
+                `SELECT pc.name FROM posts p 
+                 LEFT JOIN post_categories pc ON p.category_id = pc.category_id 
+                 WHERE p.post_id = $1`,
+                [req.body.shared_post_id]
+            );
+            if (originalPostCheck.rowCount > 0 && originalPostCheck.rows[0].name === 'Personal') {
+                return res.status(403).json({ message: "Personal posts cannot be reposted." });
+            }
+
+            // Check for Duplicate
+            const duplicateCheck = await pool.query(
+                `SELECT post_id FROM posts WHERE author_id = $1 AND shared_post_id = $2`,
+                [userId, req.body.shared_post_id]
+            );
+            if (duplicateCheck.rowCount > 0) {
+                return res.status(409).json({ message: "You have already shared this post." });
+            }
+        }
+
         // 1. Get Category ID
         let categoryId = null;
         if (!category) {
@@ -658,6 +751,8 @@ exports.getPostById = async (req, res) => {
     -- Shared Post Data
     CASE 
         WHEN p.shared_post_id IS NULL THEN NULL
+        WHEN sp.post_id IS NULL THEN 
+            json_build_object('is_accessible', false, 'reason', 'deleted')
         WHEN (
             -- 1. Private: Author only
             (sp.visibility = 'private' AND sp.author_id = $2)
@@ -688,6 +783,7 @@ exports.getPostById = async (req, res) => {
                 'media', COALESCE(sp_media.media, '[]'::json),
                 'like_count', (SELECT COUNT(*) FROM post_likes pl WHERE pl.post_id = sp.post_id)::int,
                 'comment_count', (SELECT COUNT(*) FROM post_comments pc WHERE pc.post_id = sp.post_id)::int,
+                'is_liked', EXISTS(SELECT 1 FROM post_likes pl WHERE pl.post_id = sp.post_id AND pl.user_id = $2),
                 'poll', (
                     SELECT json_build_object(
                         'poll_id', pp.poll_id,
@@ -816,6 +912,29 @@ exports.updatePostById = async (req, res) => {
 
         // visibility
         if (visibility !== undefined) {
+            // Repost privacy lock logic
+            const currentPostRes = await client.query('SELECT shared_post_id FROM posts WHERE post_id = $1', [postId]);
+            const sharedPostId = currentPostRes.rows[0]?.shared_post_id;
+
+            if (sharedPostId && visibility === 'public') {
+                const originalPostRes = await client.query(`
+                    SELECT p.visibility, c.name as category_name 
+                    FROM posts p 
+                    LEFT JOIN post_categories c ON p.category_id = c.category_id 
+                    WHERE p.post_id = $1
+                `, [sharedPostId]);
+
+                if (originalPostRes.rows.length > 0) {
+                    const original = originalPostRes.rows[0];
+                    if (original.visibility === 'private' || original.category_name === 'Personal') {
+                        await client.query('ROLLBACK');
+                        return res.status(403).json({
+                            message: "You cannot make this repost public because the original post is private or restricted."
+                        });
+                    }
+                }
+            }
+
             updates.push(`visibility = $${index++}`);
             values.push(visibility);
         }
