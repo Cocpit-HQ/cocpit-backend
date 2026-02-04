@@ -31,10 +31,6 @@ module.exports.handleConnection = async (socket) => {
   try {
     const recipientIds = await getRelatedUserIds(socket.userId);
 
-    console.log("🟢 STATUS ONLINE:", {
-      userId: socket.userId,
-      recipients: recipientIds,
-    });
 
     SocketService.broadcastStatus(
       socket.userId,
@@ -63,10 +59,6 @@ module.exports.handleDisconnect = async (socket) => {
   try {
     const recipientIds = await getRelatedUserIds(socket.userId);
 
-    console.log("🔴 STATUS OFFLINE:", {
-      userId: socket.userId,
-      recipients: recipientIds,
-    });
 
     SocketService.broadcastStatus(
       socket.userId,

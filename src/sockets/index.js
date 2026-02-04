@@ -67,7 +67,6 @@ module.exports.initSocket = async (httpServer) => {
   // Connection Handler
   io.on("connection", (socket) => {
     const userId = socket.userId;
-    console.log(`User connected: ${userId} (Socket ID: ${socket.id})`);
 
     // Auto-join personal room
     socket.join(getUserRoom(userId));
@@ -80,7 +79,6 @@ module.exports.initSocket = async (httpServer) => {
 
     // Handle Disconnect
     socket.on("disconnect", () => {
-      console.log(`User disconnected: ${userId}`);
       statusHandler.handleDisconnect(socket);
     });
   });

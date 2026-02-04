@@ -528,7 +528,6 @@ exports.login = async (req, res) => {
 exports.refreshToken = async (req, res) => {
   const refreshToken = req.cookies?.refreshToken || req.body?.refreshToken;
 
-  console.log("refresh token : ", refreshToken)
   if (!refreshToken) {
     return res.status(401).json({ message: "Refresh token missing", refreshToken: refreshToken });
   }
@@ -668,7 +667,6 @@ exports.logout = async (req, res) => {
     });
 
     console.log("👤 [BE] Logout requested for user:", userId);
-    console.log("🆔 [BE] Session ID:", sessionId);
 
     /* ---------------------------------------------------------
        2️⃣ Delete EXACT session (no UA / IP guessing)
@@ -686,7 +684,6 @@ exports.logout = async (req, res) => {
     if (result.rowCount === 0) {
       console.warn("⚠️ [BE] No session found (already logged out)");
     } else {
-      console.log("🗑️ [BE] Session deleted:", result.rows[0].token_id);
     }
 
     /* ---------------------------------------------------------

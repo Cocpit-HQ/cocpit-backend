@@ -24,11 +24,6 @@ exports.getPublicFeed = async (req, res) => {
 
         // 3. User ID (needed for subqueries)
         const userId = req.user ? req.user.sub : null;
-        console.log("[DEBUG] getPublicFeed - Auth Check:", {
-            hasUser: !!req.user,
-            userId,
-            authHeader: !!req.headers.authorization
-        });
 
         params.push(userId);
         const userParamIdx = params.length;
@@ -1132,9 +1127,10 @@ exports.addComment = async (req, res) => {
             return res.status(404).json({ message: "Post not found" })
         }
 
+        let insertParentId = parent_id || null;
+
         // Validate parent_id if provided
         if (parent_id) {
-            // 1. Verify parent comment exists
             const parentComment = await pool.query(
                 `SELECT comment_id, post_id, parent_id FROM post_comments WHERE comment_id = $1`,
                 [parent_id]
@@ -1144,30 +1140,19 @@ exports.addComment = async (req, res) => {
                 return res.status(404).json({ message: "Parent comment not found" });
             }
 
-            // 2. Verify parent belongs to same post
             if (parentComment.rows[0].post_id.toString() !== postId.toString()) {
-                console.error('[addComment] Parent comment belongs to different post', {
-                    parentPostId: parentComment.rows[0].post_id,
-                    currentPostId: postId
-                });
                 return res.status(400).json({ message: "Parent comment belongs to different post" });
             }
 
-            // 3. Prevent nested replies (Instagram-style: no reply-to-reply)
-            if (parentComment.rows[0].parent_id !== null) {
-                console.error('[addComment] Attempted to reply to a reply', {
-                    parentId: parent_id,
-                    parentOfParent: parentComment.rows[0].parent_id
-                });
-                return res.status(400).json({ message: "Cannot reply to a reply. Please reply to the root comment." });
-            }
+            // Always reply to the root comment of a thread (Instagram-style)
+            insertParentId = parentComment.rows[0].parent_id || parent_id;
         }
 
         const result = await pool.query(
             `INSERT INTO post_comments (post_id, author_id, content, parent_id)
    VALUES ($1, $2, $3, $4)
    RETURNING comment_id, author_id, content, parent_id, created_at`,
-            [postId, userId, content.trim(), parent_id || null]
+            [postId, userId, content.trim(), insertParentId]
         );
 
         const newComment = result.rows[0];
@@ -1500,11 +1485,9 @@ exports.getComments = async (req, res) => {
     }
     try {
         const post = await pool.query(`select post_id from posts where post_id = $1`, [postId])
-        console.log(post)
         if (post.rowCount === 0) {
             return res.status(404).json({ message: "Post not found" })
         }
-        console.log(postId)
         const comments = await pool.query(
             `
       SELECT 

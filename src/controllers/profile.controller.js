@@ -244,7 +244,6 @@ exports.uploadOrReplaceAvatar = async (req, res) => {
       [avatarUrl, userId]
     );
 
-    console.log("Avatar URL:", avatarUrl);
 
     res.json({ message: "Profile picture updated successfully", avatarUrl });
   } catch (err) {
@@ -267,7 +266,6 @@ exports.getAvatar = async (req, res) => {
       return res.status(404).json({ message: "No profile picture found" });
     }
 
-    console.log("Avatar URL:", result.rows[0].avatar_url);
 
     res.json({ avatarUrl: result.rows[0].avatar_url });
   } catch (err) {
@@ -311,7 +309,6 @@ exports.uploadOrReplaceCoverPhoto = async (req, res) => {
       [coverUrl, userId]
     );
 
-    console.log("Cover URL:", coverUrl);
 
     res.json({ message: "Cover photo updated successfully", coverUrl });
   } catch (err) {
@@ -704,7 +701,6 @@ exports.addEducation = async (req, res) => {
 
 
 
-    console.log("Education added successfully:", result.rows[0], profile.rows[0],);
 
     res.status(201).json({
       message: "Education added successfully",
@@ -821,7 +817,6 @@ exports.deleteEducation = async (req, res) => {
       });
     }
 
-    console.log("Education deleted successfully:", deleteResult.rows[0]);
 
 
     res.json({
@@ -872,7 +867,6 @@ exports.addSkills = async (req, res) => {
 
   try {
     await client.query("BEGIN");
-    console.log("start")
 
     // 3. Get profile
     const { rows } = await client.query(
@@ -924,7 +918,6 @@ exports.addSkills = async (req, res) => {
 
     await client.query("COMMIT");
 
-    console.log("Skills added successfully:", skills);
 
     res.status(201).json({
       message: "Skills added successfully",

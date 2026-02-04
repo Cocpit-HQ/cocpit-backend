@@ -425,7 +425,6 @@ exports.getConnectionCount = async (req, res) => {
             `SELECT COUNT(*) FROM connections WHERE user_id = $1`,
             [userId]
         );
-        console.log("connection count : ", result.rows[0]);
         res.status(200).json({
             connection_count: result.rows[0].count,
             userId: userId
