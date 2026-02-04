@@ -281,6 +281,7 @@ CREATE TABLE conversation_participants (
   conversation_id UUID REFERENCES conversations(conversation_id) ON DELETE CASCADE,
   user_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
   joined_at TIMESTAMPTZ DEFAULT now(),
+  left_at TIMESTAMPTZ, -- NULL if active, timestamp if left
   PRIMARY KEY (conversation_id, user_id)
 );
 
@@ -291,6 +292,8 @@ CREATE TABLE messages (
   --  receiver_id UUID REFERENCES users(user_id),
   text_content TEXT,
   --story_id UUID REFERENCES stories(story_id),
+  action_type TEXT, -- 'add', 'leave', 'remove', 'create'
+  target_id UUID REFERENCES users(user_id) ON DELETE SET NULL, -- Subject of the action
   created_at TIMESTAMPTZ DEFAULT now(),
   read_at TIMESTAMPTZ -- NULL if unread
 );
@@ -479,4 +482,16 @@ CREATE INDEX IF NOT EXISTS idx_users_email_trgm
 ON users USING GIN (email gin_trgm_ops);
 
 ANALYZE users;
+----3/02/2026 group chat
+CREATE TABLE group_invitations (
+  invitation_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  conversation_id UUID REFERENCES conversations(conversation_id) ON DELETE CASCADE,
+  inviter_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
+  invitee_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
+  status TEXT DEFAULT 'pending' CHECK (status IN ('pending', 'accepted', 'rejected')),
+  created_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ DEFAULT now(),
+  UNIQUE(conversation_id, invitee_id)
+);
+
 
