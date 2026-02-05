@@ -133,17 +133,17 @@ exports.createJob = async (req, res) => {
         recruiter_id, title, company_name, location,
         description, salary_min,salary_max, job_type,
         work_mode, company_type, experience_level,
-        about_company,industry, easy_apply, actively_hiring, voice_pitch_req
+        about_company,industry, easy_apply, actively_hiring
       )
       VALUES
-      ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+      ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
       RETURNING *
       `,
       [
         userId, title, company_name, location,
         description, minSalary, maxSalary, job_type,
         work_mode, company_type, experience_level,
-        about_company, industry, easy_apply, actively_hiring, voice_pitch_req
+        about_company, industry, easy_apply, actively_hiring
       ]
     );
 
@@ -213,11 +213,10 @@ exports.applyJob = async (req, res) => {
 
   try {
     // Check if job exists
-    const jobCheck = await pool.query(`SELECT 1, voice_pitch_req FROM jobs WHERE job_id = $1`, [id]);
+    const jobCheck = await pool.query(`SELECT 1 FROM jobs WHERE job_id = $1`, [id]);
     if (jobCheck.rowCount === 0) {
       return res.status(404).json({ message: "Job not found" });
     }
-    const voiceReq = 'optional';
 
     // Check if already applied
     const existing = await pool.query(
@@ -227,17 +226,14 @@ exports.applyJob = async (req, res) => {
     if (existing.rowCount > 0) {
       return res.status(409).json({ message: "Already applied to this job" });
     }
-
     // Resume file URL from Cloudinary or existing profile resume
     let resume_url = null;
-    let audio_pitch_url = null;
 
     // Handle Multer .fields() output
     if (req.files) {
       if (req.files['resume'] && req.files['resume'][0]) {
         resume_url = req.files['resume'][0].path;
       }
-
     }
     // Fallback for single file upload if still supported (legacy)
     else if (req.file) {
@@ -253,15 +249,13 @@ exports.applyJob = async (req, res) => {
       return res.status(400).json({ message: "Resume is required" });
     }
 
-
-
     // Create application
     const appResult = await pool.query(
       `INSERT INTO job_applications 
-       (job_id, applicant_id, full_name, email, phone, resume_url, cover_note, audio_pitch_url)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+       (job_id, applicant_id, full_name, email, phone, resume_url, cover_note)
+       VALUES ($1,$2,$3,$4,$5,$6,$7)
        RETURNING application_id`,
-      [id, userId, full_name, email, phone, resume_url, cover_note, audio_pitch_url]
+      [id, userId, full_name, email, phone, resume_url, cover_note]
     );
 
     const appId = appResult.rows[0].application_id;
@@ -863,7 +857,6 @@ exports.updateJob = async (req, res) => {
     industry,
     easy_apply,
     actively_hiring,
-    voice_pitch_req,
     skills = []
   } = req.body;
 
@@ -896,8 +889,8 @@ exports.updateJob = async (req, res) => {
         description = $4, salary_min = $5, salary_max = $6,
         job_type = $7, work_mode = $8, company_type = $9,
         experience_level = $10, about_company = $11, industry = $12,
-        easy_apply = $13, actively_hiring = $14, voice_pitch_req = $15
-      WHERE job_id = $16
+        easy_apply = $13, actively_hiring = $14
+      WHERE job_id = $15
       RETURNING *
       `,
       [
@@ -905,7 +898,7 @@ exports.updateJob = async (req, res) => {
         description, safeMinSalary, safeMaxSalary,
         job_type, work_mode, company_type,
         experience_level, about_company, industry,
-        easy_apply, actively_hiring, voice_pitch_req, id
+        easy_apply, actively_hiring, id
       ]
     );
 
