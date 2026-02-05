@@ -16,6 +16,7 @@ const onboardingRoutes = require("./routes/onboarding.routes");
 const groupChatRoutes = require("./routes/groupChat.routes");
 
 const app = express();
+app.set("trust proxy", true);
 
 const allowedOrigins = process.env.ALLOWED_ORIGINS
   ? process.env.ALLOWED_ORIGINS.split(',').map(origin => origin.trim())
@@ -26,6 +27,7 @@ const allowedOrigins = process.env.ALLOWED_ORIGINS
     "http://192.168.1.2:3000",
     "http://192.168.1.3:3000",
     "http://192.168.1.7:3000",
+    "http://192.168.1.5:3000",
     "https://frontend.cocpit.in",
   ];
 

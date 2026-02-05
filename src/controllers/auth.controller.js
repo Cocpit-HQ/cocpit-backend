@@ -8,6 +8,14 @@ const {
 } = require("../utils/jwt");
 const bcrypt = require("bcrypt");
 const crypto = require("crypto");
+const UAParser = require("ua-parser-js");
+
+const cookieOptions = {
+  httpOnly: true,
+  secure: true, // Required for SameSite: None
+  sameSite: "None",
+  path: "/",
+};
 
 exports.register = async (req, res) => {
   const { email, password, fullName, accountType } = req.body;
@@ -542,7 +550,19 @@ exports.refreshToken = async (req, res) => {
     /* ---------------------------------------------------------
        1️⃣ Verify refresh token and extract session
     --------------------------------------------------------- */
-    const { sub: userId, sid: sessionId } = verifyRefreshToken(refreshToken);
+    let payload;
+    try {
+      payload = verifyRefreshToken(refreshToken);
+    } catch (err) {
+      console.warn("Refresh token verification failed:", err.message);
+      res.clearCookie("refreshToken", cookieOptions);
+      return res.status(401).json({
+        error: "SESSION_INVALID",
+        message: "Session expired or invalid"
+      });
+    }
+
+    const { sub: userId, sid: sessionId } = payload;
 
     /* ---------------------------------------------------------
        2️⃣ Fetch EXACT session (no user-wide lookup)
@@ -559,8 +579,11 @@ exports.refreshToken = async (req, res) => {
     );
 
     if (sessionResult.rowCount === 0) {
-      res.clearCookie("refreshToken");
-      return res.status(403).json({ message: "Session not found" });
+      res.clearCookie("refreshToken", cookieOptions);
+      return res.status(401).json({
+        error: "SESSION_INVALID",
+        message: "Session not found or terminated"
+      });
     }
 
     const { token_id, token_hash } = sessionResult.rows[0];
@@ -570,14 +593,17 @@ exports.refreshToken = async (req, res) => {
     --------------------------------------------------------- */
     const isValid = await bcrypt.compare(refreshToken, token_hash);
     if (!isValid) {
-      // Token reuse or tampering → kill this session
+      // Token reuse or tampering → kill this session immediately
       await pool.query(
         `DELETE FROM refresh_tokens WHERE session_id = $1`,
         [sessionId]
       );
 
-      res.clearCookie("refreshToken");
-      return res.status(403).json({ message: "Invalid refresh token" });
+      res.clearCookie("refreshToken", cookieOptions);
+      return res.status(401).json({
+        error: "SESSION_INVALID",
+        message: "Security breach detected: session terminated"
+      });
     }
 
     /* ---------------------------------------------------------
@@ -633,10 +659,7 @@ exports.refreshToken = async (req, res) => {
        6️⃣ Set refreshed cookie
     --------------------------------------------------------- */
     res.cookie("refreshToken", newRefreshToken, {
-      httpOnly: true,
-      secure: true,
-      sameSite: "None",
-      path: "/",
+      ...cookieOptions,
       maxAge: 7 * 24 * 60 * 60 * 1000,
     });
 
@@ -749,6 +772,74 @@ exports.getMe = async (req, res) => {
 };
 //const pool = require("../db/pool");
 
+exports.getSessions = async (req, res) => {
+  try {
+    const userId = req.user.sub; // from access token
+    const currentSessionId = req.user.sid; // from access token
+
+    const result = await pool.query(
+      `
+      SELECT 
+        session_id,
+        user_agent,
+        ip_address,
+        created_at,
+        expires_at
+      FROM refresh_tokens
+      WHERE user_id = $1
+        AND expires_at > NOW()
+        AND revoked = FALSE
+      ORDER BY created_at DESC
+      `,
+      [userId]
+    );
+
+    const sessions = result.rows.map(row => {
+      const parser = new UAParser(row.user_agent);
+      const ua = parser.getResult();
+
+      const browser = ua.browser.name || (row.user_agent.includes("axios") ? "Axios Client" : (row.user_agent.includes("node") ? "Node.js" : "Unknown Browser"));
+      const os = ua.os.name || "Unknown OS";
+      let deviceType = "Unknown";
+
+      if (ua.device.type === "mobile") {
+        deviceType = "Mobile";
+      } else if (ua.device.type === "tablet") {
+        deviceType = "Tablet";
+      } else if (!ua.device.type) {
+        // If it's a known non-browser client, mark as Service/API
+        if (browser === "Axios Client" || browser === "Node.js" || row.user_agent.includes("Postman")) {
+          deviceType = "Service/API";
+        } else {
+          deviceType = "Desktop";
+        }
+      }
+
+      return {
+        session_id: row.session_id,
+        browser,
+        os,
+        device_type: deviceType,
+        user_agent: row.user_agent,
+        ip_address: row.ip_address,
+        created_at: row.created_at,
+        expires_at: row.expires_at,
+        is_current: row.session_id === currentSessionId
+      };
+    });
+
+    res.json({
+      sessions
+    });
+
+  } catch (error) {
+    console.error("Get sessions error:", error);
+    res.status(500).json({
+      message: "Unable to fetch active sessions"
+    });
+  }
+};
+
 exports.getMySessionCount = async (req, res) => {
   try {
     const userId = req.user.sub; // from access token
@@ -775,15 +866,83 @@ exports.getMySessionCount = async (req, res) => {
     });
   }
 };
+exports.logoutAllOtherSessions = async (req, res) => {
+  try {
+    const userId = req.user.sub; // from access token
+    const currentSessionId = req.user.sid; // from access token
+    const { password } = req.body;
+
+    if (!password) {
+      return res.status(400).json({ message: "Password is required" });
+    }
+
+    // 1. Verify password
+    const userResult = await pool.query(
+      "SELECT password_hash FROM users WHERE user_id = $1",
+      [userId]
+    );
+
+    if (userResult.rowCount === 0) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    const isPasswordValid = await comparePassword(password, userResult.rows[0].password_hash);
+    if (!isPasswordValid) {
+      return res.status(401).json({ message: "Invalid password" });
+    }
+
+    const result = await pool.query(
+      `
+      DELETE FROM refresh_tokens
+      WHERE user_id = $1
+        AND session_id != $2
+      RETURNING session_id
+      `,
+      [userId, currentSessionId]
+    );
+
+    res.json({
+      message: "All other sessions terminated",
+      deleted_count: result.rowCount
+    });
+
+  } catch (error) {
+    console.error("Logout all other sessions error:", error);
+    res.status(500).json({
+      message: "Unable to terminate other sessions"
+    });
+  }
+};
+
 exports.removeSession = async (req, res) => {
   try {
     const userId = req.user.sub;      // from access token
     const { sessionId } = req.params; // session to remove
+    const { password } = req.body;
 
     if (!sessionId) {
       return res.status(400).json({
         message: "sessionId is required"
       });
+    }
+
+    if (!password) {
+      return res.status(400).json({ message: "Password is required" });
+    }
+
+    // 1. Verify password
+    const userResult = await pool.query(
+      "SELECT password_hash FROM users WHERE user_id = $1",
+      [userId]
+    );
+
+    if (userResult.rowCount === 0) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    const isPasswordValid = await comparePassword(password, userResult.rows[0].password_hash);
+    if (!isPasswordValid) {
+      return res.status(401).json({ message: "Invalid password" });
     }
 
     const result = await pool.query(

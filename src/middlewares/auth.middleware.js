@@ -44,3 +44,34 @@ exports.optionalAuth = (req, res, next) => {
   }
   next();
 };
+
+exports.requireActiveSession = async (req, res, next) => {
+  const pool = require("../db/pool");
+  const userId = req.user?.sub;
+  const sessionId = req.user?.sid;
+
+  if (!userId || !sessionId) {
+    return res.status(401).json({ message: "Invalid session context" });
+  }
+
+  try {
+    const result = await pool.query(
+      `SELECT 1 FROM refresh_tokens 
+       WHERE user_id = $1 AND session_id = $2 
+       AND revoked = FALSE AND expires_at > NOW()`,
+      [userId, sessionId]
+    );
+
+    if (result.rowCount === 0) {
+      return res.status(401).json({
+        message: "Session expired or terminated. Please log in again.",
+        forceLogout: true,
+      });
+    }
+
+    next();
+  } catch (err) {
+    console.error("Session validity check error:", err);
+    res.status(500).json({ message: "Internal server error during session validation" });
+  }
+};

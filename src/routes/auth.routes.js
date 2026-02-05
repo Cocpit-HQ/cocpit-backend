@@ -1,7 +1,7 @@
 const express = require("express");
 const router = express.Router();
 const authController = require("../controllers/auth.controller");
-const { requireAuth } = require("../middlewares/auth.middleware");
+const { requireAuth, requireActiveSession } = require("../middlewares/auth.middleware");
 const { requireRefreshTokenAuth } = require("../middlewares/auth.middleware");
 const { requireRoles } = require("../middlewares/role.middleware");
 const { validate } = require("../middlewares/validation.middleware");
@@ -23,11 +23,14 @@ const authLimiter = rateLimit({
 router.post("/register", authLimiter, validate(registerSchema), authController.register);
 router.post("/login", authLimiter, validate(loginSchema), authController.login);
 router.post("/refresh", validate(refreshTokenSchema), authController.refreshToken);
-router.get("/sessions/count",requireAuth,getMySessionCount );
-router.delete("/sessions/:sessionId", requireAuth,authController.removeSession);
+// Session management
+router.get("/sessions", requireAuth, authController.getSessions);
+router.delete("/sessions", requireAuth, requireActiveSession, authController.logoutAllOtherSessions);
+router.get("/sessions/count", requireAuth, getMySessionCount);
+router.delete("/sessions/:sessionId", requireAuth, requireActiveSession, authController.removeSession);
 
 
-router.post("/logout",  authController.logout);
+router.post("/logout", authController.logout);
 
 router.get("/me", requireAuth, authController.getMe);
 
