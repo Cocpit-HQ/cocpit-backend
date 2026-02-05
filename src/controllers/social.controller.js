@@ -466,8 +466,9 @@ SELECT
     u.user_id AS other_user_id,
     u.headline AS other_user_headline,
     
-    -- Get the most recent message
-    m.text_content AS last_message_text
+    -- Get the most recent message (fallback to messages table if conversation field is null)
+    COALESCE(c.last_message, m.text_content) AS last_message_text,
+    COALESCE(c.last_message_at, m.created_at, c.updated_at) AS last_message_at
 FROM conversations c
 JOIN conversation_participants cp ON c.conversation_id = cp.conversation_id
 -- For 1-on-1, join the other participant. For groups, this might return multiple or we skip via logic.
@@ -476,8 +477,9 @@ LEFT JOIN conversation_participants cp_other ON c.conversation_id = cp_other.con
     AND cp_other.user_id != $1 AND c.is_group = FALSE
 LEFT JOIN users u ON cp_other.user_id = u.user_id
 
+-- Restore JOIN for backward compatibility with existing chats that lack last_message
 LEFT JOIN LATERAL (
-    SELECT text_content FROM messages 
+    SELECT text_content, created_at FROM messages 
     WHERE conversation_id = c.conversation_id 
     ORDER BY created_at DESC LIMIT 1
 ) m ON true
@@ -486,7 +488,7 @@ WHERE cp.user_id = $1
 -- Ensure distinct conversations (fix for potential multiple rows if join logic leaks)
 -- Actually, if is_group=FALSE, cp_other matches 1 row (unless multi-party DM which we don't support yet).
 -- If is_group=TRUE, cp_other is NULL due to condition.
-ORDER BY c.updated_at DESC;
+ORDER BY COALESCE(c.last_message_at, m.created_at, c.updated_at) DESC NULLS LAST;
   `, [userId]
         );
 
@@ -499,7 +501,7 @@ ORDER BY c.updated_at DESC;
     ON cp.conversation_id = m.conversation_id
   WHERE cp.user_id = $1
     AND m.sender_id <> $1
-    AND m.read_at IS NULL
+    AND m.created_at > cp.last_read_at
   GROUP BY m.conversation_id
   `, [userId]
         );
@@ -647,10 +649,14 @@ exports.sendMessage = async (req, res) => {
             if (spRes.rowCount > 0) sharedPostData = spRes.rows[0];
         }
 
-        // Update conversation timestamp
+        // Update conversation timestamp and last message
         await client.query(
-            `UPDATE conversations SET updated_at = now() WHERE conversation_id = $1`,
-            [conversationId]
+            `UPDATE conversations 
+             SET updated_at = now(),
+                 last_message = $2,
+                 last_message_at = now()
+             WHERE conversation_id = $1`,
+            [conversationId, text_content || (shared_post_id ? 'Shared a post' : 'Attachment')]
         );
         await client.query('COMMIT');
 
@@ -662,7 +668,10 @@ exports.sendMessage = async (req, res) => {
         };
 
         // Notify target user via service
-        socketService.notifyUser(targetUserId, "newMessage", messageData);
+        socketService.notifyUser(targetUserId, "new_message", messageData);
+        // Notify sender as well (for multi-device sync and chat list update)
+        socketService.notifyUser(senderId, "new_message", messageData);
+
         socketService.notifyUser(targetUserId, "notification", {
             type: "message",
             from: senderId,
@@ -689,28 +698,43 @@ exports.markConversationRead = async (req, res) => {
     const { conversationId } = req.params;
 
     try {
+        // 1. Update the participant's last_read_at timestamp
         const result = await pool.query(
             `
-      UPDATE messages
-      SET read_at = NOW()
-      WHERE conversation_id = $1
-        AND sender_id != $2
-        AND read_at IS NULL
-      RETURNING message_id
-      `,
+            UPDATE conversation_participants
+            SET last_read_at = NOW()
+            WHERE conversation_id = $1 AND user_id = $2
+            RETURNING last_read_at
+            `,
             [conversationId, userId]
         );
 
-        // 🔔 Emit read receipt
+        // 2. We can also optionally update the old 'messages.read_at' for backward compatibility or 1-on-1s, 
+        // but for unread count logic we will switch to using last_read_at.
+        // Keeping this update might be useful if other parts of the system rely on 'read_at' 
+        // effectively meaning "at least one person read it".
+        await pool.query(
+            `
+            UPDATE messages
+            SET read_at = NOW()
+            WHERE conversation_id = $1
+                AND sender_id != $2
+                AND read_at IS NULL
+            `,
+            [conversationId, userId]
+        );
+
+
+        // 🔔 Emit read receipt (Robustness: Send to room)
         socketService.notifyConversation(conversationId, "messagesRead", {
             conversationId,
             readerId: userId,
-            messageIds: result.rows.map(r => r.message_id),
+            readAt: result.rows[0]?.last_read_at || new Date(),
         });
 
         res.json({
-            message: "Messages marked as read",
-            count: result.rowCount,
+            message: "Conversation marked as read",
+            readAt: result.rows[0]?.last_read_at
         });
     } catch (err) {
         console.error(err);
@@ -746,6 +770,9 @@ exports.getMessages = async (req, res) => {
                 m.sender_id,
                 m.created_at,
                 m.read_at,
+                m.message_type,
+                m.action_type,
+                m.target_id,
                 u.full_name as sender_name,
                 u.avatar_url as sender_avatar,
                 CASE 

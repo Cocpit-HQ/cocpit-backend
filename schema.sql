@@ -273,6 +273,12 @@ CREATE TABLE connections (
 CREATE TABLE conversations (
   conversation_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   is_group BOOLEAN DEFAULT FALSE,
+  conversation_name TEXT,
+  group_avatar TEXT,
+  description TEXT,
+  admin_id UUID REFERENCES users(user_id) ON DELETE SET NULL,
+  last_message TEXT,
+  last_message_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ DEFAULT now(),
   updated_at TIMESTAMPTZ DEFAULT now()
 );
@@ -282,6 +288,7 @@ CREATE TABLE conversation_participants (
   user_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
   joined_at TIMESTAMPTZ DEFAULT now(),
   left_at TIMESTAMPTZ, -- NULL if active, timestamp if left
+  last_read_at TIMESTAMPTZ DEFAULT now(),
   PRIMARY KEY (conversation_id, user_id)
 );
 
