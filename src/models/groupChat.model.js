@@ -92,7 +92,7 @@ class GroupChatModel {
         // Simplified query to test stability
         const result = await pool.query(
             `SELECT gi.invitation_id, gi.conversation_id, gi.status, gi.created_at,
-              COALESCE(c.conversation_name, c.name, 'Unnamed Group') as group_name, 
+              COALESCE(c.conversation_name, 'Unnamed Group') as group_name, 
               COALESCE(c.group_avatar, c.avatar_url) as group_avatar,
               u.full_name as inviter_name
        FROM group_invitations gi
@@ -130,6 +130,17 @@ class GroupChatModel {
        RETURNING *`,
             [groupId, senderId, content, type, actionType, targetId]
         );
+
+        // Update conversation timestamp and last message for sorting
+        await pool.query(
+            `UPDATE conversations 
+             SET updated_at = now(),
+                 last_message = $2,
+                 last_message_at = now()
+             WHERE conversation_id = $1`,
+            [groupId, content]
+        );
+
         return result.rows[0];
     }
 

@@ -40,7 +40,7 @@ socket.on("connect_error", (err) => {
 });
 
 // ---------------- REAL-TIME EVENTS ----------------
-socket.on("newMessage", (msg) => {
+socket.on("new_message", (msg) => {
   console.log(" NEW MESSAGE RECEIVED:");
   console.log(msg);
 });

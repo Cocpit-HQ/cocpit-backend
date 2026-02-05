@@ -259,6 +259,19 @@ class GroupChatService {
         // Notify all members
         members.forEach(member => {
             socketService.notifyUser(member.user_id, 'new_message', enrichedMessage);
+
+            // Notify list update (MessagingPage listens to this)
+            // Suppress notification toast for the sender themselves
+            if (member.user_id !== senderId) {
+                socketService.notifyUser(member.user_id, 'notification', {
+                    type: 'message',
+                    from: senderId,
+                    senderName: sender.full_name,
+                    senderAvatar: sender.avatar_url,
+                    conversationId: groupId,
+                    isGroup: true
+                });
+            }
         });
 
         return message;
