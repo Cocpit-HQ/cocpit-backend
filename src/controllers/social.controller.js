@@ -444,15 +444,21 @@ exports.getConversations = async (req, res) => {
             `
 SELECT 
     c.*,
+    -- Block Status
+    CASE WHEN c.is_group THEN false ELSE EXISTS(SELECT 1 FROM blocks WHERE blocker_id = $1 AND blocked_id = u.user_id) END as is_blocked_by_me,
+    CASE WHEN c.is_group THEN false ELSE EXISTS(SELECT 1 FROM blocks WHERE blocker_id = u.user_id AND blocked_id = $1) END as is_blocked_by_other,
+
     -- Name logic: Use group name if group, else other user's name
     CASE 
         WHEN c.is_group THEN c.conversation_name 
+        WHEN EXISTS(SELECT 1 FROM blocks WHERE blocker_id = u.user_id AND blocked_id = $1) THEN 'User not found'
         ELSE u.full_name 
     END AS other_user_name,
     
     -- Avatar logic: Use group avatar if group, else other user's avatar
     CASE 
         WHEN c.is_group THEN c.group_avatar 
+        WHEN EXISTS(SELECT 1 FROM blocks WHERE blocker_id = u.user_id AND blocked_id = $1) THEN NULL
         ELSE u.avatar_url 
     END AS other_user_avatar,
     
@@ -556,6 +562,17 @@ exports.sendMessage = async (req, res) => {
 
     if (senderId === targetUserId)
         return res.status(400).json({ message: "Cannot send message to yourself" });
+
+    // Check Block Status
+    try {
+        const { checkBlockStatus } = require("../utils/blockCheck");
+        const isBlocked = await checkBlockStatus(senderId, targetUserId);
+        if (isBlocked) {
+            return res.status(404).json({ message: "User not found" }); // Masked 404
+        }
+    } catch (e) {
+        console.error("Block check failed", e);
+    }
 
     const client = await pool.connect();
     try {
@@ -724,17 +741,38 @@ exports.getMessages = async (req, res) => {
         // 2. Fetch messages (Filtered by join time if group)
         const result = await pool.query(
             `SELECT 
-                m.*,
+                m.message_id,
+                m.conversation_id,
+                m.sender_id,
+                m.created_at,
+                m.read_at,
                 u.full_name as sender_name,
                 u.avatar_url as sender_avatar,
-                CASE WHEN m.shared_post_id IS NOT NULL THEN
-                    json_build_object(
-                        'post_id', sp.post_id,
-                        'content', sp.content,
-                        'author', json_build_object('full_name', au.full_name, 'avatar_url', au.avatar_url),
-                        'media', (SELECT json_agg(json_build_object('url', url, 'media_type', media_type)) FROM post_media WHERE post_id = sp.post_id)
-                    )
-                ELSE NULL END AS shared_post
+                CASE 
+                    WHEN EXISTS (SELECT 1 FROM blocks WHERE blocker_id = $4 AND blocked_id = m.sender_id) THEN true 
+                    ELSE false 
+                END as is_blocked,
+                CASE 
+                    WHEN EXISTS (SELECT 1 FROM blocks WHERE blocker_id = $4 AND blocked_id = m.sender_id) THEN 'Message hidden'
+                    ELSE m.text_content 
+                END as text_content,
+                CASE 
+                    WHEN m.shared_post_id IS NOT NULL 
+                         AND NOT EXISTS (SELECT 1 FROM blocks WHERE blocker_id = $4 AND blocked_id = m.sender_id)
+                         AND NOT EXISTS (
+                            SELECT 1 FROM blocks b 
+                            WHERE (b.blocker_id = $4 AND b.blocked_id = sp.author_id)
+                               OR (b.blocker_id = sp.author_id AND b.blocked_id = $4)
+                         )
+                    THEN
+                        json_build_object(
+                            'post_id', sp.post_id,
+                            'content', sp.content,
+                            'author', json_build_object('full_name', au.full_name, 'avatar_url', au.avatar_url),
+                            'media', (SELECT json_agg(json_build_object('url', url, 'media_type', media_type)) FROM post_media WHERE post_id = sp.post_id)
+                        )
+                    ELSE NULL 
+                END AS shared_post
              FROM messages m
              LEFT JOIN users u ON m.sender_id = u.user_id
              LEFT JOIN posts sp ON m.shared_post_id = sp.post_id
@@ -742,7 +780,7 @@ exports.getMessages = async (req, res) => {
              WHERE m.conversation_id = $1 
              AND ($2::boolean = false OR m.created_at >= $3)
              ORDER BY m.created_at ASC`,
-            [conversation_id, is_group, joined_at]
+            [conversation_id, is_group, joined_at, userId]
         );
 
         res.json(result.rows);
@@ -791,6 +829,7 @@ exports.getNotifications = async (req, res) => {
              FROM notifications n 
              LEFT JOIN users u ON n.sender_id = u.user_id 
              WHERE n.user_id = $1 
+             AND NOT EXISTS (SELECT 1 FROM blocks WHERE blocker_id = $1 AND blocked_id = n.sender_id)
              ORDER BY n.created_at DESC`,
             [userId]
         );
@@ -810,8 +849,8 @@ exports.markNotificationRead = async (req, res) => {
         const result = await pool.query(
             `UPDATE notifications 
        SET is_read = TRUE 
-       WHERE notification_id = $1 AND user_id = $2 
-       RETURNING *`,
+       WHERE notification_id = $1 AND user_id = $2
+    RETURNING * `,
             [id, userId]
         );
 
@@ -859,10 +898,10 @@ exports.sharePostToConversations = async (req, res) => {
         // 2. Fetch shared post details once
         let sharedPostData = null;
         const spRes = await client.query(`
-            SELECT 
-                p.post_id, p.content, p.created_at, 
-                json_build_object('full_name', u.full_name, 'avatar_url', u.avatar_url) as author,
-                (SELECT json_agg(json_build_object('url', url, 'media_type', media_type)) FROM post_media WHERE post_id = p.post_id) as media
+    SELECT
+    p.post_id, p.content, p.created_at,
+        json_build_object('full_name', u.full_name, 'avatar_url', u.avatar_url) as author,
+        (SELECT json_agg(json_build_object('url', url, 'media_type', media_type)) FROM post_media WHERE post_id = p.post_id) as media
             FROM posts p
             JOIN users u ON p.author_id = u.user_id
             WHERE p.post_id = $1
@@ -895,20 +934,20 @@ exports.sharePostToConversations = async (req, res) => {
                 conversationId = existingConv.rows[0].conversation_id;
             } else {
                 const convRes = await client.query(
-                    `INSERT INTO conversations (is_group) VALUES (FALSE) RETURNING conversation_id`
+                    `INSERT INTO conversations(is_group) VALUES(FALSE) RETURNING conversation_id`
                 );
                 conversationId = convRes.rows[0].conversation_id;
 
                 await client.query(
-                    `INSERT INTO conversation_participants (conversation_id, user_id) VALUES ($1, $2), ($1, $3)`,
+                    `INSERT INTO conversation_participants(conversation_id, user_id) VALUES($1, $2), ($1, $3)`,
                     [conversationId, senderId, targetUserId]
                 );
             }
 
             // B. Insert Message
             const msgRes = await client.query(
-                `INSERT INTO messages (conversation_id, sender_id, text_content, shared_post_id)
-                  VALUES ($1, $2, $3, $4) RETURNING *`,
+                `INSERT INTO messages(conversation_id, sender_id, text_content, shared_post_id)
+    VALUES($1, $2, $3, $4) RETURNING * `,
                 [conversationId, senderId, message || '', postId]
             );
 
@@ -949,5 +988,74 @@ exports.sharePostToConversations = async (req, res) => {
         res.status(500).json({ message: "Internal server error" });
     } finally {
         client.release();
+    }
+};
+
+/* =====================================================
+   BLOCKING
+   ===================================================== */
+exports.blockUser = async (req, res) => {
+    const userId = req.user.sub;
+    const targetId = req.params.id;
+
+    if (userId === targetId) {
+        return res.status(400).json({ message: "Cannot block yourself" });
+    }
+
+    try {
+        const BlockModel = require("../models/block.model");
+        const { checkBlockStatus } = require("../utils/blockCheck");
+
+        // Use the model to block
+        await BlockModel.blockUser(userId, targetId);
+
+        // Also remove any existing connections logic?
+        // Ideally blocking should unfollow/unconnect. 
+        // Let's do that for consistency.
+        await pool.query(
+            `DELETE FROM followers WHERE(follower_id = $1 AND following_id = $2) OR(follower_id = $2 AND following_id = $1)`,
+            [userId, targetId]
+        );
+        await pool.query(
+            `DELETE FROM connections WHERE(user_id = $1 AND connected_user_id = $2) OR(user_id = $2 AND connected_user_id = $1)`,
+            [userId, targetId]
+        );
+        // Also delete pending requests
+        await pool.query(
+            `DELETE FROM connection_requests WHERE(sender_id = $1 AND receiver_id = $2) OR(sender_id = $2 AND receiver_id = $1)`,
+            [userId, targetId]
+        );
+
+        res.json({ message: "User blocked successfully" });
+    } catch (err) {
+        console.error("Block user error:", err);
+        res.status(500).json({ message: "Internal server error" });
+    }
+};
+
+exports.unblockUser = async (req, res) => {
+    const userId = req.user.sub;
+    const targetId = req.params.id;
+
+    try {
+        const BlockModel = require("../models/block.model");
+        await BlockModel.unblockUser(userId, targetId);
+        res.json({ message: "User unblocked successfully" });
+    } catch (err) {
+        console.error("Unblock user error:", err);
+        res.status(500).json({ message: "Internal server error" });
+    }
+};
+
+exports.getBlockedUsers = async (req, res) => {
+    const userId = req.user.sub;
+    try {
+        const BlockModel = require("../models/block.model");
+        // Get list of users *I* have blocked
+        const blockedUsers = await BlockModel.getBlockedUsersDetails(userId);
+        res.json(blockedUsers);
+    } catch (err) {
+        console.error("Get blocked users error:", err);
+        res.status(500).json({ message: "Internal server error" });
     }
 };

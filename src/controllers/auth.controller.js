@@ -503,7 +503,13 @@ exports.login = async (req, res) => {
     );
 
     /* ---------------------------------------------------------
-       7️⃣ Respond
+       7️⃣ Populate Block Cache (Async)
+    --------------------------------------------------------- */
+    const BlockModel = require("../models/block.model");
+    BlockModel.cacheBlocks(user.user_id).catch(e => console.error("Block cache warm-up failed", e));
+
+    /* ---------------------------------------------------------
+       8️⃣ Respond
     --------------------------------------------------------- */
     return res.status(200).json({
       accessToken,

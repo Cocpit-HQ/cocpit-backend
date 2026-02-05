@@ -45,6 +45,15 @@ exports.searchUsers = async (req, res) => {
       paramIndex++;
     }
 
+    // Exclude blocked users (both ways)
+    queryText += ` 
+      AND NOT EXISTS (
+        SELECT 1 FROM blocks b 
+        WHERE (b.blocker_id = $1 AND b.blocked_id = u.user_id)
+           OR (b.blocker_id = u.user_id AND b.blocked_id = $1)
+      )
+    `;
+
     // Order by similarity (closest match first)
     // Prioritize account_name exact matches, then similarity
     queryText += `
@@ -84,6 +93,11 @@ exports.getUserProfile = async (req, res) => {
 
   let targetUserId = id;
 
+  // Import block check util if not already imported (it's not)
+  const { checkBlockStatus } = require("../utils/blockCheck");
+
+  // ... existing code ...
+
   if (!uuidRegex.test(id)) {
     // If not a UUID, try to resolve as account_name
     try {
@@ -100,6 +114,16 @@ exports.getUserProfile = async (req, res) => {
       return res.status(500).json({ message: "Internal server error during handle resolution" });
     }
   }
+
+  // --- Block Check Implementation ---
+  if (targetUserId !== currentUserId) {
+    const isBlocked = await checkBlockStatus(currentUserId, targetUserId);
+    if (isBlocked) {
+      return res.status(404).json({ message: "User not found" });
+    }
+  }
+  // ----------------------------------
+
 
   try {
     // --- View Counting Logic ---
@@ -248,6 +272,18 @@ exports.getPublicProfilePosts = async (req, res) => {
     }
   }
 
+  // --- Block Check Implementation ---
+  const currentUserId = req.user.sub;
+  if (targetUserId !== currentUserId) {
+    const { checkBlockStatus } = require("../utils/blockCheck"); // Ensure import scope
+    const isBlocked = await checkBlockStatus(currentUserId, targetUserId);
+    if (isBlocked) {
+      return res.status(404).json({ message: "User not found" });
+    }
+  }
+  // ----------------------------------
+
+
   try {
     const params = [targetUserId];
     let idx = 2;
@@ -273,6 +309,21 @@ exports.getPublicProfilePosts = async (req, res) => {
 
     // ✅ LIMIT
     params.push(limit);
+
+    // ✅ Strict Block Logic for Shared Posts (dependant on userParamIdx which is derived from params.length + 1)
+    // We can't interpolate userParamIdx here because it's calculated afterwards.
+    // BUT, we know userParamIdx will be the LAST parameter pushed (req.user.sub).
+    // So usually it is params.length + 1 (after limit).
+    // Let's use a placeholder or interpolation.
+    // Actually, userParamIdx is calculated at line 313.
+    // Accessing it inside whereClause string is fine because whereClause is interpolated into query string at line 435.
+    // So we just need to ensure we use the variable `${userParamIdx}` in the string literal, but `userParamIdx` isn't defined yet!
+    // Ah, wait. `whereClause` is a string accumulating parts.
+    // If I add it *before* `userParamIdx` is defined, I can't use `userParamIdx`.
+    // OPTION: Add it to the query string *literally* at line 436, using `${userParamIdx}` which IS defined there.
+
+    // Changing approach: I will modify the query string directly at line 437.
+
 
     const userParamIdx = params.length + 1; // Index for current user (will be pushed later)
 
@@ -398,6 +449,16 @@ exports.getPublicProfilePosts = async (req, res) => {
 
       ${whereClause}
       
+      -- Strict Block Logic: Exclude reposts if original author is blocked
+      AND (
+          p.shared_post_id IS NULL 
+          OR NOT EXISTS (
+              SELECT 1 FROM blocks b 
+              WHERE (b.blocker_id = $${userParamIdx} AND b.blocked_id = sp.author_id)
+                 OR (b.blocker_id = sp.author_id AND b.blocked_id = $${userParamIdx})
+          )
+      )
+
       -- Privacy Escalation: Hide reposts if original post's privacy tightened
       AND (
           p.shared_post_id IS NULL 

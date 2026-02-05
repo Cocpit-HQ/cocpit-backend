@@ -494,4 +494,13 @@ CREATE TABLE group_invitations (
   UNIQUE(conversation_id, invitee_id)
 );
 
+-- 5/02/2026 Migration: Create blocks table
+CREATE TABLE IF NOT EXISTS blocks (
+    blocker_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
+    blocked_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
+    created_at TIMESTAMPTZ DEFAULT now(),
+    PRIMARY KEY (blocker_id, blocked_id),
+    CONSTRAINT no_self_block CHECK (blocker_id <> blocked_id)
+);
 
+CREATE INDEX IF NOT EXISTS idx_blocks_blocked_id ON blocks(blocked_id);

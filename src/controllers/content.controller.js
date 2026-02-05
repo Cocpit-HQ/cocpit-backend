@@ -1,6 +1,7 @@
 const { ur, vi } = require("zod/locales");
 const pool = require("../db/pool");
 const socketService = require("../services/socket.service");
+const { checkBlockStatus } = require("../utils/blockCheck");
 
 // --- Feed / Posts ---
 exports.getPublicFeed = async (req, res) => {
@@ -154,7 +155,24 @@ exports.getPublicFeed = async (req, res) => {
         LEFT JOIN post_categories sp_cat ON sp.category_id = sp_cat.category_id
 
         WHERE p.visibility = 'public'
-        -- Privacy Escalation: Hide reposts if original post's privacy tightened
+        AND NOT EXISTS (
+            SELECT 1 FROM blocks b 
+            WHERE (b.blocker_id = $${userParamIdx} AND b.blocked_id = p.author_id)
+               OR (b.blocker_id = p.author_id AND b.blocked_id = $${userParamIdx})
+        )
+        -- STRICT REPOST BLOCKING: Exclude repost if original author is blocked
+        AND (
+            p.shared_post_id IS NULL 
+            OR NOT EXISTS (
+                SELECT 1 FROM blocks b 
+                WHERE (b.blocker_id = $${userParamIdx} AND b.blocked_id = sp.author_id)
+                   OR (b.blocker_id = sp.author_id AND b.blocked_id = $${userParamIdx})
+            )
+        )
+
+
+
+      -- Privacy Escalation: Hide reposts if original post's privacy tightened
         AND (
             p.shared_post_id IS NULL 
             OR sp.post_id IS NULL -- Still show if deleted (but with 'deleted' reason above)
@@ -230,6 +248,18 @@ exports.getMyPosts = async (req, res) => {
             params.push(cursorCreatedAt, cursorPostId);
             idx += 2;
         }
+
+        // ✅ Strict Block Logic for Shared Posts
+        whereClause += `
+        AND (
+            p.shared_post_id IS NULL 
+            OR NOT EXISTS (
+                SELECT 1 FROM blocks b 
+                WHERE (b.blocker_id = $1 AND b.blocked_id = sp.author_id)
+                   OR (b.blocker_id = sp.author_id AND b.blocked_id = $1)
+            )
+        )
+        `;
 
         // ✅ LIMIT
         params.push(limit);
@@ -867,6 +897,15 @@ WHERE p.post_id = $1;
             return res.status(404).json({ message: "Post not found" });
         }
 
+        // STRICT BLOCK CHECK
+        const post = result.rows[0];
+        if (userId && post.author_id !== userId) {
+            const isBlocked = await checkBlockStatus(userId, post.author_id);
+            if (isBlocked) {
+                return res.status(404).json({ message: "Post not found" });
+            }
+        }
+
         res.status(200).json(result.rows[0]);
     } catch (err) {
         console.error("Get post error:", err);
@@ -1246,6 +1285,16 @@ exports.addComment = async (req, res) => {
             return res.status(404).json({ message: "Post not found" })
         }
 
+        const postAuthorId = post.rows[0].author_id;
+
+        // Block Check: Post Author
+        const isBlockedByPostAuthor = await checkBlockStatus(postAuthorId, userId);
+        const hasBlockedPostAuthor = await checkBlockStatus(userId, postAuthorId);
+
+        if (isBlockedByPostAuthor || hasBlockedPostAuthor) {
+            return res.status(403).json({ message: "You cannot comment on this post" });
+        }
+
         let insertParentId = parent_id || null;
 
         // Validate parent_id if provided
@@ -1263,6 +1312,18 @@ exports.addComment = async (req, res) => {
                 return res.status(400).json({ message: "Parent comment belongs to different post" });
             }
 
+            // Block Check: Parent Comment Author
+            const parentAuthorRes = await pool.query(`SELECT author_id FROM post_comments WHERE comment_id = $1`, [parent_id]);
+            if (parentAuthorRes.rowCount > 0) {
+                const parentAuthorId = parentAuthorRes.rows[0].author_id;
+                const isBlockedByParentHandler = await checkBlockStatus(parentAuthorId, userId);
+                const hasBlockedParentHandler = await checkBlockStatus(userId, parentAuthorId);
+
+                if (isBlockedByParentHandler || hasBlockedParentHandler) {
+                    return res.status(403).json({ message: "You cannot reply to this comment" });
+                }
+            }
+
             // Always reply to the root comment of a thread (Instagram-style)
             insertParentId = parentComment.rows[0].parent_id || parent_id;
         }
@@ -1278,7 +1339,7 @@ exports.addComment = async (req, res) => {
 
         // --- NOTIFICATIONS & SOCKETS ---
 
-        const postAuthorId = post.rows[0].author_id;
+        // const postAuthorId = post.rows[0].author_id; // Already declared above
 
         // Fetch current user details for notification text
         const actorRes = await pool.query(`SELECT full_name, avatar_url FROM users WHERE user_id = $1`, [userId]);
@@ -1344,20 +1405,20 @@ exports.addComment = async (req, res) => {
         }
 
         if (mentionedUsernames.length > 0) {
-            // Find user IDs for these usernames
-            // Assuming 'full_name' or 'username' column? Frontend uses 'name'.
-            // Let's assume 'full_name' (or 'username' if distinct). 
-            // NOTE: Matching exact name is tricky if spaces allowed.
-            // Frontend regex was /@([^\s]+)/.
-
             for (const handle of mentionedUsernames) {
-                // Resolve handle (account_name) to user_id
                 const userRes = await pool.query(`SELECT user_id FROM users WHERE LOWER(account_name) = LOWER($1)`, [handle]);
                 if (userRes.rowCount > 0) {
                     const mentionedUserId = userRes.rows[0].user_id;
 
                     // Don't notify if self or post owner
                     if (mentionedUserId !== userId && mentionedUserId !== postAuthorId) {
+                        const isBlockedByMentioned = await checkBlockStatus(mentionedUserId, userId);
+                        const hasBlockedMentioned = await checkBlockStatus(userId, mentionedUserId);
+
+                        if (isBlockedByMentioned || hasBlockedMentioned) {
+                            continue;
+                        }
+
                         const notifText = `${actor.full_name} mentioned you in a comment`;
                         await pool.query(
                             `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata) 
@@ -1633,6 +1694,11 @@ exports.getComments = async (req, res) => {
       FROM post_comments c
       JOIN users u ON c.author_id = u.user_id
       WHERE c.post_id = $1
+      AND NOT EXISTS (
+        SELECT 1 FROM blocks b 
+        WHERE (b.blocker_id = $2 AND b.blocked_id = c.author_id) 
+           OR (b.blocker_id = c.author_id AND b.blocked_id = $2)
+      )
       ORDER BY 
         c.is_pinned DESC NULLS LAST,
         c.pinned_at DESC NULLS LAST,
@@ -1779,6 +1845,11 @@ exports.getGroupedStories = async (req, res) => {
             LEFT JOIN users sp_u ON sp.author_id = sp_u.user_id
             LEFT JOIN post_categories sp_cat ON sp.category_id = sp_cat.category_id
             WHERE s.expires_at > now()
+            AND NOT EXISTS (
+                SELECT 1 FROM blocks b 
+                WHERE (b.blocker_id = $1 AND b.blocked_id = s.author_id)
+                   OR (b.blocker_id = s.author_id AND b.blocked_id = $1)
+            )
             ORDER BY s.created_at ASC
             `,
             [userId]
@@ -2093,8 +2164,13 @@ exports.getStoryDetailsById = async (req, res) => {
             -- Left Join ensures we still get the viewer even if there is no reaction
             LEFT JOIN story_reactions sr ON sv.story_id = sr.story_id AND sv.viewer_id = sr.user_id
             WHERE sv.story_id = $1
+            AND NOT EXISTS (
+                SELECT 1 FROM blocks b 
+                WHERE (b.blocker_id = $2 AND b.blocked_id = u.user_id) -- Viewer is blocked by me (story author)
+                   OR (b.blocker_id = u.user_id AND b.blocked_id = $2) -- Viewer blocked me
+            )
             ORDER BY sv.viewed_at DESC
-        `, [storyId]);
+        `, [storyId, userId]);
 
 
         if (result.rowCount === 0) {
@@ -2203,6 +2279,14 @@ exports.addStoryComment = async (req, res) => {
             return res.status(404).json({ message: "Story not found" })
         }
 
+        const storyAuthorId = story.rows[0].author_id;
+        const isBlockedByAuthor = await checkBlockStatus(storyAuthorId, userId);
+        const hasBlockedAuthor = await checkBlockStatus(userId, storyAuthorId);
+
+        if (isBlockedByAuthor || hasBlockedAuthor) {
+            return res.status(403).json({ message: "You cannot reply to this story" });
+        }
+
         const result = await pool.query(
             `INSERT INTO story_comments (story_id, author_id, content)
              VALUES ($1, $2, $3)
@@ -2249,6 +2333,7 @@ exports.addStoryComment = async (req, res) => {
 
 exports.getStoryComments = async (req, res) => {
     const storyId = req.params.id;
+    const userId = req.user ? req.user.sub : null;
 
     if (!storyId) {
         return res.status(400).json({ message: "storyId is required" })
@@ -2267,9 +2352,14 @@ exports.getStoryComments = async (req, res) => {
             FROM story_comments c
             JOIN users u ON c.author_id = u.user_id
             WHERE c.story_id = $1
+            AND NOT EXISTS (
+                SELECT 1 FROM blocks b 
+                WHERE (b.blocker_id = $2 AND b.blocked_id = c.author_id) 
+                   OR (b.blocker_id = c.author_id AND b.blocked_id = $2)
+            )
             ORDER BY c.created_at asc
             `,
-            [storyId]
+            [storyId, userId]
         );
         return res.status(200).json(comments.rows);
     } catch (err) {

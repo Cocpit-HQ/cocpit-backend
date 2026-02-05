@@ -1,4 +1,5 @@
 const pool = require("../db/pool");
+const { checkBlockStatus } = require("../utils/blockCheck");
 
 exports.getProfile = async (req, res) => {
   let userId = req.params.id === "me" ? req.user.sub : req.params.id;
@@ -8,6 +9,14 @@ exports.getProfile = async (req, res) => {
   // If not "me" and not valid UUID, return 400 or 404 immediately (since we reverted username support)
   if (userId !== "me" && !uuidRegex.test(userId)) {
     return res.status(400).json({ message: "Invalid user ID" });
+  }
+
+  // Block Code Check
+  if (req.user && userId !== req.user.sub) {
+    const isBlocked = await checkBlockStatus(req.user.sub, userId);
+    if (isBlocked) {
+      return res.status(404).json({ message: "User not found" });
+    }
   }
 
   try {
@@ -79,14 +88,7 @@ exports.getProfile = async (req, res) => {
       : null;
 
 
-    // Check is_following if user is authenticated
     let isFollowing = false;
-    // We can't access req.user directly here reliably without knowing middleware stack, 
-    // but usually in this project req.user is set if auth middleware ran.
-    // However, getProfile might be public. 
-    // Let's check if there is an auth header or if req.user is populated.
-    // Assuming the route might be protected or semi-protected. 
-    // If req.user exists and it's not "me" (already handled above), check db.
 
     if (req.user && req.user.sub && req.user.sub !== u.user_id) {
       const followCheck = await pool.query(
@@ -113,9 +115,8 @@ exports.getProfile = async (req, res) => {
         availability: u.availability,
         work_preference: u.work_preference,
         latest_education: latestEducation,
-        is_following: isFollowing, // ✅ Added
+        is_following: isFollowing, 
       },
-      //is_connected  want to add ...
       experiences: experiences.rows,
       educations: educations.rows,
       skills: skills.rows,
@@ -227,7 +228,7 @@ exports.getMyProfile = async (req, res) => {
   req.params.id = 'me';
   return exports.getProfile(req, res);
 }
-// Upload or replace profile picture
+
 exports.uploadOrReplaceAvatar = async (req, res) => {
   try {
     const userId = req.user.sub;
@@ -252,7 +253,6 @@ exports.uploadOrReplaceAvatar = async (req, res) => {
   }
 };
 
-// Get profile picture
 exports.getAvatar = async (req, res) => {
   try {
     const userId = req.user.sub;
@@ -274,12 +274,9 @@ exports.getAvatar = async (req, res) => {
   }
 };
 
-// Delete profile picture
 exports.deleteAvatar = async (req, res) => {
   try {
     const userId = req.user.sub;
-
-    // Optional: delete from Cloudinary here if needed
 
     await pool.query(
       "UPDATE users SET avatar_url = NULL WHERE user_id = $1",
@@ -293,7 +290,6 @@ exports.deleteAvatar = async (req, res) => {
   }
 };
 
-// Upload or replace cover photo
 exports.uploadOrReplaceCoverPhoto = async (req, res) => {
   try {
     const userId = req.user.sub;
@@ -317,7 +313,6 @@ exports.uploadOrReplaceCoverPhoto = async (req, res) => {
   }
 };
 
-// Delete cover photo
 exports.deleteCoverPhoto = async (req, res) => {
   try {
     const userId = req.user.sub;
@@ -398,13 +393,10 @@ exports.uploadOrReplaceResume = async (req, res) => {
   }
 
   try {
-    // Delete old resume if it exists
     await pool.query(
       `DELETE FROM user_resumes WHERE user_id = $1`,
       [userId]
     );
-
-    // Insert new resume
     const result = await pool.query(
       `
       INSERT INTO user_resumes
