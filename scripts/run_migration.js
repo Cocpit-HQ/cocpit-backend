@@ -1,24 +1,28 @@
 require('dotenv').config();
+const pool = require("../src/db/pool");
 const fs = require('fs');
 const path = require('path');
-const pool = require('../src/db/pool');
 
 async function runMigration() {
-    try {
-        const sqlPath = path.join(__dirname, '../migrations/002_add_last_message.sql');
-        const sql = fs.readFileSync(sqlPath, 'utf8');
+    console.log("🔧 Running migration: fix_shared_post_constraint.sql");
 
-        console.log('Running migration...');
-        const result = await pool.query(sql);
-        console.log('Migration successful:', result);
+    const client = await pool.connect();
+    try {
+        const migrationSQL = fs.readFileSync(
+            path.join(__dirname, '../migrations/fix_shared_post_constraint.sql'),
+            'utf8'
+        );
+
+        await client.query(migrationSQL);
+        console.log("✅ Migration completed successfully");
+        console.log("   - Dropped old messages_shared_post_id_fkey constraint");
+        console.log("   - Added new constraint with ON DELETE SET NULL");
     } catch (err) {
-        if (err.code === '42701') { // duplicate_column
-            console.log('Columns already exist, skipping migration.');
-        } else {
-            console.error('Migration failed:', err);
-        }
+        console.error("❌ Migration failed:", err.message);
+        throw err;
     } finally {
-        pool.end();
+        client.release();
+        process.exit(0);
     }
 }
 

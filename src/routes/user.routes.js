@@ -12,7 +12,10 @@ router.get("/search", userController.searchUsers);
 // Get public profile
 router.get("/:id", userController.getUserProfile);
 
-//Get public profile post
-router.get("/:id/posts",userController.getPublicProfilePosts)
+// Get public profile post
+router.get("/:id/posts", userController.getPublicProfilePosts);
+
+// Delete account
+router.delete("/account", userController.deleteAccount);
 
 module.exports = router;

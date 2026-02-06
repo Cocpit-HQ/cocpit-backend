@@ -505,3 +505,94 @@ exports.getPublicProfilePosts = async (req, res) => {
     res.status(500).json({ message: "Internal server error" });
   }
 };
+
+/**
+ * DELETE /api/users/account
+ * Purpose: Permanent account deletion
+ */
+exports.deleteAccount = async (req, res) => {
+  const userId = req.user.sub;
+  const { password } = req.body;
+
+  if (!password) {
+    return res.status(400).json({ message: "Password is required for account deletion" });
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+
+    // 1. Verify password
+    const userRes = await client.query(
+      "SELECT password_hash FROM users WHERE user_id = $1",
+      [userId]
+    );
+
+    if (userRes.rowCount === 0) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    const { comparePassword } = require("../utils/password");
+    const isValid = await comparePassword(password, userRes.rows[0].password_hash);
+
+    if (!isValid) {
+      await client.query("ROLLBACK");
+      return res.status(401).json({ message: "Invalid password" });
+    }
+
+    // 2. Handle Group Admin Transfer
+    // Find groups where this user is admin
+    const adminGroups = await client.query(
+      "SELECT conversation_id FROM conversations WHERE admin_id = $1 AND is_group = true",
+      [userId]
+    );
+
+    for (const group of adminGroups.rows) {
+      const groupId = group.conversation_id;
+
+      // Find the next eligible admin (oldest member who isn't the current user)
+      const nextAdminRes = await client.query(
+        `SELECT user_id FROM conversation_participants 
+         WHERE conversation_id = $1 AND user_id != $2 AND left_at IS NULL
+         ORDER BY joined_at ASC LIMIT 1`,
+        [groupId, userId]
+      );
+
+      if (nextAdminRes.rowCount > 0) {
+        const nextAdminId = nextAdminRes.rows[0].user_id;
+        await client.query(
+          "UPDATE conversations SET admin_id = $1 WHERE conversation_id = $2",
+          [nextAdminId, groupId]
+        );
+      } else {
+        // No other members, set admin to null
+        await client.query(
+          "UPDATE conversations SET admin_id = NULL WHERE conversation_id = $1",
+          [groupId]
+        );
+      }
+    }
+
+    // 3. Delete user record (Cascades handled by DB)
+    await client.query("DELETE FROM users WHERE user_id = $1", [userId]);
+
+    await client.query("COMMIT");
+
+    // 4. Clear cookies
+    res.clearCookie("refreshToken", {
+      httpOnly: true,
+      secure: true,
+      sameSite: "None",
+      path: "/",
+    });
+
+    return res.status(200).json({ message: "Account deleted successfully" });
+  } catch (err) {
+    if (client) await client.query("ROLLBACK");
+    console.error("Account deletion error:", err);
+    return res.status(500).json({ message: "Internal server error during account deletion" });
+  } finally {
+    if (client) client.release();
+  }
+};
