@@ -298,11 +298,14 @@ CREATE TABLE messages (
   sender_id UUID REFERENCES users(user_id) ON DELETE SET NULL,
   --  receiver_id UUID REFERENCES users(user_id),
   text_content TEXT,
+  shared_post_id UUID, -- Reference to shared post (snapshot preserved even if post deleted)
+  message_type TEXT DEFAULT 'text', -- 'text', 'system', etc.
   --story_id UUID REFERENCES stories(story_id),
   action_type TEXT, -- 'add', 'leave', 'remove', 'create'
   target_id UUID REFERENCES users(user_id) ON DELETE SET NULL, -- Subject of the action
   created_at TIMESTAMPTZ DEFAULT now(),
-  read_at TIMESTAMPTZ -- NULL if unread
+  read_at TIMESTAMPTZ, -- NULL if unread
+  CONSTRAINT messages_shared_post_id_fkey FOREIGN KEY (shared_post_id) REFERENCES posts(post_id) ON DELETE SET NULL
 );
 
 CREATE TABLE notifications (
