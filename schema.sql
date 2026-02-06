@@ -133,6 +133,7 @@ CREATE TABLE posts (
   title TEXT,
   content TEXT,
   visibility visibility_type DEFAULT 'public',
+  shared_post_id UUID REFERENCES posts(post_id) ON DELETE SET NULL,
   created_at TIMESTAMPTZ DEFAULT now(),
   updated_at TIMESTAMPTZ DEFAULT now(),
   post_type  AS ENUM ('image', 'video', 'article', 'poll') NOT NULL
@@ -176,6 +177,14 @@ CREATE TABLE post_likes (
   UNIQUE(post_id, user_id)
 );
 
+CREATE TABLE post_shares (
+  share_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  post_id UUID REFERENCES posts(post_id) ON DELETE CASCADE,
+  user_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+
 CREATE TABLE post_comments (
   comment_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   post_id UUID REFERENCES posts(post_id) ON DELETE CASCADE,
@@ -213,11 +222,15 @@ CREATE TABLE post_media (
 CREATE TABLE stories (
   story_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   author_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
-  title TEXT ,
+  title TEXT,
   media_url TEXT NOT NULL,
   media_type TEXT CHECK (media_type IN ('image', 'video')) DEFAULT 'image',
   description TEXT,
-expires_at TIMESTAMPTZ NOT NULL,, -- usually created_at + 24h
+  media_status TEXT DEFAULT 'ready',
+  cld_public_id TEXT,
+  shared_post_id UUID REFERENCES posts(post_id) ON DELETE SET NULL,
+  story_metadata JSONB DEFAULT '{}'::jsonb,
+  expires_at TIMESTAMPTZ NOT NULL, -- usually created_at + 24h
   created_at TIMESTAMPTZ DEFAULT now()
 );
 
