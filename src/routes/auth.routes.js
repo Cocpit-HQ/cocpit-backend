@@ -1,6 +1,7 @@
 const express = require("express");
 const router = express.Router();
 const authController = require("../controllers/auth.controller");
+const passwordResetController = require("../controllers/passwordReset.controller");
 const { requireAuth, requireActiveSession } = require("../middlewares/auth.middleware");
 const { requireRefreshTokenAuth } = require("../middlewares/auth.middleware");
 const { requireRoles } = require("../middlewares/role.middleware");
@@ -11,6 +12,7 @@ const {
   registerSchema,
   loginSchema,
   refreshTokenSchema,
+  resetPasswordSchema,
 } = require("../schemas/auth.schema");
 
 // Rate limiters
@@ -18,6 +20,12 @@ const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
   max: 15, // 5 attempts per window for sensitive auth operations
   message: "Too many login/register attempts, please try again later."
+});
+
+const passwordResetLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 5, // 5 attempts per window for password reset
+  message: "Too many password reset attempts, please try again later."
 });
 
 router.post("/register", authLimiter, validate(registerSchema), authController.register);
@@ -31,6 +39,9 @@ router.delete("/sessions/:sessionId", requireAuth, requireActiveSession, authCon
 
 
 router.post("/logout", authController.logout);
+
+// Password reset
+router.post("/reset-password", passwordResetLimiter, validate(resetPasswordSchema), passwordResetController.resetPassword);
 
 router.get("/me", requireAuth, authController.getMe);
 
