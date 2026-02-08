@@ -1099,11 +1099,17 @@ exports.sendMessage = async (req, res) => {
 };
 exports.markConversationRead = async (req, res) => {
     const userId = req.user.sub;
-    const { conversationId } = req.params;
+    const {
+        conversationId
+    } = req.params;
+
+    const client = await pool.connect();
 
     try {
+        await client.query("BEGIN");
+
         // 1. Update the participant's last_read_at timestamp
-        const result = await pool.query(
+        const result = await client.query(
             `
             UPDATE conversation_participants
             SET last_read_at = NOW()
@@ -1113,36 +1119,129 @@ exports.markConversationRead = async (req, res) => {
             [conversationId, userId]
         );
 
-        // 2. We can also optionally update the old 'messages.read_at' for backward compatibility or 1-on-1s, 
-        // but for unread count logic we will switch to using last_read_at.
-        // Keeping this update might be useful if other parts of the system rely on 'read_at' 
-        // effectively meaning "at least one person read it".
-        await pool.query(
+        // 2. Identify unread messages to mark as read
+        const unreadMessagesMsgIds = await client.query(
             `
-            UPDATE messages
-            SET read_at = NOW()
+            SELECT message_id FROM messages
             WHERE conversation_id = $1
-                AND sender_id != $2
-                AND read_at IS NULL
+            AND sender_id != $2
+            AND NOT EXISTS (
+                SELECT 1 FROM message_reads 
+                WHERE message_reads.message_id = messages.message_id 
+                AND message_reads.user_id = $2
+            )
             `,
             [conversationId, userId]
         );
 
+        const unreadMsgIds = unreadMessagesMsgIds.rows.map(r => r.message_id);
 
-        // 🔔 Emit read receipt (Robustness: Send to room)
-        socketService.notifyConversation(conversationId, "messagesRead", {
-            conversationId,
-            readerId: userId,
-            readAt: result.rows[0]?.last_read_at || new Date(),
-        });
+        if (unreadMsgIds.length > 0) {
+            // 3. Insert into message_reads
+            // Construct bulk insert values
+            const values = unreadMsgIds.map((msgId, idx) => `($${idx * 2 + 1}, $${idx * 2 + 2})`).join(', ');
+            const params = [];
+            unreadMsgIds.forEach(msgId => {
+                params.push(msgId, userId);
+            });
+
+            await client.query(
+                `INSERT INTO message_reads (message_id, user_id) VALUES ${values} ON CONFLICT DO NOTHING`,
+                params
+            );
+
+            // 4. Update 'messages.read_at' for backward compatibility (optional but good for 1-on-1 default logic)
+            // Mark messages as read if they weren't already
+            await client.query(
+                `
+                UPDATE messages
+                SET read_at = NOW()
+                WHERE message_id = ANY($1)
+                AND read_at IS NULL
+                `,
+                [unreadMsgIds]
+            );
+        }
+
+        await client.query("COMMIT");
+
+        const readAt = result.rows[0]?.last_read_at || new Date();
+
+        // 5. Emit read receipt via Socket
+        if (unreadMsgIds.length > 0) {
+            socketService.notifyConversation(conversationId, "messages_seen", {
+                conversationId,
+                readerId: userId, // Who read the messages
+                messageIds: unreadMsgIds, // Which messages were read
+                readAt: readAt,
+            });
+        }
 
         res.json({
             message: "Conversation marked as read",
-            readAt: result.rows[0]?.last_read_at
+            readAt: readAt,
+            readCount: unreadMsgIds.length
         });
+
     } catch (err) {
-        console.error(err);
-        res.status(500).json({ message: "Internal server error" });
+        await client.query("ROLLBACK");
+        console.error("Mark conversation read error:", err);
+        res.status(500).json({
+            message: "Internal server error"
+        });
+    } finally {
+        client.release();
+    }
+};
+
+exports.getMessageSeenBy = async (req, res) => {
+    const {
+        messageId
+    } = req.params;
+    const userId = req.user.sub;
+
+    try {
+        // Validation: Verify user is part of the conversation this message belongs to
+        // (Optional but recommended for security)
+        const accessCheck = await pool.query(
+            `
+            SELECT 1 
+            FROM messages m
+            JOIN conversation_participants cp ON m.conversation_id = cp.conversation_id
+            WHERE m.message_id = $1 AND cp.user_id = $2
+            `,
+            [messageId, userId]
+        );
+
+        if (accessCheck.rowCount === 0) {
+            return res.status(403).json({
+                message: "Access denied or message not found"
+            });
+        }
+
+        // Fetch users who have read the message
+        const result = await pool.query(
+            `
+            SELECT 
+                u.user_id,
+                u.full_name,
+                u.avatar_url,
+                mr.read_at
+            FROM message_reads mr
+            JOIN users u ON mr.user_id = u.user_id
+            WHERE mr.message_id = $1
+            ORDER BY mr.read_at ASC
+            `,
+            [messageId]
+        );
+
+        res.json(result.rows);
+
+    } catch (err) {
+        console.error("Get message seen by error:", err);
+        res.status(500).json({
+            message: "Internal server error"
+        });
     }
 };
 
@@ -1150,9 +1249,31 @@ exports.markConversationRead = async (req, res) => {
 exports.getMessages = async (req, res) => {
     const userId = req.user.sub;
     const conversation_id = req.params.id;
+    const limit = parseInt(req.query.limit) || 50;
+    let before = req.query.before || null;
 
     try {
-        // 1. Check participation AND get joined_at + is_group
+        // Robust UUID check (standard 8-4-4-4-12 hex with hyphens)
+        const isUUID = (str) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(str);
+
+        // 1. Resolve Pagination Cursor
+        // If 'before' is a UUID (messageId), fetch its created_at timestamp.
+        // If it's already a timestamp string, use it as is.
+        if (before && isUUID(before)) {
+            const cursorRes = await pool.query(
+                'SELECT created_at FROM messages WHERE message_id = $1',
+                [before]
+            );
+
+            if (cursorRes.rowCount > 0) {
+                before = cursorRes.rows[0].created_at; // Use the timestamp
+            } else {
+                // Message not found (deleted?), fallback to null to avoid crash
+                before = null;
+            }
+        }
+
+        // 2. Check Participation & Get Group Info
         const partCheck = await pool.query(
             `SELECT cp.joined_at, c.is_group 
              FROM conversation_participants cp
@@ -1166,7 +1287,10 @@ exports.getMessages = async (req, res) => {
 
         const { joined_at, is_group } = partCheck.rows[0];
 
-        // 2. Fetch messages (Filtered by join time if group)
+        // 3. Fetch Messages
+        // We use parameterized queries without forced casting (::timestamp) to let pg-node handle types.
+        // 'before' is now guaranteed to be a TIMESTAMP (Date object/string) or NULL.
+        // 'joined_at' is a Date object from the previous query.
         const result = await pool.query(
             `SELECT 
                 m.message_id,
@@ -1174,9 +1298,13 @@ exports.getMessages = async (req, res) => {
                 m.sender_id,
                 m.created_at,
                 m.read_at,
+                m.edited_at,
+                m.is_edited,
                 m.message_type,
                 m.action_type,
                 m.target_id,
+                m.is_deleted_for_everyone,
+                m.deleted_at,
                 u.full_name as sender_name,
                 u.avatar_url as sender_avatar,
                 CASE 
@@ -1203,19 +1331,41 @@ exports.getMessages = async (req, res) => {
                             'media', (SELECT json_agg(json_build_object('url', url, 'media_type', media_type)) FROM post_media WHERE post_id = sp.post_id)
                         )
                     ELSE NULL 
-                END AS shared_post
+                END AS shared_post,
+                EXISTS(SELECT 1 FROM message_delete md WHERE md.message_id = m.message_id AND md.user_id = $4) as is_deleted_for_me
              FROM messages m
              LEFT JOIN users u ON m.sender_id = u.user_id
              LEFT JOIN posts sp ON m.shared_post_id = sp.post_id
              LEFT JOIN users au ON sp.author_id = au.user_id
              WHERE m.conversation_id = $1 
-             AND ($2::boolean = false OR m.created_at >= $3)
-             ORDER BY m.created_at ASC`,
-            [conversation_id, is_group, joined_at, userId]
+             -- Filter messages before user joined (if group), with generous buffer
+             AND ($2::boolean = false OR m.created_at >= $3::timestamp - INTERVAL '10 year')
+             -- Pagination: Fetch messages older than 'before' cursor
+             AND ($5::timestamp IS NULL OR m.created_at < $5::timestamp)
+             ORDER BY m.created_at DESC
+             LIMIT $6`,
+            [conversation_id, is_group, joined_at, userId, before, limit]
         );
 
-        res.json(result.rows);
-    } catch (err) {
+        // Process messages: Filter "delete for me" and mask "delete for everyone"
+        const comments = result.rows
+            .filter(msg => !msg.is_deleted_for_me)
+            .map(msg => {
+                if (msg.is_deleted_for_everyone) {
+                    return {
+                        ...msg,
+                        text_content: "🚫 This message was deleted",
+                        shared_post: null, // Clear shared post if deleted
+                        is_deleted: true,
+                        message_type: 'text'
+                    };
+                }
+                return msg;
+            })
+            .reverse();
+
+        res.json(comments);
+    } catch (err) { // added catch block close logic check 
         console.error("Get messages error:", err);
         res.status(500).json({ message: "Internal server error" });
     }
@@ -1247,6 +1397,57 @@ exports.deleteMessage = async (req, res) => {
         res.status(500).json({ message: "Internal server error" });
     }
 };
+
+// Edit a message sent by logged-in user
+exports.editMessage = async (req, res) => {
+    const userId = req.user.sub;
+    const message_id = req.params.messageId;
+    const { text_content } = req.body;
+
+    if (!text_content) {
+        return res.status(400).json({ message: "Content is required" });
+    }
+
+    try {
+        const result = await pool.query(
+            `UPDATE messages 
+             SET text_content = $1, 
+                 edited_at = NOW(), 
+                 is_edited = TRUE 
+             WHERE message_id = $2 AND sender_id = $3 
+             RETURNING *`,
+            [text_content, message_id, userId]
+        );
+
+        if (result.rowCount === 0)
+            return res.status(404).json({ message: "Message not found or unauthorized" });
+
+        const updatedMessage = result.rows[0];
+
+        // Get sender details for socket event (optional but good for consistency)
+        const userRes = await pool.query(`SELECT full_name, avatar_url FROM users WHERE user_id = $1`, [userId]);
+        const sender = userRes.rows[0];
+
+        const messageData = {
+            ...updatedMessage,
+            sender_name: sender.full_name,
+            sender_avatar: sender.avatar_url
+        };
+
+        // Notify all participants
+        const { conversation_id } = updatedMessage;
+
+        socketService.notifyConversation(conversation_id, "new_message", messageData);
+
+        res.json({ message: "Message edited successfully", data: messageData });
+    } catch (err) {
+        console.error("Edit message error:", err);
+        res.status(500).json({ message: "Internal server error" });
+    }
+};
+
+
+
 
 // Get all notifications for logged-in user
 exports.getNotifications = async (req, res) => {
@@ -1648,3 +1849,4 @@ exports.getBlockedUsers = async (req, res) => {
         res.status(500).json({ message: "Internal server error" });
     }
 };
+

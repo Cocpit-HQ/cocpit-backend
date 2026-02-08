@@ -51,9 +51,13 @@ router.delete("/conversations/:id", requireAuth, socialController.deleteConversa
 router.post("/messages", requireAuth, socialController.sendMessage);
 router.post("/social/share", requireAuth, socialController.sharePostToConversations); // Batch Share
 router.get("/conversations/:id/messages", requireAuth, socialController.getMessages);
+router.delete("/messages/:messageId", requireAuth, require("../controllers/message.controller").deleteMessage);
+
 router.delete("/messages/:id", requireAuth, socialController.deleteMessage);
-router.patch("/conversations/:conversationId/read", requireAuth, socialController.markConversationRead
-);
+router.patch("/messages/:messageId/edit", requireAuth, socialController.editMessage);
+
+router.patch("/conversations/:conversationId/read", requireAuth, socialController.markConversationRead);
+router.get("/messages/:messageId/seen-by", requireAuth, socialController.getMessageSeenBy);
 
 // router.patch("/messages/:id/read", requireAuth, socialController.markMessageRead);
 

@@ -8,7 +8,7 @@ class GroupChatService {
         const group = await GroupChatModel.createGroup({ adminId, name, description, avatarUrl });
 
         // 2. Add Admin as Member
-        await GroupChatModel.addMember({ groupId: group.conversation_id, userId: adminId });
+        await GroupChatModel.addMember({ groupId: group.conversation_id, userId: adminId, role: 'admin' });
 
         // Get admin name for system message
         const adminRes = await pool.query(`SELECT full_name FROM users WHERE user_id = $1`, [adminId]);
@@ -116,6 +116,16 @@ class GroupChatService {
             });
         });
 
+        // Notify Admin of invitation update (to remove from pending)
+        const group = await GroupChatModel.getGroupDetails(invitation.conversation_id);
+        if (group && group.admin_id) {
+            socketService.notifyUser(group.admin_id, 'invitation_update', {
+                groupId: invitation.conversation_id,
+                invitationId,
+                status: 'accepted'
+            });
+        }
+
         return { success: true, groupId: invitation.conversation_id };
     }
 
@@ -125,6 +135,17 @@ class GroupChatService {
         if (invitation.invitee_id !== userId) throw new Error("Unauthorized");
 
         await GroupChatModel.updateInvitationStatus(invitationId, 'rejected');
+
+        // Notify Admin
+        const group = await GroupChatModel.getGroupDetails(invitation.conversation_id);
+        if (group && group.admin_id) {
+            socketService.notifyUser(group.admin_id, 'invitation_update', {
+                groupId: invitation.conversation_id,
+                invitationId,
+                status: 'rejected'
+            });
+        }
+
         return { success: true };
     }
 
@@ -277,8 +298,80 @@ class GroupChatService {
         return message;
     }
 
-    static async getGroupInvitations(groupId) {
+    static async getGroupInvitations(userId, groupId) {
+        // 1. Verify admin
+        const group = await GroupChatModel.getGroupDetails(groupId);
+        if (!group) throw new Error("Group not found");
+
+        // Check if requester is admin (either creator or promoted admin)
+        const members = await GroupChatModel.getGroupMembers(groupId);
+        const member = members.find(m => m.user_id === userId);
+
+        if (!member || member.role !== 'admin') {
+            throw new Error("Only admin can view invitations");
+        }
+
         return await GroupChatModel.getGroupInvitations(groupId);
+    }
+
+    static async promoteToAdmin(adminId, groupId, targetUserId) {
+        // 1. Verify requester is admin
+        const members = await GroupChatModel.getGroupMembers(groupId);
+        const adminMember = members.find(m => m.user_id === adminId);
+
+        if (!adminMember || adminMember.role !== 'admin') {
+            throw new Error("Only admin can promote members");
+        }
+
+        // 2. Verify target is in group
+        const targetMember = members.find(m => m.user_id === targetUserId);
+        if (!targetMember) {
+            throw new Error("User is not in the group");
+        }
+
+        if (targetMember.role === 'admin') {
+            throw new Error("User is already an admin");
+        }
+
+        // 3. Update role
+        await GroupChatModel.updateMemberRole(groupId, targetUserId, 'admin');
+
+        // 4. Notify all members
+        const updatedMembers = members.map(m =>
+            m.user_id === targetUserId ? { ...m, role: 'admin' } : m
+        );
+
+        updatedMembers.forEach(member => {
+            socketService.notifyUser(member.user_id, 'group_role_update', {
+                groupId,
+                userId: targetUserId,
+                role: 'admin'
+            });
+
+            // Send system message
+            socketService.notifyUser(member.user_id, 'new_message', {
+                conversation_id: groupId,
+                sender_id: null,
+                sender_name: 'System',
+                text_content: `${adminMember.full_name} made ${targetMember.full_name} a group admin`,
+                message_type: 'system',
+                created_at: new Date().toISOString(),
+                is_system: true
+            });
+        });
+
+        // Also persist system message to DB?
+        // Ideally yes, but sticking to existing pattern of socket-only or if there is a helper for system messages
+        await GroupChatModel.createMessage({
+            conversation_id: groupId,
+            sender_id: adminId, // or null if system
+            text_content: `${adminMember.full_name} made ${targetMember.full_name} a group admin`,
+            message_type: 'system',
+            action_type: 'promote',
+            target_id: targetUserId
+        });
+
+        return { success: true };
     }
     static async updateGroupAvatar(userId, groupId, avatarUrl) {
         // 1. Verify admin
@@ -298,7 +391,7 @@ class GroupChatService {
         const systemMsg = await GroupChatModel.createMessage({
             groupId,
             senderId: userId,
-            content: `${userName} updated the group icon`,
+            content: avatarUrl ? `${userName} updated the group icon` : `${userName} removed the group icon`,
             type: 'system',
             actionType: 'update_avatar'
         });
@@ -319,6 +412,57 @@ class GroupChatService {
         });
 
         return updatedGroup;
+    }
+
+    static async markGroupMessagesAsRead(userId, groupId) {
+        // 1. Verify user is member
+        const members = await GroupChatModel.getGroupMembers(groupId);
+        if (!members.find(m => m.user_id === userId)) {
+            throw new Error("User is not a member of this group");
+        }
+
+        // 2. Mark messages as read
+        const newlyReadMessages = await GroupChatModel.markMessagesAsRead(userId, groupId);
+
+        // 3. Notify other members if any messages were newly read
+        if (newlyReadMessages.length > 0) {
+            // We can emit a 'messages_read' event to the group (conversation room)
+            // Payload needs to say "User X read these messages"
+            // But usually we just say "User X read up to message Y" or "User X read messages [ids]"
+
+            // Let's emit "messages_read" with the user and the list of message IDs
+            const messageIds = newlyReadMessages.map(m => m.message_id);
+
+            // Fetch user details for the event
+            const member = members.find(m => m.user_id === userId);
+
+            members.forEach(m => {
+                // Don't notify self (optional, but good practice to reduce noise, though frontend might use it to confirm)
+                // if (m.user_id !== userId) {
+                socketService.notifyUser(m.user_id, 'messages_read', {
+                    conversation_id: groupId,
+                    user_id: userId,
+                    user_name: member.full_name,
+                    user_avatar: member.avatar_url,
+                    message_ids: messageIds,
+                    read_at: new Date().toISOString()
+                });
+                //}
+            });
+        }
+
+        return { success: true, readCount: newlyReadMessages.length };
+    }
+
+    static async getMessageReadReceipts(userId, groupId, messageId) {
+        // 1. Verify user is member
+        const members = await GroupChatModel.getGroupMembers(groupId);
+        if (!members.find(m => m.user_id === userId)) {
+            throw new Error("User is not a member of this group");
+        }
+
+        // 2. Get read receipts
+        return await GroupChatModel.getReadReceipts(messageId);
     }
 }
 
