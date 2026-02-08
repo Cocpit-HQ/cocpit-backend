@@ -579,26 +579,32 @@ exports.createPost = async (req, res) => {
     const userId = req.user.sub;
     let { content, category, visibility, media_urls, post_type, title, poll_options, poll_duration } = req.body; // category is name, media_urls is array
 
+    const client = await pool.connect();
+
     try {
+        await client.query('BEGIN');
+
         // 0. If reposting, check if original is Personal or already reposted
         if (req.body.shared_post_id) {
             // Check if Personal
-            const originalPostCheck = await pool.query(
+            const originalPostCheck = await client.query(
                 `SELECT pc.name FROM posts p 
                  LEFT JOIN post_categories pc ON p.category_id = pc.category_id 
                  WHERE p.post_id = $1`,
                 [req.body.shared_post_id]
             );
             if (originalPostCheck.rowCount > 0 && originalPostCheck.rows[0].name === 'Personal') {
+                await client.query('ROLLBACK');
                 return res.status(403).json({ message: "Personal posts cannot be reposted." });
             }
 
             // Check for Duplicate
-            const duplicateCheck = await pool.query(
+            const duplicateCheck = await client.query(
                 `SELECT post_id FROM posts WHERE author_id = $1 AND shared_post_id = $2`,
                 [userId, req.body.shared_post_id]
             );
             if (duplicateCheck.rowCount > 0) {
+                await client.query('ROLLBACK');
                 return res.status(409).json({ message: "You have already shared this post." });
             }
         }
@@ -606,19 +612,21 @@ exports.createPost = async (req, res) => {
         // 1. Get Category ID
         let categoryId = null;
         if (!category) {
+            await client.query('ROLLBACK');
             return res.status(400).json({ message: "Category is required" });
         }
         else {
-            const catRes = await pool.query(`SELECT category_id FROM post_categories WHERE name = $1`, [category]);
+            const catRes = await client.query(`SELECT category_id FROM post_categories WHERE name = $1`, [category]);
             if (catRes.rowCount > 0) {
                 categoryId = catRes.rows[0].category_id;
             } else {
+                await client.query('ROLLBACK');
                 return res.status(400).json({ message: "Invalid category" });
             }
         }
 
         // 2. Insert Post
-        const postResult = await pool.query(
+        const postResult = await client.query(
             ` INSERT INTO posts (author_id, category_id, content, visibility,post_type,title, shared_post_id)
       VALUES ($1, $2, $3, $4,$5,$6, $7)
       RETURNING post_id, created_at
@@ -628,7 +636,7 @@ exports.createPost = async (req, res) => {
         const postId = postResult.rows[0].post_id;
         let pollId;
         if (post_type === 'poll' && poll_options) {
-            const pollRes = await pool.query(
+            const pollRes = await client.query(
                 `INSERT INTO post_polls (post_id, duration) VALUES ($1, $2) RETURNING poll_id`,
                 [postId, poll_duration || '1 days'] // e.g., '1 day', '1 week'
             );
@@ -638,7 +646,7 @@ exports.createPost = async (req, res) => {
             // Insert each option and collect them
             const insertedOptions = [];
             for (const opt of poll_options) {
-                const optRes = await pool.query(
+                const optRes = await client.query(
                     `INSERT INTO poll_options (poll_id, option_text) VALUES ($1, $2) RETURNING option_id, option_text`,
                     [pollId, opt]
                 );
@@ -648,36 +656,41 @@ exports.createPost = async (req, res) => {
         }
 
         let type;
-        // 3. Insert Media
-        if (media_urls && Array.isArray(media_urls)) {
-            for (const url of media_urls) {
-                type = url.toLowerCase().match(/\.(mp4|webm|mov)$/) ? 'video' : 'image';
-                await pool.query(`INSERT INTO post_media (post_id, url, media_type) VALUES ($1, $2, $3)`, [postId, url, type]);
-            }
+        // 3. Insert Media (Parallel Optimized)
+        if (media_urls && Array.isArray(media_urls) && media_urls.length > 0) {
+            const mediaPromises = media_urls.map(url => {
+                let currentType = url.toLowerCase().match(/\.(mp4|webm|mov)$/) ? 'video' : 'image';
+                type = currentType; // Keep a reference to one type for response (legacy behavior)
+                return client.query(
+                    `INSERT INTO post_media (post_id, url, media_type) VALUES ($1, $2, $3)`,
+                    [postId, url, currentType]
+                );
+            });
+            await Promise.all(mediaPromises);
         }
 
         // 4. Handle Repost Notification
         if (req.body.shared_post_id) {
-            const originalPostRes = await pool.query(`SELECT author_id FROM posts WHERE post_id = $1`, [req.body.shared_post_id]);
+            const originalPostRes = await client.query(`SELECT author_id FROM posts WHERE post_id = $1`, [req.body.shared_post_id]);
             if (originalPostRes.rowCount > 0) {
                 const originalAuthorId = originalPostRes.rows[0].author_id;
 
                 // Don't notify if reposting own post
                 if (originalAuthorId !== userId) {
                     // Get reposter details for notification
-                    const reposterRes = await pool.query(`SELECT full_name, avatar_url FROM users WHERE user_id = $1`, [userId]);
+                    const reposterRes = await client.query(`SELECT full_name, avatar_url FROM users WHERE user_id = $1`, [userId]);
                     const reposter = reposterRes.rows[0];
 
                     const notificationText = `${reposter.full_name} reposted your post`;
 
                     // Insert notification
-                    await pool.query(
+                    await client.query(
                         `INSERT INTO notifications (user_id, sender_id, type, text, reference_id) 
                           VALUES ($1, $2, $3, $4, $5)`,
                         [originalAuthorId, userId, "repost", notificationText, postId] // reference_id is the NEW post
                     );
 
-                    // Emit socket event
+                    // Emit socket event (Side effect, can be done after commit or before, but safe here)
                     socketService.notifyUser(originalAuthorId, "notification", {
                         type: "repost",
                         text: notificationText,
@@ -690,6 +703,8 @@ exports.createPost = async (req, res) => {
                 }
             }
         }
+
+        await client.query('COMMIT');
 
         res.status(201).json({
             message: "Post created", postId,
@@ -708,8 +723,11 @@ exports.createPost = async (req, res) => {
             }
         });
     } catch (err) {
+        await client.query('ROLLBACK');
         console.error("Create post error:", err);
         res.status(500).json({ message: "Internal server error" });
+    } finally {
+        client.release();
     }
 };
 
