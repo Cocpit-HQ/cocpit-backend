@@ -70,6 +70,20 @@ exports.getProfile = async (req, res) => {
       )
       : { rows: [] };
 
+
+    // Get counts
+    const countsResult = await pool.query(
+      `
+      SELECT 
+        (SELECT COUNT(*) FROM followers WHERE following_id = $1) as followers_count,
+        (SELECT COUNT(*) FROM followers WHERE follower_id = $1) as following_count,
+        (SELECT COUNT(*) FROM connections WHERE user_id = $1) as connections_count
+      `,
+      [userId]
+    );
+
+    const counts = countsResult.rows[0];
+
     const resumeResult = await pool.query(
       `SELECT file_name, file_url FROM user_resumes WHERE user_id = $1 ORDER BY uploaded_at DESC LIMIT 1`,
       [userId]
@@ -89,13 +103,44 @@ exports.getProfile = async (req, res) => {
 
 
     let isFollowing = false;
+    let isFollowedBy = false;
+    let connectionRequestStatus = null;
+    let connectionRequestId = null;
+    let connectionRequestSender = null;
 
     if (req.user && req.user.sub && req.user.sub !== u.user_id) {
+      const viewerId = req.user.sub;
+      const targetId = u.user_id;
+
+      // Check Following (Viewer -> Target)
       const followCheck = await pool.query(
-        `SELECT 1 FROM followers WHERE follower_id = $1 AND following_id = $2`,
-        [req.user.sub, u.user_id]
+        "SELECT 1 FROM followers WHERE follower_id = $1 AND following_id = $2",
+        [viewerId, targetId]
       );
       isFollowing = followCheck.rowCount > 0;
+
+      // Check Followed By (Target -> Viewer)
+      const followedByCheck = await pool.query(
+        "SELECT 1 FROM followers WHERE follower_id = $1 AND following_id = $2",
+        [targetId, viewerId]
+      );
+      isFollowedBy = followedByCheck.rowCount > 0;
+
+      // Check Connection Request
+      const requestCheck = await pool.query(
+        `SELECT request_id, sender_id, status 
+             FROM connection_requests 
+             WHERE (sender_id = $1 AND receiver_id = $2) 
+                OR (sender_id = $2 AND receiver_id = $1)`,
+        [viewerId, targetId]
+      );
+
+      if (requestCheck.rowCount > 0) {
+        const reqRow = requestCheck.rows[0];
+        connectionRequestStatus = reqRow.status;
+        connectionRequestId = reqRow.request_id;
+        connectionRequestSender = reqRow.sender_id === viewerId ? 'me' : 'them';
+      }
     }
 
     res.json({
@@ -109,13 +154,18 @@ exports.getProfile = async (req, res) => {
         about: u.about_text,
         email: u.email,
         mobile_number: u.mobile_number,
-        profile_views: u.profile_views_count,
-        search_appearances: u.search_appearances_count,
+        followers_count: parseInt(counts.followers_count),
+        following_count: parseInt(counts.following_count),
+        connections_count: parseInt(counts.connections_count),
         open_to: u.open_to,
         availability: u.availability,
         work_preference: u.work_preference,
         latest_education: latestEducation,
-        is_following: isFollowing, 
+        is_following: isFollowing,
+        is_followed_by: isFollowedBy,
+        connection_request_status: connectionRequestStatus,
+        connection_request_id: connectionRequestId,
+        connection_request_sender: connectionRequestSender,
       },
       experiences: experiences.rows,
       educations: educations.rows,

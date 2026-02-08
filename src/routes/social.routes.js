@@ -10,14 +10,16 @@ router.post("/users/:id/follow", requireAuth, socialController.followUser);
 router.delete("/users/:id/unfollow", requireAuth, socialController.unfollowUser);
 router.get("/users/:id/followers/count", socialController.getFollowersCount);
 router.get("/users/:id/followers", socialController.getFollowers);
-// router.get("/users/:id/following", socialController.getFollowing);
+router.get("/users/:id/following", socialController.getFollowing);
 
 /* =====================================================
    CONNECTIONS (Two-way – LinkedIn style)
-   ===================================================== */
-router.post("/users/:id/connect", requireAuth, socialController.sendConnectionRequest);
-router.get("/connections/requests", requireAuth, socialController.getPendingRequests);
+   ===================================================== */// Connection Requests
+router.post('/users/:id/connect', requireAuth, socialController.sendConnectionRequest);
+router.get('/users/:id/relationship', requireAuth, socialController.getRelationshipStatus); // New Endpoint
+router.get('/connections/requests', requireAuth, socialController.getPendingRequests);
 router.patch("/connections/:requestId", requireAuth, socialController.handleConnectionRequest); // accept / reject
+router.get("/connections/history", requireAuth, socialController.getConnectionRequestHistory); // NEW History
 router.get("/my/connections", requireAuth, socialController.getMyConnections);                // NEW
 router.delete("/connections/:requestId", requireAuth, socialController.cancelConnectionRequest); // NEW
 router.delete("/connections/user/:id", requireAuth, socialController.removeConnection);   // NEW

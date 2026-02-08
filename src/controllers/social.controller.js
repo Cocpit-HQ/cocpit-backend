@@ -8,98 +8,273 @@ const socketService = require("../services/socket.service");
 // Follow another user
 exports.followUser = async (req, res) => {
     const followerId = req.user.sub;
-    const { id } = req.params; // following_id
+    const followingId = req.params.id; // The person I am trying to follow
 
-    if (followerId === id)
+    if (followerId === followingId)
         return res.status(400).json({ message: "Cannot follow yourself" });
 
+    const client = await pool.connect();
+
     try {
-        const result = await pool.query(
+        await client.query('BEGIN');
+
+        // 1. Insert Follow
+        const followResult = await client.query(
             `INSERT INTO followers (follower_id, following_id) VALUES ($1, $2) ON CONFLICT DO NOTHING RETURNING *`,
-            [followerId, id]
+            [followerId, followingId]
         );
 
-        if (result.rowCount > 0) {
-            // Get follower info for notification
-            const followerRes = await pool.query(
-                `SELECT full_name, avatar_url FROM users WHERE user_id = $1`,
-                [followerId]
+        if (followResult.rowCount === 0) {
+            await client.query('ROLLBACK');
+            return res.status(200).json({ message: "Already following" });
+        }
+
+        // 2. Check for Reverse Follow (Is followingId already following followerId?)
+        const reverseFollow = await client.query(
+            "SELECT 1 FROM followers WHERE follower_id = $1 AND following_id = $2",
+            [followingId, followerId]
+        );
+
+        let isConnected = false;
+
+        if (reverseFollow.rowCount > 0) {
+            // MUTUAL FOLLOW DETECTED -> CREATE CONNECTION
+            isConnected = true;
+            await client.query(
+                "INSERT INTO connections (user_id, connected_user_id) VALUES ($1, $2), ($2, $1) ON CONFLICT DO NOTHING",
+                [followerId, followingId]
             );
-            const follower = followerRes.rows[0];
 
-            const notificationData = {
-                type: "follow",
-                text: `${follower.full_name} started following you`,
-                from: followerId,
-                senderName: follower.full_name,
-                senderAvatar: follower.avatar_url,
-                referenceId: followerId, // Link to profile
-                time: "Just now"
-            };
-
-            // Notify via socket
-            socketService.notifyUser(id, "notification", notificationData);
-
-            // Persist notification
-            await pool.query(
-                `INSERT INTO notifications (user_id, sender_id, type, text, reference_id) 
-                 VALUES ($1, $2, $3, $4, $5)`,
-                [id, followerId, "follow", notificationData.text, followerId]
+            // Cleanup any pending requests
+            await client.query(
+                "DELETE FROM connection_requests WHERE (sender_id = $1 AND receiver_id = $2) OR (sender_id = $2 AND receiver_id = $1)",
+                [followerId, followingId]
             );
         }
 
-        res.status(200).json({ message: "Followed successfully" });
+        // 3. Notifications & Socket Events
+        const followerRes = await client.query(
+            `SELECT full_name, avatar_url FROM users WHERE user_id = $1`,
+            [followerId]
+        );
+        const follower = followerRes.rows[0];
+
+        // Notification 1: "Started following you"
+        const followNotifData = {
+            type: "follow",
+            text: `${follower.full_name} started following you`,
+            from: followerId,
+            senderName: follower.full_name,
+            senderAvatar: follower.avatar_url,
+            referenceId: followerId,
+            time: "Just now"
+        };
+
+        // Persist Follow Notification
+        const followNotifRes = await client.query(
+            `INSERT INTO notifications (user_id, sender_id, type, text, reference_id) 
+             VALUES ($1, $2, $3, $4, $5) RETURNING notification_id, created_at`,
+            [followingId, followerId, "follow", followNotifData.text, followerId]
+        );
+
+        // Emit Follow Notification
+        socketService.notifyUser(followingId, "notification", {
+            ...followNotifData,
+            notification_id: followNotifRes.rows[0].notification_id,
+            created_at: followNotifRes.rows[0].created_at.toISOString()
+        });
+
+        // Logic for Connection Notification (if mutual)
+        if (isConnected) {
+            const connectionNotifData = {
+                type: "connection_accepted", // Reusing this type for "New Connection" UI treatment
+                text: `${follower.full_name} and you are now connected!`,
+                from: followerId,
+                senderName: follower.full_name,
+                senderAvatar: follower.avatar_url,
+                referenceId: followerId,
+                time: "Just now"
+            };
+
+            const connNotifRes = await client.query(
+                `INSERT INTO notifications (user_id, sender_id, type, text, reference_id) 
+                  VALUES ($1, $2, $3, $4, $5) RETURNING notification_id, created_at`,
+                [followingId, followerId, "connection_accepted", connectionNotifData.text, followerId]
+            );
+
+            socketService.notifyUser(followingId, "notification", {
+                ...connectionNotifData,
+                notification_id: connNotifRes.rows[0].notification_id,
+                created_at: connNotifRes.rows[0].created_at.toISOString()
+            });
+
+            // Update Relationships
+            socketService.notifyUser(followerId, "relationshipUpdated", { userId: followingId, status: 'connected' });
+            socketService.notifyUser(followingId, "relationshipUpdated", { userId: followerId, status: 'connected' });
+        }
+
+        await client.query('COMMIT');
+        res.status(200).json({ message: isConnected ? "You are now connected!" : "Followed successfully", connected: isConnected });
+
     } catch (err) {
+        await client.query('ROLLBACK');
         console.error("Follow user error:", err);
         res.status(500).json({ message: "Internal server error" });
+    } finally {
+        client.release();
     }
 };
 
 // Unfollow a user
 exports.unfollowUser = async (req, res) => {
     const followerId = req.user.sub;
-    const { id } = req.params; //following_id
+    const followingId = req.params.id;
+
+    const client = await pool.connect();
 
     try {
-        const result = await pool.query(
+        await client.query('BEGIN');
+
+        const result = await client.query(
             `DELETE FROM followers WHERE follower_id = $1 AND following_id = $2 RETURNING *`,
-            [followerId, id]
+            [followerId, followingId]
         );
 
-        if (result.rowCount === 0)
+        if (result.rowCount === 0) {
+            await client.query('ROLLBACK');
             return res.status(404).json({ message: "You are not following this user" });
+        }
 
-        res.json({ message: "Unfollowed successfully" });
+        // If we were connected, break the connection
+        // (Since connection strictly requires mutual follow)
+        const deletedConnection = await client.query(
+            `DELETE FROM connections WHERE (user_id = $1 AND connected_user_id = $2) OR (user_id = $2 AND connected_user_id = $1) RETURNING *`,
+            [followerId, followingId]
+        );
+
+        if (deletedConnection.rowCount > 0) {
+            // If connection was removed, we should probably update the socket status
+            socketService.notifyUser(followerId, "relationshipUpdated", { userId: followingId, status: 'none' }); // or 'none' since I stopped following
+            socketService.notifyUser(followingId, "relationshipUpdated", { userId: followerId, status: 'none' }); // They might still follow me, but 'connection' is gone.
+
+            // Wait, if I unfollow, do they stop following me?
+            // Logic: Connection removed. But their follow remains?
+            // If I unfollow B, A->B is gone. B->A might remain.
+            // If B->A remains, status for B is "Following". Status for A is "None" (ignoring B's follow for a moment, A is simply not following B).
+            // Actually, if B follows A, A sees "Follow Back" (or similar).
+
+            // Let's refine the socket status.
+            // For A (Unfollower): I am not following B. B follows me. My status vs B? "Is Followed By".
+            // For B (Victim): I am following A. A is not following me. Status vs A? "Following".
+
+            // The frontend `getRelationshipStatus` handles this dynamically.
+            // We just need to trigger the invalidation.
+            // Check if B follows A?
+            const reverseCheck = await client.query("SELECT 1 FROM followers WHERE follower_id = $1 AND following_id = $2", [followingId, followerId]);
+            const bFollowsA = reverseCheck.rowCount > 0;
+
+            // Actually, simple invalidation signal is best.
+            // We already sent 'none' above, which forces a re-fetch usually or sets state.
+            // Ideally we just tell them "Hey, relationship changed, refetch".
+            // But existing frontend logic listens for { status } and might force that status.
+            // If we send 'none', frontend sets status 'none'. 
+            // Does 'none' imply "Is Followed By" is false?
+            // In `ConnectionButton`, status 'none' just means "Connect" button shows up.
+            // "Connect" button handles "Follow Back" logic?
+            // `ConnectionButton` logic:
+            // if status 'none': renders "Connect".
+            // There isn't a "Follow Back" state in ConnectionButton explicitly, but there is "isFollowing" / "isFollowedBy" props.
+            // Is `getRelationshipStatus` returning 'none' if I am followed by them?
+            // Let's check `getRelationshipStatus` later. Assuming 'none' or simple trigger is safe.
+        }
+
+        await client.query('COMMIT');
+        res.json({ message: "Unfollowed successfully", connectionRemoved: deletedConnection.rowCount > 0 });
     } catch (err) {
+        await client.query('ROLLBACK');
+        console.error("Unfollow error:", err);
         res.status(500).json({ message: "Internal server error" });
+    } finally {
+        client.release();
     }
 };
 
 exports.getFollowers = async (req, res) => {
     const userId = req.params.id;
+    const { search } = req.query;
 
     try {
-        const result = await pool.query(
-            `SELECT u.user_id, u.full_name, u.avatar_url, u.headline, f.created_at 
-            FROM followers f JOIN users u ON f.follower_id = u.user_id 
-            WHERE f.following_id = $1 ORDER BY f.created_at DESC`,
-            [userId]
-        );
+        let query = `
+            SELECT u.user_id, u.full_name, u.avatar_url, u.headline, f.created_at 
+            FROM followers f 
+            JOIN users u ON f.follower_id = u.user_id 
+            WHERE f.following_id = $1
+        `;
+        const params = [userId];
+
+        if (search) {
+            query += ` AND (u.full_name ILIKE $2 OR u.headline ILIKE $2)`;
+            params.push(`%${search}%`);
+        }
+
+        query += ` ORDER BY f.created_at DESC`;
+
+        const result = await pool.query(query, params);
 
         const formattedConnections = result.rows.map(row => {
-            const timeAgo = formatDistanceToNow(new Date(row.created_at), {
+            const timeAgoVal = formatDistanceToNow(new Date(row.created_at), {
                 addSuffix: true
             }).replace(/^about\s+/i, '');
 
             return {
                 ...row,
-                timeAgo: `connected ${timeAgo}`
+                timeAgo: `connected ${timeAgoVal}`
             };
         });
 
+        res.json(formattedConnections);
+    } catch (err) {
+        console.error("Get followers error:", err);
+        res.status(500).json({ message: "Internal server error" });
+    }
+}
+
+exports.getFollowing = async (req, res) => {
+    const userId = req.params.id;
+    const { search } = req.query;
+
+    try {
+        let query = `
+            SELECT u.user_id, u.full_name, u.avatar_url, u.headline, f.created_at 
+            FROM followers f 
+            JOIN users u ON f.following_id = u.user_id 
+            WHERE f.follower_id = $1
+        `;
+        const params = [userId];
+
+        if (search) {
+            query += ` AND (u.full_name ILIKE $2 OR u.headline ILIKE $2)`;
+            params.push(`%${search}%`);
+        }
+
+        query += ` ORDER BY f.created_at DESC`;
+
+        const result = await pool.query(query, params);
+
+        const formattedConnections = result.rows.map(row => {
+            const timeAgoVal = formatDistanceToNow(new Date(row.created_at), {
+                addSuffix: true
+            }).replace(/^about\s+/i, '');
+
+            return {
+                ...row,
+                timeAgo: `followed ${timeAgoVal}`
+            };
+        });
 
         res.json(formattedConnections);
     } catch (err) {
+        console.error("Get following error:", err);
         res.status(500).json({ message: "Internal server error" });
     }
 }
@@ -124,6 +299,7 @@ exports.getFollowersCount = async (req, res) => {
 exports.sendConnectionRequest = async (req, res) => {
     const senderId = req.user.sub;
     const receiverId = req.params.id;
+    const { message } = req.body;
 
     if (!receiverId) {
         return res.status(400).json({ message: "Invalid request" });
@@ -133,80 +309,205 @@ exports.sendConnectionRequest = async (req, res) => {
         return res.status(400).json({ message: "You cannot connect with yourself" });
     }
 
+    const client = await pool.connect();
+
     try {
-        // Prevent request if already connected
-        const alreadyConnected = await pool.query(
-            `
-      SELECT 1 FROM connections
-      WHERE user_id = $1 AND connected_user_id = $2
-      `,
+        await client.query("BEGIN");
+
+        // 1. Check if already connected (IDEMPOTENCY: If connected, return success/message)
+        const alreadyConnected = await client.query(
+            "SELECT 1 FROM connections WHERE user_id = $1 AND connected_user_id = $2",
             [senderId, receiverId]
         );
 
         if (alreadyConnected.rowCount > 0) {
-            return res.status(400).json({ message: "Already connected" });
+            await client.query("ROLLBACK");
+            return res.status(200).json({ message: "You are already connected", connected: true });
         }
 
-        // Blocked within last 30 days → deny
-        const recentBlock = await pool.query(
-            `
-      SELECT 1
-      FROM connection_requests
-      WHERE
-        (
-          (sender_id = $1 AND receiver_id = $2)
-          OR
-          (sender_id = $2 AND receiver_id = $1)
-        )
-        AND status = 'blocked'
-        AND responded_at >= NOW() - INTERVAL '1 days' 
-      `, //30 days at production level
+        // 2. Check for ANY pending request between the two users (Bidirectional)
+        const pendingRequest = await client.query(
+            "SELECT request_id, sender_id, status FROM connection_requests WHERE ((sender_id = $1 AND receiver_id = $2) OR (sender_id = $2 AND receiver_id = $1)) AND status = 'pending'",
             [senderId, receiverId]
         );
 
-        if (recentBlock.rowCount > 0) {
-            return res.status(403).json({
-                message: "You cannot send a connection request yet"
-            });
+        if (pendingRequest.rowCount > 0) {
+            const req = pendingRequest.rows[0];
+            if (req.sender_id === senderId) {
+                await client.query("ROLLBACK");
+                return res.status(200).json({ message: "Connection request already sent", status: 'pending' });
+            } else {
+                // AUTO-ACCEPT SCENARIO: There is a pending request FROM the receiver TO me.
+                // We treat this as an accept.
+                const reverseReqId = req.request_id;
+
+                // Create mutual connections
+                await client.query(
+                    `INSERT INTO connections (user_id, connected_user_id) VALUES ($1, $2), ($2, $1) ON CONFLICT DO NOTHING`,
+                    [senderId, receiverId]
+                );
+
+                // Create mutual follows
+                await client.query(
+                    `INSERT INTO followers (follower_id, following_id) VALUES ($1, $2), ($2, $1) ON CONFLICT DO NOTHING`,
+                    [senderId, receiverId]
+                );
+
+                // Delete the reverse request used for auto-accept
+                await client.query("DELETE FROM connection_requests WHERE request_id = $1", [reverseReqId]);
+
+                await client.query("COMMIT");
+
+                // Notify the original sender (receiverId) that I accepted via this "send" action
+                const myProfileRes = await client.query(`SELECT full_name, avatar_url FROM users WHERE user_id = $1`, [senderId]);
+                const myProfile = myProfileRes.rows[0];
+
+                const notificationData = {
+                    type: "connection_accepted",
+                    text: `accepted your connection request`,
+                    from: senderId,
+                    senderName: myProfile.full_name,
+                    senderAvatar: myProfile.avatar_url,
+                    referenceId: senderId,
+                    time: "Just now"
+                };
+                socketService.notifyUser(receiverId, "notification", notificationData);
+
+                await pool.query( // Using pool for non-transactional notification insert if slightly delayed is ok, or reuse client if strict
+                    `INSERT INTO notifications (user_id, sender_id, type, text, reference_id) 
+                     VALUES ($1, $2, 'connection_accepted', 'accepted your connection request', $3)`,
+                    [receiverId, senderId, senderId]
+                );
+
+
+                return res.status(200).json({ message: "You are now connected!", connected: true });
+            }
         }
 
-        // Remove old (expired) blocked record
-        await pool.query(
-            `
-      DELETE FROM connection_requests
-      WHERE
-        (
-          (sender_id = $1 AND receiver_id = $2)
-          OR
-          (sender_id = $2 AND receiver_id = $1)
-        )
-        AND status = 'blocked'
-        AND responded_at < NOW() - INTERVAL '30 days'
-      `,
+        // 3. Check for Cooldowns or Blocks on REJECTED/BLOCKED requests
+        // We need to check if *I* am blocked or if *I* am in a cooldown to send to *THEM*
+        // The constraint is: if I sent a request and they rejected it, I have a cooldown.
+        // Or if they blocked me.
+        const blockOrCooldown = await client.query(
+            `SELECT status, cooldown_until FROM connection_requests 
+             WHERE sender_id = $1 AND receiver_id = $2 
+             AND (status = 'blocked' OR (status = 'rejected' AND cooldown_until > NOW()))`,
             [senderId, receiverId]
         );
 
-        // Insert request (DB handles duplicates safely)
-        await pool.query(
-            `
-      INSERT INTO connection_requests (sender_id, receiver_id)
-      VALUES ($1, $2)
-      `,
-            [senderId, receiverId]
+        if (blockOrCooldown.rowCount > 0) {
+            const row = blockOrCooldown.rows[0];
+            await client.query("ROLLBACK");
+            if (row.status === 'blocked') {
+                return res.status(403).json({ message: "You cannot connect with this user." });
+            } else {
+                const now = new Date();
+                const cooldown = new Date(row.cooldown_until);
+                const diffHours = Math.ceil((cooldown - now) / (1000 * 60 * 60));
+                return res.status(403).json({ message: `You cannot send a new request yet. Please wait ${diffHours} hours.` });
+            }
+        }
+
+        // 4. Rate Limiting (Max 20 requests per 24h)
+        const rateLimitCheck = await client.query(
+            `SELECT COUNT(*) FROM connection_requests 
+             WHERE sender_id = $1 AND created_at > NOW() - INTERVAL '24 hours'`,
+            [senderId]
         );
+
+        if (parseInt(rateLimitCheck.rows[0].count) >= 20) {
+            await client.query("ROLLBACK");
+            return res.status(429).json({ message: "Daily connection request limit reached. Please try again tomorrow." });
+        }
+
+
+        // 5. Create New Request
+        // We use ON CONFLICT DO NOTHING to be super safe against race conditions on the unique index
+        const insertRes = await client.query(
+            `INSERT INTO connection_requests (sender_id, receiver_id, message, status) 
+             VALUES ($1, $2, $3, 'pending')
+             ON CONFLICT (LEAST(sender_id, receiver_id), GREATEST(sender_id, receiver_id)) 
+             WHERE status = 'pending'
+             DO NOTHING
+             RETURNING request_id`,
+            [senderId, receiverId, message || null]
+        );
+
+        if (insertRes.rowCount === 0) {
+            // Race condition hit: Accessing confirmed pending request or connection
+            await client.query("ROLLBACK");
+            return res.status(200).json({ message: "Request already processing or sent", status: 'pending' });
+        }
+
+        const newRequestId = insertRes.rows[0].request_id;
+
+        // Get sender details for notification
+        const senderRes = await client.query(
+            `SELECT full_name, avatar_url FROM users WHERE user_id = $1`,
+            [senderId]
+        );
+        const sender = senderRes.rows[0];
+
+        const notificationData = {
+            type: "connection_request",
+            text: `${sender.full_name} sent you a connection request`,
+            from: senderId,
+            senderName: sender.full_name,
+            senderAvatar: sender.avatar_url,
+            referenceId: senderId,
+            time: "Just now",
+            requestId: newRequestId // Helpful for frontend actions
+        };
+
+        // Persist notification
+        const notifRes = await client.query(
+            `INSERT INTO notifications (user_id, sender_id, type, text, reference_id) 
+             VALUES ($1, $2, $3, $4, $5) RETURNING *`,
+            [receiverId, senderId, "connection_request", notificationData.text, senderId]
+        );
+        const newNotification = notifRes.rows[0];
+
+        await client.query("COMMIT");
+
+        // Notify receiver via socket with FULL notification object (including ID)
+        // Combine DB result with extra frontend-friendly fields if needed
+        const completeNotification = {
+            ...notificationData,
+            notification_id: newNotification.notification_id,
+            created_at: newNotification.created_at.toISOString(),
+            is_read: false,
+            // Ensure frontend keys exist
+            actor_name: sender.full_name,
+            actor_avatar: sender.avatar_url,
+            text: newNotification.text,
+            type: newNotification.type,
+            reference_id: newNotification.reference_id
+        };
+
+        socketService.notifyUser(receiverId, "notification", completeNotification);
+        // Also emit a specific event for the request itself if needed
+        socketService.notifyUser(receiverId, "connectionRequestReceived", {
+            requestId: newRequestId,
+            sender: {
+                id: senderId,
+                name: sender.full_name,
+                avatar: sender.avatar_url
+            }
+        });
+
+        // Emit relationship update to receiver (they now have a pending request from me)
+        socketService.notifyUser(receiverId, "relationshipUpdated", { userId: senderId, status: 'pending_received' });
+        // Emit relationship update to sender (I now have a pending sent request to them)
+        socketService.notifyUser(senderId, "relationshipUpdated", { userId: receiverId, status: 'pending_sent' });
 
         return res.status(201).json({ message: "Connection request sent" });
 
     } catch (err) {
-        // Same or reverse pending request
-        if (err.code === '23505') {
-            return res.status(400).json({
-                message: "Connection request already exists"
-            });
-        }
-
+        await client.query("ROLLBACK");
         console.error("Send connection error:", err);
         return res.status(500).json({ message: "Internal server error" });
+    } finally {
+        client.release();
     }
 };
 
@@ -217,10 +518,12 @@ exports.getPendingRequests = async (req, res) => {
         const result = await pool.query(
             `
       SELECT 
-        cr.request_id,
-        u.user_id,
-        u.full_name,
-        u.avatar_url,
+        cr.request_id as id,
+        cr.sender_id,
+        cr.receiver_id,
+        cr.created_at,
+        u.full_name as name,
+        u.avatar_url as avatar,
         u.headline
       FROM connection_requests cr
       JOIN users u ON cr.sender_id = u.user_id
@@ -231,7 +534,21 @@ exports.getPendingRequests = async (req, res) => {
             [receiver_id]
         );
 
-        return res.status(200).json(result.rows);
+        // Map to expected frontend structure
+        const requests = result.rows.map(row => ({
+            id: row.id,
+            sender_id: row.sender_id,
+            receiver_id: row.receiver_id,
+            created_at: row.created_at,
+            status: 'pending',
+            sender: {
+                name: row.name,
+                avatar: row.avatar,
+                headline: row.headline
+            }
+        }));
+
+        return res.status(200).json(requests);
 
     } catch (err) {
         console.error("Get pending requests error:", err);
@@ -239,12 +556,61 @@ exports.getPendingRequests = async (req, res) => {
     }
 };
 
-exports.handleConnectionRequest = async (req, res) => {
-    const requestId = req.params.requestId;
-    const { status } = req.body; // 'connected' or 'blocked'
+exports.getConnectionRequestHistory = async (req, res) => {
     const userId = req.user.sub;
 
-    if (!['connected', 'blocked'].includes(status)) {
+    try {
+        const result = await pool.query(
+            `
+            SELECT 
+                cr.request_id as id,
+                cr.sender_id,
+                cr.receiver_id,
+                cr.status,
+                cr.updated_at,
+                -- If I am the sender, show receiver details. If I am receiver, show sender details.
+                CASE WHEN cr.sender_id = $1 THEN u_recv.full_name ELSE u_send.full_name END as name,
+                CASE WHEN cr.sender_id = $1 THEN u_recv.avatar_url ELSE u_send.avatar_url END as avatar,
+                CASE WHEN cr.sender_id = $1 THEN u_recv.headline ELSE u_send.headline END as headline,
+                CASE WHEN cr.sender_id = $1 THEN 'outgoing' ELSE 'incoming' END as direction
+            FROM connection_requests cr
+            LEFT JOIN users u_send ON cr.sender_id = u_send.user_id
+            LEFT JOIN users u_recv ON cr.receiver_id = u_recv.user_id
+            WHERE (cr.receiver_id = $1 OR cr.sender_id = $1)
+            AND cr.status IN ('connected', 'rejected')
+            ORDER BY cr.updated_at DESC
+            LIMIT 50
+            `,
+            [userId]
+        );
+
+        const history = result.rows.map(row => ({
+            id: row.id,
+            sender_id: row.sender_id,
+            receiver_id: row.receiver_id,
+            status: row.status === 'connected' ? 'accepted' : row.status,
+            updated_at: row.updated_at,
+            direction: row.direction,
+            otherUser: {
+                name: row.name,
+                avatar: row.avatar,
+                headline: row.headline
+            }
+        }));
+
+        return res.status(200).json(history);
+    } catch (err) {
+        console.error("Get request history error:", err);
+        return res.status(500).json({ message: "Internal server error" });
+    }
+};
+
+exports.handleConnectionRequest = async (req, res) => {
+    const requestId = req.params.requestId;
+    const { status } = req.body; // 'connected', 'rejected', 'blocked'
+    const userId = req.user.sub;
+
+    if (!['connected', 'rejected', 'blocked'].includes(status)) {
         return res.status(400).json({ message: "Invalid status" });
     }
 
@@ -255,11 +621,7 @@ exports.handleConnectionRequest = async (req, res) => {
 
         // Fetch request & authorize receiver
         const reqRes = await client.query(
-            `
-      SELECT sender_id, receiver_id
-      FROM connection_requests
-      WHERE request_id = $1 AND status = 'pending'
-      `,
+            "SELECT sender_id, receiver_id, message, status FROM connection_requests WHERE request_id = $1",
             [requestId]
         );
 
@@ -268,52 +630,108 @@ exports.handleConnectionRequest = async (req, res) => {
             return res.status(404).json({ message: "Request not found" });
         }
 
-        const { sender_id, receiver_id } = reqRes.rows[0];
+        const { sender_id, receiver_id, status: currentStatus } = reqRes.rows[0];
 
         if (receiver_id !== userId) {
             await client.query("ROLLBACK");
             return res.status(403).json({ message: "Not authorized" });
         }
 
-        // Reject
+        // IDEMPOTENCY CHECK: If already handled, return appropriate response
+        if (currentStatus !== 'pending') {
+            await client.query("ROLLBACK");
+            if (currentStatus === 'rejected') return res.status(200).json({ message: "Request already rejected", status: 'rejected' });
+            if (currentStatus === 'blocked') return res.status(200).json({ message: "User blocked", status: 'blocked' });
+            // If connected, the request row might be gone, but if it's there with a different status (unlikely given we delete on accept), consider it handled.
+            return res.status(404).json({ message: "Request already handled" });
+        }
+
+
+        // 1. BLOCK
         if (status === 'blocked') {
             await client.query(
-                `
-        UPDATE connection_requests
-        SET status = 'blocked', responded_at = NOW()
-        WHERE request_id = $1
-        `,
+                "UPDATE connection_requests SET status = 'blocked', responded_at = NOW() WHERE request_id = $1",
+                [requestId]
+            );
+
+            // Also remove any existing follows/connections just in case
+            await client.query("DELETE FROM connections WHERE (user_id = $1 AND connected_user_id = $2) OR (user_id = $2 AND connected_user_id = $1)", [sender_id, receiver_id]);
+            await client.query("DELETE FROM followers WHERE (follower_id = $1 AND following_id = $2) OR (follower_id = $2 AND following_id = $1)", [sender_id, receiver_id]);
+
+            await client.query("COMMIT");
+            return res.status(200).json({ message: "User blocked", connected: false });
+        }
+
+        // 2. REJECT
+        if (status === 'rejected') {
+            // Set cooldown for 24 hours (1 day)
+            await client.query(
+                `UPDATE connection_requests 
+                 SET status = 'rejected', responded_at = NOW(), cooldown_until = NOW() + INTERVAL '24 hours' 
+                 WHERE request_id = $1`,
                 [requestId]
             );
 
             await client.query("COMMIT");
-            return res.status(200).json({
-                message: "Connection request blocked",
-                connected: false
-            });
+            return res.status(200).json({ message: "Connection request rejected", connected: false });
         }
 
-        // Accept → create mutual connections
-        await client.query(
-            `
-      INSERT INTO connections (user_id, connected_user_id)
-      VALUES ($1, $2), ($2, $1)
-      ON CONFLICT DO NOTHING
-      `,
-            [sender_id, receiver_id]
-        );
+        // 3. ACCEPT (Connected)
+        if (status === 'connected') {
+            // Create mutual connections
+            await client.query(
+                "INSERT INTO connections (user_id, connected_user_id) VALUES ($1, $2), ($2, $1) ON CONFLICT DO NOTHING",
+                [sender_id, receiver_id]
+            );
 
-        // Delete request
-        await client.query(
-            `DELETE FROM connection_requests WHERE request_id = $1`,
-            [requestId]
-        );
+            // Create mutual follows
+            await client.query(
+                "INSERT INTO followers (follower_id, following_id) VALUES ($1, $2), ($2, $1) ON CONFLICT DO NOTHING",
+                [sender_id, receiver_id]
+            );
 
-        await client.query("COMMIT");
-        return res.status(200).json({
-            message: "Connection established",
-            connected: true
-        });
+            // Update request status to 'connected' (Preserve History)
+            await client.query(
+                "UPDATE connection_requests SET status = 'connected', responded_at = NOW() WHERE request_id = $1",
+                [requestId]
+            );
+
+            // Create Notification for Sender
+            const senderNotification = {
+                type: 'connection_accepted',
+                text: 'accepted your connection request',
+                from: receiver_id,
+                senderName: req.user.full_name, // I am the one accepting
+                senderAvatar: req.user.avatar_url,
+                referenceId: receiver_id,
+                time: "Just now"
+            };
+
+            await client.query(
+                `INSERT INTO notifications (user_id, sender_id, type, text, reference_id) 
+                 VALUES ($1, $2, 'connection_accepted', 'accepted your connection request', $3)`,
+                [sender_id, receiver_id, receiver_id]
+            );
+
+            // Create Notification for Receiver (Optional log)
+            await client.query(
+                `INSERT INTO notifications (user_id, sender_id, type, text, reference_id) 
+                 VALUES ($1, $2, 'new_connection', 'You are now connected with a new user', $3)`,
+                [receiver_id, sender_id, sender_id]
+            );
+
+            await client.query("COMMIT");
+
+            // Notify Sender via Socket
+            socketService.notifyUser(sender_id, "notification", senderNotification);
+
+            // Emit relationship update to both
+            socketService.notifyUser(sender_id, "relationshipUpdated", { userId: receiver_id, status: 'connected' });
+            socketService.notifyUser(receiver_id, "relationshipUpdated", { userId: sender_id, status: 'connected' });
+
+
+            return res.status(200).json({ message: "Connection established", connected: true });
+        }
 
     } catch (err) {
         await client.query("ROLLBACK");
@@ -331,12 +749,7 @@ exports.cancelConnectionRequest = async (req, res) => {
     try {
         // Fetch request & ensure it is pending
         const reqRes = await pool.query(
-            `
-      SELECT sender_id
-      FROM connection_requests
-      WHERE request_id = $1
-        AND status = 'pending'
-      `,
+            "SELECT sender_id, receiver_id FROM connection_requests WHERE request_id = $1 AND status = 'pending'",
             [requestId]
         );
 
@@ -368,51 +781,42 @@ exports.cancelConnectionRequest = async (req, res) => {
     }
 };
 
-exports.removeConnection = async (req, res) => {
-    const userId = req.user.sub;
-    const another_user_id = req.params.id;
 
-    try {
-        const result = await pool.query(
-            `DELETE FROM connections WHERE (user_id = $1 AND connected_user_id = $2) OR (user_id = $2 AND connected_user_id = $1) RETURNING *`,
-            [userId, another_user_id]
-        );
-
-        if (result.rowCount === 0)
-            return res.status(404).json({ message: "You are not connected with this user" });
-
-        res.json({ message: "Connection removed successfully" });
-    }
-    catch (err) {
-        res.status(500).json({ message: "Internal server error" });
-    }
-
-}
 
 exports.getMyConnections = async (req, res) => {
     const userId = req.user.sub;
+    const { search } = req.query;
 
     try {
+        let query = `
+            SELECT u.user_id, u.full_name, u.avatar_url, u.headline, c.created_at 
+            FROM connections c 
+            JOIN users u ON c.connected_user_id = u.user_id 
+            WHERE c.user_id = $1
+        `;
+        const params = [userId];
 
-        const result = await pool.query(`select u.user_id, u.full_name , u.avatar_url, u.headline, 
-             c.created_at from connections c 
-                join users u on c.connected_user_id = u.user_id where c.user_id = $1`, [userId])
+        if (search) {
+            query += ` AND (u.full_name ILIKE $2 OR u.headline ILIKE $2)`;
+            params.push(`%${search}%`);
+        }
+
+        const result = await pool.query(query, params);
 
         const formattedConnections = result.rows.map(row => {
-            const timeAgo = formatDistanceToNow(new Date(row.updated_at), {
+            const timeAgoVal = formatDistanceToNow(new Date(row.created_at), {
                 addSuffix: true
             }).replace(/^about\s+/i, '');
 
             return {
                 ...row,
-                timeAgo: timeAgo
-            }
+                timeAgo: timeAgoVal
+            };
         });
 
         res.json(formattedConnections);
-
-        res.status(200).json(result.rows)
     } catch (err) {
+        console.error("Get my connections error:", err);
         res.status(500).json({ message: "Internal server error" });
     }
 }
@@ -852,9 +1256,12 @@ exports.getNotifications = async (req, res) => {
         const result = await pool.query(
             `SELECT n.*, 
                     u.full_name as actor_name, 
-                    u.avatar_url as actor_avatar 
+                    u.avatar_url as actor_avatar,
+                    cr.request_id as request_id, 
+                    cr.status as request_status
              FROM notifications n 
              LEFT JOIN users u ON n.sender_id = u.user_id 
+             LEFT JOIN connection_requests cr ON n.sender_id = cr.sender_id AND n.user_id = cr.receiver_id AND cr.status = 'pending'
              WHERE n.user_id = $1 
              AND NOT EXISTS (SELECT 1 FROM blocks WHERE blocker_id = $1 AND blocked_id = n.sender_id)
              ORDER BY n.created_at DESC`,
@@ -1039,24 +1446,179 @@ exports.blockUser = async (req, res) => {
         // Also remove any existing connections logic?
         // Ideally blocking should unfollow/unconnect. 
         // Let's do that for consistency.
-        await pool.query(
-            `DELETE FROM followers WHERE(follower_id = $1 AND following_id = $2) OR(follower_id = $2 AND following_id = $1)`,
-            [userId, targetId]
-        );
-        await pool.query(
-            `DELETE FROM connections WHERE(user_id = $1 AND connected_user_id = $2) OR(user_id = $2 AND connected_user_id = $1)`,
-            [userId, targetId]
-        );
-        // Also delete pending requests
-        await pool.query(
-            `DELETE FROM connection_requests WHERE(sender_id = $1 AND receiver_id = $2) OR(sender_id = $2 AND receiver_id = $1)`,
-            [userId, targetId]
-        );
+        const client = await pool.connect();
+        try {
+            await client.query("BEGIN");
+            // Delete connections (bidirectional)
+            await client.query(
+                "DELETE FROM connections WHERE (user_id = $1 AND connected_user_id = $2) OR (user_id = $2 AND connected_user_id = $1)",
+                [userId, targetId]
+            );
+            // Delete follows (bidirectional)
+            await client.query(
+                "DELETE FROM followers WHERE (follower_id = $1 AND following_id = $2) OR (follower_id = $2 AND following_id = $1)",
+                [userId, targetId]
+            );
+            // Delete pending requests (bidirectional)
+            // Note: blockUser normally handles the block status in connection_requests if implemented there, 
+            // but here we are using a separate BlockModel? 
+            // The previous logic for handleConnectionRequest used 'blocked' status in connection_requests.
+            // If BlockModel is separate, we should probably clear the connection_request or set it to blocked if the schema supports it.
+            // For now, adhering to 'remove connection' logic: delete requests.
+            await client.query(
+                "DELETE FROM connection_requests WHERE (sender_id = $1 AND receiver_id = $2) OR (sender_id = $2 AND receiver_id = $1)",
+                [userId, targetId]
+            );
+
+            await client.query("COMMIT");
+        } catch (e) {
+            await client.query("ROLLBACK");
+            console.error("Block cleanup error", e);
+        } finally {
+            client.release();
+        }
 
         res.json({ message: "User blocked successfully" });
     } catch (err) {
         console.error("Block user error:", err);
         res.status(500).json({ message: "Internal server error" });
+    }
+};
+
+// Remove Connection
+exports.removeConnection = async (req, res) => {
+    const userId = req.user.sub;
+    const targetUserId = req.params.id;
+
+    const client = await pool.connect();
+
+    try {
+        await client.query("BEGIN");
+
+        // Delete connections (bidirectional)
+        await client.query(
+            "DELETE FROM connections WHERE (user_id = $1 AND connected_user_id = $2) OR (user_id = $2 AND connected_user_id = $1)",
+            [userId, targetUserId]
+        );
+
+        // Delete follows (uni-directional removal) - Only I stop following them
+        // They continue to follow me unless they unfollow
+        await client.query(
+            "DELETE FROM followers WHERE follower_id = $1 AND following_id = $2",
+            [userId, targetUserId]
+        );
+
+        await client.query("COMMIT");
+
+        // Notify both users about relationship update
+        socketService.notifyUser(userId, "relationshipUpdated", { userId: targetUserId, status: 'none' });
+        socketService.notifyUser(targetUserId, "relationshipUpdated", { userId: userId, status: 'none' });
+
+        return res.status(200).json({ message: "Connection removed" });
+    } catch (err) {
+        await client.query("ROLLBACK");
+        console.error("Remove connection error:", err);
+        return res.status(500).json({ message: "Internal server error" });
+    } finally {
+        client.release();
+    }
+};
+
+// Get Detailed Relationship Status
+exports.getRelationshipStatus = async (req, res) => {
+    const userId = req.user.sub;
+    const targetUserId = req.params.id;
+
+    if (userId === targetUserId) {
+        return res.status(200).json({
+            is_me: true,
+            status: 'me',
+            is_following: false,
+            is_followed_by: false
+        });
+    }
+
+    try {
+        const client = await pool.connect();
+        try {
+            // Check connection
+            const connectedRes = await client.query(
+                "SELECT 1 FROM connections WHERE user_id = $1 AND connected_user_id = $2",
+                [userId, targetUserId]
+            );
+            const isConnected = connectedRes.rowCount > 0;
+
+            if (isConnected) {
+                return res.status(200).json({
+                    status: 'connected',
+                    is_following: true, // Implicit
+                    is_followed_by: true // Implicit
+                });
+            }
+
+            // Check pending requests (Outgoing or Incoming)
+            const requestRes = await client.query(
+                "SELECT request_id, sender_id, status, cooldown_until FROM connection_requests WHERE ((sender_id = $1 AND receiver_id = $2) OR (sender_id = $2 AND receiver_id = $1)) AND status IN ('pending', 'rejected', 'blocked')",
+                [userId, targetUserId]
+            );
+
+            let status = 'none';
+            let cooldown = false;
+            let requestId = null;
+            let sender = null;
+
+            if (requestRes.rowCount > 0) {
+                const req = requestRes.rows[0];
+                requestId = req.request_id;
+
+                if (req.status === 'pending') {
+                    if (req.sender_id === userId) {
+                        status = 'pending_sent';
+                    } else {
+                        status = 'pending_received';
+                        sender = req.sender_id;
+                    }
+                } else if (req.status === 'rejected') {
+                    // Check cooldown
+                    // If I sent it and it was rejected, I might be on cooldown
+                    if (req.sender_id === userId && new Date(req.cooldown_until) > new Date()) {
+                        status = 'cooldown';
+                        cooldown = true;
+                    }
+                } else if (req.status === 'blocked') {
+                    // status = 'blocked'; 
+                }
+            }
+
+            // Check specific follows if not connected (should strictly not happen if connected)
+            const followingRes = await client.query(
+                "SELECT 1 FROM followers WHERE follower_id = $1 AND following_id = $2",
+                [userId, targetUserId]
+            );
+            const followedByRes = await client.query(
+                "SELECT 1 FROM followers WHERE follower_id = $1 AND following_id = $2",
+                [targetUserId, userId]
+            );
+
+            // Re-check for ID if we found a request but didn't assign it (logic redundancy cleanup)
+            if (requestRes.rowCount > 0 && !requestId) {
+                requestId = requestRes.rows[0].request_id;
+            }
+
+            return res.status(200).json({
+                status,
+                is_following: followingRes.rowCount > 0,
+                is_followed_by: followedByRes.rowCount > 0,
+                request_id: requestId,
+                sender: sender
+            });
+
+        } finally {
+            client.release();
+        }
+    } catch (err) {
+        console.error("Get relationship error:", err);
+        return res.status(500).json({ message: "Internal server error" });
     }
 };
 

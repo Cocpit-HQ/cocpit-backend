@@ -3,7 +3,7 @@ CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
 -- Enums for constrained values (or use lookup tables if mutable)
 CREATE TYPE visibility_type AS ENUM ('public', 'connections', 'private');
-CREATE TYPE connection_status AS ENUM ('pending', 'connected', 'blocked');
+CREATE TYPE connection_status AS ENUM ('pending', 'connected', 'blocked', 'rejected');
 CREATE TYPE job_work_mode AS ENUM ('Remote', 'Hybrid', 'Onsite');
 CREATE TYPE job_company_type AS ENUM ('Startup', 'MNC', 'Product-based', 'Service-based');
 CREATE TYPE event_type AS ENUM ('Online', 'InPerson');
@@ -250,12 +250,39 @@ CREATE TABLE connection_requests (
   receiver_id UUID NOT NULL
     REFERENCES users(user_id) ON DELETE CASCADE,
   status connection_status DEFAULT 'pending',
-  -- pending | connected | rejected
+  -- pending | connected | blocked | rejected
+  message TEXT,
+  cooldown_until TIMESTAMPTZ,
   created_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ DEFAULT now(),
   responded_at TIMESTAMPTZ,
   UNIQUE (sender_id, receiver_id),
   CHECK (sender_id <> receiver_id)
 );
+
+-- Strict Bidirectional Index for Pending Requests (Prevent A->B and B->A simultaneously)
+CREATE UNIQUE INDEX IF NOT EXISTS connection_requests_bidirectional_idx 
+ON connection_requests (LEAST(sender_id, receiver_id), GREATEST(sender_id, receiver_id))
+WHERE status = 'pending';
+
+-- Index for Cooldown/Block lookups
+CREATE INDEX IF NOT EXISTS connection_requests_cooldown_idx 
+ON connection_requests (sender_id, receiver_id, status, cooldown_until)
+WHERE status IN ('rejected', 'blocked');
+
+-- Trigger to update updated_at
+CREATE OR REPLACE FUNCTION update_updated_at_column()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.updated_at = CURRENT_TIMESTAMP;
+    RETURN NEW;
+END;
+$$ language 'plpgsql';
+
+CREATE TRIGGER update_connection_requests_updated_at
+    BEFORE UPDATE ON connection_requests
+    FOR EACH ROW
+    EXECUTE FUNCTION update_updated_at_column();
 
 CREATE TABLE connections (
   connection_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
