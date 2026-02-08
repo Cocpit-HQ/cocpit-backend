@@ -120,13 +120,32 @@ exports.getGroupDetails = async (req, res) => {
 
 exports.getGroupInvitations = async (req, res) => {
     try {
+        const userId = req.user.sub || req.user.user_id;
         const { groupId } = req.params;
-        const invitations = await GroupChatService.getGroupInvitations(groupId);
+        const invitations = await GroupChatService.getGroupInvitations(userId, groupId);
         res.json(invitations);
     } catch (err) {
+        if (err.message === "Only admin can view invitations" || err.message.includes("Only admin")) {
+            return res.status(403).json({ message: err.message });
+        }
         res.status(500).json({ message: err.message });
     }
-}
+};
+
+exports.promoteToAdmin = async (req, res) => {
+    try {
+        const userId = req.user.sub || req.user.user_id;
+        const { groupId, userId: targetUserId } = req.params;
+
+        await GroupChatService.promoteToAdmin(userId, groupId, targetUserId);
+        res.json({ success: true, message: "Member promoted to admin" });
+    } catch (err) {
+        if (err.message.includes("Only admin")) {
+            return res.status(403).json({ message: err.message });
+        }
+        res.status(500).json({ message: err.message });
+    }
+};
 
 exports.removeMember = async (req, res) => {
     try {
@@ -146,12 +165,38 @@ exports.updateGroupAvatar = async (req, res) => {
         const { groupId } = req.params;
         const { avatarUrl } = req.body;
 
-        if (!avatarUrl) return res.status(400).json({ message: "Avatar URL is required" });
+        if (avatarUrl === undefined) return res.status(400).json({ message: "Avatar URL is required" });
 
         const group = await GroupChatService.updateGroupAvatar(userId, groupId, avatarUrl);
         res.json(group);
     } catch (err) {
         console.error("Update Group Avatar Error:", err);
         res.status(403).json({ message: err.message });
+    }
+}
+
+exports.markGroupMessagesAsRead = async (req, res) => {
+    try {
+        const userId = req.user.sub || req.user.user_id;
+        const { groupId } = req.params;
+
+        const result = await GroupChatService.markGroupMessagesAsRead(userId, groupId);
+        res.json(result);
+    } catch (err) {
+        console.error("Mark Messages Read Error:", err);
+        res.status(500).json({ message: err.message });
+    }
+}
+
+exports.getMessageReadReceipts = async (req, res) => {
+    try {
+        const userId = req.user.sub || req.user.user_id;
+        const { groupId, messageId } = req.params;
+
+        const receipts = await GroupChatService.getMessageReadReceipts(userId, groupId, messageId);
+        res.json(receipts);
+    } catch (err) {
+        console.error("Get Read Receipts Error:", err);
+        res.status(500).json({ message: err.message });
     }
 }

@@ -13,18 +13,13 @@ class GroupChatModel {
     }
 
     static async addMember({ groupId, userId, role = 'member', status = 'joined' }) {
-        // Note: 'role' and 'status' columns might need to be added to conversation_participants if not present.
-        // Based on my migration, I didn't add role/status to participants, I relied on group_invitations for status.
-        // But for the admin adding themselves, or accepting invite, we insert into participants.
-        // If table doesn't have role/status, we just insert.
-        // Let's assume standard join for now.
         const result = await pool.query(
-            `INSERT INTO conversation_participants (conversation_id, user_id) 
-      VALUES ($1, $2) 
+            `INSERT INTO conversation_participants (conversation_id, user_id, role) 
+      VALUES ($1, $2, $3) 
       ON CONFLICT (conversation_id, user_id) 
-      DO UPDATE SET left_at = NULL, joined_at = now()
+      DO UPDATE SET left_at = NULL, joined_at = now(), role = $3
       RETURNING *`,
-            [groupId, userId]
+            [groupId, userId, role]
         );
         return result.rows[0];
     }
@@ -114,14 +109,26 @@ class GroupChatModel {
     }
 
     static async getGroupMembers(groupId) {
-        const result = await pool.query(
-            `SELECT u.user_id, u.full_name, u.avatar_url, u.headline, cp.joined_at, cp.left_at 
-       FROM conversation_participants cp
-       JOIN users u ON cp.user_id = u.user_id
-       WHERE cp.conversation_id = $1 AND cp.left_at IS NULL`,
-            [groupId]
-        );
+        const query = `
+            SELECT u.user_id, u.full_name, u.avatar_url, u.headline, cp.joined_at, cp.role
+            FROM conversation_participants cp
+            JOIN users u ON cp.user_id = u.user_id
+            WHERE cp.conversation_id = $1
+            ORDER BY cp.joined_at ASC
+        `;
+        const result = await pool.query(query, [groupId]);
         return result.rows;
+    }
+
+    static async updateMemberRole(groupId, userId, role) {
+        const query = `
+            UPDATE conversation_participants
+            SET role = $3
+            WHERE conversation_id = $1 AND user_id = $2
+            RETURNING *
+        `;
+        const result = await pool.query(query, [groupId, userId, role]);
+        return result.rows[0];
     }
     static async createMessage({ groupId, senderId, content, type = 'text', actionType = null, targetId = null }) {
         const result = await pool.query(
@@ -164,6 +171,61 @@ class GroupChatModel {
             [avatarUrl, groupId]
         );
         return result.rows[0];
+    }
+
+    // --- Read Receipts ---
+
+    static async markMessagesAsRead(userId, groupId) {
+        // 1. Insert into message_reads
+        const result = await pool.query(
+            `INSERT INTO message_reads (message_id, user_id, read_at)
+             SELECT m.message_id, $1, NOW()
+             FROM messages m
+             WHERE m.conversation_id = $2
+               AND m.sender_id != $1
+             ON CONFLICT (message_id, user_id) DO NOTHING
+             RETURNING message_id`,
+            [userId, groupId]
+        );
+
+        // 2. Update conversation_participants last_read_at (Fixes sidebar count)
+        await pool.query(
+            `UPDATE conversation_participants
+             SET last_read_at = NOW()
+             WHERE conversation_id = $1 AND user_id = $2`,
+            [groupId, userId]
+        );
+
+        return result.rows;
+    }
+
+    static async getReadReceipts(messageId) {
+        const result = await pool.query(
+            `SELECT u.user_id, u.full_name, u.avatar_url, mr.read_at
+             FROM message_reads mr
+             JOIN users u ON mr.user_id = u.user_id
+             WHERE mr.message_id = $1
+             ORDER BY mr.read_at ASC`,
+            [messageId]
+        );
+        return result.rows;
+    }
+
+    static async getUnreadCount(userId, groupId) {
+        // Count messages in this group sent by others that don't have a read entry
+        const result = await pool.query(
+            `SELECT COUNT(*)
+             FROM messages m
+             WHERE m.conversation_id = $2
+               AND m.sender_id != $1
+               AND NOT EXISTS (
+                   SELECT 1 FROM message_reads mr
+                   WHERE mr.message_id = m.message_id
+                     AND mr.user_id = $1
+               )`,
+            [userId, groupId]
+        );
+        return parseInt(result.rows[0].count, 10);
     }
 }
 

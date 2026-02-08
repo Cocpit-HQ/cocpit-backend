@@ -17,6 +17,11 @@ router.post("/groups/:groupId/leave", controller.leaveGroup);
 router.post("/groups/:groupId/messages", controller.sendMessage);
 router.get("/groups/:groupId/invitations", controller.getGroupInvitations);
 router.delete("/groups/:groupId/members/:userId", controller.removeMember);
+router.post("/groups/:groupId/members/:userId/promote", controller.promoteToAdmin);
 router.put("/groups/:groupId/avatar", controller.updateGroupAvatar);
+
+// Read Receipts
+router.post("/groups/:groupId/read", controller.markGroupMessagesAsRead);
+router.get("/groups/:groupId/messages/:messageId/read", controller.getMessageReadReceipts);
 
 module.exports = router;

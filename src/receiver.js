@@ -9,9 +9,9 @@ const { io } = require("socket.io-client");
 
 // 1. USE A REAL, NON-EXPIRED ACCESS TOKEN
 // Must be the SAME token that works with protected REST APIs
-const ACCESS_TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI1YmM1NjU4MS01NThlLTRjNmItYTBmMy0wMWYyNjM4YjNlZWYiLCJzaWQiOiIzMDg3NDZlMC1jNWM5LTQ1MmQtOWU2Zi04NzA0NzQ5Y2JjZTkiLCJyb2xlcyI6WyJBZG1pbiJdLCJpYXQiOjE3NjgxMjY4OTcsImV4cCI6MTc2ODEyNzc5N30.zGjl1ZsdR4QeEqVwC_ecPAcN79tkfevXStP5QUEC4tE"
+const ACCESS_TOKEN = require('fs').readFileSync('token.txt', 'utf-8');
 // 2. Backend base URL (NOT /api, NOT /socket.io)
-const SOCKET_URL = "http://192.168.1.6:5000";
+const SOCKET_URL = process.env.SOCKET_URL || "http://localhost:5001";
 
 // 3. Conversation ID you want to listen to
 const CONVERSATION_ID = "58e4d998-e4c6-4f5b-a42d-16fc4f8e424b";
@@ -20,7 +20,7 @@ const socket = io(SOCKET_URL, {
   auth: {
     token: ACCESS_TOKEN, //  NO "Bearer "
   },
-  transports: ["websocket"],
+  // transports: ["websocket"], // Let it negotiate
   reconnection: true,
 });
 
@@ -32,11 +32,19 @@ socket.on("connect", () => {
   // Join conversation room
   socket.emit("joinConversation", CONVERSATION_ID);
   console.log(" Joined conversation:", CONVERSATION_ID);
+
+  // [TEST] Join Group
+  socket.emit("joinGroup", { groupId: CONVERSATION_ID });
+  console.log(" [Group] Joined group:", CONVERSATION_ID);
 });
 
 // ---------------- ERRORS ----------------
 socket.on("connect_error", (err) => {
   console.error(" Socket connection error:", err.message);
+});
+
+socket.on("error", (err) => {
+  console.error(" Server Error:", err);
 });
 
 // ---------------- REAL-TIME EVENTS ----------------
@@ -55,9 +63,46 @@ socket.on("notification", (data) => {
   console.log(data);
 });
 
+// Track typing users: { [groupId]: Map<userId, username> }
+const groupTypingUsers = {};
+
 socket.on("isTyping", (data) => {
-  console.log(" USER TYPING:");
-  console.log(data);
+  if (data.isGroup) {
+    if (!groupTypingUsers[data.conversationId]) {
+      groupTypingUsers[data.conversationId] = new Map();
+    }
+    groupTypingUsers[data.conversationId].set(data.senderId, data.username);
+
+    const users = Array.from(groupTypingUsers[data.conversationId].values());
+    console.log(`\n⌨️  [Group ${data.conversationId}] TYPING INDICATOR:`);
+    if (users.length === 1) {
+      console.log(`   ${users[0]} is typing...`);
+    } else {
+      console.log(`   ${users.join(", ")} are typing...`);
+    }
+  } else {
+    console.log(" USER TYPING (Single Chat): someone is typing...");
+  }
+});
+
+socket.on("stoppedTyping", (data) => {
+  if (data.isGroup) {
+    if (groupTypingUsers[data.conversationId]) {
+      groupTypingUsers[data.conversationId].delete(data.senderId);
+
+      const users = Array.from(groupTypingUsers[data.conversationId].values());
+      if (users.length > 0) {
+        console.log(`\n⌨️  [Group ${data.conversationId}] TYPING INDICATOR:`);
+        if (users.length === 1) {
+          console.log(`   ${users[0]} is typing...`);
+        } else {
+          console.log(`   ${users.join(", ")} are typing...`);
+        }
+      } else {
+        console.log(`\n⌨️  [Group ${data.conversationId}] Typing stopped (list empty)`);
+      }
+    }
+  }
 });
 
 socket.on("userStatusChanged", (data) => {
@@ -69,3 +114,4 @@ socket.on("userStatusChanged", (data) => {
 socket.on("disconnect", (reason) => {
   console.log(" Disconnected:", reason);
 });
+
