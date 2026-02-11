@@ -870,9 +870,11 @@ SELECT
     u.user_id AS other_user_id,
     u.headline AS other_user_headline,
     
-    -- Get the most recent message (fallback to messages table if conversation field is null)
-    COALESCE(c.last_message, m.text_content) AS last_message_text,
-    COALESCE(c.last_message_at, m.created_at, c.updated_at) AS last_message_at
+    -- Get the most recent message dynamically
+    -- Prioritize the calculated message from LATERAL JOIN
+    -- Fallback to conversation fields if no message found (e.g. new chat)
+    COALESCE(m.text_content, c.last_message) AS last_message_text,
+    COALESCE(m.created_at, c.last_message_at, c.updated_at) AS last_message_at
 FROM conversations c
 JOIN conversation_participants cp ON c.conversation_id = cp.conversation_id
 -- For 1-on-1, join the other participant. For groups, this might return multiple or we skip via logic.
@@ -881,18 +883,34 @@ LEFT JOIN conversation_participants cp_other ON c.conversation_id = cp_other.con
     AND cp_other.user_id != $1 AND c.is_group = FALSE
 LEFT JOIN users u ON cp_other.user_id = u.user_id
 
--- Restore JOIN for backward compatibility with existing chats that lack last_message
+-- LATERAL JOIN to find the latest VISIBLE message for this user
 LEFT JOIN LATERAL (
-    SELECT text_content, created_at FROM messages 
-    WHERE conversation_id = c.conversation_id 
-    ORDER BY created_at DESC LIMIT 1
+    SELECT 
+        CASE 
+            WHEN msg.is_deleted_for_everyone THEN 'This message was deleted'
+            WHEN msg.shared_post_id IS NOT NULL THEN 'Shared a post'
+            WHEN msg.text_content IS NULL OR msg.text_content = '' THEN 'Attachment' -- Image/Video
+            ELSE msg.text_content
+        END as text_content,
+        msg.created_at
+    FROM messages msg
+    WHERE msg.conversation_id = c.conversation_id
+    -- Exclude messages deleted for me
+    AND NOT EXISTS (
+        SELECT 1 FROM message_delete md 
+        WHERE md.message_id = msg.message_id 
+        AND md.user_id = $1
+    )
+    -- Exclude hidden/blocked messages? (Optional, but best practice)
+    ORDER BY msg.created_at DESC 
+    LIMIT 1
 ) m ON true
 
 WHERE cp.user_id = $1
 -- Ensure distinct conversations (fix for potential multiple rows if join logic leaks)
 -- Actually, if is_group=FALSE, cp_other matches 1 row (unless multi-party DM which we don't support yet).
 -- If is_group=TRUE, cp_other is NULL due to condition.
-ORDER BY COALESCE(c.last_message_at, m.created_at, c.updated_at) DESC NULLS LAST;
+ORDER BY COALESCE(m.created_at, c.last_message_at, c.updated_at) DESC NULLS LAST;
   `, [userId]
         );
 

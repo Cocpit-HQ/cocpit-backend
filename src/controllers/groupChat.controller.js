@@ -217,6 +217,9 @@ exports.markGroupMessagesAsRead = async (req, res) => {
         res.json(result);
     } catch (err) {
         console.error("Mark Messages Read Error:", err);
+        if (err.message === "User is not a member of this group") {
+            return res.status(403).json({ message: err.message });
+        }
         res.status(500).json({ message: err.message });
     }
 }
