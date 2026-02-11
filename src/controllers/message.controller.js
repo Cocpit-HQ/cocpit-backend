@@ -65,6 +65,13 @@ exports.deleteMessage = async (req, res) => {
                 // Emit to room
                 socketService.notifyConversation(conversationId, "message_deleted", socketPayload);
 
+                // Emit conversation-updated to refresh sidebar
+                socketService.notifyConversation(conversationId, "conversation-updated", {
+                    conversationId,
+                    lastMessage: "This message was deleted", // Simple placeholder, frontend fetches real state or uses this
+                    updatedAt: new Date().toISOString()
+                });
+
             } else {
                 // DELETE FOR ME
                 // Insert into message_delete table
@@ -84,6 +91,13 @@ exports.deleteMessage = async (req, res) => {
                 };
 
                 socketService.notifyUser(userId, "message_deleted", socketPayload);
+
+                // Emit conversation-updated to refresh sidebar for THIS user
+                socketService.notifyUser(userId, "conversation-updated", {
+                    conversationId: message.conversation_id,
+                    lastMessage: null, // Let frontend fetch or use previous
+                    updatedAt: new Date().toISOString()
+                });
             }
 
             await client.query("COMMIT");
