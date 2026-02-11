@@ -961,9 +961,11 @@ exports.deleteConversation = async (req, res) => {
 exports.sendMessage = async (req, res) => {
     const senderId = req.user.sub;
     const { targetUserId, text_content, shared_post_id } = req.body;
+    const images = req.files; // Array of files from multer
 
-    if (!targetUserId || (!text_content && !shared_post_id)) {
-        return res.status(400).json({ message: "targetUserId and content (text or shared post) are required" });
+    // Basic validation: user needs target + (text OR post OR images)
+    if (!targetUserId || (!text_content && !shared_post_id && (!images || images.length === 0))) {
+        return res.status(400).json({ message: "targetUserId and content (text, post, or images) are required" });
     }
 
     if (senderId === targetUserId)
@@ -1019,7 +1021,6 @@ exports.sendMessage = async (req, res) => {
             conversationId = existingConv.rows[0].conversation_id;
         } else {
             // Create new 1-on-1 conversation in a transaction
-
             const convRes = await client.query(
                 `INSERT INTO conversations (is_group) VALUES (FALSE) RETURNING conversation_id`
             );
@@ -1032,13 +1033,47 @@ exports.sendMessage = async (req, res) => {
         }
 
         // Insert the message
+        // Determine message text for notifications/preview
+        // Determine message text for notifications/preview
+        const previewText = text_content
+            ? text_content
+            : (images && images.length > 0
+                ? (images.length > 1 ? `${images.length} attachments` : (images[0].mimetype.startsWith('video/') ? 'Sent a video' : (images[0].mimetype === 'application/pdf' ? 'Sent a document' : 'Sent a photo')))
+                : (shared_post_id ? 'Shared a post' : 'Attachment'));
+
         const msgRes = await client.query(
             `INSERT INTO messages (conversation_id, sender_id, text_content, shared_post_id)
                  VALUES ($1, $2, $3, $4) RETURNING *`,
             [conversationId, senderId, text_content || '', shared_post_id || null]
         );
+        const newMessage = msgRes.rows[0];
 
-        // Fetch shared post details if applicable for immediate socket update
+        // Process Images
+        // Process Media (Images, Video, PDF)
+        let mediaRecords = [];
+        if (images && images.length > 0) {
+            const mediaValues = images.map(file => {
+                let type = 'image';
+                if (file.mimetype.startsWith('video/')) type = 'video';
+                if (file.mimetype === 'application/pdf') type = 'document'; // Use 'document' as per schema update (ensure schema allows this!)
+                // Wait, I updated schema to allow 'document'.
+                return [newMessage.message_id, file.path, type];
+            });
+
+            // Construct bulk insert parameters
+            const placeholders = mediaValues.map((_, i) => `($${i * 3 + 1}, $${i * 3 + 2}, $${i * 3 + 3})`).join(', ');
+            const flatValues = mediaValues.flat();
+
+            const mediaRes = await client.query(
+                `INSERT INTO message_media (message_id, url, media_type) 
+                   VALUES ${placeholders} 
+                   RETURNING url, media_type`,
+                flatValues
+            );
+            mediaRecords = mediaRes.rows;
+        }
+
+        // Fetch shared post details if applicable
         let sharedPostData = null;
         if (shared_post_id) {
             const spRes = await client.query(`
@@ -1060,12 +1095,13 @@ exports.sendMessage = async (req, res) => {
                  last_message = $2,
                  last_message_at = now()
              WHERE conversation_id = $1`,
-            [conversationId, text_content || (shared_post_id ? 'Shared a post' : 'Attachment')]
+            [conversationId, previewText]
         );
         await client.query('COMMIT');
 
         const messageData = {
-            ...msgRes.rows[0],
+            ...newMessage,
+            media: mediaRecords,
             shared_post: sharedPostData,
             sender_name: senderName,
             sender_avatar: senderAvatar
@@ -1073,7 +1109,7 @@ exports.sendMessage = async (req, res) => {
 
         // Notify target user via service
         socketService.notifyUser(targetUserId, "new_message", messageData);
-        // Notify sender as well (for multi-device sync and chat list update)
+        // Notify sender as well
         socketService.notifyUser(senderId, "new_message", messageData);
 
         socketService.notifyUser(targetUserId, "notification", {
@@ -1082,16 +1118,17 @@ exports.sendMessage = async (req, res) => {
             senderName,
             senderAvatar,
             conversationId,
+            text: previewText
         });
 
         res.status(201).json({
             conversationId,
             message: "Message sent successfully",
-            data: msgRes.rows[0]
+            data: messageData
         });
     } catch (err) {
         await client.query('ROLLBACK');
-        console.error("Error in sendMessage:", err); // Added error logging
+        console.error("Error in sendMessage:", err);
         res.status(500).json({ message: "Internal server error" });
     } finally {
         client.release();
@@ -1307,6 +1344,10 @@ exports.getMessages = async (req, res) => {
                 m.deleted_at,
                 u.full_name as sender_name,
                 u.avatar_url as sender_avatar,
+                (SELECT json_agg(json_build_object('url', mm.url, 'media_type', mm.media_type)) 
+                 FROM message_media mm 
+                 WHERE mm.message_id = m.message_id
+                ) as media,
                 CASE 
                     WHEN EXISTS (SELECT 1 FROM blocks WHERE blocker_id = $4 AND blocked_id = m.sender_id) THEN true 
                     ELSE false 
@@ -1349,17 +1390,30 @@ exports.getMessages = async (req, res) => {
 
         // Process messages: Filter "delete for me" and mask "delete for everyone"
         const comments = result.rows
-            .filter(msg => !msg.is_deleted_for_me)
             .map(msg => {
+                // If deleted for everyone, show generic deleted message
                 if (msg.is_deleted_for_everyone) {
                     return {
                         ...msg,
-                        text_content: "🚫 This message was deleted",
-                        shared_post: null, // Clear shared post if deleted
+                        text_content: "This message was deleted",
+                        shared_post: null,
                         is_deleted: true,
                         message_type: 'text'
                     };
                 }
+
+                // If deleted JUST for me, show specific message
+                if (msg.is_deleted_for_me) {
+                    return {
+                        ...msg,
+                        text_content: "This message deleted for you",
+                        shared_post: null,
+                        is_deleted: true,
+                        // Keep message_type text so it renders as a bubble, but with specific styling in frontend
+                        message_type: 'text'
+                    };
+                }
+
                 return msg;
             })
             .reverse();
@@ -1375,25 +1429,60 @@ exports.getMessages = async (req, res) => {
 exports.deleteMessage = async (req, res) => {
     const userId = req.user.sub;
     const message_id = req.params.id;
+    const { deleteForEveryone } = req.body;
 
     try {
-        const result = await pool.query(
-            `DELETE FROM messages WHERE message_id = $1 AND sender_id = $2 RETURNING *`,
-            [message_id, userId]
+        // First get the message to verify ownership and get conversation_id
+        const msgResult = await pool.query(
+            `SELECT conversation_id, sender_id FROM messages WHERE message_id = $1`,
+            [message_id]
         );
 
-        if (result.rowCount === 0)
+        if (msgResult.rowCount === 0)
             return res.status(404).json({ message: "Message not found" });
-        const { conversation_id } = result.rows[0];
 
-        // 🔥 Notify all participants
-        socketService.notifyConversation(conversation_id, "messageDeleted", {
-            messageId: message_id,
-            conversationId: conversation_id,
-        });
+        const { conversation_id, sender_id } = msgResult.rows[0];
+
+        if (deleteForEveryone) {
+            // Check ownership
+            if (String(sender_id) !== String(userId)) {
+                return res.status(403).json({ message: "You can only delete your own messages for everyone" });
+            }
+
+            // Soft delete for everyone
+            await pool.query(
+                `UPDATE messages SET is_deleted_for_everyone = TRUE WHERE message_id = $1`,
+                [message_id]
+            );
+
+            // Notify all participants
+            socketService.notifyConversation(conversation_id, "message_deleted", {
+                messageId: message_id,
+                conversationId: conversation_id,
+                deleteType: 'everyone'
+            });
+            // Also emit specific event for GroupChat compatibility
+            socketService.notifyConversation(conversation_id, "message_deleted_for_everyone", {
+                messageId: message_id,
+                conversationId: conversation_id
+            });
+
+        } else {
+            // Delete for me (soft delete)
+            // Insert into message_delete table
+            // Ensure we don't insert duplicate
+            await pool.query(
+                `INSERT INTO message_delete (message_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+                [message_id, userId]
+            );
+
+            // Do NOT notify conversation for "delete for me" to avoid affecting others
+            // The client performs optimistic update.
+        }
 
         res.json({ message: "Message deleted successfully" });
     } catch (err) {
+        console.error("Delete message error:", err);
         res.status(500).json({ message: "Internal server error" });
     }
 };

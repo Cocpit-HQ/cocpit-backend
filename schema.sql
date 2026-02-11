@@ -574,3 +574,12 @@ CREATE INDEX IF NOT EXISTS idx_message_reads_user_id ON message_reads(user_id);
 
 -- Index for "Seen by" feature (finding all users who read a specific message)
 -- The PK (message_id, user_id) already covers efficient lookup by message_id.
+
+-- 10/02/2026 Migration: Create message_media table
+CREATE TABLE IF NOT EXISTS message_media (
+  media_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  message_id UUID REFERENCES messages(message_id) ON DELETE CASCADE,
+  url TEXT NOT NULL,
+  media_type TEXT CHECK (media_type IN ('image', 'video')) DEFAULT 'image',
+  created_at TIMESTAMPTZ DEFAULT now()
+);

@@ -14,7 +14,11 @@ router.post("/groups/invitation/respond", controller.respondInvitation);
 router.get("/groups/:groupId", controller.getGroupDetails);
 router.delete("/groups/:groupId", controller.deleteGroup);
 router.post("/groups/:groupId/leave", controller.leaveGroup);
-router.post("/groups/:groupId/messages", controller.sendMessage);
+router.post("/groups/:groupId/messages", require("../middlewares/upload").uploadChatMedia.fields([
+    { name: 'images', maxCount: 10 },
+    { name: 'videos', maxCount: 5 },
+    { name: 'documents', maxCount: 5 }
+]), controller.sendMessage);
 router.get("/groups/:groupId/invitations", controller.getGroupInvitations);
 router.delete("/groups/:groupId/members/:userId", controller.removeMember);
 router.post("/groups/:groupId/members/:userId/promote", controller.promoteToAdmin);

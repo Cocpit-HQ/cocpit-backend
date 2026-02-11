@@ -130,7 +130,7 @@ class GroupChatModel {
         const result = await pool.query(query, [groupId, userId, role]);
         return result.rows[0];
     }
-    static async createMessage({ groupId, senderId, content, type = 'text', actionType = null, targetId = null }) {
+    static async createMessage({ groupId, senderId, content, type = 'text', actionType = null, targetId = null, previewText = null }) {
         const result = await pool.query(
             `INSERT INTO messages (conversation_id, sender_id, text_content, message_type, action_type, target_id) 
        VALUES ($1, $2, $3, $4, $5, $6) 
@@ -139,16 +139,35 @@ class GroupChatModel {
         );
 
         // Update conversation timestamp and last message for sorting
+        // Use previewText if provided, otherwise content
+        const lastMessageText = previewText !== null ? previewText : content;
+
         await pool.query(
             `UPDATE conversations 
              SET updated_at = now(),
                  last_message = $2,
                  last_message_at = now()
              WHERE conversation_id = $1`,
-            [groupId, content]
+            [groupId, lastMessageText]
         );
 
         return result.rows[0];
+    }
+
+    static async addMessageMedia(messageId, mediaRecords) {
+        if (!mediaRecords || mediaRecords.length === 0) return [];
+
+        const values = mediaRecords.map(m => [messageId, m.url, m.type]);
+        const placeholders = values.map((_, i) => `($${i * 3 + 1}, $${i * 3 + 2}, $${i * 3 + 3})`).join(', ');
+        const flatValues = values.flat();
+
+        const result = await pool.query(
+            `INSERT INTO message_media (message_id, url, media_type) 
+             VALUES ${placeholders} 
+             RETURNING url, media_type`,
+            flatValues
+        );
+        return result.rows;
     }
 
     static async getGroupInvitations(groupId) {
