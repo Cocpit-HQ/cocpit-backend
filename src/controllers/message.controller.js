@@ -37,7 +37,10 @@ exports.deleteMessage = async (req, res) => {
 
             if (deleteForEveryone) {
                 // DELETE FOR EVERYONE
-                // Soft delete: Update message content
+                // 1. Delete associated media
+                await client.query("DELETE FROM message_media WHERE message_id = $1", [messageId]);
+
+                // 2. Soft delete: Update message content
                 // Keep the row, mark as deleted
                 await client.query(
                     `UPDATE messages 

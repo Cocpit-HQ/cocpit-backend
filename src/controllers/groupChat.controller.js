@@ -92,14 +92,47 @@ exports.sendMessage = async (req, res) => {
     try {
         const senderId = req.user.sub || req.user.user_id;
         const { groupId } = req.params;
-        const { content, type = 'text' } = req.body;
+        const { content } = req.body;
 
-        // Use pool directly or service. Using pool for consistency with other message inserts if generic service doesn't exist.
-        // But better to use a service method.
-        // Let's assume we can insert via model.
-        // Helper model method needed? Or just query here.
-        // "clean file separation". Logic in service.
-        await GroupChatService.sendMessage(senderId, groupId, content, type);
+        let files = [];
+        if (req.files) {
+            if (Array.isArray(req.files)) {
+                files = req.files;
+            } else {
+                files = Object.values(req.files).flat();
+            }
+        }
+
+        // Process files to determine type
+        let media = [];
+        let messageType = 'text';
+
+        if (files && files.length > 0) {
+            media = files.map(file => {
+                let type = 'image';
+                if (file.mimetype.startsWith('video/')) type = 'video';
+                if (file.mimetype === 'application/pdf') type = 'document';
+                return { url: file.path, type };
+            });
+
+            // If only one file, set message type to that file's type (or text if mixed? usually keep as text/image depending on UI)
+            // But we have 'message_type' column.
+            // If it has content, it's text with attachments.
+            // If no content, it's media message.
+            if (!content) {
+                if (media.length === 1) messageType = media[0].type;
+                else messageType = 'image'; // Default to image/media type for multiple
+            }
+        }
+
+        // Generate preview text if content is empty
+        const previewText = content
+            ? content
+            : (media.length > 0
+                ? (media.length > 1 ? `${media.length} attachments` : (media[0].type === 'video' ? 'Sent a video' : (media[0].type === 'document' ? 'Sent a document' : 'Sent a photo')))
+                : 'Message');
+
+        await GroupChatService.sendMessage(senderId, groupId, content, messageType, media, previewText);
         res.status(201).json({ success: true });
     } catch (err) {
         console.error("SendMessage Error:", err);

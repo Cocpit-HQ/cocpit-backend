@@ -48,7 +48,7 @@ router.delete("/conversations/:id", requireAuth, socialController.deleteConversa
 /* =====================================================
    MESSAGES
    ===================================================== */
-router.post("/messages", requireAuth, socialController.sendMessage);
+router.post("/messages", requireAuth, require("../middlewares/upload").uploadChatMedia.array("images", 10), socialController.sendMessage);
 router.post("/social/share", requireAuth, socialController.sharePostToConversations); // Batch Share
 router.get("/conversations/:id/messages", requireAuth, socialController.getMessages);
 router.delete("/messages/:messageId", requireAuth, require("../controllers/message.controller").deleteMessage);

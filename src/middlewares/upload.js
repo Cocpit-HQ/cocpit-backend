@@ -131,11 +131,7 @@ const uploadAvatar = multer({
   },
 });
 
-module.exports = {
-  upload,
-  uploadResume,
-  uploadAvatar,
-};
+
 
 // Event Banner Upload
 const eventBannerStorage = new CloudinaryStorage({
@@ -339,6 +335,52 @@ const uploadTaskSubmission = multer({
   }
 }).single('file'); // Matches frontend field name
 
+// --- Chat Media Upload (Images, Video, PDF) ---
+const chatMediaStorage = new CloudinaryStorage({
+  cloudinary,
+  params: async (req, file) => {
+    let resource_type = "image"; // Default
+    let folder = "chat_images";
+
+    if (file.mimetype.startsWith("video/")) {
+      resource_type = "video";
+      folder = "chat_videos";
+    } else if (file.mimetype === "application/pdf") {
+      resource_type = "raw"; // Cloudinary handles PDFs as 'raw' or 'image' (for thumbnail). 'raw' is safer for delivery.
+      // ACTUALLY: Cloudinary can treat PDF as image for preview. 
+      // But for reliable file storage/download, 'raw' or 'auto' is best.
+      // Let's use 'auto' to let Cloudinary decide, OR specific.
+      // For PDF viewing, often 'image' resource type is used to generate thumbnails.
+      // Let's stick to 'auto' for flexibility if possible, but multer-storage-cloudinary needs specific.
+      resource_type = "raw";
+      folder = "chat_documents";
+    }
+
+    return {
+      folder: folder,
+      resource_type: resource_type,
+      public_id: `chat-${req.user.sub}-${Date.now()}-${file.originalname}`,
+      // format: file.mimetype === "application/pdf" ? "pdf" : undefined 
+    };
+  }
+});
+
+const uploadChatMedia = multer({
+  storage: chatMediaStorage,
+  limits: { fileSize: 100 * 1024 * 1024 }, // 100MB limit
+  fileFilter: (req, file, cb) => {
+    const allowed = [
+      "image/jpeg", "image/png", "image/webp", "image/jpg",
+      "video/mp4", "video/webm", "video/quicktime",
+      "application/pdf"
+    ];
+    if (!allowed.includes(file.mimetype)) {
+      return cb(new Error("Invalid file format. Allowed: JPEG, PNG, WEBP, MP4, WebM, PDF."));
+    }
+    cb(null, true);
+  }
+});
+
 module.exports = {
   upload,
   uploadResume,
@@ -347,5 +389,6 @@ module.exports = {
   uploadStory,
   uploadCover,
   uploadApplicationFiles,
-  uploadTaskSubmission
+  uploadTaskSubmission,
+  uploadChatMedia
 };

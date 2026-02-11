@@ -254,7 +254,7 @@ class GroupChatService {
         const members = await GroupChatModel.getGroupMembers(groupId);
         return { ...group, members };
     }
-    static async sendMessage(senderId, groupId, content, type) {
+    static async sendMessage(senderId, groupId, content, type, media = [], previewText = null) {
         // 1. Verify user is member of group
         const members = await GroupChatModel.getGroupMembers(groupId);
         // console.log("Group Members:", members);
@@ -265,23 +265,31 @@ class GroupChatService {
         }
 
         // 2. Create message
-        const message = await GroupChatModel.createMessage({ groupId, senderId, content, type });
+        const message = await GroupChatModel.createMessage({ groupId, senderId, content, type, previewText });
 
-        // 3. Emit socket event
+        // 3. Insert Media
+        let mediaRecords = [];
+        if (media.length > 0) {
+            mediaRecords = await GroupChatModel.addMessageMedia(message.message_id, media);
+        }
+
+        // 4. Emit socket event
         // Enriched message for frontend (needs sender details)
         const sender = members.find(m => m.user_id === senderId);
         const enrichedMessage = {
             ...message,
+            media: mediaRecords, // Include media in socket event
             sender_name: sender.full_name,
             sender_avatar: sender.avatar_url,
             is_own: false // Will be determined by client
         };
 
         // Notify all members
-        members.forEach(member => {
-            socketService.notifyUser(member.user_id, 'new_message', enrichedMessage);
+        // Notify all members via room broadcast for the message itself
+        socketService.notifyConversation(groupId, 'new_message', enrichedMessage);
 
-            // Notify list update (MessagingPage listens to this)
+        // Notify list update (MessagingPage listens to this) via individual notifications
+        members.forEach(member => {
             // Suppress notification toast for the sender themselves
             if (member.user_id !== senderId) {
                 socketService.notifyUser(member.user_id, 'notification', {
@@ -290,12 +298,13 @@ class GroupChatService {
                     senderName: sender.full_name,
                     senderAvatar: sender.avatar_url,
                     conversationId: groupId,
-                    isGroup: true
+                    isGroup: true,
+                    text: previewText || content // Use previewText if available
                 });
             }
         });
 
-        return message;
+        return { ...message, media: mediaRecords };
     }
 
     static async getGroupInvitations(userId, groupId) {
