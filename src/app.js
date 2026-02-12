@@ -14,6 +14,7 @@ const userRoutes = require("./routes/user.routes");
 const uploadRoutes = require("./routes/upload.routes");
 const onboardingRoutes = require("./routes/onboarding.routes");
 const groupChatRoutes = require("./routes/groupChat.routes");
+const companyRoutes = require("./routes/company.routes");
 
 const app = express();
 app.set("trust proxy", true);
@@ -64,6 +65,7 @@ app.use("/api", socialRoutes); // /api/conversations...
 app.use("/api/users", userRoutes);
 app.use("/api", uploadRoutes);
 app.use("/api/onboarding", onboardingRoutes);
+app.use("/api", companyRoutes);
 app.use("/api", groupChatRoutes); // /api/groups...
 
 module.exports = app;

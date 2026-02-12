@@ -16,54 +16,64 @@ exports.searchUsers = async (req, res) => {
   const searchTerm = q.trim().replace(/^['\"]|['\"]$/g, '');
 
   try {
-    // Construct the query dynamically based on optional filters
-    let queryText = `
-      SELECT
-        u.user_id AS id,
-        u.full_name,
-        u.account_name,
-        u.headline,
-        u.avatar_url,
-        p.account_type
-      FROM users u
-      LEFT JOIN profiles p ON u.user_id = p.user_id
-      WHERE u.user_id != $1
-    `;
-
     const queryParams = [currentUserId];
-    let paramIndex = 2;
+    const likeTerm = `%${searchTerm}%`;
+    queryParams.push(likeTerm); // $2
 
-    // Add search condition - search by both full_name and account_name
-    queryText += ` AND (u.full_name ILIKE $${paramIndex} OR u.account_name ILIKE $${paramIndex})`;
-    queryParams.push(`%${searchTerm}%`);
-    paramIndex++;
-
-    // Optional accountType filter
+    let userAccountFilter = "";
     if (accountType) {
-      queryText += ` AND p.account_type = $${paramIndex}`;
-      queryParams.push(accountType);
-      paramIndex++;
+      queryParams.push(accountType); // $3
+      userAccountFilter = `AND p.account_type = $3`;
     }
 
-    // Exclude blocked users (both ways)
-    queryText += ` 
-      AND NOT EXISTS (
-        SELECT 1 FROM blocks b 
-        WHERE (b.blocker_id = $1 AND b.blocked_id = u.user_id)
-           OR (b.blocker_id = u.user_id AND b.blocked_id = $1)
-      )
-    `;
+    // Similarity param (raw term)
+    queryParams.push(searchTerm);
+    const simParamIdx = queryParams.length; // $3 or $4
 
-    // Order by similarity (closest match first)
-    // Prioritize account_name exact matches, then similarity
-    queryText += `
+    const queryText = `
+      SELECT * FROM (
+        (
+          SELECT
+            u.user_id AS id,
+            u.full_name,
+            u.account_name,
+            u.headline,
+            u.avatar_url,
+            p.account_type,
+            'USER'::text as type,
+            NULL::text as slug
+          FROM users u
+          LEFT JOIN profiles p ON u.user_id = p.user_id
+          WHERE u.user_id != $1
+          AND (u.full_name ILIKE $2 OR u.account_name ILIKE $2)
+          ${userAccountFilter}
+          AND NOT EXISTS (
+            SELECT 1 FROM blocks b 
+            WHERE (b.blocker_id = $1 AND b.blocked_id = u.user_id)
+               OR (b.blocker_id = u.user_id AND b.blocked_id = $1)
+          )
+        )
+        UNION ALL
+        (
+          SELECT
+            c.company_id AS id,
+            c.name AS full_name,
+            c.slug AS account_name,
+            c.industry AS headline,
+            c.logo_url AS avatar_url,
+            NULL::text AS account_type,
+            'COMPANY'::text as type,
+            c.slug as slug
+          FROM companies c
+          WHERE c.is_deleted = FALSE
+          AND (c.name ILIKE $2 OR c.slug ILIKE $2)
+        )
+      ) AS combined_results
       ORDER BY 
-        CASE WHEN u.account_name ILIKE $${paramIndex} THEN 0 ELSE 1 END,
-        SIMILARITY(u.full_name, $${paramIndex + 1}) DESC
+        CASE WHEN account_name ILIKE $2 THEN 0 ELSE 1 END,
+        SIMILARITY(full_name, $${simParamIdx}) DESC
       LIMIT 10
     `;
-    // Pass the search term for exact match check and similarity
-    queryParams.push(`${searchTerm}`, searchTerm);
 
     const result = await pool.query(queryText, queryParams);
 

@@ -237,17 +237,50 @@ CREATE TABLE stories (
 CREATE TABLE story_views (
   story_id UUID REFERENCES stories(story_id) ON DELETE CASCADE,
   viewer_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
-  viewed_at TIMESTAMPTZ DEFAULT now(),
-  PRIMARY KEY (story_id, viewer_id)
+  viewer_company_id UUID REFERENCES companies(company_id) ON DELETE CASCADE,
+  viewed_at TIMESTAMPTZ DEFAULT now()
+  -- Removed PK (story_id, viewer_id) to allow same user to view as company
 );
+
+-- Index for Personal Views (Unique per user if not acting as company)
+CREATE UNIQUE INDEX IF NOT EXISTS idx_story_views_personal_unique 
+ON story_views (story_id, viewer_id) 
+WHERE viewer_company_id IS NULL;
+
+-- Index for Company Views (Unique per company, regardless of which member viewed)
+CREATE UNIQUE INDEX IF NOT EXISTS idx_story_views_company_unique 
+ON story_views (story_id, viewer_company_id) 
+WHERE viewer_company_id IS NOT NULL;
 
 CREATE TABLE story_reactions (
   story_id UUID REFERENCES stories(story_id) ON DELETE CASCADE,
   user_id UUID REFERENCES users(user_id) ON DELETE CASCADE, --sender_id instead of user id 
+  reactor_company_id UUID REFERENCES companies(company_id) ON DELETE CASCADE,
   reaction_type BOOLEAN, 
-  created_at TIMESTAMPTZ DEFAULT now(),
-  PRIMARY KEY (story_id, user_id)
+  created_at TIMESTAMPTZ DEFAULT now()
+  -- Removed PK (story_id, user_id)
 );
+
+-- Index for Personal Reactions
+CREATE UNIQUE INDEX IF NOT EXISTS idx_story_reactions_personal_unique 
+ON story_reactions (story_id, user_id) 
+WHERE reactor_company_id IS NULL;
+
+-- Index for Company Reactions
+CREATE UNIQUE INDEX IF NOT EXISTS idx_story_reactions_company_unique 
+ON story_reactions (story_id, reactor_company_id) 
+WHERE reactor_company_id IS NOT NULL;
+
+CREATE TABLE story_comments (
+  comment_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  story_id UUID REFERENCES stories(story_id) ON DELETE CASCADE,
+  author_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
+  author_company_id UUID REFERENCES companies(company_id) ON DELETE CASCADE,
+  content TEXT NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX idx_story_comments_story_id ON story_comments(story_id);
 
 CREATE TABLE followers (
   follower_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
@@ -344,6 +377,7 @@ CREATE TABLE messages (
   --story_id UUID REFERENCES stories(story_id),
   action_type TEXT, -- 'add', 'leave', 'remove', 'create'
   target_id UUID REFERENCES users(user_id) ON DELETE SET NULL, -- Subject of the action
+  author_company_id UUID REFERENCES companies(company_id) ON DELETE SET NULL, -- acting as company
   created_at TIMESTAMPTZ DEFAULT now(),
   read_at TIMESTAMPTZ, -- NULL if unread
   CONSTRAINT messages_shared_post_id_fkey FOREIGN KEY (shared_post_id) REFERENCES posts(post_id) ON DELETE SET NULL
@@ -583,3 +617,206 @@ CREATE TABLE IF NOT EXISTS message_media (
   media_type TEXT CHECK (media_type IN ('image', 'video')) DEFAULT 'image',
   created_at TIMESTAMPTZ DEFAULT now()
 );
+
+-- 10/02/2026 Migration: Create companies, company_members, company_invites, company_verifications, audit_logs tables
+-- (007_create_companies.sql)
+
+-- 1. COMPANIES Table
+CREATE TABLE IF NOT EXISTS companies (
+    company_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    name VARCHAR(255) NOT NULL,
+    slug VARCHAR(255) NOT NULL UNIQUE,
+    email VARCHAR(255), -- Contact email for the company
+    industry VARCHAR(100),
+    size VARCHAR(50), -- e.g., '1-10', '11-50'
+    website VARCHAR(255),
+    location VARCHAR(255),
+    slogan TEXT,
+    logo_url TEXT,
+    cover_url TEXT,
+    description TEXT,
+    
+    -- Verification
+    verification_status VARCHAR(20) DEFAULT 'UNVERIFIED' 
+        CHECK (verification_status IN ('UNVERIFIED', 'DOMAIN_PENDING', 'DOMAIN_VERIFIED', 'REJECTED')),
+    
+    -- Meta
+    is_deleted BOOLEAN DEFAULT FALSE,
+    deleted_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+
+    -- Constraints
+    CONSTRAINT valid_slug_format CHECK (slug ~ '^[a-z0-9]+(?:-[a-z0-9]+)*$')
+);
+
+-- Index for slug lookups
+CREATE INDEX idx_companies_slug ON companies(slug);
+-- Index for domain verification checks (if we add domain column later, or use website)
+CREATE INDEX idx_companies_website ON companies(website);
+
+
+-- 2. COMPANY MEMBERS Table
+CREATE TABLE IF NOT EXISTS company_members (
+    company_id UUID REFERENCES companies(company_id) ON DELETE CASCADE,
+    user_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
+    role VARCHAR(20) NOT NULL CHECK (role IN ('OWNER', 'ADMIN', 'EDITOR')),
+    joined_at TIMESTAMPTZ DEFAULT NOW(),
+    
+    PRIMARY KEY (company_id, user_id)
+);
+
+CREATE INDEX idx_company_members_user_id ON company_members(user_id);
+CREATE INDEX idx_company_members_role ON company_members(role);
+
+
+-- 3. COMPANY INVITES Table
+CREATE TABLE IF NOT EXISTS company_invites (
+    invite_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    company_id UUID REFERENCES companies(company_id) ON DELETE CASCADE,
+    inviter_id UUID REFERENCES users(user_id) ON DELETE SET NULL, -- Who sent the invite
+    email VARCHAR(255) NOT NULL,
+    role VARCHAR(20) NOT NULL CHECK (role IN ('ADMIN', 'EDITOR')), -- Owner cannot be invited, must be transferred
+    token VARCHAR(255) NOT NULL, -- For email link
+    status VARCHAR(20) DEFAULT 'PENDING' CHECK (status IN ('PENDING', 'ACCEPTED', 'EXPIRED')),
+    expires_at TIMESTAMPTZ NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+
+    UNIQUE(company_id, email) -- One active invite per email per company (simplified)
+);
+
+CREATE INDEX idx_company_invites_token ON company_invites(token);
+
+
+-- 4. COMPANY VERIFICATIONS Table
+CREATE TABLE IF NOT EXISTS company_verifications (
+    verification_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    company_id UUID REFERENCES companies(company_id) ON DELETE CASCADE,
+    otp VARCHAR(10) NOT NULL,
+    attempts INTEGER DEFAULT 0,
+    expires_at TIMESTAMPTZ NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    is_verified BOOLEAN DEFAULT FALSE -- To track if this specific OTP was used successfully
+);
+
+
+-- 5. AUDIT LOGS Table
+-- Generic enough for other systems, but focused on company for now
+CREATE TABLE IF NOT EXISTS audit_logs (
+    log_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    entity_type VARCHAR(50) NOT NULL, -- e.g., 'COMPANY'
+    entity_id UUID NOT NULL, -- company_id
+    actor_id UUID REFERENCES users(user_id) ON DELETE SET NULL, -- Who performed the action
+    action VARCHAR(50) NOT NULL, -- 'CREATE', 'UPDATE', 'DELETE', 'TRANSFER_OWNERSHIP', 'VERIFY_DOMAIN', 'INVITE_MEMBER'
+    metadata JSONB DEFAULT '{}'::jsonb, -- Store diffs or details
+    ip_address INET,
+    user_agent TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX idx_audit_logs_entity ON audit_logs(entity_type, entity_id);
+CREATE INDEX idx_audit_logs_actor ON audit_logs(actor_id);
+
+
+-- Triggers for updated_at
+CREATE TRIGGER update_companies_updated_at
+    BEFORE UPDATE ON companies
+    FOR EACH ROW
+    EXECUTE FUNCTION update_updated_at_column();
+
+CREATE TRIGGER update_company_invites_updated_at
+    BEFORE UPDATE ON company_invites
+    FOR EACH ROW
+    EXECUTE FUNCTION update_updated_at_column();
+
+-- 11/02/2026 Migration: Add company support for comments and likes
+-- 009_company_comments_likes.sql
+
+-- 1. POST COMMENTS
+-- Add author_company_id column
+ALTER TABLE post_comments
+ADD COLUMN author_company_id UUID REFERENCES companies(company_id) ON DELETE CASCADE;
+
+-- 2. POST LIKES
+ALTER TABLE post_likes
+ADD COLUMN company_id UUID REFERENCES companies(company_id) ON DELETE CASCADE;
+
+-- Drop existing constraint: UNIQUE(post_id, user_id)
+ALTER TABLE post_likes
+DROP CONSTRAINT post_likes_post_id_user_id_key;
+
+-- Add conditional unique indexes
+-- Case 1: User Like (company_id IS NULL)
+CREATE UNIQUE INDEX idx_post_likes_user_unique 
+ON post_likes (post_id, user_id) 
+WHERE company_id IS NULL;
+
+-- Case 2: Company Like (company_id IS NOT NULL)
+-- A company can only like a post once. The actor (user) doesn't matter for uniqueness, only the company entity.
+CREATE UNIQUE INDEX idx_post_likes_company_unique 
+ON post_likes (post_id, company_id) 
+WHERE company_id IS NOT NULL;
+
+
+-- 3. COMMENT LIKES
+ALTER TABLE comment_likes
+ADD COLUMN company_id UUID REFERENCES companies(company_id) ON DELETE CASCADE;
+
+-- Drop existing PK/Constraint: PRIMARY KEY (user_id, comment_id)
+ALTER TABLE comment_likes
+DROP CONSTRAINT comment_likes_pkey;
+
+-- Add conditional unique indexes
+-- Case 1: User Like (company_id IS NULL)
+CREATE UNIQUE INDEX idx_comment_likes_user_unique 
+ON comment_likes (comment_id, user_id) 
+WHERE company_id IS NULL;
+
+-- Case 2: Company Like (company_id IS NOT NULL)
+CREATE UNIQUE INDEX idx_comment_likes_company_unique 
+ON comment_likes (comment_id, company_id) 
+WHERE company_id IS NOT NULL;
+
+-- 11/02/2026 Migration: Phase 1 Production Fixes
+-- (010_phase1_production_fixes.sql)
+
+-- 1. STORIES ATTRIBUTION
+ALTER TABLE stories
+ADD COLUMN author_company_id UUID REFERENCES companies(company_id) ON DELETE CASCADE;
+
+-- 2. POSTS ATTRIBUTION (Missing from prev migrations)
+ALTER TABLE posts
+ADD COLUMN author_company_id UUID REFERENCES companies(company_id) ON DELETE CASCADE;
+
+-- 3. PERFORMANCE INDEXES for Company Foreign Keys
+CREATE INDEX IF NOT EXISTS idx_posts_author_company_id ON posts(author_company_id);
+CREATE INDEX IF NOT EXISTS idx_post_comments_author_company_id ON post_comments(author_company_id);
+CREATE INDEX IF NOT EXISTS idx_post_likes_company_id ON post_likes(company_id);
+CREATE INDEX IF NOT EXISTS idx_comment_likes_company_id ON comment_likes(company_id);
+CREATE INDEX IF NOT EXISTS idx_notifications_recipient_company_id ON notifications(recipient_company_id);
+CREATE INDEX IF NOT EXISTS idx_stories_author_company_id ON stories(author_company_id);
+CREATE INDEX IF NOT EXISTS idx_story_views_viewer_company_id ON story_views(viewer_company_id);
+CREATE INDEX IF NOT EXISTS idx_story_reactions_reactor_company_id ON story_reactions(reactor_company_id);
+
+-- 4. SEARCH OPTIMIZATION (GIN index for companies)
+CREATE INDEX IF NOT EXISTS idx_companies_name_trgm
+ON companies USING GIN (name gin_trgm_ops);
+
+-- ANALYZE for statistics
+ANALYZE companies;
+ANALYZE posts;
+ANALYZE post_comments;
+ANALYZE stories;
+
+-- 11/02/2026 Migration: Phase 3 Social Growth
+-- (011_company_followers.sql)
+
+CREATE TABLE IF NOT EXISTS company_followers (
+    user_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
+    company_id UUID REFERENCES companies(company_id) ON DELETE CASCADE,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    PRIMARY KEY (user_id, company_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_company_followers_company_id ON company_followers(company_id);

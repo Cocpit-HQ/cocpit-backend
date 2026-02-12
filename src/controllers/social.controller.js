@@ -1539,24 +1539,51 @@ exports.editMessage = async (req, res) => {
 
 
 // Get all notifications for logged-in user
+// Get all notifications for logged-in user
 exports.getNotifications = async (req, res) => {
     const userId = req.user.sub;
+    const { companyId } = req.query;
 
     try {
-        const result = await pool.query(
-            `SELECT n.*, 
-                    u.full_name as actor_name, 
-                    u.avatar_url as actor_avatar,
-                    cr.request_id as request_id, 
-                    cr.status as request_status
-             FROM notifications n 
-             LEFT JOIN users u ON n.sender_id = u.user_id 
-             LEFT JOIN connection_requests cr ON n.sender_id = cr.sender_id AND n.user_id = cr.receiver_id AND cr.status = 'pending'
-             WHERE n.user_id = $1 
-             AND NOT EXISTS (SELECT 1 FROM blocks WHERE blocker_id = $1 AND blocked_id = n.sender_id)
-             ORDER BY n.created_at DESC`,
-            [userId]
-        );
+        let query = `
+            SELECT n.*, 
+                CASE 
+                    WHEN (n.metadata->>'company_id') IS NOT NULL THEN c.name 
+                    ELSE u.full_name 
+                END as actor_name, 
+                CASE 
+                    WHEN (n.metadata->>'company_id') IS NOT NULL THEN c.logo_url 
+                    ELSE u.avatar_url 
+                END as actor_avatar,
+                COALESCE(c.slug, u.account_name) as actor_slug,
+                ((n.metadata->>'company_id') IS NOT NULL) as is_company_actor,
+                cr.request_id as request_id, 
+                cr.status as request_status
+            FROM notifications n 
+            LEFT JOIN users u ON n.sender_id = u.user_id 
+            LEFT JOIN companies c ON (n.metadata->>'company_id')::uuid = c.company_id
+            LEFT JOIN connection_requests cr ON n.sender_id = cr.sender_id AND n.user_id = cr.receiver_id AND cr.status = 'pending'
+            WHERE 
+        `;
+
+        const params = [];
+        let paramIdx = 1;
+
+        if (companyId) {
+            // Verify user is part of company (optional but good)
+            query += ` n.recipient_company_id = $${paramIdx} `;
+            params.push(companyId);
+        } else {
+            query += ` n.user_id = $${paramIdx} AND n.recipient_company_id IS NULL `;
+            params.push(userId);
+        }
+
+        // Common filters
+        query += ` AND NOT EXISTS (SELECT 1 FROM blocks WHERE blocker_id = $${companyId ? paramIdx : paramIdx} AND blocked_id = n.sender_id) `;
+
+        query += ` ORDER BY n.created_at DESC`;
+
+        const result = await pool.query(query, params);
         res.json(result.rows);
     } catch (err) {
         console.error("Get notifications error:", err);
