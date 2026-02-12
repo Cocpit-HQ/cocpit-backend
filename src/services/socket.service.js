@@ -25,6 +25,22 @@ class SocketService {
   }
 
   /**
+   * Force a user's sockets to leave a conversation room
+   * @param {string} userId
+   * @param {string} conversationId
+   */
+  leaveConversation(userId, conversationId) {
+    if (!this.io) {
+      console.warn("SocketService: io not initialized");
+      return;
+    }
+    const userRoom = getUserRoom(userId);
+    const conversationRoom = getConversationRoom(conversationId);
+    // This forces all sockets in the user's personal room to leave the conversation room
+    this.io.in(userRoom).socketsLeave(conversationRoom);
+  }
+
+  /**
    * Notify all participants in a conversation
    * @param {string} conversationId
    * @param {string} event

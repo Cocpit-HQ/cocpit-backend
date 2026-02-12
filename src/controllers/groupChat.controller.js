@@ -173,9 +173,18 @@ exports.promoteToAdmin = async (req, res) => {
         await GroupChatService.promoteToAdmin(userId, groupId, targetUserId);
         res.json({ success: true, message: "Member promoted to admin" });
     } catch (err) {
-        if (err.message.includes("Only admin")) {
-            return res.status(403).json({ message: err.message });
-        }
+        res.status(500).json({ message: err.message });
+    }
+};
+
+exports.demoteAdmin = async (req, res) => {
+    try {
+        const userId = req.user.sub || req.user.user_id;
+        const { groupId, userId: targetUserId } = req.params;
+
+        await GroupChatService.demoteAdmin(userId, groupId, targetUserId);
+        res.json({ success: true, message: "Admin demoted to member" });
+    } catch (err) {
         res.status(500).json({ message: err.message });
     }
 };

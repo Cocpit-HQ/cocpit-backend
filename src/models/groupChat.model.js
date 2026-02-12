@@ -12,22 +12,22 @@ class GroupChatModel {
         return result.rows[0];
     }
 
-    static async addMember({ groupId, userId, role = 'member', status = 'joined' }) {
+    static async addMember({ groupId, userId, role = 'member' }) {
         const result = await pool.query(
-            `INSERT INTO conversation_participants (conversation_id, user_id, role) 
-      VALUES ($1, $2, $3) 
-      ON CONFLICT (conversation_id, user_id) 
-      DO UPDATE SET left_at = NULL, joined_at = now(), role = $3
-      RETURNING *`,
+            `INSERT INTO conversation_participants (conversation_id, user_id, role, joined_at, left_at) 
+             VALUES ($1, $2, $3, now(), NULL) 
+             RETURNING *`,
             [groupId, userId, role]
         );
         return result.rows[0];
     }
 
     static async removeMember(groupId, userId) {
-        // Soft delete (leave)
+        // Soft delete (leave) - Only update the ACTIVE membership
         await pool.query(
-            `UPDATE conversation_participants SET left_at = now() WHERE conversation_id = $1 AND user_id = $2`,
+            `UPDATE conversation_participants 
+             SET left_at = now() 
+             WHERE conversation_id = $1 AND user_id = $2 AND left_at IS NULL`,
             [groupId, userId]
         );
     }
@@ -120,11 +120,21 @@ class GroupChatModel {
         return result.rows;
     }
 
+    static async getAdminCount(groupId) {
+        const query = `
+            SELECT COUNT(*)::int as count
+            FROM conversation_participants
+            WHERE conversation_id = $1 AND role = 'admin' AND left_at IS NULL
+        `;
+        const result = await pool.query(query, [groupId]);
+        return result.rows[0].count;
+    }
+
     static async updateMemberRole(groupId, userId, role) {
         const query = `
             UPDATE conversation_participants
             SET role = $3
-            WHERE conversation_id = $1 AND user_id = $2
+            WHERE conversation_id = $1 AND user_id = $2 AND left_at IS NULL
             RETURNING *
         `;
         const result = await pool.query(query, [groupId, userId, role]);
@@ -211,7 +221,7 @@ class GroupChatModel {
         await pool.query(
             `UPDATE conversation_participants
              SET last_read_at = NOW()
-             WHERE conversation_id = $1 AND user_id = $2`,
+             WHERE conversation_id = $1 AND user_id = $2 AND left_at IS NULL`,
             [groupId, userId]
         );
 
@@ -232,11 +242,16 @@ class GroupChatModel {
 
     static async getUnreadCount(userId, groupId) {
         // Count messages in this group sent by others that don't have a read entry
+        // and were sent after the user's latest join date
         const result = await pool.query(
             `SELECT COUNT(*)
              FROM messages m
+             JOIN conversation_participants cp ON m.conversation_id = cp.conversation_id
              WHERE m.conversation_id = $2
+               AND cp.user_id = $1
+               AND cp.left_at IS NULL
                AND m.sender_id != $1
+               AND m.created_at >= cp.joined_at
                AND NOT EXISTS (
                    SELECT 1 FROM message_reads mr
                    WHERE mr.message_id = m.message_id

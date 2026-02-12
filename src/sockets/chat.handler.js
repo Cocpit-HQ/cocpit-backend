@@ -27,7 +27,7 @@ module.exports.registerChatHandlers = (io, socket) => {
         `
       SELECT 1 
       FROM conversation_participants 
-      WHERE conversation_id = $1 AND user_id = $2
+      WHERE conversation_id = $1 AND user_id = $2 AND left_at IS NULL
       `,
         [conversationId, userId]
       );
@@ -108,7 +108,7 @@ module.exports.registerChatHandlers = (io, socket) => {
         `
         SELECT 1 
         FROM conversation_participants 
-        WHERE conversation_id = $1 AND user_id = $2
+        WHERE conversation_id = $1 AND user_id = $2 AND left_at IS NULL
         `,
         [groupId, userId]
       );

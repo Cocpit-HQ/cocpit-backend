@@ -963,7 +963,7 @@ SELECT
     COALESCE(m.text_content, c.last_message) AS last_message_text,
     COALESCE(m.created_at, c.last_message_at, c.updated_at) AS last_message_at
 FROM conversations c
-JOIN conversation_participants cp ON c.conversation_id = cp.conversation_id
+JOIN conversation_participants cp ON c.conversation_id = cp.conversation_id AND cp.left_at IS NULL
 -- For 1-on-1, join the other participant. For groups, this might return multiple or we skip via logic.
 -- Using LEFT JOIN and conditional checks.
 LEFT JOIN conversation_participants cp_other ON c.conversation_id = cp_other.conversation_id 
@@ -982,6 +982,10 @@ LEFT JOIN LATERAL (
         msg.created_at
     FROM messages msg
     WHERE msg.conversation_id = c.conversation_id
+    -- Filter using joined_at for correctly handling rejoin
+    AND msg.created_at >= cp.joined_at
+    -- Exclude messages sent after user left the group (redundant if cp.left_at IS NULL, but safe)
+    AND (cp.left_at IS NULL OR msg.created_at <= cp.left_at)
     -- Exclude messages deleted for me
     AND NOT EXISTS (
         SELECT 1 FROM message_delete md 
@@ -1009,8 +1013,10 @@ ORDER BY COALESCE(m.created_at, c.last_message_at, c.updated_at) DESC NULLS LAST
   JOIN conversation_participants cp
     ON cp.conversation_id = m.conversation_id
   WHERE cp.user_id = $1
+    AND cp.left_at IS NULL
     AND m.sender_id <> $1
     AND m.created_at > cp.last_read_at
+    AND m.created_at >= cp.joined_at
   GROUP BY m.conversation_id
   `, [userId]
         );
@@ -1271,7 +1277,7 @@ exports.markConversationRead = async (req, res) => {
             `
             UPDATE conversation_participants
             SET last_read_at = NOW()
-            WHERE conversation_id = $1 AND user_id = $2
+            WHERE conversation_id = $1 AND user_id = $2 AND left_at IS NULL
             RETURNING last_read_at
             `,
             [conversationId, userId]
@@ -1433,17 +1439,17 @@ exports.getMessages = async (req, res) => {
 
         // 2. Check Participation & Get Group Info
         const partCheck = await pool.query(
-            `SELECT cp.joined_at, c.is_group 
+            `SELECT cp.joined_at, cp.left_at, c.is_group 
              FROM conversation_participants cp
              JOIN conversations c ON cp.conversation_id = c.conversation_id
-             WHERE cp.conversation_id = $1 AND cp.user_id = $2`,
+             WHERE cp.conversation_id = $1 AND cp.user_id = $2 AND cp.left_at IS NULL`,
             [conversation_id, userId]
         );
 
         if (partCheck.rowCount === 0)
             return res.status(403).json({ message: "Not a participant" });
 
-        const { joined_at, is_group } = partCheck.rows[0];
+        const { joined_at, left_at, is_group } = partCheck.rows[0];
 
         // 3. Fetch Messages
         // We use parameterized queries without forced casting (::timestamp) to let pg-node handle types.
@@ -1502,13 +1508,15 @@ exports.getMessages = async (req, res) => {
              LEFT JOIN posts sp ON m.shared_post_id = sp.post_id
              LEFT JOIN users au ON sp.author_id = au.user_id
              WHERE m.conversation_id = $1 
-             -- Filter messages before user joined (if group), with generous buffer
-             AND ($2::boolean = false OR m.created_at >= $3::timestamp - INTERVAL '10 year')
+             -- Filter messages before user joined (if group)
+             AND ($2::boolean = false OR m.created_at >= $3::timestamp)
+             -- Filter messages after user left (if group) - Redundant if joined_at is latest and left_at is NULL
+             AND ($7::timestamp IS NULL OR m.created_at <= $7::timestamp)
              -- Pagination: Fetch messages older than 'before' cursor
              AND ($5::timestamp IS NULL OR m.created_at < $5::timestamp)
              ORDER BY m.created_at DESC
              LIMIT $6`,
-            [conversation_id, is_group, joined_at, userId, before, limit]
+            [conversation_id, is_group, joined_at, userId, before, limit, left_at]
         );
 
         // Process messages: Filter "delete for me" and mask "delete for everyone"

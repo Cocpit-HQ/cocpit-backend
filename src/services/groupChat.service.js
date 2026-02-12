@@ -42,12 +42,9 @@ class GroupChatService {
     }
 
     static async inviteMember(senderId, groupId, receiverId) {
-        // Verify admin
+        // Group existence check
         const group = await GroupChatModel.getGroupDetails(groupId);
         if (!group) throw new Error("Group not found");
-        if (group.admin_id !== senderId) {
-            throw new Error("Only admin can invite members");
-        }
 
         // Check if already a member
         const members = await GroupChatModel.getGroupMembers(groupId);
@@ -170,6 +167,7 @@ class GroupChatService {
 
 
 
+        // Broadcast system message
         const members = await GroupChatModel.getGroupMembers(groupId);
         members.forEach(member => {
             socketService.notifyUser(member.user_id, 'new_message', {
@@ -180,15 +178,29 @@ class GroupChatService {
             });
         });
 
+        // Force socket to leave room
+        socketService.leaveConversation(userId, groupId);
+
         return { success: true };
     }
 
     static async removeMember(adminId, groupId, targetUserId) {
-        // 1. Verify admin
+        // 1. Verify group exists
         const group = await GroupChatModel.getGroupDetails(groupId);
         if (!group) throw new Error("Group not found");
-        if (group.admin_id !== adminId) throw new Error("Only admin can remove members");
+
         if (adminId === targetUserId) throw new Error("Admin cannot remove themselves. Use leave instead.");
+
+        // 2. Safety Rule: If target is admin, check if they are the last admin
+        const members = await GroupChatModel.getGroupMembers(groupId);
+        const targetMember = members.find(m => m.user_id === targetUserId);
+
+        if (targetMember && targetMember.role === 'admin') {
+            const adminCount = await GroupChatModel.getAdminCount(groupId);
+            if (adminCount <= 1) {
+                throw new Error("Cannot remove the last admin from the group");
+            }
+        }
 
         // 2. Get target user name
         const userRes = await pool.query(`SELECT full_name FROM users WHERE user_id = $1`, [targetUserId]);
@@ -212,12 +224,12 @@ class GroupChatService {
 
         // 5. Notify everyone including the removed user (so they see they were removed?)
         // Actually, notify current members.
-        const members = await GroupChatModel.getGroupMembers(groupId);
+        const remainingMembers = await GroupChatModel.getGroupMembers(groupId);
 
         // Notify the person who was removed specifically if they have socket
         socketService.notifyUser(targetUserId, 'removed_from_group', { groupId });
 
-        members.forEach(member => {
+        remainingMembers.forEach(member => {
             socketService.notifyUser(member.user_id, 'new_message', {
                 ...systemMsg,
                 sender_name: 'System',
@@ -225,6 +237,9 @@ class GroupChatService {
                 conversation_id: groupId
             });
         });
+
+        // Force socket to leave room
+        socketService.leaveConversation(targetUserId, groupId);
 
         return { success: true };
     }
@@ -369,26 +384,80 @@ class GroupChatService {
             });
         });
 
-        // Also persist system message to DB?
-        // Ideally yes, but sticking to existing pattern of socket-only or if there is a helper for system messages
         await GroupChatModel.createMessage({
-            conversation_id: groupId,
-            sender_id: adminId, // or null if system
-            text_content: `${adminMember.full_name} made ${targetMember.full_name} a group admin`,
-            message_type: 'system',
-            action_type: 'promote',
-            target_id: targetUserId
+            groupId,
+            senderId: adminId,
+            content: `${adminMember.full_name} made ${targetMember.full_name} a group admin`,
+            type: 'system',
+            actionType: 'promote',
+            targetId: targetUserId
+        });
+
+        return { success: true };
+    }
+
+    static async demoteAdmin(adminId, groupId, targetUserId) {
+        // 1. Verify requester is admin
+        const members = await GroupChatModel.getGroupMembers(groupId);
+        const adminMember = members.find(m => m.user_id === adminId);
+
+        if (!adminMember || adminMember.role !== 'admin') {
+            throw new Error("Only admin can demote members");
+        }
+
+        // 2. Verify target is in group
+        const targetMember = members.find(m => m.user_id === targetUserId);
+        if (!targetMember) {
+            throw new Error("User is not in the group");
+        }
+
+        if (targetMember.role !== 'admin') {
+            throw new Error("User is not an admin");
+        }
+
+        // 3. Safety Rule: Cannot demote the last admin
+        const adminCount = await GroupChatModel.getAdminCount(groupId);
+        if (adminCount <= 1) {
+            throw new Error("Cannot demote the last admin of the group");
+        }
+
+        // 4. Update role
+        await GroupChatModel.updateMemberRole(groupId, targetUserId, 'member');
+
+        // 5. Notify members
+        members.forEach(member => {
+            socketService.notifyUser(member.user_id, 'group_role_update', {
+                groupId,
+                userId: targetUserId,
+                role: 'member'
+            });
+
+            socketService.notifyUser(member.user_id, 'new_message', {
+                conversation_id: groupId,
+                sender_id: null,
+                sender_name: 'System',
+                text_content: `${adminMember.full_name} removed ${targetMember.full_name} as admin`,
+                message_type: 'system',
+                created_at: new Date().toISOString(),
+                is_system: true
+            });
+        });
+
+        await GroupChatModel.createMessage({
+            groupId,
+            senderId: adminId,
+            content: `${adminMember.full_name} removed ${targetMember.full_name} as admin`,
+            type: 'system',
+            actionType: 'demote',
+            targetId: targetUserId
         });
 
         return { success: true };
     }
     static async updateGroupAvatar(userId, groupId, avatarUrl) {
-        // 1. Verify admin
+        // Group existence check
         const group = await GroupChatModel.getGroupDetails(groupId);
         if (!group) throw new Error("Group not found");
-        if (group.admin_id !== userId) {
-            throw new Error("Only admin can update group avatar");
-        }
 
         // 2. Update avatar
         const updatedGroup = await GroupChatModel.updateGroupAvatar(groupId, avatarUrl);
