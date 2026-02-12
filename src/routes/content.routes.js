@@ -4,6 +4,12 @@ const contentController = require("../controllers/content.controller");
 const { requireAuth, optionalAuth } = require("../middlewares/auth.middleware");
 
 // --- FEED & DISCOVERY ---
+const {
+    toggleSavePost,
+    getSavedPosts,
+    checkIfPostSaved
+} = require("../controllers/savedPostController");
+
 router.get("/All/feeds", optionalAuth, contentController.getPublicFeed);
 router.get("/users/me/posts", requireAuth, contentController.getMyPosts);
 
@@ -14,6 +20,15 @@ router.put("/post/:id", requireAuth, contentController.updatePostById);
 router.delete("/post/:id", requireAuth, contentController.deletePost);
 // router.post("/post/:id/share", requireAuth, contentController.sharePost);
 // post share story share
+
+// Save / Unsave
+router.post("/posts/:postId/save", requireAuth, toggleSavePost);
+
+// Get all saved posts (Settings page)
+router.get("/saved-posts", requireAuth, getSavedPosts);
+
+// Optional: Check single post saved status
+router.get("/posts/:postId/saved", requireAuth, checkIfPostSaved);
 
 // --- POLL INTERACTION ---
 // --- POLL INTERACTION ---
