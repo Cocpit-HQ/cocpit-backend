@@ -113,7 +113,7 @@ class GroupChatModel {
             SELECT u.user_id, u.full_name, u.avatar_url, u.headline, cp.joined_at, cp.role
             FROM conversation_participants cp
             JOIN users u ON cp.user_id = u.user_id
-            WHERE cp.conversation_id = $1
+            WHERE cp.conversation_id = $1 AND cp.left_at IS NULL
             ORDER BY cp.joined_at ASC
         `;
         const result = await pool.query(query, [groupId]);
