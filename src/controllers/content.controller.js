@@ -2024,8 +2024,11 @@ exports.getStories = async (req, res) => {
             `
             SELECT 
                 s.*, 
-                u.full_name AS author_name, 
-                u.avatar_url AS author_avatar,
+                COALESCE(comp.name, u.full_name) AS author_name, 
+                CASE 
+                    WHEN s.author_company_id IS NOT NULL THEN comp.logo_url 
+                    ELSE u.avatar_url 
+                END AS author_avatar,
                 -- 1. Check if the current user has viewed this story
                 EXISTS (
                     SELECT 1 FROM story_views sv 
@@ -2038,11 +2041,13 @@ exports.getStories = async (req, res) => {
                 ) AS has_liked,
                 -- 3. Identity flag for UI changes
                 (s.author_id = $1) AS is_author,
+                (s.author_company_id IS NOT NULL) AS is_company,
                 -- 4. Counts
                 (SELECT COUNT(*) FROM story_views sv WHERE sv.story_id = s.story_id)::int AS view_count,
                 (SELECT COUNT(*) FROM story_reactions sr WHERE sr.story_id = s.story_id AND sr.reaction_type = 'true')::int AS like_count
             FROM stories s
             JOIN users u ON s.author_id = u.user_id
+            LEFT JOIN companies comp ON s.author_company_id = comp.company_id
             WHERE s.expires_at > now()
             ORDER BY s.created_at DESC
             `,
@@ -2058,22 +2063,55 @@ exports.getStories = async (req, res) => {
 
 exports.getGroupedStories = async (req, res) => {
     const userId = req.user.sub;
-    try {
-        // 1. Fetch current user details (for empty state)
-        const userRes = await pool.query(
-            `SELECT user_id, full_name, avatar_url FROM users WHERE user_id = $1`,
-            [userId]
-        );
-        const currentUser = userRes.rows[0];
+    const companyId = req.headers['x-company-id'];
 
-        // 2. Fetch all active stories with author details
+    try {
+        let currentEntityId = userId;
+        let currentEntityName = "You";
+        let currentEntityAvatar = null;
+        let isCompanyContext = false;
+
+        // 1. Determine Context (Company vs User)
+        if (companyId) {
+            const memberCheck = await pool.query(
+                `SELECT 1 FROM company_members WHERE company_id = $1 AND user_id = $2`,
+                [companyId, userId]
+            );
+            if (memberCheck.rowCount > 0) {
+                const compRes = await pool.query(`SELECT company_id, name, logo_url FROM companies WHERE company_id = $1`, [companyId]);
+                if (compRes.rowCount > 0) {
+                    const comp = compRes.rows[0];
+                    currentEntityId = comp.company_id;
+                    currentEntityName = "Your Company"; // UI can override
+                    currentEntityAvatar = comp.logo_url;
+                    isCompanyContext = true;
+                }
+            }
+        }
+
+        if (!isCompanyContext) {
+            const userRes = await pool.query(
+                `SELECT user_id, full_name, avatar_url FROM users WHERE user_id = $1`,
+                [userId]
+            );
+            if (userRes.rowCount > 0) {
+                const currentUser = userRes.rows[0];
+                currentEntityId = currentUser.user_id;
+                currentEntityAvatar = currentUser.avatar_url;
+            }
+        }
+
+        // 2. Fetch all active stories with author details (prefer company info if acting as company)
         const result = await pool.query(
             `
             SELECT 
                 s.*, 
-                u.full_name AS author_name, 
-                u.avatar_url AS author_avatar,
-                -- Shared Post Data
+                COALESCE(comp.name, u.full_name) AS author_name, 
+                CASE 
+                    WHEN s.author_company_id IS NOT NULL THEN comp.logo_url 
+                    ELSE u.avatar_url 
+                END AS author_avatar,
+                COALESCE(s.author_company_id, s.author_id) AS group_key,
                 -- Shared Post Data
                 CASE 
                     WHEN s.shared_post_id IS NULL THEN NULL
@@ -2139,11 +2177,13 @@ exports.getGroupedStories = async (req, res) => {
                     WHERE sr.story_id = s.story_id AND sr.user_id = $1 AND sr.reaction_type = 'true'
                 ) AS has_liked,
                 (s.author_id = $1) AS is_author,
+                (s.author_company_id IS NOT NULL) AS is_company,
                 -- Aggregate counts
                 (SELECT COUNT(*) FROM story_views sv WHERE sv.story_id = s.story_id)::int AS view_count,
                 (SELECT COUNT(*) FROM story_reactions sr WHERE sr.story_id = s.story_id AND sr.reaction_type = 'true')::int AS like_count
             FROM stories s
             JOIN users u ON s.author_id = u.user_id
+            LEFT JOIN companies comp ON s.author_company_id = comp.company_id
             LEFT JOIN posts sp ON s.shared_post_id = sp.post_id
             LEFT JOIN users sp_u ON sp.author_id = sp_u.user_id
             LEFT JOIN post_categories sp_cat ON sp.category_id = sp_cat.category_id
@@ -2161,44 +2201,40 @@ exports.getGroupedStories = async (req, res) => {
         const stories = result.rows;
         const groupsMap = new Map();
 
-        // Initialize Current User Group always
-        if (currentUser) {
-            groupsMap.set(currentUser.user_id, {
-                author: {
-                    id: currentUser.user_id,
-                    name: "You", // UI expects "You" or we can infer it
-                    avatar: currentUser.avatar_url
-                },
-                is_current_user: true,
-                latest_story_at: null, // Will update if stories exist
-                stories: []
-            });
-        }
+        // Initialize Current Entity Group always (User or Company)
+        groupsMap.set(currentEntityId, {
+            author: {
+                id: currentEntityId,
+                name: currentEntityName,
+                avatar: currentEntityAvatar,
+                is_company: isCompanyContext
+            },
+            is_current_user: true,
+            latest_story_at: null, // Will update if stories exist
+            stories: []
+        });
 
         // Group stories
         for (const story of stories) {
-            const authorId = story.author_id;
+            const groupKey = story.group_key;
 
-            if (!groupsMap.has(authorId)) {
-                groupsMap.set(authorId, {
+            if (!groupsMap.has(groupKey)) {
+                groupsMap.set(groupKey, {
                     author: {
-                        id: authorId,
+                        id: groupKey,
                         name: story.author_name,
                         avatar: story.author_avatar
                     },
-                    is_current_user: authorId === userId,
+                    // is_current_user is true for the active context (User or Company)
+                    is_current_user: groupKey === currentEntityId,
                     latest_story_at: story.created_at,
                     stories: []
                 });
             }
 
-            const group = groupsMap.get(authorId);
-            // Update latest_story_at if this story is newer
-            // (Since we iterate, we can just keep checking or sort later. 
-            // Query was ordered by created_at ASC, so last one is latest)
+            const group = groupsMap.get(groupKey);
             group.latest_story_at = story.created_at;
 
-            // Map story to simpler structure if needed, or keep raw
             group.stories.push({
                 story_id: story.story_id,
                 title: story.title,
@@ -2207,10 +2243,13 @@ exports.getGroupedStories = async (req, res) => {
                 media_type: story.media_type,
                 created_at: story.created_at,
                 expires_at: story.expires_at,
+                author_id: groupKey, // Use groupKey as author_id for grouping consistency
+                author_name: story.author_name,
+                author_avatar: story.author_avatar,
                 is_author: story.is_author,
+                is_company: story.is_company,
                 has_viewed: story.has_viewed,
                 has_liked: story.has_liked,
-                // Add counts if needed, query didn't fetch them in simple select but can add
                 view_count: story.view_count || 0,
                 like_count: story.like_count || 0,
                 shared_post: story.shared_post,
@@ -2250,8 +2289,23 @@ exports.getGroupedStories = async (req, res) => {
 exports.createStory = async (req, res) => {
     const userId = req.user.sub;
     const { title, media_url, description, media_type, public_id, media_status, shared_post_id, story_metadata } = req.body;
+    const companyId = req.headers['x-company-id']; // Optional company context
 
     try {
+        let authorCompanyId = null;
+
+        if (companyId) {
+            // Verify membership
+            const memberCheck = await pool.query(
+                `SELECT 1 FROM company_members WHERE company_id = $1 AND user_id = $2`,
+                [companyId, userId]
+            );
+            if (memberCheck.rowCount === 0) {
+                return res.status(403).json({ message: "Not authorized to act as this company" });
+            }
+            authorCompanyId = companyId;
+        }
+
         let type = media_type || (media_url && media_url.toLowerCase().match(/\.(mp4|webm|mov)$/) ? 'video' : 'image');
 
         // Default status: 'ready' for images, 'processing' for videos unless specified
@@ -2262,11 +2316,11 @@ exports.createStory = async (req, res) => {
 
         const result = await pool.query(
             `
-            INSERT INTO stories (author_id, title, description, media_url, media_type, expires_at, media_status, cld_public_id, shared_post_id, story_metadata)
-            VALUES ($1, $2, $3, $4, $5, now() + interval '24 hours', $6, $7, $8, $9)
+            INSERT INTO stories (author_id, title, description, media_url, media_type, expires_at, media_status, cld_public_id, shared_post_id, story_metadata, author_company_id)
+            VALUES ($1, $2, $3, $4, $5, now() + interval '24 hours', $6, $7, $8, $9, $10)
             RETURNING story_id, created_at
             `,
-            [userId, title, description, media_url, type, status, public_id, shared_post_id || null, story_metadata || {}]
+            [userId, title, description, media_url, type, status, public_id, shared_post_id || null, story_metadata || {}, authorCompanyId]
         );
 
         const { story_id, created_at } = result.rows[0];
@@ -2392,7 +2446,7 @@ exports.viewStory = async (req, res) => {
 
 
 exports.reactToStory = async (req, res) => {
-    const { storyId } = req.params;
+    const { id: storyId } = req.params;
     const userId = req.user.sub;
     const { reaction } = req.body; // true = like, false = undo
     const companyId = req.headers['x-company-id']; // Optional company context
@@ -2700,12 +2754,25 @@ exports.addStoryComment = async (req, res) => {
     const userId = req.user.sub;
     const storyId = req.params.id;
     const { content } = req.body;
+    const companyId = req.headers['x-company-id']; // Optional company context
 
     if (!storyId || !userId || !content || !content.trim()) {
         return res.status(400).json({ message: "all fields are required" })
     }
 
     try {
+        let authorCompanyId = null;
+        if (companyId) {
+            const memberCheck = await pool.query(
+                `SELECT 1 FROM company_members WHERE company_id = $1 AND user_id = $2`,
+                [companyId, userId]
+            );
+            if (memberCheck.rowCount === 0) {
+                return res.status(403).json({ message: "Not authorized to act as this company" });
+            }
+            authorCompanyId = companyId;
+        }
+
         const story = await pool.query(`select story_id, author_id, media_url from stories where story_id = $1`, [storyId])
 
         if (story.rowCount === 0) {
@@ -2721,10 +2788,10 @@ exports.addStoryComment = async (req, res) => {
         }
 
         const result = await pool.query(
-            `INSERT INTO story_comments (story_id, author_id, content)
-             VALUES ($1, $2, $3)
-             RETURNING comment_id, author_id, content, created_at`,
-            [storyId, userId, content.trim()]
+            `INSERT INTO story_comments (story_id, author_id, content, author_company_id)
+             VALUES ($1, $2, $3, $4)
+             RETURNING comment_id, author_id, content, created_at, author_company_id`,
+            [storyId, userId, content.trim(), authorCompanyId]
         );
 
         const newComment = result.rows[0];
@@ -2732,24 +2799,33 @@ exports.addStoryComment = async (req, res) => {
         // Notify Author (if not self)
         const authorId = story.rows[0].author_id;
         if (authorId !== userId) {
-            const userRes = await pool.query(`SELECT full_name, avatar_url FROM users WHERE user_id = $1`, [userId]);
-            const commenter = userRes.rows[0];
+            let commenterName, commenterAvatar;
+            if (authorCompanyId) {
+                const compRes = await pool.query(`SELECT name, logo_url FROM companies WHERE company_id = $1`, [authorCompanyId]);
+                commenterName = compRes.rows[0].name;
+                commenterAvatar = compRes.rows[0].logo_url;
+            } else {
+                const userRes = await pool.query(`SELECT full_name, avatar_url FROM users WHERE user_id = $1`, [userId]);
+                commenterName = userRes.rows[0].full_name;
+                commenterAvatar = userRes.rows[0].avatar_url;
+            }
 
             socketService.notifyUser(authorId, "notification", {
                 type: "story_comment",
-                text: `${commenter.full_name} commented on your story`,
+                text: `${commenterName} commented on your story`,
                 from: userId,
-                senderName: commenter.full_name,
-                senderAvatar: commenter.avatar_url,
+                senderName: commenterName,
+                senderAvatar: commenterAvatar,
                 referenceId: storyId,
                 mediaUrl: story.rows[0].media_url,
-                time: "Just now"
+                time: "Just now",
+                metadata: { company_id: authorCompanyId }
             });
 
             await pool.query(
-                `INSERT INTO notifications (user_id, sender_id, type, text, reference_id) 
-                  VALUES ($1, $2, $3, $4, $5)`,
-                [authorId, userId, "story_comment", `${commenter.full_name} commented on your story`, storyId]
+                `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata) 
+                  VALUES ($1, $2, $3, $4, $5, $6)`,
+                [authorId, userId, "story_comment", `${commenterName} commented on your story`, storyId, { company_id: authorCompanyId }]
             );
         }
 
@@ -2778,12 +2854,17 @@ exports.getStoryComments = async (req, res) => {
                 c.comment_id,
                 c.content,
                 c.created_at,
-                u.user_id AS author_id,
-                u.full_name,
-                u.avatar_url,
-                u.headline
+                COALESCE(comp.company_id, u.user_id) AS author_id,
+                COALESCE(comp.name, u.full_name) AS full_name,
+                CASE 
+                    WHEN c.author_company_id IS NOT NULL THEN comp.logo_url 
+                    ELSE u.avatar_url 
+                END AS avatar_url,
+                u.headline,
+                (c.author_company_id IS NOT NULL) AS is_company
             FROM story_comments c
             JOIN users u ON c.author_id = u.user_id
+            LEFT JOIN companies comp ON c.author_company_id = comp.company_id
             WHERE c.story_id = $1
             AND NOT EXISTS (
                 SELECT 1 FROM blocks b 

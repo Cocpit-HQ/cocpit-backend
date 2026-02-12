@@ -199,6 +199,93 @@ exports.unfollowUser = async (req, res) => {
     }
 };
 
+// Follow a company
+exports.followCompany = async (req, res) => {
+    const userId = req.user.sub;
+    const { companyId } = req.params;
+
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+
+        const result = await client.query(
+            `INSERT INTO company_followers (user_id, company_id) VALUES ($1, $2) ON CONFLICT DO NOTHING RETURNING *`,
+            [userId, companyId]
+        );
+
+        if (result.rowCount === 0) {
+            await client.query('ROLLBACK');
+            return res.status(200).json({ message: "Already following" });
+        }
+
+        // --- Notification Logic ---
+        // Fetch company name/slug for context if needed, but usually notifs go to company members
+        // For now, simple insert is enough.
+        // TODO: Notify company members (admins/owners) about new follower
+
+        await client.query('COMMIT');
+        res.status(200).json({ message: "Followed successfully" });
+
+    } catch (err) {
+        await client.query('ROLLBACK');
+        console.error("Follow company error:", err);
+        res.status(500).json({ message: "Internal server error" });
+    } finally {
+        client.release();
+    }
+};
+
+// Unfollow a company
+exports.unfollowCompany = async (req, res) => {
+    const userId = req.user.sub;
+    const { companyId } = req.params;
+
+    const client = await pool.connect();
+    try {
+        const result = await client.query(
+            `DELETE FROM company_followers WHERE user_id = $1 AND company_id = $2 RETURNING *`,
+            [userId, companyId]
+        );
+
+        if (result.rowCount === 0) {
+            return res.status(404).json({ message: "You are not following this company" });
+        }
+
+        res.json({ message: "Unfollowed successfully" });
+    } catch (err) {
+        console.error("Unfollow company error:", err);
+        res.status(500).json({ message: "Internal server error" });
+    } finally {
+        client.release();
+    }
+};
+
+// Get company relationship status
+exports.getCompanyRelationship = async (req, res) => {
+    const userId = req.user.sub;
+    const { companyId } = req.params;
+
+    try {
+        const result = await pool.query(
+            `SELECT 1 FROM company_followers WHERE user_id = $1 AND company_id = $2`,
+            [userId, companyId]
+        );
+
+        const followerCount = await pool.query(
+            `SELECT COUNT(*) FROM company_followers WHERE company_id = $1`,
+            [companyId]
+        );
+
+        res.json({
+            isFollowing: result.rowCount > 0,
+            followerCount: parseInt(followerCount.rows[0].count)
+        });
+    } catch (err) {
+        console.error("Get company relationship error:", err);
+        res.status(500).json({ message: "Internal server error" });
+    }
+};
+
 exports.getFollowers = async (req, res) => {
     const userId = req.params.id;
     const { search } = req.query;
@@ -978,7 +1065,7 @@ exports.deleteConversation = async (req, res) => {
 // Send a message to a user (auto-create 1-on-1 conversation if needed)
 exports.sendMessage = async (req, res) => {
     const senderId = req.user.sub;
-    const { targetUserId, text_content, shared_post_id } = req.body;
+    const { targetUserId, text_content, shared_post_id, authorCompanyId } = req.body;
     const images = req.files; // Array of files from multer
 
     // Basic validation: user needs target + (text OR post OR images)
@@ -999,19 +1086,37 @@ exports.sendMessage = async (req, res) => {
     } catch (e) {
         console.error("Block check failed", e);
     }
-
     const client = await pool.connect();
     try {
-        // Verify sender and target users exist
-        const senderRes = await client.query(
-            `SELECT full_name, avatar_url FROM users WHERE user_id = $1`,
-            [senderId]
-        );
-        if (senderRes.rowCount === 0) {
-            await client.query('ROLLBACK');
-            return res.status(404).json({ message: "Sender not found." });
+        await client.query('BEGIN');
+
+        // RBAC: If acting as company, verify membership
+        let senderName, senderAvatar;
+        if (authorCompanyId) {
+            const memberCheck = await client.query(
+                `SELECT c.name, c.logo_url FROM company_members cm 
+                 JOIN companies c ON cm.company_id = c.company_id
+                 WHERE cm.company_id = $1 AND cm.user_id = $2`,
+                [authorCompanyId, senderId]
+            );
+            if (memberCheck.rowCount === 0) {
+                await client.query('ROLLBACK');
+                return res.status(403).json({ message: "Forbidden: You are not a member of this company" });
+            }
+            senderName = memberCheck.rows[0].name;
+            senderAvatar = memberCheck.rows[0].logo_url;
+        } else {
+            const senderRes = await client.query(
+                `SELECT full_name, avatar_url FROM users WHERE user_id = $1`,
+                [senderId]
+            );
+            if (senderRes.rowCount === 0) {
+                await client.query('ROLLBACK');
+                return res.status(404).json({ message: "Sender not found." });
+            }
+            senderName = senderRes.rows[0].full_name;
+            senderAvatar = senderRes.rows[0].avatar_url;
         }
-        const { full_name: senderName, avatar_url: senderAvatar } = senderRes.rows[0];
 
         const targetUserExists = await client.query(
             `SELECT 1 FROM users WHERE user_id = $1`,
@@ -1021,8 +1126,6 @@ exports.sendMessage = async (req, res) => {
             await client.query('ROLLBACK');
             return res.status(400).json({ message: "Target user not found." });
         }
-
-        await client.query('BEGIN');
         let conversationId;
 
         // Check if 1-on-1 conversation exists
@@ -1060,9 +1163,9 @@ exports.sendMessage = async (req, res) => {
                 : (shared_post_id ? 'Shared a post' : 'Attachment'));
 
         const msgRes = await client.query(
-            `INSERT INTO messages (conversation_id, sender_id, text_content, shared_post_id)
-                 VALUES ($1, $2, $3, $4) RETURNING *`,
-            [conversationId, senderId, text_content || '', shared_post_id || null]
+            `INSERT INTO messages (conversation_id, sender_id, text_content, shared_post_id, author_company_id)
+                 VALUES ($1, $2, $3, $4, $5) RETURNING *`,
+            [conversationId, senderId, text_content || '', shared_post_id || null, authorCompanyId || null]
         );
         const newMessage = msgRes.rows[0];
 
@@ -1358,10 +1461,11 @@ exports.getMessages = async (req, res) => {
                 m.message_type,
                 m.action_type,
                 m.target_id,
+                m.author_company_id,
                 m.is_deleted_for_everyone,
                 m.deleted_at,
-                u.full_name as sender_name,
-                u.avatar_url as sender_avatar,
+                COALESCE(c.name, u.full_name) as sender_name,
+                COALESCE(c.logo_url, u.avatar_url) as sender_avatar,
                 (SELECT json_agg(json_build_object('url', mm.url, 'media_type', mm.media_type)) 
                  FROM message_media mm 
                  WHERE mm.message_id = m.message_id
@@ -1393,7 +1497,8 @@ exports.getMessages = async (req, res) => {
                 END AS shared_post,
                 EXISTS(SELECT 1 FROM message_delete md WHERE md.message_id = m.message_id AND md.user_id = $4) as is_deleted_for_me
              FROM messages m
-             LEFT JOIN users u ON m.sender_id = u.user_id
+             JOIN users u ON m.sender_id = u.user_id
+             LEFT JOIN companies c ON m.author_company_id = c.company_id
              LEFT JOIN posts sp ON m.shared_post_id = sp.post_id
              LEFT JOIN users au ON sp.author_id = au.user_id
              WHERE m.conversation_id = $1 

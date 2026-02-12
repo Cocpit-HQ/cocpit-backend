@@ -13,6 +13,13 @@ router.get("/users/:id/followers", socialController.getFollowers);
 router.get("/users/:id/following", socialController.getFollowing);
 
 /* =====================================================
+   COMPANY FOLLOW
+   ===================================================== */
+router.post("/companies/:companyId/follow", requireAuth, socialController.followCompany);
+router.delete("/companies/:companyId/unfollow", requireAuth, socialController.unfollowCompany);
+router.get("/companies/:companyId/relationship", requireAuth, socialController.getCompanyRelationship);
+
+/* =====================================================
    CONNECTIONS (Two-way – LinkedIn style)
    ===================================================== */// Connection Requests
 router.post('/users/:id/connect', requireAuth, socialController.sendConnectionRequest);

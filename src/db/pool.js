@@ -50,10 +50,12 @@ const pool = new Pool(poolConfig);
 
 /**
  * Pool error handling
+ * Prevent crash on transient errors
  */
 pool.on("error", (err) => {
-  console.error("🔥 Unexpected PostgreSQL error", err);
-  process.exit(1);
+  console.error("🔥 Unexpected PostgreSQL error on idle client", err);
+  // Do NOT exit process. attempts to reconnect/recover.
+  // process.exit(1); 
 });
 
 module.exports = pool;
