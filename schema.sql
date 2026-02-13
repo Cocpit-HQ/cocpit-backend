@@ -357,14 +357,16 @@ CREATE TABLE conversations (
 );
 
 CREATE TABLE conversation_participants (
+  participant_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   conversation_id UUID REFERENCES conversations(conversation_id) ON DELETE CASCADE,
   user_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
   joined_at TIMESTAMPTZ DEFAULT now(),
   left_at TIMESTAMPTZ, -- NULL if active, timestamp if left
   last_read_at TIMESTAMPTZ DEFAULT now(),
-  role TEXT NOT NULL DEFAULT 'member' CHECK (role IN ('member', 'admin')),--8/2/2026
-  PRIMARY KEY (conversation_id, user_id)
+  role TEXT NOT NULL DEFAULT 'member' CHECK (role IN ('member', 'admin'))--8/2/2026
 );
+
+CREATE INDEX idx_cp_active_user ON conversation_participants (conversation_id, user_id) WHERE left_at IS NULL;
 
 CREATE TABLE messages (
   message_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -820,3 +822,10 @@ CREATE TABLE IF NOT EXISTS company_followers (
 );
 
 CREATE INDEX IF NOT EXISTS idx_company_followers_company_id ON company_followers(company_id);
+-- 11/02/2026 Create saved_post table
+CREATE TABLE saved_post(
+	user_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
+	post_id UUID REFERENCES posts(post_id) ON DELETE CASCADE,
+	saved_at TIMESTAMPTZ DEFAULT now(),
+	PRIMARY KEY (user_id , post_id)
+);
