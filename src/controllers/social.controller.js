@@ -957,50 +957,54 @@ SELECT
     u.user_id AS other_user_id,
     u.headline AS other_user_headline,
     
+    cp.is_active,
+
     -- Get the most recent message dynamically
-    -- Prioritize the calculated message from LATERAL JOIN
-    -- Fallback to conversation fields if no message found (e.g. new chat)
     COALESCE(m.text_content, c.last_message) AS last_message_text,
     COALESCE(m.created_at, c.last_message_at, c.updated_at) AS last_message_at
 FROM conversations c
-JOIN conversation_participants cp ON c.conversation_id = cp.conversation_id AND cp.left_at IS NULL
--- For 1-on-1, join the other participant. For groups, this might return multiple or we skip via logic.
--- Using LEFT JOIN and conditional checks.
+JOIN (
+    -- Aggregate participation: Ensure one row per conversation for this user
+    -- and check if they have any active record
+    SELECT conversation_id, user_id,
+           EXISTS(SELECT 1 FROM conversation_participants cp_a 
+                  WHERE cp_a.conversation_id = cp_main.conversation_id 
+                  AND cp_a.user_id = cp_main.user_id 
+                  AND cp_a.left_at IS NULL) as is_active
+    FROM conversation_participants cp_main
+    WHERE cp_main.user_id = $1
+    GROUP BY conversation_id, user_id
+) cp ON c.conversation_id = cp.conversation_id
+-- For 1-on-1, join the other participant.
 LEFT JOIN conversation_participants cp_other ON c.conversation_id = cp_other.conversation_id 
     AND cp_other.user_id != $1 AND c.is_group = FALSE
 LEFT JOIN users u ON cp_other.user_id = u.user_id
 
--- LATERAL JOIN to find the latest VISIBLE message for this user
+-- LATERAL JOIN to find the latest VISIBLE message across ANY period
 LEFT JOIN LATERAL (
     SELECT 
         CASE 
             WHEN msg.is_deleted_for_everyone THEN 'This message was deleted'
             WHEN msg.shared_post_id IS NOT NULL THEN 'Shared a post'
-            WHEN msg.text_content IS NULL OR msg.text_content = '' THEN 'Attachment' -- Image/Video
+            WHEN msg.text_content IS NULL OR msg.text_content = '' THEN 'Attachment'
             ELSE msg.text_content
         END as text_content,
         msg.created_at
     FROM messages msg
+    JOIN conversation_participants cp_msg ON cp_msg.conversation_id = msg.conversation_id AND cp_msg.user_id = $1
     WHERE msg.conversation_id = c.conversation_id
-    -- Filter using joined_at for correctly handling rejoin
-    AND msg.created_at >= cp.joined_at
-    -- Exclude messages sent after user left the group (redundant if cp.left_at IS NULL, but safe)
-    AND (cp.left_at IS NULL OR msg.created_at <= cp.left_at)
+    AND msg.created_at >= cp_msg.joined_at
+    AND (cp_msg.left_at IS NULL OR msg.created_at <= cp_msg.left_at)
     -- Exclude messages deleted for me
     AND NOT EXISTS (
         SELECT 1 FROM message_delete md 
         WHERE md.message_id = msg.message_id 
         AND md.user_id = $1
     )
-    -- Exclude hidden/blocked messages? (Optional, but best practice)
     ORDER BY msg.created_at DESC 
     LIMIT 1
 ) m ON true
 
-WHERE cp.user_id = $1
--- Ensure distinct conversations (fix for potential multiple rows if join logic leaks)
--- Actually, if is_group=FALSE, cp_other matches 1 row (unless multi-party DM which we don't support yet).
--- If is_group=TRUE, cp_other is NULL due to condition.
 ORDER BY COALESCE(m.created_at, c.last_message_at, c.updated_at) DESC NULLS LAST;
   `, [userId]
         );
@@ -1437,24 +1441,22 @@ exports.getMessages = async (req, res) => {
             }
         }
 
-        // 2. Check Participation & Get Group Info
+        // 2. Simple participation check (check if the user EVER joined)
         const partCheck = await pool.query(
-            `SELECT cp.joined_at, cp.left_at, c.is_group 
-             FROM conversation_participants cp
-             JOIN conversations c ON cp.conversation_id = c.conversation_id
-             WHERE cp.conversation_id = $1 AND cp.user_id = $2 AND cp.left_at IS NULL`,
+            `SELECT c.is_group 
+             FROM conversations c
+             JOIN conversation_participants cp ON c.conversation_id = cp.conversation_id
+             WHERE c.conversation_id = $1 AND cp.user_id = $2
+             LIMIT 1`,
             [conversation_id, userId]
         );
 
         if (partCheck.rowCount === 0)
             return res.status(403).json({ message: "Not a participant" });
 
-        const { joined_at, left_at, is_group } = partCheck.rows[0];
+        const { is_group } = partCheck.rows[0];
 
-        // 3. Fetch Messages
-        // We use parameterized queries without forced casting (::timestamp) to let pg-node handle types.
-        // 'before' is now guaranteed to be a TIMESTAMP (Date object/string) or NULL.
-        // 'joined_at' is a Date object from the previous query.
+        // 3. Fetch Messages with multi-period filtering
         const result = await pool.query(
             `SELECT 
                 m.message_id,
@@ -1490,7 +1492,7 @@ exports.getMessages = async (req, res) => {
                          AND NOT EXISTS (
                             SELECT 1 FROM blocks b 
                             WHERE (b.blocker_id = $4 AND b.blocked_id = sp.author_id)
-                               OR (b.blocker_id = sp.author_id AND b.blocked_id = $4)
+                                OR (b.blocker_id = sp.author_id AND b.blocked_id = $4)
                          )
                     THEN
                         json_build_object(
@@ -1508,15 +1510,19 @@ exports.getMessages = async (req, res) => {
              LEFT JOIN posts sp ON m.shared_post_id = sp.post_id
              LEFT JOIN users au ON sp.author_id = au.user_id
              WHERE m.conversation_id = $1 
-             -- Filter messages before user joined (if group)
-             AND ($2::boolean = false OR m.created_at >= $3::timestamp)
-             -- Filter messages after user left (if group) - Redundant if joined_at is latest and left_at is NULL
-             AND ($7::timestamp IS NULL OR m.created_at <= $7::timestamp)
+             -- Visibility: If not group, show all. If group, check ANY participation record.
+             AND ($2::boolean = false OR EXISTS (
+                SELECT 1 FROM conversation_participants cp 
+                WHERE cp.conversation_id = m.conversation_id 
+                AND cp.user_id = $4
+                AND m.created_at >= cp.joined_at
+                AND (cp.left_at IS NULL OR m.created_at <= cp.left_at)
+             ))
              -- Pagination: Fetch messages older than 'before' cursor
-             AND ($5::timestamp IS NULL OR m.created_at < $5::timestamp)
+             AND ($3::timestamp IS NULL OR m.created_at < $3::timestamp)
              ORDER BY m.created_at DESC
-             LIMIT $6`,
-            [conversation_id, is_group, joined_at, userId, before, limit, left_at]
+             LIMIT $5`,
+            [conversation_id, is_group, before, userId, limit]
         );
 
         // Process messages: Filter "delete for me" and mask "delete for everyone"

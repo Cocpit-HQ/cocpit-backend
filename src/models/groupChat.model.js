@@ -13,6 +13,18 @@ class GroupChatModel {
     }
 
     static async addMember({ groupId, userId, role = 'member' }) {
+        // 1. Check if user is ALREADY an active member
+        const activeRes = await pool.query(
+            `SELECT * FROM conversation_participants 
+             WHERE conversation_id = $1 AND user_id = $2 AND left_at IS NULL`,
+            [groupId, userId]
+        );
+
+        if (activeRes.rowCount > 0) {
+            return activeRes.rows[0];
+        }
+
+        // 2. If not active, always insert a NEW record for the new period
         const result = await pool.query(
             `INSERT INTO conversation_participants (conversation_id, user_id, role, joined_at, left_at) 
              VALUES ($1, $2, $3, now(), NULL) 
@@ -108,16 +120,33 @@ class GroupChatModel {
         return groupRes.rows[0];
     }
 
-    static async getGroupMembers(groupId) {
-        const query = `
-            SELECT u.user_id, u.full_name, u.avatar_url, u.headline, cp.joined_at, cp.role
-            FROM conversation_participants cp
-            JOIN users u ON cp.user_id = u.user_id
-            WHERE cp.conversation_id = $1 AND cp.left_at IS NULL
-            ORDER BY cp.joined_at ASC
-        `;
-        const result = await pool.query(query, [groupId]);
+    static async getGroupMembers(groupId, maxJoinedAt = null) {
+        const query = maxJoinedAt ?
+            `SELECT DISTINCT ON (u.user_id) u.user_id, u.full_name, u.avatar_url, u.headline, cp.joined_at, cp.role
+             FROM conversation_participants cp
+             JOIN users u ON cp.user_id = u.user_id
+             WHERE cp.conversation_id = $1 AND cp.joined_at <= $2
+             ORDER BY u.user_id, cp.joined_at DESC` :
+            `SELECT DISTINCT ON (u.user_id) u.user_id, u.full_name, u.avatar_url, u.headline, cp.joined_at, cp.role
+             FROM conversation_participants cp
+             JOIN users u ON cp.user_id = u.user_id
+             WHERE cp.conversation_id = $1 AND cp.left_at IS NULL
+             ORDER BY u.user_id, cp.joined_at DESC`;
+
+        const params = maxJoinedAt ? [groupId, maxJoinedAt] : [groupId];
+        const result = await pool.query(query, params);
         return result.rows;
+    }
+    static async getParticipant(groupId, userId) {
+        const query = `
+            SELECT role, joined_at, left_at 
+            FROM conversation_participants 
+            WHERE conversation_id = $1 AND user_id = $2
+            ORDER BY joined_at DESC
+            LIMIT 1
+        `;
+        const result = await pool.query(query, [groupId, userId]);
+        return result.rows[0];
     }
 
     static async getAdminCount(groupId) {
@@ -200,6 +229,12 @@ class GroupChatModel {
             [avatarUrl, groupId]
         );
         return result.rows[0];
+    }
+    static async updateGroupOwner(groupId, newAdminId) {
+        await pool.query(
+            `UPDATE conversations SET admin_id = $2 WHERE conversation_id = $1`,
+            [groupId, newAdminId]
+        );
     }
 
     // --- Read Receipts ---
