@@ -1,4 +1,5 @@
 const pool = require("../db/pool");
+const AppError = require("../utils/AppError");
 const current_user = require("../controllers/profile.controller");
 
 /**
@@ -584,7 +585,27 @@ exports.deleteAccount = async (req, res) => {
       }
     }
 
-    // 3. Delete user record (Cascades handled by DB)
+    // 3. Check for Orphaned Companies (Sole Owner)
+    // Find all companies where this user is OWNER
+    const ownedCompanies = await client.query(
+      `SELECT company_id, name FROM company_members WHERE user_id = $1 AND role = 'OWNER'`,
+      [userId]
+    );
+
+    for (const company of ownedCompanies.rows) {
+      // Check if there are ANY other owners for this company
+      const otherOwners = await client.query(
+        `SELECT 1 FROM company_members 
+         WHERE company_id = $1 AND role = 'OWNER' AND user_id != $2`,
+        [company.company_id, userId]
+      );
+
+      if (otherOwners.rowCount === 0) {
+        throw new AppError(`You are the sole owner of "${company.name}". Please transfer ownership or delete the company before deleting your account.`, 400);
+      }
+    }
+
+    // 4. Delete user record (Cascades handled by DB)
     await client.query("DELETE FROM users WHERE user_id = $1", [userId]);
 
     await client.query("COMMIT");

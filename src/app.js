@@ -68,4 +68,8 @@ app.use("/api/onboarding", onboardingRoutes);
 app.use("/api", companyRoutes);
 app.use("/api", groupChatRoutes); // /api/groups...
 
+// Global Error Handler
+const errorHandler = require("./middlewares/error.middleware");
+app.use(errorHandler);
+
 module.exports = app;

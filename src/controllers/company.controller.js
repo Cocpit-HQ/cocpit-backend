@@ -1,4 +1,5 @@
 const pool = require("../db/pool");
+const AppError = require("../utils/AppError");
 
 // Helper for Audit Logging
 const logAudit = async (client, { entityId, actorId, action, metadata = {} }) => {
@@ -50,7 +51,16 @@ exports.createCompany = async (req, res) => {
             [userId]
         );
         if (parseInt(rateLimitRes.rows[0].count) >= 3) {
-            throw new Error("Rate limit exceeded: You can only create 3 companies per day.");
+            throw new AppError("Rate limit exceeded: You can only create 3 companies per day.", 429);
+        }
+
+        // 2b. Max Active Companies Limit (5)
+        const activeRes = await client.query(
+            `SELECT COUNT(*) FROM company_members WHERE user_id = $1 AND role = 'OWNER'`,
+            [userId]
+        );
+        if (parseInt(activeRes.rows[0].count) >= 5) {
+            throw new AppError("Limit reached: You can own a maximum of 5 companies.", 429);
         }
 
         // 3. Normalized Unique Check
@@ -97,11 +107,11 @@ exports.createCompany = async (req, res) => {
     } catch (err) {
         await client.query("ROLLBACK");
         console.error("Create company error:", err);
+        if (err.statusCode) {
+            return res.status(err.statusCode).json({ message: err.message });
+        }
         if (err.message.includes("Slug already taken")) {
             return res.status(409).json({ message: "Slug is already taken" });
-        }
-        if (err.message.includes("Rate limit")) {
-            return res.status(429).json({ message: err.message });
         }
         res.status(500).json({ message: "Internal server error" });
     } finally {
@@ -156,7 +166,46 @@ exports.getCompany = async (req, res) => {
             return res.status(404).json({ message: "Company not found" });
         }
 
-        res.json(result.rows[0]);
+        const company = result.rows[0];
+
+        // Audit Log for Analytics (Async, don't block response)
+        // We need a client for this. Since we used pool.query above, we don't have a transaction client.
+        // It's fine to fire and forget or use pool.
+        if (userId && company.company_id) {
+            (async () => {
+                const auditClient = await pool.connect();
+                try {
+                    // Refinement: Debounce VIEW logs (1 hour cooldown)
+                    const lastViewRes = await auditClient.query(
+                        `SELECT created_at FROM audit_logs 
+                         WHERE entity_id = $1 AND entity_type = 'COMPANY' AND actor_id = $2 AND action = 'VIEW' 
+                         ORDER BY created_at DESC LIMIT 1`,
+                        [company.company_id, userId]
+                    );
+
+                    let shouldLog = true;
+                    if (lastViewRes.rowCount > 0) {
+                        const lastViewTime = new Date(lastViewRes.rows[0].created_at).getTime();
+                        const timeDiff = Date.now() - lastViewTime;
+                        if (timeDiff < 60 * 60 * 1000) { // 1 hour
+                            shouldLog = false;
+                        }
+                    }
+
+                    if (shouldLog) {
+                        await logAudit(auditClient, {
+                            entityId: company.company_id,
+                            actorId: userId,
+                            action: 'VIEW',
+                            metadata: { source: 'profile_page' }
+                        });
+                    }
+                } catch (e) { console.error("Audit log error:", e); }
+                finally { auditClient.release(); }
+            })();
+        }
+
+        res.json(company);
     } catch (err) {
         console.error("Get company error:", err);
         res.status(500).json({ message: "Internal server error" });
@@ -221,6 +270,9 @@ exports.updateCompany = async (req, res) => {
     } catch (err) {
         await client.query("ROLLBACK");
         console.error("Update company error:", err);
+        if (err.statusCode) {
+            return res.status(err.statusCode).json({ message: err.message });
+        }
         if (err.message.startsWith("Forbidden")) {
             return res.status(403).json({ message: err.message });
         }
@@ -235,8 +287,8 @@ exports.inviteMember = async (req, res) => {
     const userId = req.user.sub;
     const { email, role } = req.body;
 
-    if (!email || !role || !['ADMIN', 'EDITOR'].includes(role)) {
-        return res.status(400).json({ message: "Valid email and role (ADMIN or EDITOR) are required" });
+    if (!email || !role || !['ADMIN', 'EDITOR', 'RECRUITER', 'ANALYST'].includes(role)) {
+        return res.status(400).json({ message: "Valid email and role (ADMIN, EDITOR, RECRUITER, ANALYST) are required" });
     }
 
     const client = await pool.connect();
@@ -297,6 +349,9 @@ exports.inviteMember = async (req, res) => {
     } catch (err) {
         await client.query("ROLLBACK");
         console.error("Invite member error:", err);
+        if (err.statusCode) {
+            return res.status(err.statusCode).json({ message: err.message });
+        }
         if (err.message.startsWith("Forbidden") || err.message.startsWith("Rate limit")) {
             return res.status(403).json({ message: err.message });
         }
@@ -401,6 +456,9 @@ exports.verifyDomain = async (req, res) => {
     } catch (err) {
         await client.query("ROLLBACK");
         console.error("Verify domain error:", err);
+        if (err.statusCode) {
+            return res.status(err.statusCode).json({ message: err.message });
+        }
         if (err.message.startsWith("Forbidden")) {
             return res.status(403).json({ message: err.message });
         }
@@ -436,9 +494,8 @@ exports.acceptInvite = async (req, res) => {
         // For now, let's assume possession of token is enough, or we can check.
         const userRes = await client.query(`SELECT email FROM users WHERE user_id = $1`, [userId]);
         if (userRes.rows[0].email !== invite.email) {
-            console.warn(`[Invite] Email mismatch warning: Invite ${invite.email} accepted by ${userRes.rows[0].email}`);
-            // allow for now, or block? usually strict match required.
-            // throw new Error("This invitation was sent to a different email address."); 
+            console.warn(`[Invite] Email mismatch blocked: Invite ${invite.email} attempted by ${userRes.rows[0].email}`);
+            throw new AppError(`This invitation was sent to ${invite.email}. You are logged in as ${userRes.rows[0].email}.`, 403);
         }
 
         // 2b. Check if User is ALREADY a member
@@ -482,6 +539,9 @@ exports.acceptInvite = async (req, res) => {
     } catch (err) {
         await client.query("ROLLBACK");
         console.error("Accept invite error:", err);
+        if (err.statusCode) {
+            return res.status(err.statusCode).json({ message: err.message });
+        }
         if (err.message === "Invalid or expired invitation") {
             return res.status(400).json({ message: err.message });
         }
@@ -494,17 +554,37 @@ exports.acceptInvite = async (req, res) => {
 exports.transferOwnership = async (req, res) => {
     const { companyId } = req.params;
     const userId = req.user.sub;
-    const { newOwnerId } = req.body;
+    let { newOwnerId } = req.body;
 
-    if (!newOwnerId) return res.status(400).json({ message: "New Owner ID required" });
+    if (!newOwnerId) return res.status(400).json({ message: "New Owner ID or Email required" });
 
     const client = await pool.connect();
     try {
         await client.query("BEGIN");
 
+        // Resolve email to UUID if necessary
+        if (newOwnerId.includes('@')) {
+            const userRes = await client.query("SELECT user_id FROM users WHERE email = $1", [newOwnerId]);
+            if (userRes.rowCount === 0) {
+                throw new AppError("User with this email not found", 404);
+            }
+            newOwnerId = userRes.rows[0].user_id;
+        }
+
         // 1. RBAC (OWNER ONLY)
         const userRole = await checkRole(client, companyId, userId, ['OWNER']);
         if (!userRole) throw new Error("Forbidden: Only OWNER can transfer ownership");
+
+        const { password } = req.body;
+        if (!password) {
+            throw new AppError("Password is required to transfer ownership", 400);
+        }
+
+        // Verify password
+        const userRes = await client.query("SELECT password_hash FROM users WHERE user_id = $1", [userId]);
+        const { comparePassword } = require("../utils/password");
+        const isValid = await comparePassword(password, userRes.rows[0].password_hash);
+        if (!isValid) throw new AppError("Invalid password", 401);
 
         // 2. Transaction
         // Demote current OWNER to ADMIN
@@ -547,6 +627,9 @@ exports.transferOwnership = async (req, res) => {
     } catch (err) {
         await client.query("ROLLBACK");
         console.error("Transfer ownership error:", err);
+        if (err.statusCode) {
+            return res.status(err.statusCode).json({ message: err.message });
+        }
         if (err.message.startsWith("Forbidden")) {
             return res.status(403).json({ message: err.message });
         }
@@ -568,6 +651,17 @@ exports.deleteCompany = async (req, res) => {
         const userRole = await checkRole(client, companyId, userId, ['OWNER']);
         if (!userRole) throw new Error("Forbidden: Only OWNER can delete company");
 
+        const { password } = req.body;
+        if (!password) {
+            throw new AppError("Password is required to delete a company", 400);
+        }
+
+        // Verify password
+        const userRes = await client.query("SELECT password_hash FROM users WHERE user_id = $1", [userId]);
+        const { comparePassword } = require("../utils/password");
+        const isValid = await comparePassword(password, userRes.rows[0].password_hash);
+        if (!isValid) throw new AppError("Invalid password", 401);
+
         // 2. Soft Delete
         await client.query(
             `UPDATE companies SET is_deleted = TRUE, deleted_at = NOW() WHERE company_id = $1`,
@@ -587,6 +681,9 @@ exports.deleteCompany = async (req, res) => {
     } catch (err) {
         await client.query("ROLLBACK");
         console.error("Delete company error:", err);
+        if (err.statusCode) {
+            return res.status(err.statusCode).json({ message: err.message });
+        }
         if (err.message.startsWith("Forbidden")) {
             return res.status(403).json({ message: err.message });
         }
@@ -604,9 +701,8 @@ exports.getMembers = async (req, res) => {
 
     const client = await pool.connect();
     try {
-        // RBAC: Allow OWNER and ADMIN to view full member list (with emails)
-        // Editors might need to see list too? Let's allow OWNER/ADMIN for management for now.
-        const userRole = await checkRole(client, companyId, userId, ['OWNER', 'ADMIN', 'EDITOR']);
+        // RBAC: Allow all members to view list
+        const userRole = await checkRole(client, companyId, userId, ['OWNER', 'ADMIN', 'EDITOR', 'RECRUITER', 'ANALYST']);
         if (!userRole) {
             return res.status(403).json({ message: "Forbidden: You must be a member to view members" });
         }
@@ -629,8 +725,8 @@ exports.getMembers = async (req, res) => {
         );
 
         const members = result.rows.map(row => {
-            // Hide email if requester is only an EDITOR
-            if (userRole === 'EDITOR' && row.user_id !== userId) {
+            // Hide email for non-admin/owner roles
+            if (['EDITOR', 'RECRUITER', 'ANALYST'].includes(userRole) && row.user_id !== userId) {
                 const [username, domain] = row.email.split('@');
                 const maskedUsername = username.charAt(0) + '****' + username.charAt(username.length - 1);
                 return { ...row, email: `${maskedUsername}@${domain}` };

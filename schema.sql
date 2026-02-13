@@ -660,7 +660,7 @@ CREATE INDEX idx_companies_website ON companies(website);
 CREATE TABLE IF NOT EXISTS company_members (
     company_id UUID REFERENCES companies(company_id) ON DELETE CASCADE,
     user_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
-    role VARCHAR(20) NOT NULL CHECK (role IN ('OWNER', 'ADMIN', 'EDITOR')),
+    role VARCHAR(20) NOT NULL CHECK (role IN ('OWNER', 'ADMIN', 'EDITOR', 'RECRUITER', 'ANALYST')),
     joined_at TIMESTAMPTZ DEFAULT NOW(),
     
     PRIMARY KEY (company_id, user_id)
@@ -676,7 +676,7 @@ CREATE TABLE IF NOT EXISTS company_invites (
     company_id UUID REFERENCES companies(company_id) ON DELETE CASCADE,
     inviter_id UUID REFERENCES users(user_id) ON DELETE SET NULL, -- Who sent the invite
     email VARCHAR(255) NOT NULL,
-    role VARCHAR(20) NOT NULL CHECK (role IN ('ADMIN', 'EDITOR')), -- Owner cannot be invited, must be transferred
+    role VARCHAR(20) NOT NULL CHECK (role IN ('ADMIN', 'EDITOR', 'RECRUITER', 'ANALYST')), -- Owner cannot be invited, must be transferred
     token VARCHAR(255) NOT NULL, -- For email link
     status VARCHAR(20) DEFAULT 'PENDING' CHECK (status IN ('PENDING', 'ACCEPTED', 'EXPIRED')),
     expires_at TIMESTAMPTZ NOT NULL,
