@@ -28,4 +28,21 @@ router.get("/companies/:companyId/analytics/engagement", requireAuth, analyticsC
 router.get("/companies/:companyId/analytics/jobs", requireAuth, analyticsController.getJobs);
 router.get("/companies/:companyId/audit-logs", requireAuth, analyticsController.getAuditLogs);
 
+// Tech Stack
+router.get("/companies/:slug/tech-stack", optionalAuth, companyController.getTechStack);
+router.post("/companies/:companyId/tech-stack", requireAuth, companyController.addTechStack);
+router.delete("/companies/:companyId/tech-stack/:stackId", requireAuth, companyController.removeTechStack);
+
+// Gallery
+router.get("/companies/:slug/gallery", optionalAuth, companyController.getGallery);
+router.post("/companies/:companyId/gallery", requireAuth, companyController.addToGallery);
+router.delete("/companies/:companyId/gallery/:galleryId", requireAuth, companyController.removeFromGallery);
+
+// Advocacy
+router.post("/companies/:companyId/posts/:postId/notify", requireAuth, companyController.notifyEmployees);
+
+// Company Posts
+router.get("/companies/:companyId/posts", optionalAuth, companyController.getCompanyPosts);
+
+
 module.exports = router;

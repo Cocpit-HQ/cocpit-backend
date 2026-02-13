@@ -73,6 +73,6 @@ router.get("/messages/:messageId/seen-by", requireAuth, socialController.getMess
    ===================================================== */
 router.get("/notifications", requireAuth, socialController.getNotifications);
 router.patch("/notifications/:id/read", requireAuth, socialController.markNotificationRead);
-// router.patch("/notifications/read-all", requireAuth, socialController.markAllNotificationsRead);
+router.patch("/notifications/read-all", requireAuth, socialController.markAllNotificationsRead);
 
 module.exports = router;

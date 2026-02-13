@@ -148,6 +148,24 @@ CREATE TABLE post_polls (
   created_at TIMESTAMPTZ DEFAULT now()
 );
 
+CREATE TABLE company_gallery (
+  gallery_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  company_id UUID REFERENCES companies(company_id) ON DELETE CASCADE,
+  url TEXT NOT NULL,
+  type TEXT CHECK (type IN ('image', 'video')),
+  caption TEXT,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE TABLE company_tech_stack (
+    stack_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    company_id UUID REFERENCES companies(company_id) ON DELETE CASCADE,
+    name TEXT NOT NULL, -- e.g. "React", "Node.js"
+    category TEXT, -- e.g. "Frontend", "Backend" (Optional)
+    created_at TIMESTAMPTZ DEFAULT now(),
+    UNIQUE(company_id, name)
+);
+
 CREATE TABLE poll_options (
   option_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   poll_id UUID NOT NULL
@@ -394,13 +412,18 @@ CREATE TABLE notifications (
   reference_id UUID, -- ID of the post/job/user
   metadata JSONB DEFAULT '{}'::jsonb, -- Additional data (e.g., comment_id, reply_id)
   is_read BOOLEAN DEFAULT FALSE,
+  recipient_company_id UUID REFERENCES companies(company_id) ON DELETE CASCADE,
   created_at TIMESTAMPTZ DEFAULT now()
 );
+
+CREATE INDEX IF NOT EXISTS idx_notifications_recipient_company ON notifications(recipient_company_id);
+CREATE INDEX IF NOT EXISTS idx_notifications_user_read ON notifications(user_id, is_read);
 
 CREATE TABLE jobs (
   job_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   recruiter_id UUID REFERENCES users(user_id) ON DELETE SET NULL,
   title TEXT NOT NULL,
+  company_id UUID REFERENCES companies(company_id) ON DELETE CASCADE,
   company_name TEXT NOT NULL,
   location TEXT,
   description TEXT,

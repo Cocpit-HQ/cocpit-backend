@@ -1737,7 +1737,7 @@ exports.markNotificationRead = async (req, res) => {
         const result = await pool.query(
             `UPDATE notifications 
        SET is_read = TRUE 
-       WHERE notification_id = $1 AND user_id = $2
+       WHERE notification_id = $1 AND (user_id = $2 OR recipient_company_id IN (SELECT company_id FROM company_members WHERE user_id = $2))
     RETURNING * `,
             [id, userId]
         );
@@ -1754,6 +1754,41 @@ exports.markNotificationRead = async (req, res) => {
             notification: result.rows[0],
         });
     } catch (err) {
+        res.status(500).json({ message: "Internal server error" });
+    }
+};
+
+// Mark ALL notifications as read
+exports.markAllNotificationsRead = async (req, res) => {
+    const userId = req.user.sub;
+    const { companyId } = req.body;
+
+    try {
+        let query = `UPDATE notifications SET is_read = TRUE WHERE is_read = FALSE`;
+        const params = [];
+
+        if (companyId) {
+            // Validate membership
+            const memberCheck = await pool.query(
+                "SELECT 1 FROM company_members WHERE company_id = $1 AND user_id = $2",
+                [companyId, userId]
+            );
+            if (memberCheck.rowCount === 0) {
+                return res.status(403).json({ message: "Not authorized for this company" });
+            }
+
+            query += ` AND recipient_company_id = $1`;
+            params.push(companyId);
+        } else {
+            query += ` AND user_id = $1 AND recipient_company_id IS NULL`;
+            params.push(userId);
+        }
+
+        await pool.query(query, params);
+
+        res.json({ message: "All notifications marked as read" });
+    } catch (err) {
+        console.error("Mark all read error:", err);
         res.status(500).json({ message: "Internal server error" });
     }
 };
