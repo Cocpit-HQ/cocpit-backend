@@ -46,8 +46,14 @@ class GroupChatService {
         const group = await GroupChatModel.getGroupDetails(groupId);
         if (!group) throw new Error("Group not found");
 
-        // Check if already a member
+        // RBAC Check: Must be active admin
         const members = await GroupChatModel.getGroupMembers(groupId);
+        const inviter = members.find(m => m.user_id === senderId);
+        if (!inviter || inviter.role !== 'admin') {
+            throw new Error("Only an active group admin can invite members");
+        }
+
+        // Check if already a member
         if (members.find(m => m.user_id === receiverId)) {
             throw new Error("User is already a member");
         }
@@ -147,41 +153,182 @@ class GroupChatService {
     }
 
     static async leaveGroup(userId, groupId) {
-        // Get user name before removal
-        const userRes = await pool.query(`SELECT full_name FROM users WHERE user_id = $1`, [userId]);
-        const userName = userRes.rows[0]?.full_name || "A member";
+        const client = await pool.connect();
+        try {
+            await client.query('BEGIN');
 
-        // Remove member (Soft delete via model update)
-        await GroupChatModel.removeMember(groupId, userId);
+            // 1. Get user name and role before leaving
+            const memberRes = await client.query(
+                `SELECT cp.role, u.full_name 
+                 FROM conversation_participants cp
+                 JOIN users u ON cp.user_id = u.user_id
+                 WHERE cp.conversation_id = $1 AND cp.user_id = $2 AND cp.left_at IS NULL`,
+                [groupId, userId]
+            );
 
-        // System message: "User left"
-        const systemMsg = await GroupChatModel.createMessage({
-            groupId,
-            senderId: userId, // The user is the actor
-            content: `${userName} left the group`,
-            type: 'system',
-            actionType: 'leave',
-            targetId: userId // Or null
-        });
+            if (memberRes.rowCount === 0) {
+                throw new Error("User is not an active member of this group");
+            }
 
+            const { role, full_name: userName } = memberRes.rows[0];
 
+            // 2. Remove member (Soft delete) AND strip role to 'member' to avoid ghost permissions
+            await client.query(
+                `UPDATE conversation_participants 
+                 SET left_at = now(), role = 'member' 
+                 WHERE conversation_id = $1 AND user_id = $2 AND left_at IS NULL`,
+                [groupId, userId]
+            );
 
+            // Fetch current group owner info
+            const groupRes = await client.query(
+                `SELECT admin_id FROM conversations WHERE conversation_id = $1`,
+                [groupId]
+            );
+            const currentOwnerId = groupRes.rows[0]?.admin_id;
+            const isOwner = currentOwnerId === userId;
 
-        // Broadcast system message
-        const members = await GroupChatModel.getGroupMembers(groupId);
-        members.forEach(member => {
-            socketService.notifyUser(member.user_id, 'new_message', {
-                ...systemMsg,
-                sender_name: 'System',
-                is_system: true,
-                conversation_id: groupId
+            const promotedMembers = [];
+
+            // 3. DYNAMIC ADMIN CHECK: Check if we need to promote a new admin
+            const adminCountRes = await client.query(
+                `SELECT COUNT(*)::int as count
+                 FROM conversation_participants
+                 WHERE conversation_id = $1 AND role = 'admin' AND left_at IS NULL`,
+                [groupId]
+            );
+
+            if (adminCountRes.rows[0].count === 0) {
+                // If NO admins are left, promote the earliest joined active member
+                const candidatesRes = await client.query(
+                    `SELECT cp.user_id, u.full_name 
+                     FROM conversation_participants cp
+                     JOIN users u ON cp.user_id = u.user_id
+                     WHERE cp.conversation_id = $1 AND cp.left_at IS NULL
+                     ORDER BY cp.joined_at ASC
+                     LIMIT 1`,
+                    [groupId]
+                );
+
+                if (candidatesRes.rowCount > 0) {
+                    const candidate = candidatesRes.rows[0];
+                    // Promote to admin
+                    await client.query(
+                        `UPDATE conversation_participants 
+                         SET role = 'admin' 
+                         WHERE conversation_id = $1 AND user_id = $2 AND left_at IS NULL`,
+                        [groupId, candidate.user_id]
+                    );
+
+                    // Always reassign group owner if zero admins were left
+                    await client.query(
+                        `UPDATE conversations SET admin_id = $1 WHERE conversation_id = $2`,
+                        [candidate.user_id, groupId]
+                    );
+
+                    // Create system message for promotion
+                    const promoMsgRes = await client.query(
+                        `INSERT INTO messages (conversation_id, sender_id, text_content, message_type, action_type, target_id) 
+                         VALUES ($1, NULL, $2, 'system', 'promote', $3) 
+                         RETURNING *`,
+                        [groupId, `${candidate.full_name} was promoted to admin.`, candidate.user_id]
+                    );
+
+                    // Update conversation last message
+                    await client.query(
+                        `UPDATE conversations SET updated_at = now(), last_message = $2, last_message_at = now() WHERE conversation_id = $1`,
+                        [groupId, `${candidate.full_name} was promoted to admin.`]
+                    );
+
+                    promotedMembers.push({
+                        user_id: candidate.user_id,
+                        full_name: candidate.full_name,
+                        message: promoMsgRes.rows[0]
+                    });
+                } else {
+                    // No members left at all, clear owner
+                    await client.query(
+                        `UPDATE conversations SET admin_id = NULL WHERE conversation_id = $1`,
+                        [groupId]
+                    );
+                }
+            } else if (isOwner) {
+                // There ARE other admins, but the leaving user was the owner.
+                // Reassign ownership to one of the remaining admins.
+                const otherAdminRes = await client.query(
+                    `SELECT user_id FROM conversation_participants 
+                     WHERE conversation_id = $1 AND role = 'admin' AND left_at IS NULL 
+                     ORDER BY joined_at ASC
+                     LIMIT 1`,
+                    [groupId]
+                );
+                if (otherAdminRes.rowCount > 0) {
+                    await client.query(
+                        `UPDATE conversations SET admin_id = $1 WHERE conversation_id = $2`,
+                        [otherAdminRes.rows[0].user_id, groupId]
+                    );
+                }
+            }
+
+            // 4. Create system message: "User left"
+            const leaveMsgRes = await client.query(
+                `INSERT INTO messages (conversation_id, sender_id, text_content, message_type, action_type, target_id) 
+                 VALUES ($1, $2, $3, 'system', 'leave', $2) 
+                 RETURNING *`,
+                [groupId, userId, `${userName} left the group`]
+            );
+
+            await client.query(
+                `UPDATE conversations SET updated_at = now(), last_message = $2, last_message_at = now() WHERE conversation_id = $1`,
+                [groupId, `${userName} left the group`]
+            );
+
+            await client.query('COMMIT');
+
+            // 5. Post-commit notifications
+            const remainingMembers = await GroupChatModel.getGroupMembers(groupId);
+
+            // Broadcast leave message
+            const leaveMsg = leaveMsgRes.rows[0];
+            remainingMembers.forEach(member => {
+                socketService.notifyUser(member.user_id, 'new_message', {
+                    ...leaveMsg,
+                    sender_name: 'System',
+                    is_system: true,
+                    conversation_id: groupId
+                });
             });
-        });
 
-        // Force socket to leave room
-        socketService.leaveConversation(userId, groupId);
+            // Handle promotions notifications
+            promotedMembers.forEach(promo => {
+                remainingMembers.forEach(member => {
+                    // Update admin badge dynamically
+                    socketService.notifyUser(member.user_id, 'group_role_update', {
+                        groupId,
+                        userId: promo.user_id,
+                        role: 'admin'
+                    });
 
-        return { success: true };
+                    // Send system message
+                    socketService.notifyUser(member.user_id, 'new_message', {
+                        ...promo.message,
+                        sender_name: 'System',
+                        is_system: true,
+                        conversation_id: groupId
+                    });
+                });
+            });
+
+            // Force socket to leave room
+            socketService.leaveConversation(userId, groupId);
+
+            return { success: true };
+        } catch (err) {
+            await client.query('ROLLBACK');
+            throw err;
+        } finally {
+            client.release();
+        }
     }
 
     static async removeMember(adminId, groupId, targetUserId) {
@@ -191,8 +338,14 @@ class GroupChatService {
 
         if (adminId === targetUserId) throw new Error("Admin cannot remove themselves. Use leave instead.");
 
-        // 2. Safety Rule: If target is admin, check if they are the last admin
+        // RBAC Check: Must be active admin
         const members = await GroupChatModel.getGroupMembers(groupId);
+        const adminMember = members.find(m => m.user_id === adminId);
+        if (!adminMember || adminMember.role !== 'admin') {
+            throw new Error("Only an active group admin can remove members");
+        }
+
+        // 2. Safety Rule: If target is admin, check if they are the last admin
         const targetMember = members.find(m => m.user_id === targetUserId);
 
         if (targetMember && targetMember.role === 'admin') {
@@ -263,11 +416,26 @@ class GroupChatService {
         return { success: true };
     }
 
-    static async getGroupDetails(groupId) {
+    static async getGroupDetails(userId, groupId) {
         const group = await GroupChatModel.getGroupDetails(groupId);
         if (!group) return null;
+
+        const participant = await GroupChatModel.getParticipant(groupId, userId);
+        const isInactive = participant ? !!participant.left_at : true;
+
+        if (isInactive) {
+            // For inactive users, return a "frozen" view with members as they were when user left
+            const members = await GroupChatModel.getGroupMembers(groupId, participant?.left_at);
+            return {
+                ...group,
+                is_inactive: true,
+                left_at: participant ? participant.left_at : null,
+                members: members // Show members who joined before user left
+            };
+        }
+
         const members = await GroupChatModel.getGroupMembers(groupId);
-        return { ...group, members };
+        return { ...group, members, is_inactive: false };
     }
     static async sendMessage(senderId, groupId, content, type, media = [], previewText = null) {
         // 1. Verify user is member of group
@@ -459,6 +627,13 @@ class GroupChatService {
         const group = await GroupChatModel.getGroupDetails(groupId);
         if (!group) throw new Error("Group not found");
 
+        // RBAC Check: Must be active admin
+        const members = await GroupChatModel.getGroupMembers(groupId);
+        const updater = members.find(m => m.user_id === userId);
+        if (!updater || updater.role !== 'admin') {
+            throw new Error("Only an active group admin can update the group icon");
+        }
+
         // 2. Update avatar
         const updatedGroup = await GroupChatModel.updateGroupAvatar(groupId, avatarUrl);
 
@@ -475,7 +650,6 @@ class GroupChatService {
         });
 
         // 4. Notify members
-        const members = await GroupChatModel.getGroupMembers(groupId);
         members.forEach(member => {
             // Notify about group update (avatar)
             socketService.notifyUser(member.user_id, 'group_updated', updatedGroup);
