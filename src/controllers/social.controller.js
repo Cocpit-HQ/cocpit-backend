@@ -941,7 +941,7 @@ SELECT
 
     -- Name logic: Use group name if group, else other user's name
     CASE 
-        WHEN c.is_group THEN c.conversation_name 
+        WHEN c.is_group THEN COALESCE(c.conversation_name, 'Group Chat')
         WHEN EXISTS(SELECT 1 FROM blocks WHERE blocker_id = u.user_id AND blocked_id = $1) THEN 'User not found'
         ELSE u.full_name 
     END AS other_user_name,
@@ -957,6 +957,7 @@ SELECT
     u.user_id AS other_user_id,
     u.headline AS other_user_headline,
     
+    -- Identify the sender profile for the current view
     cp.is_active,
 
     -- Get the most recent message dynamically

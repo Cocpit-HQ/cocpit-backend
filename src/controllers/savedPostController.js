@@ -67,7 +67,10 @@ exports.getSavedPosts = async (req, res) => {
                     '[]'::json
                 ) AS media,
                 (SELECT COUNT(*) FROM post_likes pl WHERE pl.post_id = p.post_id)::int AS like_count,
-                (SELECT COUNT(*) FROM post_comments pc WHERE pc.post_id = p.post_id)::int AS comment_count
+                (SELECT COUNT(*) FROM post_comments pc WHERE pc.post_id = p.post_id)::int AS comment_count,
+                EXISTS(SELECT 1 FROM post_likes pl WHERE pl.post_id = p.post_id AND pl.user_id = $1) AS is_liked,
+                EXISTS(SELECT 1 FROM post_comments pc_me WHERE pc_me.post_id = p.post_id AND pc_me.author_id = $1) AS is_commented,
+                true AS is_saved
              FROM saved_post sp
              JOIN posts p ON p.post_id = sp.post_id
              JOIN users u ON u.user_id = p.author_id

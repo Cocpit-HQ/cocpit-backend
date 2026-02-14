@@ -9,6 +9,9 @@ router.use(requireAuth);
 // Search users (real-time)
 router.get("/search", userController.searchUsers);
 
+// Get suggested users
+router.get("/suggested", userController.getSuggestedUsers);
+
 // Get public profile
 router.get("/:id", userController.getUserProfile);
 

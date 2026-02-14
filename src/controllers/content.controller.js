@@ -54,6 +54,8 @@ exports.getPublicFeed = async (req, res) => {
             (SELECT COUNT(*) FROM post_comments pc WHERE pc.post_id = p.post_id)::int AS comment_count,
 
             (pl_me.post_id IS NOT NULL) AS is_liked,
+            EXISTS(SELECT 1 FROM post_comments pc_me WHERE pc_me.post_id = p.post_id AND pc_me.author_id = $${userParamIdx}) AS is_commented,
+            EXISTS(SELECT 1 FROM saved_post sp_me WHERE sp_me.post_id = p.post_id AND sp_me.user_id = $${userParamIdx}) AS is_saved,
 
             (
                 SELECT json_build_object(
@@ -102,10 +104,12 @@ exports.getPublicFeed = async (req, res) => {
                             'full_name', COALESCE(sp_comp.name, sp_u.full_name),
                             'avatar_url', COALESCE(sp_comp.logo_url, sp_u.avatar_url)
                         ),
-                        'media', COALESCE((SELECT json_agg(json_build_object('url', pm.url, 'media_type', pm.media_type)) FROM post_media pm WHERE pm.post_id = sp.post_id), '[]'::json),
-                        'like_count', (SELECT COUNT(*) FROM post_likes pl WHERE pl.post_id = sp.post_id)::int,
-                        'comment_count', (SELECT COUNT(*) FROM post_comments pc WHERE pc.post_id = sp.post_id)::int,
-                        'is_liked', EXISTS(SELECT 1 FROM post_likes pl WHERE pl.post_id = sp.post_id AND pl.user_id = $${userParamIdx}),
+                         'media', COALESCE((SELECT json_agg(json_build_object('url', pm.url, 'media_type', pm.media_type)) FROM post_media pm WHERE pm.post_id = sp.post_id), '[]'::json),
+                         'like_count', (SELECT COUNT(*) FROM post_likes pl WHERE pl.post_id = sp.post_id)::int,
+                         'comment_count', (SELECT COUNT(*) FROM post_comments pc WHERE pc.post_id = sp.post_id)::int,
+                         'is_liked', EXISTS(SELECT 1 FROM post_likes pl WHERE pl.post_id = sp.post_id AND pl.user_id = $${userParamIdx}),
+                         'is_commented', EXISTS(SELECT 1 FROM post_comments pc_c WHERE pc_c.post_id = sp.post_id AND pc_c.author_id = $${userParamIdx}),
+                         'is_saved', EXISTS(SELECT 1 FROM saved_post sp_s WHERE sp_s.post_id = sp.post_id AND sp_s.user_id = $${userParamIdx}),
                         'poll', (
                             SELECT json_build_object(
                                 'poll_id', pp.poll_id,
@@ -286,6 +290,8 @@ exports.getMyPosts = async (req, res) => {
                             COALESCE(pm.media, '[]':: json) AS media,
                                 COALESCE(lc.like_count, 0) AS like_count,
                                     EXISTS(SELECT 1 FROM post_likes pl WHERE pl.post_id = p.post_id AND pl.user_id = $1) AS is_liked,
+                                    EXISTS(SELECT 1 FROM post_comments pc_me WHERE pc_me.post_id = p.post_id AND pc_me.author_id = $1) AS is_commented,
+                                    EXISTS(SELECT 1 FROM saved_post sp_me WHERE sp_me.post_id = p.post_id AND sp_me.user_id = $1) AS is_saved,
                                         COALESCE(cc.comment_count, 0) AS comment_count,
 
                                             pp.poll,
@@ -807,6 +813,8 @@ exports.getPostById = async (req, res) => {
 
     -- Is Liked (Fix for stale state)
     COALESCE(il.is_liked, false) AS is_liked,
+    EXISTS(SELECT 1 FROM post_comments pc_me WHERE pc_me.post_id = p.post_id AND pc_me.author_id = $2) AS is_commented,
+    EXISTS(SELECT 1 FROM saved_post sp_me WHERE sp_me.post_id = p.post_id AND sp_me.user_id = $2) AS is_saved,
 
     -- Media (array)
     COALESCE(
@@ -2020,6 +2028,17 @@ exports.getComments = async (req, res) => {
 exports.getStories = async (req, res) => {
     const userId = req.user.sub;
     try {
+        // Fetch following IDs
+        const followingRes = await pool.query(
+            "SELECT following_id FROM followers WHERE follower_id = $1",
+            [userId]
+        );
+        const followingIds = followingRes.rows.map(r => r.following_id);
+
+        if (followingIds.length === 0) {
+            return res.json([]);
+        }
+
         const result = await pool.query(
             `
             SELECT 
@@ -2049,9 +2068,14 @@ exports.getStories = async (req, res) => {
             JOIN users u ON s.author_id = u.user_id
             LEFT JOIN companies comp ON s.author_company_id = comp.company_id
             WHERE s.expires_at > now()
+            AND (
+                s.author_id = $1
+                OR s.author_id = ANY($2)
+                OR s.author_company_id = ANY($2)
+            )
             ORDER BY s.created_at DESC
             `,
-            [userId]
+            [userId, followingIds]
         );
 
         res.json(result.rows);
@@ -2099,6 +2123,17 @@ exports.getGroupedStories = async (req, res) => {
                 currentEntityId = currentUser.user_id;
                 currentEntityAvatar = currentUser.avatar_url;
             }
+        }
+
+        // Fetch following IDs
+        const followingRes = await pool.query(
+            "SELECT following_id FROM followers WHERE follower_id = $1",
+            [currentEntityId]
+        );
+        const followingIds = followingRes.rows.map(r => r.following_id);
+
+        if (followingIds.length === 0) {
+            return res.json([]);
         }
 
         // 2. Fetch all active stories with author details (prefer company info if acting as company)
@@ -2188,6 +2223,12 @@ exports.getGroupedStories = async (req, res) => {
             LEFT JOIN users sp_u ON sp.author_id = sp_u.user_id
             LEFT JOIN post_categories sp_cat ON sp.category_id = sp_cat.category_id
             WHERE s.expires_at > now()
+            AND (
+                s.author_id = $2
+                OR s.author_company_id = $2
+                OR s.author_id = ANY($3)
+                OR s.author_company_id = ANY($3)
+            )
             AND NOT EXISTS (
                 SELECT 1 FROM blocks b 
                 WHERE (b.blocker_id = $1 AND b.blocked_id = s.author_id)
@@ -2195,7 +2236,7 @@ exports.getGroupedStories = async (req, res) => {
             )
             ORDER BY s.created_at ASC
             `,
-            [userId]
+            [userId, currentEntityId, followingIds]
         );
 
         const stories = result.rows;

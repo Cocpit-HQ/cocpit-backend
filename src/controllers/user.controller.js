@@ -627,3 +627,43 @@ exports.deleteAccount = async (req, res) => {
     if (client) client.release();
   }
 };
+
+/**
+ * GET /api/users/suggested
+ * Purpose: Provide user recommendations for new accounts or discovery
+ */
+exports.getSuggestedUsers = async (req, res) => {
+  const currentUserId = req.user.sub;
+
+  try {
+    const query = `
+      SELECT 
+        u.user_id AS id,
+        u.full_name,
+        u.account_name,
+        u.avatar_url,
+        u.headline,
+        p.account_type,
+        (SELECT COUNT(*) FROM followers WHERE following_id = u.user_id) as followers_count
+      FROM users u
+      LEFT JOIN profiles p ON u.user_id = p.user_id
+      WHERE u.user_id != $1
+      AND NOT EXISTS (
+        SELECT 1 FROM followers WHERE follower_id = $1 AND following_id = u.user_id
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM blocks b 
+        WHERE (b.blocker_id = $1 AND b.blocked_id = u.user_id)
+           OR (b.blocker_id = u.user_id AND b.blocked_id = $1)
+      )
+      ORDER BY followers_count DESC, u.created_at DESC
+      LIMIT 15
+    `;
+
+    const result = await pool.query(query, [currentUserId]);
+    res.status(200).json(result.rows);
+  } catch (err) {
+    console.error("Get suggested users error:", err);
+    res.status(500).json({ message: "Internal server error" });
+  }
+};
