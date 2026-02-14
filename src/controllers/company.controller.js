@@ -10,15 +10,34 @@ const logAudit = async (client, { entityId, actorId, action, metadata = {} }) =>
     await client.query(query, ['COMPANY', entityId, actorId, action, metadata]);
 };
 
-// Helper: Check if user is OWNER or ADMIN
+// Helper: Check if user is OWNER or ADMIN (Updated for Dynamic Roles)
 const checkRole = async (client, companyId, userId, allowedRoles = ['OWNER', 'ADMIN']) => {
     const res = await client.query(
-        `SELECT role FROM company_members WHERE company_id = $1 AND user_id = $2`,
+        `SELECT cr.name as role FROM company_members cm
+         JOIN company_roles cr ON cm.role_id = cr.role_id
+         WHERE cm.company_id = $1 AND cm.user_id = $2`,
         [companyId, userId]
     );
     if (res.rowCount === 0) return null;
-    const role = res.rows[0].role;
+    const role = res.rows[0].role.toUpperCase();
     return allowedRoles.includes(role) ? role : null;
+};
+
+// --- Updated Permissions Helper ---
+// Replaces checkRole with new middleware logic usage pattern or direct DB check
+const checkPermission = async (client, companyId, userId, permission) => {
+    const res = await client.query(
+        `SELECT cr.permissions 
+         FROM company_members cm
+         JOIN company_roles cr ON cm.role_id = cr.role_id
+         WHERE cm.company_id = $1 AND cm.user_id = $2`,
+        [companyId, userId]
+    );
+    if (res.rowCount === 0) return false;
+    const permissions = res.rows[0].permissions || [];
+    return permissions.includes("*") ||
+        permissions.includes(permission) ||
+        (permission.startsWith("VIEW_") && permissions.includes(permission.replace("VIEW_", "MANAGE_")));
 };
 
 exports.createCompany = async (req, res) => {
@@ -87,9 +106,36 @@ exports.createCompany = async (req, res) => {
         const company = companyRes.rows[0];
 
         // 5. Add Creator as OWNER
+        // Get Owner Role ID
+        const ownerRoleRes = await client.query(`SELECT role_id FROM company_roles WHERE company_id = $1 AND name = 'Owner'`, [company.company_id]);
+        // Default roles should have been created by trigger if we had one, but we are migrating.
+        // Wait, for NEW companies, we need to create default roles!
+        // The migration script only handles EXISTING companies.
+        // We need a helper to create default roles for a new company.
+
+        // Let's create default roles inline here for now or use a shared helper.
+        const roles = [
+            { name: 'Owner', color: '#FFD700', permissions: ["*"], priority: 100, is_system: true },
+            { name: 'Admin', color: '#FF0000', permissions: ["MANAGE_COMPANY", "MANAGE_ROLES", "MANAGE_MEMBERS", "POST_JOBS", "VIEW_APPLICANTS", "CREATE_CONTENT", "VIEW_ANALYTICS"], priority: 90, is_system: true },
+            { name: 'Editor', color: '#00FF00', permissions: ["CREATE_CONTENT", "VIEW_ANALYTICS"], priority: 60, is_system: true },
+            { name: 'Recruiter', color: '#0000FF', permissions: ["POST_JOBS", "VIEW_APPLICANTS"], priority: 50, is_system: true },
+            { name: 'Analyst', color: '#800080', permissions: ["VIEW_ANALYTICS"], priority: 40, is_system: true }
+        ];
+
+        let ownerRoleId;
+
+        for (const r of roles) {
+            const rRes = await client.query(
+                `INSERT INTO company_roles (company_id, name, color, permissions, priority, is_system_role)
+                 VALUES ($1, $2, $3, $4, $5, $6) RETURNING role_id`,
+                [company.company_id, r.name, r.color, JSON.stringify(r.permissions), r.priority, r.is_system]
+            );
+            if (r.name === 'Owner') ownerRoleId = rRes.rows[0].role_id;
+        }
+
         await client.query(
-            `INSERT INTO company_members (company_id, user_id, role) VALUES ($1, $2, 'OWNER')`,
-            [company.company_id, userId]
+            `INSERT INTO company_members (company_id, user_id, role_id) VALUES ($1, $2, $3)`,
+            [company.company_id, userId, ownerRoleId]
         );
 
         // 6. Audit Log
@@ -156,7 +202,16 @@ exports.getCompany = async (req, res) => {
         const result = await pool.query(
             `SELECT c.*,
         (SELECT COUNT(*) FROM company_members cm WHERE cm.company_id = c.company_id) as member_count,
-        ${userId ? `(SELECT role FROM company_members cm WHERE cm.company_id = c.company_id AND cm.user_id = $2) as viewer_role` : 'NULL as viewer_role'}
+        ${userId ? `(
+            SELECT json_build_object(
+                'name', cr.name,
+                'permissions', cr.permissions,
+                'priority', cr.priority
+            )
+            FROM company_members cm 
+            JOIN company_roles cr ON cm.role_id = cr.role_id 
+            WHERE cm.company_id = c.company_id AND cm.user_id = $2
+        ) as viewer_role_data` : 'NULL as viewer_role_data'}
        FROM companies c
        WHERE c.slug = $1 AND c.is_deleted = FALSE`,
             userId ? [slug, userId] : [slug]
@@ -285,53 +340,71 @@ exports.updateCompany = async (req, res) => {
 exports.inviteMember = async (req, res) => {
     const { companyId } = req.params;
     const userId = req.user.sub;
-    const { email, role } = req.body;
+    const { email, role } = req.body; // Role name (e.g. "Editor")
 
-    if (!email || !role || !['ADMIN', 'EDITOR', 'RECRUITER', 'ANALYST'].includes(role)) {
-        return res.status(400).json({ message: "Valid email and role (ADMIN, EDITOR, RECRUITER, ANALYST) are required" });
+    if (!email || !role) {
+        return res.status(400).json({ message: "Valid email and role are required" });
     }
 
     const client = await pool.connect();
     try {
         await client.query("BEGIN");
 
-        // 1. RBAC Check
-        const userRole = await checkRole(client, companyId, userId, ['OWNER', 'ADMIN']);
-        if (!userRole) {
-            throw new Error("Forbidden: You allow to invite members");
+        // 1. Permission Check
+        const canInvite = await checkPermission(client, companyId, userId, 'INVITE_MEMBERS');
+        if (!canInvite) throw new Error("Forbidden: You do not have permission to invite members");
+
+        // 2. Role Escalation Check
+        // Get inviter's priority
+        const inviterRes = await client.query(
+            `SELECT cr.priority FROM company_members cm 
+             JOIN company_roles cr ON cm.role_id = cr.role_id 
+             WHERE cm.company_id = $1 AND cm.user_id = $2`,
+            [companyId, userId]
+        );
+        const inviterPriority = inviterRes.rows[0]?.priority || 0;
+
+        // Get target role priority
+        const targetRoleQuery = await client.query(
+            `SELECT role_id, priority FROM company_roles WHERE company_id = $1 AND name ILIKE $2`,
+            [companyId, role]
+        );
+        if (targetRoleQuery.rowCount === 0) throw new Error("Invalid role specified");
+
+        const targetRoleData = targetRoleQuery.rows[0];
+        if (targetRoleData.priority > inviterPriority) {
+            throw new Error("You cannot assign a role with higher priority than your own.");
         }
 
-        // 2. Rate Limit (10 invites per day per company)
+        // 3. Rate Limit
         const rateLimitRes = await client.query(
             `SELECT COUNT(*) FROM company_invites 
              WHERE company_id = $1 AND created_at > NOW() - INTERVAL '1 day'`,
             [companyId]
         );
-        if (parseInt(rateLimitRes.rows[0].count) >= 10) {
-            throw new Error("Rate limit exceeded: Max 10 invites per day per company.");
+        if (parseInt(rateLimitRes.rows[0].count) >= 20) { // Increased limit
+            throw new Error("Rate limit exceeded: Max 20 invites per day per company.");
         }
 
-        // 3. Idempotent Upsert Helper
-        // Generate Token
+        // 4. Create Invite
         const token = require('crypto').randomBytes(20).toString('hex');
         const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days
 
-        // Insert or Update existing invite
         await client.query(
-            `INSERT INTO company_invites (company_id, inviter_id, email, role, token, expires_at, status)
-             VALUES ($1, $2, $3, $4, $5, $6, 'PENDING')
+            `INSERT INTO company_invites (company_id, inviter_id, email, role, role_id, token, expires_at, status)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, 'PENDING')
              ON CONFLICT (company_id, email) 
              DO UPDATE SET 
                 role = EXCLUDED.role,
+                role_id = EXCLUDED.role_id,
                 token = EXCLUDED.token,
                 expires_at = EXCLUDED.expires_at,
                 inviter_id = EXCLUDED.inviter_id,
                 status = 'PENDING',
                 updated_at = NOW()`,
-            [companyId, userId, email, role, token, expiresAt]
+            [companyId, userId, email, role, targetRoleData.role_id, token, expiresAt]
         );
 
-        // 4. Audit Log
         await logAudit(client, {
             entityId: companyId,
             actorId: userId,
@@ -340,22 +413,16 @@ exports.inviteMember = async (req, res) => {
         });
 
         await client.query("COMMIT");
-
-        // TODO: Send Email (Mocked)
-        console.log(`[MOCK EMAIL] Invite sent to ${email} for company ${companyId} with token ${token}`);
-
-        res.status(200).json({ message: "Invitation sent successfully", token }); // Return token for manual testing
+        console.log(`[MOCK EMAIL] Invite sent to ${email} with token ${token}`);
+        res.status(200).json({ message: "Invitation sent successfully", token });
 
     } catch (err) {
         await client.query("ROLLBACK");
         console.error("Invite member error:", err);
-        if (err.statusCode) {
-            return res.status(err.statusCode).json({ message: err.message });
-        }
-        if (err.message.startsWith("Forbidden") || err.message.startsWith("Rate limit")) {
+        if (err.message.startsWith("Forbidden") || err.message.startsWith("You cannot")) {
             return res.status(403).json({ message: err.message });
         }
-        res.status(500).json({ message: "Internal server error" });
+        res.status(500).json({ message: err.message || "Internal server error" });
     } finally {
         client.release();
     }
@@ -500,13 +567,13 @@ exports.acceptInvite = async (req, res) => {
 
         // 2b. Check if User is ALREADY a member
         const memberCheck = await client.query(
-            `SELECT role FROM company_members WHERE company_id = $1 AND user_id = $2`,
+            `SELECT cr.name as role FROM company_members cm JOIN company_roles cr ON cm.role_id = cr.role_id WHERE cm.company_id = $1 AND cm.user_id = $2`,
             [invite.company_id, userId]
         );
 
         if (memberCheck.rowCount > 0) {
             const existingRole = memberCheck.rows[0].role;
-            if (existingRole === 'OWNER') {
+            if (existingRole === 'Owner') { // Changed from 'OWNER' to 'Owner' to match case in roles array
                 throw new Error("You are the OWNER of this company. You cannot accept an invitation.");
             } else {
                 throw new Error(`You are already a member as ${existingRole}.`);
@@ -514,11 +581,23 @@ exports.acceptInvite = async (req, res) => {
         }
 
         // 3. Add to Members
-        await client.query(
-            `INSERT INTO company_members (company_id, user_id, role) VALUES ($1, $2, $3)
-             ON CONFLICT (company_id, user_id) DO UPDATE SET role = EXCLUDED.role`,
-            [invite.company_id, userId, invite.role]
-        );
+        // Use role_id from invite if available, fallback to lookup
+        let roleId = invite.role_id;
+        if (!roleId) {
+            const roleRes = await client.query(`SELECT role_id FROM company_roles WHERE company_id = $1 AND name ILIKE $2`, [invite.company_id, invite.role]);
+            roleId = roleRes.rows[0]?.role_id;
+        }
+
+        if (roleId) {
+            await client.query(
+                `INSERT INTO company_members (company_id, user_id, role_id) VALUES ($1, $2, $3)
+                 ON CONFLICT (company_id, user_id) DO UPDATE SET role_id = EXCLUDED.role_id`,
+                [invite.company_id, userId, roleId]
+            );
+        } else {
+            // Fallback for very old invites? Should not happen with fresh migration
+            throw new Error("Invalid role configuration for this invite.");
+        }
 
         // 4. Update Invite Status
         await client.query(
@@ -587,15 +666,20 @@ exports.transferOwnership = async (req, res) => {
         if (!isValid) throw new AppError("Invalid password", 401);
 
         // 2. Transaction
+        // Get Role IDs
+        const rolesRes = await client.query(`SELECT role_id, name FROM company_roles WHERE company_id = $1 AND name IN ('Owner', 'Admin')`, [companyId]);
+        const ownerRole = rolesRes.rows.find(r => r.name === 'Owner');
+        const adminRole = rolesRes.rows.find(r => r.name === 'Admin');
+
+        if (!ownerRole || !adminRole) throw new Error("System roles missing");
+
         // Demote current OWNER to ADMIN
         await client.query(
-            `UPDATE company_members SET role = 'ADMIN' WHERE company_id = $1 AND user_id = $2`,
-            [companyId, userId]
+            `UPDATE company_members SET role_id = $1 WHERE company_id = $2 AND user_id = $3`,
+            [adminRole.role_id, companyId, userId]
         );
 
-        // Promote new user to OWNER (Upsert if they are already member, or insert)
-        // Actually, they must be a member? Or we can add them?
-        // Let's assume they might be a member already.
+        // Promote new user to OWNER
         const memberCheck = await client.query(
             `SELECT 1 FROM company_members WHERE company_id = $1 AND user_id = $2`,
             [companyId, newOwnerId]
@@ -603,14 +687,13 @@ exports.transferOwnership = async (req, res) => {
 
         if (memberCheck.rowCount > 0) {
             await client.query(
-                `UPDATE company_members SET role = 'OWNER' WHERE company_id = $1 AND user_id = $2`,
-                [companyId, newOwnerId]
+                `UPDATE company_members SET role_id = $1 WHERE company_id = $2 AND user_id = $3`,
+                [ownerRole.role_id, companyId, newOwnerId]
             );
         } else {
-            // If strictly must be member first, throw error. For flexibility, let's add them.
             await client.query(
-                `INSERT INTO company_members (company_id, user_id, role) VALUES ($1, $2, 'OWNER')`,
-                [companyId, newOwnerId]
+                `INSERT INTO company_members (company_id, user_id, role_id) VALUES ($1, $2, $3)`,
+                [companyId, newOwnerId, ownerRole.role_id]
             );
         }
 
@@ -696,46 +779,46 @@ exports.deleteCompany = async (req, res) => {
 exports.getMembers = async (req, res) => {
     const { companyId } = req.params;
     const userId = req.user.sub;
-    const { page = 1, limit = 10 } = req.query; // Pagination params
+    const { page = 1, limit = 10, status } = req.query;
     const offset = (page - 1) * limit;
 
     const client = await pool.connect();
     try {
-        // RBAC: Allow all members to view list
-        const userRole = await checkRole(client, companyId, userId, ['OWNER', 'ADMIN', 'EDITOR', 'RECRUITER', 'ANALYST']);
-        if (!userRole) {
-            return res.status(403).json({ message: "Forbidden: You must be a member to view members" });
+        // Permission Check
+        const canView = await checkPermission(client, companyId, userId, 'VIEW_MEMBERS');
+        if (!canView) return res.status(403).json({ message: "Forbidden" });
+
+        // Build Query
+        let whereClause = `WHERE cm.company_id = $1`;
+        const params = [companyId, limit, offset];
+        if (status) {
+            whereClause += ` AND cm.status = $4`;
+            params.push(status);
         }
 
-        // Get Total Count
         const countRes = await client.query(
-            `SELECT COUNT(*) FROM company_members WHERE company_id = $1`,
-            [companyId]
+            `SELECT COUNT(*) FROM company_members cm ${whereClause}`,
+            status ? [companyId, status] : [companyId]
         );
         const total = parseInt(countRes.rows[0].count);
 
         const result = await client.query(
-            `SELECT u.user_id, u.full_name, u.email, u.avatar_url, cm.role, cm.joined_at
+            `SELECT 
+                u.user_id, u.full_name, u.email, u.avatar_url, 
+                cr.name as role, cr.color as role_color, cr.priority,
+                cm.joined_at, cm.status, cm.expires_at,
+                cm.is_primary_display
              FROM company_members cm
              JOIN users u ON cm.user_id = u.user_id
-             WHERE cm.company_id = $1
-             ORDER BY cm.role='OWNER' DESC, cm.role='ADMIN' DESC, cm.joined_at ASC
+             JOIN company_roles cr ON cm.role_id = cr.role_id
+             ${whereClause}
+             ORDER BY cr.priority DESC, cm.joined_at ASC
              LIMIT $2 OFFSET $3`,
-            [companyId, limit, offset]
+            params
         );
 
-        const members = result.rows.map(row => {
-            // Hide email for non-admin/owner roles
-            if (['EDITOR', 'RECRUITER', 'ANALYST'].includes(userRole) && row.user_id !== userId) {
-                const [username, domain] = row.email.split('@');
-                const maskedUsername = username.charAt(0) + '****' + username.charAt(username.length - 1);
-                return { ...row, email: `${maskedUsername}@${domain}` };
-            }
-            return row;
-        });
-
         res.json({
-            data: members,
+            data: result.rows,
             meta: {
                 total,
                 page: parseInt(page),
@@ -743,6 +826,7 @@ exports.getMembers = async (req, res) => {
                 totalPages: Math.ceil(total / limit)
             }
         });
+
     } catch (err) {
         console.error("Get members error:", err);
         res.status(500).json({ message: "Internal server error" });
@@ -765,20 +849,27 @@ exports.removeMember = async (req, res) => {
 
         // 2. Check target member role
         const targetRes = await client.query(
-            `SELECT role FROM company_members WHERE company_id = $1 AND user_id = $2`,
+            `SELECT cr.name as role, cr.priority FROM company_members cm 
+             JOIN company_roles cr ON cm.role_id = cr.role_id
+             WHERE cm.company_id = $1 AND cm.user_id = $2`,
             [companyId, memberId]
         );
         if (targetRes.rowCount === 0) throw new Error("Member not found");
         const targetRole = targetRes.rows[0].role;
+        const targetPriority = targetRes.rows[0].priority;
 
         // 3. Enforce Hierarchy
-        // OWNER cannot be removed (must transfer ownership)
-        if (targetRole === 'OWNER') throw new Error("Cannot remove OWNER. Transfer ownership first.");
+        // Look up requester priority
+        const requesterRes = await client.query(
+            `SELECT cr.priority FROM company_members cm 
+             JOIN company_roles cr ON cm.role_id = cr.role_id
+             WHERE cm.company_id = $1 AND cm.user_id = $2`,
+            [companyId, userId]
+        );
+        const requesterPriority = requesterRes.rows[0].priority;
 
-        // ADMIN cannot remove other ADMINs? usually yes, or restricted. 
-        // Let's say ADMIN can remove EDITOR. OWNER can remove ADMIN/EDITOR.
-        if (requesterRole === 'ADMIN' && targetRole === 'ADMIN') {
-            throw new Error("Admins cannot remove other Admins");
+        if (targetPriority >= requesterPriority) {
+            throw new Error("You cannot remove a member with equal or higher priority.");
         }
 
         // 4. Remove
@@ -1251,5 +1342,111 @@ exports.getCompanyPosts = async (req, res) => {
     } catch (err) {
         console.error("Get company posts error:", err);
         res.status(500).json({ message: "Internal server error" });
+    }
+};
+
+exports.uploadLogo = async (req, res) => {
+    const { companyId } = req.params;
+    if (!req.file) return res.status(400).json({ message: "No file uploaded" });
+
+    const client = await pool.connect();
+    try {
+        await client.query("BEGIN");
+        const logoUrl = req.file.path;
+        await client.query(`UPDATE companies SET logo_url = $1 WHERE company_id = $2`, [logoUrl, companyId]);
+
+        await logAudit(client, {
+            entityId: companyId,
+            actorId: req.user.sub,
+            action: 'UPDATE_LOGO',
+            metadata: { url: logoUrl }
+        });
+
+        await client.query("COMMIT");
+        res.json({ message: "Logo updated", url: logoUrl });
+    } catch (err) {
+        await client.query("ROLLBACK");
+        console.error("Upload logo error:", err);
+        res.status(500).json({ message: "Internal server error" });
+    } finally {
+        client.release();
+    }
+};
+
+exports.uploadCover = async (req, res) => {
+    const { companyId } = req.params;
+    if (!req.file) return res.status(400).json({ message: "No file uploaded" });
+
+    const client = await pool.connect();
+    try {
+        await client.query("BEGIN");
+        const coverUrl = req.file.path;
+        await client.query(`UPDATE companies SET cover_url = $1 WHERE company_id = $2`, [coverUrl, companyId]);
+
+        await logAudit(client, {
+            entityId: companyId,
+            actorId: req.user.sub,
+            action: 'UPDATE_COVER',
+            metadata: { url: coverUrl }
+        });
+
+        await client.query("COMMIT");
+        res.json({ message: "Cover updated", url: coverUrl });
+    } catch (err) {
+        await client.query("ROLLBACK");
+        console.error("Upload cover error:", err);
+        res.status(500).json({ message: "Internal server error" });
+    } finally {
+        client.release();
+    }
+};
+
+exports.deleteLogo = async (req, res) => {
+    const { companyId } = req.params;
+    const client = await pool.connect();
+    try {
+        await client.query("BEGIN");
+        await client.query(`UPDATE companies SET logo_url = NULL WHERE company_id = $1`, [companyId]);
+
+        await logAudit(client, {
+            entityId: companyId,
+            actorId: req.user.sub,
+            action: 'DELETE_LOGO',
+            metadata: {}
+        });
+
+        await client.query("COMMIT");
+        res.json({ message: "Logo deleted" });
+    } catch (err) {
+        await client.query("ROLLBACK");
+        console.error("Delete logo error:", err);
+        res.status(500).json({ message: "Internal server error" });
+    } finally {
+        client.release();
+    }
+};
+
+exports.deleteCover = async (req, res) => {
+    const { companyId } = req.params;
+    const client = await pool.connect();
+    try {
+        await client.query("BEGIN");
+        await client.query(`UPDATE companies SET cover_url = NULL WHERE company_id = $1`, [companyId]);
+
+        await logAudit(client, {
+            entityId: companyId,
+            actorId: req.user.sub,
+            action: 'DELETE_COVER',
+            metadata: {}
+        });
+
+        await client.query("COMMIT");
+        res.json({ message: "Cover deleted" });
+    } catch (err) {
+        await client.query("ROLLBACK");
+        console.error("Delete cover error:", err);
+        res.status(500).json({ message: "Internal server error" });
+    } finally {
+        client.release();
     }
 };

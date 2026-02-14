@@ -148,6 +148,65 @@ CREATE TABLE post_polls (
   created_at TIMESTAMPTZ DEFAULT now()
 );
 
+-- ---------------------------------------------------------
+-- COMPANY SYSTEM (Core)
+-- ---------------------------------------------------------
+
+CREATE TABLE companies (
+    company_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name VARCHAR(255) NOT NULL,
+    slug VARCHAR(255) NOT NULL UNIQUE,
+    email VARCHAR(255),
+    industry VARCHAR(100),
+    size VARCHAR(50),
+    website VARCHAR(255),
+    location VARCHAR(255),
+    slogan TEXT,
+    logo_url TEXT,
+    cover_url TEXT,
+    description TEXT,
+    verification_status VARCHAR(20) DEFAULT 'UNVERIFIED' CHECK (verification_status IN ('UNVERIFIED', 'DOMAIN_PENDING', 'DOMAIN_VERIFIED', 'REJECTED')),
+    is_deleted BOOLEAN DEFAULT FALSE,
+    deleted_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    CONSTRAINT valid_slug_format CHECK (slug ~ '^[a-z0-9]+(?:-[a-z0-9]+)*$')
+);
+
+CREATE INDEX idx_companies_slug ON companies(slug);
+CREATE INDEX idx_companies_website ON companies(website);
+CREATE INDEX IF NOT EXISTS idx_companies_name_trgm ON companies USING GIN (name gin_trgm_ops);
+
+-- Dynamic Roles & Members
+CREATE TABLE company_roles (
+    role_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    company_id UUID REFERENCES companies(company_id) ON DELETE CASCADE,
+    name VARCHAR(50) NOT NULL,
+    color VARCHAR(7) DEFAULT '#808080',
+    permissions JSONB DEFAULT '[]'::jsonb,
+    priority INTEGER DEFAULT 0,
+    is_system_role BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE(company_id, name)
+);
+
+CREATE TABLE company_members (
+    company_id UUID REFERENCES companies(company_id) ON DELETE CASCADE,
+    user_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
+    role_id UUID REFERENCES company_roles(role_id) ON DELETE SET NULL,
+    role VARCHAR(20), -- Deprecated, kept for back-compat if needed
+    status VARCHAR(20) DEFAULT 'ACTIVE' CHECK (status IN ('ACTIVE', 'SUSPENDED', 'PENDING_INVITE', 'REMOVED')),
+    expires_at TIMESTAMPTZ DEFAULT NULL,
+    is_primary_display BOOLEAN DEFAULT FALSE,
+    is_role_visible BOOLEAN DEFAULT TRUE,
+    joined_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    PRIMARY KEY (company_id, user_id)
+);
+
+CREATE UNIQUE INDEX idx_company_members_user_primary ON company_members (user_id) WHERE is_primary_display = TRUE;
+
 CREATE TABLE company_gallery (
   gallery_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   company_id UUID REFERENCES companies(company_id) ON DELETE CASCADE,
@@ -643,57 +702,7 @@ CREATE TABLE IF NOT EXISTS message_media (
   created_at TIMESTAMPTZ DEFAULT now()
 );
 
--- 10/02/2026 Migration: Create companies, company_members, company_invites, company_verifications, audit_logs tables
--- (007_create_companies.sql)
-
--- 1. COMPANIES Table
-CREATE TABLE IF NOT EXISTS companies (
-    company_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    name VARCHAR(255) NOT NULL,
-    slug VARCHAR(255) NOT NULL UNIQUE,
-    email VARCHAR(255), -- Contact email for the company
-    industry VARCHAR(100),
-    size VARCHAR(50), -- e.g., '1-10', '11-50'
-    website VARCHAR(255),
-    location VARCHAR(255),
-    slogan TEXT,
-    logo_url TEXT,
-    cover_url TEXT,
-    description TEXT,
-    
-    -- Verification
-    verification_status VARCHAR(20) DEFAULT 'UNVERIFIED' 
-        CHECK (verification_status IN ('UNVERIFIED', 'DOMAIN_PENDING', 'DOMAIN_VERIFIED', 'REJECTED')),
-    
-    -- Meta
-    is_deleted BOOLEAN DEFAULT FALSE,
-    deleted_at TIMESTAMPTZ,
-    created_at TIMESTAMPTZ DEFAULT NOW(),
-    updated_at TIMESTAMPTZ DEFAULT NOW(),
-
-    -- Constraints
-    CONSTRAINT valid_slug_format CHECK (slug ~ '^[a-z0-9]+(?:-[a-z0-9]+)*$')
-);
-
--- Index for slug lookups
-CREATE INDEX idx_companies_slug ON companies(slug);
--- Index for domain verification checks (if we add domain column later, or use website)
-CREATE INDEX idx_companies_website ON companies(website);
-
-
--- 2. COMPANY MEMBERS Table
-CREATE TABLE IF NOT EXISTS company_members (
-    company_id UUID REFERENCES companies(company_id) ON DELETE CASCADE,
-    user_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
-    role VARCHAR(20) NOT NULL CHECK (role IN ('OWNER', 'ADMIN', 'EDITOR', 'RECRUITER', 'ANALYST')),
-    joined_at TIMESTAMPTZ DEFAULT NOW(),
-    
-    PRIMARY KEY (company_id, user_id)
-);
-
-CREATE INDEX idx_company_members_user_id ON company_members(user_id);
-CREATE INDEX idx_company_members_role ON company_members(role);
-
+-- 10/02/2026 Migration: Create companies (Moved to top)
 
 -- 3. COMPANY INVITES Table
 CREATE TABLE IF NOT EXISTS company_invites (
@@ -701,7 +710,8 @@ CREATE TABLE IF NOT EXISTS company_invites (
     company_id UUID REFERENCES companies(company_id) ON DELETE CASCADE,
     inviter_id UUID REFERENCES users(user_id) ON DELETE SET NULL, -- Who sent the invite
     email VARCHAR(255) NOT NULL,
-    role VARCHAR(20) NOT NULL CHECK (role IN ('ADMIN', 'EDITOR', 'RECRUITER', 'ANALYST')), -- Owner cannot be invited, must be transferred
+    role_id UUID REFERENCES company_roles(role_id) ON DELETE SET NULL, -- Modern link
+    role VARCHAR(50), -- Fallback role name
     token VARCHAR(255) NOT NULL, -- For email link
     status VARCHAR(20) DEFAULT 'PENDING' CHECK (status IN ('PENDING', 'ACCEPTED', 'EXPIRED')),
     expires_at TIMESTAMPTZ NOT NULL,

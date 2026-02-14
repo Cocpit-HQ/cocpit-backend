@@ -71,6 +71,28 @@ exports.getProfile = async (req, res) => {
       : { rows: [] };
 
 
+    // Updated query to include role details + visibility + priority
+    const companyRoles = await pool.query(
+      `
+      SELECT 
+        c.company_id, 
+        c.name, 
+        c.slug, 
+        c.logo_url, 
+        cr.name as role,
+        cm.is_primary_display,
+        cm.is_role_visible,
+        cr.priority
+      FROM company_members cm
+      JOIN companies c ON cm.company_id = c.company_id
+      JOIN company_roles cr ON cm.role_id = cr.role_id
+      WHERE cm.user_id = $1
+      ORDER BY cm.is_primary_display DESC, cr.priority DESC, c.name ASC
+      `,
+      [userId]
+    );
+
+
     // Get counts
     const countsResult = await pool.query(
       `
@@ -171,6 +193,7 @@ exports.getProfile = async (req, res) => {
       experiences: experiences.rows,
       educations: educations.rows,
       skills: skills.rows,
+      company_roles: companyRoles.rows,
       resume: resume
     });
   } catch (err) {

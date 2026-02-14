@@ -1,4 +1,5 @@
 const pool = require("../db/pool");
+const { logAudit } = require("../services/audit.service");
 
 exports.getEvents = async (req, res) => {
   const {
@@ -234,6 +235,10 @@ exports.createEvent = async (req, res) => {
     const eventId = result.rows[0].event_id;
 
     console.log("Event created with ID:", eventId);
+
+    // Audit Log logic for events
+    // Assuming personal events for now as no company_id is present
+    // If company events are supported later, we can add company_id check
 
     res.status(201).json({ message: "Event created successfully", eventId });
   } catch (error) {

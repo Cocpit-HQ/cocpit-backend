@@ -1,5 +1,6 @@
 const pool = require("../db/pool");
 const { buildJobFilters } = require("../utils/jobQueryBuilder");
+const { logAudit } = require("../services/audit.service");
 
 exports.getAllJobs = async (req, res) => {
   const { limit = 10, cursor } = req.query;
@@ -189,6 +190,33 @@ exports.createJob = async (req, res) => {
     }
 
     await client.query("COMMIT");
+
+    // Async Audit Log (after commit is fine, or inside)
+    if (job.company_id) {
+      // Re-acquire client for audit or use pool? 
+      // Since we released client, let's use pool or new client.
+      // Actually, let's do it inside transaction before commit for consistency
+      // But code structure... let's do it after commit with a new client connection 
+      // OR better, move it up before commit.
+      // Re-writing this block entirely is risky.
+      // Let's just launch it async without awaiting to not block response?
+      // No, reliability is key.
+      const auditClient = await pool.connect();
+      try {
+        await logAudit(auditClient, {
+          entityId: job.company_id,
+          actorId: userId,
+          action: 'POST_JOB',
+          metadata: {
+            type: 'job',
+            id: job.job_id,
+            title: job.title
+          }
+        });
+      } finally {
+        auditClient.release();
+      }
+    }
 
     res.status(201).json({
       message: "Job posted successfully",

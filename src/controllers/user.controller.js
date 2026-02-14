@@ -173,11 +173,11 @@ exports.getUserProfile = async (req, res) => {
     const userQuery = `
       SELECT
         u.user_id AS id,
-        u.full_name,
+        u.full_name AS name,
         u.headline,
-        u.avatar_url,
+        u.avatar_url AS avatar,
         u.location,
-        u.about_text,
+        u.about_text AS about,
         u.created_at,
         p.account_type,
         p.open_to,
@@ -234,14 +234,35 @@ exports.getUserProfile = async (req, res) => {
     `;
     const isFollowingResult = await pool.query(isFollowingQuery, [targetUserId, currentUserId]);
 
+    // 6. Fetch Company Roles (Public View - Only Visible Roles)
+    const companyRoles = await pool.query(
+      `
+      SELECT 
+        c.company_id, 
+        c.name, 
+        c.slug, 
+        c.logo_url, 
+        cr.name as role,
+        cm.is_primary_display
+      FROM company_members cm
+      JOIN companies c ON cm.company_id = c.company_id
+      JOIN company_roles cr ON cm.role_id = cr.role_id
+      WHERE cm.user_id = $1 
+      AND cm.is_role_visible = TRUE
+      ORDER BY cm.is_primary_display DESC, cr.priority DESC, c.name ASC
+      `,
+      [targetUserId]
+    );
+
 
     // Assemble response
     const responseData = {
-      ...user,
+      user: user,
       experiences: experiencesResult.rows,
       educations: educationsResult.rows,
       skills: skillsResult.rows.map((row) => row.name),
-      is_following: isFollowingResult.rowCount > 0, // ✅ Fixed logic and field name
+      is_following: isFollowingResult.rowCount > 0,
+      company_roles: companyRoles.rows,
     };
 
     return res.status(200).json(responseData);
