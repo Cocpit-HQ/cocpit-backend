@@ -22,7 +22,7 @@ exports.getProfile = async (req, res) => {
   try {
     let userResult = await pool.query(
       `
-          SELECT u.user_id, u.full_name, u.headline, u.avatar_url, u.cover_image_url, u.location, u.about_text, u.email, u.mobile_number, u.account_name,
+          SELECT u.user_id, u.full_name, u.headline, u.avatar_url, u.cover_image_url, u.location, u.about_text, u.email, u.mobile_number, u.account_name, u.created_at,
                  p.profile_id, p.open_to, p.availability, p.work_preference, p.profile_views_count, p.search_appearances_count
           FROM users u
           LEFT JOIN profiles p ON u.user_id = p.user_id
@@ -166,6 +166,7 @@ exports.getProfile = async (req, res) => {
         connection_request_status: connectionRequestStatus,
         connection_request_id: connectionRequestId,
         connection_request_sender: connectionRequestSender,
+        created_at: u.created_at,
       },
       experiences: experiences.rows,
       educations: educations.rows,
