@@ -156,30 +156,30 @@ class GroupChatService {
         const client = await pool.connect();
         try {
             await client.query('BEGIN');
+            console.log(`[GroupChatService] User ${userId} leaving group ${groupId}`);
+
+            // 0. Lock Conversation to prevent race conditions
+            await client.query(`SELECT 1 FROM conversations WHERE conversation_id = $1 FOR UPDATE`, [groupId]);
 
             // 1. Get user name and role before leaving
             const memberRes = await client.query(
                 `SELECT cp.role, u.full_name 
                  FROM conversation_participants cp
                  JOIN users u ON cp.user_id = u.user_id
-                 WHERE cp.conversation_id = $1 AND cp.user_id = $2 AND cp.left_at IS NULL`,
+                 WHERE cp.conversation_id = $1 AND cp.user_id = $2`,
                 [groupId, userId]
             );
 
             if (memberRes.rowCount === 0) {
-                throw new Error("User is not an active member of this group");
+                console.log(`[GroupChatService] User ${userId} already left or not in group ${groupId}`);
+                await client.query('ROLLBACK');
+                return { success: true };
             }
 
             const { role, full_name: userName } = memberRes.rows[0];
+            console.log(`[GroupChatService] User ${userId} is currently ${role}`);
 
-            // 2. Remove member (Soft delete) AND strip role to 'member' to avoid ghost permissions
-            await client.query(
-                `UPDATE conversation_participants 
-                 SET left_at = now(), role = 'member' 
-                 WHERE conversation_id = $1 AND user_id = $2 AND left_at IS NULL`,
-                [groupId, userId]
-            );
-
+            // 2. Dynamic Admin Promotion (Perform BEFORE updating the row)
             // Fetch current group owner info
             const groupRes = await client.query(
                 `SELECT admin_id FROM conversations WHERE conversation_id = $1`,
@@ -187,90 +187,109 @@ class GroupChatService {
             );
             const currentOwnerId = groupRes.rows[0]?.admin_id;
             const isOwner = currentOwnerId === userId;
-
             const promotedMembers = [];
 
-            // 3. DYNAMIC ADMIN CHECK: Check if we need to promote a new admin
-            const adminCountRes = await client.query(
-                `SELECT COUNT(*)::int as count
-                 FROM conversation_participants
-                 WHERE conversation_id = $1 AND role = 'admin' AND left_at IS NULL`,
-                [groupId]
-            );
-
-            if (adminCountRes.rows[0].count === 0) {
-                // If NO admins are left, promote the earliest joined active member
-                const candidatesRes = await client.query(
-                    `SELECT cp.user_id, u.full_name 
-                     FROM conversation_participants cp
-                     JOIN users u ON cp.user_id = u.user_id
-                     WHERE cp.conversation_id = $1 AND cp.left_at IS NULL
-                     ORDER BY cp.joined_at ASC
-                     LIMIT 1`,
-                    [groupId]
+            if (role === 'admin') {
+                // Count OTHER ACTIVE admins
+                const adminCountRes = await client.query(
+                    `SELECT COUNT(*)::int as count
+                     FROM conversation_participants
+                     WHERE conversation_id = $1 
+                     AND role = 'admin' 
+                     AND user_id != $2
+                     AND left_at IS NULL`, // CRITICAL: Only count active admins
+                    [groupId, userId]
                 );
 
-                if (candidatesRes.rowCount > 0) {
-                    const candidate = candidatesRes.rows[0];
-                    // Promote to admin
-                    await client.query(
-                        `UPDATE conversation_participants 
-                         SET role = 'admin' 
-                         WHERE conversation_id = $1 AND user_id = $2 AND left_at IS NULL`,
-                        [groupId, candidate.user_id]
+                console.log(`[GroupChatService] Other active admins count: ${adminCountRes.rows[0].count}`);
+
+                // If 0 other admins, we MUST promote someone
+                if (adminCountRes.rows[0].count === 0) {
+                    console.log(`[GroupChatService] No other admins. Looking for oldest active member...`);
+
+                    const candidatesRes = await client.query(
+                        `SELECT cp.user_id, u.full_name 
+                         FROM conversation_participants cp
+                         JOIN users u ON cp.user_id = u.user_id
+                         WHERE cp.conversation_id = $1 
+                         AND cp.user_id != $2
+                         AND cp.left_at IS NULL
+                         ORDER BY cp.joined_at ASC
+                         LIMIT 1`,
+                        [groupId, userId]
                     );
 
-                    // Always reassign group owner if zero admins were left
-                    await client.query(
-                        `UPDATE conversations SET admin_id = $1 WHERE conversation_id = $2`,
-                        [candidate.user_id, groupId]
-                    );
+                    if (candidatesRes.rowCount > 0) {
+                        const candidate = candidatesRes.rows[0];
+                        console.log(`[GroupChatService] Promoting candidate: ${candidate.user_id} (${candidate.full_name})`);
 
-                    // Create system message for promotion
-                    const promoMsgRes = await client.query(
-                        `INSERT INTO messages (conversation_id, sender_id, text_content, message_type, action_type, target_id) 
-                         VALUES ($1, NULL, $2, 'system', 'promote', $3) 
-                         RETURNING *`,
-                        [groupId, `${candidate.full_name} was promoted to admin.`, candidate.user_id]
-                    );
+                        // Promote to admin
+                        await client.query(
+                            `UPDATE conversation_participants 
+                             SET role = 'admin' 
+                             WHERE conversation_id = $1 AND user_id = $2`,
+                            [groupId, candidate.user_id]
+                        );
 
-                    // Update conversation last message
-                    await client.query(
-                        `UPDATE conversations SET updated_at = now(), last_message = $2, last_message_at = now() WHERE conversation_id = $1`,
-                        [groupId, `${candidate.full_name} was promoted to admin.`]
-                    );
+                        // Update group owner
+                        await client.query(
+                            `UPDATE conversations SET admin_id = $1 WHERE conversation_id = $2`,
+                            [candidate.user_id, groupId]
+                        );
 
-                    promotedMembers.push({
-                        user_id: candidate.user_id,
-                        full_name: candidate.full_name,
-                        message: promoMsgRes.rows[0]
-                    });
-                } else {
-                    // No members left at all, clear owner
-                    await client.query(
-                        `UPDATE conversations SET admin_id = NULL WHERE conversation_id = $1`,
-                        [groupId]
+                        // System message for promotion
+                        const promoMsgRes = await client.query(
+                            `INSERT INTO messages (conversation_id, sender_id, text_content, message_type, action_type, target_id) 
+                             VALUES ($1, NULL, $2, 'system', 'promote', $3) 
+                             RETURNING *`,
+                            [groupId, `${candidate.full_name} was promoted to admin`, candidate.user_id]
+                        );
+
+                        promotedMembers.push({
+                            user_id: candidate.user_id,
+                            full_name: candidate.full_name,
+                            message: promoMsgRes.rows[0]
+                        });
+                    } else {
+                        console.log(`[GroupChatService] No candidates found. Group will have no admin.`);
+                        // Group empty or only inactive members?
+                        await client.query(
+                            `UPDATE conversations SET admin_id = NULL WHERE conversation_id = $1`,
+                            [groupId]
+                        );
+                    }
+                } else if (isOwner) {
+                    // Reassign ownership to another existing admin
+                    console.log(`[GroupChatService] User was owner but other admins exist. Reassigning ownership.`);
+                    const otherAdminRes = await client.query(
+                        `SELECT user_id FROM conversation_participants 
+                         WHERE conversation_id = $1 
+                         AND role = 'admin' 
+                         AND user_id != $2
+                         AND left_at IS NULL
+                         ORDER BY joined_at ASC
+                         LIMIT 1`,
+                        [groupId, userId]
                     );
-                }
-            } else if (isOwner) {
-                // There ARE other admins, but the leaving user was the owner.
-                // Reassign ownership to one of the remaining admins.
-                const otherAdminRes = await client.query(
-                    `SELECT user_id FROM conversation_participants 
-                     WHERE conversation_id = $1 AND role = 'admin' AND left_at IS NULL 
-                     ORDER BY joined_at ASC
-                     LIMIT 1`,
-                    [groupId]
-                );
-                if (otherAdminRes.rowCount > 0) {
-                    await client.query(
-                        `UPDATE conversations SET admin_id = $1 WHERE conversation_id = $2`,
-                        [otherAdminRes.rows[0].user_id, groupId]
-                    );
+                    if (otherAdminRes.rowCount > 0) {
+                        await client.query(
+                            `UPDATE conversations SET admin_id = $1 WHERE conversation_id = $2`,
+                            [otherAdminRes.rows[0].user_id, groupId]
+                        );
+                    }
                 }
             }
 
-            // 4. Create system message: "User left"
+            // 3. SOFT DELETE Member (Update left_at)
+            await client.query(
+                `UPDATE conversation_participants 
+                 SET left_at = NOW(), role = 'member' 
+                 WHERE conversation_id = $1 AND user_id = $2`,
+                [groupId, userId]
+            );
+            console.log(`[GroupChatService] User ${userId} marked as left (soft delete)`);
+
+            // 4. Create system message: "User left" 
             const leaveMsgRes = await client.query(
                 `INSERT INTO messages (conversation_id, sender_id, text_content, message_type, action_type, target_id) 
                  VALUES ($1, $2, $3, 'system', 'leave', $2) 
@@ -285,45 +304,47 @@ class GroupChatService {
 
             await client.query('COMMIT');
 
-            // 5. Post-commit notifications
-            const remainingMembers = await GroupChatModel.getGroupMembers(groupId);
+            // 5. Notifications
+            // Broadcast 'memberLeft' event
+            socketService.notifyConversation(groupId, 'memberLeft', { groupId, userId });
+
+            // Also notify the user who left so they can close their panel!
+            socketService.notifyUser(userId, 'memberLeft', { groupId, userId });
 
             // Broadcast leave message
             const leaveMsg = leaveMsgRes.rows[0];
-            remainingMembers.forEach(member => {
-                socketService.notifyUser(member.user_id, 'new_message', {
-                    ...leaveMsg,
+            const enrichedLeaveMsg = {
+                ...leaveMsg,
+                sender_name: 'System',
+                is_system: true,
+                conversation_id: groupId
+            };
+            socketService.notifyConversation(groupId, 'new_message', enrichedLeaveMsg);
+
+
+            // Handle promotions notifications
+            promotedMembers.forEach(promo => {
+                socketService.notifyConversation(groupId, 'group_role_update', {
+                    groupId,
+                    userId: promo.user_id,
+                    role: 'admin',
+                    updatedBy: 'System'
+                });
+
+                socketService.notifyConversation(groupId, 'new_message', {
+                    ...promo.message,
                     sender_name: 'System',
                     is_system: true,
                     conversation_id: groupId
                 });
             });
 
-            // Handle promotions notifications
-            promotedMembers.forEach(promo => {
-                remainingMembers.forEach(member => {
-                    // Update admin badge dynamically
-                    socketService.notifyUser(member.user_id, 'group_role_update', {
-                        groupId,
-                        userId: promo.user_id,
-                        role: 'admin'
-                    });
-
-                    // Send system message
-                    socketService.notifyUser(member.user_id, 'new_message', {
-                        ...promo.message,
-                        sender_name: 'System',
-                        is_system: true,
-                        conversation_id: groupId
-                    });
-                });
-            });
-
-            // Force socket to leave room
+            // Force socket leave
             socketService.leaveConversation(userId, groupId);
 
             return { success: true };
         } catch (err) {
+            console.error(`[GroupChatService] Leave group error:`, err);
             await client.query('ROLLBACK');
             throw err;
         } finally {
@@ -359,7 +380,7 @@ class GroupChatService {
         const userRes = await pool.query(`SELECT full_name FROM users WHERE user_id = $1`, [targetUserId]);
         const userName = userRes.rows[0]?.full_name || "A member";
 
-        // 3. Remove member
+        // 3. Remove member (Soft Delete)
         await GroupChatModel.removeMember(groupId, targetUserId);
 
         // 4. System message: "X was removed by Admin"
@@ -507,120 +528,101 @@ class GroupChatService {
     }
 
     static async promoteToAdmin(adminId, groupId, targetUserId) {
-        // 1. Verify requester is admin
-        const members = await GroupChatModel.getGroupMembers(groupId);
-        const adminMember = members.find(m => m.user_id === adminId);
-
-        if (!adminMember || adminMember.role !== 'admin') {
-            throw new Error("Only admin can promote members");
-        }
-
-        // 2. Verify target is in group
-        const targetMember = members.find(m => m.user_id === targetUserId);
-        if (!targetMember) {
-            throw new Error("User is not in the group");
-        }
-
-        if (targetMember.role === 'admin') {
-            throw new Error("User is already an admin");
-        }
-
-        // 3. Update role
-        await GroupChatModel.updateMemberRole(groupId, targetUserId, 'admin');
-
-        // 4. Notify all members
-        const updatedMembers = members.map(m =>
-            m.user_id === targetUserId ? { ...m, role: 'admin' } : m
-        );
-
-        updatedMembers.forEach(member => {
-            socketService.notifyUser(member.user_id, 'group_role_update', {
-                groupId,
-                userId: targetUserId,
-                role: 'admin'
-            });
-
-            // Send system message
-            socketService.notifyUser(member.user_id, 'new_message', {
-                conversation_id: groupId,
-                sender_id: null,
-                sender_name: 'System',
-                text_content: `${adminMember.full_name} made ${targetMember.full_name} a group admin`,
-                message_type: 'system',
-                created_at: new Date().toISOString(),
-                is_system: true
-            });
-        });
-
-        await GroupChatModel.createMessage({
-            groupId,
-            senderId: adminId,
-            content: `${adminMember.full_name} made ${targetMember.full_name} a group admin`,
-            type: 'system',
-            actionType: 'promote',
-            targetId: targetUserId
-        });
-
-        return { success: true };
+        return this.updateMemberRole(adminId, groupId, targetUserId, 'admin');
     }
 
     static async demoteAdmin(adminId, groupId, targetUserId) {
-        // 1. Verify requester is admin
-        const members = await GroupChatModel.getGroupMembers(groupId);
-        const adminMember = members.find(m => m.user_id === adminId);
+        // ... existing legacy demoteAdmin code ...
+        // Forward to new generic method or keep as alias? 
+        // For now, let's keep the new method separate and robust.
+        return this.updateMemberRole(adminId, groupId, targetUserId, 'member');
+    }
 
-        if (!adminMember || adminMember.role !== 'admin') {
-            throw new Error("Only admin can demote members");
+    static async updateMemberRole(adminId, groupId, targetUserId, newRole) {
+        // 1. Verify group exists
+        const group = await GroupChatModel.getGroupDetails(groupId);
+        if (!group) throw new Error("Group not found");
+
+        if (adminId === targetUserId) {
+            throw new Error("Admins cannot change their own role");
         }
 
-        // 2. Verify target is in group
+        // 2. RBAC Check: Must be active admin
+        const members = await GroupChatModel.getGroupMembers(groupId);
+        const adminMember = members.find(m => m.user_id === adminId);
+        if (!adminMember || adminMember.role !== 'admin') {
+            throw new Error("Only an active group admin can manage roles");
+        }
+
+        // 3. Verify target is in group
         const targetMember = members.find(m => m.user_id === targetUserId);
         if (!targetMember) {
             throw new Error("User is not in the group");
         }
 
-        if (targetMember.role !== 'admin') {
-            throw new Error("User is not an admin");
+        // 4. Validate Role Transition
+        if (targetMember.role === newRole) {
+            throw new Error(`User is already a ${newRole}`);
         }
 
-        // 3. Safety Rule: Cannot demote the last admin
-        const adminCount = await GroupChatModel.getAdminCount(groupId);
-        if (adminCount <= 1) {
-            throw new Error("Cannot demote the last admin of the group");
+        if (newRole !== 'admin' && newRole !== 'member') {
+            throw new Error("Invalid role specified");
         }
 
-        // 4. Update role
-        await GroupChatModel.updateMemberRole(groupId, targetUserId, 'member');
+        // 5. Safety Rule: Cannot demote the last admin
+        if (targetMember.role === 'admin' && newRole === 'member') {
+            const adminCount = await GroupChatModel.getAdminCount(groupId);
+            if (adminCount <= 1) {
+                throw new Error("Cannot demote the last admin of the group");
+            }
+        }
 
-        // 5. Notify members
-        members.forEach(member => {
-            socketService.notifyUser(member.user_id, 'group_role_update', {
-                groupId,
-                userId: targetUserId,
-                role: 'member'
-            });
+        // 6. Update role
+        await GroupChatModel.updateMemberRole(groupId, targetUserId, newRole);
 
-            socketService.notifyUser(member.user_id, 'new_message', {
-                conversation_id: groupId,
-                sender_id: null,
-                sender_name: 'System',
-                text_content: `${adminMember.full_name} removed ${targetMember.full_name} as admin`,
-                message_type: 'system',
-                created_at: new Date().toISOString(),
-                is_system: true
-            });
-        });
-
-        await GroupChatModel.createMessage({
+        // 7. Notify members via Socket
+        // We broadcast to the specific group room
+        // Payload: groupId, targetUserId, newRole, updatedBy
+        const payload = {
             groupId,
-            senderId: adminId,
-            content: `${adminMember.full_name} removed ${targetMember.full_name} as admin`,
+            userId: targetUserId,
+            targetUserId: targetUserId, // redundant but clear
+            newRole,
+            updatedBy: adminId
+        };
+
+        // Use io.to(groupId).emit logic via helper. 
+        // socketService.notifyConversation broadcasts to the room.
+        // We use 'groupRoleUpdated' event name.
+        socketService.notifyConversation(groupId, 'group_role_update', payload);
+
+        // 8. Create and broadcast System Message
+        let systemMsgContent = "";
+        if (newRole === 'admin') {
+            systemMsgContent = `${targetMember.full_name} is now a group admin`;
+        } else {
+            systemMsgContent = `${targetMember.full_name} is no longer a group admin`;
+        }
+
+        const systemMsg = await GroupChatModel.createMessage({
+            groupId,
+            senderId: null, // System message
+            content: systemMsgContent,
             type: 'system',
-            actionType: 'demote',
+            actionType: 'role_update',
             targetId: targetUserId
         });
 
-        return { success: true };
+        // Broadcast system message
+        const enrichedMsg = {
+            ...systemMsg,
+            sender_name: 'System',
+            is_system: true,
+            conversation_id: groupId
+        };
+        socketService.notifyConversation(groupId, 'new_message', enrichedMsg);
+
+        return { success: true, message: "Role updated successfully" };
     }
     static async updateGroupAvatar(userId, groupId, avatarUrl) {
         // Group existence check
