@@ -1473,8 +1473,8 @@ exports.getMessages = async (req, res) => {
                 m.author_company_id,
                 m.is_deleted_for_everyone,
                 m.deleted_at,
-                COALESCE(c.name, u.full_name) as sender_name,
-                COALESCE(c.logo_url, u.avatar_url) as sender_avatar,
+                COALESCE(c.name, u.full_name, 'Deleted User') as sender_name,
+                COALESCE(c.logo_url, u.avatar_url, NULL) as sender_avatar,
                 (SELECT json_agg(json_build_object('url', mm.url, 'media_type', mm.media_type)) 
                  FROM message_media mm 
                  WHERE mm.message_id = m.message_id
@@ -1506,7 +1506,7 @@ exports.getMessages = async (req, res) => {
                 END AS shared_post,
                 EXISTS(SELECT 1 FROM message_delete md WHERE md.message_id = m.message_id AND md.user_id = $4) as is_deleted_for_me
              FROM messages m
-             JOIN users u ON m.sender_id = u.user_id
+             LEFT JOIN users u ON m.sender_id = u.user_id
              LEFT JOIN companies c ON m.author_company_id = c.company_id
              LEFT JOIN posts sp ON m.shared_post_id = sp.post_id
              LEFT JOIN users au ON sp.author_id = au.user_id
