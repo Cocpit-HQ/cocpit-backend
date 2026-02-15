@@ -177,6 +177,23 @@ exports.promoteToAdmin = async (req, res) => {
     }
 };
 
+exports.updateMemberRole = async (req, res) => {
+    try {
+        const adminId = req.user.sub || req.user.user_id;
+        const { groupId } = req.params;
+        const { targetUserId, newRole } = req.body;
+
+        if (!targetUserId || !newRole) {
+            return res.status(400).json({ message: "targetUserId and newRole are required" });
+        }
+
+        const result = await GroupChatService.updateMemberRole(adminId, groupId, targetUserId, newRole);
+        res.json(result);
+    } catch (err) {
+        res.status(403).json({ message: err.message });
+    }
+};
+
 exports.demoteAdmin = async (req, res) => {
     try {
         const userId = req.user.sub || req.user.user_id;

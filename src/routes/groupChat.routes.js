@@ -19,6 +19,7 @@ router.delete("/groups/:groupId/members/:userId", groupAdminMiddleware.requireGr
 router.post("/groups/:groupId/members/:userId/promote", groupAdminMiddleware.requireGroupAdmin, controller.promoteToAdmin);
 router.post("/groups/:groupId/members/:userId/demote", groupAdminMiddleware.requireGroupAdmin, controller.demoteAdmin);
 router.put("/groups/:groupId/avatar", groupAdminMiddleware.requireGroupAdmin, controller.updateGroupAvatar);
+router.patch("/groups/:groupId/role", groupAdminMiddleware.requireGroupAdmin, controller.updateMemberRole);
 
 router.get("/groups/:groupId", controller.getGroupDetails);
 router.delete("/groups/:groupId", controller.deleteGroup);
