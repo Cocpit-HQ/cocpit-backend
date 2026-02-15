@@ -607,17 +607,27 @@ exports.deleteAccount = async (req, res) => {
     }
 
     // 3. Check for Orphaned Companies (Sole Owner)
-    // Find all companies where this user is OWNER
+    // Find all companies where this user is OWNER (Active companies only)
     const ownedCompanies = await client.query(
-      `SELECT company_id, name FROM company_members WHERE user_id = $1 AND role = 'OWNER'`,
+      `SELECT cm.company_id, c.name 
+       FROM company_members cm
+       JOIN companies c ON cm.company_id = c.company_id
+       LEFT JOIN company_roles cr ON cm.role_id = cr.role_id
+       WHERE cm.user_id = $1 
+         AND (cr.name ILIKE 'Owner' OR cm.role = 'OWNER')
+         AND c.is_deleted = FALSE`,
       [userId]
     );
 
     for (const company of ownedCompanies.rows) {
       // Check if there are ANY other owners for this company
       const otherOwners = await client.query(
-        `SELECT 1 FROM company_members 
-         WHERE company_id = $1 AND role = 'OWNER' AND user_id != $2`,
+        `SELECT 1 
+         FROM company_members cm
+         LEFT JOIN company_roles cr ON cm.role_id = cr.role_id
+         WHERE cm.company_id = $1 
+           AND (cr.name ILIKE 'Owner' OR cm.role = 'OWNER')
+           AND cm.user_id != $2`,
         [company.company_id, userId]
       );
 

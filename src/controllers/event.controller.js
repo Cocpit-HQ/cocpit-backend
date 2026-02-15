@@ -1,6 +1,22 @@
 const pool = require("../db/pool");
 const { logAudit } = require("../services/audit.service");
 
+// Helper: Check Company Permission
+const checkCompanyPermission = async (companyId, userId, permission) => {
+  const res = await pool.query(
+    `SELECT cr.permissions 
+         FROM company_members cm
+         JOIN company_roles cr ON cm.role_id = cr.role_id
+         WHERE cm.company_id = $1 AND cm.user_id = $2`,
+    [companyId, userId]
+  );
+  if (res.rowCount === 0) return false;
+  const permissions = res.rows[0].permissions || [];
+  return permissions.includes("*") ||
+    permissions.includes(permission) ||
+    (permission.startsWith("VIEW_") && permissions.includes(permission.replace("VIEW_", "MANAGE_")));
+};
+
 exports.getEvents = async (req, res) => {
   const {
     q, // General search
@@ -13,7 +29,8 @@ exports.getEvents = async (req, res) => {
     endDate,
     organizer,
     cursor,
-    userId: filterUserId, // Explicitly allow filtering by a specific user ID (e.g. for "My Events" search)
+    userId: filterUserId,
+    companyId: filterCompanyId, // Company Filter
     limit = 10
   } = req.query;
 
@@ -21,16 +38,23 @@ exports.getEvents = async (req, res) => {
     const userId = req.user ? req.user.sub : null;
     const values = [];
 
-    // Base Query - Selecting events and resolving saved status properly
+    // Base Query
+    // Added LEFT JOIN companies and handling for company_name/logo
     let query = `
-      SELECT e.*, u.full_name as organizer_name,
+      SELECT e.*, 
+      COALESCE(c.name, u.full_name) as organizer_name,
+      c.name as company_name,
+      c.logo_url as company_logo,
+      u.full_name as user_name,
+      u.avatar_url as user_avatar,
       (SELECT COUNT(*)::int FROM event_registrations er WHERE er.event_id = e.event_id) AS registered_count,
       CASE 
         WHEN es.event_id IS NOT NULL THEN true
         ELSE false
       END AS "isSaved"
       FROM events e
-      JOIN users u ON e.organizer_id = u.user_id
+      LEFT JOIN users u ON e.organizer_id = u.user_id
+      LEFT JOIN companies c ON e.company_id = c.company_id
       LEFT JOIN event_saves es 
         ON es.event_id = e.event_id AND es.user_id = $1
       WHERE 1=1
@@ -39,20 +63,26 @@ exports.getEvents = async (req, res) => {
     values.push(userId); // $1 is always userId (can be null)
 
     /* ---------------------------------------------------------
-       🔍 Search & Filtering (Granular Pattern)
+       🔍 Search & Filtering
     --------------------------------------------------------- */
 
-    // 0. Filter by specific Organizer ID (e.g. for "My Events" search)
-    if (filterUserId) {
+    // 0a. Filter by Specific Context (User OR Company)
+    if (filterCompanyId) {
+      values.push(filterCompanyId);
+      query += ` AND e.company_id = $${values.length}`;
+    } else if (filterUserId) {
+      // Only show personal events if specifically asked for a user, 
+      // OR show all events by that user including company ones?
+      // Usually "My Events" implies things I organized.
       values.push(filterUserId);
       query += ` AND e.organizer_id = $${values.length}`;
     }
 
-    // 1. General Search (q) - Searches multiple fields
+    // 1. General Search (q)
     if (q) {
       values.push(`%${q}%`);
       const idx = values.length;
-      query += ` AND (e.title ILIKE $${idx} OR e.description ILIKE $${idx} OR e.location ILIKE $${idx} OR u.full_name ILIKE $${idx})`;
+      query += ` AND (e.title ILIKE $${idx} OR e.description ILIKE $${idx} OR e.location ILIKE $${idx} OR u.full_name ILIKE $${idx} OR c.name ILIKE $${idx})`;
     }
 
     // 2. Specific Title Filter
@@ -76,36 +106,31 @@ exports.getEvents = async (req, res) => {
     // 5. Organizer Filter (Name)
     if (organizer) {
       values.push(`%${organizer}%`);
-      query += ` AND u.full_name ILIKE $${values.length}`;
+      query += ` AND (u.full_name ILIKE $${values.length} OR c.name ILIKE $${values.length})`;
     }
 
-    // 6. Event Type (Online/InPerson)
+    // 6. Event Type
     if (type) {
       values.push(type);
       query += ` AND e.event_type = $${values.length}`;
     }
 
     // 7. Dates
-    // Specific Date (YYYY-MM-DD)
     if (date) {
       values.push(date);
       query += ` AND DATE(e.start_time) = $${values.length}`;
     }
-
-    // Date Range (Start)
     if (startDate) {
       values.push(startDate);
       query += ` AND e.start_time >= $${values.length}`;
     }
-
-    // Date Range (End)
     if (endDate) {
       values.push(endDate);
       query += ` AND e.start_time <= $${values.length}`;
     }
 
     /* ---------------------------------------------------------
-       📄 Pagination (Cursor-based)
+       📄 Pagination
     --------------------------------------------------------- */
     if (cursor) {
       try {
@@ -117,18 +142,13 @@ exports.getEvents = async (req, res) => {
           const timeIdx = values.length;
           values.push(cursorId);
           const idIdx = values.length;
-
-          // (start_time > cursTime) OR (start_time = cursTime AND event_id > cursId)
           query += ` AND (e.start_time > $${timeIdx} OR (e.start_time = $${timeIdx} AND e.event_id > $${idIdx}))`;
         }
-      } catch (e) {
-        // Ignore invalid cursor
-      }
+      } catch (e) { }
     }
 
     query += ` ORDER BY e.start_time ASC, e.event_id ASC`;
 
-    // Limit + 1 for hasMore check
     const limitNum = parseInt(limit) || 10;
     values.push(limitNum + 1);
     query += ` LIMIT $${values.length}`;
@@ -158,25 +178,30 @@ exports.getEvents = async (req, res) => {
     res.status(500).json({ message: "Internal server error" });
   }
 };
+
 exports.getEventById = async (req, res) => {
   try {
-    const { id } = req.params;         // get the id from URL
-    const trimmedId = id.trim();       // optional: remove extra spaces
-
+    const { id } = req.params;
+    const trimmedId = id.trim();
 
     const result = await pool.query(
       `
             SELECT 
                 e.*,
-                u.full_name AS organizer_name,
+                COALESCE(c.name, u.full_name) as organizer_name,
+                c.name as company_name,
+                c.logo_url as company_logo,
+                u.full_name as user_name,
+                u.avatar_url as user_avatar,
                 COUNT(er.user_id) AS registered_count
             FROM events e
-            JOIN users u ON e.organizer_id = u.user_id
+            LEFT JOIN users u ON e.organizer_id = u.user_id
+            LEFT JOIN companies c ON e.company_id = c.company_id
             LEFT JOIN event_registrations er ON e.event_id = er.event_id
             WHERE e.event_id = $1
-            GROUP BY e.event_id, u.full_name
+            GROUP BY e.event_id, u.full_name, c.name, c.logo_url, u.avatar_url
             `,
-      [trimmedId]                     // now this variable exists
+      [trimmedId]
     );
 
 
@@ -190,17 +215,35 @@ exports.getEventById = async (req, res) => {
     res.status(500).json({ message: "Internal server error" });
   }
 };
+
 exports.createEvent = async (req, res) => {
   try {
     const userId = req.user.sub;
-    const { title, description, category, eventType, virtualLink, location, startTime, endTime, maxAttendees, registrationDeadline, waitlist } = req.body;
+    const {
+      title, description, category, eventType, virtualLink, location,
+      startTime, endTime, maxAttendees, registrationDeadline, waitlist,
+      companyId // Optional: If posting as company
+    } = req.body;
+
     if (!title || !description || !startTime) return res.status(400).json({ message: "Please fill all required fields" });
     if (eventType === "Online" && !virtualLink) return res.status(400).json({ message: "Virtual link is required for online events" });
     const bannerUrl = req.file ? req.file.path : null;
 
+    let finalCompanyId = null;
+
+    // Company Authorization Check
+    if (companyId) {
+      const canPost = await checkCompanyPermission(companyId, userId, 'CREATE_CONTENT'); // or POST_JOBS/MANAGE_COMPANY
+      if (!canPost) {
+        return res.status(403).json({ message: "You do not have permission to post events for this company." });
+      }
+      finalCompanyId = companyId;
+    }
+
     const result = await pool.query(
       `INSERT INTO events (
         organizer_id,
+        company_id,
         title,
         description,
         category,
@@ -213,10 +256,11 @@ exports.createEvent = async (req, res) => {
         max_attendees,
         waitlist_enabled,
         registration_deadline
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
       RETURNING event_id`,
       [
         userId,
+        finalCompanyId,
         title,
         description,
         category,
@@ -236,9 +280,15 @@ exports.createEvent = async (req, res) => {
 
     console.log("Event created with ID:", eventId);
 
-    // Audit Log logic for events
-    // Assuming personal events for now as no company_id is present
-    // If company events are supported later, we can add company_id check
+    // Audit Log for Company
+    if (finalCompanyId) {
+      await logAudit(pool, { // Assuming logAudit takes pool or client. Need to check audit service.
+        entityId: finalCompanyId,
+        actorId: userId,
+        action: 'CREATE_EVENT',
+        metadata: { eventId, title }
+      });
+    }
 
     res.status(201).json({ message: "Event created successfully", eventId });
   } catch (error) {
@@ -374,7 +424,9 @@ exports.getMyRegisteredEvents = async (req, res) => {
   try {
     const result = await pool.query(
       `
-            SELECT e.*, u.full_name AS organizer_name,
+            SELECT e.*, 
+            COALESCE(c.name, u.full_name) as organizer_name,
+            c.name as company_name,
             (SELECT COUNT(*)::int FROM event_registrations er WHERE er.event_id = e.event_id) AS registered_count,
             CASE 
     WHEN es.event_id IS NOT NULL THEN true
@@ -382,7 +434,8 @@ exports.getMyRegisteredEvents = async (req, res) => {
   END AS "isSaved"
             FROM event_registrations er
             JOIN events e ON er.event_id = e.event_id
-            JOIN users u ON e.organizer_id = u.user_id
+            LEFT JOIN users u ON e.organizer_id = u.user_id
+            LEFT JOIN companies c ON e.company_id = c.company_id
             LEFT JOIN event_saves es 
   ON es.event_id = e.event_id
    AND es.user_id = $1          -- IMPORTANT
@@ -400,30 +453,44 @@ exports.getMyRegisteredEvents = async (req, res) => {
 };
 exports.getMyCreatedEvents = async (req, res) => {
   const userId = req.user.sub;
+  const { companyId } = req.query;
 
   try {
-    const result = await pool.query(
-      `
+    let query = `
         SELECT 
   e.*,
-  u.full_name AS organizer_name,
+  COALESCE(c.name, u.full_name) as organizer_name,
+  c.name as company_name,
   (SELECT COUNT(*)::int FROM event_registrations er WHERE er.event_id = e.event_id) AS registered_count,
   CASE 
     WHEN es.event_id IS NOT NULL THEN true
     ELSE false
   END AS "isSaved"
 FROM events e
-JOIN users u 
-  ON e.organizer_id = u.user_id
+LEFT JOIN users u ON e.organizer_id = u.user_id
+LEFT JOIN companies c ON e.company_id = c.company_id
 LEFT JOIN event_saves es 
   ON es.event_id = e.event_id
- AND es.user_id = $1          -- IMPORTANT
-WHERE e.organizer_id = $1
-ORDER BY e.start_time ASC;
+ AND es.user_id = $1
+`;
+    const params = [userId];
 
-            `,
-      [userId]
-    );
+    if (companyId) {
+      // Verify permission first
+      const canView = await checkCompanyPermission(companyId, userId, 'VIEW_ANALYTICS') || await checkCompanyPermission(companyId, userId, 'CREATE_CONTENT');
+      if (!canView) return res.status(403).json({ message: "Forbidden" });
+
+      query += ` WHERE e.company_id = $2 ORDER BY e.start_time ASC`;
+      params.push(companyId);
+    } else {
+      query += ` WHERE e.organizer_id = $1 AND e.company_id IS NULL ORDER BY e.start_time ASC`; // Only personal events? Or all initiated by user? User said: "should not show events created by the associated user" -> implying separation.
+      // If I am looking at "My Events" (Personal), I probably shouldn't see company events I made? Or maybe I should?
+      // User request: "When on comany account ... it should not show events created by the associated user"
+      // This implies when on Personal account, it might show personal events.
+      // Let's stick to strict separation for now as requested.
+    }
+
+    const result = await pool.query(query, params);
 
     res.json(result.rows);
   } catch (err) {
@@ -501,11 +568,14 @@ exports.getMySavedEvents = async (req, res) => {
   try {
     const result = await pool.query(
       `
-            SELECT e.*, u.full_name AS organizer_name,
+            SELECT e.*, 
+            COALESCE(c.name, u.full_name) as organizer_name,
+            c.name as company_name,
             (SELECT COUNT(*)::int FROM event_registrations er WHERE er.event_id = e.event_id) AS registered_count
             FROM event_saves es
             JOIN events e ON es.event_id = e.event_id
-            JOIN users u ON e.organizer_id = u.user_id
+            LEFT JOIN users u ON e.organizer_id = u.user_id
+            LEFT JOIN companies c ON e.company_id = c.company_id
             WHERE es.user_id = $1
             ORDER BY es.saved_at DESC
             `,
@@ -526,12 +596,22 @@ exports.updateEvent = async (req, res) => {
   const bannerUrl = req.file ? req.file.path : undefined; // Only update if file provided
 
   try {
-    // Check ownership
-    const eventCheck = await pool.query("SELECT organizer_id, banner_url FROM events WHERE event_id = $1", [eventId]);
+    // Check ownership or company permission
+    const eventCheck = await pool.query("SELECT organizer_id, company_id, banner_url FROM events WHERE event_id = $1", [eventId]);
     if (eventCheck.rowCount === 0) return res.status(404).json({ message: "Event not found" });
-    if (eventCheck.rows[0].organizer_id !== userId) return res.status(403).json({ message: "Not authorized to update this event" });
 
-    const currentBanner = eventCheck.rows[0].banner_url;
+    const event = eventCheck.rows[0];
+    let authorized = event.organizer_id === userId;
+
+    if (!authorized && event.company_id) {
+      // Check if user is company admin/member with permission
+      authorized = await checkCompanyPermission(event.company_id, userId, 'MANAGE_COMPANY'); // Or strict Create content
+      if (!authorized) authorized = await checkCompanyPermission(event.company_id, userId, 'CREATE_CONTENT');
+    }
+
+    if (!authorized) return res.status(403).json({ message: "Not authorized to update this event" });
+
+    const currentBanner = event.banner_url;
 
     // Construct Update Query dynamically
     const updates = [];
@@ -584,10 +664,19 @@ exports.deleteEvent = async (req, res) => {
   const eventId = req.params.id;
 
   try {
-    // Check ownership
-    const eventCheck = await pool.query("SELECT organizer_id FROM events WHERE event_id = $1", [eventId]);
+    // Check ownership or company permission
+    const eventCheck = await pool.query("SELECT organizer_id, company_id FROM events WHERE event_id = $1", [eventId]);
     if (eventCheck.rowCount === 0) return res.status(404).json({ message: "Event not found" });
-    if (eventCheck.rows[0].organizer_id !== userId) return res.status(403).json({ message: "Not authorized to delete this event" });
+
+    const event = eventCheck.rows[0];
+    let authorized = event.organizer_id === userId;
+
+    if (!authorized && event.company_id) {
+      authorized = await checkCompanyPermission(event.company_id, userId, 'MANAGE_COMPANY');
+      if (!authorized) authorized = await checkCompanyPermission(event.company_id, userId, 'CREATE_CONTENT');
+    }
+
+    if (!authorized) return res.status(403).json({ message: "Not authorized to delete this event" });
 
     // Delete (Assuming cascade for related tables or manual cleanup if needed)
     // We should probably delete registrations and saves first if no cascade

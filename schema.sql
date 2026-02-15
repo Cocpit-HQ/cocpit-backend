@@ -546,6 +546,7 @@ CREATE TABLE application_status_history (
 CREATE TABLE events (
   event_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   organizer_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
+  company_id UUID REFERENCES companies(company_id) ON DELETE CASCADE,
   title TEXT NOT NULL,
   description TEXT,
   start_time TIMESTAMPTZ NOT NULL,

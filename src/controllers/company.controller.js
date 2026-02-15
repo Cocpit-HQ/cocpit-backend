@@ -956,9 +956,16 @@ exports.getUserCompanies = async (req, res) => {
     const client = await pool.connect();
     try {
         const result = await client.query(
-            `SELECT c.*, cm.role
+            `SELECT c.*, 
+             json_build_object(
+                'name', cr.name,
+                'permissions', cr.permissions,
+                'priority', cr.priority
+             ) as viewer_role_data,
+             cr.name as role -- Keep for backward compatibility if needed, or use cr.name
              FROM companies c
              JOIN company_members cm ON c.company_id = cm.company_id
+             LEFT JOIN company_roles cr ON cm.role_id = cr.role_id
              WHERE cm.user_id = $1 AND c.is_deleted = FALSE
              ORDER BY c.created_at DESC`,
             [userId]
