@@ -44,6 +44,15 @@ class GroupChatModel {
         );
     }
 
+    static async hardDeleteMember(groupId, userId) {
+        // Strict Hard Delete
+        await pool.query(
+            `DELETE FROM conversation_participants 
+             WHERE conversation_id = $1 AND user_id = $2`,
+            [groupId, userId]
+        );
+    }
+
     static async deleteMemberRow(groupId, userId) {
         // Hard delete
         await pool.query(
@@ -125,7 +134,9 @@ class GroupChatModel {
             `SELECT DISTINCT ON (u.user_id) u.user_id, u.full_name, u.avatar_url, u.headline, cp.joined_at, cp.role
              FROM conversation_participants cp
              JOIN users u ON cp.user_id = u.user_id
-             WHERE cp.conversation_id = $1 AND cp.joined_at <= $2
+             WHERE cp.conversation_id = $1 
+             AND cp.joined_at <= $2
+             AND (cp.left_at IS NULL OR cp.left_at > $2)
              ORDER BY u.user_id, cp.joined_at DESC` :
             `SELECT DISTINCT ON (u.user_id) u.user_id, u.full_name, u.avatar_url, u.headline, cp.joined_at, cp.role
              FROM conversation_participants cp
