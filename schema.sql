@@ -863,3 +863,14 @@ CREATE TABLE saved_post(
 	saved_at TIMESTAMPTZ DEFAULT now(),
 	PRIMARY KEY (user_id , post_id)
 );
+
+-- Seed Data for Post Categories
+INSERT INTO post_categories (name) VALUES 
+('Personal'),
+('Professional'),
+('Achievement'),
+('Update'),
+('Hiring'),
+('Milestone'),
+('Insight')
+ON CONFLICT (name) DO NOTHING;

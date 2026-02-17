@@ -656,8 +656,7 @@ exports.createPost = async (req, res) => {
         if (!category) {
             await client.query('ROLLBACK');
             return res.status(400).json({ message: "Category is required" });
-        }
-        else {
+        } else {
             const catRes = await client.query(`SELECT category_id FROM post_categories WHERE name = $1`, [category]);
             if (catRes.rowCount > 0) {
                 categoryId = catRes.rows[0].category_id;
@@ -665,7 +664,26 @@ exports.createPost = async (req, res) => {
                 await client.query('ROLLBACK');
                 return res.status(400).json({ message: "Invalid category" });
             }
+
+            // --- CONTEXT-AWARE CATEGORY VALIDATION ---
+            const userAllowed = ['Personal', 'Professional', 'Achievement'];
+            const companyAllowed = ['Update', 'Hiring', 'Milestone', 'Insight', 'Professional', 'Article']; // Added Article if needed, else stick to requirements
+
+            if (companyId) {
+                // Company Post
+                if (!['Update', 'Hiring', 'Milestone', 'Insight'].includes(category)) {
+                    await client.query('ROLLBACK');
+                    return res.status(400).json({ message: `Invalid category for Company posts. Allowed: Update, Hiring, Milestone, Insight` });
+                }
+            } else {
+                // User Post
+                if (!['Personal', 'Professional', 'Achievement'].includes(category)) {
+                    await client.query('ROLLBACK');
+                    return res.status(400).json({ message: `Invalid category for User posts. Allowed: Personal, Professional, Achievement` });
+                }
+            }
         }
+
 
         // 2. Insert Post
         const postResult = await client.query(
