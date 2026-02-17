@@ -22,9 +22,23 @@ router.delete("/post/:id", requireAuth, contentController.deletePost);
 // post share story share
 
 // Save / Unsave
+// Save / Unsave / Save to Folder
 router.post("/posts/:postId/save", requireAuth, toggleSavePost);
 
-// Get all saved posts (Settings page)
+// Saved Folders CRUD
+const {
+    createFolder,
+    getFolders,
+    renameFolder,
+    deleteFolder
+} = require("../controllers/savedPostController");
+
+router.post("/saved-folders", requireAuth, createFolder);
+router.get("/saved-folders", requireAuth, getFolders);
+router.put("/saved-folders/:folderId", requireAuth, renameFolder);
+router.delete("/saved-folders/:folderId", requireAuth, deleteFolder);
+
+// Get all saved posts (Settings page - optionally filtered by ?folderId)
 router.get("/saved-posts", requireAuth, getSavedPosts);
 
 // Optional: Check single post saved status
