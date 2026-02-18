@@ -629,7 +629,10 @@ exports.deleteAccount = async (req, res) => {
       }
     }
 
-    // 4. Delete user record (Cascades handled by DB)
+    // 4. Clean up conversation participants (Explicitly to prevent ghosts if CASCADE fails)
+    await client.query("DELETE FROM conversation_participants WHERE user_id = $1", [userId]);
+
+    // 5. Delete user record
     await client.query("DELETE FROM users WHERE user_id = $1", [userId]);
 
     await client.query("COMMIT");

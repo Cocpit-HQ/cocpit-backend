@@ -115,7 +115,8 @@ class GroupChatService {
                 ...systemMsg,
                 sender_name: 'System',
                 is_system: true,
-                conversation_id: invitation.conversation_id // Ensure conversation_id is present
+                conversation_id: invitation.conversation_id, // Ensure conversation_id is present
+                isGroup: true
             });
         });
 
@@ -317,7 +318,8 @@ class GroupChatService {
                 ...leaveMsg,
                 sender_name: 'System',
                 is_system: true,
-                conversation_id: groupId
+                conversation_id: groupId,
+                isGroup: true
             };
             socketService.notifyConversation(groupId, 'new_message', enrichedLeaveMsg);
 
@@ -335,7 +337,8 @@ class GroupChatService {
                     ...promo.message,
                     sender_name: 'System',
                     is_system: true,
-                    conversation_id: groupId
+                    conversation_id: groupId,
+                    isGroup: true
                 });
             });
 
@@ -408,7 +411,8 @@ class GroupChatService {
                 ...systemMsg,
                 sender_name: 'System',
                 is_system: true,
-                conversation_id: groupId
+                conversation_id: groupId,
+                isGroup: true
             });
         });
 
@@ -618,7 +622,8 @@ class GroupChatService {
             ...systemMsg,
             sender_name: 'System',
             is_system: true,
-            conversation_id: groupId
+            conversation_id: groupId,
+            isGroup: true
         };
         socketService.notifyConversation(groupId, 'new_message', enrichedMsg);
 
@@ -661,7 +666,8 @@ class GroupChatService {
                 ...systemMsg,
                 sender_name: 'System',
                 is_system: true,
-                conversation_id: groupId
+                conversation_id: groupId,
+                isGroup: true
             });
         });
 
