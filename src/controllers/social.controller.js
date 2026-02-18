@@ -943,6 +943,7 @@ SELECT
     CASE 
         WHEN c.is_group THEN COALESCE(c.conversation_name, 'Group Chat')
         WHEN EXISTS(SELECT 1 FROM blocks WHERE blocker_id = u.user_id AND blocked_id = $1) THEN 'User not found'
+        WHEN u.full_name IS NULL THEN 'Deleted User' -- Handle deleted users
         ELSE u.full_name 
     END AS other_user_name,
     
@@ -950,6 +951,7 @@ SELECT
     CASE 
         WHEN c.is_group THEN c.group_avatar 
         WHEN EXISTS(SELECT 1 FROM blocks WHERE blocker_id = u.user_id AND blocked_id = $1) THEN NULL
+        WHEN u.avatar_url IS NULL THEN NULL -- Handle deleted users
         ELSE u.avatar_url 
     END AS other_user_avatar,
     
@@ -959,6 +961,12 @@ SELECT
     
     -- Identify the sender profile for the current view
     cp.is_active,
+    
+    -- Flag for deleted users in 1-on-1 chats
+    CASE 
+        WHEN c.is_group = FALSE AND u.user_id IS NULL THEN true 
+        ELSE false 
+    END AS is_deleted_user,
 
     -- Get the most recent message dynamically
     COALESCE(m.text_content, c.last_message) AS last_message_text,
