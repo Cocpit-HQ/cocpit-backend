@@ -705,7 +705,7 @@ CREATE TABLE IF NOT EXISTS message_media (
   media_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   message_id UUID REFERENCES messages(message_id) ON DELETE CASCADE,
   url TEXT NOT NULL,
-  media_type TEXT CHECK (media_type IN ('image', 'video')) DEFAULT 'image',
+  media_type TEXT CHECK (media_type IN ('image', 'video', 'document')) DEFAULT 'image',
   created_at TIMESTAMPTZ DEFAULT now()
 );
 
@@ -880,3 +880,93 @@ INSERT INTO post_categories (name) VALUES
 ('Milestone'),
 ('Insight')
 ON CONFLICT (name) DO NOTHING;
+
+-- 18/02/2026 Migration: Company Messaging Support
+-- (013_company_messaging.sql)
+
+-- 1. Create sender_type enum
+DO $$ BEGIN
+    CREATE TYPE sender_type_enum AS ENUM ('USER', 'COMPANY');
+EXCEPTION
+    WHEN duplicate_object THEN null;
+END $$;
+
+-- 2. Update messages table: add sender_type, soft-delete, and edit tracking columns
+ALTER TABLE messages
+ADD COLUMN IF NOT EXISTS sender_type sender_type_enum DEFAULT 'USER',
+ADD COLUMN IF NOT EXISTS is_deleted_for_everyone BOOLEAN DEFAULT FALSE,
+ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ,
+ADD COLUMN IF NOT EXISTS is_edited BOOLEAN DEFAULT FALSE,
+ADD COLUMN IF NOT EXISTS edited_at TIMESTAMPTZ;
+
+-- 3. Update conversation_participants: add company_id, make user_id nullable
+ALTER TABLE conversation_participants
+ADD COLUMN IF NOT EXISTS company_id UUID REFERENCES companies(company_id) ON DELETE SET NULL;
+
+ALTER TABLE conversation_participants
+ALTER COLUMN user_id DROP NOT NULL;
+
+-- Constraint: each participant row must be either a user OR a company (not both, not neither)
+ALTER TABLE conversation_participants
+ADD CONSTRAINT participant_identity_check
+CHECK (
+    (user_id IS NOT NULL AND company_id IS NULL) OR
+    (user_id IS NULL AND company_id IS NOT NULL)
+);
+
+-- 4. Create message_delete table (per-user soft delete)
+CREATE TABLE IF NOT EXISTS message_delete (
+  message_id UUID REFERENCES messages(message_id) ON DELETE CASCADE,
+  user_id    UUID REFERENCES users(user_id) ON DELETE CASCADE,
+  deleted_at TIMESTAMPTZ DEFAULT now(),
+  PRIMARY KEY (message_id, user_id)
+);
+
+-- 5. Indexes for performance
+CREATE INDEX IF NOT EXISTS idx_cp_company_id ON conversation_participants(company_id);
+CREATE INDEX IF NOT EXISTS idx_messages_sender_type ON messages(sender_type);
+CREATE INDEX IF NOT EXISTS idx_message_delete_user_id ON message_delete(user_id);
+
+-- 19/02/2026 Migration: Company Chat Sessions
+-- (015_company_chat_sessions.sql)
+
+CREATE TABLE IF NOT EXISTS company_chat_sessions (
+    session_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    conversation_id UUID NOT NULL REFERENCES conversations(conversation_id) ON DELETE CASCADE,
+    company_id UUID NOT NULL REFERENCES companies(company_id) ON DELETE CASCADE,
+    handler_user_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    handler_name_snapshot TEXT NOT NULL,
+    handler_role_id_snapshot UUID,
+    handler_role_name_snapshot TEXT,
+    status VARCHAR(20) NOT NULL DEFAULT 'ACTIVE'
+        CHECK (status IN ('ACTIVE', 'TIMED_OUT', 'ENDED', 'TRANSFERRED')),
+    started_at TIMESTAMPTZ DEFAULT NOW(),
+    last_activity_at TIMESTAMPTZ DEFAULT NOW(),
+    ended_at TIMESTAMPTZ,
+    end_reason VARCHAR(30)
+        CHECK (end_reason IS NULL OR end_reason IN (
+            'manual', 'timeout', 'transfer', 'force_takeover',
+            'member_removed', 'company_deactivated', 'system'
+        )),
+    message_count INTEGER DEFAULT 0,
+    transferred_to UUID REFERENCES users(user_id) ON DELETE SET NULL,
+    transferred_from_session_id UUID REFERENCES company_chat_sessions(session_id) ON DELETE SET NULL,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ccs_active
+ON company_chat_sessions (conversation_id, company_id) WHERE status = 'ACTIVE';
+CREATE INDEX IF NOT EXISTS idx_ccs_company ON company_chat_sessions(company_id, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_ccs_handler ON company_chat_sessions(handler_user_id, status);
+CREATE INDEX IF NOT EXISTS idx_ccs_timeout ON company_chat_sessions(status, last_activity_at) WHERE status = 'ACTIVE';
+
+ALTER TABLE messages
+ADD COLUMN IF NOT EXISTS session_id UUID REFERENCES company_chat_sessions(session_id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS idx_messages_session_id ON messages(session_id);
+
+DO $$ BEGIN
+    ALTER TABLE messages ADD CONSTRAINT chk_session_sender_type
+    CHECK ((session_id IS NULL) OR (sender_type = 'COMPANY'));
+EXCEPTION
+    WHEN duplicate_object THEN NULL;
+END $$;

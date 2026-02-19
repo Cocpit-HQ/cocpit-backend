@@ -15,6 +15,7 @@ const uploadRoutes = require("./routes/upload.routes");
 const onboardingRoutes = require("./routes/onboarding.routes");
 const groupChatRoutes = require("./routes/groupChat.routes");
 const companyRoutes = require("./routes/company.routes");
+const chatSessionRoutes = require("./routes/chatSession.routes");
 
 const app = express();
 app.set("trust proxy", true);
@@ -67,6 +68,7 @@ app.use("/api", uploadRoutes);
 app.use("/api/onboarding", onboardingRoutes);
 app.use("/api", companyRoutes);
 app.use("/api", groupChatRoutes); // /api/groups...
+app.use("/api", chatSessionRoutes); // /api/company-chat-sessions...
 
 // Global Error Handler
 const errorHandler = require("./middlewares/error.middleware");

@@ -3,6 +3,7 @@ const pool = require("../db/pool");
 const socketService = require("../services/socket.service");
 const { checkBlockStatus } = require("../utils/blockCheck");
 const { logAudit } = require("../services/audit.service");
+const { checkCompanyPermission } = require("../utils/rbac");
 
 // --- Feed / Posts ---
 exports.getPublicFeed = async (req, res) => {
@@ -1256,27 +1257,7 @@ WHERE p.post_id = $1;
     }
 };
 
-const checkCompanyPermission = async (client, companyId, userId, permissionsToCheck) => {
-    const res = await client.query(
-        `SELECT cr.permissions, cr.name 
-         FROM company_members cm
-         JOIN company_roles cr ON cm.role_id = cr.role_id
-         WHERE cm.company_id = $1 AND cm.user_id = $2`,
-        [companyId, userId]
-    );
-    if (res.rowCount === 0) return false;
-    const { permissions, name } = res.rows[0];
-    const roleName = name.toUpperCase();
-
-    // Owner/Admin override
-    if (roleName === 'OWNER' || roleName === 'ADMIN') return true;
-
-    // Permissions check
-    const perms = permissions || [];
-    if (perms.includes("*")) return true;
-
-    return permissionsToCheck.some(p => perms.includes(p));
-};
+// checkCompanyPermission imported from utils/rbac
 
 exports.deletePost = async (req, res) => {
     const postId = req.params.id;

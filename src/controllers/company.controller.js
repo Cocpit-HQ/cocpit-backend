@@ -1,5 +1,7 @@
 const pool = require("../db/pool");
 const AppError = require("../utils/AppError");
+const chatSessionCtrl = require("./chatSession.controller");
+const { checkCompanyPermission } = require("../utils/rbac");
 
 // Helper for Audit Logging
 const logAudit = async (client, { entityId, actorId, action, metadata = {} }) => {
@@ -25,20 +27,7 @@ const checkRole = async (client, companyId, userId, allowedRoles = ['OWNER', 'AD
 
 // --- Updated Permissions Helper ---
 // Replaces checkRole with new middleware logic usage pattern or direct DB check
-const checkPermission = async (client, companyId, userId, permission) => {
-    const res = await client.query(
-        `SELECT cr.permissions 
-         FROM company_members cm
-         JOIN company_roles cr ON cm.role_id = cr.role_id
-         WHERE cm.company_id = $1 AND cm.user_id = $2`,
-        [companyId, userId]
-    );
-    if (res.rowCount === 0) return false;
-    const permissions = res.rows[0].permissions || [];
-    return permissions.includes("*") ||
-        permissions.includes(permission) ||
-        (permission.startsWith("VIEW_") && permissions.includes(permission.replace("VIEW_", "MANAGE_")));
-};
+// checkPermission replaced by checkCompanyPermission from utils/rbac
 
 exports.createCompany = async (req, res) => {
     const userId = req.user.sub;
@@ -351,7 +340,7 @@ exports.inviteMember = async (req, res) => {
         await client.query("BEGIN");
 
         // 1. Permission Check
-        const canInvite = await checkPermission(client, companyId, userId, 'INVITE_MEMBERS');
+        const canInvite = await checkCompanyPermission(client, companyId, userId, 'INVITE_MEMBERS');
         if (!canInvite) throw new Error("Forbidden: You do not have permission to invite members");
 
         // 2. Role Escalation Check
@@ -751,6 +740,9 @@ exports.deleteCompany = async (req, res) => {
             [companyId]
         );
 
+        // Lifecycle: End all active sessions for this company
+        await chatSessionCtrl.endAllSessionsForCompany(client, companyId, userId);
+
         await logAudit(client, {
             entityId: companyId,
             actorId: userId,
@@ -785,7 +777,7 @@ exports.getMembers = async (req, res) => {
     const client = await pool.connect();
     try {
         // Permission Check
-        const canView = await checkPermission(client, companyId, userId, 'VIEW_MEMBERS');
+        const canView = await checkCompanyPermission(client, companyId, userId, 'VIEW_MEMBERS');
         if (!canView) return res.status(403).json({ message: "Forbidden" });
 
         // Build Query
@@ -877,6 +869,9 @@ exports.removeMember = async (req, res) => {
             `DELETE FROM company_members WHERE company_id = $1 AND user_id = $2`,
             [companyId, memberId]
         );
+
+        // Lifecycle: End all active sessions for this member
+        const endedSessions = await chatSessionCtrl.endAllSessionsForMember(client, companyId, memberId, userId);
 
         await logAudit(client, {
             entityId: companyId,
