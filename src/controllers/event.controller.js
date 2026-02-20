@@ -1,21 +1,8 @@
 const pool = require("../db/pool");
 const { logAudit } = require("../services/audit.service");
+const { checkCompanyPermission } = require("../utils/rbac");
 
-// Helper: Check Company Permission
-const checkCompanyPermission = async (companyId, userId, permission) => {
-  const res = await pool.query(
-    `SELECT cr.permissions 
-         FROM company_members cm
-         JOIN company_roles cr ON cm.role_id = cr.role_id
-         WHERE cm.company_id = $1 AND cm.user_id = $2`,
-    [companyId, userId]
-  );
-  if (res.rowCount === 0) return false;
-  const permissions = res.rows[0].permissions || [];
-  return permissions.includes("*") ||
-    permissions.includes(permission) ||
-    (permission.startsWith("VIEW_") && permissions.includes(permission.replace("VIEW_", "MANAGE_")));
-};
+// Helper: Check Company Permission - Imported from utils/rbac
 
 exports.getEvents = async (req, res) => {
   const {

@@ -2,8 +2,24 @@ const { stat } = require("node:fs");
 const pool = require("../db/pool");
 const { connected } = require("node:process");
 const { formatDistanceToNow } = require('date-fns');
-const timeAgo = require("./../utils/timeAgo")
 const socketService = require("../services/socket.service");
+const { checkRateLimit } = require("../utils/sessionRateLimiter");
+
+// Helper function for timeAgo
+const timeAgo = (date) => {
+    const seconds = Math.floor((new Date() - new Date(date)) / 1000);
+    let interval = seconds / 31536000;
+    if (interval > 1) return Math.floor(interval) + "y";
+    interval = seconds / 2592000;
+    if (interval > 1) return Math.floor(interval) + "mo";
+    interval = seconds / 86400;
+    if (interval > 1) return Math.floor(interval) + "d";
+    interval = seconds / 3600;
+    if (interval > 1) return Math.floor(interval) + "h";
+    interval = seconds / 60;
+    if (interval > 1) return Math.floor(interval) + "m";
+    return Math.floor(seconds) + "s";
+};
 
 // Follow another user
 exports.followUser = async (req, res) => {
@@ -939,32 +955,35 @@ SELECT
     CASE WHEN c.is_group THEN false ELSE EXISTS(SELECT 1 FROM blocks WHERE blocker_id = $1 AND blocked_id = u.user_id) END as is_blocked_by_me,
     CASE WHEN c.is_group THEN false ELSE EXISTS(SELECT 1 FROM blocks WHERE blocker_id = u.user_id AND blocked_id = $1) END as is_blocked_by_other,
 
-    -- Name logic: Use group name if group, else other user's name
+    -- Name logic: Use group name if group, else other participant's name (User or Company)
     CASE 
         WHEN c.is_group THEN COALESCE(c.conversation_name, 'Group Chat')
-        WHEN EXISTS(SELECT 1 FROM blocks WHERE blocker_id = u.user_id AND blocked_id = $1) THEN 'User not found'
-        WHEN u.full_name IS NULL THEN 'Deleted User' -- Handle deleted users
+        -- WHEN EXISTS(SELECT 1 FROM blocks WHERE blocker_id = u.user_id AND blocked_id = $1) THEN 'User not found' -- Update for Company?
+        WHEN comp.company_id IS NOT NULL THEN comp.name
+        WHEN u.full_name IS NULL AND comp.company_id IS NULL THEN 'Deleted User'
         ELSE u.full_name 
     END AS other_user_name,
     
-    -- Avatar logic: Use group avatar if group, else other user's avatar
+    -- Avatar logic
     CASE 
         WHEN c.is_group THEN c.group_avatar 
-        WHEN EXISTS(SELECT 1 FROM blocks WHERE blocker_id = u.user_id AND blocked_id = $1) THEN NULL
-        WHEN u.avatar_url IS NULL THEN NULL -- Handle deleted users
+        -- WHEN EXISTS(SELECT 1 FROM blocks WHERE blocker_id = u.user_id AND blocked_id = $1) THEN NULL
+        WHEN comp.company_id IS NOT NULL THEN comp.logo_url
+        WHEN u.avatar_url IS NULL AND comp.company_id IS NULL THEN NULL
         ELSE u.avatar_url 
     END AS other_user_avatar,
     
-    -- Other user ID (only for 1-on-1)
-    u.user_id AS other_user_id,
+    -- Other ID (User or Company)
+    COALESCE(u.user_id, comp.company_id) AS other_user_id,
     u.headline AS other_user_headline,
+    CASE WHEN comp.company_id IS NOT NULL THEN 'COMPANY' ELSE 'USER' END as other_user_type,
     
     -- Identify the sender profile for the current view
     cp.is_active,
     
-    -- Flag for deleted users in 1-on-1 chats
+    -- Flag for deleted users
     CASE 
-        WHEN c.is_group = FALSE AND u.user_id IS NULL THEN true 
+        WHEN c.is_group = FALSE AND u.user_id IS NULL AND comp.company_id IS NULL THEN true 
         ELSE false 
     END AS is_deleted_user,
 
@@ -975,19 +994,35 @@ FROM conversations c
 JOIN (
     -- Aggregate participation: Ensure one row per conversation for this user
     -- and check if they have any active record
-    SELECT conversation_id, user_id,
+    SELECT conversation_id, user_id, company_id,
            EXISTS(SELECT 1 FROM conversation_participants cp_a 
                   WHERE cp_a.conversation_id = cp_main.conversation_id 
-                  AND cp_a.user_id = cp_main.user_id 
+                  AND (
+                      (cp_main.user_id IS NOT NULL AND cp_a.user_id = cp_main.user_id)
+                      OR
+                      (cp_main.company_id IS NOT NULL AND cp_a.company_id = cp_main.company_id)
+                  )
                   AND cp_a.left_at IS NULL) as is_active
     FROM conversation_participants cp_main
-    WHERE cp_main.user_id = $1
-    GROUP BY conversation_id, user_id
+    WHERE 
+      -- Filter by User OR Company based on context
+      ($2::uuid IS NOT NULL AND cp_main.company_id = $2)
+      OR
+      ($2::uuid IS NULL AND cp_main.user_id = $1)
+    GROUP BY conversation_id, user_id, company_id -- added company_id
 ) cp ON c.conversation_id = cp.conversation_id
 -- For 1-on-1, join the other participant.
 LEFT JOIN conversation_participants cp_other ON c.conversation_id = cp_other.conversation_id 
-    AND cp_other.user_id != $1 AND c.is_group = FALSE
+    AND (
+        -- If I am User, other is NOT me (User) AND NOT my Company (if applicable, though usually 1-on-1 is User-User or User-Company)
+        -- Simplified: Other participant is the one that is NOT the current context ID
+        ($2::uuid IS NOT NULL AND (cp_other.company_id != $2 OR cp_other.company_id IS NULL))
+        OR
+        ($2::uuid IS NULL AND (cp_other.user_id != $1 OR cp_other.user_id IS NULL))
+    )
+    AND c.is_group = FALSE
 LEFT JOIN users u ON cp_other.user_id = u.user_id
+LEFT JOIN companies comp ON cp_other.company_id = comp.company_id -- Join companies for Company participants
 
 -- LATERAL JOIN to find the latest VISIBLE message across ANY period
 LEFT JOIN LATERAL (
@@ -1000,22 +1035,37 @@ LEFT JOIN LATERAL (
         END as text_content,
         msg.created_at
     FROM messages msg
-    JOIN conversation_participants cp_msg ON cp_msg.conversation_id = msg.conversation_id AND cp_msg.user_id = $1
+    JOIN conversation_participants cp_msg ON cp_msg.conversation_id = msg.conversation_id 
     WHERE msg.conversation_id = c.conversation_id
+    -- Permission/Visibility Check:
+    AND (
+        ($2::uuid IS NOT NULL AND cp_msg.company_id = $2)
+        OR
+        ($2::uuid IS NULL AND cp_msg.user_id = $1)
+    )
     AND msg.created_at >= cp_msg.joined_at
     AND (cp_msg.left_at IS NULL OR msg.created_at <= cp_msg.left_at)
-    -- Exclude messages deleted for me
+    -- Exclude messages deleted for me (User only currently)
     AND NOT EXISTS (
         SELECT 1 FROM message_delete md 
         WHERE md.message_id = msg.message_id 
-        AND md.user_id = $1
+        AND md.user_id = $1 -- Deletes are user-specific for now
     )
     ORDER BY msg.created_at DESC 
     LIMIT 1
 ) m ON true
 
+-- Self-message guard: in company mode, exclude conversations where current user is also a direct participant
+WHERE ($2::uuid IS NULL OR NOT EXISTS (
+    SELECT 1 FROM conversation_participants cp_self_guard
+    WHERE cp_self_guard.conversation_id = c.conversation_id
+    AND cp_self_guard.user_id = $1
+    AND cp_self_guard.left_at IS NULL
+    AND c.is_group = FALSE
+))
+
 ORDER BY COALESCE(m.created_at, c.last_message_at, c.updated_at) DESC NULLS LAST;
-  `, [userId]
+  `, [userId, req.query.companyId || null]
         );
 
         const unreadCountsResult = await pool.query(
@@ -1025,13 +1075,20 @@ ORDER BY COALESCE(m.created_at, c.last_message_at, c.updated_at) DESC NULLS LAST
   FROM messages m
   JOIN conversation_participants cp
     ON cp.conversation_id = m.conversation_id
-  WHERE cp.user_id = $1
+  WHERE 
+    (($2::uuid IS NOT NULL AND cp.company_id = $2) OR ($2::uuid IS NULL AND cp.user_id = $1))
     AND cp.left_at IS NULL
-    AND m.sender_id <> $1
+    AND (
+        -- If I am Company, sender is NOT me (My Company)
+        ($2::uuid IS NOT NULL AND (m.author_company_id != $2 OR m.author_company_id IS NULL))
+        OR
+        -- If I am User, sender is NOT me (User)
+        ($2::uuid IS NULL AND (m.sender_id != $1 OR m.sender_id IS NULL))
+    )
     AND m.created_at > cp.last_read_at
     AND m.created_at >= cp.joined_at
   GROUP BY m.conversation_id
-  `, [userId]
+  `, [userId, req.query.companyId || null]
         );
 
         const unreadMap = {};
@@ -1049,6 +1106,7 @@ ORDER BY COALESCE(m.created_at, c.last_message_at, c.updated_at) DESC NULLS LAST
         res.json(conversationsWithUnread);
 
     } catch (err) {
+        console.error("Get conversations error:", err);
         res.status(500).json({ message: "Internal server error" });
     }
 };
@@ -1056,26 +1114,41 @@ ORDER BY COALESCE(m.created_at, c.last_message_at, c.updated_at) DESC NULLS LAST
 exports.deleteConversation = async (req, res) => {
     const conversationId = req.params.id;
     const userId = req.user.sub;
+    const companyId = req.query.companyId || null;
 
     try {
-        // We delete from 'conversations' but only if the 'userId' is a participant
+        // RBAC: If deleting as company, verify the user is a member
+        if (companyId) {
+            const memberCheck = await pool.query(
+                'SELECT 1 FROM company_members WHERE company_id = $1 AND user_id = $2',
+                [companyId, userId]
+            );
+            if (memberCheck.rowCount === 0) {
+                return res.status(403).json({ message: "Forbidden: Not a company member" });
+            }
+        }
+
+        // Delete conversation only if the requester is a participant
         const result = await pool.query(
             `DELETE FROM conversations 
              WHERE conversation_id = $1 
              AND EXISTS (
                  SELECT 1 FROM conversation_participants 
-                 WHERE conversation_id = $1 AND user_id = $2
+                 WHERE conversation_id = $1 
+                 AND (
+                     ($3::uuid IS NOT NULL AND company_id = $3)
+                     OR ($3::uuid IS NULL AND user_id = $2)
+                 )
              )
              RETURNING *`,
-            [conversationId, userId]
+            [conversationId, userId, companyId]
         );
 
         if (result.rowCount === 0) {
-            // This triggers if the ID is wrong OR if the user isn't a participant
             return res.status(404).json({ message: "Conversation not found or access denied" });
         }
 
-        res.status(200).json({ message: "Conversation deleted successfully", userId: userId, conversationId: conversationId });
+        res.status(200).json({ message: "Conversation deleted successfully", conversationId: conversationId });
     } catch (err) {
         console.error("Delete conversation error:", err);
         res.status(500).json({ message: "Internal server error" });
@@ -1087,136 +1160,296 @@ exports.sendMessage = async (req, res) => {
     const { targetUserId, text_content, shared_post_id, authorCompanyId } = req.body;
     const images = req.files; // Array of files from multer
 
+    const trimmedText = text_content?.trim() || '';
     // Basic validation: user needs target + (text OR post OR images)
-    if (!targetUserId || (!text_content && !shared_post_id && (!images || images.length === 0))) {
+    if (!targetUserId || (!trimmedText && !shared_post_id && (!images || images.length === 0))) {
         return res.status(400).json({ message: "targetUserId and content (text, post, or images) are required" });
     }
 
-    if (senderId === targetUserId)
+    if (senderId === targetUserId) {
         return res.status(400).json({ message: "Cannot send message to yourself" });
-
-    // Check Block Status
-    try {
-        const { checkBlockStatus } = require("../utils/blockCheck");
-        const isBlocked = await checkBlockStatus(senderId, targetUserId);
-        if (isBlocked) {
-            return res.status(404).json({ message: "User not found" }); // Masked 404
-        }
-    } catch (e) {
-        console.error("Block check failed", e);
     }
-    const client = await pool.connect();
-    try {
-        await client.query('BEGIN');
 
-        // RBAC: If acting as company, verify membership
-        let senderName, senderAvatar;
-        if (authorCompanyId) {
-            const memberCheck = await client.query(
-                `SELECT c.name, c.logo_url FROM company_members cm 
+    const client = await pool.connect();
+    const MAX_RETRIES = 2;
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+        try {
+            await client.query('BEGIN ISOLATION LEVEL SERIALIZABLE');
+
+            // RBAC: If acting as company, verify membership
+            let senderName, senderAvatar;
+            if (authorCompanyId) {
+                const memberCheck = await client.query(
+                    `SELECT c.name, c.logo_url FROM company_members cm 
                  JOIN companies c ON cm.company_id = c.company_id
                  WHERE cm.company_id = $1 AND cm.user_id = $2`,
-                [authorCompanyId, senderId]
-            );
-            if (memberCheck.rowCount === 0) {
-                await client.query('ROLLBACK');
-                return res.status(403).json({ message: "Forbidden: You are not a member of this company" });
-            }
-            senderName = memberCheck.rows[0].name;
-            senderAvatar = memberCheck.rows[0].logo_url;
-        } else {
-            const senderRes = await client.query(
-                `SELECT full_name, avatar_url FROM users WHERE user_id = $1`,
-                [senderId]
-            );
-            if (senderRes.rowCount === 0) {
-                await client.query('ROLLBACK');
-                return res.status(404).json({ message: "Sender not found." });
-            }
-            senderName = senderRes.rows[0].full_name;
-            senderAvatar = senderRes.rows[0].avatar_url;
-        }
+                    [authorCompanyId, senderId]
+                );
+                if (memberCheck.rowCount === 0) {
+                    await client.query('ROLLBACK');
+                    return res.status(403).json({ message: "Forbidden: You are not a member of this company" });
+                }
+                senderName = memberCheck.rows[0].name;
+                senderAvatar = memberCheck.rows[0].logo_url;
 
-        const targetUserExists = await client.query(
-            `SELECT 1 FROM users WHERE user_id = $1`,
-            [targetUserId]
-        );
-        if (targetUserExists.rowCount === 0) {
-            await client.query('ROLLBACK');
-            return res.status(400).json({ message: "Target user not found." });
-        }
-        let conversationId;
+                // Session check: if feature enabled, require active session
+                const sessionFeatureEnabled = (() => {
+                    if (process.env.COMPANY_CHAT_SESSIONS_ENABLED === 'false') return false;
+                    const perCompany = process.env.COMPANY_CHAT_SESSIONS_COMPANIES || 'all';
+                    if (perCompany === 'all') return true;
+                    return perCompany.split(',').map(s => s.trim()).includes(authorCompanyId);
+                })();
 
-        // Check if 1-on-1 conversation exists
-        const existingConv = await client.query(
-            `SELECT c.conversation_id
+                var activeSession = null;
+                if (sessionFeatureEnabled) {
+                    // Rate limit company messages
+                    const rateCheck = checkRateLimit(`${authorCompanyId}:${senderId}`, 'company:message');
+                    if (!rateCheck.allowed) {
+                        await client.query('ROLLBACK');
+                        return res.status(429).json({ message: 'Too many messages. Please slow down.', retryAfterMs: rateCheck.retryAfterMs });
+                    }
+                }
+            } else {
+                const senderRes = await client.query(
+                    `SELECT full_name, avatar_url FROM users WHERE user_id = $1`,
+                    [senderId]
+                );
+                if (senderRes.rowCount === 0) {
+                    await client.query('ROLLBACK');
+                    return res.status(404).json({ message: "Sender not found." });
+                }
+                senderName = senderRes.rows[0].full_name;
+                senderAvatar = senderRes.rows[0].avatar_url;
+            }
+
+            // Determine if target is a user or a company
+            const targetUserExists = await client.query(
+                `SELECT 1 FROM users WHERE user_id = $1`,
+                [targetUserId]
+            );
+            const targetCompanyExists = targetUserExists.rowCount === 0
+                ? await client.query(`SELECT 1 FROM companies WHERE company_id = $1`, [targetUserId])
+                : null;
+
+            const targetIsUser = targetUserExists.rowCount > 0;
+            const targetIsCompany = !targetIsUser && targetCompanyExists?.rowCount > 0;
+
+            if (!targetIsUser && !targetIsCompany) {
+                await client.query('ROLLBACK');
+                return res.status(400).json({ message: "Target not found." });
+            }
+
+            // Block check: only applies to user targets (companies are not blockable)
+            if (targetIsUser) {
+                try {
+                    const { checkBlockStatus } = require("../utils/blockCheck");
+                    const isBlocked = await checkBlockStatus(senderId, targetUserId);
+                    if (isBlocked) {
+                        await client.query('ROLLBACK');
+                        return res.status(404).json({ message: "User not found" });
+                    }
+                } catch (e) {
+                    console.error("Block check failed", e);
+                }
+            }
+
+            let conversationId;
+            let isNewConversation = false;
+            let newSessionHandlerName = null;
+
+            if (authorCompanyId) {
+                // Company-to-User: look for a conversation where company is a participant AND target user is a participant
+                const existingConv = await client.query(
+                    `SELECT c.conversation_id
+                 FROM conversations c
+                 JOIN conversation_participants cp1 ON c.conversation_id = cp1.conversation_id AND cp1.company_id = $1
+                 JOIN conversation_participants cp2 ON c.conversation_id = cp2.conversation_id AND cp2.user_id = $2
+                 WHERE c.is_group = FALSE`,
+                    [authorCompanyId, targetUserId]
+                );
+
+                if (existingConv.rowCount > 0) {
+                    conversationId = existingConv.rows[0].conversation_id;
+                } else {
+                    // Create new conversation with company as one participant
+                    const convRes = await client.query(
+                        `INSERT INTO conversations (is_group) VALUES (FALSE) RETURNING conversation_id`
+                    );
+                    conversationId = convRes.rows[0].conversation_id;
+                    isNewConversation = true;
+
+                    // Company participant (no user_id)
+                    await client.query(
+                        `INSERT INTO conversation_participants (conversation_id, company_id) VALUES ($1, $2)`,
+                        [conversationId, authorCompanyId]
+                    );
+                    // Target user participant
+                    await client.query(
+                        `INSERT INTO conversation_participants (conversation_id, user_id) VALUES ($1, $2)`,
+                        [conversationId, targetUserId]
+                    );
+                }
+            } else if (targetIsCompany) {
+                // User-to-Company: look for a conversation where user is a participant AND target company is a participant
+                const existingConv = await client.query(
+                    `SELECT c.conversation_id
+                 FROM conversations c
+                 JOIN conversation_participants cp1 ON c.conversation_id = cp1.conversation_id AND cp1.user_id = $1
+                 JOIN conversation_participants cp2 ON c.conversation_id = cp2.conversation_id AND cp2.company_id = $2
+                 WHERE c.is_group = FALSE`,
+                    [senderId, targetUserId]
+                );
+
+                if (existingConv.rowCount > 0) {
+                    conversationId = existingConv.rows[0].conversation_id;
+                } else {
+                    const convRes = await client.query(
+                        `INSERT INTO conversations (is_group) VALUES (FALSE) RETURNING conversation_id`
+                    );
+                    conversationId = convRes.rows[0].conversation_id;
+
+                    // Sender user participant
+                    await client.query(
+                        `INSERT INTO conversation_participants (conversation_id, user_id) VALUES ($1, $2)`,
+                        [conversationId, senderId]
+                    );
+                    // Target company participant
+                    await client.query(
+                        `INSERT INTO conversation_participants (conversation_id, company_id) VALUES ($1, $2)`,
+                        [conversationId, targetUserId]
+                    );
+                }
+            } else {
+                // User-to-User: original logic
+                const existingConv = await client.query(
+                    `SELECT c.conversation_id
                  FROM conversations c
                  JOIN conversation_participants cp1 ON c.conversation_id = cp1.conversation_id AND cp1.user_id = $1
                  JOIN conversation_participants cp2 ON c.conversation_id = cp2.conversation_id AND cp2.user_id = $2
                  WHERE c.is_group = FALSE`,
-            [senderId, targetUserId]
-        );
+                    [senderId, targetUserId]
+                );
 
-        if (existingConv.rowCount > 0) {
-            conversationId = existingConv.rows[0].conversation_id;
-        } else {
-            // Create new 1-on-1 conversation in a transaction
-            const convRes = await client.query(
-                `INSERT INTO conversations (is_group) VALUES (FALSE) RETURNING conversation_id`
+                if (existingConv.rowCount > 0) {
+                    conversationId = existingConv.rows[0].conversation_id;
+                } else {
+                    const convRes = await client.query(
+                        `INSERT INTO conversations (is_group) VALUES (FALSE) RETURNING conversation_id`
+                    );
+                    conversationId = convRes.rows[0].conversation_id;
+
+                    await client.query(
+                        `INSERT INTO conversation_participants (conversation_id, user_id) VALUES ($1, $2), ($1, $3)`,
+                        [conversationId, senderId, targetUserId]
+                    );
+                }
+            }
+
+            // Insert the message
+            // Determine message text for notifications/preview
+            const previewText = trimmedText
+                ? trimmedText
+                : (images && images.length > 0
+                    ? (images.length > 1 ? `${images.length} attachments` : (images[0].mimetype.startsWith('video/') ? 'Sent a video' : (images[0].mimetype === 'application/pdf' ? 'Sent a document' : 'Sent a photo')))
+                    : (shared_post_id ? 'Shared a post' : 'Attachment'));
+
+            // Session enforcement for company messages (within transaction for atomicity)
+            let sessionId = null;
+            if (authorCompanyId) {
+                const sessionFeatureEnabled = (() => {
+                    if (process.env.COMPANY_CHAT_SESSIONS_ENABLED === 'false') return false;
+                    const perCompany = process.env.COMPANY_CHAT_SESSIONS_COMPANIES || 'all';
+                    if (perCompany === 'all') return true;
+                    return perCompany.split(',').map(s => s.trim()).includes(authorCompanyId);
+                })();
+
+                if (sessionFeatureEnabled) {
+                    const sessionCheck = await client.query(
+                        `SELECT session_id FROM company_chat_sessions
+                         WHERE conversation_id = $1 AND company_id = $2
+                         AND handler_user_id = $3 AND status = 'ACTIVE'
+                         FOR UPDATE`,
+                        [conversationId, authorCompanyId, senderId]
+                    );
+                    if (sessionCheck.rowCount === 0) {
+                        if (isNewConversation) {
+                            // Auto-claim session for new conversation
+                            // 1. Get member details for snapshot
+                            const memberRes = await client.query(
+                                `SELECT cm.role_id, cr.name as role_name, u.full_name
+                                 FROM company_members cm
+                                 JOIN users u ON cm.user_id = u.user_id
+                                 LEFT JOIN company_roles cr ON cm.role_id = cr.role_id
+                                 WHERE cm.company_id = $1 AND cm.user_id = $2`,
+                                [authorCompanyId, senderId]
+                            );
+
+                            const memberDetails = memberRes.rows[0];
+                            // Fallback if not found (should be validated by now, but safe guard)
+                            const handlerName = memberDetails?.full_name || 'Unknown';
+                            newSessionHandlerName = handlerName;
+                            const roleId = memberDetails?.role_id || null;
+                            const roleName = memberDetails?.role_name || null;
+
+                            // 2. Create Session
+                            const newSessionRes = await client.query(
+                                `INSERT INTO company_chat_sessions 
+                                 (conversation_id, company_id, handler_user_id, 
+                                  handler_name_snapshot, handler_role_id_snapshot, handler_role_name_snapshot,
+                                  status)
+                                 VALUES ($1, $2, $3, $4, $5, $6, 'ACTIVE')
+                                 RETURNING session_id`,
+                                [conversationId, authorCompanyId, senderId, handlerName, roleId, roleName]
+                            );
+                            sessionId = newSessionRes.rows[0].session_id;
+
+                            // 3. Notify socket (queued for after commit)
+                            // We'll emit 'session_claimed' below
+                        } else {
+                            await client.query('ROLLBACK');
+                            return res.status(403).json({ message: 'No active session. Claim conversation first.' });
+                        }
+                    } else {
+                        sessionId = sessionCheck.rows[0].session_id;
+                    }
+                }
+            }
+
+            const msgRes = await client.query(
+                `INSERT INTO messages (conversation_id, sender_id, text_content, shared_post_id, author_company_id, sender_type, session_id)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
+                [conversationId, senderId, trimmedText || '', shared_post_id || null, authorCompanyId || null, authorCompanyId ? 'COMPANY' : 'USER', sessionId]
             );
-            conversationId = convRes.rows[0].conversation_id;
+            const newMessage = msgRes.rows[0];
 
-            await client.query(
-                `INSERT INTO conversation_participants (conversation_id, user_id) VALUES ($1, $2), ($1, $3)`,
-                [conversationId, senderId, targetUserId]
-            );
-        }
+            // Process Images
+            // Process Media (Images, Video, PDF)
+            let mediaRecords = [];
+            if (images && images.length > 0) {
+                const mediaValues = images.map(file => {
+                    let type = 'image';
+                    if (file.mimetype.startsWith('video/')) type = 'video';
+                    if (file.mimetype === 'application/pdf') type = 'document';
+                    return [newMessage.message_id, file.path, type];
+                });
 
-        // Insert the message
-        // Determine message text for notifications/preview
-        // Determine message text for notifications/preview
-        const previewText = text_content
-            ? text_content
-            : (images && images.length > 0
-                ? (images.length > 1 ? `${images.length} attachments` : (images[0].mimetype.startsWith('video/') ? 'Sent a video' : (images[0].mimetype === 'application/pdf' ? 'Sent a document' : 'Sent a photo')))
-                : (shared_post_id ? 'Shared a post' : 'Attachment'));
+                // Construct bulk insert parameters
+                const placeholders = mediaValues.map((_, i) => `($${i * 3 + 1}, $${i * 3 + 2}, $${i * 3 + 3})`).join(', ');
+                const flatValues = mediaValues.flat();
 
-        const msgRes = await client.query(
-            `INSERT INTO messages (conversation_id, sender_id, text_content, shared_post_id, author_company_id)
-                 VALUES ($1, $2, $3, $4, $5) RETURNING *`,
-            [conversationId, senderId, text_content || '', shared_post_id || null, authorCompanyId || null]
-        );
-        const newMessage = msgRes.rows[0];
-
-        // Process Images
-        // Process Media (Images, Video, PDF)
-        let mediaRecords = [];
-        if (images && images.length > 0) {
-            const mediaValues = images.map(file => {
-                let type = 'image';
-                if (file.mimetype.startsWith('video/')) type = 'video';
-                if (file.mimetype === 'application/pdf') type = 'document'; // Use 'document' as per schema update (ensure schema allows this!)
-                // Wait, I updated schema to allow 'document'.
-                return [newMessage.message_id, file.path, type];
-            });
-
-            // Construct bulk insert parameters
-            const placeholders = mediaValues.map((_, i) => `($${i * 3 + 1}, $${i * 3 + 2}, $${i * 3 + 3})`).join(', ');
-            const flatValues = mediaValues.flat();
-
-            const mediaRes = await client.query(
-                `INSERT INTO message_media (message_id, url, media_type) 
+                const mediaRes = await client.query(
+                    `INSERT INTO message_media (message_id, url, media_type) 
                    VALUES ${placeholders} 
                    RETURNING url, media_type`,
-                flatValues
-            );
-            mediaRecords = mediaRes.rows;
-        }
+                    flatValues
+                );
+                mediaRecords = mediaRes.rows;
+            }
 
-        // Fetch shared post details if applicable
-        let sharedPostData = null;
-        if (shared_post_id) {
-            const spRes = await client.query(`
+            // Fetch shared post details if applicable
+            let sharedPostData = null;
+            if (shared_post_id) {
+                const spRes = await client.query(`
                 SELECT 
                     p.post_id, p.content, p.created_at, 
                     json_build_object('full_name', u.full_name, 'avatar_url', u.avatar_url) as author,
@@ -1225,54 +1458,130 @@ exports.sendMessage = async (req, res) => {
                 JOIN users u ON p.author_id = u.user_id
                 WHERE p.post_id = $1
             `, [shared_post_id]);
-            if (spRes.rowCount > 0) sharedPostData = spRes.rows[0];
-        }
+                if (spRes.rowCount > 0) sharedPostData = spRes.rows[0];
+            }
 
-        // Update conversation timestamp and last message
-        await client.query(
-            `UPDATE conversations 
+            // Update conversation timestamp and last message
+            await client.query(
+                `UPDATE conversations 
              SET updated_at = now(),
                  last_message = $2,
                  last_message_at = now()
              WHERE conversation_id = $1`,
-            [conversationId, previewText]
-        );
-        await client.query('COMMIT');
+                [conversationId, previewText]
+            );
+            // Update session activity (within transaction)
+            if (sessionId) {
+                await client.query(
+                    `UPDATE company_chat_sessions
+                     SET last_activity_at = NOW(), message_count = message_count + 1
+                     WHERE session_id = $1`,
+                    [sessionId]
+                );
+            }
 
-        const messageData = {
-            ...newMessage,
-            media: mediaRecords,
-            shared_post: sharedPostData,
-            sender_name: senderName,
-            sender_avatar: senderAvatar
-        };
+            await client.query('COMMIT');
 
-        // Notify target user via service
-        socketService.notifyUser(targetUserId, "new_message", messageData);
-        // Notify sender as well
-        socketService.notifyUser(senderId, "new_message", messageData);
+            // Emit session activity event (outside transaction)
+            if (sessionId && authorCompanyId) {
+                try {
+                    const members = await pool.query(
+                        'SELECT user_id FROM company_members WHERE company_id = $1 AND status = $2',
+                        [authorCompanyId, 'ACTIVE']
+                    );
+                    for (const m of members.rows) {
+                        socketService.notifyUser(m.user_id, 'session_activity', {
+                            conversationId,
+                            sessionId,
+                            lastActivityAt: new Date().toISOString()
+                        });
+                    }
+                } catch (notifyErr) {
+                    console.error('Error emitting session_activity:', notifyErr);
+                }
+            }
 
-        socketService.notifyUser(targetUserId, "notification", {
-            type: "message",
-            from: senderId,
-            senderName,
-            senderAvatar,
-            conversationId,
-            text: previewText
-        });
+            // Emit session_claimed (outside transaction) if auto-claimed
+            if (sessionId && authorCompanyId && isNewConversation && newSessionHandlerName) {
+                try {
+                    const members = await pool.query(
+                        'SELECT user_id FROM company_members WHERE company_id = $1 AND status = $2',
+                        [authorCompanyId, 'ACTIVE']
+                    );
+                    for (const m of members.rows) {
+                        socketService.notifyUser(m.user_id, 'session_claimed', {
+                            conversationId,
+                            sessionId,
+                            handlerUserId: senderId,
+                            handlerName: newSessionHandlerName
+                        });
+                    }
+                } catch (notifyErr) {
+                    console.error('Error emitting session_claimed:', notifyErr);
+                }
+            }
 
-        res.status(201).json({
-            conversationId,
-            message: "Message sent successfully",
-            data: messageData
-        });
-    } catch (err) {
-        await client.query('ROLLBACK');
-        console.error("Error in sendMessage:", err);
-        res.status(500).json({ message: "Internal server error" });
-    } finally {
-        client.release();
-    }
+            const messageData = {
+                ...newMessage,
+                media: mediaRecords,
+                shared_post: sharedPostData,
+                sender_name: senderName,
+                sender_avatar: senderAvatar
+            };
+
+            // Notify via socket
+            if (targetIsCompany) {
+                // User→Company: notify all members of the target company
+                const members = await pool.query(
+                    'SELECT user_id FROM company_members WHERE company_id = $1',
+                    [targetUserId]
+                );
+                for (const member of members.rows) {
+                    socketService.notifyUser(member.user_id, "new_message", messageData);
+                    socketService.notifyUser(member.user_id, "notification", {
+                        type: "message",
+                        from: senderId,
+                        senderName,
+                        senderAvatar,
+                        conversationId,
+                        text: previewText,
+                        targetProfileType: 'COMPANY',
+                        targetCompanyId: targetUserId
+                    });
+                }
+            } else {
+                // User→User or Company→User: notify target user directly
+                socketService.notifyUser(targetUserId, "new_message", messageData);
+                socketService.notifyUser(targetUserId, "notification", {
+                    type: "message",
+                    from: senderId,
+                    senderName,
+                    senderAvatar,
+                    conversationId,
+                    text: previewText,
+                    targetProfileType: 'USER'
+                });
+            }
+            // Notify sender as well
+            socketService.notifyUser(senderId, "new_message", messageData);
+
+            res.status(201).json({
+                conversationId,
+                message: "Message sent successfully",
+                data: messageData
+            });
+            break; // Success — exit retry loop
+        } catch (err) {
+            await client.query('ROLLBACK');
+            // Retry on serialization failure (race condition: concurrent first messages)
+            if (err.code === '40001' && attempt < MAX_RETRIES) {
+                continue;
+            }
+            console.error("Error in sendMessage:", err);
+            res.status(500).json({ message: "Internal server error" });
+        }
+    } // end retry loop
+    client.release();
 };
 exports.markConversationRead = async (req, res) => {
     const userId = req.user.sub;
@@ -1280,20 +1589,41 @@ exports.markConversationRead = async (req, res) => {
         conversationId
     } = req.params;
 
+    const companyId = req.body?.companyId || null;
+
     const client = await pool.connect();
 
     try {
         await client.query("BEGIN");
+
+        // RBAC: If marking as company, verify the user is a member
+        if (companyId) {
+            const memberCheck = await client.query(
+                'SELECT 1 FROM company_members WHERE company_id = $1 AND user_id = $2',
+                [companyId, userId]
+            );
+            if (memberCheck.rowCount === 0) {
+                await client.query('ROLLBACK');
+                client.release();
+                return res.status(403).json({ message: "Forbidden: Not a company member" });
+            }
+        }
 
         // 1. Update the participant's last_read_at timestamp
         const result = await client.query(
             `
             UPDATE conversation_participants
             SET last_read_at = NOW()
-            WHERE conversation_id = $1 AND user_id = $2 AND left_at IS NULL
+            WHERE conversation_id = $1 
+            AND (
+                ($3::uuid IS NOT NULL AND company_id = $3)
+                OR
+                ($3::uuid IS NULL AND user_id = $2)
+            )
+            AND left_at IS NULL
             RETURNING last_read_at
             `,
-            [conversationId, userId]
+            [conversationId, userId, companyId]
         );
 
         // 2. Identify unread messages to mark as read
@@ -1380,14 +1710,20 @@ exports.getMessageSeenBy = async (req, res) => {
     try {
         // Validation: Verify user is part of the conversation this message belongs to
         // (Optional but recommended for security)
+        const companyId = req.query.companyId || null;
         const accessCheck = await pool.query(
             `
             SELECT 1 
             FROM messages m
             JOIN conversation_participants cp ON m.conversation_id = cp.conversation_id
-            WHERE m.message_id = $1 AND cp.user_id = $2
+            WHERE m.message_id = $1 
+            AND (
+                ($3::uuid IS NOT NULL AND cp.company_id = $3)
+                OR
+                ($3::uuid IS NULL AND cp.user_id = $2)
+            )
             `,
-            [messageId, userId]
+            [messageId, userId, companyId]
         );
 
         if (accessCheck.rowCount === 0) {
@@ -1430,6 +1766,19 @@ exports.getMessages = async (req, res) => {
     let before = req.query.before || null;
 
     try {
+        const companyId = req.query.companyId || null;
+
+        // RBAC: If requesting as company, verify membership
+        if (companyId) {
+            const memberCheck = await pool.query(
+                'SELECT 1 FROM company_members WHERE company_id = $1 AND user_id = $2',
+                [companyId, userId]
+            );
+            if (memberCheck.rowCount === 0) {
+                return res.status(403).json({ message: "Forbidden: Not a company member" });
+            }
+        }
+
         // Robust UUID check (standard 8-4-4-4-12 hex with hyphens)
         const isUUID = (str) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(str);
 
@@ -1455,9 +1804,14 @@ exports.getMessages = async (req, res) => {
             `SELECT c.is_group 
              FROM conversations c
              JOIN conversation_participants cp ON c.conversation_id = cp.conversation_id
-             WHERE c.conversation_id = $1 AND cp.user_id = $2
+             WHERE c.conversation_id = $1 
+             AND (
+                ($3::uuid IS NOT NULL AND cp.company_id = $3)
+                OR
+                ($3::uuid IS NULL AND cp.user_id = $2)
+             )
              LIMIT 1`,
-            [conversation_id, userId]
+            [conversation_id, userId, req.query.companyId || null]
         );
 
         if (partCheck.rowCount === 0)
@@ -1523,7 +1877,12 @@ exports.getMessages = async (req, res) => {
              AND ($2::boolean = false OR EXISTS (
                 SELECT 1 FROM conversation_participants cp 
                 WHERE cp.conversation_id = m.conversation_id 
-                AND cp.user_id = $4
+                AND (
+                    -- Check if I am a participant as User OR Company
+                    ($6::uuid IS NOT NULL AND cp.company_id = $6)
+                    OR
+                    ($6::uuid IS NULL AND cp.user_id = $4)
+                )
                 AND m.created_at >= cp.joined_at
                 AND (cp.left_at IS NULL OR m.created_at <= cp.left_at)
              ))
@@ -1531,7 +1890,7 @@ exports.getMessages = async (req, res) => {
              AND ($3::timestamp IS NULL OR m.created_at < $3::timestamp)
              ORDER BY m.created_at DESC
              LIMIT $5`,
-            [conversation_id, is_group, before, userId, limit]
+            [conversation_id, is_group, before, userId, limit, req.query.companyId || null]
         );
 
         // Process messages: Filter "delete for me" and mask "delete for everyone"

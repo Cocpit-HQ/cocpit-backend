@@ -26,8 +26,12 @@ module.exports.registerChatHandlers = (io, socket) => {
       const result = await pool.query(
         `
       SELECT 1 
-      FROM conversation_participants 
-      WHERE conversation_id = $1 AND user_id = $2 AND left_at IS NULL
+      FROM conversation_participants cp
+      WHERE cp.conversation_id = $1 AND cp.left_at IS NULL
+      AND (
+        cp.user_id = $2
+        OR cp.company_id IN (SELECT company_id FROM company_members WHERE user_id = $2)
+      )
       `,
         [conversationId, userId]
       );
