@@ -3,7 +3,11 @@ const pool = require("../db/pool");
 const socketService = require("../services/socket.service");
 const { checkBlockStatus } = require("../utils/blockCheck");
 const { logAudit } = require("../services/audit.service");
+<<<<<<< feature/storyeditor
+const renderService = require("../services/render.service");
+=======
 const { checkCompanyPermission } = require("../utils/rbac");
+>>>>>>> main
 
 // --- Feed / Posts ---
 exports.getPublicFeed = async (req, res) => {
@@ -2468,7 +2472,10 @@ exports.getGroupedStories = async (req, res) => {
                 view_count: story.view_count || 0,
                 like_count: story.like_count || 0,
                 shared_post: story.shared_post,
-                story_metadata: story.story_metadata
+                shared_post: story.shared_post,
+                story_metadata: story.story_metadata,
+                final_url: story.final_url,
+                render_status: story.render_status
             });
         }
 
@@ -2501,16 +2508,48 @@ exports.getGroupedStories = async (req, res) => {
     }
 };
 
+exports.getStoryRecommendations = async (req, res) => {
+    try {
+        // Mocked response or empty array for now so frontend doesn't crash 
+        // until recommendations logic is actually implemented for stories.
+        return res.status(200).json([]);
+    } catch (err) {
+        console.error("Story recommendations error:", err);
+        return res.status(500).json({ message: "Internal server error" });
+    }
+};
+
 exports.createStory = async (req, res) => {
-    const userId = req.user.sub;
-    const { title, media_url, description, media_type, public_id, media_status, shared_post_id, story_metadata } = req.body;
+    // Extract user ID from JWT — support both .sub and .user_id
+    const userId = req.user?.sub || req.user?.user_id;
+    if (!userId) {
+        return res.status(401).json({ message: "Unauthorized: user not identified" });
+    }
+
+    const {
+        title,
+        media_url,
+        description,
+        media_type,
+        public_id,
+        media_status,
+        shared_post_id,
+        story_metadata,
+        original_url,
+        final_url
+    } = req.body;
+
+    // --- Validate required fields ---
+    if (!media_url) {
+        return res.status(400).json({ message: "media_url is required" });
+    }
+
     const companyId = req.headers['x-company-id']; // Optional company context
 
     try {
         let authorCompanyId = null;
 
         if (companyId) {
-            // Verify membership
             const memberCheck = await pool.query(
                 `SELECT 1 FROM company_members WHERE company_id = $1 AND user_id = $2`,
                 [companyId, userId]
@@ -2521,42 +2560,84 @@ exports.createStory = async (req, res) => {
             authorCompanyId = companyId;
         }
 
-        let type = media_type || (media_url && media_url.toLowerCase().match(/\.(mp4|webm|mov)$/) ? 'video' : 'image');
+        // Derive media_type from URL extension if not provided
+        let type = media_type || (media_url.toLowerCase().match(/\.(mp4|webm|mov)$/) ? 'video' : 'image');
 
-        // Default status: 'ready' for images, 'processing' for videos unless specified
-        let status = media_status || (type === 'video' ? 'processing' : 'ready');
+        // Derive media_status: images are always 'ready', videos start as 'processing'
+        let status;
+        if (type === 'image') {
+            status = 'ready';
+        } else {
+            status = media_status || 'processing';
+        }
 
-        // If it's an image, it's always ready immediately
-        if (type === 'image') status = 'ready';
+        // Map to valid render_status (DB constraint: legacy|queued|rendering|ready|failed)
+        let renderStatus;
+        switch (status) {
+            case 'processing': renderStatus = 'rendering'; break;
+            case 'ready': renderStatus = 'ready'; break;
+            case 'failed': renderStatus = 'failed'; break;
+            default: renderStatus = 'queued'; break;
+        }
+
+        // Ensure original_url is populated (required NOT NULL column)
+        const resolvedOriginalUrl = original_url || media_url;
+        const resolvedFinalUrl = final_url || media_url;
 
         const result = await pool.query(
-            `
-            INSERT INTO stories (author_id, title, description, media_url, media_type, expires_at, media_status, cld_public_id, shared_post_id, story_metadata, author_company_id)
-            VALUES ($1, $2, $3, $4, $5, now() + interval '24 hours', $6, $7, $8, $9, $10)
-            RETURNING story_id, created_at
-            `,
-            [userId, title, description, media_url, type, status, public_id, shared_post_id || null, story_metadata || {}, authorCompanyId]
+            `INSERT INTO stories
+                (author_id, title, description, media_url, original_url, final_url, media_type,
+                 expires_at, media_status, render_status, cld_public_id, shared_post_id,
+                 story_metadata, author_company_id)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, now() + interval '24 hours', $8, $9, $10, $11, $12, $13)
+             RETURNING story_id, created_at`,
+            [
+                userId,
+                title ?? '',        // title is now nullable in DB but use '' for clarity
+
+                description || null,
+                media_url,
+                resolvedOriginalUrl,
+                resolvedFinalUrl,
+                type,
+                status,
+                renderStatus,
+                public_id || null,
+                shared_post_id || null,
+                story_metadata ? JSON.parse(JSON.stringify(story_metadata)) : {},
+                authorCompanyId || null
+            ]
         );
 
         const { story_id, created_at } = result.rows[0];
 
         res.status(201).json({
             message: "Story created",
-            story_id: story_id,
-            userId: userId,
-            title: title,
-            description: description,
-            media_url: media_url,
+            story_id,
+            userId,
+            title,
+            description,
+            media_url,
             media_type: type,
             media_status: status,
-            created_at: created_at,
+            render_status: renderStatus,
+            created_at,
             story_metadata: story_metadata || {}
         });
+
+        // Trigger background rendering ONLY if the client did not already upload a final_url
+        if (public_id && !final_url) {
+            renderService.renderStory(story_id, public_id, type, story_metadata || {})
+                .catch(err => console.error(`[Background] Story render failed for ${story_id}:`, err));
+        }
+
     } catch (err) {
-        console.error("Create story error:", err);
-        res.status(500).json({ message: "Internal server error" });
+        console.error("[createStory] Database error:", err.message);
+        console.error("[createStory] Full error:", err);
+        res.status(500).json({ message: "Internal server error", detail: err.message });
     }
 };
+
 
 exports.deleteStory = async (req, res) => {
     const storyId = req.params.id;
