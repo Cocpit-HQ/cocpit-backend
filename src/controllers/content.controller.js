@@ -3,11 +3,8 @@ const pool = require("../db/pool");
 const socketService = require("../services/socket.service");
 const { checkBlockStatus } = require("../utils/blockCheck");
 const { logAudit } = require("../services/audit.service");
-<<<<<<< feature/storyeditor
 const renderService = require("../services/render.service");
-=======
 const { checkCompanyPermission } = require("../utils/rbac");
->>>>>>> main
 
 // --- Feed / Posts ---
 exports.getPublicFeed = async (req, res) => {

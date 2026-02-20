@@ -591,7 +591,9 @@ exports.getMyJobs = async (req, res) => {
         (SELECT COUNT(*)::int FROM job_applications ja_count WHERE ja_count.job_id = j.job_id) as applicants_count
       FROM jobs j
       LEFT JOIN users u ON j.recruiter_id = u.user_id
-      WHERE j.recruiter_id = $1 AND j.is_active = TRUE
+      WHERE j.recruiter_id = $1 
+        AND j.is_active = TRUE 
+        AND (j.posted_as_company IS FALSE OR j.posted_as_company IS NULL)
     `;
     const params = [recruiterId];
     let paramCount = 2;
@@ -706,8 +708,8 @@ exports.getDashboardStats = async (req, res) => {
   try {
     const stats = await pool.query(`
       SELECT
-        COUNT(j.job_id) FILTER (WHERE j.is_active = TRUE) as "activeJobs",
-        COUNT(j.job_id) as "totalJobs",
+        COUNT(j.job_id) FILTER (WHERE j.is_active = TRUE AND (j.posted_as_company IS FALSE OR j.posted_as_company IS NULL)) as "activeJobs",
+        COUNT(j.job_id) FILTER (WHERE j.posted_as_company IS FALSE OR j.posted_as_company IS NULL) as "totalJobs",
         (
            SELECT COUNT(*) 
            FROM job_applications ja 
@@ -715,7 +717,8 @@ exports.getDashboardStats = async (req, res) => {
            WHERE j2.recruiter_id = $1
         ) as "totalApplicants"
       FROM jobs j
-      WHERE j.recruiter_id = $1
+      WHERE j.recruiter_id = $1 
+        AND (j.posted_as_company IS FALSE OR j.posted_as_company IS NULL)
     `, [userId]);
 
     const data = stats.rows[0];

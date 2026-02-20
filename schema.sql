@@ -504,6 +504,49 @@ CREATE TABLE jobs (
   actively_hiring BOOLEAN DEFAULT false,
   match_score INTEGER, -- optional / mock
   is_active BOOLEAN DEFAULT TRUE,
+  posted_as_company BOOLEAN DEFAULT FALSE,
+  status VARCHAR(20) DEFAULT 'ACTIVE' CHECK (status IN ('DRAFT', 'ACTIVE', 'CLOSED', 'EXPIRED', 'REJECTED', 'UNDER_REVIEW')),
+  expires_at TIMESTAMPTZ,
+  salary_currency VARCHAR(10) DEFAULT 'USD',
+  salary_period VARCHAR(20) DEFAULT 'YEARLY' CHECK (salary_period IN ('YEARLY', 'MONTHLY', 'HOURLY')),
+  salary_visibility VARCHAR(20) DEFAULT 'PUBLIC' CHECK (salary_visibility IN ('PUBLIC', 'PRIVATE')),
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- Prevent race condition duplicates
+CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_recent_job_company
+ON jobs(company_id, title, location)
+WHERE status = 'ACTIVE';
+
+-- Analytics/Dashboard optimization
+CREATE INDEX IF NOT EXISTS idx_jobs_company_status 
+ON jobs(company_id, status);
+
+CREATE TABLE event_outbox (
+  event_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  topic VARCHAR(255) NOT NULL,
+  payload JSONB NOT NULL,
+  status VARCHAR(20) DEFAULT 'PENDING' CHECK (status IN ('PENDING', 'PROCESSED', 'FAILED')),
+  created_at TIMESTAMPTZ DEFAULT now(),
+  processed_at TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS idx_event_outbox_pending ON event_outbox(status) WHERE status = 'PENDING';
+
+CREATE TABLE job_reports (
+  report_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  job_id UUID NOT NULL REFERENCES jobs(job_id) ON DELETE CASCADE,
+  reporter_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+  reason TEXT NOT NULL,
+  status VARCHAR(20) DEFAULT 'PENDING' CHECK (status IN ('PENDING', 'REVIEWED', 'RESOLVED', 'DISMISSED')),
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE TABLE job_versions (
+  version_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  job_id UUID NOT NULL REFERENCES jobs(job_id) ON DELETE CASCADE,
+  changed_by UUID REFERENCES users(user_id) ON DELETE SET NULL,
+  previous_data JSONB NOT NULL,
   created_at TIMESTAMPTZ DEFAULT now()
 );
 

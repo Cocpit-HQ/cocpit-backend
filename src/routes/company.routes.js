@@ -1,6 +1,7 @@
 const express = require("express");
 const router = express.Router();
 const companyController = require("../controllers/company.controller");
+const companyJobsController = require("../controllers/company.jobs.controller");
 const analyticsController = require("../controllers/company.analytics.controller");
 const { requireAuth, optionalAuth } = require("../middlewares/auth.middleware");
 const { companyActionLimiter, otpGenerationLimiter } = require("../middlewares/rate-limiter.middleware");
@@ -45,6 +46,11 @@ router.post("/companies/:companyId/posts/:postId/notify", requireAuth, companyCo
 // Company Posts
 router.get("/companies/:companyId/posts", optionalAuth, companyController.getCompanyPosts);
 
+// Company Jobs
+router.get("/companies/:companyId/jobs", optionalAuth, companyJobsController.getCompanyJobs); // Public scopes optionalAuth, Internal scope requireAuth checked inside controller
+router.post("/companies/:companyId/jobs", requireAuth, require("../middlewares/company.auth.middleware").requireCompanyPermission("POST_JOBS"), companyJobsController.createCompanyJob);
+router.put("/companies/:companyId/jobs/:jobId", requireAuth, require("../middlewares/company.auth.middleware").requireCompanyPermission("POST_JOBS"), companyJobsController.updateCompanyJob);
+router.delete("/companies/:companyId/jobs/:jobId", requireAuth, require("../middlewares/company.auth.middleware").requireCompanyPermission("POST_JOBS"), companyJobsController.deleteCompanyJob);
 
 const roleController = require("../controllers/company.roles.controller");
 const { requireCompanyPermission } = require("../middlewares/company.auth.middleware");

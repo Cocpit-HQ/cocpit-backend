@@ -4,6 +4,8 @@ const app = require("./app");
 const http = require("http");
 const { initSocket } = require("./utils/socket");
 const { startSessionTimeoutWorker } = require("./workers/sessionTimeoutWorker");
+const { processJobExpirations } = require("./workers/jobExpiryWorker");
+const { processEventOutbox } = require("./workers/eventOutboxWorker");
 const server = http.createServer(app);
 
 const PORT = process.env.PORT || 5000;
@@ -11,6 +13,16 @@ const PORT = process.env.PORT || 5000;
 app.set("trust proxy", true);
 initSocket(server);
 startSessionTimeoutWorker();
+
+// Start simple job expiry worker (Every 15 minutes)
+setInterval(() => {
+  processJobExpirations();
+}, 15 * 60 * 1000);
+
+// Start Event Outbox Processor (Every 5 seconds)
+setInterval(() => {
+  processEventOutbox();
+}, 5 * 1000);
 
 server.listen(PORT, '0.0.0.0', () => {
   console.log('Server running on port ' + PORT);
