@@ -2524,6 +2524,17 @@ exports.getGroupedStories = async (req, res) => {
     }
 };
 
+exports.getStoryRecommendations = async (req, res) => {
+    try {
+        // Mocked response or empty array for now so frontend doesn't crash 
+        // until recommendations logic is actually implemented for stories.
+        return res.status(200).json([]);
+    } catch (err) {
+        console.error("Story recommendations error:", err);
+        return res.status(500).json({ message: "Internal server error" });
+    }
+};
+
 exports.createStory = async (req, res) => {
     // Extract user ID from JWT — support both .sub and .user_id
     const userId = req.user?.sub || req.user?.user_id;
