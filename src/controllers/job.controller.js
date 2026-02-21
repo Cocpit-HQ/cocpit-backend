@@ -1,6 +1,7 @@
 const pool = require("../db/pool");
 const { buildJobFilters } = require("../utils/jobQueryBuilder");
 const { logAudit } = require("../services/audit.service");
+const { checkCompanyPermission } = require("../utils/rbac");
 
 exports.getAllJobs = async (req, res) => {
   const { limit = 10, cursor } = req.query;
@@ -247,9 +248,24 @@ exports.applyJob = async (req, res) => {
 
   try {
     // Check if job exists
-    const jobCheck = await pool.query(`SELECT 1 FROM jobs WHERE job_id = $1`, [id]);
+    const jobCheck = await pool.query(`SELECT company_id, recruiter_id FROM jobs WHERE job_id = $1`, [id]);
     if (jobCheck.rowCount === 0) {
       return res.status(404).json({ message: "Job not found" });
+    }
+
+    const { company_id, recruiter_id } = jobCheck.rows[0];
+
+    // Check if user is the recruiter
+    if (recruiter_id === userId) {
+      return res.status(403).json({ message: "You cannot apply to your own job" });
+    }
+
+    // Check if user has permission to post jobs for this company
+    if (company_id) {
+      const canPostJobs = await checkCompanyPermission(pool, company_id, userId, ['POST_JOBS', 'MANAGE_COMPANY']);
+      if (canPostJobs) {
+        return res.status(403).json({ message: "You cannot apply to a job posted by your company" });
+      }
     }
 
     // Check if already applied
@@ -742,11 +758,22 @@ exports.getJobApplicants = async (req, res) => {
   try {
     // 1. Verify ownership
     const jobCheck = await pool.query(
-      `SELECT 1 FROM jobs WHERE job_id = $1 AND recruiter_id = $2`,
-      [id, userId]
+      `SELECT company_id, recruiter_id FROM jobs WHERE job_id = $1`,
+      [id]
     );
 
     if (jobCheck.rowCount === 0) {
+      return res.status(404).json({ message: "Job not found" });
+    }
+
+    const { company_id, recruiter_id } = jobCheck.rows[0];
+    let isAuthorized = recruiter_id === userId;
+
+    if (!isAuthorized && company_id) {
+      isAuthorized = await checkCompanyPermission(pool, company_id, userId, ['VIEW_APPLICANTS', 'MANAGE_APPLICANTS', 'MANAGE_COMPANY']);
+    }
+
+    if (!isAuthorized) {
       return res.status(403).json({ message: "Not authorized to view applicants for this job" });
     }
 
@@ -853,12 +880,23 @@ exports.deleteJob = async (req, res) => {
   try {
     // Check ownership and existence
     const jobCheck = await pool.query(
-      `SELECT 1 FROM jobs WHERE job_id = $1 AND recruiter_id = $2`,
-      [id, userId]
+      `SELECT company_id, recruiter_id FROM jobs WHERE job_id = $1`,
+      [id]
     );
 
     if (jobCheck.rowCount === 0) {
-      return res.status(403).json({ message: "Not authorized to delete this job or job does not exist" });
+      return res.status(404).json({ message: "Job not found" });
+    }
+
+    const { company_id, recruiter_id } = jobCheck.rows[0];
+    let isAuthorized = recruiter_id === userId;
+
+    if (!isAuthorized && company_id) {
+      isAuthorized = await checkCompanyPermission(pool, company_id, userId, ['POST_JOBS', 'MANAGE_COMPANY']);
+    }
+
+    if (!isAuthorized) {
+      return res.status(403).json({ message: "Not authorized to delete this job" });
     }
 
     // Soft delete by setting is_active = FALSE
@@ -908,11 +946,23 @@ exports.updateJob = async (req, res) => {
 
     // 1. Check ownership
     const checkRes = await client.query(
-      `SELECT 1 FROM jobs WHERE job_id = $1 AND recruiter_id = $2`,
-      [id, userId]
+      `SELECT company_id, recruiter_id FROM jobs WHERE job_id = $1`,
+      [id]
     );
 
     if (checkRes.rowCount === 0) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ message: "Job not found" });
+    }
+
+    const { company_id, recruiter_id } = checkRes.rows[0];
+    let isAuthorized = recruiter_id === userId;
+
+    if (!isAuthorized && company_id) {
+      isAuthorized = await checkCompanyPermission(client, company_id, userId, ['POST_JOBS', 'MANAGE_COMPANY']);
+    }
+
+    if (!isAuthorized) {
       await client.query("ROLLBACK");
       return res.status(403).json({ message: "Not authorized to update this job" });
     }
@@ -1039,14 +1089,22 @@ exports.updateApplicationStatus = async (req, res) => {
   try {
     // 1. Verify ownership of the job associated with this application
     const check = await pool.query(`
-      SELECT j.recruiter_id, ja.job_id 
+      SELECT j.recruiter_id, j.company_id, ja.job_id 
       FROM job_applications ja
       JOIN jobs j ON ja.job_id = j.job_id
       WHERE ja.application_id = $1
     `, [id]);
 
     if (check.rowCount === 0) return res.status(404).json({ message: "Application not found" });
-    if (check.rows[0].recruiter_id !== userId) return res.status(403).json({ message: "Not authorized" });
+
+    const { recruiter_id, company_id } = check.rows[0];
+    let isAuthorized = recruiter_id === userId;
+
+    if (!isAuthorized && company_id) {
+      isAuthorized = await checkCompanyPermission(pool, company_id, userId, ['MANAGE_APPLICANTS', 'MANAGE_COMPANY']);
+    }
+
+    if (!isAuthorized) return res.status(403).json({ message: "Not authorized" });
 
     // 2. Build Update Query
     let query = `UPDATE job_applications SET current_status = $1`;
