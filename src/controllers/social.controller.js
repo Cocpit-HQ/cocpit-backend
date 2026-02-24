@@ -1604,7 +1604,6 @@ exports.markConversationRead = async (req, res) => {
             );
             if (memberCheck.rowCount === 0) {
                 await client.query('ROLLBACK');
-                client.release();
                 return res.status(403).json({ message: "Forbidden: Not a company member" });
             }
         }

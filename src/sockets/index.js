@@ -6,6 +6,7 @@ const { getUserRoom } = require("../utils/socketRooms");
 const socketService = require("../services/socket.service");
 const statusHandler = require("./status.handler");
 const chatHandler = require("./chat.handler");
+const storyHandler = require("./story.handler");
 
 module.exports.initSocket = async (httpServer) => {
   // CORS Configuration
@@ -76,6 +77,9 @@ module.exports.initSocket = async (httpServer) => {
 
     // Register Chat Events
     chatHandler.registerChatHandlers(io, socket);
+
+    // Register Story Events
+    storyHandler.registerStoryHandlers(io, socket);
 
     // Handle Disconnect
     socket.on("disconnect", () => {

@@ -83,7 +83,9 @@ async function sweepTimedOutSessions() {
         await client.query('ROLLBACK');
         console.error("[SessionWorker] Sweep error:", err);
     } finally {
-        client.release();
+        if (client) {
+            client.release();
+        }
     }
 }
 

@@ -2202,17 +2202,17 @@ exports.getComments = async (req, res) => {
 //--- STORIES INTEGRATION ---
 exports.getStories = async (req, res) => {
     const userId = req.user.sub;
+    const companyId = req.headers['x-company-id'];
     try {
-        // Fetch following IDs
-        const followingRes = await pool.query(
-            "SELECT following_id FROM followers WHERE follower_id = $1",
-            [userId]
-        );
-        const followingIds = followingRes.rows.map(r => r.following_id);
+        // Fetch following IDs (including companies)
+        const followingRes = await pool.query(`
+            SELECT following_id as id FROM followers WHERE follower_id = $1
+            UNION
+            SELECT company_id as id FROM company_followers WHERE user_id = $1
+        `, [userId]);
 
-        if (followingIds.length === 0) {
-            return res.json([]);
-        }
+        const followingIds = followingRes.rows.map(r => r.id);
+        followingIds.push(userId); // Always include own stories
 
         const result = await pool.query(
             `
@@ -2223,15 +2223,23 @@ exports.getStories = async (req, res) => {
                     WHEN s.author_company_id IS NOT NULL THEN comp.logo_url 
                     ELSE u.avatar_url 
                 END AS author_avatar,
-                -- 1. Check if the current user has viewed this story
+                -- 1. Check if the current entity has viewed this story
                 EXISTS (
                     SELECT 1 FROM story_views sv 
-                    WHERE sv.story_id = s.story_id AND sv.viewer_id = $1
+                    WHERE sv.story_id = s.story_id AND 
+                    (
+                        ($3::uuid IS NOT NULL AND sv.viewer_company_id = $3::uuid) OR
+                        ($3::uuid IS NULL AND sv.viewer_id = $1 AND sv.viewer_company_id IS NULL)
+                    )
                 ) AS has_viewed,
-                -- 2. Check if the current user has liked this story
+                -- 2. Check if the current entity has liked this story
                 EXISTS (
                     SELECT 1 FROM story_reactions sr 
-                    WHERE sr.story_id = s.story_id AND sr.user_id = $1 AND sr.reaction_type = 'true'
+                    WHERE sr.story_id = s.story_id AND sr.reaction_type = 'true' AND
+                    (
+                        ($3::uuid IS NOT NULL AND sr.reactor_company_id = $3::uuid) OR
+                        ($3::uuid IS NULL AND sr.user_id = $1 AND sr.reactor_company_id IS NULL)
+                    )
                 ) AS has_liked,
                 -- 3. Identity flag for UI changes
                 (s.author_id = $1) AS is_author,
@@ -2244,13 +2252,12 @@ exports.getStories = async (req, res) => {
             LEFT JOIN companies comp ON s.author_company_id = comp.company_id
             WHERE s.expires_at > now()
             AND (
-                s.author_id = $1
-                OR s.author_id = ANY($2)
+                s.author_id = ANY($2)
                 OR s.author_company_id = ANY($2)
             )
             ORDER BY s.created_at DESC
             `,
-            [userId, followingIds]
+            [userId, followingIds, companyId || null]
         );
 
         res.json(result.rows);
@@ -2301,15 +2308,18 @@ exports.getGroupedStories = async (req, res) => {
         }
 
         // Fetch following IDs
-        const followingRes = await pool.query(
-            "SELECT following_id FROM followers WHERE follower_id = $1",
-            [currentEntityId]
-        );
-        const followingIds = followingRes.rows.map(r => r.following_id);
-
-        if (followingIds.length === 0) {
-            return res.json([]);
+        let followingQuery = "SELECT following_id as id FROM followers WHERE follower_id = $1";
+        if (!isCompanyContext) {
+            followingQuery = `
+                SELECT following_id as id FROM followers WHERE follower_id = $1
+                UNION
+                SELECT company_id as id FROM company_followers WHERE user_id = $1
+            `;
         }
+
+        const followingRes = await pool.query(followingQuery, [currentEntityId]);
+        const followingIds = followingRes.rows.map(r => r.id);
+        followingIds.push(currentEntityId);
 
         // 2. Fetch all active stories with author details (prefer company info if acting as company)
         const result = await pool.query(
@@ -2377,14 +2387,22 @@ exports.getGroupedStories = async (req, res) => {
                 END AS shared_post,
                 s.story_metadata,
 
-                -- Check if viewed/liked
+                -- Check if viewed/liked using context
                 EXISTS (
                     SELECT 1 FROM story_views sv 
-                    WHERE sv.story_id = s.story_id AND sv.viewer_id = $1
+                    WHERE sv.story_id = s.story_id AND 
+                    (
+                        ($4::uuid IS NOT NULL AND sv.viewer_company_id = $4::uuid) OR
+                        ($4::uuid IS NULL AND sv.viewer_id = $1 AND sv.viewer_company_id IS NULL)
+                    )
                 ) AS has_viewed,
                 EXISTS (
                     SELECT 1 FROM story_reactions sr 
-                    WHERE sr.story_id = s.story_id AND sr.user_id = $1 AND sr.reaction_type = 'true'
+                    WHERE sr.story_id = s.story_id AND sr.reaction_type = 'true' AND
+                    (
+                        ($4::uuid IS NOT NULL AND sr.reactor_company_id = $4::uuid) OR
+                        ($4::uuid IS NULL AND sr.user_id = $1 AND sr.reactor_company_id IS NULL)
+                    )
                 ) AS has_liked,
                 (s.author_id = $1) AS is_author,
                 (s.author_company_id IS NOT NULL) AS is_company,
@@ -2411,7 +2429,7 @@ exports.getGroupedStories = async (req, res) => {
             )
             ORDER BY s.created_at ASC
             `,
-            [userId, currentEntityId, followingIds]
+            [userId, currentEntityId, followingIds, companyId || null]
         );
 
         const stories = result.rows;
@@ -2608,22 +2626,36 @@ exports.createStory = async (req, res) => {
 
         const { story_id, created_at } = result.rows[0];
 
-        res.status(201).json({
-            message: "Story created",
-            story_id,
-            userId,
-            title,
-            description,
-            media_url,
-            media_type: type,
-            media_status: status,
-            render_status: renderStatus,
-            created_at,
-            story_metadata: story_metadata || {}
-        });
+        // Fetch a DTO that perfectly matches the Showcase API expectation 
+        // (so the frontend pessimistic insert works instantly)
+        const mappedResult = await pool.query(
+            `
+            SELECT 
+                s.*, 
+                COALESCE(comp.name, u.full_name) AS author_name, 
+                CASE 
+                    WHEN s.author_company_id IS NOT NULL THEN comp.logo_url 
+                    ELSE u.avatar_url 
+                END AS author_avatar,
+                false AS has_viewed,
+                false AS has_liked,
+                true AS is_author,
+                (s.author_company_id IS NOT NULL) AS is_company,
+                0 AS view_count,
+                0 AS like_count,
+                null AS shared_post
+            FROM stories s
+            JOIN users u ON s.author_id = u.user_id
+            LEFT JOIN companies comp ON s.author_company_id = comp.company_id
+            WHERE s.story_id = $1
+            `,
+            [story_id]
+        );
 
-        // Trigger background rendering ONLY if the client did not already upload a final_url
-        if (public_id && !final_url) {
+        res.status(201).json(mappedResult.rows[0]);
+
+        // Trigger background rendering if it legitimately needs processing
+        if (public_id && status === 'processing') {
             renderService.renderStory(story_id, public_id, type, story_metadata || {})
                 .catch(err => console.error(`[Background] Story render failed for ${story_id}:`, err));
         }
@@ -2894,8 +2926,23 @@ exports.reactToStory = async (req, res) => {
             }
         }
 
+        const likeCountRes = await client.query(
+            `SELECT COUNT(*) as count FROM story_reactions WHERE story_id = $1 AND reaction_type = 'true'`,
+            [storyId]
+        );
+        const likeCount = parseInt(likeCountRes.rows[0].count, 10);
+
+        try {
+            const ioService = require('../services/socket.service');
+            if (ioService && ioService.notifyStory) {
+                ioService.notifyStory(storyId, "story_reaction_updated", { storyId, likeCount });
+            }
+        } catch (e) {
+            console.error("Socket emit failed", e)
+        }
+
         await client.query("COMMIT");
-        return res.status(200).json({ success: true, liked });
+        return res.status(200).json({ success: true, liked, likeCount });
 
     } catch (err) {
         await client.query("ROLLBACK");

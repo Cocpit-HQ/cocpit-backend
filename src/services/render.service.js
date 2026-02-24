@@ -29,7 +29,7 @@ exports.renderStory = async (storyId, publicId, mediaType, metadata = {}) => {
                         overlay: {
                             font_family: style.fontFamily || "Arial",
                             font_size: style.fontSize || 30,
-                            text: layer.content
+                            text: encodeURIComponent(layer.content)
                         },
                         color: style.color || "#FFFFFF",
                         gravity: style.gravity || "center",
@@ -48,7 +48,7 @@ exports.renderStory = async (storyId, publicId, mediaType, metadata = {}) => {
                 overlay: {
                     font_family: style.fontFamily || "Arial",
                     font_size: style.fontSize || 30,
-                    text: metadata.text
+                    text: encodeURIComponent(metadata.text)
                 },
                 color: style.color || "#FFFFFF",
                 gravity: style.gravity || "center",
