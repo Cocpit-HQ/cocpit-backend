@@ -48,13 +48,13 @@ class GroupChatService {
 
         // RBAC Check: Must be active admin
         const members = await GroupChatModel.getGroupMembers(groupId);
-        const inviter = members.find(m => m.user_id === senderId);
+        const inviter = members.find(m => m.user_id == senderId);
         if (!inviter || inviter.role !== 'admin') {
             throw new Error("Only an active group admin can invite members");
         }
 
         // Check if already a member
-        if (members.find(m => m.user_id === receiverId)) {
+        if (members.find(m => m.user_id == receiverId)) {
             throw new Error("User is already a member");
         }
 
@@ -364,13 +364,13 @@ class GroupChatService {
 
         // RBAC Check: Must be active admin
         const members = await GroupChatModel.getGroupMembers(groupId);
-        const adminMember = members.find(m => m.user_id === adminId);
+        const adminMember = members.find(m => m.user_id == adminId);
         if (!adminMember || adminMember.role !== 'admin') {
             throw new Error("Only an active group admin can remove members");
         }
 
         // 2. Safety Rule: If target is admin, check if they are the last admin
-        const targetMember = members.find(m => m.user_id === targetUserId);
+        const targetMember = members.find(m => m.user_id == targetUserId);
 
         if (targetMember && targetMember.role === 'admin') {
             const adminCount = await GroupChatModel.getAdminCount(groupId);
@@ -427,7 +427,7 @@ class GroupChatService {
 
         // Check if user is currently a member (active)
         const members = await GroupChatModel.getGroupMembers(groupId);
-        const isMember = members.find(m => m.user_id === userId);
+        const isMember = members.find(m => m.user_id == userId);
 
         if (isMember) {
             // If active, leave first (soft delete + notify)
@@ -467,7 +467,7 @@ class GroupChatService {
         const members = await GroupChatModel.getGroupMembers(groupId);
         // console.log("Group Members:", members);
 
-        if (!members.find(m => m.user_id === senderId)) {
+        if (!members.find(m => m.user_id == senderId)) {
             console.error("User not member:", senderId);
             throw new Error("User is not a member of this group");
         }
@@ -483,7 +483,7 @@ class GroupChatService {
 
         // 4. Emit socket event
         // Enriched message for frontend (needs sender details)
-        const sender = members.find(m => m.user_id === senderId);
+        const sender = members.find(m => m.user_id == senderId);
         const enrichedMessage = {
             ...message,
             media: mediaRecords, // Include media in socket event
@@ -522,7 +522,7 @@ class GroupChatService {
 
         // Check if requester is admin (either creator or promoted admin)
         const members = await GroupChatModel.getGroupMembers(groupId);
-        const member = members.find(m => m.user_id === userId);
+        const member = members.find(m => m.user_id == userId);
 
         if (!member || member.role !== 'admin') {
             throw new Error("Only admin can view invitations");
@@ -553,13 +553,13 @@ class GroupChatService {
 
         // 2. RBAC Check: Must be active admin
         const members = await GroupChatModel.getGroupMembers(groupId);
-        const adminMember = members.find(m => m.user_id === adminId);
+        const adminMember = members.find(m => m.user_id == adminId);
         if (!adminMember || adminMember.role !== 'admin') {
             throw new Error("Only an active group admin can manage roles");
         }
 
         // 3. Verify target is in group
-        const targetMember = members.find(m => m.user_id === targetUserId);
+        const targetMember = members.find(m => m.user_id == targetUserId);
         if (!targetMember) {
             throw new Error("User is not in the group");
         }
@@ -636,7 +636,7 @@ class GroupChatService {
 
         // RBAC Check: Must be active admin
         const members = await GroupChatModel.getGroupMembers(groupId);
-        const updater = members.find(m => m.user_id === userId);
+        const updater = members.find(m => m.user_id == userId);
         if (!updater || updater.role !== 'admin') {
             throw new Error("Only an active group admin can update the group icon");
         }
@@ -677,7 +677,7 @@ class GroupChatService {
     static async markGroupMessagesAsRead(userId, groupId) {
         // 1. Verify user is member
         const members = await GroupChatModel.getGroupMembers(groupId);
-        if (!members.find(m => m.user_id === userId)) {
+        if (!members.find(m => m.user_id == userId)) {
             throw new Error("User is not a member of this group");
         }
 
@@ -694,7 +694,7 @@ class GroupChatService {
             const messageIds = newlyReadMessages.map(m => m.message_id);
 
             // Fetch user details for the event
-            const member = members.find(m => m.user_id === userId);
+            const member = members.find(m => m.user_id == userId);
 
             members.forEach(m => {
                 // Don't notify self (optional, but good practice to reduce noise, though frontend might use it to confirm)
@@ -717,7 +717,7 @@ class GroupChatService {
     static async getMessageReadReceipts(userId, groupId, messageId) {
         // 1. Verify user is member
         const members = await GroupChatModel.getGroupMembers(groupId);
-        if (!members.find(m => m.user_id === userId)) {
+        if (!members.find(m => m.user_id == userId)) {
             throw new Error("User is not a member of this group");
         }
 
