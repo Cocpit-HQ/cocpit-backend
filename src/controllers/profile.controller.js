@@ -148,20 +148,37 @@ exports.getProfile = async (req, res) => {
       );
       isFollowedBy = followedByCheck.rowCount > 0;
 
-      // Check Connection Request
-      const requestCheck = await pool.query(
-        `SELECT request_id, sender_id, status 
-             FROM connection_requests 
-             WHERE (sender_id = $1 AND receiver_id = $2) 
-                OR (sender_id = $2 AND receiver_id = $1)`,
+      // Check True Connection
+      const connectionCheck = await pool.query(
+        "SELECT 1 FROM connections WHERE user_id = $1 AND connected_user_id = $2",
         [viewerId, targetId]
       );
+      const isConnected = connectionCheck.rowCount > 0;
 
-      if (requestCheck.rowCount > 0) {
-        const reqRow = requestCheck.rows[0];
-        connectionRequestStatus = reqRow.status;
-        connectionRequestId = reqRow.request_id;
-        connectionRequestSender = reqRow.sender_id === viewerId ? 'me' : 'them';
+      if (isConnected) {
+        // If connected, they are explicitly following each other logcially
+        isFollowing = true;
+        isFollowedBy = true;
+        connectionRequestStatus = 'connected';
+      }
+
+      // Only check requests if NOT already connected
+      if (!isConnected) {
+        // Check Connection Request
+        const requestCheck = await pool.query(
+          `SELECT request_id, sender_id, status 
+                 FROM connection_requests 
+                 WHERE (sender_id = $1 AND receiver_id = $2) 
+                    OR (sender_id = $2 AND receiver_id = $1)`,
+          [viewerId, targetId]
+        );
+
+        if (requestCheck.rowCount > 0) {
+          const reqRow = requestCheck.rows[0];
+          connectionRequestStatus = reqRow.status;
+          connectionRequestId = reqRow.request_id;
+          connectionRequestSender = reqRow.sender_id === viewerId ? 'me' : 'them';
+        }
       }
     }
 
