@@ -6,6 +6,7 @@ const { initSocket } = require("./utils/socket");
 const { startSessionTimeoutWorker } = require("./workers/sessionTimeoutWorker");
 const { processJobExpirations } = require("./workers/jobExpiryWorker");
 const { processEventOutbox } = require("./workers/eventOutboxWorker");
+const { processStoryExpirations } = require("./workers/storyExpiryWorker");
 const server = http.createServer(app);
 
 const PORT = process.env.PORT || 5000;
@@ -17,6 +18,11 @@ startSessionTimeoutWorker();
 // Start simple job expiry worker (Every 15 minutes)
 setInterval(() => {
   processJobExpirations();
+}, 15 * 60 * 1000);
+
+// Start story expiry & cleanup worker (Every 15 minutes)
+setInterval(() => {
+  processStoryExpirations();
 }, 15 * 60 * 1000);
 
 // Start Event Outbox Processor (Every 5 seconds)

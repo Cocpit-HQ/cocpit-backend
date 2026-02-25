@@ -301,18 +301,11 @@ CREATE TABLE stories (
   author_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
   title TEXT,
   media_url TEXT NOT NULL,
-  original_url TEXT NOT NULL,
-  final_url TEXT,
-  preview_url TEXT,
   media_type TEXT CHECK (media_type IN ('image', 'video')) DEFAULT 'image',
   description TEXT,
-  media_status TEXT DEFAULT 'ready',
   cld_public_id TEXT,
   shared_post_id UUID REFERENCES posts(post_id) ON DELETE SET NULL,
   story_metadata JSONB DEFAULT '{}'::jsonb,
-  edit_metadata JSONB DEFAULT '{}'::jsonb NOT NULL,
-  render_status TEXT DEFAULT 'queued' CHECK (render_status IN ('legacy', 'queued', 'rendering', 'ready', 'failed')),
-  render_engine TEXT DEFAULT 'legacy' CHECK (render_engine IN ('legacy', 'cloudinary', 'server')),
   expires_at TIMESTAMPTZ NOT NULL, -- usually created_at + 24h
   created_at TIMESTAMPTZ DEFAULT now()
 );

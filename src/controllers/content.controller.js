@@ -3,7 +3,7 @@ const pool = require("../db/pool");
 const socketService = require("../services/socket.service");
 const { checkBlockStatus } = require("../utils/blockCheck");
 const { logAudit } = require("../services/audit.service");
-const renderService = require("../services/render.service");
+const cloudinary = require("../config/cloudinary");
 const { checkCompanyPermission } = require("../utils/rbac");
 
 // --- Feed / Posts ---
@@ -2488,9 +2488,7 @@ exports.getGroupedStories = async (req, res) => {
                 like_count: story.like_count || 0,
                 shared_post: story.shared_post,
                 shared_post: story.shared_post,
-                story_metadata: story.story_metadata,
-                final_url: story.final_url,
-                render_status: story.render_status
+                story_metadata: story.story_metadata
             });
         }
 
@@ -2543,15 +2541,12 @@ exports.createStory = async (req, res) => {
 
     const {
         title,
-        media_url,
+        media_url,        // The baked snapshot URL (image or video) from Cloudinary
         description,
         media_type,
-        public_id,
-        media_status,
+        public_id,        // Cloudinary public_id for cleanup
         shared_post_id,
-        story_metadata,
-        original_url,
-        final_url
+        story_metadata,   // Optional: edit metadata for re-editing (hybrid approach)
     } = req.body;
 
     // --- Validate required fields ---
@@ -2576,58 +2571,33 @@ exports.createStory = async (req, res) => {
         }
 
         // Derive media_type from URL extension if not provided
-        let type = media_type || (media_url.toLowerCase().match(/\.(mp4|webm|mov)$/) ? 'video' : 'image');
+        const type = media_type || (media_url.toLowerCase().match(/\.(mp4|webm|mov)$/) ? 'video' : 'image');
 
-        // Derive media_status: images are always 'ready', videos start as 'processing'
-        let status;
-        if (type === 'image') {
-            status = 'ready';
-        } else {
-            status = media_status || 'processing';
-        }
-
-        // Map to valid render_status (DB constraint: legacy|queued|rendering|ready|failed)
-        let renderStatus;
-        switch (status) {
-            case 'processing': renderStatus = 'rendering'; break;
-            case 'ready': renderStatus = 'ready'; break;
-            case 'failed': renderStatus = 'failed'; break;
-            default: renderStatus = 'queued'; break;
-        }
-
-        // Ensure original_url is populated (required NOT NULL column)
-        const resolvedOriginalUrl = original_url || media_url;
-        const resolvedFinalUrl = final_url || media_url;
-
+        // Snapshot-based: everything is immediately ready (no server-side rendering)
         const result = await pool.query(
             `INSERT INTO stories
-                (author_id, title, description, media_url, original_url, final_url, media_type,
-                 expires_at, media_status, render_status, cld_public_id, shared_post_id,
+                (author_id, title, description, media_url, media_type,
+                 expires_at, cld_public_id, shared_post_id,
                  story_metadata, author_company_id)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, now() + interval '24 hours', $8, $9, $10, $11, $12, $13)
+             VALUES ($1, $2, $3, $4, $5, now() + interval '24 hours', $6, $7, $8, $9)
              RETURNING story_id, created_at`,
             [
                 userId,
-                title ?? '',        // title is now nullable in DB but use '' for clarity
-
+                title ?? '',
                 description || null,
-                media_url,
-                resolvedOriginalUrl,
-                resolvedFinalUrl,
-                type,
-                status,
-                renderStatus,
-                public_id || null,
-                shared_post_id || null,
-                story_metadata ? JSON.parse(JSON.stringify(story_metadata)) : {},
-                authorCompanyId || null
+                media_url,          // $4
+                type,               // $5
+                public_id || null,  // $6
+                shared_post_id || null, // $7
+                story_metadata ? JSON.parse(JSON.stringify(story_metadata)) : {}, // $8
+                authorCompanyId || null  // $9
             ]
         );
 
-        const { story_id, created_at } = result.rows[0];
+        const { story_id } = result.rows[0];
 
         // Fetch a DTO that perfectly matches the Showcase API expectation 
-        // (so the frontend pessimistic insert works instantly)
+        // (so the frontend optimistic insert works instantly)
         const mappedResult = await pool.query(
             `
             SELECT 
@@ -2654,18 +2624,13 @@ exports.createStory = async (req, res) => {
 
         res.status(201).json(mappedResult.rows[0]);
 
-        // Trigger background rendering if it legitimately needs processing
-        if (public_id && status === 'processing') {
-            renderService.renderStory(story_id, public_id, type, story_metadata || {})
-                .catch(err => console.error(`[Background] Story render failed for ${story_id}:`, err));
-        }
-
     } catch (err) {
         console.error("[createStory] Database error:", err.message);
         console.error("[createStory] Full error:", err);
         res.status(500).json({ message: "Internal server error", detail: err.message });
     }
 };
+
 
 
 exports.deleteStory = async (req, res) => {
@@ -2677,13 +2642,22 @@ exports.deleteStory = async (req, res) => {
     }
 
     try {
+        // Delete from DB and get the Cloudinary public_id for cleanup
         const result = await pool.query(
-            `DELETE FROM stories WHERE story_id = $1 AND author_id = $2 RETURNING story_id`,
+            `DELETE FROM stories WHERE story_id = $1 AND author_id = $2 RETURNING story_id, cld_public_id, media_type`,
             [storyId, userId]
         );
 
         if (result.rowCount === 0) {
             return res.status(404).json({ message: "Story not found or unauthorized", storyId, userId });
+        }
+
+        // Clean up Cloudinary asset in background
+        const { cld_public_id, media_type } = result.rows[0];
+        if (cld_public_id) {
+            const resourceType = media_type === 'video' ? 'video' : 'image';
+            cloudinary.uploader.destroy(cld_public_id, { resource_type: resourceType })
+                .catch(err => console.error(`[deleteStory] Cloudinary cleanup failed for ${cld_public_id}:`, err.message));
         }
 
         res.status(200).json({ message: "Story deleted", deletedStoryId: storyId });
