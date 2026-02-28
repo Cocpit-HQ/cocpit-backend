@@ -2,6 +2,7 @@ const pool = require("../db/pool");
 const AppError = require("../utils/AppError");
 const chatSessionCtrl = require("./chatSession.controller");
 const { checkCompanyPermission } = require("../utils/rbac");
+const socketService = require("../services/socket.service");
 
 // Helper for Audit Logging
 const logAudit = async (client, { entityId, actorId, action, metadata = {} }) => {
@@ -402,8 +403,76 @@ exports.inviteMember = async (req, res) => {
         });
 
         await client.query("COMMIT");
-        console.log(`[MOCK EMAIL] Invite sent to ${email} with token ${token}`);
-        res.status(200).json({ message: "Invitation sent successfully", token });
+
+        // --- Notification Delivery (post-commit, non-transactional) ---
+        const inviteLink = `/company/invite/accept?token=${token}`;
+        let userFound = false;
+
+        try {
+            // Look up invited user on the platform
+            const invitedUserRes = await pool.query(
+                `SELECT user_id, full_name FROM users WHERE email = $1`, [email]
+            );
+
+            // Get company name + inviter details for the notification
+            const companyRes = await pool.query(
+                `SELECT name FROM companies WHERE company_id = $1`, [companyId]
+            );
+            const inviterDetailsRes = await pool.query(
+                `SELECT full_name, avatar_url FROM users WHERE user_id = $1`, [userId]
+            );
+            const companyName = companyRes.rows[0]?.name || 'a company';
+            const inviterName = inviterDetailsRes.rows[0]?.full_name || 'Someone';
+            const inviterAvatar = inviterDetailsRes.rows[0]?.avatar_url;
+
+            if (invitedUserRes.rowCount > 0) {
+                userFound = true;
+                const targetUserId = invitedUserRes.rows[0].user_id;
+                const notifText = `${inviterName} invited you to join ${companyName} as ${role}`;
+
+                // Persist notification
+                const notifRes = await pool.query(
+                    `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata)
+                     VALUES ($1, $2, 'company_invite', $3, $4, $5) RETURNING notification_id, created_at`,
+                    [targetUserId, userId, notifText, companyId,
+                        JSON.stringify({ token, companyId, companyName, role, inviteLink })]
+                );
+
+                // Real-time socket push (include actor_* fields for popover rendering)
+                socketService.notifyUser(targetUserId, "notification", {
+                    type: "company_invite",
+                    text: notifText,
+                    from: userId,
+                    sender_id: userId,
+                    senderName: inviterName,
+                    senderAvatar: inviterAvatar,
+                    actor_name: inviterName,
+                    actor_avatar: inviterAvatar,
+                    referenceId: companyId,
+                    reference_id: companyId,
+                    metadata: { token, companyId, companyName, role, inviteLink },
+                    notification_id: notifRes.rows[0].notification_id,
+                    created_at: notifRes.rows[0].created_at.toISOString(),
+                    is_read: false
+                });
+
+                console.log(`[INVITE] Notification sent to ${email} (userId: ${targetUserId})`);
+            } else {
+                console.log(`[INVITE] User ${email} not found on platform. Invite link: ${inviteLink}`);
+            }
+        } catch (notifErr) {
+            // Non-critical: invite was created successfully, notification is best-effort
+            console.error("[INVITE] Notification delivery failed:", notifErr.message);
+        }
+
+        res.status(200).json({
+            message: userFound
+                ? "Invitation sent to user"
+                : "User not found on Cocpit. Share the invite link manually.",
+            inviteLink,
+            token,
+            userFound
+        });
 
     } catch (err) {
         await client.query("ROLLBACK");
@@ -961,7 +1030,7 @@ exports.getUserCompanies = async (req, res) => {
              FROM companies c
              JOIN company_members cm ON c.company_id = cm.company_id
              LEFT JOIN company_roles cr ON cm.role_id = cr.role_id
-             WHERE cm.user_id = $1 AND c.is_deleted = FALSE
+             WHERE cm.user_id = $1 AND c.is_deleted = FALSE AND cm.status = 'ACTIVE'
              ORDER BY c.created_at DESC`,
             [userId]
         );
