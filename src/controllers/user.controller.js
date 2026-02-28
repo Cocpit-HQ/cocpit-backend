@@ -225,16 +225,82 @@ exports.getUserProfile = async (req, res) => {
     `;
     const skillsResult = await pool.query(skillsQuery, [targetUserId]);
 
-    // 5. Check if I am following them
-    // $1 = profileUser (them), $2 = currentUser (me)
-    const isFollowingQuery = `
-      SELECT 1 
-      FROM followers 
-      WHERE follower_id = $2 AND following_id = $1
-    `;
-    const isFollowingResult = await pool.query(isFollowingQuery, [targetUserId, currentUserId]);
+    // 5. Check social relationship (following, followed_by, connection status)
+    let isFollowing = false;
+    let isFollowedBy = false;
+    let connectionRequestStatus = null;
+    let connectionRequestId = null;
+    let connectionRequestSender = null;
 
-    // 6. Fetch Company Roles (Public View - Only Visible Roles)
+    if (currentUserId && currentUserId !== targetUserId) {
+      // Check Following (Me -> Them)
+      const followCheck = await pool.query(
+        "SELECT 1 FROM followers WHERE follower_id = $1 AND following_id = $2",
+        [currentUserId, targetUserId]
+      );
+      isFollowing = followCheck.rowCount > 0;
+
+      // Check Followed By (Them -> Me)
+      const followedByCheck = await pool.query(
+        "SELECT 1 FROM followers WHERE follower_id = $1 AND following_id = $2",
+        [targetUserId, currentUserId]
+      );
+      isFollowedBy = followedByCheck.rowCount > 0;
+
+      // Check True Connection
+      const connectionCheck = await pool.query(
+        "SELECT 1 FROM connections WHERE user_id = $1 AND connected_user_id = $2",
+        [currentUserId, targetUserId]
+      );
+      const isConnected = connectionCheck.rowCount > 0;
+
+      if (isConnected) {
+        isFollowing = true;
+        isFollowedBy = true;
+        connectionRequestStatus = 'connected';
+      }
+
+      // Only check requests if NOT already connected
+      if (!isConnected) {
+        const requestCheck = await pool.query(
+          `SELECT request_id, sender_id, status 
+           FROM connection_requests 
+           WHERE (sender_id = $1 AND receiver_id = $2) 
+              OR (sender_id = $2 AND receiver_id = $1)`,
+          [currentUserId, targetUserId]
+        );
+
+        if (requestCheck.rowCount > 0) {
+          const reqRow = requestCheck.rows[0];
+          connectionRequestStatus = reqRow.status;
+          connectionRequestId = reqRow.request_id;
+          connectionRequestSender = reqRow.sender_id === currentUserId ? 'me' : 'them';
+        }
+      }
+    }
+
+    // Enrich user object with social fields
+    user.is_following = isFollowing;
+    user.is_followed_by = isFollowedBy;
+    user.connection_request_status = connectionRequestStatus;
+    user.connection_request_id = connectionRequestId;
+    user.connection_request_sender = connectionRequestSender;
+
+    // 6. Fetch follower/following/connection counts
+    const countsResult = await pool.query(
+      `SELECT 
+        (SELECT COUNT(*) FROM followers WHERE following_id = $1) as followers_count,
+        (SELECT COUNT(*) FROM followers WHERE follower_id = $1) as following_count,
+        (SELECT COUNT(*) FROM connections WHERE user_id = $1) as connections_count
+      `,
+      [targetUserId]
+    );
+    const counts = countsResult.rows[0];
+    user.followers_count = parseInt(counts.followers_count);
+    user.following_count = parseInt(counts.following_count);
+    user.connections_count = parseInt(counts.connections_count);
+
+    // 7. Fetch Company Roles (Public View - Only Visible Roles)
     const companyRoles = await pool.query(
       `
       SELECT 
@@ -261,7 +327,7 @@ exports.getUserProfile = async (req, res) => {
       experiences: experiencesResult.rows,
       educations: educationsResult.rows,
       skills: skillsResult.rows.map((row) => row.name),
-      is_following: isFollowingResult.rowCount > 0,
+      is_following: isFollowing,
       company_roles: companyRoles.rows,
     };
 

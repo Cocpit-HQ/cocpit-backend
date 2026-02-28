@@ -1006,3 +1006,85 @@ DO $$ BEGIN
 EXCEPTION
     WHEN duplicate_object THEN NULL;
 END $$;
+
+-- ---------------------------------------------------------
+-- COMPANY CONNECTIONS (25/02/2026)
+-- ---------------------------------------------------------
+
+-- Company Connection Requests (pending/rejected/blocked)
+CREATE TABLE IF NOT EXISTS company_connection_requests (
+  request_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  company_id UUID NOT NULL REFERENCES companies(company_id) ON DELETE CASCADE,
+  user_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+  initiated_by UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+  status VARCHAR(20) DEFAULT 'pending' CHECK (status IN ('pending', 'accepted', 'rejected', 'blocked')),
+  message TEXT,
+  cooldown_until TIMESTAMPTZ,
+  expires_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ DEFAULT now(),
+  UNIQUE (company_id, user_id)
+);
+
+-- Company Connections (accepted, bidirectional)
+CREATE TABLE IF NOT EXISTS company_connections (
+  connection_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  company_id UUID NOT NULL REFERENCES companies(company_id) ON DELETE CASCADE,
+  user_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+  created_at TIMESTAMPTZ DEFAULT now(),
+  UNIQUE (company_id, user_id)
+);
+
+-- Add counter cache to companies for 1M user scale performance
+ALTER TABLE companies ADD COLUMN IF NOT EXISTS followers_count INTEGER DEFAULT 0;
+
+-- Index for receiver (user) to see invitations
+CREATE INDEX IF NOT EXISTS idx_company_conn_req_user_id ON company_connection_requests(user_id);
+
+-- Index for company to see its connections
+CREATE INDEX IF NOT EXISTS idx_company_conn_company_id ON company_connections(company_id);
+
+-- ---------------------------------------------------------
+-- SOCIAL SYSTEM INDEXING (26/02/2026)
+-- Supports bidirectional social graph lookups at 1M user scale
+-- ---------------------------------------------------------
+
+-- 1. Reverse index for Followers list (Who follows me?)
+-- The primary key (follower_id, following_id) already covers "Who am I following?" efficiently.
+-- This index covers the reverse lookup.
+CREATE INDEX IF NOT EXISTS idx_followers_following_id 
+ON followers(following_id, follower_id);
+
+-- 2. Index for Company Followers
+CREATE INDEX IF NOT EXISTS idx_company_followers_company_id
+ON company_followers(company_id, user_id);
+
+-- 3. Composite index for connections
+CREATE INDEX IF NOT EXISTS idx_connections_bidirectional
+ON connections(user_id, connected_user_id);
+
+-- ---------------------------------------------------------
+-- DIRECT JOB OFFERS (26/02/2026)
+-- ---------------------------------------------------------
+
+-- Direct Job Offers Table
+-- A lean table that references the existing `jobs` table for job details
+-- Only stores offer-specific data: who sent it, who it's for, status
+CREATE TABLE IF NOT EXISTS job_offers (
+  offer_id     UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  job_id       UUID NOT NULL REFERENCES jobs(job_id) ON DELETE CASCADE,
+  company_id   UUID NOT NULL REFERENCES companies(company_id) ON DELETE CASCADE,
+  user_id      UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+  sent_by      UUID NOT NULL REFERENCES users(user_id),
+  message      TEXT,
+  status       VARCHAR(20) DEFAULT 'pending'
+               CHECK (status IN ('pending', 'accepted', 'declined', 'withdrawn', 'expired')),
+  responded_at TIMESTAMPTZ,
+  expires_at   TIMESTAMPTZ,
+  created_at   TIMESTAMPTZ DEFAULT now(),
+  updated_at   TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_job_offers_user ON job_offers(user_id, status);
+CREATE INDEX IF NOT EXISTS idx_job_offers_company ON job_offers(company_id, status);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_job_offers_no_dup ON job_offers(job_id, user_id) WHERE status = 'pending';
