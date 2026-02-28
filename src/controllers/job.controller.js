@@ -78,7 +78,9 @@ exports.getJobById = async (req, res) => {
         c.slug AS company_slug,
         ${userId ? '(js.user_id IS NOT NULL) AS "isSaved",' : 'FALSE AS "isSaved",'}
         ${userId ? '(ja.application_id IS NOT NULL) AS "hasApplied",' : 'FALSE AS "hasApplied",'}
-        ${userId ? 'ja.current_status AS "applicationStatus",' : 'NULL AS "applicationStatus",'}
+        ${userId ? '(jo.offer_id IS NOT NULL AND jo.status = \'pending\') AS "is_offer",' : 'FALSE AS "is_offer",'}
+        ${userId ? 'jo.status AS "offerStatus",' : 'NULL AS "offerStatus",'}
+        ${userId ? 'jo.offer_id AS "offer_id",' : 'NULL AS "offer_id",'}
         ${userId ? 'ja.application_id AS "applicationId",' : 'NULL AS "applicationId",'}
         ${userId ? 'ja.screening_required AS "screeningRequired",' : 'NULL AS "screeningRequired",'}
         ${userId ? 'ja.screening_type AS "screeningType",' : 'NULL AS "screeningType",'}
@@ -90,6 +92,7 @@ exports.getJobById = async (req, res) => {
       LEFT JOIN companies c ON j.company_id = c.company_id
       ${userId ? 'LEFT JOIN job_saves js ON js.job_id = j.job_id AND js.user_id = $2' : ''}
       ${userId ? 'LEFT JOIN job_applications ja ON ja.job_id = j.job_id AND ja.applicant_id = $2' : ''}
+      ${userId ? 'LEFT JOIN job_offers jo ON jo.job_id = j.job_id AND jo.user_id = $2 AND jo.status = \'pending\'' : ''}
       WHERE j.job_id = $1
       `,
       userId ? [id, userId] : [id]

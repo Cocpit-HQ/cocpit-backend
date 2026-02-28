@@ -1,5 +1,6 @@
 const { stat } = require("node:fs");
 const pool = require("../db/pool");
+const redisClient = require("../db/redisClient"); // Added for cache invalidation
 const { connected } = require("node:process");
 const { formatDistanceToNow } = require('date-fns');
 const socketService = require("../services/socket.service");
@@ -61,9 +62,9 @@ exports.followUser = async (req, res) => {
                 [followerId, followingId]
             );
 
-            // Cleanup any pending requests
+            // Mark any pending requests as connected (preserve for history)
             await client.query(
-                "DELETE FROM connection_requests WHERE (sender_id = $1 AND receiver_id = $2) OR (sender_id = $2 AND receiver_id = $1)",
+                "UPDATE connection_requests SET status = 'connected', responded_at = NOW(), updated_at = NOW() WHERE ((sender_id = $1 AND receiver_id = $2) OR (sender_id = $2 AND receiver_id = $1)) AND status = 'pending'",
                 [followerId, followingId]
             );
         }
@@ -234,12 +235,18 @@ exports.followCompany = async (req, res) => {
             return res.status(200).json({ message: "Already following" });
         }
 
-        // --- Notification Logic ---
-        // Fetch company name/slug for context if needed, but usually notifs go to company members
-        // For now, simple insert is enough.
-        // TODO: Notify company members (admins/owners) about new follower
-
         await client.query('COMMIT');
+
+        // Invalidate Cache
+        try {
+            if (redisClient.isOpen) {
+                await redisClient.del(`user:${userId}:following`);
+                await redisClient.del(`company:${companyId}:followers`);
+            }
+        } catch (cacheErr) {
+            console.warn("[FOLLOW_COMPANY] Cache invalidation failed:", cacheErr.message);
+        }
+
         res.status(200).json({ message: "Followed successfully" });
 
     } catch (err) {
@@ -258,17 +265,74 @@ exports.unfollowCompany = async (req, res) => {
 
     const client = await pool.connect();
     try {
-        const result = await client.query(
+        await client.query('BEGIN');
+
+        // 1. Remove Follower record
+        const followResult = await client.query(
             `DELETE FROM company_followers WHERE user_id = $1 AND company_id = $2 RETURNING *`,
             [userId, companyId]
         );
 
-        if (result.rowCount === 0) {
-            return res.status(404).json({ message: "You are not following this company" });
+        // 2. Remove Connection record
+        const connResult = await client.query(
+            `DELETE FROM company_connections WHERE user_id = $1 AND company_id = $2`,
+            [userId, companyId]
+        );
+
+        // 3. Clean up any Connection Requests (any status)
+        const requestResult = await client.query(
+            `DELETE FROM company_connection_requests WHERE user_id = $1 AND company_id = $2`,
+            [userId, companyId]
+        );
+
+        await client.query('COMMIT');
+
+        console.log(`[unfollowCompany] Cleanup details for user=${userId}, company=${companyId}:`);
+        console.log(` - company_followers: ${followResult.rowCount} rows`);
+        console.log(` - company_connections: ${connResult.rowCount} rows`);
+        console.log(` - company_connection_requests: ${requestResult.rowCount} rows`);
+
+        // --- ENHANCED LOGGING & NOTIFICATION ---
+        console.log(`[UNFOLLOW] user=${userId} unfollowed/disconnected company=${companyId}`);
+
+        // Notify the user who unfollowed
+        socketService.notifyUser(userId, "relationshipUpdated", {
+            userId: companyId, status: 'none', type: 'company'
+        });
+
+        // 1. Invalidate Redis Cache (Production Hotfix)
+        try {
+            if (redisClient.isOpen) {
+                // Invalidate both user and company level caches if they exist
+                await redisClient.del(`user:${userId}:following`);
+                await redisClient.del(`company:${companyId}:followers`);
+                await redisClient.del(`company:${companyId}:connections`);
+                console.log(`[UNFOLLOW] Cache invalidated for user=${userId} and company=${companyId}`);
+            }
+        } catch (cacheErr) {
+            console.warn("[UNFOLLOW] Cache invalidation failed:", cacheErr.message);
         }
+
+        // 2. Notify ALL company admins/members so their UI updates
+        try {
+            const admins = await pool.query(
+                `SELECT user_id FROM company_members WHERE company_id = $1`,
+                [companyId]
+            );
+            console.log(`[UNFOLLOW] Notifying ${admins.rowCount} company members`);
+            for (const admin of admins.rows) {
+                socketService.notifyUser(admin.user_id, "relationshipUpdated", {
+                    userId: userId, status: 'none', type: 'company_connection'
+                });
+            }
+        } catch (notifyErr) {
+            console.error("[UNFOLLOW] Failed to notify admins:", notifyErr);
+        }
+        // ----------------------------------------
 
         res.json({ message: "Unfollowed successfully" });
     } catch (err) {
+        await client.query('ROLLBACK');
         console.error("Unfollow company error:", err);
         res.status(500).json({ message: "Internal server error" });
     } finally {
@@ -283,22 +347,104 @@ exports.getCompanyRelationship = async (req, res) => {
 
     try {
         const result = await pool.query(
-            `SELECT 1 FROM company_followers WHERE user_id = $1 AND company_id = $2`,
+            `SELECT 
+                (SELECT 1 FROM company_followers WHERE user_id = $1 AND company_id = $2) as is_following,
+                (SELECT COUNT(*) FROM company_followers WHERE company_id = $2) as follower_count`,
             [userId, companyId]
         );
 
-        const followerCount = await pool.query(
-            `SELECT COUNT(*) FROM company_followers WHERE company_id = $1`,
-            [companyId]
-        );
-
         res.json({
-            isFollowing: result.rowCount > 0,
-            followerCount: parseInt(followerCount.rows[0].count)
+            isFollowing: !!result.rows[0]?.is_following,
+            followerCount: parseInt(result.rows[0]?.follower_count || 0)
         });
     } catch (err) {
         console.error("Get company relationship error:", err);
         res.status(500).json({ message: "Internal server error" });
+    }
+};
+
+// Get company followers list
+exports.getCompanyFollowers = async (req, res) => {
+    const { companyId } = req.params;
+    const { search } = req.query;
+
+    try {
+        let query = `
+            SELECT u.user_id, u.full_name, u.headline, u.avatar_url, cf.created_at as followed_at
+            FROM company_followers cf
+            JOIN users u ON cf.user_id = u.user_id
+            WHERE cf.company_id = $1
+        `;
+        const params = [companyId];
+
+        if (search && search.trim()) {
+            query += ` AND (u.full_name ILIKE $2 OR u.headline ILIKE $2)`;
+            params.push(`%${search.trim()}%`);
+        }
+
+        query += ` ORDER BY cf.created_at DESC`;
+
+        const result = await pool.query(query, params);
+
+        res.json(result.rows);
+    } catch (err) {
+        console.error("Get company followers error:", err);
+        res.status(500).json({ message: "Internal server error" });
+    }
+};
+
+// Remove a follower from a company (admin action)
+exports.removeCompanyFollower = async (req, res) => {
+    const { companyId, followerId } = req.params;
+
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+
+        // 1. Remove Follower record
+        await client.query(
+            `DELETE FROM company_followers WHERE user_id = $1 AND company_id = $2`,
+            [followerId, companyId]
+        );
+
+        // 2. Also remove company connection if it exists
+        await client.query(
+            `DELETE FROM company_connections WHERE user_id = $1 AND company_id = $2`,
+            [followerId, companyId]
+        );
+
+        // 3. Clean up stale connection requests
+        await client.query(
+            `DELETE FROM company_connection_requests WHERE user_id = $1 AND company_id = $2`,
+            [followerId, companyId]
+        );
+
+        await client.query('COMMIT');
+
+        // --- ENHANCED CACHE INVALIDATION ---
+        try {
+            if (redisClient.isOpen) {
+                await redisClient.del(`user:${followerId}:following`);
+                await redisClient.del(`company:${companyId}:followers`);
+                await redisClient.del(`company:${companyId}:connections`);
+                console.log(`[REMOVE_FOLLOWER] Cache invalidated for follower=${followerId} and company=${companyId}`);
+            }
+        } catch (cacheErr) {
+            console.warn("[REMOVE_FOLLOWER] Cache invalidation failed:", cacheErr.message);
+        }
+
+        // Notify the removed user about relationship change
+        socketService.notifyUser(followerId, "relationshipUpdated", {
+            userId: companyId, status: 'none', type: 'company'
+        });
+
+        res.json({ success: true, message: "Follower removed" });
+    } catch (err) {
+        await client.query('ROLLBACK');
+        console.error("Remove company follower error:", err);
+        res.status(500).json({ message: "Internal server error" });
+    } finally {
+        client.release();
     }
 };
 
@@ -308,7 +454,7 @@ exports.getFollowers = async (req, res) => {
 
     try {
         let query = `
-            SELECT u.user_id, u.full_name, u.avatar_url, u.headline, f.created_at 
+            SELECT u.user_id, u.full_name, u.avatar_url, u.headline, f.created_at, 'user' as type
             FROM followers f 
             JOIN users u ON f.follower_id = u.user_id 
             WHERE f.following_id = $1
@@ -347,22 +493,33 @@ exports.getFollowing = async (req, res) => {
     const { search } = req.query;
 
     try {
-        let query = `
-            SELECT u.user_id, u.full_name, u.avatar_url, u.headline, f.created_at 
-            FROM followers f 
-            JOIN users u ON f.following_id = u.user_id 
+        // Build UNION query: users the person follows + companies the person follows
+        let userQuery = `
+            SELECT u.user_id, u.full_name, u.avatar_url, u.headline, f.created_at, 'user' as type, NULL as slug
+            FROM followers f
+            JOIN users u ON f.following_id = u.user_id
             WHERE f.follower_id = $1
         `;
+
+        let companyQuery = `
+            SELECT c.company_id as user_id, c.name as full_name, c.logo_url as avatar_url, c.industry as headline, cf.created_at, 'company' as type, c.slug
+            FROM company_followers cf
+            JOIN companies c ON cf.company_id = c.company_id
+            WHERE cf.user_id = $1
+              AND c.is_deleted = FALSE
+        `;
+
         const params = [userId];
 
         if (search) {
-            query += ` AND (u.full_name ILIKE $2 OR u.headline ILIKE $2)`;
+            userQuery += ` AND (u.full_name ILIKE $2 OR u.headline ILIKE $2)`;
+            companyQuery += ` AND (c.name ILIKE $2 OR c.industry ILIKE $2)`;
             params.push(`%${search}%`);
         }
 
-        query += ` ORDER BY f.created_at DESC`;
+        const fullQuery = `(${userQuery}) UNION ALL (${companyQuery}) ORDER BY created_at DESC`;
 
-        const result = await pool.query(query, params);
+        const result = await pool.query(fullQuery, params);
 
         const formattedConnections = result.rows.map(row => {
             const timeAgoVal = formatDistanceToNow(new Date(row.created_at), {
@@ -456,8 +613,8 @@ exports.sendConnectionRequest = async (req, res) => {
                     [senderId, receiverId]
                 );
 
-                // Delete the reverse request used for auto-accept
-                await client.query("DELETE FROM connection_requests WHERE request_id = $1", [reverseReqId]);
+                // Mark the reverse request as connected (preserve for history)
+                await client.query("UPDATE connection_requests SET status = 'connected', responded_at = NOW(), updated_at = NOW() WHERE request_id = $1", [reverseReqId]);
 
                 await client.query("COMMIT");
 
@@ -524,13 +681,21 @@ exports.sendConnectionRequest = async (req, res) => {
         }
 
 
-        // 5. Create New Request
+        // 5. Clean up any stale 'connected' or expired 'rejected' rows from previous cycles
+        // These rows block the INSERT below due to the UNIQUE constraint on (sender_id, receiver_id)
+        await client.query(
+            `DELETE FROM connection_requests 
+             WHERE ((sender_id = $1 AND receiver_id = $2) OR (sender_id = $2 AND receiver_id = $1))
+             AND (status = 'connected' OR (status = 'rejected' AND (cooldown_until IS NULL OR cooldown_until <= NOW())))`,
+            [senderId, receiverId]
+        );
+
+        // 6. Create New Request
         // We use ON CONFLICT DO NOTHING to be super safe against race conditions on the unique index
         const insertRes = await client.query(
             `INSERT INTO connection_requests (sender_id, receiver_id, message, status) 
              VALUES ($1, $2, $3, 'pending')
-             ON CONFLICT (LEAST(sender_id, receiver_id), GREATEST(sender_id, receiver_id)) 
-             WHERE status = 'pending'
+             ON CONFLICT (sender_id, receiver_id) 
              DO NOTHING
              RETURNING request_id`,
             [senderId, receiverId, message || null]
@@ -603,7 +768,7 @@ exports.sendConnectionRequest = async (req, res) => {
         // Emit relationship update to sender (I now have a pending sent request to them)
         socketService.notifyUser(senderId, "relationshipUpdated", { userId: receiverId, status: 'pending_sent' });
 
-        return res.status(201).json({ message: "Connection request sent" });
+        return res.status(201).json({ message: "Connection request sent", relationship: "pending_sent" });
 
     } catch (err) {
         await client.query("ROLLBACK");
@@ -620,19 +785,36 @@ exports.getPendingRequests = async (req, res) => {
     try {
         const result = await pool.query(
             `
-      SELECT 
+      (SELECT 
         cr.request_id as id,
         cr.sender_id,
         cr.receiver_id,
         cr.created_at,
         u.full_name as name,
         u.avatar_url as avatar,
-        u.headline
+        u.headline,
+        false as is_company_request,
+        NULL as slug
       FROM connection_requests cr
       JOIN users u ON cr.sender_id = u.user_id
       WHERE cr.receiver_id = $1
-        AND cr.status = 'pending'
-      ORDER BY cr.created_at DESC
+        AND cr.status = 'pending')
+      UNION ALL
+      (SELECT
+        ccr.request_id as id,
+        ccr.company_id as sender_id,
+        ccr.user_id as receiver_id,
+        ccr.created_at,
+        c.name as name,
+        c.logo_url as avatar,
+        c.industry as headline,
+        true as is_company_request,
+        c.slug
+      FROM company_connection_requests ccr
+      JOIN companies c ON ccr.company_id = c.company_id
+      WHERE ccr.user_id = $1
+        AND ccr.status = 'pending')
+      ORDER BY created_at DESC
       `,
             [receiver_id]
         );
@@ -644,10 +826,12 @@ exports.getPendingRequests = async (req, res) => {
             receiver_id: row.receiver_id,
             created_at: row.created_at,
             status: 'pending',
+            isCompanyRequest: row.is_company_request,
             sender: {
                 name: row.name,
                 avatar: row.avatar,
-                headline: row.headline
+                headline: row.headline,
+                slug: row.slug || null
             }
         }));
 
@@ -665,23 +849,46 @@ exports.getConnectionRequestHistory = async (req, res) => {
     try {
         const result = await pool.query(
             `
+            -- User-to-User connection requests
             SELECT 
                 cr.request_id as id,
                 cr.sender_id,
                 cr.receiver_id,
-                cr.status,
+                cr.status::TEXT as status,
                 cr.updated_at,
-                -- If I am the sender, show receiver details. If I am receiver, show sender details.
                 CASE WHEN cr.sender_id = $1 THEN u_recv.full_name ELSE u_send.full_name END as name,
                 CASE WHEN cr.sender_id = $1 THEN u_recv.avatar_url ELSE u_send.avatar_url END as avatar,
                 CASE WHEN cr.sender_id = $1 THEN u_recv.headline ELSE u_send.headline END as headline,
-                CASE WHEN cr.sender_id = $1 THEN 'outgoing' ELSE 'incoming' END as direction
+                CASE WHEN cr.sender_id = $1 THEN 'outgoing' ELSE 'incoming' END as direction,
+                'user' as type,
+                NULL as company_slug
             FROM connection_requests cr
             LEFT JOIN users u_send ON cr.sender_id = u_send.user_id
             LEFT JOIN users u_recv ON cr.receiver_id = u_recv.user_id
             WHERE (cr.receiver_id = $1 OR cr.sender_id = $1)
             AND cr.status IN ('connected', 'rejected')
-            ORDER BY cr.updated_at DESC
+
+            UNION ALL
+
+            -- Company-to-User connection requests
+            SELECT
+                ccr.request_id as id,
+                ccr.initiated_by as sender_id,
+                ccr.user_id as receiver_id,
+                ccr.status::TEXT as status,
+                ccr.updated_at,
+                c.name as name,
+                c.logo_url as avatar,
+                c.industry as headline,
+                CASE WHEN ccr.user_id = $1 THEN 'incoming' ELSE 'outgoing' END as direction,
+                'company' as type,
+                c.slug as company_slug
+            FROM company_connection_requests ccr
+            JOIN companies c ON ccr.company_id = c.company_id
+            WHERE (ccr.user_id = $1 OR ccr.initiated_by = $1)
+            AND ccr.status IN ('accepted', 'rejected')
+
+            ORDER BY updated_at DESC
             LIMIT 50
             `,
             [userId]
@@ -691,13 +898,15 @@ exports.getConnectionRequestHistory = async (req, res) => {
             id: row.id,
             sender_id: row.sender_id,
             receiver_id: row.receiver_id,
-            status: row.status === 'connected' ? 'accepted' : row.status,
+            status: row.status === 'connected' || row.status === 'accepted' ? 'accepted' : row.status,
             updated_at: row.updated_at,
             direction: row.direction,
+            type: row.type,
             otherUser: {
                 name: row.name,
                 avatar: row.avatar,
-                headline: row.headline
+                headline: row.headline,
+                slug: row.company_slug
             }
         }));
 
@@ -793,9 +1002,9 @@ exports.handleConnectionRequest = async (req, res) => {
                 [sender_id, receiver_id]
             );
 
-            // Update request status to 'connected' (Preserve History)
+            // Update the request status to 'connected' — keeps history for the notifications tab
             await client.query(
-                "UPDATE connection_requests SET status = 'connected', responded_at = NOW() WHERE request_id = $1",
+                "UPDATE connection_requests SET status = 'connected', responded_at = NOW(), updated_at = NOW() WHERE request_id = $1",
                 [requestId]
             );
 
@@ -833,7 +1042,7 @@ exports.handleConnectionRequest = async (req, res) => {
             socketService.notifyUser(receiver_id, "relationshipUpdated", { userId: sender_id, status: 'connected' });
 
 
-            return res.status(200).json({ message: "Connection established", connected: true });
+            return res.status(200).json({ message: "Connection established", connected: true, relationship: "connected" });
         }
 
     } catch (err) {
@@ -891,20 +1100,30 @@ exports.getMyConnections = async (req, res) => {
     const { search } = req.query;
 
     try {
-        let query = `
-            SELECT u.user_id, u.full_name, u.avatar_url, u.headline, c.created_at 
+        let userQuery = `
+            SELECT u.user_id, u.full_name, u.avatar_url, u.headline, c.created_at, 'user' as type, NULL as slug
             FROM connections c 
             JOIN users u ON c.connected_user_id = u.user_id 
             WHERE c.user_id = $1
         `;
-        const params = [userId];
 
+        let companyQuery = `
+            SELECT c.company_id as user_id, c.name as full_name, c.logo_url as avatar_url, c.industry as headline, cc.created_at, 'company' as type, c.slug
+            FROM company_connections cc
+            JOIN companies c ON cc.company_id = c.company_id
+            WHERE cc.user_id = $1
+              AND c.is_deleted = FALSE
+        `;
+
+        const params = [userId];
         if (search) {
-            query += ` AND (u.full_name ILIKE $2 OR u.headline ILIKE $2)`;
+            userQuery += ` AND (u.full_name ILIKE $2 OR u.headline ILIKE $2)`;
+            companyQuery += ` AND (c.name ILIKE $2 OR c.industry ILIKE $2)`;
             params.push(`%${search}%`);
         }
 
-        const result = await pool.query(query, params);
+        const fullQuery = `(${userQuery}) UNION ALL (${companyQuery}) ORDER BY created_at DESC`;
+        const result = await pool.query(fullQuery, params);
 
         const formattedConnections = result.rows.map(row => {
             const timeAgoVal = formatDistanceToNow(new Date(row.created_at), {
@@ -929,18 +1148,17 @@ exports.getConnectionCount = async (req, res) => {
 
     try {
         const result = await pool.query(
-            `SELECT COUNT(*) FROM connections WHERE user_id = $1`,
+            `SELECT 
+                (SELECT COUNT(*) FROM connections WHERE user_id = $1) + 
+                (SELECT COUNT(*) FROM company_connections WHERE user_id = $1) as count`,
             [userId]
         );
-        res.status(200).json({
-            connection_count: result.rows[0].count,
-            userId: userId
-        });
-    }
-    catch (err) {
+        res.json({ count: parseInt(result.rows[0].count) });
+    } catch (err) {
+        console.error("Get connection count error:", err);
         res.status(500).json({ message: "Internal server error" });
     }
-}
+};
 
 // Get all conversations of logged-in user
 exports.getConversations = async (req, res) => {
@@ -2358,6 +2576,12 @@ exports.removeConnection = async (req, res) => {
             [userId, targetUserId]
         );
 
+        // Delete any leftover connection_requests rows (prevents stale 'connected' status on refresh)
+        await client.query(
+            "DELETE FROM connection_requests WHERE (sender_id = $1 AND receiver_id = $2) OR (sender_id = $2 AND receiver_id = $1)",
+            [userId, targetUserId]
+        );
+
         // Delete follows (uni-directional removal) - Only I stop following them
         // They continue to follow me unless they unfollow
         await client.query(
@@ -2371,7 +2595,7 @@ exports.removeConnection = async (req, res) => {
         socketService.notifyUser(userId, "relationshipUpdated", { userId: targetUserId, status: 'none' });
         socketService.notifyUser(targetUserId, "relationshipUpdated", { userId: userId, status: 'none' });
 
-        return res.status(200).json({ message: "Connection removed" });
+        return res.status(200).json({ success: true, message: "Connection removed", relationship: "none" });
     } catch (err) {
         await client.query("ROLLBACK");
         console.error("Remove connection error:", err);
@@ -2398,9 +2622,9 @@ exports.getRelationshipStatus = async (req, res) => {
     try {
         const client = await pool.connect();
         try {
-            // Check connection
+            // Check connection (Bidirectional for safety)
             const connectedRes = await client.query(
-                "SELECT 1 FROM connections WHERE user_id = $1 AND connected_user_id = $2",
+                "SELECT 1 FROM connections WHERE (user_id = $1 AND connected_user_id = $2) OR (user_id = $2 AND connected_user_id = $1)",
                 [userId, targetUserId]
             );
             const isConnected = connectedRes.rowCount > 0;
@@ -2408,19 +2632,18 @@ exports.getRelationshipStatus = async (req, res) => {
             if (isConnected) {
                 return res.status(200).json({
                     status: 'connected',
-                    is_following: true, // Implicit
-                    is_followed_by: true // Implicit
+                    is_following: true,
+                    is_followed_by: true
                 });
             }
 
-            // Check pending requests (Outgoing or Incoming)
+            // Check pending requests ONLY — connections table is the sole authority for 'connected'
             const requestRes = await client.query(
                 "SELECT request_id, sender_id, status, cooldown_until FROM connection_requests WHERE ((sender_id = $1 AND receiver_id = $2) OR (sender_id = $2 AND receiver_id = $1)) AND status IN ('pending', 'rejected', 'blocked')",
                 [userId, targetUserId]
             );
 
             let status = 'none';
-            let cooldown = false;
             let requestId = null;
             let sender = null;
 
@@ -2437,13 +2660,9 @@ exports.getRelationshipStatus = async (req, res) => {
                     }
                 } else if (req.status === 'rejected') {
                     // Check cooldown
-                    // If I sent it and it was rejected, I might be on cooldown
                     if (req.sender_id === userId && new Date(req.cooldown_until) > new Date()) {
                         status = 'cooldown';
-                        cooldown = true;
                     }
-                } else if (req.status === 'blocked') {
-                    // status = 'blocked'; 
                 }
             }
 
@@ -2457,10 +2676,6 @@ exports.getRelationshipStatus = async (req, res) => {
                 [targetUserId, userId]
             );
 
-            // Re-check for ID if we found a request but didn't assign it (logic redundancy cleanup)
-            if (requestRes.rowCount > 0 && !requestId) {
-                requestId = requestRes.rows[0].request_id;
-            }
 
             return res.status(200).json({
                 status,
@@ -2506,3 +2721,424 @@ exports.getBlockedUsers = async (req, res) => {
     }
 };
 
+// Get Profile Stats (followers, following, connections counts)
+exports.getProfileStats = async (req, res) => {
+    const userId = req.params.id;
+
+    try {
+        const result = await pool.query(
+            `SELECT 
+                (SELECT COUNT(*) FROM followers WHERE following_id = $1) as followers_count,
+                (SELECT COUNT(*) FROM followers WHERE follower_id = $1) + (SELECT COUNT(*) FROM company_followers cf JOIN companies c ON cf.company_id = c.company_id WHERE cf.user_id = $1 AND c.is_deleted = FALSE) as following_count,
+                (SELECT COUNT(*) FROM connections WHERE user_id = $1) + (SELECT COUNT(*) FROM company_connections cc JOIN companies c ON cc.company_id = c.company_id WHERE cc.user_id = $1 AND c.is_deleted = FALSE) as connections_count`,
+            [userId]
+        );
+
+        const row = result.rows[0];
+        return res.status(200).json({
+            followers_count: parseInt(row.followers_count),
+            following_count: parseInt(row.following_count),
+            connections_count: parseInt(row.connections_count)
+        });
+    } catch (err) {
+        console.error("Get profile stats error:", err);
+        return res.status(500).json({ message: "Internal server error" });
+    }
+};
+
+
+
+// ---------------------------------------------------------
+// COMPANY-LEVEL CONNECTIONS (Separate from personal)
+// ---------------------------------------------------------
+
+/**
+ * sendCompanyConnectionRequest
+ * Company (owner/admin) sends request to user
+ */
+exports.sendCompanyConnectionRequest = async (req, res) => {
+    const { companyId, userId: targetUserId } = req.params;
+    const initiatorId = req.user.sub;
+    const { message } = req.body;
+
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+
+        // 1. Check if already connected
+        console.log(`[sendCompanyConnectionRequest] Checking company_connections: company_id=${companyId}, user_id=${targetUserId}, initiator=${initiatorId}`);
+        const connCheck = await client.query(
+            "SELECT 1 FROM company_connections WHERE company_id = $1 AND user_id = $2",
+            [companyId, targetUserId]
+        );
+        if (connCheck.rowCount > 0) {
+            console.log(`[sendCompanyConnectionRequest] FOUND existing company_connection for company=${companyId}, user=${targetUserId}`);
+            await client.query('ROLLBACK');
+            return res.status(200).json({ status: 'connected', message: "Already connected (company-level)" });
+        }
+
+        // 2. Check for existing pending request
+        const reqCheck = await client.query(
+            "SELECT request_id, status FROM company_connection_requests WHERE company_id = $1 AND user_id = $2",
+            [companyId, targetUserId]
+        );
+
+        if (reqCheck.rowCount > 0) {
+            const row = reqCheck.rows[0];
+            if (row.status === 'pending') {
+                await client.query('ROLLBACK');
+                return res.status(200).json({ status: 'pending_sent', message: "Request already exists" });
+            }
+
+            // Clean up old rejected or accepted rows to allow fresh insert
+            // (Status 'accepted' should theoretically not be here if connection check passed, 
+            // but we clean it up anyway for consistency)
+            await client.query("DELETE FROM company_connection_requests WHERE request_id = $1", [row.request_id]);
+        }
+
+        // 3. Create request
+        await client.query(
+            `INSERT INTO company_connection_requests (company_id, user_id, initiated_by, message, status) 
+             VALUES ($1, $2, $3, $4, 'pending')`,
+            [companyId, targetUserId, initiatorId, message || null]
+        );
+
+        // 4. Notifications
+        const companyRes = await client.query("SELECT name, logo_url FROM companies WHERE company_id = $1", [companyId]);
+        const company = companyRes.rows[0];
+
+        const notificationData = {
+            type: "company_connection_request",
+            text: `${company.name} wants to connect with you`,
+            from: companyId,
+            senderName: company.name,
+            senderAvatar: company.logo_url,
+            referenceId: companyId,
+            time: "Just now",
+            isCompanyRequest: true
+        };
+
+        const notifRes = await client.query(
+            `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, recipient_company_id) 
+             VALUES ($1, $2, $3, $4, $5, NULL) RETURNING *`,
+            [targetUserId, initiatorId, "company_connection_request", notificationData.text, companyId]
+        );
+
+        socketService.notifyUser(targetUserId, "notification", {
+            ...notificationData,
+            notification_id: notifRes.rows[0].notification_id,
+            created_at: notifRes.rows[0].created_at.toISOString()
+        });
+
+        // Trigger relationship update on both sides
+        socketService.notifyUser(targetUserId, "relationshipUpdated", { userId: companyId, status: 'pending_received', type: 'company' });
+        socketService.notifyUser(initiatorId, "relationshipUpdated", { userId: targetUserId, status: 'pending_sent' });
+
+        await client.query('COMMIT');
+        res.status(201).json({ status: 'pending_sent', message: "Request sent successfully" });
+
+    } catch (err) {
+        await client.query('ROLLBACK');
+        console.error("Send company connection error:", err);
+        res.status(500).json({ message: "Internal server error" });
+    } finally {
+        client.release();
+    }
+};
+
+/**
+ * handleCompanyConnectionRequest
+ * User accepts/rejects request from company
+ */
+exports.handleCompanyConnectionRequest = async (req, res) => {
+    const { companyId } = req.params;
+    const { status } = req.body; // 'accepted' or 'rejected'
+    const userId = req.user.sub;
+
+    if (!['accepted', 'rejected'].includes(status)) {
+        return res.status(400).json({ message: "Invalid action" });
+    }
+
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+
+        // 1. Fetch and Lock the request (Prevention of race conditions)
+        const reqRes = await client.query(
+            "SELECT request_id FROM company_connection_requests WHERE company_id = $1 AND user_id = $2 AND status = 'pending' FOR UPDATE",
+            [companyId, userId]
+        );
+
+        if (reqRes.rowCount === 0) {
+            await client.query('ROLLBACK');
+            return res.status(404).json({ message: "Pending invitation not found" });
+        }
+
+        const invite = reqRes.rows[0];
+
+        if (status === 'accepted') {
+            // 2. Create connection + follow (Atomic Multi-update)
+            // 2a. The connection itself
+            await client.query(
+                "INSERT INTO company_connections (company_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+                [companyId, userId]
+            );
+
+            // 2b. Auto-follow the company (user follows company on acceptance)
+            await client.query(
+                "INSERT INTO company_followers (user_id, company_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+                [userId, companyId]
+            );
+
+            // 3. Update invite status
+            await client.query(
+                "UPDATE company_connection_requests SET status = 'accepted', updated_at = NOW() WHERE company_id = $1 AND user_id = $2",
+                [companyId, userId]
+            );
+
+            // 4. Notifications (Persistent + Real-time)
+            const userRes = await client.query("SELECT full_name, avatar_url FROM users WHERE user_id = $1", [userId]);
+            const user = userRes.rows[0];
+
+            const companyRes = await client.query("SELECT name, logo_url FROM companies WHERE company_id = $1", [companyId]);
+            const company = companyRes.rows[0];
+
+            // 4a. Persistent notification for the accepting user (appears in their history)
+            const userNotifRes = await client.query(
+                `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata)
+                 VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+                [
+                    userId,
+                    userId, // self-action
+                    "company_connection_accepted",
+                    `You are now connected with ${company.name}`,
+                    companyId,
+                    JSON.stringify({ company_id: companyId })
+                ]
+            );
+
+            socketService.notifyUser(userId, "notification", {
+                type: "company_connection_accepted",
+                text: `You are now connected with ${company.name}`,
+                from: companyId,
+                senderName: company.name,
+                senderAvatar: company.logo_url,
+                referenceId: companyId,
+                isCompanyRequest: true,
+                notification_id: userNotifRes.rows[0].notification_id,
+                created_at: userNotifRes.rows[0].created_at.toISOString(),
+                time: "Just now"
+            });
+
+            // 4b. Persistent notification for company admins
+            const adminsRes = await client.query(
+                "SELECT user_id FROM company_members WHERE company_id = $1 AND (role = 'ADMIN' OR role = 'OWNER')",
+                [companyId]
+            );
+
+            for (const admin of adminsRes.rows) {
+                const adminNotifRes = await client.query(
+                    `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, recipient_company_id, metadata)
+                     VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
+                    [
+                        admin.user_id,
+                        userId,
+                        "company_connection_accepted",
+                        `${user.full_name} accepted the company's connection request`,
+                        companyId,
+                        companyId,
+                        JSON.stringify({ company_id: companyId })
+                    ]
+                );
+
+                socketService.notifyUser(admin.user_id, "notification", {
+                    type: "company_connection_accepted",
+                    text: `${user.full_name} accepted the company's connection request`,
+                    from: userId,
+                    senderName: user.full_name,
+                    senderAvatar: user.avatar_url,
+                    referenceId: companyId,
+                    notification_id: adminNotifRes.rows[0].notification_id,
+                    created_at: adminNotifRes.rows[0].created_at.toISOString(),
+                    time: "Just now"
+                });
+            }
+
+            // Update relationships for Socket
+            socketService.notifyUser(userId, "relationshipUpdated", { userId: companyId, status: 'connected', type: 'company' });
+            for (const admin of adminsRes.rows) {
+                socketService.notifyUser(admin.user_id, "relationshipUpdated", { userId: userId, status: 'connected', type: 'company_connection' });
+            }
+
+            // Invalidate Cache
+            try {
+                if (redisClient.isOpen) {
+                    await redisClient.del(`user:${userId}:following`);
+                    await redisClient.del(`company:${companyId}:followers`);
+                    await redisClient.del(`company:${companyId}:connections`);
+                }
+            } catch (cacheErr) {
+                console.warn("[HANDLE_CONNECTION] Cache invalidation failed:", cacheErr.message);
+            }
+
+            await client.query('COMMIT');
+            res.status(200).json({ status: 'connected', message: "Invitation accepted successfully" });
+
+        } else {
+            // Rejected
+            await client.query(
+                "UPDATE company_connection_requests SET status = 'rejected', updated_at = NOW() WHERE company_id = $1 AND user_id = $2",
+                [companyId, userId]
+            );
+
+            socketService.notifyUser(userId, "relationshipUpdated", { userId: companyId, status: 'none', type: 'company' });
+
+            await client.query('COMMIT');
+            res.json({ status: 'rejected', message: "Invitation declined" });
+        }
+
+    } catch (err) {
+        await client.query('ROLLBACK');
+        console.error("Handle company connection error:", err);
+        res.status(500).json({ message: "Internal server error" });
+    } finally {
+        client.release();
+    }
+};
+
+/**
+ * cancelCompanyConnectionRequest
+ */
+exports.cancelCompanyConnectionRequest = async (req, res) => {
+    const { companyId, userId: targetUserId } = req.params;
+
+    try {
+        await pool.query(
+            "DELETE FROM company_connection_requests WHERE company_id = $1 AND user_id = $2 AND status = 'pending'",
+            [companyId, targetUserId]
+        );
+        res.json({ success: true, message: "Request cancelled" });
+    } catch (err) {
+        console.error("Cancel company connection error:", err);
+        res.status(500).json({ message: "Internal server error" });
+    }
+};
+
+/**
+ * removeCompanyConnection
+ */
+exports.removeCompanyConnection = async (req, res) => {
+    const { companyId, userId: targetUserId } = req.params;
+
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+
+        // 1. Delete the connection
+        await client.query(
+            "DELETE FROM company_connections WHERE company_id = $1 AND user_id = $2",
+            [companyId, targetUserId]
+        );
+
+        // 2. Clean up the follow (Ghost Follow prevention)
+        await client.query(
+            "DELETE FROM company_followers WHERE user_id = $1 AND company_id = $2",
+            [targetUserId, companyId]
+        );
+
+        // 3. Clean up the request record (any status: pending, accepted, rejected, blocked)
+        await client.query(
+            "DELETE FROM company_connection_requests WHERE company_id = $1 AND user_id = $2",
+            [companyId, targetUserId]
+        );
+
+        await client.query('COMMIT');
+
+        // --- ENHANCED CACHE INVALIDATION ---
+        try {
+            if (redisClient.isOpen) {
+                await redisClient.del(`user:${targetUserId}:following`);
+                await redisClient.del(`company:${companyId}:followers`);
+                await redisClient.del(`company:${companyId}:connections`);
+                console.log(`[REMOVE_CONNECTION] Cache invalidated for user=${targetUserId} and company=${companyId}`);
+            }
+        } catch (cacheErr) {
+            console.warn("[REMOVE_CONNECTION] Cache invalidation failed:", cacheErr.message);
+        }
+
+        // Notify both sides
+        socketService.notifyUser(targetUserId, "relationshipUpdated", { userId: companyId, status: 'none', type: 'company' });
+
+        res.json({ success: true, message: "Connection removed" });
+    } catch (err) {
+        await client.query('ROLLBACK');
+        console.error("Remove company connection error:", err);
+        res.status(500).json({ message: "Internal server error" });
+    } finally {
+        client.release();
+    }
+};
+
+/**
+ * getCompanyConnectionStatus
+ * Determines the current relationship between a company and a user.
+ * authority: company_connections (for 'connected') -> company_connection_requests (for 'pending')
+ */
+exports.getCompanyConnectionStatus = async (req, res) => {
+    const { companyId, userId: targetUserId } = req.params;
+    const currentUserId = req.user.sub;
+
+    try {
+        // 1. Check direct connection
+        const connCheck = await pool.query(
+            "SELECT 1 FROM company_connections WHERE company_id = $1 AND user_id = $2",
+            [companyId, targetUserId]
+        );
+
+        if (connCheck.rowCount > 0) {
+            return res.json({ status: 'connected' });
+        }
+
+        // 1b. Check if user is a follower (Follower = Connected in this UI)
+        const followCheck = await pool.query(
+            "SELECT 1 FROM company_followers WHERE company_id = $1 AND user_id = $2",
+            [companyId, targetUserId]
+        );
+
+        if (followCheck.rowCount > 0) {
+            return res.json({ status: 'connected' });
+        }
+
+        // 2. Check for pending or existing requests
+        const reqCheck = await pool.query(
+            "SELECT status, initiated_by FROM company_connection_requests WHERE company_id = $1 AND user_id = $2",
+            [companyId, targetUserId]
+        );
+
+        if (reqCheck.rowCount > 0) {
+            const request = reqCheck.rows[0];
+
+            if (request.status === 'pending') {
+                // If the company initiated it, and the requester is an admin or the target user.
+                // Logic: 
+                // - If currentUserId is targetUserId -> 'pending_received'
+                // - If currentUserId is NOT targetUserId -> 'pending_sent' (assuming they belong to company)
+                return res.json({
+                    status: currentUserId === targetUserId ? 'pending_received' : 'pending_sent'
+                });
+            }
+
+            if (request.status === 'accepted') {
+                // Should have been caught by connCheck, but for safety:
+                return res.json({ status: 'connected' });
+            }
+
+            return res.json({ status: request.status === 'rejected' ? 'none' : request.status });
+        }
+
+        res.json({ status: 'none' });
+    } catch (err) {
+        console.error("Get company connection status error:", err);
+        res.status(500).json({ message: "Internal server error" });
+    }
+};
