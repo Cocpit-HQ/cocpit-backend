@@ -1,5 +1,5 @@
-const pool = require("../db/pool");
-const { getConversationRoom } = require("../utils/socketRooms");
+const pool = require("../core/db/pool");
+const { getConversationRoom } = require("../core/utils/socketRooms");
 
 module.exports.registerChatHandlers = (io, socket) => {
   const userId = socket.userId;

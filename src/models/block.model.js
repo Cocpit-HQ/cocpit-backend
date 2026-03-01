@@ -1,5 +1,5 @@
-const pool = require("../db/pool");
-const redisClient = require("../db/redisClient");
+const pool = require("../core/db/pool");
+const redisClient = require("../core/db/redis");
 
 const CACHE_TTL = 3600; // 1 hour
 

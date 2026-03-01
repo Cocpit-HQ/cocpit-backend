@@ -1,6 +1,6 @@
-const pool = require("../db/pool");
+const pool = require("../core/db/pool");
 // const pool = require("../config/db");
-const SocketService = require("../services/socket.service");
+const SocketService = require("../core/infrastructure/socket.service");
 
 /**
  * Fetch followers + following users for presence updates

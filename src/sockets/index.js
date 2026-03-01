@@ -1,25 +1,35 @@
 const { Server } = require("socket.io");
 const { createClient } = require("redis");
 const { createAdapter } = require("@socket.io/redis-adapter");
-const { verifyAccessToken } = require("../utils/jwt");
-const { getUserRoom } = require("../utils/socketRooms");
-const socketService = require("../services/socket.service");
+const { verifyAccessToken } = require("../core/utils/jwt");
+const { getUserRoom } = require("../core/utils/socketRooms");
+const socketService = require("../core/infrastructure/socket.service");
 const statusHandler = require("./status.handler");
 const chatHandler = require("./chat.handler");
 const storyHandler = require("./story.handler");
 
 module.exports.initSocket = async (httpServer) => {
   // CORS Configuration
-  const allowedOrigins = process.env.ALLOWED_ORIGINS
-    ? process.env.ALLOWED_ORIGINS.split(",").map((o) => o.trim())
-    : ["http://localhost:3000"];
+  const corsOptions = {
+    origin: function (origin, callback) {
+      if (!origin ||
+        origin.match(/^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/) ||
+        origin.match(/^http:\/\/192\.168\.\d+\.\d+(:\d+)?$/) ||
+        origin === "https://frontend.cocpit.in") {
+        callback(null, true);
+      } else if (process.env.ALLOWED_ORIGINS && process.env.ALLOWED_ORIGINS.includes(origin)) {
+        callback(null, true);
+      } else {
+        callback(new Error('Not allowed by CORS'));
+      }
+    },
+    methods: ["GET", "POST", "OPTIONS", "PUT", "DELETE"],
+    allowedHeaders: ['Content-Type', 'Authorization', 'x-company-id'],
+    credentials: true,
+  };
 
   const io = new Server(httpServer, {
-    cors: {
-      origin: allowedOrigins,
-      methods: ["GET", "POST"],
-      credentials: true,
-    },
+    cors: corsOptions,
   });
 
   // Redis Adapter Setup

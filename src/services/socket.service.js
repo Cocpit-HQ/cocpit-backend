@@ -1,4 +1,4 @@
-const { getUserRoom, getConversationRoom, getStoryRoom } = require("../utils/socketRooms");
+const { getUserRoom, getConversationRoom, getStoryRoom } = require("../core/utils/socketRooms");
 
 class SocketService {
   constructor() {

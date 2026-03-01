@@ -1,4 +1,4 @@
-const pool = require("../db/pool");
+const pool = require("../core/db/pool");
 
 class GroupChatModel {
     static async createGroup({ adminId, name, description, avatarUrl }) {

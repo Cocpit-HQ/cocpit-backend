@@ -1,4 +1,4 @@
-const pool = require("../db/pool");
+const pool = require("../core/db/pool");
 
 /**
  * Worker to automatically expire jobs when their `expires_at` date has passed.

@@ -1,5 +1,5 @@
-const pool = require("../db/pool");
-const cloudinary = require("../config/cloudinary");
+const pool = require("../core/db/pool");
+const cloudinary = require("../core/infrastructure/cloudinary.client");
 
 /**
  * Story Expiry Worker
