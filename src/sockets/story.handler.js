@@ -1,4 +1,4 @@
-const { getStoryRoom } = require("../utils/socketRooms");
+const { getStoryRoom } = require("../core/utils/socketRooms");
 
 module.exports.registerStoryHandlers = (io, socket) => {
     // Join Story Room for Real-Time Updates (Comments/Likes)

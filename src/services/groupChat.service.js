@@ -1,6 +1,6 @@
 const GroupChatModel = require("../models/groupChat.model");
-const socketService = require("../services/socket.service"); // Assuming existing socket service
-const pool = require("../db/pool"); // For specific queries if model isn't enough or for transactions
+const socketService = require("../core/infrastructure/socket.service"); // Assuming existing socket service
+const pool = require("../core/db/pool"); // For specific queries if model isn't enough or for transactions
 
 class GroupChatService {
     static async createGroup(adminId, { name, description, avatarUrl, members }) {

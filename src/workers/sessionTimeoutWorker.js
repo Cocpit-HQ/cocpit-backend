@@ -5,9 +5,9 @@
  * Runs every 2 minutes via setInterval.
  */
 
-const pool = require("../db/pool");
-const socketService = require("../services/socket.service");
-const { logAudit } = require("../services/audit.service");
+const pool = require("../core/db/pool");
+const socketService = require("../core/infrastructure/socket.service");
+const { logAudit } = require("../core/infrastructure/audit.service");
 
 const TIMEOUT_MINUTES = 10;
 const SWEEP_INTERVAL_MS = 2 * 60 * 1000; // 2 minutes

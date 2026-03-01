@@ -1,5 +1,5 @@
-const pool = require("../db/pool");
-const { hashPassword } = require("../utils/password");
+const pool = require("../core/db/pool");
+const { hashPassword } = require("../core/utils/password");
 
 /**
  * Reset user password
