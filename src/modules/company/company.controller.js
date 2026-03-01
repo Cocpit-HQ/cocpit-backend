@@ -260,11 +260,19 @@ exports.getCompany = async (req, res) => {
 exports.updateCompany = async (req, res) => {
     const { companyId } = req.params;
     const userId = req.user.sub;
-    const { name, slogan, industry, size, website, location, description, logo_url, cover_url } = req.body;
+    const { name, slogan, industry, size, website, location, description, logo_url, cover_url, headline } = req.body;
 
     // Basic validation
     if (!name || name.trim().length < 2) {
         return res.status(400).json({ message: "Company name must be at least 2 characters" });
+    }
+
+    // Headline validation
+    if (headline !== undefined && headline !== null) {
+        const trimmedHeadline = headline.trim();
+        if (trimmedHeadline.length > 120) {
+            return res.status(400).json({ message: "Headline must be 120 characters or less" });
+        }
     }
 
     const client = await pool.connect();
@@ -276,8 +284,6 @@ exports.updateCompany = async (req, res) => {
         if (!userRole) throw new Error("Forbidden: Only Admins can update company details");
 
         // 2. Update
-        // Note: slug update is restricted for now to avoid breaking links/indices easily.
-        // Can be added later with more checks.
         const updateQuery = `
             UPDATE companies 
             SET name = $1, 
@@ -289,13 +295,14 @@ exports.updateCompany = async (req, res) => {
                 description = $7, 
                 logo_url = COALESCE($8, logo_url), 
                 cover_url = COALESCE($9, cover_url),
+                headline = $10,
                 updated_at = NOW()
-            WHERE company_id = $10
+            WHERE company_id = $11
             RETURNING *
         `;
 
         const result = await client.query(updateQuery, [
-            name, slogan, industry, size, website, location, description, logo_url, cover_url, companyId
+            name, slogan, industry, size, website, location, description, logo_url, cover_url, headline ? headline.trim() : null, companyId
         ]);
 
         const updatedCompany = result.rows[0];
