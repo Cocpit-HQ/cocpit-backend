@@ -27,9 +27,9 @@ const updateUserFields = async (userId, fields) => {
          job_title = COALESCE($3, job_title), company_name = COALESCE($4, company_name),
          school = COALESCE($5, school), degree = COALESCE($6, degree),
          location = COALESCE($7, location), about_text = COALESCE($8, about_text),
-         mobile_number = COALESCE($9, mobile_number), updated_at = now()
-     WHERE user_id = $10`,
-        [full_name, headline, job_title, company_name, school, degree, location, about_text, mobile_number, userId]
+         mobile_number = COALESCE($9, mobile_number),account_name = COALESCE($10, account_name), updated_at = now()
+     WHERE user_id = $11`,
+        [full_name, headline, job_title, company_name, school, degree, location, about_text, mobile_number,account_name, userId]
     );
     await pool.query("COMMIT");
 };

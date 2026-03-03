@@ -42,7 +42,8 @@ exports.searchUsers = async (req, res) => {
             u.avatar_url,
             p.account_type,
             'USER'::text as type,
-            NULL::text as slug
+            NULL::text as slug,
+            NULL::text as industry
           FROM users u
           LEFT JOIN profiles p ON u.user_id = p.user_id
           WHERE u.user_id != $1
@@ -60,11 +61,12 @@ exports.searchUsers = async (req, res) => {
             c.company_id AS id,
             c.name AS full_name,
             c.slug AS account_name,
-            c.industry AS headline,
+            c.headline AS headline,
             c.logo_url AS avatar_url,
             NULL::text AS account_type,
             'COMPANY'::text as type,
-            c.slug as slug
+            c.slug as slug,
+            c.industry as industry
           FROM companies c
           WHERE c.is_deleted = FALSE
           AND (c.name ILIKE $2 OR c.slug ILIKE $2)
@@ -110,10 +112,10 @@ exports.getUserProfile = async (req, res) => {
   // ... existing code ...
 
   if (!uuidRegex.test(id)) {
-    // If not a UUID, try to resolve as account_name
+    // If not a UUID, try to resolve as account_name (case-insensitive)
     try {
       const resolveResult = await pool.query(
-        "SELECT user_id FROM users WHERE account_name = $1",
+        "SELECT user_id FROM users WHERE LOWER(account_name) = LOWER($1)",
         [id]
       );
       if (resolveResult.rowCount === 0) {
@@ -173,6 +175,7 @@ exports.getUserProfile = async (req, res) => {
     const userQuery = `
       SELECT
         u.user_id AS id,
+        u.account_name,
         u.full_name AS name,
         u.headline,
         u.avatar_url AS avatar,
@@ -354,10 +357,10 @@ exports.getPublicProfilePosts = async (req, res) => {
   let targetUserId = userId;
 
   if (!uuidRegex.test(userId)) {
-    // If not a UUID, try to resolve as account_name
+    // If not a UUID, try to resolve as account_name (case-insensitive)
     try {
       const resolveResult = await pool.query(
-        "SELECT user_id FROM users WHERE account_name = $1",
+        "SELECT user_id FROM users WHERE LOWER(account_name) = LOWER($1)",
         [userId]
       );
       if (resolveResult.rowCount === 0) {
