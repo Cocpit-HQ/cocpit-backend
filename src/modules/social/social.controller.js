@@ -235,6 +235,13 @@ exports.followCompany = async (req, res) => {
             return res.status(200).json({ message: "Already following" });
         }
 
+        // Auto-create notification preferences (all categories ON by default)
+        await client.query(
+            `INSERT INTO company_notification_preferences (user_id, company_id)
+             VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+            [userId, companyId]
+        );
+
         await client.query('COMMIT');
 
         // Invalidate Cache
@@ -282,6 +289,12 @@ exports.unfollowCompany = async (req, res) => {
         // 3. Clean up any Connection Requests (any status)
         const requestResult = await client.query(
             `DELETE FROM company_connection_requests WHERE user_id = $1 AND company_id = $2`,
+            [userId, companyId]
+        );
+
+        // 4. Remove notification preferences
+        await client.query(
+            `DELETE FROM company_notification_preferences WHERE user_id = $1 AND company_id = $2`,
             [userId, companyId]
         );
 
@@ -3141,3 +3154,307 @@ exports.getCompanyConnectionStatus = async (req, res) => {
         res.status(500).json({ message: "Internal server error" });
     }
 };
+
+/**
+ * Internal Profile Sharing
+ * POST /api/profile/share
+ * Body: { profileId, profileType, receiverId, receiverType, message, senderCompanyId? }
+ */
+exports.shareProfile = async (req, res) => {
+    const senderId = req.user.sub || req.user.user_id;
+    const { profileId, profileType, receiverId, receiverType, message, senderCompanyId } = req.body;
+
+    if (!profileId || !profileType || !receiverId || !receiverType) {
+        return res.status(400).json({ message: "profileId, profileType, receiverId, and receiverType are required" });
+    }
+
+    if (senderId === receiverId && receiverType === 'user' && !senderCompanyId) {
+        return res.status(400).json({ message: "Cannot share profile with yourself" });
+    }
+
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+
+        // 0. Verify company membership if acting as company
+        if (senderCompanyId) {
+            const memberCheck = await client.query(
+                `SELECT 1 FROM company_members WHERE company_id = $1 AND user_id = $2 AND status = 'ACTIVE'`,
+                [senderCompanyId, senderId]
+            );
+            if (memberCheck.rowCount === 0) {
+                await client.query('ROLLBACK');
+                return res.status(403).json({ message: "Not authorized to act as this company" });
+            }
+        }
+
+        // 1. Fetch sender identity (company or user)
+        let senderName, senderAvatar;
+        if (senderCompanyId) {
+            const companyRes = await client.query(
+                `SELECT name, logo_url, slug FROM companies WHERE company_id = $1 AND is_deleted = FALSE`,
+                [senderCompanyId]
+            );
+            if (companyRes.rowCount === 0) {
+                await client.query('ROLLBACK');
+                return res.status(404).json({ message: "Sender company not found" });
+            }
+            senderName = companyRes.rows[0].name;
+            senderAvatar = companyRes.rows[0].logo_url;
+        } else {
+            const userRes = await client.query(
+                `SELECT full_name, avatar_url FROM users WHERE user_id = $1`,
+                [senderId]
+            );
+            senderName = userRes.rows[0]?.full_name || 'Someone';
+            senderAvatar = userRes.rows[0]?.avatar_url || null;
+        }
+
+        // 2. Fetch shared profile info for preview data
+        let sharedProfileData = null;
+        if (profileType === 'user') {
+            const upRes = await client.query(
+                `SELECT full_name as name, avatar_url as avatar, headline, account_name FROM users WHERE user_id = $1`,
+                [profileId]
+            );
+            sharedProfileData = upRes.rows[0];
+        } else {
+            const cpRes = await client.query(
+                `SELECT name, logo_url as avatar, slogan as headline, slug FROM companies WHERE company_id = $1`,
+                [profileId]
+            );
+            sharedProfileData = cpRes.rows[0];
+        }
+
+        if (!sharedProfileData) {
+            await client.query('ROLLBACK');
+            return res.status(404).json({ message: "Shared profile not found" });
+        }
+
+        // 3. Conversation Lookup/Creation Logic
+        let conversationId;
+
+        if (senderCompanyId && receiverType === 'company') {
+            // Company-to-Company conversation
+            const existingConv = await client.query(
+                `SELECT c.conversation_id
+                 FROM conversations c
+                 JOIN conversation_participants cp1 ON c.conversation_id = cp1.conversation_id AND cp1.company_id = $1
+                 JOIN conversation_participants cp2 ON c.conversation_id = cp2.conversation_id AND cp2.company_id = $2
+                 WHERE c.is_group = FALSE`,
+                [senderCompanyId, receiverId]
+            );
+
+            if (existingConv.rowCount > 0) {
+                conversationId = existingConv.rows[0].conversation_id;
+            } else {
+                const convRes = await client.query(
+                    `INSERT INTO conversations(is_group) VALUES(FALSE) RETURNING conversation_id`
+                );
+                conversationId = convRes.rows[0].conversation_id;
+
+                await client.query(
+                    `INSERT INTO conversation_participants(conversation_id, company_id) VALUES($1, $2)`,
+                    [conversationId, senderCompanyId]
+                );
+                await client.query(
+                    `INSERT INTO conversation_participants(conversation_id, company_id) VALUES($1, $2)`,
+                    [conversationId, receiverId]
+                );
+            }
+        } else if (senderCompanyId && receiverType === 'user') {
+            // Company-to-User conversation
+            const existingConv = await client.query(
+                `SELECT c.conversation_id
+                 FROM conversations c
+                 JOIN conversation_participants cp1 ON c.conversation_id = cp1.conversation_id AND cp1.company_id = $1
+                 JOIN conversation_participants cp2 ON c.conversation_id = cp2.conversation_id AND cp2.user_id = $2
+                 WHERE c.is_group = FALSE`,
+                [senderCompanyId, receiverId]
+            );
+
+            if (existingConv.rowCount > 0) {
+                conversationId = existingConv.rows[0].conversation_id;
+            } else {
+                const convRes = await client.query(
+                    `INSERT INTO conversations(is_group) VALUES(FALSE) RETURNING conversation_id`
+                );
+                conversationId = convRes.rows[0].conversation_id;
+
+                await client.query(
+                    `INSERT INTO conversation_participants(conversation_id, company_id) VALUES($1, $2)`,
+                    [conversationId, senderCompanyId]
+                );
+                await client.query(
+                    `INSERT INTO conversation_participants(conversation_id, user_id) VALUES($1, $2)`,
+                    [conversationId, receiverId]
+                );
+            }
+        } else if (!senderCompanyId && receiverType === 'company') {
+            // User-to-Company conversation
+            const existingConv = await client.query(
+                `SELECT c.conversation_id
+                 FROM conversations c
+                 JOIN conversation_participants cp1 ON c.conversation_id = cp1.conversation_id AND cp1.user_id = $1
+                 JOIN conversation_participants cp2 ON c.conversation_id = cp2.conversation_id AND cp2.company_id = $2
+                 WHERE c.is_group = FALSE`,
+                [senderId, receiverId]
+            );
+
+            if (existingConv.rowCount > 0) {
+                conversationId = existingConv.rows[0].conversation_id;
+            } else {
+                const convRes = await client.query(
+                    `INSERT INTO conversations(is_group) VALUES(FALSE) RETURNING conversation_id`
+                );
+                conversationId = convRes.rows[0].conversation_id;
+
+                await client.query(
+                    `INSERT INTO conversation_participants(conversation_id, user_id) VALUES($1, $2)`,
+                    [conversationId, senderId]
+                );
+                await client.query(
+                    `INSERT INTO conversation_participants(conversation_id, company_id) VALUES($1, $2)`,
+                    [conversationId, receiverId]
+                );
+            }
+        } else {
+            // User-to-User conversation
+            const existingConv = await client.query(
+                `SELECT c.conversation_id
+                 FROM conversations c
+                 JOIN conversation_participants cp1 ON c.conversation_id = cp1.conversation_id AND cp1.user_id = $1
+                 JOIN conversation_participants cp2 ON c.conversation_id = cp2.conversation_id AND cp2.user_id = $2
+                 WHERE c.is_group = FALSE`,
+                [senderId, receiverId]
+            );
+
+            if (existingConv.rowCount > 0) {
+                conversationId = existingConv.rows[0].conversation_id;
+            } else {
+                const convRes = await client.query(
+                    `INSERT INTO conversations(is_group) VALUES(FALSE) RETURNING conversation_id`
+                );
+                conversationId = convRes.rows[0].conversation_id;
+
+                await client.query(
+                    `INSERT INTO conversation_participants(conversation_id, user_id) VALUES($1, $2), ($1, $3)`,
+                    [conversationId, senderId, receiverId]
+                );
+            }
+        }
+
+        // 4. Insert Message
+        const msgRes = await client.query(
+            `INSERT INTO messages(
+                conversation_id, sender_id, text_content, 
+                message_type, shared_profile_id, shared_profile_type,
+                sender_type
+            )
+            VALUES($1, $2, $3, 'profile_share', $4, $5, $6)
+            RETURNING *`,
+            [conversationId, senderId, message || '', profileId, profileType, senderCompanyId ? 'COMPANY' : 'USER']
+        );
+
+        // 5. Update Conversation Timestamp
+        await client.query(
+            `UPDATE conversations SET updated_at = NOW() WHERE conversation_id = $1`,
+            [conversationId]
+        );
+
+        // 6. Build notification metadata (includes company_id for attribution + navigation info)
+        const notifMeta = {
+            profileType,
+            ...(senderCompanyId ? { company_id: senderCompanyId } : {}),
+            ...(receiverType === 'company' ? { receiverType, receiverId } : {}),
+            // Navigation helpers: slug for company profiles, account_name for user profiles
+            ...(profileType === 'company' && sharedProfileData?.slug ? { slug: sharedProfileData.slug } : {}),
+            ...(profileType === 'user' && sharedProfileData?.account_name ? { account_name: sharedProfileData.account_name } : {})
+        };
+
+        // 7. Create Persistent Notification
+        if (receiverType === 'company') {
+            // Company receiver: notification goes to company account via recipient_company_id
+            const adminsRes = await client.query(
+                `SELECT user_id FROM company_members WHERE company_id = $1 AND status = 'ACTIVE' LIMIT 1`,
+                [receiverId]
+            );
+            const firstMemberId = adminsRes.rows[0]?.user_id || senderId;
+            await client.query(
+                `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata, recipient_company_id)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+                [firstMemberId, senderId, 'profile_share', `${senderName} shared a ${profileType} profile with your company`, profileId, JSON.stringify(notifMeta), receiverId]
+            );
+        } else {
+            // User receiver: personal notification
+            await client.query(
+                `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata)
+                 VALUES ($1, $2, $3, $4, $5, $6)`,
+                [receiverId, senderId, 'profile_share', `${senderName} shared a ${profileType} profile with you`, profileId, JSON.stringify(notifMeta)]
+            );
+        }
+
+        await client.query('COMMIT');
+
+        // 8. Notify via Socket
+        const socketData = {
+            ...msgRes.rows[0],
+            sender_name: senderName,
+            sender_avatar: senderAvatar,
+            shared_profile: sharedProfileData,
+            is_company_actor: !!senderCompanyId,
+            sender_company_id: senderCompanyId || null
+        };
+
+        if (receiverType === 'company') {
+            // Notify all active company members (so they see it when viewing as company)
+            const membersRes = await client.query(
+                `SELECT user_id FROM company_members WHERE company_id = $1 AND status = 'ACTIVE'`,
+                [receiverId]
+            );
+            for (const member of membersRes.rows) {
+                socketService.notifyUser(member.user_id, "newMessage", socketData);
+
+                socketService.notifyUser(member.user_id, "notification", {
+                    type: "message",
+                    from: senderCompanyId || senderId,
+                    senderName: senderName,
+                    senderAvatar: senderAvatar,
+                    conversationId,
+                    text: `Shared a ${profileType} profile`,
+                    recipient_company_id: receiverId,
+                    isCompanyNotification: true,
+                    is_company_actor: !!senderCompanyId,
+                    metadata: notifMeta
+                });
+            }
+        } else {
+            socketService.notifyUser(receiverId, "newMessage", socketData);
+
+            socketService.notifyUser(receiverId, "notification", {
+                type: "message",
+                from: senderCompanyId || senderId,
+                senderName: senderName,
+                senderAvatar: senderAvatar,
+                conversationId,
+                text: `Shared a ${profileType} profile`,
+                is_company_actor: !!senderCompanyId,
+                metadata: notifMeta
+            });
+        }
+
+        res.status(200).json({
+            message: "Profile shared successfully",
+            conversationId,
+            messageData: socketData
+        });
+
+    } catch (err) {
+        await client.query('ROLLBACK');
+        console.error("Share profile error:", err);
+        res.status(500).json({ message: "Internal server error" });
+    } finally {
+        client.release();
+    }
+};
+

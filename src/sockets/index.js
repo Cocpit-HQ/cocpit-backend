@@ -7,6 +7,7 @@ const socketService = require("../core/infrastructure/socket.service");
 const statusHandler = require("./status.handler");
 const chatHandler = require("./chat.handler");
 const storyHandler = require("./story.handler");
+const notificationHandler = require("./notification.handler");
 
 module.exports.initSocket = async (httpServer) => {
   // CORS Configuration
@@ -90,6 +91,12 @@ module.exports.initSocket = async (httpServer) => {
 
     // Register Story Events
     storyHandler.registerStoryHandlers(io, socket);
+
+    // Register Notification Events (Company rooms)
+    notificationHandler.registerNotificationHandlers(io, socket);
+
+    // Auto-join all company rooms for this user
+    notificationHandler.autoJoinCompanyRooms(socket);
 
     // Handle Disconnect
     socket.on("disconnect", () => {

@@ -73,4 +73,8 @@ router.delete("/companies/:companyId/logo", requireAuth, requireCompanyPermissio
 router.post("/companies/:companyId/cover", requireAuth, requireCompanyPermission("MANAGE_SETTINGS"), uploadCover.single("cover"), companyController.uploadCover);
 router.delete("/companies/:companyId/cover", requireAuth, requireCompanyPermission("MANAGE_SETTINGS"), companyController.deleteCover);
 
+// Notification Preferences
+router.get("/companies/:companyId/notification-preferences", requireAuth, companyController.getNotificationPreferences);
+router.put("/companies/:companyId/notification-preferences", requireAuth, companyController.updateNotificationPreferences);
+
 module.exports = router;
