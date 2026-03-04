@@ -2738,9 +2738,21 @@ exports.getBlockedUsers = async (req, res) => {
 
 // Get Profile Stats (followers, following, connections counts)
 exports.getProfileStats = async (req, res) => {
-    const userId = req.params.id;
+    let userId = req.params.id;
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
     try {
+        if (!uuidRegex.test(userId)) {
+            const resolveResult = await pool.query(
+                "SELECT user_id FROM users WHERE LOWER(account_name) = LOWER($1)",
+                [userId]
+            );
+            if (resolveResult.rowCount === 0) {
+                return res.status(404).json({ message: "User not found" });
+            }
+            userId = resolveResult.rows[0].user_id;
+        }
+
         const result = await pool.query(
             `SELECT 
                 (SELECT COUNT(*) FROM followers WHERE following_id = $1) as followers_count,
