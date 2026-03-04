@@ -1,6 +1,7 @@
 const pool = require("../../core/db/pool");
 const { buildJobFilters } = require("../../core/utils/jobQueryBuilder");
 const { v4: uuidv4 } = require("uuid"); // Ensure unique ID generation for idempotency checks
+const { notifyCompanyFollowers } = require("../../services/notification.service");
 
 exports.createCompanyJob = async (req, res) => {
     const { companyId } = req.params;
@@ -122,6 +123,16 @@ exports.createCompanyJob = async (req, res) => {
         );
 
         await client.query("COMMIT");
+
+        // 6. Notify followers with 'jobs' preference enabled (fire-and-forget, after commit)
+        if (status === "ACTIVE") {
+            notifyCompanyFollowers(companyId, "jobs", {
+                type: "company_job",
+                text: `${companyName} posted a new job: ${title}`,
+                referenceId: job.job_id,
+                metadata: { job_title: title, location: location || null },
+            }).catch(err => console.error("Job notification error:", err));
+        }
 
         res.status(201).json({
             message: "Job created successfully",

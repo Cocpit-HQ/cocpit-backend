@@ -451,7 +451,9 @@ CREATE TABLE messages (
   --  receiver_id UUID REFERENCES users(user_id),
   text_content TEXT,
   shared_post_id UUID, -- Reference to shared post (snapshot preserved even if post deleted)
-  message_type TEXT DEFAULT 'text', -- 'text', 'system', etc.
+  shared_profile_id UUID, -- ID of the shared user or company profile
+  shared_profile_type VARCHAR(20), -- 'user' or 'company'
+  message_type TEXT DEFAULT 'text', -- 'text', 'system', 'profile_share', etc.
   --story_id UUID REFERENCES stories(story_id),
   action_type TEXT, -- 'add', 'leave', 'remove', 'create'
   target_id UUID REFERENCES users(user_id) ON DELETE SET NULL, -- Subject of the action
@@ -476,6 +478,20 @@ CREATE TABLE notifications (
 
 CREATE INDEX IF NOT EXISTS idx_notifications_recipient_company ON notifications(recipient_company_id);
 CREATE INDEX IF NOT EXISTS idx_notifications_user_read ON notifications(user_id, is_read);
+
+CREATE TABLE IF NOT EXISTS company_notification_preferences (
+    user_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
+    company_id UUID REFERENCES companies(company_id) ON DELETE CASCADE,
+    events_enabled BOOLEAN DEFAULT TRUE,
+    jobs_enabled BOOLEAN DEFAULT TRUE,
+    posts_enabled BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    PRIMARY KEY (user_id, company_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_cnp_company_id ON company_notification_preferences(company_id);
+CREATE INDEX IF NOT EXISTS idx_cnp_user_company ON company_notification_preferences(user_id, company_id);
 
 CREATE TABLE jobs (
   job_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

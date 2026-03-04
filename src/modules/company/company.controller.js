@@ -1528,3 +1528,71 @@ exports.deleteCover = async (req, res) => {
         client.release();
     }
 };
+
+// --- Notification Preferences ---
+
+exports.getNotificationPreferences = async (req, res) => {
+    const { companyId } = req.params;
+    const userId = req.user.sub;
+
+    try {
+        const result = await pool.query(
+            `SELECT events_enabled, jobs_enabled, posts_enabled, updated_at
+             FROM company_notification_preferences
+             WHERE user_id = $1 AND company_id = $2`,
+            [userId, companyId]
+        );
+
+        if (result.rowCount === 0) {
+            // Return defaults (all ON) if no preferences set yet
+            return res.json({
+                events_enabled: true,
+                jobs_enabled: true,
+                posts_enabled: true,
+                is_default: true,
+            });
+        }
+
+        res.json(result.rows[0]);
+    } catch (err) {
+        console.error("Get notification preferences error:", err);
+        res.status(500).json({ message: "Internal server error" });
+    }
+};
+
+exports.updateNotificationPreferences = async (req, res) => {
+    const { companyId } = req.params;
+    const userId = req.user.sub;
+    const { events_enabled, jobs_enabled, posts_enabled } = req.body;
+
+    try {
+        // Verify user follows the company
+        const followCheck = await pool.query(
+            `SELECT 1 FROM company_followers WHERE user_id = $1 AND company_id = $2`,
+            [userId, companyId]
+        );
+
+        if (followCheck.rowCount === 0) {
+            return res.status(403).json({ message: "You must follow this company to set notification preferences" });
+        }
+
+        // Upsert preferences
+        const result = await pool.query(
+            `INSERT INTO company_notification_preferences (user_id, company_id, events_enabled, jobs_enabled, posts_enabled)
+             VALUES ($1, $2, $3, $4, $5)
+             ON CONFLICT (user_id, company_id)
+             DO UPDATE SET
+                events_enabled = COALESCE($3, company_notification_preferences.events_enabled),
+                jobs_enabled = COALESCE($4, company_notification_preferences.jobs_enabled),
+                posts_enabled = COALESCE($5, company_notification_preferences.posts_enabled),
+                updated_at = NOW()
+             RETURNING *`,
+            [userId, companyId, events_enabled, jobs_enabled, posts_enabled]
+        );
+
+        res.json(result.rows[0]);
+    } catch (err) {
+        console.error("Update notification preferences error:", err);
+        res.status(500).json({ message: "Internal server error" });
+    }
+};

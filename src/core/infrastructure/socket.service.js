@@ -1,4 +1,4 @@
-const { getUserRoom, getConversationRoom, getStoryRoom } = require("../utils/socketRooms");
+const { getUserRoom, getConversationRoom, getStoryRoom, getCompanyRoom } = require("../utils/socketRooms");
 
 class SocketService {
   constructor() {
@@ -67,6 +67,21 @@ class SocketService {
       return;
     }
     const room = getStoryRoom(storyId);
+    this.io.to(room).emit(event, payload);
+  }
+
+  /**
+   * Notify all members of a company (via company room)
+   * @param {string} companyId
+   * @param {string} event
+   * @param {object} payload
+   */
+  notifyCompany(companyId, event, payload) {
+    if (!this.io) {
+      console.warn("SocketService: io not initialized");
+      return;
+    }
+    const room = getCompanyRoom(companyId);
     this.io.to(room).emit(event, payload);
   }
 

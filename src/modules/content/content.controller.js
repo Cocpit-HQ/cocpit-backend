@@ -5,6 +5,7 @@ const { checkBlockStatus } = require("../../core/utils/blockCheck");
 const { logAudit } = require("../../core/infrastructure/audit.service");
 const cloudinary = require("../../core/infrastructure/cloudinary.client");
 const { checkCompanyPermission } = require("../../core/utils/rbac");
+const { notifyCompanyFollowers } = require("../../services/notification.service");
 
 // --- Feed / Posts ---
 exports.getPublicFeed = async (req, res) => {
@@ -808,6 +809,18 @@ exports.createPost = async (req, res) => {
         }
 
         await client.query('COMMIT');
+
+        // Notify followers with 'posts' preference enabled (fire-and-forget, after commit)
+        if (companyId) {
+            const companyNameRes = await pool.query(`SELECT name FROM companies WHERE company_id = $1`, [companyId]);
+            const cName = companyNameRes.rows[0]?.name || 'A company';
+            notifyCompanyFollowers(companyId, "posts", {
+                type: "company_post",
+                text: `${cName} published a new post`,
+                referenceId: postId,
+                metadata: { post_title: title || content?.substring(0, 50) },
+            }).catch(err => console.error("Post notification error:", err));
+        }
 
         res.status(201).json({
             message: "Post created", postId,

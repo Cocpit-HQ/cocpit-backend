@@ -2,6 +2,7 @@ const pool = require("../../core/db/pool");
 const { buildJobFilters } = require("../../core/utils/jobQueryBuilder");
 const { logAudit } = require("../../core/infrastructure/audit.service");
 const { checkCompanyPermission } = require("../../core/utils/rbac");
+const { notifyCompanyFollowers } = require("../../services/notification.service");
 
 exports.getAllJobs = async (req, res) => {
   const { limit = 10, cursor } = req.query;
@@ -195,16 +196,8 @@ exports.createJob = async (req, res) => {
 
     await client.query("COMMIT");
 
-    // Async Audit Log (after commit is fine, or inside)
+    // Async Audit Log & Notification (after commit is fine)
     if (job.company_id) {
-      // Re-acquire client for audit or use pool? 
-      // Since we released client, let's use pool or new client.
-      // Actually, let's do it inside transaction before commit for consistency
-      // But code structure... let's do it after commit with a new client connection 
-      // OR better, move it up before commit.
-      // Re-writing this block entirely is risky.
-      // Let's just launch it async without awaiting to not block response?
-      // No, reliability is key.
       const auditClient = await pool.connect();
       try {
         await logAudit(auditClient, {
@@ -220,6 +213,14 @@ exports.createJob = async (req, res) => {
       } finally {
         auditClient.release();
       }
+
+      // 2. Notify followers (fire-and-forget)
+      notifyCompanyFollowers(job.company_id, "jobs", {
+        type: "company_job",
+        text: `${job.company_name} posted a new job: ${job.title}`,
+        referenceId: job.job_id,
+        metadata: { job_title: job.title, location: job.location || null },
+      }).catch(err => console.error("Job notification error:", err));
     }
 
     res.status(201).json({

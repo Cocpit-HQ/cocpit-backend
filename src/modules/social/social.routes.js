@@ -49,6 +49,7 @@ router.delete("/conversations/:id", requireAuth, socialController.deleteConversa
 
 // Messages
 router.post("/messages", requireAuth, require("../../core/middlewares/upload.middleware").uploadChatMedia.array("images", 10), socialController.sendMessage);
+router.post("/profile/share", requireAuth, socialController.shareProfile);
 router.post("/social/share", requireAuth, socialController.sharePostToConversations);
 router.get("/conversations/:id/messages", requireAuth, socialController.getMessages);
 router.delete("/messages/:messageId", requireAuth, messageController.deleteMessage);

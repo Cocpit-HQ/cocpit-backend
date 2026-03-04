@@ -6,6 +6,7 @@ const eventRepo = require("./event.repository");
 const { logAudit } = require("../../core/infrastructure/audit.service");
 const { checkCompanyPermission } = require("../../core/utils/rbac");
 const pool = require("../../core/db/pool");
+const { notifyCompanyFollowers } = require("../../services/notification.service");
 
 // ─── List Events (with filtering + cursor pagination) ───────────────────────────
 
@@ -113,6 +114,14 @@ exports.createEvent = async (req, res) => {
 
         if (finalCompanyId) {
             await logAudit(pool, { entityId: finalCompanyId, actorId: userId, action: "CREATE_EVENT", metadata: { eventId, title } });
+
+            // Notify followers with 'events' preference enabled (fire-and-forget)
+            notifyCompanyFollowers(finalCompanyId, "events", {
+                type: "company_event",
+                text: `New event: ${title}`,
+                referenceId: eventId,
+                metadata: { event_title: title, event_type: eventType || null },
+            }).catch(err => console.error("Event notification error:", err));
         }
 
         res.status(201).json({ message: "Event created successfully", eventId });
