@@ -11,20 +11,19 @@ const pool = require("../db/pool");
 const checkCompanyPermission = async (queryable, companyId, userId, permissionsToCheck) => {
     try {
         const res = await queryable.query(
-            `SELECT cr.permissions, cr.name 
+            `SELECT cr.permissions, cr.name, cm.status, cm.expires_at
              FROM company_members cm
-             JOIN company_roles cr ON cm.role_id = cr.role_id
+             LEFT JOIN company_roles cr ON cm.role_id = cr.role_id
              WHERE cm.company_id = $1 AND cm.user_id = $2`,
             [companyId, userId]
         );
 
         if (res.rowCount === 0) return false;
 
-        const { permissions, name } = res.rows[0];
-        const roleName = name.toUpperCase();
+        const { permissions, status, expires_at } = res.rows[0];
 
-        // Owner/Admin override (Superuser roles)
-        if (roleName === 'OWNER' || roleName === 'ADMIN') return true;
+        if (status !== 'ACTIVE') return false;
+        if (expires_at && new Date(expires_at) < new Date()) return false;
 
         // Permissions check
         const perms = permissions || [];

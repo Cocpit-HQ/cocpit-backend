@@ -129,7 +129,7 @@ exports.updateCompanyRole = async (req, res, next) => {
         // 4. System Role Protections
         if (targetRole.is_system_role) {
             if (name && name !== targetRole.name) throw new AppError("Cannot change name of system roles", 400);
-            if (priority && priority !== targetRole.priority) throw new AppError("Cannot change priority of system roles", 400);
+            if (priority !== undefined && priority !== null && Number(priority) !== Number(targetRole.priority)) throw new AppError("Cannot change priority of system roles", 400);
 
             if (targetRole.name === 'Owner') {
                 if (permissions) throw new AppError("Cannot modify Owner permissions", 400);

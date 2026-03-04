@@ -1,18 +1,7 @@
 const pool = require("../../core/db/pool");
 const AppError = require("../../core/errors/AppError");
 
-// Helper to check permissions (Owner, Admin, Analyst)
-// Recruiter can view Jobs analytics, but maybe not financial/deep stats?
-// Plan said: ANALYST can view Analytics Dashboard.
-const checkAnalyticsPermission = async (client, companyId, userId) => {
-    const res = await client.query(
-        `SELECT role FROM company_members WHERE company_id = $1 AND user_id = $2`,
-        [companyId, userId]
-    );
-    if (res.rowCount === 0) return false;
-    const role = res.rows[0].role;
-    return ['OWNER', 'ADMIN', 'ANALYST'].includes(role);
-};
+const { checkCompanyPermission } = require("../../core/utils/rbac");
 
 exports.getOverview = async (req, res) => {
     const { companyId } = req.params;
@@ -20,7 +9,7 @@ exports.getOverview = async (req, res) => {
 
     const client = await pool.connect();
     try {
-        if (!(await checkAnalyticsPermission(client, companyId, userId))) {
+        if (!(await checkCompanyPermission(client, companyId, userId, 'VIEW_ANALYTICS'))) {
             throw new AppError("Forbidden: You do not have permission to view analytics", 403);
         }
 
@@ -84,7 +73,7 @@ exports.getEngagement = async (req, res) => {
 
     const client = await pool.connect();
     try {
-        if (!(await checkAnalyticsPermission(client, companyId, userId))) {
+        if (!(await checkCompanyPermission(client, companyId, userId, 'VIEW_ANALYTICS'))) {
             throw new AppError("Forbidden: You do not have permission to view analytics", 403);
         }
 
@@ -136,15 +125,7 @@ exports.getJobs = async (req, res) => {
 
     const client = await pool.connect();
     try {
-        // RECRUITERs can also see Job Analytics
-        const userRoleRes = await client.query(
-            `SELECT role FROM company_members WHERE company_id = $1 AND user_id = $2`,
-            [companyId, userId]
-        );
-        if (userRoleRes.rowCount === 0) throw new AppError("Forbidden", 403);
-        const role = userRoleRes.rows[0].role;
-
-        if (!['OWNER', 'ADMIN', 'ANALYST', 'RECRUITER'].includes(role)) {
+        if (!(await checkCompanyPermission(client, companyId, userId, 'VIEW_ANALYTICS'))) {
             throw new AppError("Forbidden: You do not have permission to view job analytics", 403);
         }
 
@@ -188,17 +169,9 @@ exports.getAuditLogs = async (req, res) => {
 
     const client = await pool.connect();
     try {
-        // PERMISSIONS: Only OWNER and ADMIN can view audit logs
-        const userRoleRes = await client.query(
-            `SELECT role FROM company_members WHERE company_id = $1 AND user_id = $2`,
-            [companyId, userId]
-        );
-        if (userRoleRes.rowCount === 0) throw new AppError("Forbidden", 403);
-        const role = userRoleRes.rows[0].role;
-
-        if (!['OWNER', 'ADMIN'].includes(role)) {
-            throw new AppError("Forbidden: Only Admins can view audit logs", 403);
-        }
+        // PERMISSIONS: Only OWNER and ADMIN can view audit logs (requires MANAGE_COMPANY)
+        const canViewAudit = await checkCompanyPermission(client, companyId, userId, 'MANAGE_COMPANY');
+        if (!canViewAudit) throw new AppError("Forbidden: Only Admins can view audit logs", 403);
 
         // Build Query
         let query = `

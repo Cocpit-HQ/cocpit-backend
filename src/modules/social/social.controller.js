@@ -1809,7 +1809,10 @@ exports.sendMessage = async (req, res) => {
                 continue;
             }
             console.error("Error in sendMessage:", err);
-            res.status(500).json({ message: "Internal server error" });
+            if (!res.headersSent) {
+                res.status(500).json({ message: "Internal server error" });
+            }
+            break; // Exit retry loop on non-serialization errors
         }
     } // end retry loop
     client.release();
