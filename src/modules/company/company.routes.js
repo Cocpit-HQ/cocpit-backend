@@ -17,34 +17,34 @@ router.get("/companies/:slug", optionalAuth, companyController.getCompany);
 // Protected Routes
 router.post("/companies", requireAuth, companyActionLimiter, companyController.createCompany);
 router.post("/companies/invites/accept", requireAuth, companyController.acceptInvite);
-router.post("/companies/:companyId/members/invite", requireAuth, companyActionLimiter, companyController.inviteMember);
-router.get("/companies/:companyId/members", requireAuth, companyController.getMembers);
-router.delete("/companies/:companyId/members/:memberId", requireAuth, companyController.removeMember);
+router.post("/companies/:companyId/members/invite", requireAuth, requireCompanyPermission("INVITE_MEMBERS"), companyActionLimiter, companyController.inviteMember);
+router.get("/companies/:companyId/members", requireAuth, requireCompanyPermission("VIEW_MEMBERS"), companyController.getMembers);
+router.delete("/companies/:companyId/members/:memberId", requireAuth, requireCompanyPermission("REMOVE_MEMBERS"), companyController.removeMember);
 router.post("/companies/:companyId/leave", requireAuth, companyController.leaveCompany);
 
-router.post("/companies/:companyId/verify/domain", requireAuth, otpGenerationLimiter, companyController.verifyDomain);
+router.post("/companies/:companyId/verify/domain", requireAuth, requireCompanyPermission("MANAGE_SETTINGS"), otpGenerationLimiter, companyController.verifyDomain);
 router.post("/companies/:companyId/transfer-ownership", requireAuth, companyActionLimiter, companyController.transferOwnership);
-router.put("/companies/:companyId", requireAuth, companyController.updateCompany);
-router.delete("/companies/:companyId", requireAuth, companyActionLimiter, companyController.deleteCompany);
+router.put("/companies/:companyId", requireAuth, requireCompanyPermission("MANAGE_COMPANY_DETAILS"), companyController.updateCompany);
+router.delete("/companies/:companyId", requireAuth, requireCompanyPermission("MANAGE_COMPANY"), companyActionLimiter, companyController.deleteCompany);
 
 // Analytics
-router.get("/companies/:companyId/analytics/overview", requireAuth, analyticsController.getOverview);
-router.get("/companies/:companyId/analytics/engagement", requireAuth, analyticsController.getEngagement);
-router.get("/companies/:companyId/analytics/jobs", requireAuth, analyticsController.getJobs);
-router.get("/companies/:companyId/audit-logs", requireAuth, analyticsController.getAuditLogs);
+router.get("/companies/:companyId/analytics/overview", requireAuth, requireCompanyPermission("VIEW_ANALYTICS"), analyticsController.getOverview);
+router.get("/companies/:companyId/analytics/engagement", requireAuth, requireCompanyPermission("VIEW_ANALYTICS"), analyticsController.getEngagement);
+router.get("/companies/:companyId/analytics/jobs", requireAuth, requireCompanyPermission("VIEW_ANALYTICS"), analyticsController.getJobs);
+router.get("/companies/:companyId/audit-logs", requireAuth, requireCompanyPermission("MANAGE_COMPANY"), analyticsController.getAuditLogs);
 
 // Tech Stack
 router.get("/companies/:slug/tech-stack", optionalAuth, companyController.getTechStack);
-router.post("/companies/:companyId/tech-stack", requireAuth, companyController.addTechStack);
-router.delete("/companies/:companyId/tech-stack/:stackId", requireAuth, companyController.removeTechStack);
+router.post("/companies/:companyId/tech-stack", requireAuth, requireCompanyPermission("MANAGE_COMPANY_DETAILS"), companyController.addTechStack);
+router.delete("/companies/:companyId/tech-stack/:stackId", requireAuth, requireCompanyPermission("MANAGE_COMPANY_DETAILS"), companyController.removeTechStack);
 
 // Gallery
 router.get("/companies/:slug/gallery", optionalAuth, companyController.getGallery);
-router.post("/companies/:companyId/gallery", requireAuth, companyController.addToGallery);
-router.delete("/companies/:companyId/gallery/:galleryId", requireAuth, companyController.removeFromGallery);
+router.post("/companies/:companyId/gallery", requireAuth, requireCompanyPermission("MANAGE_COMPANY_DETAILS"), companyController.addToGallery);
+router.delete("/companies/:companyId/gallery/:galleryId", requireAuth, requireCompanyPermission("MANAGE_COMPANY_DETAILS"), companyController.removeFromGallery);
 
 // Advocacy
-router.post("/companies/:companyId/posts/:postId/notify", requireAuth, companyController.notifyEmployees);
+router.post("/companies/:companyId/posts/:postId/notify", requireAuth, requireCompanyPermission("MANAGE_COMPANY"), companyController.notifyEmployees);
 
 // Company Posts
 router.get("/companies/:companyId/posts", optionalAuth, companyController.getCompanyPosts);
@@ -74,7 +74,7 @@ router.post("/companies/:companyId/cover", requireAuth, requireCompanyPermission
 router.delete("/companies/:companyId/cover", requireAuth, requireCompanyPermission("MANAGE_SETTINGS"), companyController.deleteCover);
 
 // Notification Preferences
-router.get("/companies/:companyId/notification-preferences", requireAuth, companyController.getNotificationPreferences);
-router.put("/companies/:companyId/notification-preferences", requireAuth, companyController.updateNotificationPreferences);
+router.get("/companies/:companyId/notification-preferences", requireAuth, requireCompanyPermission("VIEW_MEMBERS"), companyController.getNotificationPreferences);
+router.put("/companies/:companyId/notification-preferences", requireAuth, requireCompanyPermission("MANAGE_SETTINGS"), companyController.updateNotificationPreferences);
 
 module.exports = router;

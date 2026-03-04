@@ -13,18 +13,7 @@ const logAudit = async (client, { entityId, actorId, action, metadata = {} }) =>
     await client.query(query, ['COMPANY', entityId, actorId, action, metadata]);
 };
 
-// Helper: Check if user is OWNER or ADMIN (Updated for Dynamic Roles)
-const checkRole = async (client, companyId, userId, allowedRoles = ['OWNER', 'ADMIN']) => {
-    const res = await client.query(
-        `SELECT cr.name as role FROM company_members cm
-         JOIN company_roles cr ON cm.role_id = cr.role_id
-         WHERE cm.company_id = $1 AND cm.user_id = $2`,
-        [companyId, userId]
-    );
-    if (res.rowCount === 0) return null;
-    const role = res.rows[0].role.toUpperCase();
-    return allowedRoles.includes(role) ? role : null;
-};
+// Helper: checkRole was removed in favor of checkCompanyPermission
 
 // --- Updated Permissions Helper ---
 // Replaces checkRole with new middleware logic usage pattern or direct DB check
@@ -106,10 +95,10 @@ exports.createCompany = async (req, res) => {
         // Let's create default roles inline here for now or use a shared helper.
         const roles = [
             { name: 'Owner', color: '#FFD700', permissions: ["*"], priority: 100, is_system: true },
-            { name: 'Admin', color: '#FF0000', permissions: ["MANAGE_COMPANY", "MANAGE_ROLES", "MANAGE_MEMBERS", "POST_JOBS", "VIEW_APPLICANTS", "CREATE_CONTENT", "VIEW_ANALYTICS"], priority: 90, is_system: true },
-            { name: 'Editor', color: '#00FF00', permissions: ["CREATE_CONTENT", "VIEW_ANALYTICS"], priority: 60, is_system: true },
-            { name: 'Recruiter', color: '#0000FF', permissions: ["POST_JOBS", "VIEW_APPLICANTS"], priority: 50, is_system: true },
-            { name: 'Analyst', color: '#800080', permissions: ["VIEW_ANALYTICS"], priority: 40, is_system: true }
+            { name: 'Admin', color: '#FF0000', permissions: ["SWITCH_TO_COMPANY", "MANAGE_COMPANY", "MANAGE_COMPANY_DETAILS", "MANAGE_SETTINGS", "MANAGE_ROLES", "MANAGE_MEMBERS", "INVITE_MEMBERS", "REMOVE_MEMBERS", "VIEW_MEMBERS", "POST_JOBS", "VIEW_APPLICANTS", "MANAGE_APPLICANTS", "CREATE_CONTENT", "MANAGE_COMMENTS", "VIEW_ANALYTICS"], priority: 90, is_system: true },
+            { name: 'Editor', color: '#00FF00', permissions: ["SWITCH_TO_COMPANY", "CREATE_CONTENT", "VIEW_ANALYTICS", "VIEW_MEMBERS", "MANAGE_COMPANY_DETAILS"], priority: 60, is_system: true },
+            { name: 'Recruiter', color: '#0000FF', permissions: ["SWITCH_TO_COMPANY", "POST_JOBS", "VIEW_APPLICANTS", "MANAGE_APPLICANTS", "VIEW_MEMBERS"], priority: 50, is_system: true },
+            { name: 'Analyst', color: '#800080', permissions: ["SWITCH_TO_COMPANY", "VIEW_ANALYTICS", "VIEW_MEMBERS"], priority: 40, is_system: true }
         ];
 
         let ownerRoleId;
@@ -279,9 +268,9 @@ exports.updateCompany = async (req, res) => {
     try {
         await client.query("BEGIN");
 
-        // 1. RBAC Check (ADMIN or OWNER)
-        const userRole = await checkRole(client, companyId, userId, ['OWNER', 'ADMIN']);
-        if (!userRole) throw new Error("Forbidden: Only Admins can update company details");
+        // 1. RBAC Check (MANAGE_COMPANY_DETAILS)
+        const canEdit = await checkCompanyPermission(client, companyId, userId, 'MANAGE_COMPANY_DETAILS');
+        if (!canEdit) throw new Error("Forbidden: You do not have permission to update company details");
 
         // 2. Update
         const updateQuery = `
@@ -503,8 +492,8 @@ exports.verifyDomain = async (req, res) => {
         await client.query("BEGIN");
 
         // 1. RBAC (OWNER ONLY)
-        const userRole = await checkRole(client, companyId, userId, ['OWNER']);
-        if (!userRole) throw new Error("Forbidden: Only OWNER can verify domain");
+        const isOwner = await checkCompanyPermission(client, companyId, userId, '*');
+        if (!isOwner) throw new Error("Forbidden: Only OWNER can verify domain");
 
         // PHASE 2: Verify OTP if provided
         if (otp) {
@@ -716,8 +705,8 @@ exports.transferOwnership = async (req, res) => {
         }
 
         // 1. RBAC (OWNER ONLY)
-        const userRole = await checkRole(client, companyId, userId, ['OWNER']);
-        if (!userRole) throw new Error("Forbidden: Only OWNER can transfer ownership");
+        const isOwner = await checkCompanyPermission(client, companyId, userId, '*');
+        if (!isOwner) throw new Error("Forbidden: Only OWNER can transfer ownership");
 
         const { password } = req.body;
         if (!password) {
@@ -795,9 +784,12 @@ exports.deleteCompany = async (req, res) => {
     try {
         await client.query("BEGIN");
 
-        // 1. RBAC (OWNER ONLY)
-        const userRole = await checkRole(client, companyId, userId, ['OWNER']);
-        if (!userRole) throw new Error("Forbidden: Only OWNER can delete company");
+        // 1. RBAC (OWNER ONLY - MANAGE_COMPANY is required, but deleting is likely OWNER only)
+        // Since delete is extremely sensitive, we use checkCompanyPermission for a wildcard meaning or specific logic.
+        // Actually, for deleteCompany, let's keep it strictly to Owner role name for safety, but checkCompanyPermission doesn't do name matching anymore.
+        // Let's use checkCompanyPermission('*') which only Owner has.
+        const isOwner = await checkCompanyPermission(client, companyId, userId, '*');
+        if (!isOwner) throw new Error("Forbidden: Only OWNER can delete company");
 
         const { password } = req.body;
         if (!password) {
@@ -911,9 +903,9 @@ exports.removeMember = async (req, res) => {
     try {
         await client.query("BEGIN");
 
-        // 1. Check requester role
-        const requesterRole = await checkRole(client, companyId, userId, ['OWNER', 'ADMIN']);
-        if (!requesterRole) throw new Error("Forbidden: You cannot remove members");
+        // 1. Check requester role (REMOVE_MEMBERS)
+        const canRemove = await checkCompanyPermission(client, companyId, userId, 'REMOVE_MEMBERS');
+        if (!canRemove) throw new Error("Forbidden: You cannot remove members");
 
         // 2. Check target member role
         const targetRes = await client.query(
@@ -1080,8 +1072,8 @@ exports.addTechStack = async (req, res) => {
     const client = await pool.connect();
     try {
         await client.query("BEGIN");
-        const userRole = await checkRole(client, companyId, userId, ['OWNER', 'ADMIN', 'EDITOR']);
-        if (!userRole) throw new Error("Forbidden: You cannot edit company profile");
+        const canEdit = await checkCompanyPermission(client, companyId, userId, 'MANAGE_COMPANY_DETAILS');
+        if (!canEdit) throw new Error("Forbidden: You cannot edit company profile");
 
         const result = await client.query(
             `INSERT INTO company_tech_stack (company_id, name, category)
@@ -1120,8 +1112,8 @@ exports.removeTechStack = async (req, res) => {
     const client = await pool.connect();
     try {
         await client.query("BEGIN");
-        const userRole = await checkRole(client, companyId, userId, ['OWNER', 'ADMIN', 'EDITOR']);
-        if (!userRole) throw new Error("Forbidden: You cannot edit company profile");
+        const canEdit = await checkCompanyPermission(client, companyId, userId, 'MANAGE_COMPANY_DETAILS');
+        if (!canEdit) throw new Error("Forbidden: You cannot edit company profile");
 
         await client.query(
             `DELETE FROM company_tech_stack WHERE company_id = $1 AND stack_id = $2`,
@@ -1169,8 +1161,8 @@ exports.addToGallery = async (req, res) => {
     const client = await pool.connect();
     try {
         await client.query("BEGIN");
-        const userRole = await checkRole(client, companyId, userId, ['OWNER', 'ADMIN', 'EDITOR']);
-        if (!userRole) throw new Error("Forbidden: You cannot edit company profile");
+        const canEdit = await checkCompanyPermission(client, companyId, userId, 'MANAGE_COMPANY_DETAILS');
+        if (!canEdit) throw new Error("Forbidden: You cannot edit company profile");
 
         const result = await client.query(
             `INSERT INTO company_gallery (company_id, url, type, caption)
@@ -1198,8 +1190,8 @@ exports.removeFromGallery = async (req, res) => {
     const client = await pool.connect();
     try {
         await client.query("BEGIN");
-        const userRole = await checkRole(client, companyId, userId, ['OWNER', 'ADMIN', 'EDITOR']);
-        if (!userRole) throw new Error("Forbidden: You cannot edit company profile");
+        const canEdit = await checkCompanyPermission(client, companyId, userId, 'MANAGE_COMPANY_DETAILS');
+        if (!canEdit) throw new Error("Forbidden: You cannot edit company profile");
 
         await client.query(
             `DELETE FROM company_gallery WHERE company_id = $1 AND gallery_id = $2`,
@@ -1225,8 +1217,8 @@ exports.notifyEmployees = async (req, res) => {
     const client = await pool.connect();
     try {
         await client.query("BEGIN");
-        const userRole = await checkRole(client, companyId, userId, ['OWNER', 'ADMIN', 'EDITOR']);
-        if (!userRole) throw new Error("Forbidden: You cannot notify employees");
+        const canNotify = await checkCompanyPermission(client, companyId, userId, 'MANAGE_COMPANY');
+        if (!canNotify) throw new Error("Forbidden: You cannot notify employees");
 
         // 1. Get Company Name
         const companyRes = await client.query('SELECT name FROM companies WHERE company_id = $1', [companyId]);
