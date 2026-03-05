@@ -15,6 +15,7 @@ const uploadRoutes = require("./modules/upload/upload.routes");
 const onboardingRoutes = require("./modules/auth/onboarding.routes");
 const messagingRoutes = require("./modules/messaging/messaging.routes");
 const organizationRoutes = require("./modules/organization/organization.routes");
+const shareRoutes = require("./modules/share/share.routes");
 
 const app = express();
 app.set("trust proxy", true);
@@ -65,6 +66,7 @@ app.use("/api", uploadRoutes);
 app.use("/api/onboarding", onboardingRoutes);
 app.use("/api", organizationRoutes); // Supporting both /api/organizations and legacy /api/companies
 app.use("/api", messagingRoutes); // /api/groups... + /api/company-chat-sessions...
+app.use("/api", shareRoutes); // /api/share + /api/entity/preview
 
 // Global Error Handler
 const errorHandler = require("./core/middlewares/error.middleware");

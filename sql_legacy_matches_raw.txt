@@ -1,0 +1,2 @@
+﻿C:\Users\user3\Desktop\cocpit\cocpit-backend\src\modules\share\share.controller.js:246:                 author_company_id
+C:\Users\user3\Desktop\cocpit\cocpit-backend\src\modules\social\social.controller.js:2122:                         ) FROM companies pc WHERE pc.company_id = m.shared_profile_id AND pc.is_deleted = FALSE)

@@ -2,6 +2,7 @@ const express = require("express");
 const router = express.Router();
 const chatSessionCtrl = require("./chatSession.controller");
 const groupChatCtrl = require("./groupChat.controller");
+const messageCtrl = require("./message.controller");
 const { requireAuth } = require("../../core/middlewares/auth.middleware");
 const { sessionRateLimiter } = require("../../core/utils/sessionRateLimiter");
 const groupAdminMiddleware = require("../../core/middlewares/groupAdmin.middleware");
