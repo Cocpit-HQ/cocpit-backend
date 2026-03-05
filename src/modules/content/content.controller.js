@@ -9,7 +9,7 @@ const { notifyOrgFollowers } = require("../../services/notification.service");
 
 // --- Feed / Posts ---
 exports.getPublicFeed = async (req, res) => {
-    const { cursorCreatedAt, cursorPostId } = req.query;
+    const { cursorCreatedAt, cursorPostId, companyId } = req.query;
     const limit = 10;
 
     try {
@@ -27,11 +27,14 @@ exports.getPublicFeed = async (req, res) => {
         params.push(limit);
         const limitParamIdx = params.length;
 
-        // 3. User ID (needed for subqueries)
+        // 3. User ID and Company ID (needed for subqueries)
         const userId = req.user ? req.user.sub : null;
 
         params.push(userId);
         const userParamIdx = params.length;
+
+        params.push(companyId || null);
+        const companyParamIdx = params.length;
 
         const query = `
         SELECT
@@ -58,8 +61,30 @@ exports.getPublicFeed = async (req, res) => {
             (SELECT COUNT(*) FROM post_likes pl WHERE pl.post_id = p.post_id)::int AS like_count,
             (SELECT COUNT(*) FROM post_comments pc WHERE pc.post_id = p.post_id)::int AS comment_count,
 
-            (pl_me.post_id IS NOT NULL) AS is_liked,
-            EXISTS(SELECT 1 FROM post_comments pc_me WHERE pc_me.post_id = p.post_id AND pc_me.author_id = $${userParamIdx}) AS is_commented,
+            (
+                EXISTS(
+                    SELECT 1 FROM post_likes pl 
+                    WHERE pl.post_id = p.post_id 
+                    AND (
+                        ($${companyParamIdx}::uuid IS NOT NULL AND pl.org_id = $${companyParamIdx}::uuid)
+                        OR
+                        ($${companyParamIdx}::uuid IS NULL AND pl.user_id = $${userParamIdx} AND pl.org_id IS NULL)
+                    )
+                )
+            ) AS is_liked,
+
+            (
+                EXISTS(
+                    SELECT 1 FROM post_comments pc_me 
+                    WHERE pc_me.post_id = p.post_id 
+                    AND (
+                        ($${companyParamIdx}::uuid IS NOT NULL AND pc_me.author_org_id = $${companyParamIdx}::uuid)
+                        OR
+                        ($${companyParamIdx}::uuid IS NULL AND pc_me.author_id = $${userParamIdx} AND pc_me.author_org_id IS NULL)
+                    )
+                )
+            ) AS is_commented,
+
             EXISTS(SELECT 1 FROM saved_post sp_me WHERE sp_me.post_id = p.post_id AND sp_me.user_id = $${userParamIdx}) AS is_saved,
 
             (
@@ -71,7 +96,15 @@ exports.getPublicFeed = async (req, res) => {
                     ),
                     'total_votes', (SELECT COUNT(*) FROM poll_votes pv WHERE pv.poll_id = pp.poll_id),
                     'duration', COALESCE(pp.duration, '1 day'),
-                    'user_vote', (SELECT pv_u.option_id FROM poll_votes pv_u WHERE pv_u.poll_id = pp.poll_id AND pv_u.voter_id = $${userParamIdx}),
+                    'user_vote', (
+                        SELECT pv_u.option_id FROM poll_votes pv_u 
+                        WHERE pv_u.poll_id = pp.poll_id 
+                        AND (
+                            ($${companyParamIdx}::uuid IS NOT NULL AND pv_u.org_id = $${companyParamIdx}::uuid)
+                            OR
+                            ($${companyParamIdx}::uuid IS NULL AND pv_u.voter_id = $${userParamIdx} AND pv_u.org_id IS NULL)
+                        )
+                    ),
                     'is_active', (pp.created_at + COALESCE(pp.duration, '1 day')::interval > NOW())
                 )
                 FROM post_polls pp WHERE pp.post_id = p.post_id
@@ -112,15 +145,39 @@ exports.getPublicFeed = async (req, res) => {
                          'media', COALESCE((SELECT json_agg(json_build_object('url', pm.url, 'media_type', pm.media_type)) FROM post_media pm WHERE pm.post_id = sp.post_id), '[]'::json),
                          'like_count', (SELECT COUNT(*) FROM post_likes pl WHERE pl.post_id = sp.post_id)::int,
                          'comment_count', (SELECT COUNT(*) FROM post_comments pc WHERE pc.post_id = sp.post_id)::int,
-                         'is_liked', EXISTS(SELECT 1 FROM post_likes pl WHERE pl.post_id = sp.post_id AND pl.user_id = $${userParamIdx}),
-                         'is_commented', EXISTS(SELECT 1 FROM post_comments pc_c WHERE pc_c.post_id = sp.post_id AND pc_c.author_id = $${userParamIdx}),
+                         'is_liked', EXISTS(
+                             SELECT 1 FROM post_likes pl 
+                             WHERE pl.post_id = sp.post_id 
+                             AND (
+                                 ($${companyParamIdx}::uuid IS NOT NULL AND pl.org_id = $${companyParamIdx}::uuid)
+                                 OR
+                                 ($${companyParamIdx}::uuid IS NULL AND pl.user_id = $${userParamIdx} AND pl.org_id IS NULL)
+                             )
+                         ),
+                         'is_commented', EXISTS(
+                             SELECT 1 FROM post_comments pc_c 
+                             WHERE pc_c.post_id = sp.post_id 
+                             AND (
+                                 ($${companyParamIdx}::uuid IS NOT NULL AND pc_c.author_org_id = $${companyParamIdx}::uuid)
+                                 OR
+                                 ($${companyParamIdx}::uuid IS NULL AND pc_c.author_id = $${userParamIdx} AND pc_c.author_org_id IS NULL)
+                             )
+                         ),
                          'is_saved', EXISTS(SELECT 1 FROM saved_post sp_s WHERE sp_s.post_id = sp.post_id AND sp_s.user_id = $${userParamIdx}),
                         'poll', (
                             SELECT json_build_object(
                                 'poll_id', pp.poll_id,
                                 'duration', COALESCE(pp.duration, '1 day'),
                                 'total_votes', (SELECT COUNT(*) FROM poll_votes pv WHERE pv.poll_id = pp.poll_id)::int,
-                                'user_vote', (SELECT pv_u.option_id FROM poll_votes pv_u WHERE pv_u.poll_id = pp.poll_id AND pv_u.voter_id = $${userParamIdx}),
+                                'user_vote', (
+                                    SELECT pv_u.option_id FROM poll_votes pv_u 
+                                    WHERE pv_u.poll_id = pp.poll_id 
+                                    AND (
+                                        ($${companyParamIdx}::uuid IS NOT NULL AND pv_u.org_id = $${companyParamIdx}::uuid)
+                                        OR
+                                        ($${companyParamIdx}::uuid IS NULL AND pv_u.voter_id = $${userParamIdx} AND pv_u.org_id IS NULL)
+                                    )
+                                ),
                                 'is_active', (pp.created_at + COALESCE(pp.duration, '1 day')::interval > NOW()),
                                 'options', COALESCE(
                                     (SELECT json_agg(json_build_object('option_id', po.option_id, 'option_text', po.option_text, 'vote_count', (SELECT COUNT(*) FROM poll_votes pv WHERE pv.option_id = po.option_id))) FROM poll_options po WHERE po.poll_id = pp.poll_id),
@@ -163,9 +220,6 @@ exports.getPublicFeed = async (req, res) => {
         LEFT JOIN users sp_u ON sp.author_id = sp_u.user_id
         LEFT JOIN organizations sp_comp ON sp_comp.org_id = sp.author_org_id
         LEFT JOIN post_categories sp_cat ON sp.category_id = sp_cat.category_id
-
-        -- Like Check Join
-        LEFT JOIN post_likes pl_me ON pl_me.post_id = p.post_id AND pl_me.user_id = $${userParamIdx}
 
         WHERE p.visibility = 'public'
         AND (p.is_removed IS FALSE OR p.is_removed IS NULL)
@@ -240,12 +294,17 @@ exports.getMyPosts = async (req, res) => {
         cursorCreatedAt,
         cursorPostId,
         limit = 10,
+        companyId
     } = req.query;
 
     try {
-        const params = [userId];
+        const actorId = companyId || userId;
+        const isOrgActor = !!companyId;
+        const params = [actorId];
         let idx = 2;
-        let whereClause = `WHERE p.author_id = $1 AND p.author_org_id IS NULL`;
+        let whereClause = isOrgActor
+            ? `WHERE p.author_org_id = $1::uuid`
+            : `WHERE p.author_id = $1 AND p.author_org_id IS NULL`;
 
         // ✅ Category filter (skip if "All")
         if (category && category !== "All") {
@@ -275,6 +334,9 @@ exports.getMyPosts = async (req, res) => {
         )
         `;
 
+        // If org actor, $1 is the org_id. We might need the userId for block checks if they are personal blocks,
+        // but typically blocks are user-level. For now, assuming $1 is the actor.
+
         // ✅ LIMIT
         params.push(limit);
 
@@ -295,9 +357,28 @@ exports.getMyPosts = async (req, res) => {
 
                             COALESCE(pm.media, '[]':: json) AS media,
                                 COALESCE(lc.like_count, 0) AS like_count,
-                                    EXISTS(SELECT 1 FROM post_likes pl WHERE pl.post_id = p.post_id AND pl.user_id = $1) AS is_liked,
-                                    EXISTS(SELECT 1 FROM post_comments pc_me WHERE pc_me.post_id = p.post_id AND pc_me.author_id = $1) AS is_commented,
-                                    EXISTS(SELECT 1 FROM saved_post sp_me WHERE sp_me.post_id = p.post_id AND sp_me.user_id = $1) AS is_saved,
+                                    -- Identity Aware states
+                                    EXISTS(
+                                        SELECT 1 FROM post_likes pl_me 
+                                        WHERE pl_me.post_id = p.post_id 
+                                        AND (
+                                            ${isOrgActor ? 'pl_me.org_id = $1::uuid' : 'pl_me.user_id = $1 AND pl_me.org_id IS NULL'}
+                                        )
+                                    ) AS is_liked,
+                                    EXISTS(
+                                        SELECT 1 FROM post_comments pc_me 
+                                        WHERE pc_me.post_id = p.post_id 
+                                        AND (
+                                            ${isOrgActor ? 'pc_me.author_org_id = $1::uuid' : 'pc_me.author_id = $1 AND pc_me.author_org_id IS NULL'}
+                                        )
+                                    ) AS is_commented,
+                                    EXISTS(
+                                        SELECT 1 FROM saved_post sp_me 
+                                        WHERE sp_me.post_id = p.post_id AND sp_me.user_id = $1
+                                        AND (
+                                            ${isOrgActor ? 'sp_me.org_id = $1::uuid' : 'sp_me.org_id IS NULL'}
+                                        )
+                                    ) AS is_saved,
                                         COALESCE(cc.comment_count, 0) AS comment_count,
 
                                             pp.poll,
@@ -418,7 +499,13 @@ exports.getMyPosts = async (req, res) => {
                 'poll_id', pp.poll_id,
                 'duration', COALESCE(pp.duration, '1 day'),
                 'total_votes', COALESCE(pv.total_votes, 0),
-                'user_vote', (SELECT pv_u.option_id FROM poll_votes pv_u WHERE pv_u.poll_id = pp.poll_id AND pv_u.voter_id = $1),
+                'user_vote', (
+                    SELECT pv_u.option_id FROM poll_votes pv_u 
+                    WHERE pv_u.poll_id = pp.poll_id 
+                    AND (
+                        ${isOrgActor ? 'pv_u.org_id = $1::uuid' : 'pv_u.voter_id = $1 AND pv_u.org_id IS NULL'}
+                    )
+                ),
             'options', COALESCE(po.options, '[]':: json),
             'is_active', (pp.created_at + COALESCE(pp.duration, '1 day'):: interval > NOW())
           ) AS poll
@@ -902,6 +989,7 @@ exports.createPost = async (req, res) => {
 exports.getPostById = async (req, res) => {
     const postId = req.params.id;
     const userId = req.user ? req.user.sub : null;
+    const { companyId } = req.query;
 
     try {
         const query = `SELECT 
@@ -918,9 +1006,27 @@ exports.getPostById = async (req, res) => {
     -- Comment Count
     (SELECT COUNT(*) FROM post_comments pc WHERE pc.post_id = p.post_id)::int AS comment_count,
 
-    -- Is Liked (Fix for stale state)
-    COALESCE(il.is_liked, false) AS is_liked,
-    EXISTS(SELECT 1 FROM post_comments pc_me WHERE pc_me.post_id = p.post_id AND pc_me.author_id = $2) AS is_commented,
+    -- Is Liked (Identity Aware)
+    EXISTS(
+        SELECT 1 FROM post_likes pl 
+        WHERE pl.post_id = p.post_id 
+        AND (
+            ($3::uuid IS NOT NULL AND pl.org_id = $3::uuid)
+            OR
+            ($3::uuid IS NULL AND pl.user_id = $2 AND pl.org_id IS NULL)
+        )
+    ) AS is_liked,
+
+    EXISTS(
+        SELECT 1 FROM post_comments pc_me 
+        WHERE pc_me.post_id = p.post_id 
+        AND (
+            ($3::uuid IS NOT NULL AND pc_me.author_org_id = $3::uuid)
+            OR
+            ($3::uuid IS NULL AND pc_me.author_id = $2 AND pc_me.author_org_id IS NULL)
+        )
+    ) AS is_commented,
+
     EXISTS(SELECT 1 FROM saved_post sp_me WHERE sp_me.post_id = p.post_id AND sp_me.user_id = $2) AS is_saved,
 
     -- Media (array)
@@ -945,7 +1051,15 @@ exports.getPostById = async (req, res) => {
             'poll_id', pp.poll_id,
             'duration', COALESCE(pp.duration, '1 day'),
             'total_votes', (SELECT COUNT(*) FROM poll_votes pv WHERE pv.poll_id = pp.poll_id)::int,
-            'user_vote', (SELECT pv_u.option_id FROM poll_votes pv_u WHERE pv_u.poll_id = pp.poll_id AND pv_u.voter_id = $2),
+            'user_vote', (
+                SELECT pv_u.option_id FROM poll_votes pv_u 
+                WHERE pv_u.poll_id = pp.poll_id 
+                AND (
+                    ($3::uuid IS NOT NULL AND pv_u.org_id = $3::uuid)
+                    OR
+                    ($3::uuid IS NULL AND pv_u.voter_id = $2 AND pv_u.org_id IS NULL)
+                )
+            ),
             'is_active', (pp.created_at + COALESCE(pp.duration, '1 day')::interval > NOW()),
             'options',
             COALESCE(
@@ -1002,13 +1116,29 @@ exports.getPostById = async (req, res) => {
                 'media', COALESCE(sp_media.media, '[]'::json),
                 'like_count', (SELECT COUNT(*) FROM post_likes pl WHERE pl.post_id = sp.post_id)::int,
                 'comment_count', (SELECT COUNT(*) FROM post_comments pc WHERE pc.post_id = sp.post_id)::int,
-                'is_liked', EXISTS(SELECT 1 FROM post_likes pl WHERE pl.post_id = sp.post_id AND pl.user_id = $2),
+                'is_liked', EXISTS(
+                    SELECT 1 FROM post_likes pl 
+                    WHERE pl.post_id = sp.post_id 
+                    AND (
+                        ($3::uuid IS NOT NULL AND pl.org_id = $3::uuid)
+                        OR
+                        ($3::uuid IS NULL AND pl.user_id = $2 AND pl.org_id IS NULL)
+                    )
+                ),
                 'poll', (
                     SELECT json_build_object(
                         'poll_id', pp.poll_id,
                         'duration', COALESCE(pp.duration, '1 day'),
                         'total_votes', (SELECT COUNT(*) FROM poll_votes pv WHERE pv.poll_id = pp.poll_id)::int,
-                        'user_vote', (SELECT pv_u.option_id FROM poll_votes pv_u WHERE pv_u.poll_id = pp.poll_id AND pv_u.voter_id = $2),
+                        'user_vote', (
+                            SELECT pv_u.option_id FROM poll_votes pv_u 
+                            WHERE pv_u.poll_id = pp.poll_id 
+                            AND (
+                                ($3::uuid IS NOT NULL AND pv_u.org_id = $3::uuid)
+                                OR
+                                ($3::uuid IS NULL AND pv_u.voter_id = $2 AND pv_u.org_id IS NULL)
+                            )
+                        ),
                         'is_active', (pp.created_at + COALESCE(pp.duration, '1 day')::interval > NOW()),
                         'options',
                         COALESCE(
@@ -1069,20 +1199,10 @@ LEFT JOIN (
     GROUP BY post_id
 ) sp_media ON sp.post_id = sp_media.post_id
 
-LEFT JOIN (
-    SELECT post_id, COUNT(*) AS like_count
-    FROM post_likes
-    GROUP BY post_id
-) lc ON lc.post_id = p.post_id
-LEFT JOIN (
-    SELECT post_id, true AS is_liked
-    FROM post_likes
-    WHERE user_id = $2
-) il ON il.post_id = p.post_id
 WHERE p.post_id = $1;
 `
 
-        const result = await pool.query(query, [postId, userId]);
+        const result = await pool.query(query, [postId, userId, companyId || null]);
 
         if (result.rows.length === 0) {
             return res.status(404).json({ message: "Post not found" });
@@ -1410,14 +1530,23 @@ exports.deletePost = async (req, res) => {
 
 // --- POLL INTERACTION ---
 exports.voteInPoll = async (req, res) => {
-    const voterId = req.user.sub;
+    const userId = req.user.sub;
     const { id: postId } = req.params;
-    const { option_id } = req.body;
+    const { option_id, companyId } = req.body;
 
     try {
+        // Company Authorization Check
+        if (companyId) {
+            const memberCheck = await pool.query(
+                `SELECT 1 FROM organization_members WHERE org_id = $1 AND user_id = $2`,
+                [companyId, userId]
+            );
+            if (memberCheck.rowCount === 0) {
+                return res.status(403).json({ message: "Not authorized to act as this company" });
+            }
+        }
+
         // 1. Check if poll exists and if it's still active using DB logic
-
-
         const pollRes = await pool.query(
             `SELECT pp.poll_id, 
              (pp.created_at + COALESCE(pp.duration, '1 day')::interval > NOW()) as is_active 
@@ -1435,13 +1564,24 @@ exports.voteInPoll = async (req, res) => {
             return res.status(403).json({ message: "This poll has ended and no longer accepts votes." });
         }
 
-        await pool.query(
-            `INSERT INTO poll_votes (voter_id, poll_id, option_id) 
-             VALUES ($1, $2, $3) 
-             ON CONFLICT (voter_id, poll_id) 
-             DO UPDATE SET option_id = $3`,
-            [voterId, poll_id, option_id]
-        );
+        // 3. Cast Vote with Identity Isolation
+        if (companyId) {
+            await pool.query(
+                `INSERT INTO poll_votes (voter_id, poll_id, option_id, org_id) 
+                 VALUES ($1, $2, $3, $4) 
+                 ON CONFLICT (poll_id, org_id) WHERE org_id IS NOT NULL
+                 DO UPDATE SET option_id = $3`,
+                [userId, poll_id, option_id, companyId]
+            );
+        } else {
+            await pool.query(
+                `INSERT INTO poll_votes (voter_id, poll_id, option_id) 
+                 VALUES ($1, $2, $3) 
+                 ON CONFLICT (poll_id, voter_id) WHERE org_id IS NULL
+                 DO UPDATE SET option_id = $3`,
+                [userId, poll_id, option_id]
+            );
+        }
 
         res.status(200).json({ message: "Vote recorded successfully" });
 
@@ -1452,8 +1592,9 @@ exports.voteInPoll = async (req, res) => {
 }
 
 exports.removeVote = async (req, res) => {
-    const voterId = req.user.sub;
+    const userId = req.user.sub;
     const { id: postId } = req.params;
+    const { companyId } = req.body;
 
     try {
         const pollRes = await pool.query(
@@ -1469,10 +1610,17 @@ exports.removeVote = async (req, res) => {
             return res.status(403).json({ message: "Cannot change votes on an ended poll" });
         }
 
-        await pool.query(
-            `DELETE FROM poll_votes WHERE voter_id = $1 AND poll_id = $2`,
-            [voterId, poll_id]
-        );
+        if (companyId) {
+            await pool.query(
+                `DELETE FROM poll_votes WHERE org_id = $1 AND poll_id = $2`,
+                [companyId, poll_id]
+            );
+        } else {
+            await pool.query(
+                `DELETE FROM poll_votes WHERE voter_id = $1 AND poll_id = $2 AND org_id IS NULL`,
+                [userId, poll_id]
+            );
+        }
 
         res.status(200).json({ message: "Vote removed successfully" });
     } catch (err) {
@@ -1864,7 +2012,7 @@ exports.addComment = async (req, res) => {
 exports.updateComment = async (req, res) => {
     const userId = req.user.sub;
     const commentId = req.params.commentId;
-    const { content } = req.body;
+    const { content, companyId } = req.body;
 
     if (!commentId) {
         return res.status(400).json({ message: "commentId is required" });
@@ -1879,15 +2027,26 @@ exports.updateComment = async (req, res) => {
     }
 
     try {
-        const result = await pool.query(
-            `
-      UPDATE post_comments
-      SET content = $1
-      WHERE comment_id = $2 AND author_id = $3
-      RETURNING comment_id, content, created_at
-      `,
-            [content.trim(), commentId, userId]
-        );
+        let query, params;
+        if (companyId) {
+            query = `
+                UPDATE post_comments
+                SET content = $1
+                WHERE comment_id = $2 AND author_org_id = $3
+                RETURNING comment_id, content, created_at
+            `;
+            params = [content.trim(), commentId, companyId];
+        } else {
+            query = `
+                UPDATE post_comments
+                SET content = $1
+                WHERE comment_id = $2 AND author_id = $3 AND author_org_id IS NULL
+                RETURNING comment_id, content, created_at
+            `;
+            params = [content.trim(), commentId, userId];
+        }
+
+        const result = await pool.query(query, params);
 
         if (result.rowCount === 0) {
             // Either comment doesn't exist OR user is not the author
@@ -1914,6 +2073,8 @@ exports.deleteComment = async (req, res) => {
     const userId = req.user.sub;
     const commentId = req.params.commentId;
 
+    const { companyId } = req.body;
+
     if (!userId || !commentId) {
         return res.status(400).json({ message: "userId and commentId are required" });
     }
@@ -1925,10 +2086,25 @@ exports.deleteComment = async (req, res) => {
         }
         const comment = commentCheck.rows[0];
 
-        const postCheck = await pool.query(`SELECT author_id FROM posts WHERE post_id = $1`, [comment.post_id]);
-        let postOwnerId = postCheck.rowCount > 0 ? postCheck.rows[0].author_id : null;
+        const postCheck = await pool.query(`SELECT author_id, author_org_id FROM posts WHERE post_id = $1`, [comment.post_id]);
+        if (postCheck.rowCount === 0) {
+            return res.status(404).json({ message: "Associated post not found" });
+        }
+        const post = postCheck.rows[0];
 
-        const canDelete = (String(comment.author_id) === String(userId)) || (String(postOwnerId) === String(userId));
+        let canDelete = false;
+
+        if (companyId) {
+            // Acting as organization: Can delete if they authored the comment OR own the post
+            const isCommentAuthor = comment.author_org_id === companyId;
+            const isPostOwner = post.author_org_id === companyId;
+            canDelete = isCommentAuthor || isPostOwner;
+        } else {
+            // Acting as user: Can delete if they authored the comment OR own the post (personal scope)
+            const isCommentAuthor = (comment.author_id === userId && comment.author_org_id === null);
+            const isPostOwner = (post.author_id === userId && post.author_org_id === null);
+            canDelete = isCommentAuthor || isPostOwner;
+        }
 
         if (!canDelete) {
             return res.status(403).json({ message: "Not authorized to delete this comment" });
@@ -2119,8 +2295,7 @@ exports.toggleCommentLike = async (req, res) => {
 
 // Toggle pin on a comment (post owner only)
 exports.toggleCommentPin = async (req, res) => {
-    const userId = req.user.sub;
-    const { commentId } = req.params;
+    const { companyId } = req.body;
 
     if (!commentId || !userId) {
         return res.status(400).json({ message: "Comment ID and user ID are required" });
@@ -2129,7 +2304,7 @@ exports.toggleCommentPin = async (req, res) => {
     try {
         // Get comment and verify it exists
         const commentResult = await pool.query(
-            `SELECT c.comment_id, c.post_id, c.is_pinned, p.author_id as post_author_id
+            `SELECT c.comment_id, c.post_id, c.is_pinned, p.author_id as post_author_id, p.author_org_id as post_author_org_id
              FROM post_comments c
              JOIN posts p ON c.post_id = p.post_id
              WHERE c.comment_id = $1`,
@@ -2142,8 +2317,15 @@ exports.toggleCommentPin = async (req, res) => {
 
         const comment = commentResult.rows[0];
 
-        // Verify user is the post owner
-        if (comment.post_author_id.toString() !== userId.toString()) {
+        // Verify user is the post owner (Identity Aware)
+        let isOwner = false;
+        if (companyId) {
+            isOwner = comment.post_author_org_id === companyId;
+        } else {
+            isOwner = (comment.post_author_id === userId && comment.post_author_org_id === null);
+        }
+
+        if (!isOwner) {
             return res.status(403).json({ message: "Only post owner can pin comments" });
         }
 
@@ -2161,9 +2343,9 @@ exports.toggleCommentPin = async (req, res) => {
             // Pin: Add pin
             await pool.query(
                 `UPDATE post_comments 
-                 SET is_pinned = true, pinned_at = NOW(), pinned_by = $1
-                 WHERE comment_id = $2`,
-                [userId, commentId]
+                 SET is_pinned = true, pinned_at = NOW(), pinned_by = $1, pinned_by_org_id = $2
+                 WHERE comment_id = $3`,
+                [userId, companyId || null, commentId]
             );
             pinned = true;
         }
