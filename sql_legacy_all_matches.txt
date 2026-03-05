@@ -1,0 +1,44 @@
+﻿C:\Users\user3\Desktop\cocpit\cocpit-backend\src\modules\content\content.controller.js:1678:                 if (!companyId) { // Skip block check for companies for now (simplify)
+C:\Users\user3\Desktop\cocpit\cocpit-backend\src\modules\content\content.controller.js:1726:         // Note: Posts are strictly User-owned currently. Companies don't own posts in this schema yet (except shared posts maybe?).
+C:\Users\user3\Desktop\cocpit\cocpit-backend\src\modules\content\content.controller.js:2272:         // Fetch following IDs (including companies)
+C:\Users\user3\Desktop\cocpit\cocpit-backend\src\modules\content\content.controller.js:2765:             // We ignore author_id check strictly for now, or we can say companies owned by author also don't count?
+C:\Users\user3\Desktop\cocpit\cocpit-backend\src\modules\jobs\job.routes.js:35: router.post("/companies/:companyId/offers", requireAuth, requireCompanyPermission("MANAGE_JOBS"), offerController.sendJobOffer);
+C:\Users\user3\Desktop\cocpit\cocpit-backend\src\modules\jobs\job.routes.js:36: router.get("/companies/:companyId/offers/sent", requireAuth, requireCompanyPermission("VIEW_JOBS"), offerController.getCompanySentOffers);
+C:\Users\user3\Desktop\cocpit\cocpit-backend\src\modules\jobs\job.routes.js:37: router.get("/companies/:companyId/offers/job/:jobId/recipients", requireAuth, requireCompanyPermission("VIEW_JOBS"), offerController.getCompanyOfferRecipients);
+C:\Users\user3\Desktop\cocpit\cocpit-backend\src\modules\jobs\job.routes.js:38: router.get("/companies/:companyId/offers/check/:targetUserId", requireAuth, requireCompanyPermission("VIEW_JOBS"), offerController.checkOfferStatus);
+C:\Users\user3\Desktop\cocpit\cocpit-backend\src\modules\jobs\job.routes.js:40: router.delete("/companies/:companyId/offers/:offerId", requireAuth, requireCompanyPermission("MANAGE_JOBS"), offerController.withdrawOffer);
+C:\Users\user3\Desktop\cocpit\cocpit-backend\src\modules\organization\organization.controller.js:52:         // 2b. Max Active Companies Limit (5)
+C:\Users\user3\Desktop\cocpit\cocpit-backend\src\modules\organization\organization.routes.js:20: router.get("/companies/check-slug", optionalAuth, organizationController.checkSlug);
+C:\Users\user3\Desktop\cocpit\cocpit-backend\src\modules\organization\organization.routes.js:23: router.get("/companies/mine", requireAuth, organizationController.getUserOrganizations);
+C:\Users\user3\Desktop\cocpit\cocpit-backend\src\modules\organization\organization.routes.js:26: router.get("/companies/:slug", optionalAuth, organizationController.getOrganization);
+C:\Users\user3\Desktop\cocpit\cocpit-backend\src\modules\organization\organization.routes.js:30: router.post("/companies", requireAuth, organizationActionLimiter, organizationController.createOrganization);
+C:\Users\user3\Desktop\cocpit\cocpit-backend\src\modules\organization\organization.routes.js:33: router.post("/companies/invites/accept", requireAuth, membersController.acceptInvite);
+C:\Users\user3\Desktop\cocpit\cocpit-backend\src\modules\organization\organization.routes.js:42: router.post("/companies/:companyId/members/invite", requireAuth, requireOrgPermission("INVITE_MEMBERS"), organizationActionLimiter, membersController.inviteMember);
+C:\Users\user3\Desktop\cocpit\cocpit-backend\src\modules\organization\organization.routes.js:43: router.get("/companies/:companyId/members", requireAuth, requireOrgPermission("VIEW_MEMBERS"), membersController.getMembers);
+C:\Users\user3\Desktop\cocpit\cocpit-backend\src\modules\organization\organization.routes.js:44: router.delete("/companies/:companyId/members/:memberId", requireAuth, requireOrgPermission("REMOVE_MEMBERS"), membersController.removeMember);
+C:\Users\user3\Desktop\cocpit\cocpit-backend\src\modules\organization\organization.routes.js:45: router.post("/companies/:companyId/leave", requireAuth, membersController.leaveOrganization);
+C:\Users\user3\Desktop\cocpit\cocpit-backend\src\modules\organization\organization.routes.js:52: router.post("/companies/:orgId/enroll", requireAuth, institutionController.requestEnrollment);
+C:\Users\user3\Desktop\cocpit\cocpit-backend\src\modules\organization\organization.routes.js:59: router.post("/companies/:companyId/verify/domain", requireAuth, requireOrgPermission("MANAGE_SETTINGS"), otpGenerationLimiter, verifyController.verifyDomain);
+C:\Users\user3\Desktop\cocpit\cocpit-backend\src\modules\organization\organization.routes.js:66: router.put("/companies/:companyId", requireAuth, requireOrgPermission("MANAGE_COMPANY_DETAILS"), organizationController.updateOrganization);
+C:\Users\user3\Desktop\cocpit\cocpit-backend\src\modules\organization\organization.routes.js:90: router.get("/companies/:companyId/posts", optionalAuth, postsController.getOrganizationPosts);
+C:\Users\user3\Desktop\cocpit\cocpit-backend\src\modules\organization\organization.routes.js:98: router.get("/companies/:companyId/jobs", optionalAuth, organizationJobsController.getOrganizationJobs);
+C:\Users\user3\Desktop\cocpit\cocpit-backend\src\modules\profile\profile.controller.js:75:             company_roles: companyRoles,
+C:\Users\user3\Desktop\cocpit\cocpit-backend\src\modules\share\share.controller.js:150:                OR cp.company_id IN (SELECT company_id FROM organization_members WHERE user_id = $2 AND status = 'ACTIVE')
+C:\Users\user3\Desktop\cocpit\cocpit-backend\src\modules\share\share.controller.js:187:                 `SELECT company_id, name, logo_url AS avatar, industry AS headline, slug, industry
+C:\Users\user3\Desktop\cocpit\cocpit-backend\src\modules\share\share.controller.js:246:                 author_company_id
+C:\Users\user3\Desktop\cocpit\cocpit-backend\src\modules\share\share.service.js:236:             ...(senderCompanyId ? { company_id: senderCompanyId } : {}),
+C:\Users\user3\Desktop\cocpit\cocpit-backend\src\modules\social\social.controller.js:509:         // Build UNION query: users the person follows + companies the person follows
+C:\Users\user3\Desktop\cocpit\cocpit-backend\src\modules\social\social.controller.js:1473:             // Block check: only applies to user targets (companies are not blockable)
+C:\Users\user3\Desktop\cocpit\cocpit-backend\src\modules\social\social.controller.js:2122:                         ) FROM companies pc WHERE pc.company_id = m.shared_profile_id AND pc.is_deleted = FALSE)
+C:\Users\user3\Desktop\cocpit\cocpit-backend\src\modules\social\social.routes.js:16: router.post("/companies/:companyId/follow", requireAuth, socialController.followCompany);
+C:\Users\user3\Desktop\cocpit\cocpit-backend\src\modules\social\social.routes.js:17: router.delete("/companies/:companyId/unfollow", requireAuth, socialController.unfollowCompany);
+C:\Users\user3\Desktop\cocpit\cocpit-backend\src\modules\social\social.routes.js:18: router.get("/companies/:companyId/relationship", requireAuth, socialController.getCompanyRelationship);
+C:\Users\user3\Desktop\cocpit\cocpit-backend\src\modules\social\social.routes.js:19: router.get("/companies/:companyId/followers", socialController.getCompanyFollowers);
+C:\Users\user3\Desktop\cocpit\cocpit-backend\src\modules\social\social.routes.js:20: router.delete("/companies/:companyId/followers/:followerId", requireAuth, requireCompanyPermission("MANAGE_MEMBERS"), socialController.removeCompanyFollower);
+C:\Users\user3\Desktop\cocpit\cocpit-backend\src\modules\social\social.routes.js:30: router.post("/companies/:companyId/connect/:userId", requireAuth, requireCompanyPermission("MANAGE_CONNECTIONS"), socialController.sendCompanyConnectionRequest);
+C:\Users\user3\Desktop\cocpit\cocpit-backend\src\modules\social\social.routes.js:31: router.patch("/companies/:companyId/connect/handle", requireAuth, socialController.handleCompanyConnectionRequest);
+C:\Users\user3\Desktop\cocpit\cocpit-backend\src\modules\social\social.routes.js:32: router.delete("/companies/:companyId/connect/:userId/cancel", requireAuth, requireCompanyPermission("MANAGE_CONNECTIONS"), socialController.cancelCompanyConnectionRequest);
+C:\Users\user3\Desktop\cocpit\cocpit-backend\src\modules\social\social.routes.js:33: router.delete("/companies/:companyId/connections/:userId", requireAuth, socialController.removeCompanyConnection);
+C:\Users\user3\Desktop\cocpit\cocpit-backend\src\modules\social\social.routes.js:34: router.get("/companies/:companyId/connection-status/:userId", requireAuth, socialController.getCompanyConnectionStatus);
+C:\Users\user3\Desktop\cocpit\cocpit-backend\src\modules\user\user.controller.js:671:     // 3. Check for Orphaned Companies (Sole Owner)
+C:\Users\user3\Desktop\cocpit\cocpit-backend\src\modules\user\user.controller.js:672:     // Find all companies where this user is OWNER (Active companies only)

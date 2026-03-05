@@ -13,18 +13,18 @@ exports.getProfile = async (req, res) => {
 
     if (userId !== "me" && !uuidRegex.test(userId)) {
         try {
-      const resolveResult = await pool.query(
-        "SELECT user_id FROM users WHERE LOWER(account_name) = LOWER($1)",
-        [userId]
-      );
-      if (resolveResult.rowCount === 0) {
-        return res.status(404).json({ message: "User not found" });
-      }
-      userId = resolveResult.rows[0].user_id;
-    } catch (err) {
-      console.error("Username resolution error:", err);
-      return res.status(500).json({ message: "Internal server error" });
-    }
+            const resolveResult = await pool.query(
+                "SELECT user_id FROM users WHERE LOWER(account_name) = LOWER($1)",
+                [userId]
+            );
+            if (resolveResult.rowCount === 0) {
+                return res.status(404).json({ message: "User not found" });
+            }
+            userId = resolveResult.rows[0].user_id;
+        } catch (err) {
+            console.error("Username resolution error:", err);
+            return res.status(500).json({ message: "Internal server error" });
+        }
     }
 
     if (req.user && userId !== req.user.sub) {
@@ -91,7 +91,7 @@ exports.getMyProfile = async (req, res) => {
 exports.updateProfile = async (req, res) => {
     const userId = req.user.sub;
     const { full_name, headline, job_title, company_name, school, degree, location, about_text, mobile_number,
-    account_name} = req.body;
+        account_name } = req.body;
 
     if (full_name && full_name.trim().length < 3) return res.status(400).json({ message: "Full name must be at least 3 characters" });
     if (headline && headline.length > 120) return res.status(400).json({ message: "Headline cannot exceed 120 characters" });
@@ -103,20 +103,20 @@ exports.updateProfile = async (req, res) => {
     if (about_text && about_text.length > 500) return res.status(400).json({ message: "About section cannot exceed 500 characters" });
     // Validate account_name (username) if provided
     if (account_name !== undefined) {
-    const usernameRegex = /^[a-zA-Z0-9_-]{3,30}$/;
-    if (!usernameRegex.test(account_name)) {
-      return res.status(400).json({ message: "Username must be 3-30 characters and contain only letters, numbers, underscores, or hyphens" });
-    }
+        const usernameRegex = /^[a-zA-Z0-9_-]{3,30}$/;
+        if (!usernameRegex.test(account_name)) {
+            return res.status(400).json({ message: "Username must be 3-30 characters and contain only letters, numbers, underscores, or hyphens" });
+        }
 
-    // Check case-insensitive uniqueness
-    const existing = await pool.query(
-      "SELECT user_id FROM users WHERE LOWER(account_name) = LOWER($1) AND user_id != $2",
-      [account_name, userId]
-    );
-    if (existing.rowCount > 0) {
-      return res.status(409).json({ message: "Username is already taken" });
+        // Check case-insensitive uniqueness
+        const existing = await pool.query(
+            "SELECT user_id FROM users WHERE LOWER(account_name) = LOWER($1) AND user_id != $2",
+            [account_name, userId]
+        );
+        if (existing.rowCount > 0) {
+            return res.status(409).json({ message: "Username is already taken" });
+        }
     }
-  }
 
     try {
         await profileRepo.updateUserFields(userId, req.body);
