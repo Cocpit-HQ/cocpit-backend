@@ -14,6 +14,13 @@ router.get("/post/:id", requireAuth, contentController.getPostById);
 router.put("/post/:id", requireAuth, contentController.updatePostById);
 router.delete("/post/:id", requireAuth, contentController.deletePost);
 
+// Post Moderation
+router.post("/post/:id/flag", requireAuth, contentController.flagPost);
+// The moderation endpoint requires the exact orgId format to use our RBAC middleware
+// Assuming it's hit as /api/organizations/:orgId/posts/:postId/moderate
+const { requireOrgPermission } = require("../../core/middlewares/organization.auth.middleware");
+router.delete("/organizations/:orgId/posts/:postId/moderate", requireAuth, requireOrgPermission("MANAGE_COMMENTS"), contentController.moderatePost);
+
 // Save / Unsave
 router.post("/posts/:postId/save", requireAuth, toggleSavePost);
 

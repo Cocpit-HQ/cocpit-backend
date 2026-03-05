@@ -1,21 +1,21 @@
 const pool = require("../../core/db/pool");
 const AppError = require("../../core/errors/AppError");
 
-const { checkCompanyPermission } = require("../../core/utils/rbac");
+const { checkOrgPermission } = require("../../core/utils/rbac");
 
 exports.getOverview = async (req, res) => {
-    const { companyId } = req.params;
+    const { orgId: companyId } = req.params;
     const userId = req.user.sub;
 
     const client = await pool.connect();
     try {
-        if (!(await checkCompanyPermission(client, companyId, userId, 'VIEW_ANALYTICS'))) {
+        if (!(await checkOrgPermission(client, companyId, userId, 'VIEW_ANALYTICS'))) {
             throw new AppError("Forbidden: You do not have permission to view analytics", 403);
         }
 
         // 1. Follower Count & Growth (Last 30 days)
         const followerCountRes = await client.query(
-            `SELECT COUNT(*) FROM company_followers WHERE company_id = $1`,
+            `SELECT COUNT(*) FROM organization_followers WHERE org_id = $1`,
             [companyId]
         );
         const totalFollowers = parseInt(followerCountRes.rows[0].count);
@@ -23,8 +23,8 @@ exports.getOverview = async (req, res) => {
         // Growth: Group by day for last 30 days
         const growthRes = await client.query(
             `SELECT DATE(created_at) as date, COUNT(*) as count 
-             FROM company_followers 
-             WHERE company_id = $1 AND created_at > NOW() - INTERVAL '30 days'
+             FROM organization_followers 
+             WHERE org_id = $1 AND created_at > NOW() - INTERVAL '30 days'
              GROUP BY DATE(created_at) 
              ORDER BY DATE(created_at) ASC`,
             [companyId]
@@ -35,7 +35,7 @@ exports.getOverview = async (req, res) => {
         const viewsRes = await client.query(
             `SELECT DATE(created_at) as date, COUNT(*) as count 
              FROM audit_logs 
-             WHERE entity_id = $1 AND entity_type = 'COMPANY' AND action = 'VIEW'
+             WHERE entity_id = $1 AND entity_type = 'ORGANIZATION' AND action = 'VIEW'
              AND created_at > NOW() - INTERVAL '30 days'
              GROUP BY DATE(created_at)
              ORDER BY DATE(created_at) ASC`,
@@ -43,7 +43,7 @@ exports.getOverview = async (req, res) => {
         );
 
         const totalViewsRes = await client.query(
-            `SELECT COUNT(*) FROM audit_logs WHERE entity_id = $1 AND entity_type = 'COMPANY' AND action = 'VIEW'`,
+            `SELECT COUNT(*) FROM audit_logs WHERE entity_id = $1 AND entity_type = 'ORGANIZATION' AND action = 'VIEW'`,
             [companyId]
         );
         const totalViews = parseInt(totalViewsRes.rows[0].count);
@@ -68,28 +68,28 @@ exports.getOverview = async (req, res) => {
 };
 
 exports.getEngagement = async (req, res) => {
-    const { companyId } = req.params;
+    const { orgId: companyId } = req.params;
     const userId = req.user.sub;
 
     const client = await pool.connect();
     try {
-        if (!(await checkCompanyPermission(client, companyId, userId, 'VIEW_ANALYTICS'))) {
+        if (!(await checkOrgPermission(client, companyId, userId, 'VIEW_ANALYTICS'))) {
             throw new AppError("Forbidden: You do not have permission to view analytics", 403);
         }
 
         // 1. Total Likes & Comments on Company Posts
         const statsRes = await client.query(
             `SELECT 
-                (SELECT COUNT(*) FROM post_likes WHERE company_id = $1) as company_likes_given, 
-                (SELECT COUNT(*) FROM post_comments WHERE author_company_id = $1) as company_comments_given,
+                (SELECT COUNT(*) FROM post_likes WHERE org_id = $1) as company_likes_given, 
+                (SELECT COUNT(*) FROM post_comments WHERE author_org_id = $1) as company_comments_given,
                 -- Received Engagement (on posts authored by company)
-                -- We look for posts where author_company_id = companyId
+                -- We look for posts where author_org_id = companyId
                 (SELECT COUNT(*) FROM post_likes pl 
                  JOIN posts p ON pl.post_id = p.post_id 
-                 WHERE p.author_company_id = $1) as likes_received,
+                 WHERE p.author_org_id = $1) as likes_received,
                 (SELECT COUNT(*) FROM post_comments pc
                  JOIN posts p ON pc.post_id = p.post_id
-                 WHERE p.author_company_id = $1) as comments_received
+                 WHERE p.author_org_id = $1) as comments_received
             `,
             [companyId]
         );
@@ -100,7 +100,7 @@ exports.getEngagement = async (req, res) => {
                 (SELECT COUNT(*) FROM post_likes pl WHERE pl.post_id = p.post_id) as like_count,
                 (SELECT COUNT(*) FROM post_comments pc WHERE pc.post_id = p.post_id) as comment_count
              FROM posts p
-             WHERE p.author_company_id = $1
+             WHERE p.author_org_id = $1
              ORDER BY (like_count + comment_count) DESC
              LIMIT 5`,
             [companyId]
@@ -120,18 +120,18 @@ exports.getEngagement = async (req, res) => {
 };
 
 exports.getJobs = async (req, res) => {
-    const { companyId } = req.params;
+    const { orgId: companyId } = req.params;
     const userId = req.user.sub;
 
     const client = await pool.connect();
     try {
-        if (!(await checkCompanyPermission(client, companyId, userId, 'VIEW_ANALYTICS'))) {
+        if (!(await checkOrgPermission(client, companyId, userId, 'VIEW_ANALYTICS'))) {
             throw new AppError("Forbidden: You do not have permission to view job analytics", 403);
         }
 
         // 1. Identify Jobs
         // Strategy: Match by company_name corresponding to this company
-        const companyRes = await client.query(`SELECT name FROM companies WHERE company_id = $1`, [companyId]);
+        const companyRes = await client.query(`SELECT name FROM organizations WHERE org_id = $1`, [companyId]);
         const companyName = companyRes.rows[0].name;
 
         // 2. Aggregate Stats
@@ -162,7 +162,7 @@ exports.getJobs = async (req, res) => {
 };
 
 exports.getAuditLogs = async (req, res) => {
-    const { companyId } = req.params;
+    const { orgId: companyId } = req.params;
     const userId = req.user.sub;
     const { page = 1, limit = 20, action, actorId } = req.query;
     const offset = (page - 1) * limit;
@@ -170,7 +170,7 @@ exports.getAuditLogs = async (req, res) => {
     const client = await pool.connect();
     try {
         // PERMISSIONS: Only OWNER and ADMIN can view audit logs (requires MANAGE_COMPANY)
-        const canViewAudit = await checkCompanyPermission(client, companyId, userId, 'MANAGE_COMPANY');
+        const canViewAudit = await checkOrgPermission(client, companyId, userId, 'MANAGE_COMPANY');
         if (!canViewAudit) throw new AppError("Forbidden: Only Admins can view audit logs", 403);
 
         // Build Query
@@ -178,7 +178,7 @@ exports.getAuditLogs = async (req, res) => {
             SELECT al.*, u.full_name as actor_name, u.email as actor_email, u.avatar_url as actor_avatar
             FROM audit_logs al
             LEFT JOIN users u ON al.actor_id = u.user_id
-            WHERE al.entity_id = $1 AND al.entity_type = 'COMPANY'
+            WHERE al.entity_id = $1 AND al.entity_type = 'ORGANIZATION'
         `;
         const params = [companyId];
         let paramIdx = 2;
@@ -202,7 +202,7 @@ exports.getAuditLogs = async (req, res) => {
 
         // Get Total Count (for pagination)
         // Simplified count query
-        let countQuery = `SELECT COUNT(*) FROM audit_logs WHERE entity_id = $1 AND entity_type = 'COMPANY'`;
+        let countQuery = `SELECT COUNT(*) FROM audit_logs WHERE entity_id = $1 AND entity_type = 'ORGANIZATION'`;
         const countParams = [companyId];
         let countParamIdx = 2;
         if (action) {

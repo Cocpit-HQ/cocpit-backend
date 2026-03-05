@@ -21,11 +21,11 @@ async function sweepTimedOutSessions() {
 
         // Find and lock sessions that have timed out
         const result = await client.query(
-            `UPDATE company_chat_sessions
+            `UPDATE organization_chat_sessions
              SET status = 'TIMED_OUT', ended_at = NOW(), end_reason = 'timeout'
              WHERE status = 'ACTIVE'
              AND last_activity_at < NOW() - INTERVAL '${TIMEOUT_MINUTES} minutes'
-             RETURNING session_id, conversation_id, company_id, handler_user_id, handler_name_snapshot`
+             RETURNING session_id, conversation_id, org_id, handler_user_id, handler_name_snapshot`
         );
 
         if (result.rowCount > 0) {
@@ -36,8 +36,8 @@ async function sweepTimedOutSessions() {
         for (const session of result.rows) {
             // Audit log
             await logAudit(client, {
-                entityType: 'COMPANY_CHAT_SESSION',
-                entityId: session.company_id,
+                entityType: 'ORGANIZATION_CHAT_SESSION',
+                entityId: session.org_id,
                 actorId: null, // System action
                 action: 'SESSION_TIMEOUT',
                 metadata: {
@@ -59,11 +59,11 @@ async function sweepTimedOutSessions() {
                 reason: 'timeout'
             });
 
-            // Notify all company members
+            // Notify all organization members
             try {
                 const members = await pool.query(
-                    'SELECT user_id FROM company_members WHERE company_id = $1 AND status = $2',
-                    [session.company_id, 'ACTIVE']
+                    'SELECT user_id FROM organization_members WHERE org_id = $1 AND status = $2',
+                    [session.org_id, 'ACTIVE']
                 );
                 for (const m of members.rows) {
                     if (m.user_id !== session.handler_user_id) {

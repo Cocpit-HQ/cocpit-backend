@@ -20,7 +20,7 @@ exports.sendJobOffer = async (req, res) => {
 
         // 1. Verify job belongs to this company
         const jobCheck = await client.query(
-            "SELECT job_id, title FROM jobs WHERE job_id = $1 AND company_id = $2 AND is_active = TRUE",
+            "SELECT job_id, title FROM jobs WHERE job_id = $1 AND org_id = $2 AND is_active = TRUE",
             [jobId, companyId]
         );
         if (jobCheck.rowCount === 0) {
@@ -40,7 +40,7 @@ exports.sendJobOffer = async (req, res) => {
 
         // 3. Create the offer
         const result = await client.query(
-            `INSERT INTO job_offers (job_id, company_id, user_id, sent_by, message)
+            `INSERT INTO job_offers (job_id, org_id, user_id, sent_by, message)
              VALUES ($1, $2, $3, $4, $5) RETURNING *`,
             [jobId, companyId, userId, sentBy, message || null]
         );
@@ -50,7 +50,7 @@ exports.sendJobOffer = async (req, res) => {
 
         // 4. Create notification for user
         const companyRes = await client.query(
-            "SELECT name, logo_url FROM companies WHERE company_id = $1",
+            "SELECT name, logo_url FROM organizations WHERE org_id = $1",
             [companyId]
         );
         const company = companyRes.rows[0];
@@ -64,7 +64,7 @@ exports.sendJobOffer = async (req, res) => {
                 "job_offer_received",
                 `${company.name} sent you a job offer: ${jobTitle}`,
                 offer.offer_id,
-                JSON.stringify({ company_id: companyId, offer_id: offer.offer_id, job_id: jobId })
+                JSON.stringify({ org_id: companyId, offer_id: offer.offer_id, job_id: jobId })
             ]
         );
 
@@ -114,7 +114,7 @@ exports.getMyOffers = async (req, res) => {
                 u.full_name as sent_by_name
             FROM job_offers jo
             JOIN jobs j ON jo.job_id = j.job_id
-            JOIN companies c ON jo.company_id = c.company_id
+            JOIN organizations c ON jo.org_id = c.org_id
             LEFT JOIN users u ON jo.sent_by = u.user_id
             WHERE jo.user_id = $1
         `;
@@ -172,8 +172,8 @@ exports.getCompanySentOffers = async (req, res) => {
                 MAX(jo.created_at) AS latest_offer_at
             FROM job_offers jo
             JOIN jobs j ON jo.job_id = j.job_id
-            JOIN companies c ON jo.company_id = c.company_id
-            WHERE jo.company_id = $1
+            JOIN organizations c ON jo.org_id = c.org_id
+            WHERE jo.org_id = $1
             GROUP BY j.job_id, j.title, j.job_type, j.work_mode, j.location,
                      j.experience_level, j.salary_min, j.salary_max, j.salary_currency,
                      j.salary_period, j.company_name, j.description,
@@ -223,7 +223,7 @@ exports.getCompanyOfferRecipients = async (req, res) => {
             FROM job_offers jo
             JOIN users u ON jo.user_id = u.user_id
             LEFT JOIN users sender ON jo.sent_by = sender.user_id
-            WHERE jo.company_id = $1 AND jo.job_id = $2
+            WHERE jo.org_id = $1 AND jo.job_id = $2
             ORDER BY jo.created_at DESC
         `, [companyId, jobId]);
 
@@ -277,23 +277,23 @@ exports.respondToOffer = async (req, res) => {
         const jobRes = await client.query("SELECT title FROM jobs WHERE job_id = $1", [offer.job_id]);
         const jobTitle = jobRes.rows[0]?.title || 'Unknown Job';
 
-        const companyRes = await client.query("SELECT name, logo_url FROM companies WHERE company_id = $1", [offer.company_id]);
+        const companyRes = await client.query("SELECT name, logo_url FROM organizations WHERE org_id = $1", [offer.org_id]);
         const company = companyRes.rows[0];
 
-        // 4. Notify company admins/managers (join company_roles for correct permission check)
+        // 4. Notify company admins/managers (join organization_roles for correct permission check)
         const adminsRes = await client.query(
-            `SELECT cm.user_id FROM company_members cm
-             JOIN company_roles cr ON cm.role_id = cr.role_id
-             WHERE cm.company_id = $1 AND cm.status = 'ACTIVE'
+            `SELECT cm.user_id FROM organization_members cm
+             JOIN organization_roles cr ON cm.role_id = cr.role_id
+             WHERE cm.org_id = $1 AND cm.status = 'ACTIVE'
                AND (cr.permissions @> '["*"]'::jsonb OR cr.permissions @> '["MANAGE_JOBS"]'::jsonb)`,
-            [offer.company_id]
+            [offer.org_id]
         );
 
         const actionText = action === 'accepted' ? 'accepted' : 'declined';
 
         for (const admin of adminsRes.rows) {
             const notifRes = await client.query(
-                `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, recipient_company_id, metadata)
+                `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, recipient_org_id, metadata)
                  VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
                 [
                     admin.user_id,
@@ -301,8 +301,8 @@ exports.respondToOffer = async (req, res) => {
                     `job_offer_${actionText}`,
                     `${user.full_name} ${actionText} your offer for ${jobTitle}`,
                     offer.offer_id,
-                    offer.company_id,
-                    JSON.stringify({ company_id: offer.company_id, offer_id: offerId, job_id: offer.job_id })
+                    offer.org_id,
+                    JSON.stringify({ org_id: offer.org_id, offer_id: offerId, job_id: offer.job_id })
                 ]
             );
 
@@ -329,7 +329,7 @@ exports.respondToOffer = async (req, res) => {
                 `job_offer_${actionText}`,
                 `You ${actionText} the offer from ${company.name} for ${jobTitle}`,
                 offer.offer_id,
-                JSON.stringify({ company_id: offer.company_id, offer_id: offerId })
+                JSON.stringify({ org_id: offer.org_id, offer_id: offerId })
             ]
         );
 
@@ -357,7 +357,7 @@ exports.withdrawOffer = async (req, res) => {
         await client.query('BEGIN');
 
         const offerRes = await client.query(
-            "SELECT * FROM job_offers WHERE offer_id = $1 AND company_id = $2 AND status = 'pending' FOR UPDATE",
+            "SELECT * FROM job_offers WHERE offer_id = $1 AND org_id = $2 AND status = 'pending' FOR UPDATE",
             [offerId, companyId]
         );
 
@@ -374,7 +374,7 @@ exports.withdrawOffer = async (req, res) => {
         );
 
         // Notify the user
-        const companyRes = await client.query("SELECT name, logo_url FROM companies WHERE company_id = $1", [companyId]);
+        const companyRes = await client.query("SELECT name, logo_url FROM organizations WHERE org_id = $1", [companyId]);
         const company = companyRes.rows[0];
 
         const jobRes = await client.query("SELECT title FROM jobs WHERE job_id = $1", [offer.job_id]);
@@ -389,7 +389,7 @@ exports.withdrawOffer = async (req, res) => {
                 "job_offer_withdrawn",
                 `${company.name} withdrew their offer for ${jobTitle}`,
                 offerId,
-                JSON.stringify({ company_id: companyId, offer_id: offerId })
+                JSON.stringify({ org_id: companyId, offer_id: offerId })
             ]
         );
 
@@ -436,10 +436,10 @@ exports.getOfferDetail = async (req, res) => {
                 u.full_name as sent_by_name, u.avatar_url as sent_by_avatar
             FROM job_offers jo
             JOIN jobs j ON jo.job_id = j.job_id
-            JOIN companies c ON jo.company_id = c.company_id
+            JOIN organizations c ON jo.org_id = c.org_id
             LEFT JOIN users u ON jo.sent_by = u.user_id
-            WHERE jo.offer_id = $1 AND (jo.user_id = $2 OR jo.company_id IN (
-                SELECT company_id FROM company_members WHERE user_id = $2
+            WHERE jo.offer_id = $1 AND (jo.user_id = $2 OR jo.org_id IN (
+                SELECT org_id FROM organization_members WHERE user_id = $2
             ))`,
             [offerId, userId]
         );
@@ -465,7 +465,7 @@ exports.checkOfferStatus = async (req, res) => {
     try {
         const result = await pool.query(
             `SELECT job_id FROM job_offers 
-             WHERE company_id = $1 AND user_id = $2 AND status = 'pending'`,
+             WHERE org_id = $1 AND user_id = $2 AND status = 'pending'`,
             [companyId, targetUserId]
         );
 

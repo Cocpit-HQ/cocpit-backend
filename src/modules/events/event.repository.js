@@ -19,7 +19,7 @@ const getEventById = async (eventId) => {
             COUNT(er.user_id) AS registered_count
      FROM events e
      LEFT JOIN users u ON e.organizer_id = u.user_id
-     LEFT JOIN companies c ON e.company_id = c.company_id
+     LEFT JOIN organizations c ON e.org_id = c.org_id
      LEFT JOIN event_registrations er ON e.event_id = er.event_id
      WHERE e.event_id = $1
      GROUP BY e.event_id, u.full_name, c.name, c.logo_url, u.avatar_url`,
@@ -32,7 +32,7 @@ const createEvent = async (data) => {
     const { organizerId, companyId, title, description, category, eventType, location, virtualLink,
         startTime, endTime, bannerUrl, maxAttendees, waitlist, registrationDeadline } = data;
     const result = await pool.query(
-        `INSERT INTO events (organizer_id, company_id, title, description, category, event_type, location,
+        `INSERT INTO events (organizer_id, org_id, title, description, category, event_type, location,
        virtual_link, start_time, end_time, banner_url, max_attendees, waitlist_enabled, registration_deadline)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) RETURNING event_id`,
         [organizerId, companyId, title, description, category, eventType,
@@ -45,7 +45,7 @@ const createEvent = async (data) => {
 
 const getEventOwnership = async (eventId) => {
     const result = await pool.query(
-        "SELECT organizer_id, company_id, banner_url FROM events WHERE event_id = $1",
+        "SELECT organizer_id, org_id, banner_url FROM events WHERE event_id = $1",
         [eventId]
     );
     return result.rows[0] || null;
@@ -115,7 +115,7 @@ const getMyRegisteredEvents = async (userId) => {
      FROM event_registrations er
      JOIN events e ON er.event_id = e.event_id
      LEFT JOIN users u ON e.organizer_id = u.user_id
-     LEFT JOIN companies c ON e.company_id = c.company_id
+     LEFT JOIN organizations c ON e.org_id = c.org_id
      LEFT JOIN event_saves es ON es.event_id = e.event_id AND es.user_id = $1
      WHERE er.user_id = $1 ORDER BY e.start_time ASC`,
         [userId]
@@ -128,15 +128,15 @@ const getMyCreatedEvents = async (userId, companyId = null) => {
     (SELECT COUNT(*)::int FROM event_registrations er WHERE er.event_id = e.event_id) AS registered_count,
     CASE WHEN es.event_id IS NOT NULL THEN true ELSE false END AS "isSaved"
     FROM events e LEFT JOIN users u ON e.organizer_id = u.user_id
-    LEFT JOIN companies c ON e.company_id = c.company_id
+    LEFT JOIN organizations c ON e.org_id = c.org_id
     LEFT JOIN event_saves es ON es.event_id = e.event_id AND es.user_id = $1`;
     const params = [userId];
 
     if (companyId) {
-        query += ` WHERE e.company_id = $2 ORDER BY e.start_time ASC`;
+        query += ` WHERE e.org_id = $2 ORDER BY e.start_time ASC`;
         params.push(companyId);
     } else {
-        query += ` WHERE e.organizer_id = $1 AND e.company_id IS NULL ORDER BY e.start_time ASC`;
+        query += ` WHERE e.organizer_id = $1 AND e.org_id IS NULL ORDER BY e.start_time ASC`;
     }
 
     const result = await pool.query(query, params);
@@ -171,7 +171,7 @@ const getMySavedEvents = async (userId) => {
             (SELECT COUNT(*)::int FROM event_registrations er WHERE er.event_id = e.event_id) AS registered_count
      FROM event_saves es JOIN events e ON es.event_id = e.event_id
      LEFT JOIN users u ON e.organizer_id = u.user_id
-     LEFT JOIN companies c ON e.company_id = c.company_id
+     LEFT JOIN organizations c ON e.org_id = c.org_id
      WHERE es.user_id = $1 ORDER BY es.saved_at DESC`,
         [userId]
     );

@@ -3,8 +3,8 @@ const { buildJobFilters } = require("../../core/utils/jobQueryBuilder");
 const { v4: uuidv4 } = require("uuid"); // Ensure unique ID generation for idempotency checks
 const { notifyCompanyFollowers } = require("../../services/notification.service");
 
-exports.createCompanyJob = async (req, res) => {
-    const { companyId } = req.params;
+exports.createOrganizationJob = async (req, res) => {
+    const { orgId: companyId } = req.params;
     const userId = req.user.sub;
     const idempotencyKey = req.headers["idempotency-key"] || uuidv4();
 
@@ -42,10 +42,10 @@ exports.createCompanyJob = async (req, res) => {
         // Check idempotency (simplified - relies on unique index in db for exact matches or external Redis normally)
         // Relying on `idx_unique_recent_job_company` for exact dupes active jobs.
 
-        // 1. Fetch Company Name (needed for legacy columns in jobs table)
-        const companyRes = await client.query("SELECT name FROM companies WHERE company_id = $1 AND is_deleted = FALSE", [companyId]);
+        // 1. Fetch Organization Name (needed for legacy columns in jobs table)
+        const companyRes = await client.query("SELECT name FROM organizations WHERE org_id = $1 AND is_deleted = FALSE", [companyId]);
         if (companyRes.rowCount === 0) {
-            throw new Error("Company not found or deleted");
+            throw new Error("Organization not found or deleted");
         }
         const companyName = companyRes.rows[0].name;
 
@@ -54,7 +54,7 @@ exports.createCompanyJob = async (req, res) => {
             `
       INSERT INTO jobs
       (
-        recruiter_id, title, company_name, company_id, location,
+        recruiter_id, title, company_name, org_id, location,
         description, salary_min, salary_max, job_type,
         work_mode, company_type, experience_level,
         about_company, industry, easy_apply, actively_hiring,
@@ -112,7 +112,7 @@ exports.createCompanyJob = async (req, res) => {
         // 4. Audit Log
         await client.query(
             `INSERT INTO audit_logs (entity_type, entity_id, actor_id, action, metadata)
-         VALUES ('COMPANY', $1, $2, 'POST_JOB', $3)`,
+         VALUES ('ORGANIZATION', $1, $2, 'POST_JOB', $3)`,
             [companyId, userId, JSON.stringify({ type: 'job', id: job.job_id, title: job.title })]
         );
 
@@ -142,35 +142,35 @@ exports.createCompanyJob = async (req, res) => {
     } catch (err) {
         await client.query("ROLLBACK");
         if (err.code === '23505' && err.constraint === 'idx_unique_recent_job_company') {
-            return res.status(409).json({ message: "Duplicate active job found for this company." });
+            return res.status(409).json({ message: "Duplicate active job found for this organization." });
         }
-        console.error("Create company job error:", err);
+        console.error("Create organization job error:", err);
         res.status(500).json({ message: "Internal server error" });
     } finally {
         client.release();
     }
 };
 
-exports.getCompanyJobs = async (req, res) => {
-    const { companyId } = req.params;
+exports.getOrganizationJobs = async (req, res) => {
+    const { orgId: companyId } = req.params;
     const { scope = 'public', limit = 10, cursor } = req.query;
 
     // For 'internal' scope, the route middleware should already guarantee they are a member.
     // We enforce the query filter.
 
     try {
-        let conditions = ["j.company_id = $1"];
+        let conditions = ["j.org_id = $1"];
         let params = [companyId];
         let paramCount = 2;
 
         if (scope === 'public') {
             // Public fetching requires company to be verified and not suspended
-            const companyCheck = await pool.query("SELECT verification_status FROM companies WHERE company_id = $1 AND is_deleted = FALSE", [companyId]);
+            const companyCheck = await pool.query("SELECT verification_status FROM organizations WHERE org_id = $1 AND is_deleted = FALSE", [companyId]);
             if (companyCheck.rowCount === 0) {
-                return res.status(404).json({ message: "Company not found" });
+                return res.status(404).json({ message: "Organization not found" });
             }
             if (companyCheck.rows[0].verification_status === 'SUSPENDED') {
-                return res.status(403).json({ message: "Company is suspended" });
+                return res.status(403).json({ message: "Organization is suspended" });
             }
 
             // Only ACTIVE jobs that are not expired
@@ -209,13 +209,13 @@ exports.getCompanyJobs = async (req, res) => {
         res.status(200).json(result.rows);
 
     } catch (err) {
-        console.error("Get company jobs error:", err);
+        console.error("Get organization jobs error:", err);
         res.status(500).json({ message: "Internal server error" });
     }
 };
 
-exports.updateCompanyJob = async (req, res) => {
-    const { companyId, jobId } = req.params;
+exports.updateOrganizationJob = async (req, res) => {
+    const { orgId: companyId, jobId } = req.params;
     const userId = req.user.sub;
 
     const {
@@ -231,8 +231,8 @@ exports.updateCompanyJob = async (req, res) => {
         await client.query("BEGIN");
 
         // 1. Verify Job Ownership
-        const jobCheck = await client.query("SELECT * FROM jobs WHERE job_id = $1 AND company_id = $2 FOR UPDATE", [jobId, companyId]);
-        if (jobCheck.rowCount === 0) return res.status(404).json({ message: "Job not found in this company." });
+        const jobCheck = await client.query("SELECT * FROM jobs WHERE job_id = $1 AND org_id = $2 FOR UPDATE", [jobId, companyId]);
+        if (jobCheck.rowCount === 0) return res.status(404).json({ message: "Job not found in this organization." });
 
         const oldJobData = jobCheck.rows[0];
 
@@ -287,7 +287,7 @@ exports.updateCompanyJob = async (req, res) => {
         // 5. Audit Log
         await client.query(
             `INSERT INTO audit_logs (entity_type, entity_id, actor_id, action, metadata)
-             VALUES ('COMPANY', $1, $2, 'UPDATE_JOB', $3)`,
+             VALUES ('ORGANIZATION', $1, $2, 'UPDATE_JOB', $3)`,
             [companyId, userId, JSON.stringify({ jobId, newStatus: updatedJob.status })]
         );
 
@@ -302,15 +302,15 @@ exports.updateCompanyJob = async (req, res) => {
         res.status(200).json({ message: "Job updated successfully", job: updatedJob });
     } catch (err) {
         await client.query("ROLLBACK");
-        console.error("Update company job error:", err);
+        console.error("Update organization job error:", err);
         res.status(500).json({ message: "Internal server error" });
     } finally {
         client.release();
     }
 };
 
-exports.deleteCompanyJob = async (req, res) => {
+exports.deleteOrganizationJob = async (req, res) => {
     // Soft delete equivalent
     req.body.status = 'CLOSED';
-    return exports.updateCompanyJob(req, res);
+    return exports.updateOrganizationJob(req, res);
 };

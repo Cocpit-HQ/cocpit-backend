@@ -4,7 +4,7 @@ const jobController = require("./job.controller");
 const offerController = require("./offer.controller");
 const { requireAuth, optionalAuth } = require("../../core/middlewares/auth.middleware");
 const { requireRoles } = require("../../core/middlewares/role.middleware");
-const { requireCompanyPermission } = require("../../core/middlewares/company.auth.middleware");
+const { requireOrgPermission, requireCompanyPermission } = require("../../core/middlewares/organization.auth.middleware");
 const { uploadApplicationFiles, uploadTaskSubmission } = require("../../core/middlewares/upload.middleware");
 
 // Public routes

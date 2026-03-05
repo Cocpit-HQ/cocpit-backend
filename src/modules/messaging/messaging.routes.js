@@ -6,7 +6,15 @@ const { requireAuth } = require("../../core/middlewares/auth.middleware");
 const { sessionRateLimiter } = require("../../core/utils/sessionRateLimiter");
 const groupAdminMiddleware = require("../../core/middlewares/groupAdmin.middleware");
 
-// ═══════ Company Chat Sessions ═══════
+// ═══════ Organization Chat Sessions ═══════
+router.post("/organization-chat-sessions/claim", requireAuth, sessionRateLimiter("session:claim"), chatSessionCtrl.claimSession);
+router.post("/organization-chat-sessions/release", requireAuth, chatSessionCtrl.releaseSession);
+router.post("/organization-chat-sessions/takeover", requireAuth, sessionRateLimiter("session:takeover"), chatSessionCtrl.takeoverSession);
+router.get("/organization-chat-sessions/active", requireAuth, chatSessionCtrl.getActiveSession);
+router.get("/organization-chat-sessions/history", requireAuth, chatSessionCtrl.getSessionHistory);
+router.get("/organization-chat-sessions/:sessionId/messages", requireAuth, chatSessionCtrl.getSessionMessages);
+
+// Legacy aliases
 router.post("/company-chat-sessions/claim", requireAuth, sessionRateLimiter("session:claim"), chatSessionCtrl.claimSession);
 router.post("/company-chat-sessions/release", requireAuth, chatSessionCtrl.releaseSession);
 router.post("/company-chat-sessions/takeover", requireAuth, sessionRateLimiter("session:takeover"), chatSessionCtrl.takeoverSession);

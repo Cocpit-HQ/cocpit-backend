@@ -58,7 +58,7 @@ exports.searchUsers = async (req, res) => {
         UNION ALL
         (
           SELECT
-            c.company_id AS id,
+            c.org_id AS id,
             c.name AS full_name,
             c.slug AS account_name,
             c.headline AS headline,
@@ -67,7 +67,7 @@ exports.searchUsers = async (req, res) => {
             'COMPANY'::text as type,
             c.slug as slug,
             c.industry as industry
-          FROM companies c
+          FROM organizations c
           WHERE c.is_deleted = FALSE
           AND (c.name ILIKE $2 OR c.slug ILIKE $2)
         )
@@ -307,15 +307,15 @@ exports.getUserProfile = async (req, res) => {
     const companyRoles = await pool.query(
       `
       SELECT 
-        c.company_id, 
+        c.org_id, 
         c.name, 
         c.slug, 
         c.logo_url, 
         cr.name as role,
         cm.is_primary_display
-      FROM company_members cm
-      JOIN companies c ON cm.company_id = c.company_id
-      JOIN company_roles cr ON cm.role_id = cr.role_id
+      FROM organization_members cm
+      JOIN organizations c ON cm.org_id = c.org_id
+      JOIN organization_roles cr ON cm.role_id = cr.role_id
       WHERE cm.user_id = $1 
       AND cm.is_role_visible = TRUE
       ORDER BY cm.is_primary_display DESC, cr.priority DESC, c.name ASC
@@ -331,7 +331,7 @@ exports.getUserProfile = async (req, res) => {
       educations: educationsResult.rows,
       skills: skillsResult.rows.map((row) => row.name),
       is_following: isFollowing,
-      company_roles: companyRoles.rows,
+      organization_roles: companyRoles.rows,
     };
 
     return res.status(200).json(responseData);
@@ -671,10 +671,10 @@ exports.deleteAccount = async (req, res) => {
     // 3. Check for Orphaned Companies (Sole Owner)
     // Find all companies where this user is OWNER (Active companies only)
     const ownedCompanies = await client.query(
-      `SELECT cm.company_id, c.name 
-       FROM company_members cm
-       JOIN companies c ON cm.company_id = c.company_id
-       LEFT JOIN company_roles cr ON cm.role_id = cr.role_id
+      `SELECT cm.org_id, c.name 
+       FROM organization_members cm
+       JOIN organizations c ON cm.org_id = c.org_id
+       LEFT JOIN organization_roles cr ON cm.role_id = cr.role_id
        WHERE cm.user_id = $1 
          AND (cr.name ILIKE 'Owner' OR cm.role = 'OWNER')
          AND c.is_deleted = FALSE`,
@@ -685,12 +685,12 @@ exports.deleteAccount = async (req, res) => {
       // Check if there are ANY other owners for this company
       const otherOwners = await client.query(
         `SELECT 1 
-         FROM company_members cm
-         LEFT JOIN company_roles cr ON cm.role_id = cr.role_id
-         WHERE cm.company_id = $1 
+         FROM organization_members cm
+         LEFT JOIN organization_roles cr ON cm.role_id = cr.role_id
+         WHERE cm.org_id = $1 
            AND (cr.name ILIKE 'Owner' OR cm.role = 'OWNER')
            AND cm.user_id != $2`,
-        [company.company_id, userId]
+        [company.org_id, userId]
       );
 
       if (otherOwners.rowCount === 0) {

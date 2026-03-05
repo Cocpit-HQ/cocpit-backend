@@ -1,5 +1,5 @@
 /**
- * Company Chat Session Controller
+ * Organization Chat Session Controller
  * Implements: claim, release, takeover, getActive, getHistory
  * State machine: ACTIVE → TIMED_OUT | ENDED | TRANSFERRED (all terminal per row)
  */
@@ -10,13 +10,13 @@ const { logAudit } = require("../../core/infrastructure/audit.service");
 const { checkRateLimit } = require("../../core/utils/sessionRateLimiter");
 
 // Feature flag check
-function isFeatureEnabled(companyId) {
+function isFeatureEnabled(orgId) {
     // Environment-level flag
-    if (process.env.COMPANY_CHAT_SESSIONS_ENABLED === 'false') return false;
-    // Per-company flag (comma-separated company IDs or 'all')
-    const perCompany = process.env.COMPANY_CHAT_SESSIONS_COMPANIES || 'all';
-    if (perCompany === 'all') return true;
-    return perCompany.split(',').map(s => s.trim()).includes(companyId);
+    if (process.env.organization_chat_sessions_ENABLED === 'false') return false;
+    // Per-organization flag (comma-separated organization IDs or 'all')
+    const perOrg = process.env.organization_chat_sessions_COMPANIES || 'all';
+    if (perOrg === 'all') return true;
+    return perOrg.split(',').map(s => s.trim()).includes(orgId);
 }
 
 // Valid state transitions
@@ -29,20 +29,21 @@ function isValidTransition(from, to) {
 }
 
 /**
- * POST /api/company-chat-sessions/claim
- * Body: { conversationId, companyId }
+ * POST /api/organization-chat-sessions/claim
+ * Body: { conversationId, orgId }
  */
 exports.claimSession = async (req, res) => {
     const userId = req.user.sub;
-    const { conversationId, companyId } = req.body;
+    const { conversationId, orgId, companyId } = req.body;
+    const targetOrgId = orgId || companyId;
 
-    if (!conversationId || !companyId || conversationId === 'new') {
-        return res.status(400).json({ message: "Valid conversationId and companyId are required" });
+    if (!conversationId || !targetOrgId || conversationId === 'new') {
+        return res.status(400).json({ message: "Valid conversationId and orgId are required" });
     }
 
     // Feature flag
-    if (!isFeatureEnabled(companyId)) {
-        return res.status(403).json({ message: "Chat sessions are not enabled for this company" });
+    if (!isFeatureEnabled(targetOrgId)) {
+        return res.status(403).json({ message: "Chat sessions are not enabled for this organization" });
     }
 
     // Rate limit
@@ -58,35 +59,37 @@ exports.claimSession = async (req, res) => {
         // 1. RBAC: verify membership + permissions
         const memberRes = await client.query(
             `SELECT cm.user_id, cr.name AS role_name, cr.role_id, cr.permissions
-             FROM company_members cm
-             LEFT JOIN company_roles cr ON cm.role_id = cr.role_id
-             WHERE cm.company_id = $1 AND cm.user_id = $2 AND cm.status = 'ACTIVE'`,
-            [companyId, userId]
+             FROM organization_members cm
+             LEFT JOIN organization_roles cr ON cm.role_id = cr.role_id
+             WHERE cm.org_id = $1 AND cm.user_id = $2 AND cm.status = 'ACTIVE'`,
+            [targetOrgId, userId]
         );
         if (memberRes.rowCount === 0) {
             await client.query('ROLLBACK');
-            return res.status(403).json({ message: "Not an active member of this company" });
+            return res.status(403).json({ message: "Not an active member of this organization" });
         }
 
         const member = memberRes.rows[0];
         const permissions = member.permissions || [];
         const hasPermission = permissions.includes('*') ||
+            permissions.includes('MANAGE_ORGANIZATION_CHATS') ||
+            permissions.includes('VIEW_ORGANIZATION_CHATS') ||
             permissions.includes('MANAGE_COMPANY_CHATS') ||
             permissions.includes('VIEW_COMPANY_CHATS');
         if (!hasPermission) {
             await client.query('ROLLBACK');
-            return res.status(403).json({ message: "Missing MANAGE_COMPANY_CHATS permission" });
+            return res.status(403).json({ message: "Missing MANAGE_ORGANIZATION_CHATS permission" });
         }
 
         // 2. Verify conversation exists and company is a participant
         const convCheck = await client.query(
             `SELECT 1 FROM conversation_participants
-             WHERE conversation_id = $1 AND company_id = $2 AND left_at IS NULL`,
-            [conversationId, companyId]
+             WHERE conversation_id = $1 AND org_id = $2 AND left_at IS NULL`,
+            [conversationId, targetOrgId]
         );
         if (convCheck.rowCount === 0) {
             await client.query('ROLLBACK');
-            return res.status(404).json({ message: "Company is not a participant in this conversation" });
+            return res.status(404).json({ message: "Organization is not a participant in this conversation" });
         }
 
         // 3. Self-guard: check if the other participant is the claiming user
@@ -103,10 +106,10 @@ exports.claimSession = async (req, res) => {
         // 4. Check for existing ACTIVE session (SELECT FOR UPDATE for race safety)
         const activeSession = await client.query(
             `SELECT ccs.session_id, ccs.handler_user_id, ccs.handler_name_snapshot
-             FROM company_chat_sessions ccs
-             WHERE ccs.conversation_id = $1 AND ccs.company_id = $2 AND ccs.status = 'ACTIVE'
+             FROM organization_chat_sessions ccs
+             WHERE ccs.conversation_id = $1 AND ccs.org_id = $2 AND ccs.status = 'ACTIVE'
              FOR UPDATE`,
-            [conversationId, companyId]
+            [conversationId, targetOrgId]
         );
         if (activeSession.rowCount > 0) {
             await client.query('ROLLBACK');
@@ -126,20 +129,20 @@ exports.claimSession = async (req, res) => {
 
         // 6. Insert new session
         const insertRes = await client.query(
-            `INSERT INTO company_chat_sessions 
-             (conversation_id, company_id, handler_user_id, 
+            `INSERT INTO organization_chat_sessions 
+             (conversation_id, org_id, handler_user_id, 
               handler_name_snapshot, handler_role_id_snapshot, handler_role_name_snapshot,
               status)
              VALUES ($1, $2, $3, $4, $5, $6, 'ACTIVE')
              RETURNING session_id, started_at`,
-            [conversationId, companyId, userId, handlerName, member.role_id || null, member.role_name || null]
+            [conversationId, targetOrgId, userId, handlerName, member.role_id || null, member.role_name || null]
         );
         const session = insertRes.rows[0];
 
         // 7. Audit log
         await logAudit(client, {
-            entityType: 'COMPANY_CHAT_SESSION',
-            entityId: companyId,
+            entityType: 'ORGANIZATION_CHAT_SESSION',
+            entityId: targetOrgId,
             actorId: userId,
             action: 'SESSION_CLAIMED',
             metadata: { sessionId: session.session_id, conversationId }
@@ -147,10 +150,10 @@ exports.claimSession = async (req, res) => {
 
         await client.query('COMMIT');
 
-        // 8. Notify all company members via socket
+        // 8. Notify all organization members via socket
         const members = await pool.query(
-            'SELECT user_id FROM company_members WHERE company_id = $1 AND status = $2',
-            [companyId, 'ACTIVE']
+            'SELECT user_id FROM organization_members WHERE org_id = $1 AND status = $2',
+            [targetOrgId, 'ACTIVE']
         );
         for (const m of members.rows) {
             socketService.notifyUser(m.user_id, 'session_claimed', {
@@ -182,7 +185,7 @@ exports.claimSession = async (req, res) => {
 };
 
 /**
- * POST /api/company-chat-sessions/release
+ * POST /api/organization-chat-sessions/release
  * Body: { sessionId }
  */
 exports.releaseSession = async (req, res) => {
@@ -198,7 +201,7 @@ exports.releaseSession = async (req, res) => {
         await client.query('BEGIN');
 
         const sessionRes = await client.query(
-            `SELECT * FROM company_chat_sessions WHERE session_id = $1 FOR UPDATE`,
+            `SELECT * FROM organization_chat_sessions WHERE session_id = $1 FOR UPDATE`,
             [sessionId]
         );
         if (sessionRes.rowCount === 0) {
@@ -221,21 +224,21 @@ exports.releaseSession = async (req, res) => {
         }
 
         // Feature flag
-        if (!isFeatureEnabled(session.company_id)) {
+        if (!isFeatureEnabled(session.org_id)) {
             await client.query('ROLLBACK');
-            return res.status(403).json({ message: "Chat sessions are not enabled for this company" });
+            return res.status(403).json({ message: "Chat sessions are not enabled for this organization" });
         }
 
         await client.query(
-            `UPDATE company_chat_sessions
+            `UPDATE organization_chat_sessions
              SET status = 'ENDED', ended_at = NOW(), end_reason = 'manual'
              WHERE session_id = $1`,
             [sessionId]
         );
 
         await logAudit(client, {
-            entityType: 'COMPANY_CHAT_SESSION',
-            entityId: session.company_id,
+            entityType: 'ORGANIZATION_CHAT_SESSION',
+            entityId: session.org_id,
             actorId: userId,
             action: 'SESSION_ENDED',
             metadata: { sessionId, conversationId: session.conversation_id, messageCount: session.message_count }
@@ -243,10 +246,10 @@ exports.releaseSession = async (req, res) => {
 
         await client.query('COMMIT');
 
-        // Notify company members
+        // Notify organization members
         const members = await pool.query(
-            'SELECT user_id FROM company_members WHERE company_id = $1 AND status = $2',
-            [session.company_id, 'ACTIVE']
+            'SELECT user_id FROM organization_members WHERE org_id = $1 AND status = $2',
+            [session.org_id, 'ACTIVE']
         );
         for (const m of members.rows) {
             socketService.notifyUser(m.user_id, 'session_released', {
@@ -268,20 +271,21 @@ exports.releaseSession = async (req, res) => {
 };
 
 /**
- * POST /api/company-chat-sessions/takeover
- * Body: { conversationId, companyId }
+ * POST /api/organization-chat-sessions/takeover
+ * Body: { conversationId, orgId }
  * Requires FORCE_TAKEOVER permission
  */
 exports.takeoverSession = async (req, res) => {
     const userId = req.user.sub;
-    const { conversationId, companyId } = req.body;
+    const { conversationId, orgId, companyId } = req.body;
+    const targetOrgId = orgId || companyId;
 
-    if (!conversationId || !companyId || conversationId === 'new') {
-        return res.status(400).json({ message: "Valid conversationId and companyId are required" });
+    if (!conversationId || !targetOrgId || conversationId === 'new') {
+        return res.status(400).json({ message: "Valid conversationId and orgId are required" });
     }
 
-    if (!isFeatureEnabled(companyId)) {
-        return res.status(403).json({ message: "Chat sessions are not enabled for this company" });
+    if (!isFeatureEnabled(targetOrgId)) {
+        return res.status(403).json({ message: "Chat sessions are not enabled for this organization" });
     }
 
     // Rate limit
@@ -291,8 +295,8 @@ exports.takeoverSession = async (req, res) => {
         const auditClient = await pool.connect();
         try {
             await logAudit(auditClient, {
-                entityType: 'COMPANY_CHAT_SESSION',
-                entityId: companyId,
+                entityType: 'ORGANIZATION_CHAT_SESSION',
+                entityId: targetOrgId,
                 actorId: userId,
                 action: 'REPEATED_TAKEOVER_ATTEMPTS',
                 metadata: { conversationId }
@@ -309,14 +313,14 @@ exports.takeoverSession = async (req, res) => {
         // 1. RBAC: verify FORCE_TAKEOVER permission
         const memberRes = await client.query(
             `SELECT cm.user_id, cr.name AS role_name, cr.role_id, cr.permissions
-             FROM company_members cm
-             LEFT JOIN company_roles cr ON cm.role_id = cr.role_id
-             WHERE cm.company_id = $1 AND cm.user_id = $2 AND cm.status = 'ACTIVE'`,
-            [companyId, userId]
+             FROM organization_members cm
+             LEFT JOIN organization_roles cr ON cm.role_id = cr.role_id
+             WHERE cm.org_id = $1 AND cm.user_id = $2 AND cm.status = 'ACTIVE'`,
+            [targetOrgId, userId]
         );
         if (memberRes.rowCount === 0) {
             await client.query('ROLLBACK');
-            return res.status(403).json({ message: "Not an active member of this company" });
+            return res.status(403).json({ message: "Not an active member of this organization" });
         }
 
         const member = memberRes.rows[0];
@@ -340,10 +344,10 @@ exports.takeoverSession = async (req, res) => {
 
         // 3. Find active session
         const activeSession = await client.query(
-            `SELECT * FROM company_chat_sessions
-             WHERE conversation_id = $1 AND company_id = $2 AND status = 'ACTIVE'
+            `SELECT * FROM organization_chat_sessions
+             WHERE conversation_id = $1 AND org_id = $2 AND status = 'ACTIVE'
              FOR UPDATE`,
-            [conversationId, companyId]
+            [conversationId, targetOrgId]
         );
         if (activeSession.rowCount === 0) {
             await client.query('ROLLBACK');
@@ -365,7 +369,7 @@ exports.takeoverSession = async (req, res) => {
         }
 
         await client.query(
-            `UPDATE company_chat_sessions
+            `UPDATE organization_chat_sessions
              SET status = 'TRANSFERRED', ended_at = NOW(), end_reason = 'force_takeover', transferred_to = $2
              WHERE session_id = $1`,
             [oldSession.session_id, userId]
@@ -379,13 +383,13 @@ exports.takeoverSession = async (req, res) => {
 
         // 6. Create new session
         const newSessionRes = await client.query(
-            `INSERT INTO company_chat_sessions 
-             (conversation_id, company_id, handler_user_id,
+            `INSERT INTO organization_chat_sessions 
+             (conversation_id, org_id, handler_user_id,
               handler_name_snapshot, handler_role_id_snapshot, handler_role_name_snapshot,
               status, transferred_from_session_id)
              VALUES ($1, $2, $3, $4, $5, $6, 'ACTIVE', $7)
              RETURNING session_id, started_at`,
-            [conversationId, companyId, userId, handlerName,
+            [conversationId, targetOrgId, userId, handlerName,
                 member.role_id || null, member.role_name || null,
                 oldSession.session_id]
         );
@@ -393,8 +397,8 @@ exports.takeoverSession = async (req, res) => {
 
         // 7. Audit
         await logAudit(client, {
-            entityType: 'COMPANY_CHAT_SESSION',
-            entityId: companyId,
+            entityType: 'ORGANIZATION_CHAT_SESSION',
+            entityId: targetOrgId,
             actorId: userId,
             action: 'FORCE_TAKEOVER',
             metadata: {
@@ -414,10 +418,10 @@ exports.takeoverSession = async (req, res) => {
             newHandlerName: handlerName
         });
 
-        // Notify all company members
+        // Notify all organization members
         const members = await pool.query(
-            'SELECT user_id FROM company_members WHERE company_id = $1 AND status = $2',
-            [companyId, 'ACTIVE']
+            'SELECT user_id FROM organization_members WHERE org_id = $1 AND status = $2',
+            [targetOrgId, 'ACTIVE']
         );
         for (const m of members.rows) {
             socketService.notifyUser(m.user_id, 'session_claimed', {
@@ -449,23 +453,24 @@ exports.takeoverSession = async (req, res) => {
 };
 
 /**
- * GET /api/company-chat-sessions/active
- * Query: ?conversationId=...&companyId=...
+ * GET /api/organization-chat-sessions/active
+ * Query: ?conversationId=...&orgId=...
  */
 exports.getActiveSession = async (req, res) => {
-    const { conversationId, companyId } = req.query;
+    const { conversationId, orgId, companyId } = req.query;
+    const targetOrgId = orgId || companyId;
 
-    if (!conversationId || !companyId) {
-        return res.status(400).json({ message: "conversationId and companyId are required" });
+    if (!conversationId || !targetOrgId) {
+        return res.status(400).json({ message: "conversationId and orgId are required" });
     }
 
     // Handle "new" conversation flow (not yet created)
     if (conversationId === 'new') {
         // Return null session but indicate feature state if needed
-        return res.json({ session: null, featureEnabled: isFeatureEnabled(companyId) });
+        return res.json({ session: null, featureEnabled: isFeatureEnabled(targetOrgId) });
     }
 
-    if (!isFeatureEnabled(companyId)) {
+    if (!isFeatureEnabled(targetOrgId)) {
         return res.json({ session: null, featureEnabled: false });
     }
 
@@ -474,9 +479,9 @@ exports.getActiveSession = async (req, res) => {
             `SELECT ccs.session_id, ccs.handler_user_id, ccs.handler_name_snapshot,
                     ccs.handler_role_name_snapshot, ccs.status, ccs.started_at,
                     ccs.last_activity_at, ccs.message_count
-             FROM company_chat_sessions ccs
-             WHERE ccs.conversation_id = $1 AND ccs.company_id = $2 AND ccs.status = 'ACTIVE'`,
-            [conversationId, companyId]
+             FROM organization_chat_sessions ccs
+             WHERE ccs.conversation_id = $1 AND ccs.org_id = $2 AND ccs.status = 'ACTIVE'`,
+            [conversationId, targetOrgId]
         );
 
         if (result.rowCount === 0) {
@@ -491,19 +496,20 @@ exports.getActiveSession = async (req, res) => {
 };
 
 /**
- * GET /api/company-chat-sessions/history
- * Query: ?companyId=...&memberId=...&page=1&limit=20
- * Requires VIEW_COMPANY_CHATS permission
+ * GET /api/organization-chat-sessions/history
+ * Query: ?orgId=...&memberId=...&page=1&limit=20
+ * Requires VIEW_ORGANIZATION_CHATS permission
  */
 exports.getSessionHistory = async (req, res) => {
-    const { companyId, memberId, startDate, endDate, page = 1, limit = 20 } = req.query;
+    const { orgId, companyId, memberId, startDate, endDate, page = 1, limit = 20 } = req.query;
+    const targetOrgId = orgId || companyId;
 
-    if (!companyId) {
-        return res.status(400).json({ message: "companyId is required" });
+    if (!targetOrgId) {
+        return res.status(400).json({ message: "orgId is required" });
     }
 
-    if (!isFeatureEnabled(companyId)) {
-        return res.status(403).json({ message: "Chat sessions are not enabled for this company" });
+    if (!isFeatureEnabled(targetOrgId)) {
+        return res.status(403).json({ message: "Chat sessions are not enabled for this organization" });
     }
 
     const offset = (parseInt(page) - 1) * parseInt(limit);
@@ -513,17 +519,17 @@ exports.getSessionHistory = async (req, res) => {
         // RBAC check
         const userId = req.user.sub;
         const memberCheck = await pool.query(
-            `SELECT cr.permissions FROM company_members cm
-             LEFT JOIN company_roles cr ON cm.role_id = cr.role_id
-             WHERE cm.company_id = $1 AND cm.user_id = $2 AND cm.status = 'ACTIVE'`,
-            [companyId, userId]
+            `SELECT cr.permissions FROM organization_members cm
+             LEFT JOIN organization_roles cr ON cm.role_id = cr.role_id
+             WHERE cm.org_id = $1 AND cm.user_id = $2 AND cm.status = 'ACTIVE'`,
+            [targetOrgId, userId]
         );
         if (memberCheck.rowCount === 0) {
-            return res.status(403).json({ message: "Not a member of this company" });
+            return res.status(403).json({ message: "Not a member of this organization" });
         }
         const perms = memberCheck.rows[0].permissions || [];
-        if (!perms.includes('*') && !perms.includes('VIEW_COMPANY_CHATS') && !perms.includes('MANAGE_COMPANY_CHATS')) {
-            return res.status(403).json({ message: "Missing VIEW_COMPANY_CHATS permission" });
+        if (!perms.includes('*') && !perms.includes('VIEW_ORGANIZATION_CHATS') && !perms.includes('MANAGE_ORGANIZATION_CHATS') && !perms.includes('VIEW_COMPANY_CHATS') && !perms.includes('MANAGE_COMPANY_CHATS')) {
+            return res.status(403).json({ message: "Missing VIEW_ORGANIZATION_CHATS permission" });
         }
 
         let query = `
@@ -532,10 +538,10 @@ exports.getSessionHistory = async (req, res) => {
                    ccs.status, ccs.started_at, ccs.ended_at, ccs.end_reason,
                    ccs.message_count, ccs.last_activity_at,
                    ccs.transferred_to, ccs.transferred_from_session_id
-            FROM company_chat_sessions ccs
-            WHERE ccs.company_id = $1
+            FROM organization_chat_sessions ccs
+            WHERE ccs.org_id = $1
         `;
-        const params = [companyId];
+        const params = [targetOrgId];
         let paramIdx = 2;
 
         if (memberId) {
@@ -562,8 +568,8 @@ exports.getSessionHistory = async (req, res) => {
         const result = await pool.query(query, params);
 
         // Count total
-        let countQuery = `SELECT COUNT(*)::int AS total FROM company_chat_sessions WHERE company_id = $1`;
-        const countParams = [companyId];
+        let countQuery = `SELECT COUNT(*)::int AS total FROM organization_chat_sessions WHERE org_id = $1`;
+        const countParams = [targetOrgId];
         if (memberId) {
             countQuery += ` AND handler_user_id = $${countParams.length + 1}`;
             countParams.push(memberId);
@@ -591,7 +597,7 @@ exports.getSessionHistory = async (req, res) => {
 };
 
 /**
- * GET /api/company-chat-sessions/:sessionId/messages
+ * GET /api/organization-chat-sessions/:sessionId/messages
  * Fetch messages belonging to a specific session
  */
 exports.getSessionMessages = async (req, res) => {
@@ -600,7 +606,7 @@ exports.getSessionMessages = async (req, res) => {
     try {
         // Get session details first to verify permissions and get context
         const sessionRes = await pool.query(
-            `SELECT * FROM company_chat_sessions WHERE session_id = $1`,
+            `SELECT * FROM organization_chat_sessions WHERE session_id = $1`,
             [sessionId]
         );
 
@@ -610,17 +616,17 @@ exports.getSessionMessages = async (req, res) => {
 
         const session = sessionRes.rows[0];
 
-        // RBAC: Check if requester has VIEW_COMPANY_CHATS for this company
+        // RBAC: Check if requester has VIEW_ORGANIZATION_CHATS for this organization
         const userId = req.user.sub;
         const memberCheck = await pool.query(
-            `SELECT cr.permissions FROM company_members cm
-             LEFT JOIN company_roles cr ON cm.role_id = cr.role_id
-             WHERE cm.company_id = $1 AND cm.user_id = $2 AND cm.status = 'ACTIVE'`,
-            [session.company_id, userId]
+            `SELECT cr.permissions FROM organization_members cm
+             LEFT JOIN organization_roles cr ON cm.role_id = cr.role_id
+             WHERE cm.org_id = $1 AND cm.user_id = $2 AND cm.status = 'ACTIVE'`,
+            [session.org_id, userId]
         );
 
         if (memberCheck.rowCount === 0) {
-            return res.status(403).json({ message: "Not a member of the company" });
+            return res.status(403).json({ message: "Not a member of the organization" });
         }
         const perms = memberCheck.rows[0].permissions || [];
         if (!perms.includes('*') && !perms.includes('VIEW_COMPANY_CHATS') && !perms.includes('MANAGE_COMPANY_CHATS')) {
@@ -630,15 +636,17 @@ exports.getSessionMessages = async (req, res) => {
         // Fetch messages with session_id
         const messagesRes = await pool.query(
             `SELECT m.*, 
-                    CASE WHEN m.sender_type = 'COMPANY' THEN $2
+                    CASE WHEN m.sender_type = 'ORGANIZATION' THEN $2
+                         WHEN m.sender_type = 'COMPANY' THEN $2
                          ELSE u.full_name END as sender_name,
-                    CASE WHEN m.sender_type = 'COMPANY' THEN NULL
+                    CASE WHEN m.sender_type = 'ORGANIZATION' THEN NULL
+                         WHEN m.sender_type = 'COMPANY' THEN NULL
                          ELSE u.avatar_url END as sender_avatar
              FROM messages m
              LEFT JOIN users u ON m.sender_id = u.user_id
              WHERE m.session_id = $1
              ORDER BY m.created_at ASC`,
-            [sessionId, session.handler_name_snapshot] // Use snapshot name for company messages in this session
+            [sessionId, session.handler_name_snapshot] // Use snapshot name for organization messages in this session
         );
 
         res.json(messagesRes.rows);
@@ -653,25 +661,25 @@ exports.getSessionMessages = async (req, res) => {
  * Helper: End all active sessions for a member (e.g. on removal)
  * Executed within an external transaction (client)
  */
-exports.endAllSessionsForMember = async (client, companyId, memberId, actorId) => {
+exports.endAllSessionsForMember = async (client, orgId, memberId, actorId) => {
     // Audit logging happens in the caller or triggered by status change, 
     // but here we force update status
     const result = await client.query(
-        `UPDATE company_chat_sessions
+        `UPDATE organization_chat_sessions
          SET status = 'ENDED', 
              ended_at = NOW(), 
              end_reason = 'member_removed'
-         WHERE company_id = $1 
+         WHERE org_id = $1 
            AND handler_user_id = $2 
            AND status = 'ACTIVE'
          RETURNING session_id`,
-        [companyId, memberId]
+        [orgId, memberId]
     );
 
     if (result.rowCount > 0) {
         // Emit events for each ended session
         // Note: we might not be able to emit to the removed member effectively if they are disconnected,
-        // but we should notify the company room or conversation room
+        // but we should notify the organization room or conversation room
         // Since we are inside a transaction, we should technically wait for commit,
         // but for socket events we often emit immediately or fire-and-forget.
         // Better pattern: return the list of ended sessions and let the controller emit after commit.
@@ -684,15 +692,15 @@ exports.endAllSessionsForMember = async (client, companyId, memberId, actorId) =
 };
 
 /**
- * Helper: End all active sessions for a company (e.g. on deactivation)
+ * Helper: End all active sessions for an organization (e.g. on deactivation)
  */
-exports.endAllSessionsForCompany = async (client, companyId, actorId) => {
+exports.endAllSessionsForOrganization = async (client, orgId, actorId) => {
     const result = await client.query(
-        `UPDATE company_chat_sessions
+        `UPDATE organization_chat_sessions
          SET status = 'ENDED', 
              ended_at = NOW(), 
              end_reason = 'company_deactivated'
-         WHERE company_id = $1 
+         WHERE org_id = $1 
            AND status = 'ACTIVE'
          RETURNING session_id`,
         [companyId]

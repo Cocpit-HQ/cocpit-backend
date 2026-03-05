@@ -14,7 +14,7 @@ const userRoutes = require("./modules/user/user.routes");
 const uploadRoutes = require("./modules/upload/upload.routes");
 const onboardingRoutes = require("./modules/auth/onboarding.routes");
 const messagingRoutes = require("./modules/messaging/messaging.routes");
-const companyRoutes = require("./modules/company/company.routes");
+const organizationRoutes = require("./modules/organization/organization.routes");
 
 const app = express();
 app.set("trust proxy", true);
@@ -33,7 +33,7 @@ const corsOptions = {
     }
   },
   methods: 'GET,POST,PUT,DELETE,PATCH,OPTIONS', // Allowed HTTP methods
-  allowedHeaders: ['Content-Type', 'Authorization', 'x-company-id'], // Allowed headers
+  allowedHeaders: ['Content-Type', 'Authorization', 'x-company-id', 'x-org-id'], // Allowed headers
   credentials: true // Enables cookies/authorization headers to be sent
 }
 
@@ -63,7 +63,7 @@ app.use("/api", socialRoutes); // /api/conversations...
 app.use("/api/users", userRoutes);
 app.use("/api", uploadRoutes);
 app.use("/api/onboarding", onboardingRoutes);
-app.use("/api", companyRoutes);
+app.use("/api", organizationRoutes); // Supporting both /api/organizations and legacy /api/companies
 app.use("/api", messagingRoutes); // /api/groups... + /api/company-chat-sessions...
 
 // Global Error Handler

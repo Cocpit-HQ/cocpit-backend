@@ -4,8 +4,8 @@ const socketService = require("../../core/infrastructure/socket.service");
 const { checkBlockStatus } = require("../../core/utils/blockCheck");
 const { logAudit } = require("../../core/infrastructure/audit.service");
 const cloudinary = require("../../core/infrastructure/cloudinary.client");
-const { checkCompanyPermission } = require("../../core/utils/rbac");
-const { notifyCompanyFollowers } = require("../../services/notification.service");
+const { checkOrgPermission } = require("../../core/utils/rbac");
+const { notifyOrgFollowers } = require("../../services/notification.service");
 
 // --- Feed / Posts ---
 exports.getPublicFeed = async (req, res) => {
@@ -40,11 +40,12 @@ exports.getPublicFeed = async (req, res) => {
             p.created_at,
             p.visibility,
 
-            COALESCE(p.author_company_id, u.user_id) AS author_id,
+            COALESCE(p.author_org_id, u.user_id) AS author_id,
             COALESCE(comp.name, u.full_name) AS author_name,
             COALESCE(comp.logo_url, u.avatar_url) AS author_avatar,
             COALESCE(comp.slug, u.account_name) AS author_slug,
-            (p.author_company_id IS NOT NULL) AS is_company_post,
+            (p.author_org_id IS NOT NULL) AS is_organization_post,
+            (comp.entity_type = 'INSTITUTION') AS is_institution_post,
 
             pc.name AS category_name,
 
@@ -104,7 +105,7 @@ exports.getPublicFeed = async (req, res) => {
                         'content', sp.content,
                         'created_at', sp.created_at,
                         'author', json_build_object(
-                            'user_id', COALESCE(sp.author_company_id, sp_u.user_id),
+                            'user_id', COALESCE(sp.author_org_id, sp_u.user_id),
                             'full_name', COALESCE(sp_comp.name, sp_u.full_name),
                             'avatar_url', COALESCE(sp_comp.logo_url, sp_u.avatar_url)
                         ),
@@ -154,19 +155,20 @@ exports.getPublicFeed = async (req, res) => {
 
         FROM posts p
         JOIN users u ON u.user_id = p.author_id
-        LEFT JOIN companies comp ON comp.company_id = p.author_company_id
+        LEFT JOIN organizations comp ON comp.org_id = p.author_org_id
         LEFT JOIN post_categories pc ON pc.category_id = p.category_id
 
         -- Shared Post Joins
         LEFT JOIN posts sp ON p.shared_post_id = sp.post_id
         LEFT JOIN users sp_u ON sp.author_id = sp_u.user_id
-        LEFT JOIN companies sp_comp ON sp_comp.company_id = sp.author_company_id
+        LEFT JOIN organizations sp_comp ON sp_comp.org_id = sp.author_org_id
         LEFT JOIN post_categories sp_cat ON sp.category_id = sp_cat.category_id
 
         -- Like Check Join
         LEFT JOIN post_likes pl_me ON pl_me.post_id = p.post_id AND pl_me.user_id = $${userParamIdx}
 
         WHERE p.visibility = 'public'
+        AND (p.is_removed IS FALSE OR p.is_removed IS NULL)
         AND NOT EXISTS (
             SELECT 1 FROM blocks b 
             WHERE (b.blocker_id = $${userParamIdx} AND b.blocked_id = p.author_id)
@@ -243,7 +245,7 @@ exports.getMyPosts = async (req, res) => {
     try {
         const params = [userId];
         let idx = 2;
-        let whereClause = `WHERE p.author_id = $1 AND p.author_company_id IS NULL`;
+        let whereClause = `WHERE p.author_id = $1 AND p.author_org_id IS NULL`;
 
         // ✅ Category filter (skip if "All")
         if (category && category !== "All") {
@@ -283,11 +285,11 @@ exports.getMyPosts = async (req, res) => {
             p.created_at,
             p.visibility,
 
-            COALESCE(p.author_company_id, u.user_id) AS author_id,
+            COALESCE(p.author_org_id, u.user_id) AS author_id,
             COALESCE(comp.name, u.full_name) AS author_name,
             COALESCE(comp.logo_url, u.avatar_url) AS author_avatar,
             COALESCE(comp.slug, u.account_name) AS author_slug,
-            (p.author_company_id IS NOT NULL) AS is_company_post,
+            (p.author_org_id IS NOT NULL) AS is_organization_post,
 
                         pc.name AS category_name,
 
@@ -328,11 +330,11 @@ exports.getMyPosts = async (req, res) => {
                                                         'content', sp.content,
                                                         'created_at', sp.created_at,
                                                          'author', json_build_object(
-                                                             'user_id', COALESCE(sp.author_company_id, sp_u.user_id),
+                                                             'user_id', COALESCE(sp.author_org_id, sp_u.user_id),
                                                              'full_name', COALESCE(sp_comp.name, sp_u.full_name),
                                                              'avatar_url', COALESCE(sp_comp.logo_url, sp_u.avatar_url),
                                                              'author_slug', COALESCE(sp_comp.slug, sp_u.account_name),
-                                                             'is_company_post', (sp.author_company_id IS NOT NULL)
+                                                             'is_organization_post', (sp.author_org_id IS NOT NULL)
                                                          ),
                                                         'media', COALESCE(sp_media.media, '[]'::json),
                                                         'like_count', (SELECT COUNT(*) FROM post_likes pl WHERE pl.post_id = sp.post_id)::int,
@@ -364,13 +366,13 @@ exports.getMyPosts = async (req, res) => {
 
        FROM posts p
        JOIN users u ON u.user_id = p.author_id
-       LEFT JOIN companies comp ON comp.company_id = p.author_company_id
+       LEFT JOIN organizations comp ON comp.org_id = p.author_org_id
        LEFT JOIN post_categories pc ON pc.category_id = p.category_id
  
          --Shared Post Joins
        LEFT JOIN posts sp ON p.shared_post_id = sp.post_id
        LEFT JOIN users sp_u ON sp.author_id = sp_u.user_id
-       LEFT JOIN companies sp_comp ON sp_comp.company_id = sp.author_company_id
+       LEFT JOIN organizations sp_comp ON sp_comp.org_id = sp.author_org_id
        LEFT JOIN post_categories sp_cat ON sp.category_id = sp_cat.category_id
        LEFT JOIN(
              SELECT post_id, json_agg(json_build_object('url', url, 'media_type', media_type)) as media
@@ -600,6 +602,7 @@ exports.createPost = async (req, res) => {
     let { content, category, visibility, media_urls, post_type, title, poll_options, poll_duration, companyId } = req.body; // category is name, media_urls is array
 
     const client = await pool.connect();
+    const { checkOrgPermission } = require("../../core/utils/rbac");
 
     try {
         await client.query('BEGIN');
@@ -607,7 +610,7 @@ exports.createPost = async (req, res) => {
         // Company Authorization Check
         if (companyId) {
             const memberCheck = await client.query(
-                `SELECT 1 FROM company_members WHERE company_id = $1 AND user_id = $2`,
+                `SELECT 1 FROM organization_members WHERE org_id = $1 AND user_id = $2`,
                 [companyId, userId]
             );
             if (memberCheck.rowCount === 0) {
@@ -670,13 +673,62 @@ exports.createPost = async (req, res) => {
 
             // --- CONTEXT-AWARE CATEGORY VALIDATION ---
             const userAllowed = ['Personal', 'Professional', 'Achievement'];
-            const companyAllowed = ['Update', 'Hiring', 'Milestone', 'Insight', 'Professional', 'Article']; // Added Article if needed, else stick to requirements
+            const companyAllowed = ['Update', 'Hiring', 'Milestone', 'Insight', 'Professional', 'Article'];
+            const institutionAllowed = ['Announcement', 'Academic', 'Admission', 'Campus Life', 'Research', 'Club Activity', 'General'];
 
             if (companyId) {
-                // Company Post
-                if (!['Update', 'Hiring', 'Milestone', 'Insight'].includes(category)) {
-                    await client.query('ROLLBACK');
-                    return res.status(400).json({ message: `Invalid category for Company posts. Allowed: Update, Hiring, Milestone, Insight` });
+                // Determine if it's a COMPANY or INSTITUTION
+                const orgRes = await client.query('SELECT entity_type, verification_status FROM organizations WHERE org_id = $1', [companyId]);
+                const entityType = orgRes.rows[0]?.entity_type;
+                const vStatus = orgRes.rows[0]?.verification_status;
+
+                if (entityType === 'INSTITUTION') {
+                    // --- PHASE 4: Verification Check ---
+                    const verifiedStatuses = ['VERIFIED', 'DOMAIN_VERIFIED'];
+                    if (!verifiedStatuses.includes(vStatus)) {
+                        await client.query('ROLLBACK');
+                        return res.status(403).json({
+                            message: "Institution must be verified before posting. Please verify via EDU email or documents."
+                        });
+                    }
+                    if (!institutionAllowed.includes(category)) {
+                        await client.query('ROLLBACK');
+                        return res.status(400).json({
+                            message: `Invalid category for Institution posts. Allowed: ${institutionAllowed.join(', ')}`
+                        });
+                    }
+
+                    // Category-level RBAC check
+                    const categoryPermissionMap = {
+                        'Announcement': 'POST_ANNOUNCEMENT',
+                        'Academic': 'CREATE_ACADEMIC_CONTENT',
+                        'Research': 'CREATE_ACADEMIC_CONTENT',
+                        'Admission': 'POST_ANNOUNCEMENT',
+                        'Campus Life': 'CREATE_GENERAL_CONTENT',
+                        'Club Activity': 'CREATE_GENERAL_CONTENT',
+                        'General': 'CREATE_GENERAL_CONTENT'
+                    };
+
+                    const requiredPerm = categoryPermissionMap[category];
+                    const canPost = await checkOrgPermission(companyId, userId, [requiredPerm, 'MANAGE_COMPANY', 'CREATE_CONTENT']);
+
+                    if (!canPost) {
+                        // Allow Students to post in General freely
+                        // The test script role has CREATE_GENERAL_CONTENT mapped to 'Student' and 'Student Moderator'
+                        // So the auth check `checkOrgPermission` should handle it if passed the right permissions.
+                        // Wait: checkOrgPermission signature is `(orgId, userId, requiredPermissions)`
+                        await client.query('ROLLBACK');
+                        return res.status(403).json({
+                            message: `You do not have permission to post in category: ${category}`
+                        });
+                    }
+
+                } else {
+                    // Normal Company Post
+                    if (!companyAllowed.includes(category)) {
+                        await client.query('ROLLBACK');
+                        return res.status(400).json({ message: `Invalid category for Company posts. Allowed: Update, Hiring, Milestone, Insight` });
+                    }
                 }
             } else {
                 // User Post
@@ -690,7 +742,7 @@ exports.createPost = async (req, res) => {
 
         // 2. Insert Post
         const postResult = await client.query(
-            ` INSERT INTO posts (author_id, category_id, content, visibility,post_type,title, shared_post_id, author_company_id)
+            ` INSERT INTO posts (author_id, category_id, content, visibility,post_type,title, shared_post_id, author_org_id)
       VALUES ($1, $2, $3, $4,$5,$6, $7, $8)
       RETURNING post_id, created_at
       `, [userId, categoryId, content, visibility || 'public', post_type, title, req.body.shared_post_id || null, companyId || null]
@@ -734,15 +786,15 @@ exports.createPost = async (req, res) => {
 
         // 4. Handle Repost Notification
         if (req.body.shared_post_id) {
-            const originalPostRes = await client.query(`SELECT author_id, author_company_id FROM posts WHERE post_id = $1`, [req.body.shared_post_id]);
+            const originalPostRes = await client.query(`SELECT author_id, author_org_id FROM posts WHERE post_id = $1`, [req.body.shared_post_id]);
             if (originalPostRes.rowCount > 0) {
                 const originalAuthorId = originalPostRes.rows[0].author_id;
-                const originalCompanyId = originalPostRes.rows[0].author_company_id;
+                const originalCompanyId = originalPostRes.rows[0].author_org_id;
 
                 // Determine Reposter Identity
                 let reposterName, reposterAvatar;
                 if (companyId) {
-                    const companyRes = await client.query(`SELECT name, logo_url FROM companies WHERE company_id = $1`, [companyId]);
+                    const companyRes = await client.query(`SELECT name, logo_url FROM organizations WHERE org_id = $1`, [companyId]);
                     reposterName = companyRes.rows[0].name;
                     reposterAvatar = companyRes.rows[0].logo_url;
                 } else {
@@ -760,13 +812,13 @@ exports.createPost = async (req, res) => {
                     const notificationText = `${reposterName} reposted your post`;
 
                     const meta = {
-                        company_id: companyId, // Sender company
+                        org_id: companyId, // Sender company
                         post_id: postId
                     };
 
                     // Insert notification
                     await client.query(
-                        `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata, recipient_company_id) 
+                        `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata, recipient_org_id) 
                           VALUES ($1, $2, $3, $4, $5, $6, $7)`,
                         [originalAuthorId, userId, "repost", notificationText, postId, JSON.stringify(meta), originalCompanyId]
                     );
@@ -781,7 +833,7 @@ exports.createPost = async (req, res) => {
                         referenceId: postId,
                         metadata: meta,
                         time: "Just now",
-                        recipient_company_id: originalCompanyId
+                        recipient_org_id: originalCompanyId
                     });
                 }
             }
@@ -789,7 +841,7 @@ exports.createPost = async (req, res) => {
 
         if (companyId) {
             // PERMISSION CHECK START
-            const canCreate = await checkCompanyPermission(client, companyId, userId, ['CREATE_CONTENT', 'MANAGE_COMPANY']);
+            const canCreate = await checkOrgPermission(client, companyId, userId, ['CREATE_CONTENT', 'MANAGE_COMPANY']);
             if (!canCreate) {
                 await client.query('ROLLBACK');
                 return res.status(403).json({ message: "Unauthorized to create posts for this company" });
@@ -812,10 +864,10 @@ exports.createPost = async (req, res) => {
 
         // Notify followers with 'posts' preference enabled (fire-and-forget, after commit)
         if (companyId) {
-            const companyNameRes = await pool.query(`SELECT name FROM companies WHERE company_id = $1`, [companyId]);
-            const cName = companyNameRes.rows[0]?.name || 'A company';
-            notifyCompanyFollowers(companyId, "posts", {
-                type: "company_post",
+            const companyNameRes = await pool.query(`SELECT name FROM organizations WHERE org_id = $1`, [companyId]);
+            const cName = companyNameRes.rows[0]?.name || 'An organization';
+            notifyOrgFollowers(companyId, "posts", {
+                type: "organization_post",
                 text: `${cName} published a new post`,
                 referenceId: postId,
                 metadata: { post_title: title || content?.substring(0, 50) },
@@ -857,7 +909,7 @@ exports.getPostById = async (req, res) => {
     COALESCE(comp.name, u.full_name) AS author_name,
     COALESCE(comp.logo_url, u.avatar_url) AS author_avatar,
     COALESCE(comp.slug, u.account_name) AS author_slug,
-    (p.author_company_id IS NOT NULL) AS is_company_post,
+    (p.author_org_id IS NOT NULL) AS is_organization_post,
     c.name AS category_name,
 
     -- Like Count
@@ -943,7 +995,7 @@ exports.getPostById = async (req, res) => {
                 'content', sp.content,
                 'created_at', sp.created_at,
                 'author', json_build_object(
-                    'user_id', COALESCE(sp.author_company_id, sp_u.user_id),
+                    'user_id', COALESCE(sp.author_org_id, sp_u.user_id),
                     'full_name', COALESCE(sp_comp.name, sp_u.full_name),
                     'avatar_url', COALESCE(sp_comp.logo_url, sp_u.avatar_url)
                 ),
@@ -983,7 +1035,7 @@ exports.getPostById = async (req, res) => {
             'is_accessible', false, 
             'reason', 'private',
             'author', json_build_object(
-                'user_id', COALESCE(sp.author_company_id, sp_u.user_id),
+                'user_id', COALESCE(sp.author_org_id, sp_u.user_id),
                 'full_name', COALESCE(sp_comp.name, sp_u.full_name),
                 'avatar_url', COALESCE(sp_comp.logo_url, sp_u.avatar_url)
             )
@@ -992,7 +1044,7 @@ exports.getPostById = async (req, res) => {
             'is_accessible', false, 
             'reason', 'personal_connection',
             'author', json_build_object(
-                'user_id', COALESCE(sp.author_company_id, sp_u.user_id),
+                'user_id', COALESCE(sp.author_org_id, sp_u.user_id),
                 'full_name', COALESCE(sp_comp.name, sp_u.full_name),
                 'avatar_url', COALESCE(sp_comp.logo_url, sp_u.avatar_url)
             )
@@ -1003,13 +1055,13 @@ exports.getPostById = async (req, res) => {
 
 FROM posts p
 JOIN users u ON u.user_id = p.author_id
-LEFT JOIN companies comp ON comp.company_id = p.author_company_id
+LEFT JOIN organizations comp ON comp.org_id = p.author_org_id
 LEFT JOIN post_categories c ON p.category_id = c.category_id
 
 -- Shared Post Joins
 LEFT JOIN posts sp ON p.shared_post_id = sp.post_id
 LEFT JOIN users sp_u ON sp.author_id = sp_u.user_id
-LEFT JOIN companies sp_comp ON sp_comp.company_id = sp.author_company_id
+LEFT JOIN organizations sp_comp ON sp_comp.org_id = sp.author_org_id
 LEFT JOIN post_categories sp_cat ON sp.category_id = sp_cat.category_id
 LEFT JOIN (
     SELECT post_id, json_agg(json_build_object('url', url, 'media_type', media_type)) as media
@@ -1072,21 +1124,21 @@ exports.updatePostById = async (req, res) => {
         }
 
         // 2. Fetch Post & Check Permissions (CRITICAL FIX)
-        const postCheck = await client.query(`SELECT author_id, author_company_id FROM posts WHERE post_id = $1`, [postId]);
+        const postCheck = await client.query(`SELECT author_id, author_org_id FROM posts WHERE post_id = $1`, [postId]);
         if (postCheck.rowCount === 0) {
             await client.query("ROLLBACK");
             return res.status(404).json({ message: "Post not found" });
         }
-        const { author_id, author_company_id } = postCheck.rows[0];
+        const { author_id, author_org_id } = postCheck.rows[0];
         let canEdit = false;
 
-        if (author_id === userId && !author_company_id) {
+        if (author_id === userId && !author_org_id) {
             canEdit = true;
-        } else if (author_company_id) {
+        } else if (author_org_id) {
             if (author_id === userId) {
                 canEdit = true;
             } else {
-                canEdit = await checkCompanyPermission(client, author_company_id, userId, ['MANAGE_COMPANY', 'CREATE_CONTENT']);
+                canEdit = await checkOrgPermission(client, author_org_id, userId, ['MANAGE_COMPANY', 'CREATE_CONTENT']);
             }
         }
 
@@ -1197,11 +1249,11 @@ exports.updatePostById = async (req, res) => {
         }
 
 
-        if (author_company_id) {
+        if (author_org_id) {
             const auditClient = await pool.connect();
             try {
                 await logAudit(auditClient, {
-                    entityId: author_company_id,
+                    entityId: author_org_id,
                     actorId: userId,
                     action: 'UPDATE_POST',
                     metadata: {
@@ -1287,7 +1339,7 @@ exports.deletePost = async (req, res) => {
 
         // 1. Fetch Post Ownership Info
         const postRes = await client.query(
-            `SELECT author_id, author_company_id FROM posts WHERE post_id = $1`,
+            `SELECT author_id, author_org_id FROM posts WHERE post_id = $1`,
             [postId]
         );
 
@@ -1296,20 +1348,20 @@ exports.deletePost = async (req, res) => {
             return res.status(404).json({ message: "Post not found" });
         }
 
-        const { author_id, author_company_id } = postRes.rows[0];
+        const { author_id, author_org_id } = postRes.rows[0];
         let canDelete = false;
 
         // 2. Check Permissions
-        if (author_id === userId && !author_company_id) {
+        if (author_id === userId && !author_org_id) {
             // Personal Post -> Author can delete
             canDelete = true;
-        } else if (author_company_id) {
+        } else if (author_org_id) {
             // Company Post -> Check Company Permissions
             // Allow if Author (User acting as company) OR if has MANAGE_COMPANY / CREATE_CONTENT
             if (author_id === userId) {
                 canDelete = true;
             } else {
-                canDelete = await checkCompanyPermission(client, author_company_id, userId, ['MANAGE_COMPANY', 'CREATE_CONTENT']);
+                canDelete = await checkOrgPermission(client, author_org_id, userId, ['MANAGE_COMPANY', 'CREATE_CONTENT']);
             }
         }
 
@@ -1321,11 +1373,11 @@ exports.deletePost = async (req, res) => {
         // 3. Delete
 
         // Log Audit BEFORE delete (so we still have access if needed, though we already fetched info)
-        if (author_company_id) {
+        if (author_org_id) {
             const auditClient = await pool.connect();
             try {
                 await logAudit(auditClient, {
-                    entityId: author_company_id,
+                    entityId: author_org_id,
                     actorId: userId,
                     action: 'DELETE_POST', // Consistent naming
                     metadata: {
@@ -1439,7 +1491,7 @@ exports.toggleLike = async (req, res) => {
         // Company Authorization Check
         if (companyId) {
             const memberCheck = await pool.query(
-                `SELECT 1 FROM company_members WHERE company_id = $1 AND user_id = $2`,
+                `SELECT 1 FROM organization_members WHERE org_id = $1 AND user_id = $2`,
                 [companyId, userId]
             );
             if (memberCheck.rowCount === 0) {
@@ -1451,12 +1503,12 @@ exports.toggleLike = async (req, res) => {
         let alreadyLiked;
         if (companyId) {
             alreadyLiked = await pool.query(
-                "SELECT 1 FROM post_likes WHERE post_id = $1 AND company_id = $2",
+                "SELECT 1 FROM post_likes WHERE post_id = $1 AND org_id = $2",
                 [postId, companyId]
             );
         } else {
             alreadyLiked = await pool.query(
-                "SELECT 1 FROM post_likes WHERE post_id = $1 AND user_id = $2 AND company_id IS NULL",
+                "SELECT 1 FROM post_likes WHERE post_id = $1 AND user_id = $2 AND org_id IS NULL",
                 [postId, userId]
             );
         }
@@ -1467,12 +1519,12 @@ exports.toggleLike = async (req, res) => {
             // 2️⃣ Unlike
             if (companyId) {
                 await pool.query(
-                    "DELETE FROM post_likes WHERE post_id = $1 AND company_id = $2",
+                    "DELETE FROM post_likes WHERE post_id = $1 AND org_id = $2",
                     [postId, companyId]
                 );
             } else {
                 await pool.query(
-                    "DELETE FROM post_likes WHERE post_id = $1 AND user_id = $2 AND company_id IS NULL",
+                    "DELETE FROM post_likes WHERE post_id = $1 AND user_id = $2 AND org_id IS NULL",
                     [postId, userId]
                 );
             }
@@ -1481,7 +1533,7 @@ exports.toggleLike = async (req, res) => {
             // 3️⃣ Like
             if (companyId) {
                 await pool.query(
-                    "INSERT INTO post_likes (post_id, user_id, company_id) VALUES ($1, $2, $3)",
+                    "INSERT INTO post_likes (post_id, user_id, org_id) VALUES ($1, $2, $3)",
                     [postId, userId, companyId]
                 );
             } else {
@@ -1494,10 +1546,10 @@ exports.toggleLike = async (req, res) => {
 
             // 🔔 Notify Author
             // Fetch post author
-            const postRes = await pool.query("SELECT author_id, author_company_id FROM posts WHERE post_id = $1", [postId]);
+            const postRes = await pool.query("SELECT author_id, author_org_id FROM posts WHERE post_id = $1", [postId]);
             if (postRes.rowCount > 0) {
                 const authorId = postRes.rows[0].author_id;
-                const authorCompanyId = postRes.rows[0].author_company_id;
+                const authorCompanyId = postRes.rows[0].author_org_id;
 
                 // Don't notify if self (User liking own user post OR Company liking own company post)
                 let isSelf = (!companyId && !authorCompanyId && authorId === userId);
@@ -1507,7 +1559,7 @@ exports.toggleLike = async (req, res) => {
                     let senderName, senderAvatar;
 
                     if (companyId) {
-                        const companyRes = await pool.query("SELECT name, logo_url FROM companies WHERE company_id = $1", [companyId]);
+                        const companyRes = await pool.query("SELECT name, logo_url FROM organizations WHERE org_id = $1", [companyId]);
                         senderName = companyRes.rows[0].name;
                         senderAvatar = companyRes.rows[0].logo_url;
                     } else {
@@ -1522,14 +1574,14 @@ exports.toggleLike = async (req, res) => {
                         senderName: senderName,
                         senderAvatar: senderAvatar,
                         postId,
-                        metadata: { company_id: companyId }
+                        metadata: { org_id: companyId }
                     });
 
                     // Persist notification
                     await pool.query(
-                        `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata, recipient_company_id) 
+                        `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata, recipient_org_id) 
                          VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-                        [authorId, userId, "like", `${senderName} liked your post`, postId, JSON.stringify({ company_id: companyId }), authorCompanyId]
+                        [authorId, userId, "like", `${senderName} liked your post`, postId, JSON.stringify({ org_id: companyId }), authorCompanyId]
                     );
                 }
             }
@@ -1574,7 +1626,7 @@ exports.addComment = async (req, res) => {
         // Company Authorization Check
         if (companyId) {
             const memberCheck = await pool.query(
-                `SELECT 1 FROM company_members WHERE company_id = $1 AND user_id = $2`,
+                `SELECT 1 FROM organization_members WHERE org_id = $1 AND user_id = $2`,
                 [companyId, userId]
             );
             if (memberCheck.rowCount === 0) {
@@ -1582,14 +1634,14 @@ exports.addComment = async (req, res) => {
             }
         }
 
-        const post = await pool.query(`select post_id, author_id, author_company_id from posts where post_id = $1`, [postId])
+        const post = await pool.query(`select post_id, author_id, author_org_id from posts where post_id = $1`, [postId])
 
         if (post.rowCount === 0) {
             return res.status(404).json({ message: "Post not found" })
         }
 
         const postAuthorId = post.rows[0].author_id;
-        const postCompanyId = post.rows[0].author_company_id;
+        const postCompanyId = post.rows[0].author_org_id;
 
         // Block Check: Post Author (skip if company)
         if (!companyId) {
@@ -1638,9 +1690,9 @@ exports.addComment = async (req, res) => {
         }
 
         const result = await pool.query(
-            `INSERT INTO post_comments (post_id, author_id, content, parent_id, author_company_id)
+            `INSERT INTO post_comments (post_id, author_id, content, parent_id, author_org_id)
              VALUES ($1, $2, $3, $4, $5)
-             RETURNING comment_id, author_id, content, parent_id, author_company_id, created_at`,
+             RETURNING comment_id, author_id, content, parent_id, author_org_id, created_at`,
             [postId, userId, content.trim(), insertParentId, companyId || null]
         );
 
@@ -1652,7 +1704,7 @@ exports.addComment = async (req, res) => {
         let actorName, actorAvatar;
 
         if (companyId) {
-            const companyRes = await pool.query(`SELECT name, logo_url FROM companies WHERE company_id = $1`, [companyId]);
+            const companyRes = await pool.query(`SELECT name, logo_url FROM organizations WHERE org_id = $1`, [companyId]);
             const company = companyRes.rows[0];
             actorName = company.name;
             actorAvatar = company.logo_url;
@@ -1682,11 +1734,11 @@ exports.addComment = async (req, res) => {
             // Notification Metadata
             const meta = {
                 comment_id: newComment.comment_id,
-                company_id: companyId
+                org_id: companyId
             };
 
             await pool.query(
-                `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata, recipient_company_id) 
+                `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata, recipient_org_id) 
                  VALUES ($1, $2, $3, $4, $5, $6, $7)`,
                 [postAuthorId, userId, 'comment', notificationText, postId, JSON.stringify(meta), postCompanyId]
             );
@@ -1706,13 +1758,13 @@ exports.addComment = async (req, res) => {
         if (parent_id) {
             // Get parent comment author AND company
             const parentAuthorRes = await pool.query(
-                `SELECT author_id, author_company_id FROM post_comments WHERE comment_id = $1`,
+                `SELECT author_id, author_org_id FROM post_comments WHERE comment_id = $1`,
                 [parent_id]
             );
 
             if (parentAuthorRes.rowCount > 0) {
                 const parentAuthorId = parentAuthorRes.rows[0].author_id;
-                const parentCompanyId = parentAuthorRes.rows[0].author_company_id;
+                const parentCompanyId = parentAuthorRes.rows[0].author_org_id;
 
                 // Notify parent author (if not self and not post owner already notified)
                 let isSelfReply = (!companyId && parentAuthorId === userId);
@@ -1731,11 +1783,11 @@ exports.addComment = async (req, res) => {
                     const meta = {
                         comment_id: newComment.comment_id,
                         parent_id,
-                        company_id: companyId
+                        org_id: companyId
                     };
 
                     await pool.query(
-                        `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata, recipient_company_id) 
+                        `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata, recipient_org_id) 
                          VALUES ($1, $2, $3, $4, $5, $6, $7)`,
                         [parentAuthorId, userId, 'reply', replyText, postId, JSON.stringify(meta), parentCompanyId]
                     );
@@ -1749,7 +1801,7 @@ exports.addComment = async (req, res) => {
                         referenceId: postId,
                         metadata: meta,
                         time: "Just now",
-                        recipient_company_id: parentCompanyId // Helper for frontend if needed
+                        recipient_org_id: parentCompanyId // Helper for frontend if needed
                     });
                 }
             }
@@ -1774,7 +1826,7 @@ exports.addComment = async (req, res) => {
                         const notifText = `${actorName} mentioned you in a comment`;
                         const meta = {
                             comment_id: newComment.comment_id,
-                            company_id: companyId
+                            org_id: companyId
                         };
 
                         await pool.query(
@@ -1890,12 +1942,12 @@ exports.deleteComment = async (req, res) => {
         // For now, I'm assuming the user wants an audit log for comment deletion.
         // If `logAudit` is expected to be called, it needs to be imported or defined.
         // Assuming `logAudit` is available in this scope.
-        // Also assuming `comment.author_company_id` exists if company-level auditing is needed for comments.
-        if (comment.author_company_id) {
+        // Also assuming `comment.author_org_id` exists if company-level auditing is needed for comments.
+        if (comment.author_org_id) {
             const auditClient = await pool.connect();
             try {
                 await logAudit(auditClient, {
-                    entityId: comment.author_company_id, // Using comment's company ID
+                    entityId: comment.author_org_id, // Using comment's company ID
                     actorId: userId,
                     action: 'DELETE_COMMENT', // Action changed to DELETE_COMMENT
                     metadata: {
@@ -1934,7 +1986,7 @@ exports.toggleCommentLike = async (req, res) => {
         // Company Authorization Check
         if (companyId) {
             const memberCheck = await pool.query(
-                `SELECT 1 FROM company_members WHERE company_id = $1 AND user_id = $2`,
+                `SELECT 1 FROM organization_members WHERE org_id = $1 AND user_id = $2`,
                 [companyId, userId]
             );
             if (memberCheck.rowCount === 0) {
@@ -1944,7 +1996,7 @@ exports.toggleCommentLike = async (req, res) => {
 
         // Check if comment exists
         const commentCheck = await pool.query(
-            `SELECT comment_id, author_id, author_company_id, post_id FROM post_comments WHERE comment_id = $1`,
+            `SELECT comment_id, author_id, author_org_id, post_id FROM post_comments WHERE comment_id = $1`,
             [commentId]
         );
 
@@ -1958,12 +2010,12 @@ exports.toggleCommentLike = async (req, res) => {
         let existingLike;
         if (companyId) {
             existingLike = await pool.query(
-                `SELECT * FROM comment_likes WHERE company_id = $1 AND comment_id = $2`,
+                `SELECT * FROM comment_likes WHERE org_id = $1 AND comment_id = $2`,
                 [companyId, commentId]
             );
         } else {
             existingLike = await pool.query(
-                `SELECT * FROM comment_likes WHERE user_id = $1 AND comment_id = $2 AND company_id IS NULL`,
+                `SELECT * FROM comment_likes WHERE user_id = $1 AND comment_id = $2 AND org_id IS NULL`,
                 [userId, commentId]
             );
         }
@@ -1973,12 +2025,12 @@ exports.toggleCommentLike = async (req, res) => {
             // Unlike
             if (companyId) {
                 await pool.query(
-                    `DELETE FROM comment_likes WHERE company_id = $1 AND comment_id = $2`,
+                    `DELETE FROM comment_likes WHERE org_id = $1 AND comment_id = $2`,
                     [companyId, commentId]
                 );
             } else {
                 await pool.query(
-                    `DELETE FROM comment_likes WHERE user_id = $1 AND comment_id = $2 AND company_id IS NULL`,
+                    `DELETE FROM comment_likes WHERE user_id = $1 AND comment_id = $2 AND org_id IS NULL`,
                     [userId, commentId]
                 );
             }
@@ -1987,7 +2039,7 @@ exports.toggleCommentLike = async (req, res) => {
             // Like
             if (companyId) {
                 await pool.query(
-                    `INSERT INTO comment_likes (user_id, comment_id, company_id) VALUES ($1, $2, $3)`,
+                    `INSERT INTO comment_likes (user_id, comment_id, org_id) VALUES ($1, $2, $3)`,
                     [userId, commentId, companyId]
                 );
             } else {
@@ -2000,7 +2052,7 @@ exports.toggleCommentLike = async (req, res) => {
 
             // --- NOTIFICATION LOGIC ---
             const authorId = comment.author_id;
-            const authorCompanyId = comment.author_company_id;
+            const authorCompanyId = comment.author_org_id;
 
             // Determine if self-like
             let isSelf = (!companyId && authorId === userId);
@@ -2011,7 +2063,7 @@ exports.toggleCommentLike = async (req, res) => {
                 let senderName, senderAvatar;
 
                 if (companyId) {
-                    const companyRes = await pool.query("SELECT name, logo_url FROM companies WHERE company_id = $1", [companyId]);
+                    const companyRes = await pool.query("SELECT name, logo_url FROM organizations WHERE org_id = $1", [companyId]);
                     senderName = companyRes.rows[0].name;
                     senderAvatar = companyRes.rows[0].logo_url;
                 } else {
@@ -2023,12 +2075,12 @@ exports.toggleCommentLike = async (req, res) => {
                 // Persist notification
                 const meta = {
                     comment_id: commentId,
-                    company_id: companyId,
+                    org_id: companyId,
                     post_id: comment.post_id
                 };
 
                 await pool.query(
-                    `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata, recipient_company_id) 
+                    `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata, recipient_org_id) 
                      VALUES ($1, $2, $3, $4, $5, $6, $7)`,
                     [authorId, userId, "like", `${senderName} liked your comment`, comment.post_id, JSON.stringify(meta), authorCompanyId]
                 );
@@ -2041,7 +2093,7 @@ exports.toggleCommentLike = async (req, res) => {
                     senderAvatar: senderAvatar,
                     referenceId: comment.post_id, // Link to post usually
                     metadata: meta,
-                    recipient_company_id: authorCompanyId
+                    recipient_org_id: authorCompanyId
                 });
             }
         }
@@ -2152,27 +2204,27 @@ exports.getComments = async (req, res) => {
         u.user_id AS author_id,
         
         CASE 
-            WHEN c.author_company_id IS NOT NULL THEN comp.name 
+            WHEN c.author_org_id IS NOT NULL THEN comp.name 
             ELSE u.full_name 
         END AS full_name,
 
         CASE 
-            WHEN c.author_company_id IS NOT NULL THEN comp.slug 
+            WHEN c.author_org_id IS NOT NULL THEN comp.slug 
             ELSE u.account_name 
         END AS account_name,
 
         CASE 
-            WHEN c.author_company_id IS NOT NULL THEN comp.logo_url 
+            WHEN c.author_org_id IS NOT NULL THEN comp.logo_url 
             ELSE u.avatar_url 
         END AS avatar_url,
         COALESCE(comp.slug, u.account_name) AS author_slug,
-        (c.author_company_id IS NOT NULL) AS is_company_post,
+        (c.author_org_id IS NOT NULL) AS is_organization_post,
         CASE 
-            WHEN c.author_company_id IS NOT NULL THEN comp.slogan 
+            WHEN c.author_org_id IS NOT NULL THEN comp.slogan 
             ELSE u.headline 
         END AS headline,
 
-        c.author_company_id,
+        c.author_org_id,
 
         COALESCE(
           (SELECT COUNT(*)::int FROM comment_likes cl WHERE cl.comment_id = c.comment_id),
@@ -2182,16 +2234,16 @@ exports.getComments = async (req, res) => {
           (SELECT EXISTS(SELECT 1 FROM comment_likes cl 
            WHERE cl.comment_id = c.comment_id 
            AND (
-               ($3::uuid IS NOT NULL AND cl.company_id = $3::uuid) 
+               ($3::uuid IS NOT NULL AND cl.org_id = $3::uuid) 
                OR 
-               ($3::uuid IS NULL AND cl.user_id = $2 AND cl.company_id IS NULL)
+               ($3::uuid IS NULL AND cl.user_id = $2 AND cl.org_id IS NULL)
            )
           )),
           false
         ) AS is_liked
       FROM post_comments c
       JOIN users u ON c.author_id = u.user_id
-      LEFT JOIN companies comp ON c.author_company_id = comp.company_id
+      LEFT JOIN organizations comp ON c.author_org_id = comp.org_id
       WHERE c.post_id = $1
       AND NOT EXISTS (
         SELECT 1 FROM blocks b 
@@ -2221,7 +2273,7 @@ exports.getStories = async (req, res) => {
         const followingRes = await pool.query(`
             SELECT following_id as id FROM followers WHERE follower_id = $1
             UNION
-            SELECT company_id as id FROM company_followers WHERE user_id = $1
+            SELECT org_id as id FROM organization_followers WHERE user_id = $1
         `, [userId]);
 
         const followingIds = followingRes.rows.map(r => r.id);
@@ -2233,7 +2285,7 @@ exports.getStories = async (req, res) => {
                 s.*, 
                 COALESCE(comp.name, u.full_name) AS author_name, 
                 CASE 
-                    WHEN s.author_company_id IS NOT NULL THEN comp.logo_url 
+                    WHEN s.author_org_id IS NOT NULL THEN comp.logo_url 
                     ELSE u.avatar_url 
                 END AS author_avatar,
                 -- 1. Check if the current entity has viewed this story
@@ -2241,8 +2293,8 @@ exports.getStories = async (req, res) => {
                     SELECT 1 FROM story_views sv 
                     WHERE sv.story_id = s.story_id AND 
                     (
-                        ($3::uuid IS NOT NULL AND sv.viewer_company_id = $3::uuid) OR
-                        ($3::uuid IS NULL AND sv.viewer_id = $1 AND sv.viewer_company_id IS NULL)
+                        ($3::uuid IS NOT NULL AND sv.viewer_org_id = $3::uuid) OR
+                        ($3::uuid IS NULL AND sv.viewer_id = $1 AND sv.viewer_org_id IS NULL)
                     )
                 ) AS has_viewed,
                 -- 2. Check if the current entity has liked this story
@@ -2250,23 +2302,23 @@ exports.getStories = async (req, res) => {
                     SELECT 1 FROM story_reactions sr 
                     WHERE sr.story_id = s.story_id AND sr.reaction_type = 'true' AND
                     (
-                        ($3::uuid IS NOT NULL AND sr.reactor_company_id = $3::uuid) OR
-                        ($3::uuid IS NULL AND sr.user_id = $1 AND sr.reactor_company_id IS NULL)
+                        ($3::uuid IS NOT NULL AND sr.reactor_org_id = $3::uuid) OR
+                        ($3::uuid IS NULL AND sr.user_id = $1 AND sr.reactor_org_id IS NULL)
                     )
                 ) AS has_liked,
                 -- 3. Identity flag for UI changes
                 (s.author_id = $1) AS is_author,
-                (s.author_company_id IS NOT NULL) AS is_company,
+                (s.author_org_id IS NOT NULL) AS is_company,
                 -- 4. Counts
                 (SELECT COUNT(*) FROM story_views sv WHERE sv.story_id = s.story_id)::int AS view_count,
                 (SELECT COUNT(*) FROM story_reactions sr WHERE sr.story_id = s.story_id AND sr.reaction_type = 'true')::int AS like_count
             FROM stories s
             JOIN users u ON s.author_id = u.user_id
-            LEFT JOIN companies comp ON s.author_company_id = comp.company_id
+            LEFT JOIN organizations comp ON s.author_org_id = comp.org_id
             WHERE s.expires_at > now()
             AND (
                 s.author_id = ANY($2)
-                OR s.author_company_id = ANY($2)
+                OR s.author_org_id = ANY($2)
             )
             ORDER BY s.created_at DESC
             `,
@@ -2293,14 +2345,14 @@ exports.getGroupedStories = async (req, res) => {
         // 1. Determine Context (Company vs User)
         if (companyId) {
             const memberCheck = await pool.query(
-                `SELECT 1 FROM company_members WHERE company_id = $1 AND user_id = $2`,
+                `SELECT 1 FROM organization_members WHERE org_id = $1 AND user_id = $2`,
                 [companyId, userId]
             );
             if (memberCheck.rowCount > 0) {
-                const compRes = await pool.query(`SELECT company_id, name, logo_url FROM companies WHERE company_id = $1`, [companyId]);
+                const compRes = await pool.query(`SELECT org_id, name, logo_url FROM organizations WHERE org_id = $1`, [companyId]);
                 if (compRes.rowCount > 0) {
                     const comp = compRes.rows[0];
-                    currentEntityId = comp.company_id;
+                    currentEntityId = comp.org_id;
                     currentEntityName = "Your Company"; // UI can override
                     currentEntityAvatar = comp.logo_url;
                     isCompanyContext = true;
@@ -2326,7 +2378,7 @@ exports.getGroupedStories = async (req, res) => {
             followingQuery = `
                 SELECT following_id as id FROM followers WHERE follower_id = $1
                 UNION
-                SELECT company_id as id FROM company_followers WHERE user_id = $1
+                SELECT org_id as id FROM organization_followers WHERE user_id = $1
             `;
         }
 
@@ -2341,10 +2393,10 @@ exports.getGroupedStories = async (req, res) => {
                 s.*, 
                 COALESCE(comp.name, u.full_name) AS author_name, 
                 CASE 
-                    WHEN s.author_company_id IS NOT NULL THEN comp.logo_url 
+                    WHEN s.author_org_id IS NOT NULL THEN comp.logo_url 
                     ELSE u.avatar_url 
                 END AS author_avatar,
-                COALESCE(s.author_company_id, s.author_id) AS group_key,
+                COALESCE(s.author_org_id, s.author_id) AS group_key,
                 -- Shared Post Data
                 CASE 
                     WHEN s.shared_post_id IS NULL THEN NULL
@@ -2405,35 +2457,35 @@ exports.getGroupedStories = async (req, res) => {
                     SELECT 1 FROM story_views sv 
                     WHERE sv.story_id = s.story_id AND 
                     (
-                        ($4::uuid IS NOT NULL AND sv.viewer_company_id = $4::uuid) OR
-                        ($4::uuid IS NULL AND sv.viewer_id = $1 AND sv.viewer_company_id IS NULL)
+                        ($4::uuid IS NOT NULL AND sv.viewer_org_id = $4::uuid) OR
+                        ($4::uuid IS NULL AND sv.viewer_id = $1 AND sv.viewer_org_id IS NULL)
                     )
                 ) AS has_viewed,
                 EXISTS (
                     SELECT 1 FROM story_reactions sr 
                     WHERE sr.story_id = s.story_id AND sr.reaction_type = 'true' AND
                     (
-                        ($4::uuid IS NOT NULL AND sr.reactor_company_id = $4::uuid) OR
-                        ($4::uuid IS NULL AND sr.user_id = $1 AND sr.reactor_company_id IS NULL)
+                        ($4::uuid IS NOT NULL AND sr.reactor_org_id = $4::uuid) OR
+                        ($4::uuid IS NULL AND sr.user_id = $1 AND sr.reactor_org_id IS NULL)
                     )
                 ) AS has_liked,
                 (s.author_id = $1) AS is_author,
-                (s.author_company_id IS NOT NULL) AS is_company,
+                (s.author_org_id IS NOT NULL) AS is_company,
                 -- Aggregate counts
                 (SELECT COUNT(*) FROM story_views sv WHERE sv.story_id = s.story_id)::int AS view_count,
                 (SELECT COUNT(*) FROM story_reactions sr WHERE sr.story_id = s.story_id AND sr.reaction_type = 'true')::int AS like_count
             FROM stories s
             JOIN users u ON s.author_id = u.user_id
-            LEFT JOIN companies comp ON s.author_company_id = comp.company_id
+            LEFT JOIN organizations comp ON s.author_org_id = comp.org_id
             LEFT JOIN posts sp ON s.shared_post_id = sp.post_id
             LEFT JOIN users sp_u ON sp.author_id = sp_u.user_id
             LEFT JOIN post_categories sp_cat ON sp.category_id = sp_cat.category_id
             WHERE s.expires_at > now()
             AND (
                 s.author_id = $2
-                OR s.author_company_id = $2
+                OR s.author_org_id = $2
                 OR s.author_id = ANY($3)
-                OR s.author_company_id = ANY($3)
+                OR s.author_org_id = ANY($3)
             )
             AND NOT EXISTS (
                 SELECT 1 FROM blocks b 
@@ -2574,7 +2626,7 @@ exports.createStory = async (req, res) => {
 
         if (companyId) {
             const memberCheck = await pool.query(
-                `SELECT 1 FROM company_members WHERE company_id = $1 AND user_id = $2`,
+                `SELECT 1 FROM organization_members WHERE org_id = $1 AND user_id = $2`,
                 [companyId, userId]
             );
             if (memberCheck.rowCount === 0) {
@@ -2591,7 +2643,7 @@ exports.createStory = async (req, res) => {
             `INSERT INTO stories
                 (author_id, title, description, media_url, media_type,
                  expires_at, cld_public_id, shared_post_id,
-                 story_metadata, author_company_id)
+                 story_metadata, author_org_id)
              VALUES ($1, $2, $3, $4, $5, now() + interval '24 hours', $6, $7, $8, $9)
              RETURNING story_id, created_at`,
             [
@@ -2617,19 +2669,19 @@ exports.createStory = async (req, res) => {
                 s.*, 
                 COALESCE(comp.name, u.full_name) AS author_name, 
                 CASE 
-                    WHEN s.author_company_id IS NOT NULL THEN comp.logo_url 
+                    WHEN s.author_org_id IS NOT NULL THEN comp.logo_url 
                     ELSE u.avatar_url 
                 END AS author_avatar,
                 false AS has_viewed,
                 false AS has_liked,
                 true AS is_author,
-                (s.author_company_id IS NOT NULL) AS is_company,
+                (s.author_org_id IS NOT NULL) AS is_company,
                 0 AS view_count,
                 0 AS like_count,
                 null AS shared_post
             FROM stories s
             JOIN users u ON s.author_id = u.user_id
-            LEFT JOIN companies comp ON s.author_company_id = comp.company_id
+            LEFT JOIN organizations comp ON s.author_org_id = comp.org_id
             WHERE s.story_id = $1
             `,
             [story_id]
@@ -2700,7 +2752,7 @@ exports.viewStory = async (req, res) => {
         if (companyId) {
             // 1. Verify user is a member of the company
             const memberCheck = await pool.query(
-                `SELECT 1 FROM company_members WHERE company_id = $1 AND user_id = $2`,
+                `SELECT 1 FROM organization_members WHERE org_id = $1 AND user_id = $2`,
                 [companyId, viewer_id]
             );
 
@@ -2718,9 +2770,9 @@ exports.viewStory = async (req, res) => {
             // So a Company viewing a User story is always a "cross-entity" view.
 
             await pool.query(
-                `INSERT INTO story_views (story_id, viewer_id, viewer_company_id) 
+                `INSERT INTO story_views (story_id, viewer_id, viewer_org_id) 
                  VALUES ($1, $2, $3)
-                 ON CONFLICT (story_id, viewer_company_id) WHERE viewer_company_id IS NOT NULL 
+                 ON CONFLICT (story_id, viewer_org_id) WHERE viewer_org_id IS NOT NULL 
                  DO NOTHING`,
                 [story_id, viewer_id, companyId]
             );
@@ -2735,9 +2787,9 @@ exports.viewStory = async (req, res) => {
         // Only insert if the viewer is NOT the author
         if (viewer_id !== author_id) {
             await pool.query(
-                `INSERT INTO story_views (story_id, viewer_id, viewer_company_id) 
+                `INSERT INTO story_views (story_id, viewer_id, viewer_org_id) 
                  VALUES ($1, $2, NULL)
-                 ON CONFLICT (story_id, viewer_id) WHERE viewer_company_id IS NULL
+                 ON CONFLICT (story_id, viewer_id) WHERE viewer_org_id IS NULL
                  DO NOTHING`,
                 [story_id, viewer_id]
             );
@@ -2775,7 +2827,7 @@ exports.reactToStory = async (req, res) => {
         if (companyId) {
             // Verify membership
             const memberCheck = await client.query(
-                `SELECT 1 FROM company_members WHERE company_id = $1 AND user_id = $2`,
+                `SELECT 1 FROM organization_members WHERE org_id = $1 AND user_id = $2`,
                 [companyId, userId]
             );
             if (memberCheck.rowCount === 0) {
@@ -2784,14 +2836,14 @@ exports.reactToStory = async (req, res) => {
             reactorCompanyId = companyId;
             reactorUserId = null; // Reactions are attributed to Company, not User+Company? 
             // DB schema: user_id is nullable? No, schema says `user_id UUID REFERENCES users`. I made it nullable in migration?
-            // Wait, I did NOT make user_id nullable in migration. I only added reactor_company_id and dropped PK.
+            // Wait, I did NOT make user_id nullable in migration. I only added reactor_org_id and dropped PK.
             // I need to ensure user_id is nullable in DB if I want to support "Company Only" reaction.
-            // Actually, for now let's keep user_id as the "Actor" (who clicked) and reactor_company_id as the "Context".
-            // But unique constraint `idx_story_reactions_company_unique` is on `(story_id, reactor_company_id)`.
+            // Actually, for now let's keep user_id as the "Actor" (who clicked) and reactor_org_id as the "Context".
+            // But unique constraint `idx_story_reactions_company_unique` is on `(story_id, reactor_org_id)`.
             // So if User A acts as Comp X, and User B acts as Comp X, they collide. This IS correct for "Company Reaction".
             // So `reactorUserId` should be stored for audit, but uniqueness is on Company.
-            // However, my partial index `idx_story_reactions_personal_unique` is `WHERE reactor_company_id IS NULL`.
-            // So if I insert `user_id` AND `reactor_company_id`, it targets the Company Index. Correct.
+            // However, my partial index `idx_story_reactions_personal_unique` is `WHERE reactor_org_id IS NULL`.
+            // So if I insert `user_id` AND `reactor_org_id`, it targets the Company Index. Correct.
         }
 
         // 2. Fetch Story & Media URL (for notification)
@@ -2807,10 +2859,10 @@ exports.reactToStory = async (req, res) => {
         let params = [];
 
         if (reactorCompanyId) {
-            query = `SELECT * FROM story_reactions WHERE story_id = $1 AND reactor_company_id = $2`;
+            query = `SELECT * FROM story_reactions WHERE story_id = $1 AND reactor_org_id = $2`;
             params = [storyId, reactorCompanyId];
         } else {
-            query = `SELECT * FROM story_reactions WHERE story_id = $1 AND user_id = $2 AND reactor_company_id IS NULL`;
+            query = `SELECT * FROM story_reactions WHERE story_id = $1 AND user_id = $2 AND reactor_org_id IS NULL`;
             params = [storyId, reactorUserId];
         }
 
@@ -2819,9 +2871,9 @@ exports.reactToStory = async (req, res) => {
         if (existingReaction.rowCount > 0) {
             // UNLIKE
             if (reactorCompanyId) {
-                await client.query("DELETE FROM story_reactions WHERE story_id = $1 AND reactor_company_id = $2", [storyId, reactorCompanyId]);
+                await client.query("DELETE FROM story_reactions WHERE story_id = $1 AND reactor_org_id = $2", [storyId, reactorCompanyId]);
             } else {
-                await client.query("DELETE FROM story_reactions WHERE story_id = $1 AND user_id = $2 AND reactor_company_id IS NULL", [storyId, reactorUserId]);
+                await client.query("DELETE FROM story_reactions WHERE story_id = $1 AND user_id = $2 AND reactor_org_id IS NULL", [storyId, reactorUserId]);
             }
             liked = false;
         } else {
@@ -2832,18 +2884,18 @@ exports.reactToStory = async (req, res) => {
 
             if (reactorCompanyId) {
                 await client.query(
-                    `INSERT INTO story_reactions (story_id, user_id, reactor_company_id, reaction_type)
+                    `INSERT INTO story_reactions (story_id, user_id, reactor_org_id, reaction_type)
                      VALUES ($1, $2, $3, $4)
-                     ON CONFLICT (story_id, reactor_company_id) WHERE reactor_company_id IS NOT NULL
+                     ON CONFLICT (story_id, reactor_org_id) WHERE reactor_org_id IS NOT NULL
                      DO UPDATE SET reaction_type = $4`,
                     [storyId, userId, reactorCompanyId, reaction.toString()]
                 );
 
                 // Also record view for company
                 await client.query(
-                    `INSERT INTO story_views (story_id, viewer_id, viewer_company_id)
+                    `INSERT INTO story_views (story_id, viewer_id, viewer_org_id)
                      VALUES ($1, $2, $3)
-                     ON CONFLICT (story_id, viewer_company_id) WHERE viewer_company_id IS NOT NULL
+                     ON CONFLICT (story_id, viewer_org_id) WHERE viewer_org_id IS NOT NULL
                      DO NOTHING`,
                     [storyId, userId, reactorCompanyId]
                 );
@@ -2852,7 +2904,7 @@ exports.reactToStory = async (req, res) => {
                 await client.query(
                     `INSERT INTO story_reactions (story_id, user_id, reaction_type)
                      VALUES ($1, $2, $3)
-                     ON CONFLICT (story_id, user_id) WHERE reactor_company_id IS NULL
+                     ON CONFLICT (story_id, user_id) WHERE reactor_org_id IS NULL
                      DO UPDATE SET reaction_type = $3`,
                     [storyId, userId, reaction.toString()]
                 );
@@ -2861,7 +2913,7 @@ exports.reactToStory = async (req, res) => {
                 await client.query(
                     `INSERT INTO story_views (story_id, viewer_id)
                      VALUES ($1, $2)
-                     ON CONFLICT (story_id, viewer_id) WHERE viewer_company_id IS NULL
+                     ON CONFLICT (story_id, viewer_id) WHERE viewer_org_id IS NULL
                      DO NOTHING`,
                     [storyId, userId]
                 );
@@ -2876,11 +2928,11 @@ exports.reactToStory = async (req, res) => {
 
             let shouldNotify = true;
             if (!reactorCompanyId && author_id === userId) shouldNotify = false;
-            // TODO: If Company owns the story, check against Company ID? (Stories don't have owner_company_id yet, presumed User is author)
+            // TODO: If Company owns the story, check against Company ID? (Stories don't have owner_org_id yet, presumed User is author)
 
             if (shouldNotify && liked) {
-                const actorName = reactorCompanyId ? (await client.query("SELECT name FROM companies WHERE company_id = $1", [reactorCompanyId])).rows[0].name : (await client.query("SELECT full_name FROM users WHERE user_id = $1", [userId])).rows[0].full_name;
-                const actorAvatar = reactorCompanyId ? (await client.query("SELECT logo_url FROM companies WHERE company_id = $1", [reactorCompanyId])).rows[0].logo_url : (await client.query("SELECT avatar_url FROM users WHERE user_id = $1", [userId])).rows[0].avatar_url;
+                const actorName = reactorCompanyId ? (await client.query("SELECT name FROM organizations WHERE org_id = $1", [reactorCompanyId])).rows[0].name : (await client.query("SELECT full_name FROM users WHERE user_id = $1", [userId])).rows[0].full_name;
+                const actorAvatar = reactorCompanyId ? (await client.query("SELECT logo_url FROM organizations WHERE org_id = $1", [reactorCompanyId])).rows[0].logo_url : (await client.query("SELECT avatar_url FROM users WHERE user_id = $1", [userId])).rows[0].avatar_url;
 
                 const notificationData = {
                     type: "story_like",
@@ -2890,7 +2942,7 @@ exports.reactToStory = async (req, res) => {
                     senderAvatar: actorAvatar,
                     referenceId: storyId,
                     mediaUrl: media_url,
-                    metadata: { company_id: reactorCompanyId }
+                    metadata: { org_id: reactorCompanyId }
                 };
 
                 // Notify via socket - ensuring socketService is available
@@ -2960,22 +3012,22 @@ exports.getStoryDetailsById = async (req, res) => {
         }
         const result = await pool.query(`
             SELECT 
-                COALESCE(c.company_id, u.user_id) as user_id, -- Frontend uses 'user_id' as key
+                COALESCE(c.org_id, u.user_id) as user_id, -- Frontend uses 'user_id' as key
                 COALESCE(c.name, u.full_name) as full_name, 
                 COALESCE(c.logo_url, u.avatar_url) as avatar_url, 
                 sr.reaction_type, 
                 sv.viewed_at,
-                c.company_id,
-                CASE WHEN c.company_id IS NOT NULL THEN true ELSE false END as is_company
+                c.org_id,
+                CASE WHEN c.org_id IS NOT NULL THEN true ELSE false END as is_company
             FROM story_views sv 
             JOIN users u ON sv.viewer_id = u.user_id
-            LEFT JOIN companies c ON sv.viewer_company_id = c.company_id
+            LEFT JOIN organizations c ON sv.viewer_org_id = c.org_id
             -- Left Join ensures we still get the viewer even if there is no reaction
             -- Join specifically on context (Company vs User)
             LEFT JOIN story_reactions sr ON sv.story_id = sr.story_id AND (
-                (sv.viewer_company_id IS NOT NULL AND sr.reactor_company_id = sv.viewer_company_id)
+                (sv.viewer_org_id IS NOT NULL AND sr.reactor_org_id = sv.viewer_org_id)
                 OR
-                (sv.viewer_company_id IS NULL AND sr.user_id = sv.viewer_id AND sr.reactor_company_id IS NULL)
+                (sv.viewer_org_id IS NULL AND sr.user_id = sv.viewer_id AND sr.reactor_org_id IS NULL)
             )
             WHERE sv.story_id = $1
             AND NOT EXISTS (
@@ -3091,7 +3143,7 @@ exports.addStoryComment = async (req, res) => {
         let authorCompanyId = null;
         if (companyId) {
             const memberCheck = await pool.query(
-                `SELECT 1 FROM company_members WHERE company_id = $1 AND user_id = $2`,
+                `SELECT 1 FROM organization_members WHERE org_id = $1 AND user_id = $2`,
                 [companyId, userId]
             );
             if (memberCheck.rowCount === 0) {
@@ -3115,9 +3167,9 @@ exports.addStoryComment = async (req, res) => {
         }
 
         const result = await pool.query(
-            `INSERT INTO story_comments (story_id, author_id, content, author_company_id)
+            `INSERT INTO story_comments (story_id, author_id, content, author_org_id)
              VALUES ($1, $2, $3, $4)
-             RETURNING comment_id, author_id, content, created_at, author_company_id`,
+             RETURNING comment_id, author_id, content, created_at, author_org_id`,
             [storyId, userId, content.trim(), authorCompanyId]
         );
 
@@ -3128,7 +3180,7 @@ exports.addStoryComment = async (req, res) => {
         if (authorId !== userId) {
             let commenterName, commenterAvatar;
             if (authorCompanyId) {
-                const compRes = await pool.query(`SELECT name, logo_url FROM companies WHERE company_id = $1`, [authorCompanyId]);
+                const compRes = await pool.query(`SELECT name, logo_url FROM organizations WHERE org_id = $1`, [authorCompanyId]);
                 commenterName = compRes.rows[0].name;
                 commenterAvatar = compRes.rows[0].logo_url;
             } else {
@@ -3146,13 +3198,13 @@ exports.addStoryComment = async (req, res) => {
                 referenceId: storyId,
                 mediaUrl: story.rows[0].media_url,
                 time: "Just now",
-                metadata: { company_id: authorCompanyId }
+                metadata: { org_id: authorCompanyId }
             });
 
             await pool.query(
                 `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata) 
                   VALUES ($1, $2, $3, $4, $5, $6)`,
-                [authorId, userId, "story_comment", `${commenterName} commented on your story`, storyId, { company_id: authorCompanyId }]
+                [authorId, userId, "story_comment", `${commenterName} commented on your story`, storyId, { org_id: authorCompanyId }]
             );
         }
 
@@ -3181,17 +3233,17 @@ exports.getStoryComments = async (req, res) => {
                 c.comment_id,
                 c.content,
                 c.created_at,
-                COALESCE(comp.company_id, u.user_id) AS author_id,
+                COALESCE(comp.org_id, u.user_id) AS author_id,
                 COALESCE(comp.name, u.full_name) AS full_name,
                 CASE 
-                    WHEN c.author_company_id IS NOT NULL THEN comp.logo_url 
+                    WHEN c.author_org_id IS NOT NULL THEN comp.logo_url 
                     ELSE u.avatar_url 
                 END AS avatar_url,
                 u.headline,
-                (c.author_company_id IS NOT NULL) AS is_company
+                (c.author_org_id IS NOT NULL) AS is_company
             FROM story_comments c
             JOIN users u ON c.author_id = u.user_id
-            LEFT JOIN companies comp ON c.author_company_id = comp.company_id
+            LEFT JOIN organizations comp ON c.author_org_id = comp.org_id
             WHERE c.story_id = $1
             AND NOT EXISTS (
                 SELECT 1 FROM blocks b 
@@ -3234,3 +3286,66 @@ exports.deleteStoryComment = async (req, res) => {
         return res.status(500).json({ message: "Internal server error" })
     }
 }
+// --- POST MODERATION ---
+
+exports.flagPost = async (req, res) => {
+    const userId = req.user.sub;
+    const { id: postId } = req.params;
+
+    try {
+        const updateRes = await pool.query(
+            `UPDATE posts SET is_flagged = TRUE WHERE post_id = $1 RETURNING *`,
+            [postId]
+        );
+        if (updateRes.rowCount === 0) {
+            return res.status(404).json({ message: "Post not found" });
+        }
+        res.json({ message: "Post flagged successfully" });
+    } catch (err) {
+        console.error("Flag post error:", err);
+        res.status(500).json({ message: "Internal server error" });
+    }
+};
+
+exports.moderatePost = async (req, res) => {
+    const adminId = req.user.sub;
+    const { postId, orgId } = req.params;
+    const { reason } = req.body;
+
+    // RBAC middleware (requireOrgPermission('MANAGE_COMMENTS')) already enforces that the user
+    // has moderation rights for this organization.
+
+    try {
+        // Also verify the post actually belongs to this organization
+        const postCheck = await pool.query(
+            `SELECT author_org_id, category_id, is_removed FROM posts WHERE post_id = $1`,
+            [postId]
+        );
+
+        if (postCheck.rowCount === 0) {
+            return res.status(404).json({ message: "Post not found" });
+        }
+
+        const post = postCheck.rows[0];
+
+        if (post.author_org_id !== orgId) {
+            return res.status(403).json({ message: "Post does not belong to this organization" });
+        }
+
+        if (post.is_removed) {
+            return res.status(400).json({ message: "Post is already removed" });
+        }
+
+        const updateRes = await pool.query(
+            `UPDATE posts 
+             SET is_removed = TRUE, removed_by = $1, removed_reason = $2 
+             WHERE post_id = $3 RETURNING *`,
+            [adminId, reason || 'Moderator action', postId]
+        );
+
+        res.json({ message: "Post removed successfully by moderator" });
+    } catch (err) {
+        console.error("Moderate post error:", err);
+        res.status(500).json({ message: "Internal server error" });
+    }
+};

@@ -1,8 +1,8 @@
 const pool = require("../../core/db/pool");
 const { buildJobFilters } = require("../../core/utils/jobQueryBuilder");
 const { logAudit } = require("../../core/infrastructure/audit.service");
-const { checkCompanyPermission } = require("../../core/utils/rbac");
-const { notifyCompanyFollowers } = require("../../services/notification.service");
+const { checkOrgPermission } = require("../../core/utils/rbac");
+const { notifyOrgFollowers } = require("../../services/notification.service");
 
 exports.getAllJobs = async (req, res) => {
   const { limit = 10, cursor } = req.query;
@@ -43,7 +43,7 @@ exports.getAllJobs = async (req, res) => {
         (SELECT COUNT(*)::int FROM job_applications ja_count WHERE ja_count.job_id = j.job_id) as applicants
       FROM jobs j
       LEFT JOIN users u ON j.recruiter_id = u.user_id
-      LEFT JOIN companies c ON j.company_id = c.company_id
+      LEFT JOIN organizations c ON j.org_id = c.org_id
       ${userId ? "LEFT JOIN job_saves js ON js.job_id = j.job_id AND js.user_id = $1" : ""}
       ${userId ? "LEFT JOIN job_applications ja ON ja.job_id = j.job_id AND ja.applicant_id = $1" : ""}
       ${whereClause}
@@ -90,7 +90,7 @@ exports.getJobById = async (req, res) => {
         (SELECT COUNT(*)::int FROM job_applications ja_count WHERE ja_count.job_id = j.job_id) as applicants
       FROM jobs j
       LEFT JOIN users u ON j.recruiter_id = u.user_id
-      LEFT JOIN companies c ON j.company_id = c.company_id
+      LEFT JOIN organizations c ON j.org_id = c.org_id
       ${userId ? 'LEFT JOIN job_saves js ON js.job_id = j.job_id AND js.user_id = $2' : ''}
       ${userId ? 'LEFT JOIN job_applications ja ON ja.job_id = j.job_id AND ja.applicant_id = $2' : ''}
       ${userId ? 'LEFT JOIN job_offers jo ON jo.job_id = j.job_id AND jo.user_id = $2 AND jo.status = \'pending\'' : ''}
@@ -142,7 +142,7 @@ exports.createJob = async (req, res) => {
       `
       INSERT INTO jobs
       (
-        recruiter_id, title, company_name, company_id, location,
+        recruiter_id, title, company_name, org_id, location,
         description, salary_min, salary_max, job_type,
         work_mode, company_type, experience_level,
         about_company, industry, easy_apply, actively_hiring
@@ -152,7 +152,7 @@ exports.createJob = async (req, res) => {
       RETURNING *
       `,
       [
-        userId, title, company_name, req.body.company_id || null, location,
+        userId, title, company_name, req.body.org_id || null, location,
         description, minSalary, maxSalary, job_type,
         work_mode, company_type, experience_level,
         about_company, industry, easy_apply, actively_hiring
@@ -197,11 +197,11 @@ exports.createJob = async (req, res) => {
     await client.query("COMMIT");
 
     // Async Audit Log & Notification (after commit is fine)
-    if (job.company_id) {
+    if (job.org_id) {
       const auditClient = await pool.connect();
       try {
         await logAudit(auditClient, {
-          entityId: job.company_id,
+          entityId: job.org_id,
           actorId: userId,
           action: 'POST_JOB',
           metadata: {
@@ -215,8 +215,8 @@ exports.createJob = async (req, res) => {
       }
 
       // 2. Notify followers (fire-and-forget)
-      notifyCompanyFollowers(job.company_id, "jobs", {
-        type: "company_job",
+      notifyOrgFollowers(job.org_id, "jobs", {
+        type: "organization_job",
         text: `${job.company_name} posted a new job: ${job.title}`,
         referenceId: job.job_id,
         metadata: { job_title: job.title, location: job.location || null },
@@ -252,23 +252,23 @@ exports.applyJob = async (req, res) => {
 
   try {
     // Check if job exists
-    const jobCheck = await pool.query(`SELECT company_id, recruiter_id FROM jobs WHERE job_id = $1`, [id]);
+    const jobCheck = await pool.query(`SELECT org_id, recruiter_id FROM jobs WHERE job_id = $1`, [id]);
     if (jobCheck.rowCount === 0) {
       return res.status(404).json({ message: "Job not found" });
     }
 
-    const { company_id, recruiter_id } = jobCheck.rows[0];
+    const { org_id, recruiter_id } = jobCheck.rows[0];
 
     // Check if user is the recruiter
     if (recruiter_id === userId) {
       return res.status(403).json({ message: "You cannot apply to your own job" });
     }
 
-    // Check if user has permission to post jobs for this company
-    if (company_id) {
-      const canPostJobs = await checkCompanyPermission(pool, company_id, userId, ['POST_JOBS', 'MANAGE_COMPANY']);
+    // Check if user has permission to post jobs for this organization
+    if (org_id) {
+      const canPostJobs = await checkOrgPermission(pool, org_id, userId, ['POST_JOBS', 'MANAGE_COMPANY']);
       if (canPostJobs) {
-        return res.status(403).json({ message: "You cannot apply to a job posted by your company" });
+        return res.status(403).json({ message: "You cannot apply to a job posted by your organization" });
       }
     }
 
@@ -762,7 +762,7 @@ exports.getJobApplicants = async (req, res) => {
   try {
     // 1. Verify ownership
     const jobCheck = await pool.query(
-      `SELECT company_id, recruiter_id FROM jobs WHERE job_id = $1`,
+      `SELECT org_id, recruiter_id FROM jobs WHERE job_id = $1`,
       [id]
     );
 
@@ -770,11 +770,11 @@ exports.getJobApplicants = async (req, res) => {
       return res.status(404).json({ message: "Job not found" });
     }
 
-    const { company_id, recruiter_id } = jobCheck.rows[0];
+    const { org_id, recruiter_id } = jobCheck.rows[0];
     let isAuthorized = recruiter_id === userId;
 
-    if (!isAuthorized && company_id) {
-      isAuthorized = await checkCompanyPermission(pool, company_id, userId, ['VIEW_APPLICANTS', 'MANAGE_APPLICANTS', 'MANAGE_COMPANY']);
+    if (!isAuthorized && org_id) {
+      isAuthorized = await checkOrgPermission(pool, org_id, userId, ['VIEW_APPLICANTS', 'MANAGE_APPLICANTS', 'MANAGE_COMPANY']);
     }
 
     if (!isAuthorized) {
@@ -884,7 +884,7 @@ exports.deleteJob = async (req, res) => {
   try {
     // Check ownership and existence
     const jobCheck = await pool.query(
-      `SELECT company_id, recruiter_id FROM jobs WHERE job_id = $1`,
+      `SELECT org_id, recruiter_id FROM jobs WHERE job_id = $1`,
       [id]
     );
 
@@ -892,11 +892,11 @@ exports.deleteJob = async (req, res) => {
       return res.status(404).json({ message: "Job not found" });
     }
 
-    const { company_id, recruiter_id } = jobCheck.rows[0];
+    const { org_id, recruiter_id } = jobCheck.rows[0];
     let isAuthorized = recruiter_id === userId;
 
-    if (!isAuthorized && company_id) {
-      isAuthorized = await checkCompanyPermission(pool, company_id, userId, ['POST_JOBS', 'MANAGE_COMPANY']);
+    if (!isAuthorized && org_id) {
+      isAuthorized = await checkOrgPermission(pool, org_id, userId, ['POST_JOBS', 'MANAGE_COMPANY']);
     }
 
     if (!isAuthorized) {
@@ -950,7 +950,7 @@ exports.updateJob = async (req, res) => {
 
     // 1. Check ownership
     const checkRes = await client.query(
-      `SELECT company_id, recruiter_id FROM jobs WHERE job_id = $1`,
+      `SELECT org_id, recruiter_id FROM jobs WHERE job_id = $1`,
       [id]
     );
 
@@ -959,11 +959,11 @@ exports.updateJob = async (req, res) => {
       return res.status(404).json({ message: "Job not found" });
     }
 
-    const { company_id, recruiter_id } = checkRes.rows[0];
+    const { org_id, recruiter_id } = checkRes.rows[0];
     let isAuthorized = recruiter_id === userId;
 
-    if (!isAuthorized && company_id) {
-      isAuthorized = await checkCompanyPermission(client, company_id, userId, ['POST_JOBS', 'MANAGE_COMPANY']);
+    if (!isAuthorized && org_id) {
+      isAuthorized = await checkOrgPermission(client, org_id, userId, ['POST_JOBS', 'MANAGE_COMPANY']);
     }
 
     if (!isAuthorized) {
@@ -1093,7 +1093,7 @@ exports.updateApplicationStatus = async (req, res) => {
   try {
     // 1. Verify ownership of the job associated with this application
     const check = await pool.query(`
-      SELECT j.recruiter_id, j.company_id, ja.job_id 
+      SELECT j.recruiter_id, j.org_id, ja.job_id 
       FROM job_applications ja
       JOIN jobs j ON ja.job_id = j.job_id
       WHERE ja.application_id = $1
@@ -1101,11 +1101,11 @@ exports.updateApplicationStatus = async (req, res) => {
 
     if (check.rowCount === 0) return res.status(404).json({ message: "Application not found" });
 
-    const { recruiter_id, company_id } = check.rows[0];
+    const { recruiter_id, org_id } = check.rows[0];
     let isAuthorized = recruiter_id === userId;
 
-    if (!isAuthorized && company_id) {
-      isAuthorized = await checkCompanyPermission(pool, company_id, userId, ['MANAGE_APPLICANTS', 'MANAGE_COMPANY']);
+    if (!isAuthorized && org_id) {
+      isAuthorized = await checkOrgPermission(pool, org_id, userId, ['MANAGE_APPLICANTS', 'MANAGE_COMPANY']);
     }
 
     if (!isAuthorized) return res.status(403).json({ message: "Not authorized" });

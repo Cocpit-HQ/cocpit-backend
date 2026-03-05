@@ -226,7 +226,7 @@ exports.followCompany = async (req, res) => {
         await client.query('BEGIN');
 
         const result = await client.query(
-            `INSERT INTO company_followers (user_id, company_id) VALUES ($1, $2) ON CONFLICT DO NOTHING RETURNING *`,
+            `INSERT INTO organization_followers (user_id, org_id) VALUES ($1, $2) ON CONFLICT DO NOTHING RETURNING *`,
             [userId, companyId]
         );
 
@@ -237,7 +237,7 @@ exports.followCompany = async (req, res) => {
 
         // Auto-create notification preferences (all categories ON by default)
         await client.query(
-            `INSERT INTO company_notification_preferences (user_id, company_id)
+            `INSERT INTO organization_notification_preferences (user_id, org_id)
              VALUES ($1, $2) ON CONFLICT DO NOTHING`,
             [userId, companyId]
         );
@@ -276,34 +276,34 @@ exports.unfollowCompany = async (req, res) => {
 
         // 1. Remove Follower record
         const followResult = await client.query(
-            `DELETE FROM company_followers WHERE user_id = $1 AND company_id = $2 RETURNING *`,
+            `DELETE FROM organization_followers WHERE user_id = $1 AND org_id = $2 RETURNING *`,
             [userId, companyId]
         );
 
         // 2. Remove Connection record
         const connResult = await client.query(
-            `DELETE FROM company_connections WHERE user_id = $1 AND company_id = $2`,
+            `DELETE FROM organization_connections WHERE user_id = $1 AND org_id = $2`,
             [userId, companyId]
         );
 
         // 3. Clean up any Connection Requests (any status)
         const requestResult = await client.query(
-            `DELETE FROM company_connection_requests WHERE user_id = $1 AND company_id = $2`,
+            `DELETE FROM organization_connection_requests WHERE user_id = $1 AND org_id = $2`,
             [userId, companyId]
         );
 
         // 4. Remove notification preferences
         await client.query(
-            `DELETE FROM company_notification_preferences WHERE user_id = $1 AND company_id = $2`,
+            `DELETE FROM organization_notification_preferences WHERE user_id = $1 AND org_id = $2`,
             [userId, companyId]
         );
 
         await client.query('COMMIT');
 
         console.log(`[unfollowCompany] Cleanup details for user=${userId}, company=${companyId}:`);
-        console.log(` - company_followers: ${followResult.rowCount} rows`);
-        console.log(` - company_connections: ${connResult.rowCount} rows`);
-        console.log(` - company_connection_requests: ${requestResult.rowCount} rows`);
+        console.log(` - organization_followers: ${followResult.rowCount} rows`);
+        console.log(` - organization_connections: ${connResult.rowCount} rows`);
+        console.log(` - organization_connection_requests: ${requestResult.rowCount} rows`);
 
         // --- ENHANCED LOGGING & NOTIFICATION ---
         console.log(`[UNFOLLOW] user=${userId} unfollowed/disconnected company=${companyId}`);
@@ -329,7 +329,7 @@ exports.unfollowCompany = async (req, res) => {
         // 2. Notify ALL company admins/members so their UI updates
         try {
             const admins = await pool.query(
-                `SELECT user_id FROM company_members WHERE company_id = $1`,
+                `SELECT user_id FROM organization_members WHERE org_id = $1`,
                 [companyId]
             );
             console.log(`[UNFOLLOW] Notifying ${admins.rowCount} company members`);
@@ -361,8 +361,8 @@ exports.getCompanyRelationship = async (req, res) => {
     try {
         const result = await pool.query(
             `SELECT 
-                (SELECT 1 FROM company_followers WHERE user_id = $1 AND company_id = $2) as is_following,
-                (SELECT COUNT(*) FROM company_followers WHERE company_id = $2) as follower_count`,
+                (SELECT 1 FROM organization_followers WHERE user_id = $1 AND org_id = $2) as is_following,
+                (SELECT COUNT(*) FROM organization_followers WHERE org_id = $2) as follower_count`,
             [userId, companyId]
         );
 
@@ -384,9 +384,9 @@ exports.getCompanyFollowers = async (req, res) => {
     try {
         let query = `
             SELECT u.user_id, u.full_name, u.headline, u.avatar_url, cf.created_at as followed_at
-            FROM company_followers cf
+            FROM organization_followers cf
             JOIN users u ON cf.user_id = u.user_id
-            WHERE cf.company_id = $1
+            WHERE cf.org_id = $1
         `;
         const params = [companyId];
 
@@ -416,19 +416,19 @@ exports.removeCompanyFollower = async (req, res) => {
 
         // 1. Remove Follower record
         await client.query(
-            `DELETE FROM company_followers WHERE user_id = $1 AND company_id = $2`,
+            `DELETE FROM organization_followers WHERE user_id = $1 AND org_id = $2`,
             [followerId, companyId]
         );
 
         // 2. Also remove company connection if it exists
         await client.query(
-            `DELETE FROM company_connections WHERE user_id = $1 AND company_id = $2`,
+            `DELETE FROM organization_connections WHERE user_id = $1 AND org_id = $2`,
             [followerId, companyId]
         );
 
         // 3. Clean up stale connection requests
         await client.query(
-            `DELETE FROM company_connection_requests WHERE user_id = $1 AND company_id = $2`,
+            `DELETE FROM organization_connection_requests WHERE user_id = $1 AND org_id = $2`,
             [followerId, companyId]
         );
 
@@ -515,9 +515,9 @@ exports.getFollowing = async (req, res) => {
         `;
 
         let companyQuery = `
-            SELECT c.company_id as user_id, c.name as full_name, c.logo_url as avatar_url, c.industry as headline, cf.created_at, 'company' as type, c.slug
-            FROM company_followers cf
-            JOIN companies c ON cf.company_id = c.company_id
+            SELECT c.org_id as user_id, c.name as full_name, c.logo_url as avatar_url, c.industry as headline, cf.created_at, 'company' as type, c.slug
+            FROM organization_followers cf
+            JOIN organizations c ON cf.org_id = c.org_id
             WHERE cf.user_id = $1
               AND c.is_deleted = FALSE
         `;
@@ -815,7 +815,7 @@ exports.getPendingRequests = async (req, res) => {
       UNION ALL
       (SELECT
         ccr.request_id as id,
-        ccr.company_id as sender_id,
+        ccr.org_id as sender_id,
         ccr.user_id as receiver_id,
         ccr.created_at,
         c.name as name,
@@ -823,8 +823,8 @@ exports.getPendingRequests = async (req, res) => {
         c.industry as headline,
         true as is_company_request,
         c.slug
-      FROM company_connection_requests ccr
-      JOIN companies c ON ccr.company_id = c.company_id
+      FROM organization_connection_requests ccr
+      JOIN organizations c ON ccr.org_id = c.org_id
       WHERE ccr.user_id = $1
         AND ccr.status = 'pending')
       ORDER BY created_at DESC
@@ -896,8 +896,8 @@ exports.getConnectionRequestHistory = async (req, res) => {
                 CASE WHEN ccr.user_id = $1 THEN 'incoming' ELSE 'outgoing' END as direction,
                 'company' as type,
                 c.slug as company_slug
-            FROM company_connection_requests ccr
-            JOIN companies c ON ccr.company_id = c.company_id
+            FROM organization_connection_requests ccr
+            JOIN organizations c ON ccr.org_id = c.org_id
             WHERE (ccr.user_id = $1 OR ccr.initiated_by = $1)
             AND ccr.status IN ('accepted', 'rejected')
 
@@ -1121,9 +1121,9 @@ exports.getMyConnections = async (req, res) => {
         `;
 
         let companyQuery = `
-            SELECT c.company_id as user_id, c.name as full_name, c.logo_url as avatar_url, c.industry as headline, cc.created_at, 'company' as type, c.slug
-            FROM company_connections cc
-            JOIN companies c ON cc.company_id = c.company_id
+            SELECT c.org_id as user_id, c.name as full_name, c.logo_url as avatar_url, c.industry as headline, cc.created_at, 'company' as type, c.slug
+            FROM organization_connections cc
+            JOIN organizations c ON cc.org_id = c.org_id
             WHERE cc.user_id = $1
               AND c.is_deleted = FALSE
         `;
@@ -1163,7 +1163,7 @@ exports.getConnectionCount = async (req, res) => {
         const result = await pool.query(
             `SELECT 
                 (SELECT COUNT(*) FROM connections WHERE user_id = $1) + 
-                (SELECT COUNT(*) FROM company_connections WHERE user_id = $1) as count`,
+                (SELECT COUNT(*) FROM organization_connections WHERE user_id = $1) as count`,
             [userId]
         );
         res.json({ count: parseInt(result.rows[0].count) });
@@ -1190,8 +1190,8 @@ SELECT
     CASE 
         WHEN c.is_group THEN COALESCE(c.conversation_name, 'Group Chat')
         -- WHEN EXISTS(SELECT 1 FROM blocks WHERE blocker_id = u.user_id AND blocked_id = $1) THEN 'User not found' -- Update for Company?
-        WHEN comp.company_id IS NOT NULL THEN comp.name
-        WHEN u.full_name IS NULL AND comp.company_id IS NULL THEN 'Deleted User'
+        WHEN comp.org_id IS NOT NULL THEN comp.name
+        WHEN u.full_name IS NULL AND comp.org_id IS NULL THEN 'Deleted User'
         ELSE u.full_name 
     END AS other_user_name,
     
@@ -1199,22 +1199,22 @@ SELECT
     CASE 
         WHEN c.is_group THEN c.group_avatar 
         -- WHEN EXISTS(SELECT 1 FROM blocks WHERE blocker_id = u.user_id AND blocked_id = $1) THEN NULL
-        WHEN comp.company_id IS NOT NULL THEN comp.logo_url
-        WHEN u.avatar_url IS NULL AND comp.company_id IS NULL THEN NULL
+        WHEN comp.org_id IS NOT NULL THEN comp.logo_url
+        WHEN u.avatar_url IS NULL AND comp.org_id IS NULL THEN NULL
         ELSE u.avatar_url 
     END AS other_user_avatar,
     
     -- Other ID (User or Company)
-    COALESCE(u.user_id, comp.company_id) AS other_user_id,
+    COALESCE(u.user_id, comp.org_id) AS other_user_id,
     u.headline AS other_user_headline,
-    CASE WHEN comp.company_id IS NOT NULL THEN 'COMPANY' ELSE 'USER' END as other_user_type,
+    CASE WHEN comp.org_id IS NOT NULL THEN 'COMPANY' ELSE 'USER' END as other_user_type,
     
     -- Identify the sender profile for the current view
     cp.is_active,
     
     -- Flag for deleted users
     CASE 
-        WHEN c.is_group = FALSE AND u.user_id IS NULL AND comp.company_id IS NULL THEN true 
+        WHEN c.is_group = FALSE AND u.user_id IS NULL AND comp.org_id IS NULL THEN true 
         ELSE false 
     END AS is_deleted_user,
 
@@ -1225,35 +1225,35 @@ FROM conversations c
 JOIN (
     -- Aggregate participation: Ensure one row per conversation for this user
     -- and check if they have any active record
-    SELECT conversation_id, user_id, company_id,
+    SELECT conversation_id, user_id, org_id,
            EXISTS(SELECT 1 FROM conversation_participants cp_a 
                   WHERE cp_a.conversation_id = cp_main.conversation_id 
                   AND (
                       (cp_main.user_id IS NOT NULL AND cp_a.user_id = cp_main.user_id)
                       OR
-                      (cp_main.company_id IS NOT NULL AND cp_a.company_id = cp_main.company_id)
+                      (cp_main.org_id IS NOT NULL AND cp_a.org_id = cp_main.org_id)
                   )
                   AND cp_a.left_at IS NULL) as is_active
     FROM conversation_participants cp_main
     WHERE 
       -- Filter by User OR Company based on context
-      ($2::uuid IS NOT NULL AND cp_main.company_id = $2)
+      ($2::uuid IS NOT NULL AND cp_main.org_id = $2)
       OR
       ($2::uuid IS NULL AND cp_main.user_id = $1)
-    GROUP BY conversation_id, user_id, company_id -- added company_id
+    GROUP BY conversation_id, user_id, org_id -- added org_id
 ) cp ON c.conversation_id = cp.conversation_id
 -- For 1-on-1, join the other participant.
 LEFT JOIN conversation_participants cp_other ON c.conversation_id = cp_other.conversation_id 
     AND (
         -- If I am User, other is NOT me (User) AND NOT my Company (if applicable, though usually 1-on-1 is User-User or User-Company)
         -- Simplified: Other participant is the one that is NOT the current context ID
-        ($2::uuid IS NOT NULL AND (cp_other.company_id != $2 OR cp_other.company_id IS NULL))
+        ($2::uuid IS NOT NULL AND (cp_other.org_id != $2 OR cp_other.org_id IS NULL))
         OR
         ($2::uuid IS NULL AND (cp_other.user_id != $1 OR cp_other.user_id IS NULL))
     )
     AND c.is_group = FALSE
 LEFT JOIN users u ON cp_other.user_id = u.user_id
-LEFT JOIN companies comp ON cp_other.company_id = comp.company_id -- Join companies for Company participants
+LEFT JOIN organizations comp ON cp_other.org_id = comp.org_id -- JOIN organizations for Company participants
 
 -- LATERAL JOIN to find the latest VISIBLE message across ANY period
 LEFT JOIN LATERAL (
@@ -1270,7 +1270,7 @@ LEFT JOIN LATERAL (
     WHERE msg.conversation_id = c.conversation_id
     -- Permission/Visibility Check:
     AND (
-        ($2::uuid IS NOT NULL AND cp_msg.company_id = $2)
+        ($2::uuid IS NOT NULL AND cp_msg.org_id = $2)
         OR
         ($2::uuid IS NULL AND cp_msg.user_id = $1)
     )
@@ -1307,11 +1307,11 @@ ORDER BY COALESCE(m.created_at, c.last_message_at, c.updated_at) DESC NULLS LAST
   JOIN conversation_participants cp
     ON cp.conversation_id = m.conversation_id
   WHERE 
-    (($2::uuid IS NOT NULL AND cp.company_id = $2) OR ($2::uuid IS NULL AND cp.user_id = $1))
+    (($2::uuid IS NOT NULL AND cp.org_id = $2) OR ($2::uuid IS NULL AND cp.user_id = $1))
     AND cp.left_at IS NULL
     AND (
         -- If I am Company, sender is NOT me (My Company)
-        ($2::uuid IS NOT NULL AND (m.author_company_id != $2 OR m.author_company_id IS NULL))
+        ($2::uuid IS NOT NULL AND (m.author_org_id != $2 OR m.author_org_id IS NULL))
         OR
         -- If I am User, sender is NOT me (User)
         ($2::uuid IS NULL AND (m.sender_id != $1 OR m.sender_id IS NULL))
@@ -1351,7 +1351,7 @@ exports.deleteConversation = async (req, res) => {
         // RBAC: If deleting as company, verify the user is a member
         if (companyId) {
             const memberCheck = await pool.query(
-                'SELECT 1 FROM company_members WHERE company_id = $1 AND user_id = $2',
+                'SELECT 1 FROM organization_members WHERE org_id = $1 AND user_id = $2',
                 [companyId, userId]
             );
             if (memberCheck.rowCount === 0) {
@@ -1367,7 +1367,7 @@ exports.deleteConversation = async (req, res) => {
                  SELECT 1 FROM conversation_participants 
                  WHERE conversation_id = $1 
                  AND (
-                     ($3::uuid IS NOT NULL AND company_id = $3)
+                     ($3::uuid IS NOT NULL AND org_id = $3)
                      OR ($3::uuid IS NULL AND user_id = $2)
                  )
              )
@@ -1411,9 +1411,9 @@ exports.sendMessage = async (req, res) => {
             let senderName, senderAvatar;
             if (authorCompanyId) {
                 const memberCheck = await client.query(
-                    `SELECT c.name, c.logo_url FROM company_members cm 
-                 JOIN companies c ON cm.company_id = c.company_id
-                 WHERE cm.company_id = $1 AND cm.user_id = $2`,
+                    `SELECT c.name, c.logo_url FROM organization_members cm 
+                 JOIN organizations c ON cm.org_id = c.org_id
+                 WHERE cm.org_id = $1 AND cm.user_id = $2`,
                     [authorCompanyId, senderId]
                 );
                 if (memberCheck.rowCount === 0) {
@@ -1425,8 +1425,8 @@ exports.sendMessage = async (req, res) => {
 
                 // Session check: if feature enabled, require active session
                 const sessionFeatureEnabled = (() => {
-                    if (process.env.COMPANY_CHAT_SESSIONS_ENABLED === 'false') return false;
-                    const perCompany = process.env.COMPANY_CHAT_SESSIONS_COMPANIES || 'all';
+                    if (process.env.organization_chat_sessions_ENABLED === 'false') return false;
+                    const perCompany = process.env.organization_chat_sessions_COMPANIES || 'all';
                     if (perCompany === 'all') return true;
                     return perCompany.split(',').map(s => s.trim()).includes(authorCompanyId);
                 })();
@@ -1459,7 +1459,7 @@ exports.sendMessage = async (req, res) => {
                 [targetUserId]
             );
             const targetCompanyExists = targetUserExists.rowCount === 0
-                ? await client.query(`SELECT 1 FROM companies WHERE company_id = $1`, [targetUserId])
+                ? await client.query(`SELECT 1 FROM organizations WHERE org_id = $1`, [targetUserId])
                 : null;
 
             const targetIsUser = targetUserExists.rowCount > 0;
@@ -1493,7 +1493,7 @@ exports.sendMessage = async (req, res) => {
                 const existingConv = await client.query(
                     `SELECT c.conversation_id
                  FROM conversations c
-                 JOIN conversation_participants cp1 ON c.conversation_id = cp1.conversation_id AND cp1.company_id = $1
+                 JOIN conversation_participants cp1 ON c.conversation_id = cp1.conversation_id AND cp1.org_id = $1
                  JOIN conversation_participants cp2 ON c.conversation_id = cp2.conversation_id AND cp2.user_id = $2
                  WHERE c.is_group = FALSE`,
                     [authorCompanyId, targetUserId]
@@ -1511,7 +1511,7 @@ exports.sendMessage = async (req, res) => {
 
                     // Company participant (no user_id)
                     await client.query(
-                        `INSERT INTO conversation_participants (conversation_id, company_id) VALUES ($1, $2)`,
+                        `INSERT INTO conversation_participants (conversation_id, org_id) VALUES ($1, $2)`,
                         [conversationId, authorCompanyId]
                     );
                     // Target user participant
@@ -1526,7 +1526,7 @@ exports.sendMessage = async (req, res) => {
                     `SELECT c.conversation_id
                  FROM conversations c
                  JOIN conversation_participants cp1 ON c.conversation_id = cp1.conversation_id AND cp1.user_id = $1
-                 JOIN conversation_participants cp2 ON c.conversation_id = cp2.conversation_id AND cp2.company_id = $2
+                 JOIN conversation_participants cp2 ON c.conversation_id = cp2.conversation_id AND cp2.org_id = $2
                  WHERE c.is_group = FALSE`,
                     [senderId, targetUserId]
                 );
@@ -1546,7 +1546,7 @@ exports.sendMessage = async (req, res) => {
                     );
                     // Target company participant
                     await client.query(
-                        `INSERT INTO conversation_participants (conversation_id, company_id) VALUES ($1, $2)`,
+                        `INSERT INTO conversation_participants (conversation_id, org_id) VALUES ($1, $2)`,
                         [conversationId, targetUserId]
                     );
                 }
@@ -1588,16 +1588,16 @@ exports.sendMessage = async (req, res) => {
             let sessionId = null;
             if (authorCompanyId) {
                 const sessionFeatureEnabled = (() => {
-                    if (process.env.COMPANY_CHAT_SESSIONS_ENABLED === 'false') return false;
-                    const perCompany = process.env.COMPANY_CHAT_SESSIONS_COMPANIES || 'all';
+                    if (process.env.organization_chat_sessions_ENABLED === 'false') return false;
+                    const perCompany = process.env.organization_chat_sessions_COMPANIES || 'all';
                     if (perCompany === 'all') return true;
                     return perCompany.split(',').map(s => s.trim()).includes(authorCompanyId);
                 })();
 
                 if (sessionFeatureEnabled) {
                     const sessionCheck = await client.query(
-                        `SELECT session_id FROM company_chat_sessions
-                         WHERE conversation_id = $1 AND company_id = $2
+                        `SELECT session_id FROM organization_chat_sessions
+                         WHERE conversation_id = $1 AND org_id = $2
                          AND handler_user_id = $3 AND status = 'ACTIVE'
                          FOR UPDATE`,
                         [conversationId, authorCompanyId, senderId]
@@ -1608,10 +1608,10 @@ exports.sendMessage = async (req, res) => {
                             // 1. Get member details for snapshot
                             const memberRes = await client.query(
                                 `SELECT cm.role_id, cr.name as role_name, u.full_name
-                                 FROM company_members cm
+                                 FROM organization_members cm
                                  JOIN users u ON cm.user_id = u.user_id
-                                 LEFT JOIN company_roles cr ON cm.role_id = cr.role_id
-                                 WHERE cm.company_id = $1 AND cm.user_id = $2`,
+                                 LEFT JOIN organization_roles cr ON cm.role_id = cr.role_id
+                                 WHERE cm.org_id = $1 AND cm.user_id = $2`,
                                 [authorCompanyId, senderId]
                             );
 
@@ -1624,8 +1624,8 @@ exports.sendMessage = async (req, res) => {
 
                             // 2. Create Session
                             const newSessionRes = await client.query(
-                                `INSERT INTO company_chat_sessions 
-                                 (conversation_id, company_id, handler_user_id, 
+                                `INSERT INTO organization_chat_sessions 
+                                 (conversation_id, org_id, handler_user_id, 
                                   handler_name_snapshot, handler_role_id_snapshot, handler_role_name_snapshot,
                                   status)
                                  VALUES ($1, $2, $3, $4, $5, $6, 'ACTIVE')
@@ -1647,7 +1647,7 @@ exports.sendMessage = async (req, res) => {
             }
 
             const msgRes = await client.query(
-                `INSERT INTO messages (conversation_id, sender_id, text_content, shared_post_id, author_company_id, sender_type, session_id)
+                `INSERT INTO messages (conversation_id, sender_id, text_content, shared_post_id, author_org_id, sender_type, session_id)
                  VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
                 [conversationId, senderId, trimmedText || '', shared_post_id || null, authorCompanyId || null, authorCompanyId ? 'COMPANY' : 'USER', sessionId]
             );
@@ -1704,7 +1704,7 @@ exports.sendMessage = async (req, res) => {
             // Update session activity (within transaction)
             if (sessionId) {
                 await client.query(
-                    `UPDATE company_chat_sessions
+                    `UPDATE organization_chat_sessions
                      SET last_activity_at = NOW(), message_count = message_count + 1
                      WHERE session_id = $1`,
                     [sessionId]
@@ -1717,7 +1717,7 @@ exports.sendMessage = async (req, res) => {
             if (sessionId && authorCompanyId) {
                 try {
                     const members = await pool.query(
-                        'SELECT user_id FROM company_members WHERE company_id = $1 AND status = $2',
+                        'SELECT user_id FROM organization_members WHERE org_id = $1 AND status = $2',
                         [authorCompanyId, 'ACTIVE']
                     );
                     for (const m of members.rows) {
@@ -1736,7 +1736,7 @@ exports.sendMessage = async (req, res) => {
             if (sessionId && authorCompanyId && isNewConversation && newSessionHandlerName) {
                 try {
                     const members = await pool.query(
-                        'SELECT user_id FROM company_members WHERE company_id = $1 AND status = $2',
+                        'SELECT user_id FROM organization_members WHERE org_id = $1 AND status = $2',
                         [authorCompanyId, 'ACTIVE']
                     );
                     for (const m of members.rows) {
@@ -1764,7 +1764,7 @@ exports.sendMessage = async (req, res) => {
             if (targetIsCompany) {
                 // User→Company: notify all members of the target company
                 const members = await pool.query(
-                    'SELECT user_id FROM company_members WHERE company_id = $1',
+                    'SELECT user_id FROM organization_members WHERE org_id = $1',
                     [targetUserId]
                 );
                 for (const member of members.rows) {
@@ -1833,7 +1833,7 @@ exports.markConversationRead = async (req, res) => {
         // RBAC: If marking as company, verify the user is a member
         if (companyId) {
             const memberCheck = await client.query(
-                'SELECT 1 FROM company_members WHERE company_id = $1 AND user_id = $2',
+                'SELECT 1 FROM organization_members WHERE org_id = $1 AND user_id = $2',
                 [companyId, userId]
             );
             if (memberCheck.rowCount === 0) {
@@ -1849,7 +1849,7 @@ exports.markConversationRead = async (req, res) => {
             SET last_read_at = NOW()
             WHERE conversation_id = $1 
             AND (
-                ($3::uuid IS NOT NULL AND company_id = $3)
+                ($3::uuid IS NOT NULL AND org_id = $3)
                 OR
                 ($3::uuid IS NULL AND user_id = $2)
             )
@@ -1951,7 +1951,7 @@ exports.getMessageSeenBy = async (req, res) => {
             JOIN conversation_participants cp ON m.conversation_id = cp.conversation_id
             WHERE m.message_id = $1 
             AND (
-                ($3::uuid IS NOT NULL AND cp.company_id = $3)
+                ($3::uuid IS NOT NULL AND cp.org_id = $3)
                 OR
                 ($3::uuid IS NULL AND cp.user_id = $2)
             )
@@ -2004,7 +2004,7 @@ exports.getMessages = async (req, res) => {
         // RBAC: If requesting as company, verify membership
         if (companyId) {
             const memberCheck = await pool.query(
-                'SELECT 1 FROM company_members WHERE company_id = $1 AND user_id = $2',
+                'SELECT 1 FROM organization_members WHERE org_id = $1 AND user_id = $2',
                 [companyId, userId]
             );
             if (memberCheck.rowCount === 0) {
@@ -2039,7 +2039,7 @@ exports.getMessages = async (req, res) => {
              JOIN conversation_participants cp ON c.conversation_id = cp.conversation_id
              WHERE c.conversation_id = $1 
              AND (
-                ($3::uuid IS NOT NULL AND cp.company_id = $3)
+                ($3::uuid IS NOT NULL AND cp.org_id = $3)
                 OR
                 ($3::uuid IS NULL AND cp.user_id = $2)
              )
@@ -2065,7 +2065,7 @@ exports.getMessages = async (req, res) => {
                 m.message_type,
                 m.action_type,
                 m.target_id,
-                m.author_company_id,
+                m.author_org_id,
                 m.is_deleted_for_everyone,
                 m.deleted_at,
                 COALESCE(c.name, u.full_name, 'Deleted User') as sender_name,
@@ -2102,7 +2102,7 @@ exports.getMessages = async (req, res) => {
                 EXISTS(SELECT 1 FROM message_delete md WHERE md.message_id = m.message_id AND md.user_id = $4) as is_deleted_for_me
              FROM messages m
              LEFT JOIN users u ON m.sender_id = u.user_id
-             LEFT JOIN companies c ON m.author_company_id = c.company_id
+             LEFT JOIN organizations c ON m.author_org_id = c.org_id
              LEFT JOIN posts sp ON m.shared_post_id = sp.post_id
              LEFT JOIN users au ON sp.author_id = au.user_id
              WHERE m.conversation_id = $1 
@@ -2112,7 +2112,7 @@ exports.getMessages = async (req, res) => {
                 WHERE cp.conversation_id = m.conversation_id 
                 AND (
                     -- Check if I am a participant as User OR Company
-                    ($6::uuid IS NOT NULL AND cp.company_id = $6)
+                    ($6::uuid IS NOT NULL AND cp.org_id = $6)
                     OR
                     ($6::uuid IS NULL AND cp.user_id = $4)
                 )
@@ -2286,20 +2286,20 @@ exports.getNotifications = async (req, res) => {
         let query = `
             SELECT n.*, 
                 CASE 
-                    WHEN (n.metadata->>'company_id') IS NOT NULL THEN c.name 
+                    WHEN (n.metadata->>'org_id') IS NOT NULL THEN c.name 
                     ELSE u.full_name 
                 END as actor_name, 
                 CASE 
-                    WHEN (n.metadata->>'company_id') IS NOT NULL THEN c.logo_url 
+                    WHEN (n.metadata->>'org_id') IS NOT NULL THEN c.logo_url 
                     ELSE u.avatar_url 
                 END as actor_avatar,
                 COALESCE(c.slug, u.account_name) as actor_slug,
-                ((n.metadata->>'company_id') IS NOT NULL) as is_company_actor,
+                ((n.metadata->>'org_id') IS NOT NULL) as is_company_actor,
                 cr.request_id as request_id, 
                 cr.status as request_status
             FROM notifications n 
             LEFT JOIN users u ON n.sender_id = u.user_id 
-            LEFT JOIN companies c ON (n.metadata->>'company_id')::uuid = c.company_id
+            LEFT JOIN organizations c ON (n.metadata->>'org_id')::uuid = c.org_id
             LEFT JOIN connection_requests cr ON n.sender_id = cr.sender_id AND n.user_id = cr.receiver_id AND cr.status = 'pending'
             WHERE 
         `;
@@ -2309,10 +2309,10 @@ exports.getNotifications = async (req, res) => {
 
         if (companyId) {
             // Verify user is part of company (optional but good)
-            query += ` n.recipient_company_id = $${paramIdx} `;
+            query += ` n.recipient_org_id = $${paramIdx} `;
             params.push(companyId);
         } else {
-            query += ` n.user_id = $${paramIdx} AND n.recipient_company_id IS NULL `;
+            query += ` n.user_id = $${paramIdx} AND n.recipient_org_id IS NULL `;
             params.push(userId);
         }
 
@@ -2338,7 +2338,7 @@ exports.markNotificationRead = async (req, res) => {
         const result = await pool.query(
             `UPDATE notifications 
        SET is_read = TRUE 
-       WHERE notification_id = $1 AND (user_id = $2 OR recipient_company_id IN (SELECT company_id FROM company_members WHERE user_id = $2))
+       WHERE notification_id = $1 AND (user_id = $2 OR recipient_org_id IN (SELECT org_id FROM organization_members WHERE user_id = $2))
     RETURNING * `,
             [id, userId]
         );
@@ -2371,17 +2371,17 @@ exports.markAllNotificationsRead = async (req, res) => {
         if (companyId) {
             // Validate membership
             const memberCheck = await pool.query(
-                "SELECT 1 FROM company_members WHERE company_id = $1 AND user_id = $2",
+                "SELECT 1 FROM organization_members WHERE org_id = $1 AND user_id = $2",
                 [companyId, userId]
             );
             if (memberCheck.rowCount === 0) {
                 return res.status(403).json({ message: "Not authorized for this company" });
             }
 
-            query += ` AND recipient_company_id = $1`;
+            query += ` AND recipient_org_id = $1`;
             params.push(companyId);
         } else {
-            query += ` AND user_id = $1 AND recipient_company_id IS NULL`;
+            query += ` AND user_id = $1 AND recipient_org_id IS NULL`;
             params.push(userId);
         }
 
@@ -2756,8 +2756,8 @@ exports.getProfileStats = async (req, res) => {
         const result = await pool.query(
             `SELECT 
                 (SELECT COUNT(*) FROM followers WHERE following_id = $1) as followers_count,
-                (SELECT COUNT(*) FROM followers WHERE follower_id = $1) + (SELECT COUNT(*) FROM company_followers cf JOIN companies c ON cf.company_id = c.company_id WHERE cf.user_id = $1 AND c.is_deleted = FALSE) as following_count,
-                (SELECT COUNT(*) FROM connections WHERE user_id = $1) + (SELECT COUNT(*) FROM company_connections cc JOIN companies c ON cc.company_id = c.company_id WHERE cc.user_id = $1 AND c.is_deleted = FALSE) as connections_count`,
+                (SELECT COUNT(*) FROM followers WHERE follower_id = $1) + (SELECT COUNT(*) FROM organization_followers cf JOIN organizations c ON cf.org_id = c.org_id WHERE cf.user_id = $1 AND c.is_deleted = FALSE) as following_count,
+                (SELECT COUNT(*) FROM connections WHERE user_id = $1) + (SELECT COUNT(*) FROM organization_connections cc JOIN organizations c ON cc.org_id = c.org_id WHERE cc.user_id = $1 AND c.is_deleted = FALSE) as connections_count`,
             [userId]
         );
 
@@ -2793,9 +2793,9 @@ exports.sendCompanyConnectionRequest = async (req, res) => {
         await client.query('BEGIN');
 
         // 1. Check if already connected
-        console.log(`[sendCompanyConnectionRequest] Checking company_connections: company_id=${companyId}, user_id=${targetUserId}, initiator=${initiatorId}`);
+        console.log(`[sendCompanyConnectionRequest] Checking organization_connections: org_id=${companyId}, user_id=${targetUserId}, initiator=${initiatorId}`);
         const connCheck = await client.query(
-            "SELECT 1 FROM company_connections WHERE company_id = $1 AND user_id = $2",
+            "SELECT 1 FROM organization_connections WHERE org_id = $1 AND user_id = $2",
             [companyId, targetUserId]
         );
         if (connCheck.rowCount > 0) {
@@ -2806,7 +2806,7 @@ exports.sendCompanyConnectionRequest = async (req, res) => {
 
         // 2. Check for existing pending request
         const reqCheck = await client.query(
-            "SELECT request_id, status FROM company_connection_requests WHERE company_id = $1 AND user_id = $2",
+            "SELECT request_id, status FROM organization_connection_requests WHERE org_id = $1 AND user_id = $2",
             [companyId, targetUserId]
         );
 
@@ -2820,18 +2820,18 @@ exports.sendCompanyConnectionRequest = async (req, res) => {
             // Clean up old rejected or accepted rows to allow fresh insert
             // (Status 'accepted' should theoretically not be here if connection check passed, 
             // but we clean it up anyway for consistency)
-            await client.query("DELETE FROM company_connection_requests WHERE request_id = $1", [row.request_id]);
+            await client.query("DELETE FROM organization_connection_requests WHERE request_id = $1", [row.request_id]);
         }
 
         // 3. Create request
         await client.query(
-            `INSERT INTO company_connection_requests (company_id, user_id, initiated_by, message, status) 
+            `INSERT INTO organization_connection_requests (org_id, user_id, initiated_by, message, status) 
              VALUES ($1, $2, $3, $4, 'pending')`,
             [companyId, targetUserId, initiatorId, message || null]
         );
 
         // 4. Notifications
-        const companyRes = await client.query("SELECT name, logo_url FROM companies WHERE company_id = $1", [companyId]);
+        const companyRes = await client.query("SELECT name, logo_url FROM organizations WHERE org_id = $1", [companyId]);
         const company = companyRes.rows[0];
 
         const notificationData = {
@@ -2846,7 +2846,7 @@ exports.sendCompanyConnectionRequest = async (req, res) => {
         };
 
         const notifRes = await client.query(
-            `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, recipient_company_id) 
+            `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, recipient_org_id) 
              VALUES ($1, $2, $3, $4, $5, NULL) RETURNING *`,
             [targetUserId, initiatorId, "company_connection_request", notificationData.text, companyId]
         );
@@ -2892,7 +2892,7 @@ exports.handleCompanyConnectionRequest = async (req, res) => {
 
         // 1. Fetch and Lock the request (Prevention of race conditions)
         const reqRes = await client.query(
-            "SELECT request_id FROM company_connection_requests WHERE company_id = $1 AND user_id = $2 AND status = 'pending' FOR UPDATE",
+            "SELECT request_id FROM organization_connection_requests WHERE org_id = $1 AND user_id = $2 AND status = 'pending' FOR UPDATE",
             [companyId, userId]
         );
 
@@ -2907,19 +2907,19 @@ exports.handleCompanyConnectionRequest = async (req, res) => {
             // 2. Create connection + follow (Atomic Multi-update)
             // 2a. The connection itself
             await client.query(
-                "INSERT INTO company_connections (company_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+                "INSERT INTO organization_connections (org_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
                 [companyId, userId]
             );
 
             // 2b. Auto-follow the company (user follows company on acceptance)
             await client.query(
-                "INSERT INTO company_followers (user_id, company_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+                "INSERT INTO organization_followers (user_id, org_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
                 [userId, companyId]
             );
 
             // 3. Update invite status
             await client.query(
-                "UPDATE company_connection_requests SET status = 'accepted', updated_at = NOW() WHERE company_id = $1 AND user_id = $2",
+                "UPDATE organization_connection_requests SET status = 'accepted', updated_at = NOW() WHERE org_id = $1 AND user_id = $2",
                 [companyId, userId]
             );
 
@@ -2927,7 +2927,7 @@ exports.handleCompanyConnectionRequest = async (req, res) => {
             const userRes = await client.query("SELECT full_name, avatar_url FROM users WHERE user_id = $1", [userId]);
             const user = userRes.rows[0];
 
-            const companyRes = await client.query("SELECT name, logo_url FROM companies WHERE company_id = $1", [companyId]);
+            const companyRes = await client.query("SELECT name, logo_url FROM organizations WHERE org_id = $1", [companyId]);
             const company = companyRes.rows[0];
 
             // 4a. Persistent notification for the accepting user (appears in their history)
@@ -2940,7 +2940,7 @@ exports.handleCompanyConnectionRequest = async (req, res) => {
                     "company_connection_accepted",
                     `You are now connected with ${company.name}`,
                     companyId,
-                    JSON.stringify({ company_id: companyId })
+                    JSON.stringify({ org_id: companyId })
                 ]
             );
 
@@ -2959,13 +2959,13 @@ exports.handleCompanyConnectionRequest = async (req, res) => {
 
             // 4b. Persistent notification for company admins
             const adminsRes = await client.query(
-                "SELECT user_id FROM company_members WHERE company_id = $1 AND (role = 'ADMIN' OR role = 'OWNER')",
+                "SELECT user_id FROM organization_members WHERE org_id = $1 AND (role = 'ADMIN' OR role = 'OWNER')",
                 [companyId]
             );
 
             for (const admin of adminsRes.rows) {
                 const adminNotifRes = await client.query(
-                    `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, recipient_company_id, metadata)
+                    `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, recipient_org_id, metadata)
                      VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
                     [
                         admin.user_id,
@@ -2974,7 +2974,7 @@ exports.handleCompanyConnectionRequest = async (req, res) => {
                         `${user.full_name} accepted the company's connection request`,
                         companyId,
                         companyId,
-                        JSON.stringify({ company_id: companyId })
+                        JSON.stringify({ org_id: companyId })
                     ]
                 );
 
@@ -3014,7 +3014,7 @@ exports.handleCompanyConnectionRequest = async (req, res) => {
         } else {
             // Rejected
             await client.query(
-                "UPDATE company_connection_requests SET status = 'rejected', updated_at = NOW() WHERE company_id = $1 AND user_id = $2",
+                "UPDATE organization_connection_requests SET status = 'rejected', updated_at = NOW() WHERE org_id = $1 AND user_id = $2",
                 [companyId, userId]
             );
 
@@ -3041,7 +3041,7 @@ exports.cancelCompanyConnectionRequest = async (req, res) => {
 
     try {
         await pool.query(
-            "DELETE FROM company_connection_requests WHERE company_id = $1 AND user_id = $2 AND status = 'pending'",
+            "DELETE FROM organization_connection_requests WHERE org_id = $1 AND user_id = $2 AND status = 'pending'",
             [companyId, targetUserId]
         );
         res.json({ success: true, message: "Request cancelled" });
@@ -3063,19 +3063,19 @@ exports.removeCompanyConnection = async (req, res) => {
 
         // 1. Delete the connection
         await client.query(
-            "DELETE FROM company_connections WHERE company_id = $1 AND user_id = $2",
+            "DELETE FROM organization_connections WHERE org_id = $1 AND user_id = $2",
             [companyId, targetUserId]
         );
 
         // 2. Clean up the follow (Ghost Follow prevention)
         await client.query(
-            "DELETE FROM company_followers WHERE user_id = $1 AND company_id = $2",
+            "DELETE FROM organization_followers WHERE user_id = $1 AND org_id = $2",
             [targetUserId, companyId]
         );
 
         // 3. Clean up the request record (any status: pending, accepted, rejected, blocked)
         await client.query(
-            "DELETE FROM company_connection_requests WHERE company_id = $1 AND user_id = $2",
+            "DELETE FROM organization_connection_requests WHERE org_id = $1 AND user_id = $2",
             [companyId, targetUserId]
         );
 
@@ -3109,7 +3109,7 @@ exports.removeCompanyConnection = async (req, res) => {
 /**
  * getCompanyConnectionStatus
  * Determines the current relationship between a company and a user.
- * authority: company_connections (for 'connected') -> company_connection_requests (for 'pending')
+ * authority: organization_connections (for 'connected') -> organization_connection_requests (for 'pending')
  */
 exports.getCompanyConnectionStatus = async (req, res) => {
     const { companyId, userId: targetUserId } = req.params;
@@ -3118,7 +3118,7 @@ exports.getCompanyConnectionStatus = async (req, res) => {
     try {
         // 1. Check direct connection
         const connCheck = await pool.query(
-            "SELECT 1 FROM company_connections WHERE company_id = $1 AND user_id = $2",
+            "SELECT 1 FROM organization_connections WHERE org_id = $1 AND user_id = $2",
             [companyId, targetUserId]
         );
 
@@ -3128,7 +3128,7 @@ exports.getCompanyConnectionStatus = async (req, res) => {
 
         // 1b. Check if user is a follower (Follower = Connected in this UI)
         const followCheck = await pool.query(
-            "SELECT 1 FROM company_followers WHERE company_id = $1 AND user_id = $2",
+            "SELECT 1 FROM organization_followers WHERE org_id = $1 AND user_id = $2",
             [companyId, targetUserId]
         );
 
@@ -3138,7 +3138,7 @@ exports.getCompanyConnectionStatus = async (req, res) => {
 
         // 2. Check for pending or existing requests
         const reqCheck = await pool.query(
-            "SELECT status, initiated_by FROM company_connection_requests WHERE company_id = $1 AND user_id = $2",
+            "SELECT status, initiated_by FROM organization_connection_requests WHERE org_id = $1 AND user_id = $2",
             [companyId, targetUserId]
         );
 
@@ -3194,7 +3194,7 @@ exports.shareProfile = async (req, res) => {
         // 0. Verify company membership if acting as company
         if (senderCompanyId) {
             const memberCheck = await client.query(
-                `SELECT 1 FROM company_members WHERE company_id = $1 AND user_id = $2 AND status = 'ACTIVE'`,
+                `SELECT 1 FROM organization_members WHERE org_id = $1 AND user_id = $2 AND status = 'ACTIVE'`,
                 [senderCompanyId, senderId]
             );
             if (memberCheck.rowCount === 0) {
@@ -3207,7 +3207,7 @@ exports.shareProfile = async (req, res) => {
         let senderName, senderAvatar;
         if (senderCompanyId) {
             const companyRes = await client.query(
-                `SELECT name, logo_url, slug FROM companies WHERE company_id = $1 AND is_deleted = FALSE`,
+                `SELECT name, logo_url, slug FROM organizations WHERE org_id = $1 AND is_deleted = FALSE`,
                 [senderCompanyId]
             );
             if (companyRes.rowCount === 0) {
@@ -3235,7 +3235,7 @@ exports.shareProfile = async (req, res) => {
             sharedProfileData = upRes.rows[0];
         } else {
             const cpRes = await client.query(
-                `SELECT name, logo_url as avatar, slogan as headline, slug FROM companies WHERE company_id = $1`,
+                `SELECT name, logo_url as avatar, slogan as headline, slug FROM organizations WHERE org_id = $1`,
                 [profileId]
             );
             sharedProfileData = cpRes.rows[0];
@@ -3254,8 +3254,8 @@ exports.shareProfile = async (req, res) => {
             const existingConv = await client.query(
                 `SELECT c.conversation_id
                  FROM conversations c
-                 JOIN conversation_participants cp1 ON c.conversation_id = cp1.conversation_id AND cp1.company_id = $1
-                 JOIN conversation_participants cp2 ON c.conversation_id = cp2.conversation_id AND cp2.company_id = $2
+                 JOIN conversation_participants cp1 ON c.conversation_id = cp1.conversation_id AND cp1.org_id = $1
+                 JOIN conversation_participants cp2 ON c.conversation_id = cp2.conversation_id AND cp2.org_id = $2
                  WHERE c.is_group = FALSE`,
                 [senderCompanyId, receiverId]
             );
@@ -3269,11 +3269,11 @@ exports.shareProfile = async (req, res) => {
                 conversationId = convRes.rows[0].conversation_id;
 
                 await client.query(
-                    `INSERT INTO conversation_participants(conversation_id, company_id) VALUES($1, $2)`,
+                    `INSERT INTO conversation_participants(conversation_id, org_id) VALUES($1, $2)`,
                     [conversationId, senderCompanyId]
                 );
                 await client.query(
-                    `INSERT INTO conversation_participants(conversation_id, company_id) VALUES($1, $2)`,
+                    `INSERT INTO conversation_participants(conversation_id, org_id) VALUES($1, $2)`,
                     [conversationId, receiverId]
                 );
             }
@@ -3282,7 +3282,7 @@ exports.shareProfile = async (req, res) => {
             const existingConv = await client.query(
                 `SELECT c.conversation_id
                  FROM conversations c
-                 JOIN conversation_participants cp1 ON c.conversation_id = cp1.conversation_id AND cp1.company_id = $1
+                 JOIN conversation_participants cp1 ON c.conversation_id = cp1.conversation_id AND cp1.org_id = $1
                  JOIN conversation_participants cp2 ON c.conversation_id = cp2.conversation_id AND cp2.user_id = $2
                  WHERE c.is_group = FALSE`,
                 [senderCompanyId, receiverId]
@@ -3297,7 +3297,7 @@ exports.shareProfile = async (req, res) => {
                 conversationId = convRes.rows[0].conversation_id;
 
                 await client.query(
-                    `INSERT INTO conversation_participants(conversation_id, company_id) VALUES($1, $2)`,
+                    `INSERT INTO conversation_participants(conversation_id, org_id) VALUES($1, $2)`,
                     [conversationId, senderCompanyId]
                 );
                 await client.query(
@@ -3311,7 +3311,7 @@ exports.shareProfile = async (req, res) => {
                 `SELECT c.conversation_id
                  FROM conversations c
                  JOIN conversation_participants cp1 ON c.conversation_id = cp1.conversation_id AND cp1.user_id = $1
-                 JOIN conversation_participants cp2 ON c.conversation_id = cp2.conversation_id AND cp2.company_id = $2
+                 JOIN conversation_participants cp2 ON c.conversation_id = cp2.conversation_id AND cp2.org_id = $2
                  WHERE c.is_group = FALSE`,
                 [senderId, receiverId]
             );
@@ -3329,7 +3329,7 @@ exports.shareProfile = async (req, res) => {
                     [conversationId, senderId]
                 );
                 await client.query(
-                    `INSERT INTO conversation_participants(conversation_id, company_id) VALUES($1, $2)`,
+                    `INSERT INTO conversation_participants(conversation_id, org_id) VALUES($1, $2)`,
                     [conversationId, receiverId]
                 );
             }
@@ -3377,10 +3377,10 @@ exports.shareProfile = async (req, res) => {
             [conversationId]
         );
 
-        // 6. Build notification metadata (includes company_id for attribution + navigation info)
+        // 6. Build notification metadata (includes org_id for attribution + navigation info)
         const notifMeta = {
             profileType,
-            ...(senderCompanyId ? { company_id: senderCompanyId } : {}),
+            ...(senderCompanyId ? { org_id: senderCompanyId } : {}),
             ...(receiverType === 'company' ? { receiverType, receiverId } : {}),
             // Navigation helpers: slug for company profiles, account_name for user profiles
             ...(profileType === 'company' && sharedProfileData?.slug ? { slug: sharedProfileData.slug } : {}),
@@ -3389,14 +3389,14 @@ exports.shareProfile = async (req, res) => {
 
         // 7. Create Persistent Notification
         if (receiverType === 'company') {
-            // Company receiver: notification goes to company account via recipient_company_id
+            // Company receiver: notification goes to company account via recipient_org_id
             const adminsRes = await client.query(
-                `SELECT user_id FROM company_members WHERE company_id = $1 AND status = 'ACTIVE' LIMIT 1`,
+                `SELECT user_id FROM organization_members WHERE org_id = $1 AND status = 'ACTIVE' LIMIT 1`,
                 [receiverId]
             );
             const firstMemberId = adminsRes.rows[0]?.user_id || senderId;
             await client.query(
-                `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata, recipient_company_id)
+                `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata, recipient_org_id)
                  VALUES ($1, $2, $3, $4, $5, $6, $7)`,
                 [firstMemberId, senderId, 'profile_share', `${senderName} shared a ${profileType} profile with your company`, profileId, JSON.stringify(notifMeta), receiverId]
             );
@@ -3418,13 +3418,13 @@ exports.shareProfile = async (req, res) => {
             sender_avatar: senderAvatar,
             shared_profile: sharedProfileData,
             is_company_actor: !!senderCompanyId,
-            sender_company_id: senderCompanyId || null
+            sender_org_id: senderCompanyId || null
         };
 
         if (receiverType === 'company') {
             // Notify all active company members (so they see it when viewing as company)
             const membersRes = await client.query(
-                `SELECT user_id FROM company_members WHERE company_id = $1 AND status = 'ACTIVE'`,
+                `SELECT user_id FROM organization_members WHERE org_id = $1 AND status = 'ACTIVE'`,
                 [receiverId]
             );
             for (const member of membersRes.rows) {
@@ -3437,7 +3437,7 @@ exports.shareProfile = async (req, res) => {
                     senderAvatar: senderAvatar,
                     conversationId,
                     text: `Shared a ${profileType} profile`,
-                    recipient_company_id: receiverId,
+                    recipient_org_id: receiverId,
                     isCompanyNotification: true,
                     is_company_actor: !!senderCompanyId,
                     metadata: notifMeta

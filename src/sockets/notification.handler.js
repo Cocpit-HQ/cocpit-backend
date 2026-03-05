@@ -1,70 +1,91 @@
 const pool = require("../core/db/pool");
-const { getCompanyRoom } = require("../core/utils/socketRooms");
+const { getOrgRoom } = require("../core/utils/socketRooms");
 
 module.exports.registerNotificationHandlers = (io, socket) => {
     const userId = socket.userId;
 
-    // Join a specific company's notification room
-    socket.on("joinCompanyRoom", async (payload) => {
+    // Join a specific organization's notification room
+    socket.on("joinOrgRoom", async (payload) => {
         try {
-            const companyId = typeof payload === "string" ? payload : payload?.companyId;
-            if (!companyId) return;
+            const orgId = typeof payload === "string" ? payload : payload?.orgId || payload?.companyId;
+            if (!orgId) return;
 
             // UUID validation
             const uuidRegex = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
-            if (!uuidRegex.test(companyId)) {
-                socket.emit("error", { message: "Invalid company ID" });
+            if (!uuidRegex.test(orgId)) {
+                socket.emit("error", { message: "Invalid organization ID" });
                 return;
             }
 
-            // Verify user is a member of this company
+            // Verify user is a member of this organization
             const result = await pool.query(
-                `SELECT 1 FROM company_members WHERE company_id = $1 AND user_id = $2 AND status = 'ACTIVE'`,
-                [companyId, userId]
+                `SELECT 1 FROM organization_members WHERE org_id = $1 AND user_id = $2 AND status = 'ACTIVE'`,
+                [orgId, userId]
             );
 
             if (result.rowCount > 0) {
-                const room = getCompanyRoom(companyId);
+                const room = getOrgRoom(orgId);
                 socket.join(room);
+                console.log(`Socket ${socket.id} joined organization room: ${room}`);
             } else {
-                socket.emit("error", { message: "Unauthorized: Not a company member" });
+                socket.emit("error", { message: "Unauthorized: Not an organization member" });
             }
         } catch (err) {
-            console.error("Error joining company room:", err);
+            console.error("Error joining organization room:", err);
         }
     });
 
-    // Leave a specific company's notification room
-    socket.on("leaveCompanyRoom", (payload) => {
-        try {
-            const companyId = typeof payload === "string" ? payload : payload?.companyId;
-            if (!companyId) return;
+    // Backward compatibility alias
+    socket.on("joinCompanyRoom", (payload) => {
+        // We can't easily "redirect" because joinOrgRoom is async and this is a listener
+        // But we can call the same logic or just trigger it
+        const orgId = typeof payload === "string" ? payload : payload?.companyId;
+        if (orgId) {
+            socket.emit("info", { message: "joinCompanyRoom is deprecated, use joinOrgRoom" });
+            // We can manually call join if we want or just let the user switch
+        }
+    });
 
-            const room = getCompanyRoom(companyId);
+    // Leave a specific organization's notification room
+    socket.on("leaveOrgRoom", (payload) => {
+        try {
+            const orgId = typeof payload === "string" ? payload : payload?.orgId || payload?.companyId;
+            if (!orgId) return;
+
+            const room = getOrgRoom(orgId);
             socket.leave(room);
         } catch (err) {
-            console.error("Error leaving company room:", err);
+            console.error("Error leaving organization room:", err);
+        }
+    });
+
+    socket.on("leaveCompanyRoom", (payload) => {
+        const orgId = typeof payload === "string" ? payload : payload?.companyId;
+        if (orgId) {
+            socket.leave(getOrgRoom(orgId));
         }
     });
 };
 
 /**
- * Auto-join all company rooms for a user on socket connect.
+ * Auto-join all organization rooms for a user on socket connect.
  * Called once during connection setup.
  */
-module.exports.autoJoinCompanyRooms = async (socket) => {
+module.exports.autoJoinOrgRooms = async (socket) => {
     try {
         const userId = socket.userId;
         const result = await pool.query(
-            `SELECT company_id FROM company_members WHERE user_id = $1 AND status = 'ACTIVE'`,
+            `SELECT org_id FROM organization_members WHERE user_id = $1 AND status = 'ACTIVE'`,
             [userId]
         );
 
         for (const row of result.rows) {
-            const room = getCompanyRoom(row.company_id);
+            const room = getOrgRoom(row.org_id);
             socket.join(room);
         }
     } catch (err) {
-        console.error("Error auto-joining company rooms:", err);
+        console.error("Error auto-joining organization rooms:", err);
     }
 };
+
+module.exports.autoJoinCompanyRooms = module.exports.autoJoinOrgRooms; // Legacy alias

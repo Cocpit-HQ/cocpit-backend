@@ -8,7 +8,8 @@ const rateLimitStore = new Map();
 const LIMITS = {
     'session:claim': { max: 5, windowMs: 60 * 1000 },      // 5 claims/min
     'session:takeover': { max: 3, windowMs: 60 * 1000 },    // 3 takeovers/min
-    'company:message': { max: 30, windowMs: 60 * 1000 },    // 30 msgs/min
+    'organization:message': { max: 30, windowMs: 60 * 1000 },    // 30 msgs/min
+    'company:message': { max: 30, windowMs: 60 * 1000 },         // Legacy alias
 };
 
 /**

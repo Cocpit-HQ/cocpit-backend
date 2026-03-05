@@ -1,21 +1,32 @@
 const pool = require("../db/pool");
 
 /**
- * Check if a user has specific permissions within a company.
+ * Maps legacy company permissions to organization permissions
+ */
+const PERMISSION_MAP = {
+    'MANAGE_COMPANY': 'MANAGE_ORGANIZATION',
+    'MANAGE_COMPANY_DETAILS': 'MANAGE_ORGANIZATION_DETAILS',
+    'VIEW_COMPANY_CHATS': 'VIEW_ORGANIZATION_CHATS',
+    'MANAGE_COMPANY_CHATS': 'MANAGE_ORGANIZATION_CHATS',
+    'SWITCH_TO_COMPANY': 'SWITCH_TO_ORGANIZATION'
+};
+
+/**
+ * Check if a user has specific permissions within an organization (company or institution).
  * @param {Object} queryable - The database client or pool to execute the query.
- * @param {string} companyId - The ID of the company.
+ * @param {string} orgId - The ID of the organization.
  * @param {string} userId - The ID of the user.
  * @param {string|string[]} permissionsToCheck - A single permission string or an array of permissions.
  * @returns {Promise<boolean>} - True if authorized, false otherwise.
  */
-const checkCompanyPermission = async (queryable, companyId, userId, permissionsToCheck) => {
+const checkOrgPermission = async (queryable, orgId, userId, permissionsToCheck) => {
     try {
         const res = await queryable.query(
             `SELECT cr.permissions, cr.name, cm.status, cm.expires_at
-             FROM company_members cm
-             LEFT JOIN company_roles cr ON cm.role_id = cr.role_id
-             WHERE cm.company_id = $1 AND cm.user_id = $2`,
-            [companyId, userId]
+             FROM organization_members cm
+             LEFT JOIN organization_roles cr ON cm.role_id = cr.role_id
+             WHERE cm.org_id = $1 AND cm.user_id = $2`,
+            [orgId, userId]
         );
 
         if (res.rowCount === 0) return false;
@@ -32,11 +43,30 @@ const checkCompanyPermission = async (queryable, companyId, userId, permissionsT
         const checks = Array.isArray(permissionsToCheck) ? permissionsToCheck : [permissionsToCheck];
 
         // Check if ANY of the required permissions are present
-        // (Logic: If checking multiple, usually we want AT LEAST ONE, e.g. "MANAGE_COMPANY" OR "CREATE_CONTENT")
         return checks.some(p => {
+            // Check original
             if (perms.includes(p)) return true;
+
+            // Check organization mapping
+            const mapped = PERMISSION_MAP[p];
+            if (mapped && perms.includes(mapped)) return true;
+
+            // Check if p is an organization permission and has a legacy mapping in perms
+            const legacy = Object.keys(PERMISSION_MAP).find(k => PERMISSION_MAP[k] === p);
+            if (legacy && perms.includes(legacy)) return true;
+
             // Hierarchy: MANAGE_X implies VIEW_X
             if (p.startsWith("VIEW_") && perms.includes(p.replace("VIEW_", "MANAGE_"))) return true;
+
+            // Cross-mapping hierarchy (VIEW_ORG -> MANAGE_COMPANY, etc)
+            if (p.startsWith("VIEW_")) {
+                const manageP = p.replace("VIEW_", "MANAGE_");
+                const manageMapped = PERMISSION_MAP[manageP];
+                if (manageMapped && perms.includes(manageMapped)) return true;
+                const manageLegacy = Object.keys(PERMISSION_MAP).find(k => PERMISSION_MAP[k] === manageP);
+                if (manageLegacy && perms.includes(manageLegacy)) return true;
+            }
+
             return false;
         });
 
@@ -46,6 +76,10 @@ const checkCompanyPermission = async (queryable, companyId, userId, permissionsT
     }
 };
 
+// Backward compatibility alias
+const checkCompanyPermission = checkOrgPermission;
+
 module.exports = {
-    checkCompanyPermission
+    checkOrgPermission,
+    checkCompanyPermission // Legacy alias — will be removed after full migration
 };

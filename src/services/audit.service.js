@@ -1,4 +1,4 @@
-const logAudit = async (client, { entityId, entityType = 'COMPANY', actorId, action, metadata = {} }) => {
+const logAudit = async (client, { entityId, entityType = 'ORGANIZATION', actorId, action, metadata = {} }) => {
     try {
         const query = `
             INSERT INTO audit_logs (entity_type, entity_id, actor_id, action, metadata)

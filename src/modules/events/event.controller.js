@@ -4,9 +4,9 @@
  */
 const eventRepo = require("./event.repository");
 const { logAudit } = require("../../core/infrastructure/audit.service");
-const { checkCompanyPermission } = require("../../core/utils/rbac");
+const { checkOrgPermission } = require("../../core/utils/rbac");
 const pool = require("../../core/db/pool");
-const { notifyCompanyFollowers } = require("../../services/notification.service");
+const { notifyOrgFollowers } = require("../../services/notification.service");
 
 // ─── List Events (with filtering + cursor pagination) ───────────────────────────
 
@@ -24,12 +24,12 @@ exports.getEvents = async (req, res) => {
       (SELECT COUNT(*)::int FROM event_registrations er WHERE er.event_id = e.event_id) AS registered_count,
       CASE WHEN es.event_id IS NOT NULL THEN true ELSE false END AS "isSaved"
       FROM events e LEFT JOIN users u ON e.organizer_id = u.user_id
-      LEFT JOIN companies c ON e.company_id = c.company_id
+      LEFT JOIN organizations c ON e.org_id = c.org_id
       LEFT JOIN event_saves es ON es.event_id = e.event_id AND es.user_id = $1
       WHERE 1=1`;
 
-        if (filterCompanyId) { values.push(filterCompanyId); query += ` AND e.company_id = $${values.length}`; }
-        else if (filterUserId) { values.push(filterUserId); query += ` AND e.organizer_id = $${values.length}`; }
+        if (filterCompanyId && filterCompanyId !== 'undefined') { values.push(filterCompanyId); query += ` AND e.org_id = $${values.length}`; }
+        else if (filterUserId && filterUserId !== 'undefined') { values.push(filterUserId); query += ` AND e.organizer_id = $${values.length}`; }
         if (q) { values.push(`%${q}%`); const idx = values.length; query += ` AND (e.title ILIKE $${idx} OR e.description ILIKE $${idx} OR e.location ILIKE $${idx} OR u.full_name ILIKE $${idx} OR c.name ILIKE $${idx})`; }
         if (title) { values.push(`%${title}%`); query += ` AND e.title ILIKE $${values.length}`; }
         if (location) { values.push(`%${location}%`); query += ` AND e.location ILIKE $${values.length}`; }
@@ -101,8 +101,8 @@ exports.createEvent = async (req, res) => {
 
         let finalCompanyId = null;
         if (companyId) {
-            const canPost = await checkCompanyPermission(pool, companyId, userId, "CREATE_CONTENT");
-            if (!canPost) return res.status(403).json({ message: "You do not have permission to post events for this company." });
+            const canPost = await checkOrgPermission(pool, companyId, userId, "CREATE_CONTENT");
+            if (!canPost) return res.status(403).json({ message: "You do not have permission to post events for this organization." });
             finalCompanyId = companyId;
         }
 
@@ -116,8 +116,8 @@ exports.createEvent = async (req, res) => {
             await logAudit(pool, { entityId: finalCompanyId, actorId: userId, action: "CREATE_EVENT", metadata: { eventId, title } });
 
             // Notify followers with 'events' preference enabled (fire-and-forget)
-            notifyCompanyFollowers(finalCompanyId, "events", {
-                type: "company_event",
+            notifyOrgFollowers(finalCompanyId, "events", {
+                type: "organization_event",
                 text: `New event: ${title}`,
                 referenceId: eventId,
                 metadata: { event_title: title, event_type: eventType || null },
@@ -203,7 +203,7 @@ exports.getMyCreatedEvents = async (req, res) => {
 
     try {
         if (companyId) {
-            const canView = await checkCompanyPermission(pool, companyId, userId, "VIEW_ANALYTICS") || await checkCompanyPermission(pool, companyId, userId, "CREATE_CONTENT");
+            const canView = await checkOrgPermission(pool, companyId, userId, "VIEW_ANALYTICS") || await checkOrgPermission(pool, companyId, userId, "CREATE_CONTENT");
             if (!canView) return res.status(403).json({ message: "Forbidden" });
         }
         const events = await eventRepo.getMyCreatedEvents(userId, companyId);
@@ -265,9 +265,9 @@ exports.updateEvent = async (req, res) => {
         if (!event) return res.status(404).json({ message: "Event not found" });
 
         let authorized = event.organizer_id === userId;
-        if (!authorized && event.company_id) {
-            authorized = await checkCompanyPermission(pool, event.company_id, userId, "MANAGE_COMPANY");
-            if (!authorized) authorized = await checkCompanyPermission(pool, event.company_id, userId, "CREATE_CONTENT");
+        if (!authorized && event.org_id) {
+            authorized = await checkOrgPermission(pool, event.org_id, userId, "MANAGE_COMPANY");
+            if (!authorized) authorized = await checkOrgPermission(pool, event.org_id, userId, "CREATE_CONTENT");
         }
         if (!authorized) return res.status(403).json({ message: "Not authorized to update this event" });
 
@@ -306,9 +306,9 @@ exports.deleteEvent = async (req, res) => {
         if (!event) return res.status(404).json({ message: "Event not found" });
 
         let authorized = event.organizer_id === userId;
-        if (!authorized && event.company_id) {
-            authorized = await checkCompanyPermission(pool, event.company_id, userId, "MANAGE_COMPANY");
-            if (!authorized) authorized = await checkCompanyPermission(pool, event.company_id, userId, "CREATE_CONTENT");
+        if (!authorized && event.org_id) {
+            authorized = await checkOrgPermission(pool, event.org_id, userId, "MANAGE_COMPANY");
+            if (!authorized) authorized = await checkOrgPermission(pool, event.org_id, userId, "CREATE_CONTENT");
         }
         if (!authorized) return res.status(403).json({ message: "Not authorized to delete this event" });
 

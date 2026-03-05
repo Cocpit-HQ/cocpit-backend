@@ -1,8 +1,8 @@
 /**
- * Company Notification Service
+ * Organization Notification Service
  * 
  * Central utility for dispatching preference-aware notifications
- * to company followers. Checks each follower's notification preferences
+ * to organization followers. Checks each follower's notification preferences
  * before creating DB entries and emitting real-time events.
  */
 
@@ -17,24 +17,24 @@ const CATEGORY_COLUMN_MAP = {
 };
 
 /**
- * Send notifications to company followers who have the given category enabled.
+ * Send notifications to organization followers who have the given category enabled.
  * 
- * @param {string} companyId - The company that produced the content
+ * @param {string} orgId - The organization that produced the content
  * @param {string} category - One of: 'jobs', 'events', 'posts', 'announcements'
  * @param {object} notificationData - { type, text, referenceId, metadata }
  */
-async function notifyCompanyFollowers(companyId, category, notificationData) {
+async function notifyOrgFollowers(orgId, category, notificationData) {
     const column = CATEGORY_COLUMN_MAP[category];
     if (!column) {
-        console.error(`notifyCompanyFollowers: Unknown category "${category}"`);
+        console.error(`notifyOrgFollowers: Unknown category "${category}"`);
         return;
     }
 
     try {
-        // 1. Get company info for notification text
+        // 1. Get organization info for notification text
         const companyRes = await pool.query(
-            `SELECT name, logo_url, slug FROM companies WHERE company_id = $1`,
-            [companyId]
+            `SELECT name, logo_url, slug FROM organizations WHERE org_id = $1`,
+            [orgId]
         );
         if (companyRes.rowCount === 0) return;
         const company = companyRes.rows[0];
@@ -42,11 +42,11 @@ async function notifyCompanyFollowers(companyId, category, notificationData) {
         // 2. Get opted-in followers (who have this category enabled)
         const followersRes = await pool.query(
             `SELECT cf.user_id
-       FROM company_followers cf
-       INNER JOIN company_notification_preferences cnp
-         ON cf.user_id = cnp.user_id AND cf.company_id = cnp.company_id
-       WHERE cf.company_id = $1 AND cnp.${column} = TRUE`,
-            [companyId]
+       FROM organization_followers cf
+       INNER JOIN organization_notification_preferences cnp
+         ON cf.user_id = cnp.user_id AND cf.org_id = cnp.org_id
+       WHERE cf.org_id = $1 AND cnp.${column} = TRUE`,
+            [orgId]
         );
 
         if (followersRes.rowCount === 0) return;
@@ -64,11 +64,11 @@ async function notifyCompanyFollowers(companyId, category, notificationData) {
             );
             values.push(
                 row.user_id,             // user_id (recipient)
-                null,                     // sender_id (company action, no individual sender)
+                null,                     // sender_id (organization action, no individual sender)
                 type,                     // type
                 text,                     // text
                 referenceId || null,      // reference_id
-                JSON.stringify({ ...metadata, company_id: companyId }) // metadata
+                JSON.stringify({ ...metadata, org_id: orgId }) // metadata
             );
             paramIdx += 6;
         }
@@ -93,17 +93,17 @@ async function notifyCompanyFollowers(companyId, category, notificationData) {
                 actor_name: company.name,
                 actor_avatar: company.logo_url,
                 actor_slug: company.slug,
-                is_company_actor: true,
-                metadata: { ...metadata, company_id: companyId },
+                is_organization_actor: true,
+                metadata: { ...metadata, org_id: orgId },
             });
         }
 
         console.log(
-            `📢 Sent ${insertRes.rowCount} "${category}" notifications for company ${company.name}`
+            `📢 Sent ${insertRes.rowCount} "${category}" notifications for organization ${company.name}`
         );
     } catch (err) {
-        console.error("notifyCompanyFollowers error:", err);
+        console.error("notifyOrgFollowers error:", err);
     }
 }
 
-module.exports = { notifyCompanyFollowers };
+module.exports = { notifyOrgFollowers };

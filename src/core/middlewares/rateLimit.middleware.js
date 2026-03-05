@@ -1,10 +1,10 @@
 const { rateLimit } = require('express-rate-limit');
 
 /**
- * Standard Rate Limiter for sensitive company operations
+ * Standard Rate Limiter for sensitive organization operations
  * (Transfer Ownership, Domain Verification, Invites)
  */
-const companyActionLimiter = rateLimit({
+const organizationActionLimiter = rateLimit({
     windowMs: 15 * 60 * 1000, // 15 minutes
     limit: 10,
     standardHeaders: 'draft-7',
@@ -14,6 +14,8 @@ const companyActionLimiter = rateLimit({
     },
     skip: (req) => process.env.NODE_ENV === 'test',
 });
+
+const companyActionLimiter = organizationActionLimiter; // Legacy alias
 
 /**
  * Stricter Limiter for OTP generation
@@ -73,6 +75,7 @@ const createRateLimit = (options) => {
 };
 
 module.exports = {
+    organizationActionLimiter,
     companyActionLimiter,
     otpGenerationLimiter,
     createRateLimit

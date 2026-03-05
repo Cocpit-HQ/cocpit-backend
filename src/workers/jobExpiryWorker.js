@@ -15,7 +15,7 @@ const processJobExpirations = async () => {
             UPDATE jobs 
             SET status = 'EXPIRED'
             WHERE status = 'ACTIVE' AND expires_at <= NOW()
-            RETURNING job_id, company_id, title
+            RETURNING job_id, org_id, title
         `);
 
         if (expiredRes.rowCount > 0) {
@@ -27,13 +27,13 @@ const processJobExpirations = async () => {
                 // System actor for audit, or leave actor_id NULL
                 await client.query(
                     `INSERT INTO audit_logs (entity_type, entity_id, action, metadata)
-                     VALUES ('COMPANY', $1, 'EXPIRE_JOB', $2)`,
-                    [job.company_id, JSON.stringify({ jobId: job.job_id, title: job.title })]
+                     VALUES ('ORGANIZATION', $1, 'EXPIRE_JOB', $2)`,
+                    [job.org_id, JSON.stringify({ jobId: job.job_id, title: job.title })]
                 );
 
                 await client.query(
                     `INSERT INTO event_outbox (topic, payload) VALUES ($1, $2)`,
-                    ['JOB_EXPIRED', JSON.stringify({ jobId: job.job_id, companyId: job.company_id })]
+                    ['JOB_EXPIRED', JSON.stringify({ jobId: job.job_id, orgId: job.org_id })]
                 );
             }
         }

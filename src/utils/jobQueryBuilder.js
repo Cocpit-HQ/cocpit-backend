@@ -10,11 +10,15 @@ const buildJobFilters = (params, paramCountStart = 1) => {
         datePosted,
         jobType,
         workMode,
+        organizationType,
         companyType,
         industry,
-        company_id,
+        org_id,
+        orgId,
         status,
     } = params;
+    const targetOrgId = org_id || orgId;
+    const targetCompType = organizationType || companyType;
 
     let conditions = [];
     let values = [];
@@ -86,9 +90,9 @@ const buildJobFilters = (params, paramCountStart = 1) => {
         values.push(workMode);
         currentIndex++;
     }
-    if (companyType) {
+    if (targetCompType) {
         conditions.push(`j.company_type = $${currentIndex}`);
-        values.push(companyType);
+        values.push(targetCompType);
         currentIndex++;
     }
     if (industry) {
@@ -96,9 +100,9 @@ const buildJobFilters = (params, paramCountStart = 1) => {
         values.push(industry);
         currentIndex++;
     }
-    if (company_id) {
-        conditions.push(`j.company_id = $${currentIndex}`);
-        values.push(company_id);
+    if (targetOrgId) {
+        conditions.push(`j.org_id = $${currentIndex}`);
+        values.push(targetOrgId);
         currentIndex++;
     }
     if (status) {

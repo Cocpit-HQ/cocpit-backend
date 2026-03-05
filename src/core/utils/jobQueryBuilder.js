@@ -12,7 +12,7 @@ const buildJobFilters = (params, paramCountStart = 1) => {
         workMode,
         companyType,
         industry,
-        company_id,
+        org_id,
         status,
     } = params;
 
@@ -96,9 +96,9 @@ const buildJobFilters = (params, paramCountStart = 1) => {
         values.push(industry);
         currentIndex++;
     }
-    if (company_id) {
-        conditions.push(`j.company_id = $${currentIndex}`);
-        values.push(company_id);
+    if (org_id) {
+        conditions.push(`j.org_id = $${currentIndex}`);
+        values.push(org_id);
         currentIndex++;
     }
     if (status) {

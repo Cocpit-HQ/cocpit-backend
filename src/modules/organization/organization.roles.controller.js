@@ -3,24 +3,24 @@ const AppError = require("../../core/errors/AppError");
 const { logAudit } = require("../../core/infrastructure/audit.service");
 
 // Get all roles for a company
-// Get all roles for a company
-exports.getCompanyRoles = async (req, res, next) => {
-    const { companyId } = req.params;
+// Get all roles for an organization
+exports.getOrganizationRoles = async (req, res, next) => {
+    const { orgId: companyId } = req.params;
     const userId = req.user.sub; // Ensure we have the user
 
     const client = await pool.connect();
     try {
         // Enforce membership check (Any member can see roles)
         const memberCheck = await client.query(
-            `SELECT 1 FROM company_members WHERE company_id = $1 AND user_id = $2`,
+            `SELECT 1 FROM organization_members WHERE org_id = $1 AND user_id = $2`,
             [companyId, userId]
         );
         if (memberCheck.rowCount === 0) {
-            return res.status(403).json({ message: "Forbidden: Must be a company member" });
+            return res.status(403).json({ message: "Forbidden: Must be an organization member" });
         }
 
         const result = await client.query(
-            `SELECT * FROM company_roles WHERE company_id = $1 ORDER BY priority DESC`,
+            `SELECT * FROM organization_roles WHERE org_id = $1 ORDER BY priority DESC`,
             [companyId]
         );
 
@@ -33,8 +33,8 @@ exports.getCompanyRoles = async (req, res, next) => {
 };
 
 // Create a new role
-exports.createCompanyRole = async (req, res, next) => {
-    const { companyId } = req.params;
+exports.createOrganizationRole = async (req, res, next) => {
+    const { orgId: companyId } = req.params;
     const { name, color, permissions, priority } = req.body;
 
     // Validation
@@ -45,9 +45,9 @@ exports.createCompanyRole = async (req, res, next) => {
         // Enforce basic hierarchy: Cannot create role higher than self
         const query = `
             SELECT cr.priority 
-            FROM company_members cm 
-            JOIN company_roles cr ON cm.role_id = cr.role_id 
-            WHERE cm.company_id = $1 AND cm.user_id = $2
+            FROM organization_members cm 
+            JOIN organization_roles cr ON cm.role_id = cr.role_id 
+            WHERE cm.org_id = $1 AND cm.user_id = $2
         `;
         const actorRes = await client.query(query, [companyId, req.user.sub]);
         const actorPriority = actorRes.rows[0]?.priority || 0;
@@ -67,9 +67,9 @@ exports.createCompanyRole = async (req, res, next) => {
             }
         }
 
-        // Enforce uniqueness of name per company
+        // Enforce uniqueness of name per organization
         const existing = await client.query(
-            `SELECT 1 FROM company_roles WHERE company_id = $1 AND name ILIKE $2`,
+            `SELECT 1 FROM organization_roles WHERE org_id = $1 AND name ILIKE $2`,
             [companyId, name]
         );
 
@@ -78,7 +78,7 @@ exports.createCompanyRole = async (req, res, next) => {
         }
 
         const result = await client.query(
-            `INSERT INTO company_roles (company_id, name, color, permissions, priority)
+            `INSERT INTO organization_roles (org_id, name, color, permissions, priority)
              VALUES ($1, $2, $3, $4, $5)
              RETURNING *`,
             [companyId, name, color || '#808080', JSON.stringify(permissions || []), priority || 0]
@@ -93,8 +93,8 @@ exports.createCompanyRole = async (req, res, next) => {
 };
 
 // Update a role
-exports.updateCompanyRole = async (req, res, next) => {
-    const { companyId, roleId } = req.params;
+exports.updateOrganizationRole = async (req, res, next) => {
+    const { orgId: companyId, roleId } = req.params;
     const { name, color, permissions, priority } = req.body;
     const actorId = req.user.sub;
 
@@ -105,16 +105,16 @@ exports.updateCompanyRole = async (req, res, next) => {
         // 1. Get Actor's Role Priority
         const actorRes = await client.query(
             `SELECT cr.priority 
-             FROM company_members cm 
-             JOIN company_roles cr ON cm.role_id = cr.role_id 
-             WHERE cm.company_id = $1 AND cm.user_id = $2`,
+             FROM organization_members cm 
+             JOIN organization_roles cr ON cm.role_id = cr.role_id 
+             WHERE cm.org_id = $1 AND cm.user_id = $2`,
             [companyId, actorId]
         );
         const actorPriority = actorRes.rows[0]?.priority || 0;
 
         // 2. Get Target Role Details
         const roleCheck = await client.query(
-            `SELECT * FROM company_roles WHERE role_id = $1 AND company_id = $2`,
+            `SELECT * FROM organization_roles WHERE role_id = $1 AND org_id = $2`,
             [roleId, companyId]
         );
 
@@ -138,13 +138,13 @@ exports.updateCompanyRole = async (req, res, next) => {
 
         // 5. Update
         const result = await client.query(
-            `UPDATE company_roles 
+            `UPDATE organization_roles 
              SET name = COALESCE($1, name),
                  color = COALESCE($2, color),
                  permissions = COALESCE($3, permissions),
                  priority = COALESCE($4, priority),
                  updated_at = NOW()
-             WHERE role_id = $5 AND company_id = $6
+             WHERE role_id = $5 AND org_id = $6
              RETURNING *`,
             [name, color, JSON.stringify(permissions), priority, roleId, companyId]
         );
@@ -167,8 +167,8 @@ exports.updateCompanyRole = async (req, res, next) => {
 };
 
 // Delete a role
-exports.deleteCompanyRole = async (req, res, next) => {
-    const { companyId, roleId } = req.params;
+exports.deleteOrganizationRole = async (req, res, next) => {
+    const { orgId: companyId, roleId } = req.params;
 
     const client = await pool.connect();
     try {
@@ -176,7 +176,7 @@ exports.deleteCompanyRole = async (req, res, next) => {
 
         // Check system role
         const roleCheck = await client.query(
-            `SELECT is_system_role, name FROM company_roles WHERE role_id = $1 AND company_id = $2`,
+            `SELECT is_system_role, name FROM organization_roles WHERE role_id = $1 AND org_id = $2`,
             [roleId, companyId]
         );
 
@@ -188,7 +188,7 @@ exports.deleteCompanyRole = async (req, res, next) => {
         // Handle members with this role
         // Option 1: Prevent delete if members exist
         const memberCount = await client.query(
-            `SELECT COUNT(*) FROM company_members WHERE role_id = $1`,
+            `SELECT COUNT(*) FROM organization_members WHERE role_id = $1`,
             [roleId]
         );
 
@@ -196,7 +196,7 @@ exports.deleteCompanyRole = async (req, res, next) => {
             throw new AppError("Cannot delete role assigned to members. Please reassign them first.", 400);
         }
 
-        await client.query(`DELETE FROM company_roles WHERE role_id = $1`, [roleId]);
+        await client.query(`DELETE FROM organization_roles WHERE role_id = $1`, [roleId]);
 
         await logAudit(client, {
             entityId: companyId,
@@ -218,7 +218,7 @@ exports.deleteCompanyRole = async (req, res, next) => {
 
 // Assign role to member
 exports.assignRoleToMember = async (req, res, next) => {
-    const { companyId, userId } = req.params;
+    const { orgId: companyId, userId } = req.params;
     const { roleId } = req.body;
     const actorId = req.user.sub;
 
@@ -229,20 +229,20 @@ exports.assignRoleToMember = async (req, res, next) => {
         // 1. Get Actor's Role & Priority
         const actorRes = await client.query(
             `SELECT cr.priority, cr.name 
-             FROM company_members cm 
-             JOIN company_roles cr ON cm.role_id = cr.role_id 
-             WHERE cm.company_id = $1 AND cm.user_id = $2`,
+             FROM organization_members cm 
+             JOIN organization_roles cr ON cm.role_id = cr.role_id 
+             WHERE cm.org_id = $1 AND cm.user_id = $2`,
             [companyId, actorId]
         );
-        if (actorRes.rowCount === 0) throw new AppError("You are not a member of this company", 403);
+        if (actorRes.rowCount === 0) throw new AppError("You are not a member of this organization", 403);
         const actorRole = actorRes.rows[0];
 
         // 2. Get Target Member's Current Role & Priority
         const targetRes = await client.query(
             `SELECT cr.priority, cr.name
-             FROM company_members cm 
-             JOIN company_roles cr ON cm.role_id = cr.role_id 
-             WHERE cm.company_id = $1 AND cm.user_id = $2`,
+             FROM organization_members cm 
+             JOIN organization_roles cr ON cm.role_id = cr.role_id 
+             WHERE cm.org_id = $1 AND cm.user_id = $2`,
             [companyId, userId]
         );
         if (targetRes.rowCount === 0) throw new AppError("Member not found", 404);
@@ -250,7 +250,7 @@ exports.assignRoleToMember = async (req, res, next) => {
 
         // 3. Get New Role Details
         const newRoleRes = await client.query(
-            `SELECT priority, name, is_system_role FROM company_roles WHERE role_id = $1 AND company_id = $2`,
+            `SELECT priority, name, is_system_role FROM organization_roles WHERE role_id = $1 AND org_id = $2`,
             [roleId, companyId]
         );
         if (newRoleRes.rowCount === 0) throw new AppError("Invalid role", 400);
@@ -286,9 +286,9 @@ exports.assignRoleToMember = async (req, res, next) => {
 
         // 5. Update Record
         await client.query(
-            `UPDATE company_members 
+            `UPDATE organization_members 
              SET role_id = $1, joined_at = joined_at 
-             WHERE company_id = $2 AND user_id = $3`,
+             WHERE org_id = $2 AND user_id = $3`,
             [roleId, companyId, userId]
         );
 
@@ -317,7 +317,7 @@ exports.assignRoleToMember = async (req, res, next) => {
 
 // Update member role settings (Self-service: set primary, toggle visibility)
 exports.updateMemberRoleSettings = async (req, res, next) => {
-    const { companyId } = req.params;
+    const { orgId: companyId } = req.params;
     const userId = req.user.sub;
     const { is_primary_display, is_role_visible } = req.body;
 
@@ -327,30 +327,30 @@ exports.updateMemberRoleSettings = async (req, res, next) => {
 
         // Check verification (ensure user is actually a member)
         const memberCheck = await client.query(
-            `SELECT 1 FROM company_members WHERE company_id = $1 AND user_id = $2`,
+            `SELECT 1 FROM organization_members WHERE org_id = $1 AND user_id = $2`,
             [companyId, userId]
         );
 
         if (memberCheck.rowCount === 0) {
-            throw new AppError("You are not a member of this company", 403);
+            throw new AppError("You are not a member of this organization", 403);
         }
 
         // Handle Primary Display Logic
         if (is_primary_display === true) {
             // Unset primary for all other roles of this user
             await client.query(
-                `UPDATE company_members SET is_primary_display = FALSE WHERE user_id = $1`,
+                `UPDATE organization_members SET is_primary_display = FALSE WHERE user_id = $1`,
                 [userId]
             );
         }
 
         // Update the specific record
         const query = `
-            UPDATE company_members 
+            UPDATE organization_members 
             SET 
                 is_primary_display = COALESCE($1, is_primary_display),
                 is_role_visible = COALESCE($2, is_role_visible)
-            WHERE company_id = $3 AND user_id = $4
+            WHERE org_id = $3 AND user_id = $4
             RETURNING *
         `;
 

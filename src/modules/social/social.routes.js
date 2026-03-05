@@ -3,7 +3,7 @@ const router = express.Router();
 const socialController = require("./social.controller");
 const messageController = require("../messaging/message.controller");
 const { requireAuth } = require("../../core/middlewares/auth.middleware");
-const { requireCompanyPermission } = require("../../core/middlewares/company.auth.middleware");
+const { requireOrgPermission, requireCompanyPermission } = require("../../core/middlewares/organization.auth.middleware");
 
 // Follow (One-way)
 router.post("/users/:id/follow", requireAuth, socialController.followUser);
@@ -12,19 +12,33 @@ router.get("/users/:id/followers/count", socialController.getFollowersCount);
 router.get("/users/:id/followers", socialController.getFollowers);
 router.get("/users/:id/following", socialController.getFollowing);
 
-// Company Follow
+// Company/Organization Follow
 router.post("/companies/:companyId/follow", requireAuth, socialController.followCompany);
 router.delete("/companies/:companyId/unfollow", requireAuth, socialController.unfollowCompany);
 router.get("/companies/:companyId/relationship", requireAuth, socialController.getCompanyRelationship);
 router.get("/companies/:companyId/followers", socialController.getCompanyFollowers);
 router.delete("/companies/:companyId/followers/:followerId", requireAuth, requireCompanyPermission("MANAGE_MEMBERS"), socialController.removeCompanyFollower);
 
-// Company Connections
+// Organization Follow Aliases
+router.post("/organizations/:orgId/follow", requireAuth, socialController.followCompany);
+router.delete("/organizations/:orgId/unfollow", requireAuth, socialController.unfollowCompany);
+router.get("/organizations/:orgId/relationship", requireAuth, socialController.getCompanyRelationship);
+router.get("/organizations/:orgId/followers", socialController.getCompanyFollowers);
+router.delete("/organizations/:orgId/followers/:followerId", requireAuth, requireOrgPermission("MANAGE_MEMBERS"), socialController.removeCompanyFollower);
+
+// Company/Organization Connections
 router.post("/companies/:companyId/connect/:userId", requireAuth, requireCompanyPermission("MANAGE_CONNECTIONS"), socialController.sendCompanyConnectionRequest);
 router.patch("/companies/:companyId/connect/handle", requireAuth, socialController.handleCompanyConnectionRequest);
 router.delete("/companies/:companyId/connect/:userId/cancel", requireAuth, requireCompanyPermission("MANAGE_CONNECTIONS"), socialController.cancelCompanyConnectionRequest);
 router.delete("/companies/:companyId/connections/:userId", requireAuth, socialController.removeCompanyConnection);
 router.get("/companies/:companyId/connection-status/:userId", requireAuth, socialController.getCompanyConnectionStatus);
+
+// Organization Connection Aliases
+router.post("/organizations/:orgId/connect/:userId", requireAuth, requireOrgPermission("MANAGE_CONNECTIONS"), socialController.sendCompanyConnectionRequest);
+router.patch("/organizations/:orgId/connect/handle", requireAuth, socialController.handleCompanyConnectionRequest);
+router.delete("/organizations/:orgId/connect/:userId/cancel", requireAuth, requireOrgPermission("MANAGE_CONNECTIONS"), socialController.cancelCompanyConnectionRequest);
+router.delete("/organizations/:orgId/connections/:userId", requireAuth, socialController.removeCompanyConnection);
+router.get("/organizations/:orgId/connection-status/:userId", requireAuth, socialController.getCompanyConnectionStatus);
 
 // Connections (Two-way)
 router.post("/users/:id/connect", requireAuth, socialController.sendConnectionRequest);

@@ -30,7 +30,7 @@ module.exports.registerChatHandlers = (io, socket) => {
       WHERE cp.conversation_id = $1 AND cp.left_at IS NULL
       AND (
         cp.user_id = $2
-        OR cp.company_id IN (SELECT company_id FROM company_members WHERE user_id = $2)
+        OR cp.org_id IN (SELECT org_id FROM organization_members WHERE user_id = $2)
       )
       `,
         [conversationId, userId]
