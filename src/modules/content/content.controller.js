@@ -797,7 +797,7 @@ exports.createPost = async (req, res) => {
                     };
 
                     const requiredPerm = categoryPermissionMap[category];
-                    const canPost = await checkOrgPermission(companyId, userId, [requiredPerm, 'MANAGE_COMPANY', 'CREATE_CONTENT']);
+                    const canPost = await checkOrgPermission(client, companyId, userId, [requiredPerm, 'MANAGE_COMPANY', 'CREATE_CONTENT']);
 
                     if (!canPost) {
                         // Allow Students to post in General freely

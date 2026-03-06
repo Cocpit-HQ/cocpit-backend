@@ -8,6 +8,12 @@ exports.getOrganizationRoles = async (req, res, next) => {
     const { orgId: companyId } = req.params;
     const userId = req.user.sub; // Ensure we have the user
 
+    // Validate UUID to prevent 500 Invalid Input Syntax errors
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+    if (!companyId || !uuidRegex.test(companyId)) {
+        return next(new AppError("Invalid organization ID format", 400));
+    }
+
     const client = await pool.connect();
     try {
         // Enforce membership check (Any member can see roles)

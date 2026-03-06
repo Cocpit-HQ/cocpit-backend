@@ -276,7 +276,7 @@ exports.getMembers = async (req, res) => {
     const client = await pool.connect();
     try {
         // Permission Check
-        const canView = await checkOrgPermission(companyId, userId, 'VIEW_MEMBERS');
+        const canView = await checkOrgPermission(client, companyId, userId, 'VIEW_MEMBERS');
         if (!canView) return res.status(403).json({ message: "Forbidden" });
 
         // Build Query
@@ -335,7 +335,7 @@ exports.removeMember = async (req, res) => {
         await client.query("BEGIN");
 
         // 1. Check requester role (REMOVE_MEMBERS)
-        const canRemove = await checkOrgPermission(companyId, userId, 'REMOVE_MEMBERS');
+        const canRemove = await checkOrgPermission(client, companyId, userId, 'REMOVE_MEMBERS');
         if (!canRemove) throw new Error("Forbidden: You cannot remove members");
 
         // 2. Check target member role
@@ -465,7 +465,7 @@ exports.transferOwnership = async (req, res) => {
         }
 
         // 1. RBAC (OWNER ONLY)
-        const isOwner = await checkOrgPermission(companyId, userId, '*');
+        const isOwner = await checkOrgPermission(client, companyId, userId, '*');
         if (!isOwner) throw new Error("Forbidden: Only OWNER can transfer ownership");
 
         const { password } = req.body;
