@@ -7,6 +7,7 @@
 
 const { shareEntity } = require("./share.service");
 const { resolveEntity, resolveBatch } = require("./entityResolver");
+const { validateShareRules } = require("./shareRules");
 
 /**
  * POST /api/share
@@ -46,7 +47,7 @@ exports.share = async (req, res) => {
             targetId,
             targetType: targetType || "user",
             message,
-            senderCompanyId,
+            senderOrgId: senderCompanyId,
         });
 
         res.status(200).json(result);
@@ -326,6 +327,14 @@ exports.shareProfile = async (req, res) => {
 
     if (senderId === receiverId && receiverType === 'user' && !senderOrgId) {
         return res.status(400).json({ message: "Cannot share profile with yourself" });
+    }
+
+    // Validate share rules (e.g., user profile → company blocked)
+    try {
+        const entityType = profileType === 'company' ? 'company' : 'profile';
+        await validateShareRules({ entityType, entityId: profileId, receiverType });
+    } catch (ruleErr) {
+        return res.status(ruleErr.status || 400).json({ message: ruleErr.message });
     }
 
     const client = await pool.connect();
