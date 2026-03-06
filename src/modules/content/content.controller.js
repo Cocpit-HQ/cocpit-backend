@@ -1001,7 +1001,7 @@ exports.getPostById = async (req, res) => {
     c.name AS category_name,
 
     -- Like Count
-    COALESCE(lc.like_count, 0)::int AS like_count,
+    (SELECT COUNT(*) FROM post_likes pl WHERE pl.post_id = p.post_id)::int AS like_count,
 
     -- Comment Count
     (SELECT COUNT(*) FROM post_comments pc WHERE pc.post_id = p.post_id)::int AS comment_count,
