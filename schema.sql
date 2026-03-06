@@ -152,8 +152,8 @@ CREATE TABLE post_polls (
 -- COMPANY SYSTEM (Core)
 -- ---------------------------------------------------------
 
-CREATE TABLE companies (
-    company_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+CREATE TABLE organizations (
+    org_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name VARCHAR(255) NOT NULL,
     slug VARCHAR(255) NOT NULL UNIQUE,
     email VARCHAR(255),
@@ -165,6 +165,12 @@ CREATE TABLE companies (
     logo_url TEXT,
     cover_url TEXT,
     description TEXT,
+        entity_type VARCHAR(20) DEFAULT 'COMPANY' NOT NULL,
+    institution_type VARCHAR(50),
+    established_year INTEGER,
+    campus_location VARCHAR(255),
+    verified_edu BOOLEAN DEFAULT FALSE,
+    auto_verify_domains VARCHAR(255)[] DEFAULT '{}',
     verification_status VARCHAR(20) DEFAULT 'UNVERIFIED' CHECK (verification_status IN ('UNVERIFIED', 'DOMAIN_PENDING', 'DOMAIN_VERIFIED', 'REJECTED')),
     is_deleted BOOLEAN DEFAULT FALSE,
     deleted_at TIMESTAMPTZ,
@@ -173,14 +179,14 @@ CREATE TABLE companies (
     CONSTRAINT valid_slug_format CHECK (slug ~ '^[a-z0-9]+(?:-[a-z0-9]+)*$')
 );
 
-CREATE INDEX idx_companies_slug ON companies(slug);
-CREATE INDEX idx_companies_website ON companies(website);
-CREATE INDEX IF NOT EXISTS idx_companies_name_trgm ON companies USING GIN (name gin_trgm_ops);
+CREATE INDEX idx_companies_slug ON organizations(slug);
+CREATE INDEX idx_companies_website ON organizations(website);
+CREATE INDEX IF NOT EXISTS idx_companies_name_trgm ON organizations USING GIN (name gin_trgm_ops);
 
 -- Dynamic Roles & Members
-CREATE TABLE company_roles (
+CREATE TABLE organization_roles (
     role_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    company_id UUID REFERENCES companies(company_id) ON DELETE CASCADE,
+    org_id UUID REFERENCES organizations(org_id) ON DELETE CASCADE,
     name VARCHAR(50) NOT NULL,
     color VARCHAR(7) DEFAULT '#808080',
     permissions JSONB DEFAULT '[]'::jsonb,
@@ -188,13 +194,13 @@ CREATE TABLE company_roles (
     is_system_role BOOLEAN DEFAULT FALSE,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW(),
-    UNIQUE(company_id, name)
+    UNIQUE(org_id, name)
 );
 
-CREATE TABLE company_members (
-    company_id UUID REFERENCES companies(company_id) ON DELETE CASCADE,
+CREATE TABLE organization_members (
+    org_id UUID REFERENCES organizations(org_id) ON DELETE CASCADE,
     user_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
-    role_id UUID REFERENCES company_roles(role_id) ON DELETE SET NULL,
+    role_id UUID REFERENCES organization_roles(role_id) ON DELETE SET NULL,
     role VARCHAR(20), -- Deprecated, kept for back-compat if needed
     status VARCHAR(20) DEFAULT 'ACTIVE' CHECK (status IN ('ACTIVE', 'SUSPENDED', 'PENDING_INVITE', 'REMOVED')),
     expires_at TIMESTAMPTZ DEFAULT NULL,
@@ -202,27 +208,27 @@ CREATE TABLE company_members (
     is_role_visible BOOLEAN DEFAULT TRUE,
     joined_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW(),
-    PRIMARY KEY (company_id, user_id)
+    PRIMARY KEY (org_id, user_id)
 );
 
-CREATE UNIQUE INDEX idx_company_members_user_primary ON company_members (user_id) WHERE is_primary_display = TRUE;
+CREATE UNIQUE INDEX idx_company_members_user_primary ON organization_members (user_id) WHERE is_primary_display = TRUE;
 
-CREATE TABLE company_gallery (
+CREATE TABLE organization_gallery (
   gallery_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  company_id UUID REFERENCES companies(company_id) ON DELETE CASCADE,
+  org_id UUID REFERENCES organizations(org_id) ON DELETE CASCADE,
   url TEXT NOT NULL,
   type TEXT CHECK (type IN ('image', 'video')),
   caption TEXT,
   created_at TIMESTAMPTZ DEFAULT now()
 );
 
-CREATE TABLE company_tech_stack (
+CREATE TABLE organization_tech_stack (
     stack_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    company_id UUID REFERENCES companies(company_id) ON DELETE CASCADE,
+    org_id UUID REFERENCES organizations(org_id) ON DELETE CASCADE,
     name TEXT NOT NULL, -- e.g. "React", "Node.js"
     category TEXT, -- e.g. "Frontend", "Backend" (Optional)
     created_at TIMESTAMPTZ DEFAULT now(),
-    UNIQUE(company_id, name)
+    UNIQUE(org_id, name)
 );
 
 CREATE TABLE poll_options (
@@ -241,9 +247,10 @@ CREATE TABLE poll_votes (
         REFERENCES poll_options(option_id) ON DELETE CASCADE,
     voter_id UUID NOT NULL
         REFERENCES users(user_id) ON DELETE CASCADE,
+    org_id UUID REFERENCES organizations(org_id) ON DELETE CASCADE,
     created_at TIMESTAMPTZ DEFAULT now(),
     -- one vote per poll per user (single-choice)
-    UNIQUE (poll_id, voter_id)
+    UNIQUE (poll_id, voter_id, org_id)
 );
 
 CREATE TABLE post_likes (
@@ -313,7 +320,7 @@ CREATE TABLE stories (
 CREATE TABLE story_views (
   story_id UUID REFERENCES stories(story_id) ON DELETE CASCADE,
   viewer_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
-  viewer_company_id UUID REFERENCES companies(company_id) ON DELETE CASCADE,
+  viewer_org_id UUID REFERENCES organizations(org_id) ON DELETE CASCADE,
   viewed_at TIMESTAMPTZ DEFAULT now()
   -- Removed PK (story_id, viewer_id) to allow same user to view as company
 );
@@ -321,17 +328,17 @@ CREATE TABLE story_views (
 -- Index for Personal Views (Unique per user if not acting as company)
 CREATE UNIQUE INDEX IF NOT EXISTS idx_story_views_personal_unique 
 ON story_views (story_id, viewer_id) 
-WHERE viewer_company_id IS NULL;
+WHERE viewer_org_id IS NULL;
 
 -- Index for Company Views (Unique per company, regardless of which member viewed)
 CREATE UNIQUE INDEX IF NOT EXISTS idx_story_views_company_unique 
-ON story_views (story_id, viewer_company_id) 
-WHERE viewer_company_id IS NOT NULL;
+ON story_views (story_id, viewer_org_id) 
+WHERE viewer_org_id IS NOT NULL;
 
 CREATE TABLE story_reactions (
   story_id UUID REFERENCES stories(story_id) ON DELETE CASCADE,
   user_id UUID REFERENCES users(user_id) ON DELETE CASCADE, --sender_id instead of user id 
-  reactor_company_id UUID REFERENCES companies(company_id) ON DELETE CASCADE,
+  reactor_org_id UUID REFERENCES organizations(org_id) ON DELETE CASCADE,
   reaction_type BOOLEAN, 
   created_at TIMESTAMPTZ DEFAULT now()
   -- Removed PK (story_id, user_id)
@@ -340,18 +347,18 @@ CREATE TABLE story_reactions (
 -- Index for Personal Reactions
 CREATE UNIQUE INDEX IF NOT EXISTS idx_story_reactions_personal_unique 
 ON story_reactions (story_id, user_id) 
-WHERE reactor_company_id IS NULL;
+WHERE reactor_org_id IS NULL;
 
 -- Index for Company Reactions
 CREATE UNIQUE INDEX IF NOT EXISTS idx_story_reactions_company_unique 
-ON story_reactions (story_id, reactor_company_id) 
-WHERE reactor_company_id IS NOT NULL;
+ON story_reactions (story_id, reactor_org_id) 
+WHERE reactor_org_id IS NOT NULL;
 
 CREATE TABLE story_comments (
   comment_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   story_id UUID REFERENCES stories(story_id) ON DELETE CASCADE,
   author_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
-  author_company_id UUID REFERENCES companies(company_id) ON DELETE CASCADE,
+  author_org_id UUID REFERENCES organizations(org_id) ON DELETE CASCADE,
   content TEXT NOT NULL,
   created_at TIMESTAMPTZ DEFAULT now()
 );
@@ -457,7 +464,9 @@ CREATE TABLE messages (
   --story_id UUID REFERENCES stories(story_id),
   action_type TEXT, -- 'add', 'leave', 'remove', 'create'
   target_id UUID REFERENCES users(user_id) ON DELETE SET NULL, -- Subject of the action
-  author_company_id UUID REFERENCES companies(company_id) ON DELETE SET NULL, -- acting as company
+  entity_type TEXT,
+  entity_id TEXT,
+  author_org_id UUID REFERENCES organizations(org_id) ON DELETE SET NULL, -- acting as company
   created_at TIMESTAMPTZ DEFAULT now(),
   read_at TIMESTAMPTZ, -- NULL if unread
   CONSTRAINT messages_shared_post_id_fkey FOREIGN KEY (shared_post_id) REFERENCES posts(post_id) ON DELETE SET NULL
@@ -470,34 +479,36 @@ CREATE TABLE notifications (
   type TEXT NOT NULL, -- 'like', 'comment', 'view', 'job_alert'
   text TEXT NOT NULL,
   reference_id UUID, -- ID of the post/job/user
+  entity_type TEXT,
+  entity_id TEXT,
   metadata JSONB DEFAULT '{}'::jsonb, -- Additional data (e.g., comment_id, reply_id)
   is_read BOOLEAN DEFAULT FALSE,
-  recipient_company_id UUID REFERENCES companies(company_id) ON DELETE CASCADE,
+  recipient_org_id UUID REFERENCES organizations(org_id) ON DELETE CASCADE,
   created_at TIMESTAMPTZ DEFAULT now()
 );
 
-CREATE INDEX IF NOT EXISTS idx_notifications_recipient_company ON notifications(recipient_company_id);
+CREATE INDEX IF NOT EXISTS idx_notifications_recipient_company ON notifications(recipient_org_id);
 CREATE INDEX IF NOT EXISTS idx_notifications_user_read ON notifications(user_id, is_read);
 
-CREATE TABLE IF NOT EXISTS company_notification_preferences (
+CREATE TABLE IF NOT EXISTS organization_notification_preferences (
     user_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
-    company_id UUID REFERENCES companies(company_id) ON DELETE CASCADE,
+    org_id UUID REFERENCES organizations(org_id) ON DELETE CASCADE,
     events_enabled BOOLEAN DEFAULT TRUE,
     jobs_enabled BOOLEAN DEFAULT TRUE,
     posts_enabled BOOLEAN DEFAULT TRUE,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW(),
-    PRIMARY KEY (user_id, company_id)
+    PRIMARY KEY (user_id, org_id)
 );
 
-CREATE INDEX IF NOT EXISTS idx_cnp_company_id ON company_notification_preferences(company_id);
-CREATE INDEX IF NOT EXISTS idx_cnp_user_company ON company_notification_preferences(user_id, company_id);
+CREATE INDEX IF NOT EXISTS idx_cnp_company_id ON organization_notification_preferences(org_id);
+CREATE INDEX IF NOT EXISTS idx_cnp_user_company ON organization_notification_preferences(user_id, org_id);
 
 CREATE TABLE jobs (
   job_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   recruiter_id UUID REFERENCES users(user_id) ON DELETE SET NULL,
   title TEXT NOT NULL,
-  company_id UUID REFERENCES companies(company_id) ON DELETE CASCADE,
+  org_id UUID REFERENCES organizations(org_id) ON DELETE CASCADE,
   company_name TEXT NOT NULL,
   location TEXT,
   description TEXT,
@@ -524,12 +535,12 @@ CREATE TABLE jobs (
 
 -- Prevent race condition duplicates
 CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_recent_job_company
-ON jobs(company_id, title, location)
+ON jobs(org_id, title, location)
 WHERE status = 'ACTIVE';
 
 -- Analytics/Dashboard optimization
 CREATE INDEX IF NOT EXISTS idx_jobs_company_status 
-ON jobs(company_id, status);
+ON jobs(org_id, status);
 
 CREATE TABLE event_outbox (
   event_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -604,7 +615,7 @@ CREATE TABLE application_status_history (
 CREATE TABLE events (
   event_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   organizer_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
-  company_id UUID REFERENCES companies(company_id) ON DELETE CASCADE,
+  org_id UUID REFERENCES organizations(org_id) ON DELETE CASCADE,
   title TEXT NOT NULL,
   description TEXT,
   start_time TIMESTAMPTZ NOT NULL,
@@ -761,15 +772,15 @@ CREATE TABLE IF NOT EXISTS message_media (
   created_at TIMESTAMPTZ DEFAULT now()
 );
 
--- 10/02/2026 Migration: Create companies (Moved to top)
+-- 10/02/2026 Migration: Create organizations (Moved to top)
 
 -- 3. COMPANY INVITES Table
-CREATE TABLE IF NOT EXISTS company_invites (
+CREATE TABLE IF NOT EXISTS organization_invites (
     invite_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    company_id UUID REFERENCES companies(company_id) ON DELETE CASCADE,
+    org_id UUID REFERENCES organizations(org_id) ON DELETE CASCADE,
     inviter_id UUID REFERENCES users(user_id) ON DELETE SET NULL, -- Who sent the invite
     email VARCHAR(255) NOT NULL,
-    role_id UUID REFERENCES company_roles(role_id) ON DELETE SET NULL, -- Modern link
+    role_id UUID REFERENCES organization_roles(role_id) ON DELETE SET NULL, -- Modern link
     role VARCHAR(50), -- Fallback role name
     token VARCHAR(255) NOT NULL, -- For email link
     status VARCHAR(20) DEFAULT 'PENDING' CHECK (status IN ('PENDING', 'ACCEPTED', 'EXPIRED')),
@@ -777,16 +788,16 @@ CREATE TABLE IF NOT EXISTS company_invites (
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW(),
 
-    UNIQUE(company_id, email) -- One active invite per email per company (simplified)
+    UNIQUE(org_id, email) -- One active invite per email per company (simplified)
 );
 
-CREATE INDEX idx_company_invites_token ON company_invites(token);
+CREATE INDEX idx_company_invites_token ON organization_invites(token);
 
 
 -- 4. COMPANY VERIFICATIONS Table
-CREATE TABLE IF NOT EXISTS company_verifications (
+CREATE TABLE IF NOT EXISTS organization_verifications (
     verification_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    company_id UUID REFERENCES companies(company_id) ON DELETE CASCADE,
+    org_id UUID REFERENCES organizations(org_id) ON DELETE CASCADE,
     otp VARCHAR(10) NOT NULL,
     attempts INTEGER DEFAULT 0,
     expires_at TIMESTAMPTZ NOT NULL,
@@ -800,7 +811,7 @@ CREATE TABLE IF NOT EXISTS company_verifications (
 CREATE TABLE IF NOT EXISTS audit_logs (
     log_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     entity_type VARCHAR(50) NOT NULL, -- e.g., 'COMPANY'
-    entity_id UUID NOT NULL, -- company_id
+    entity_id UUID NOT NULL, -- org_id
     actor_id UUID REFERENCES users(user_id) ON DELETE SET NULL, -- Who performed the action
     action VARCHAR(50) NOT NULL, -- 'CREATE', 'UPDATE', 'DELETE', 'TRANSFER_OWNERSHIP', 'VERIFY_DOMAIN', 'INVITE_MEMBER'
     metadata JSONB DEFAULT '{}'::jsonb, -- Store diffs or details
@@ -815,12 +826,12 @@ CREATE INDEX idx_audit_logs_actor ON audit_logs(actor_id);
 
 -- Triggers for updated_at
 CREATE TRIGGER update_companies_updated_at
-    BEFORE UPDATE ON companies
+    BEFORE UPDATE ON organizations
     FOR EACH ROW
     EXECUTE FUNCTION update_updated_at_column();
 
 CREATE TRIGGER update_company_invites_updated_at
-    BEFORE UPDATE ON company_invites
+    BEFORE UPDATE ON organization_invites
     FOR EACH ROW
     EXECUTE FUNCTION update_updated_at_column();
 
@@ -828,77 +839,77 @@ CREATE TRIGGER update_company_invites_updated_at
 -- 009_company_comments_likes.sql
 
 -- 1. POST COMMENTS
--- Add author_company_id column
+-- Add author_org_id column
 ALTER TABLE post_comments
-ADD COLUMN author_company_id UUID REFERENCES companies(company_id) ON DELETE CASCADE;
+ADD COLUMN author_org_id UUID REFERENCES organizations(org_id) ON DELETE CASCADE;
 
 -- 2. POST LIKES
 ALTER TABLE post_likes
-ADD COLUMN company_id UUID REFERENCES companies(company_id) ON DELETE CASCADE;
+ADD COLUMN org_id UUID REFERENCES organizations(org_id) ON DELETE CASCADE;
 
 -- Drop existing constraint: UNIQUE(post_id, user_id)
 ALTER TABLE post_likes
 DROP CONSTRAINT post_likes_post_id_user_id_key;
 
 -- Add conditional unique indexes
--- Case 1: User Like (company_id IS NULL)
+-- Case 1: User Like (org_id IS NULL)
 CREATE UNIQUE INDEX idx_post_likes_user_unique 
 ON post_likes (post_id, user_id) 
-WHERE company_id IS NULL;
+WHERE org_id IS NULL;
 
--- Case 2: Company Like (company_id IS NOT NULL)
+-- Case 2: Company Like (org_id IS NOT NULL)
 -- A company can only like a post once. The actor (user) doesn't matter for uniqueness, only the company entity.
 CREATE UNIQUE INDEX idx_post_likes_company_unique 
-ON post_likes (post_id, company_id) 
-WHERE company_id IS NOT NULL;
+ON post_likes (post_id, org_id) 
+WHERE org_id IS NOT NULL;
 
 
 -- 3. COMMENT LIKES
 ALTER TABLE comment_likes
-ADD COLUMN company_id UUID REFERENCES companies(company_id) ON DELETE CASCADE;
+ADD COLUMN org_id UUID REFERENCES organizations(org_id) ON DELETE CASCADE;
 
 -- Drop existing PK/Constraint: PRIMARY KEY (user_id, comment_id)
 ALTER TABLE comment_likes
 DROP CONSTRAINT comment_likes_pkey;
 
 -- Add conditional unique indexes
--- Case 1: User Like (company_id IS NULL)
+-- Case 1: User Like (org_id IS NULL)
 CREATE UNIQUE INDEX idx_comment_likes_user_unique 
 ON comment_likes (comment_id, user_id) 
-WHERE company_id IS NULL;
+WHERE org_id IS NULL;
 
--- Case 2: Company Like (company_id IS NOT NULL)
+-- Case 2: Company Like (org_id IS NOT NULL)
 CREATE UNIQUE INDEX idx_comment_likes_company_unique 
-ON comment_likes (comment_id, company_id) 
-WHERE company_id IS NOT NULL;
+ON comment_likes (comment_id, org_id) 
+WHERE org_id IS NOT NULL;
 
 -- 11/02/2026 Migration: Phase 1 Production Fixes
 -- (010_phase1_production_fixes.sql)
 
 -- 1. STORIES ATTRIBUTION
 ALTER TABLE stories
-ADD COLUMN author_company_id UUID REFERENCES companies(company_id) ON DELETE CASCADE;
+ADD COLUMN author_org_id UUID REFERENCES organizations(org_id) ON DELETE CASCADE;
 
 -- 2. POSTS ATTRIBUTION (Missing from prev migrations)
 ALTER TABLE posts
-ADD COLUMN author_company_id UUID REFERENCES companies(company_id) ON DELETE CASCADE;
+ADD COLUMN author_org_id UUID REFERENCES organizations(org_id) ON DELETE CASCADE;
 
 -- 3. PERFORMANCE INDEXES for Company Foreign Keys
-CREATE INDEX IF NOT EXISTS idx_posts_author_company_id ON posts(author_company_id);
-CREATE INDEX IF NOT EXISTS idx_post_comments_author_company_id ON post_comments(author_company_id);
-CREATE INDEX IF NOT EXISTS idx_post_likes_company_id ON post_likes(company_id);
-CREATE INDEX IF NOT EXISTS idx_comment_likes_company_id ON comment_likes(company_id);
-CREATE INDEX IF NOT EXISTS idx_notifications_recipient_company_id ON notifications(recipient_company_id);
-CREATE INDEX IF NOT EXISTS idx_stories_author_company_id ON stories(author_company_id);
-CREATE INDEX IF NOT EXISTS idx_story_views_viewer_company_id ON story_views(viewer_company_id);
-CREATE INDEX IF NOT EXISTS idx_story_reactions_reactor_company_id ON story_reactions(reactor_company_id);
+CREATE INDEX IF NOT EXISTS idx_posts_author_company_id ON posts(author_org_id);
+CREATE INDEX IF NOT EXISTS idx_post_comments_author_company_id ON post_comments(author_org_id);
+CREATE INDEX IF NOT EXISTS idx_post_likes_company_id ON post_likes(org_id);
+CREATE INDEX IF NOT EXISTS idx_comment_likes_company_id ON comment_likes(org_id);
+CREATE INDEX IF NOT EXISTS idx_notifications_recipient_company_id ON notifications(recipient_org_id);
+CREATE INDEX IF NOT EXISTS idx_stories_author_company_id ON stories(author_org_id);
+CREATE INDEX IF NOT EXISTS idx_story_views_viewer_company_id ON story_views(viewer_org_id);
+CREATE INDEX IF NOT EXISTS idx_story_reactions_reactor_company_id ON story_reactions(reactor_org_id);
 
--- 4. SEARCH OPTIMIZATION (GIN index for companies)
+-- 4. SEARCH OPTIMIZATION (GIN index for organizations)
 CREATE INDEX IF NOT EXISTS idx_companies_name_trgm
-ON companies USING GIN (name gin_trgm_ops);
+ON organizations USING GIN (name gin_trgm_ops);
 
 -- ANALYZE for statistics
-ANALYZE companies;
+ANALYZE organizations;
 ANALYZE posts;
 ANALYZE post_comments;
 ANALYZE stories;
@@ -906,14 +917,14 @@ ANALYZE stories;
 -- 11/02/2026 Migration: Phase 3 Social Growth
 -- (011_company_followers.sql)
 
-CREATE TABLE IF NOT EXISTS company_followers (
+CREATE TABLE IF NOT EXISTS organization_followers (
     user_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
-    company_id UUID REFERENCES companies(company_id) ON DELETE CASCADE,
+    org_id UUID REFERENCES organizations(org_id) ON DELETE CASCADE,
     created_at TIMESTAMPTZ DEFAULT NOW(),
-    PRIMARY KEY (user_id, company_id)
+    PRIMARY KEY (user_id, org_id)
 );
 
-CREATE INDEX IF NOT EXISTS idx_company_followers_company_id ON company_followers(company_id);
+CREATE INDEX IF NOT EXISTS idx_company_followers_company_id ON organization_followers(org_id);
 -- 11/02/2026 Create saved_post table
 CREATE TABLE saved_post(
 	user_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
@@ -951,9 +962,9 @@ ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ,
 ADD COLUMN IF NOT EXISTS is_edited BOOLEAN DEFAULT FALSE,
 ADD COLUMN IF NOT EXISTS edited_at TIMESTAMPTZ;
 
--- 3. Update conversation_participants: add company_id, make user_id nullable
+-- 3. Update conversation_participants: add org_id, make user_id nullable
 ALTER TABLE conversation_participants
-ADD COLUMN IF NOT EXISTS company_id UUID REFERENCES companies(company_id) ON DELETE SET NULL;
+ADD COLUMN IF NOT EXISTS org_id UUID REFERENCES organizations(org_id) ON DELETE SET NULL;
 
 ALTER TABLE conversation_participants
 ALTER COLUMN user_id DROP NOT NULL;
@@ -962,8 +973,8 @@ ALTER COLUMN user_id DROP NOT NULL;
 ALTER TABLE conversation_participants
 ADD CONSTRAINT participant_identity_check
 CHECK (
-    (user_id IS NOT NULL AND company_id IS NULL) OR
-    (user_id IS NULL AND company_id IS NOT NULL)
+    (user_id IS NOT NULL AND org_id IS NULL) OR
+    (user_id IS NULL AND org_id IS NOT NULL)
 );
 
 -- 4. Create message_delete table (per-user soft delete)
@@ -975,17 +986,17 @@ CREATE TABLE IF NOT EXISTS message_delete (
 );
 
 -- 5. Indexes for performance
-CREATE INDEX IF NOT EXISTS idx_cp_company_id ON conversation_participants(company_id);
+CREATE INDEX IF NOT EXISTS idx_cp_company_id ON conversation_participants(org_id);
 CREATE INDEX IF NOT EXISTS idx_messages_sender_type ON messages(sender_type);
 CREATE INDEX IF NOT EXISTS idx_message_delete_user_id ON message_delete(user_id);
 
 -- 19/02/2026 Migration: Company Chat Sessions
 -- (015_company_chat_sessions.sql)
 
-CREATE TABLE IF NOT EXISTS company_chat_sessions (
+CREATE TABLE IF NOT EXISTS organization_chat_sessions (
     session_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     conversation_id UUID NOT NULL REFERENCES conversations(conversation_id) ON DELETE CASCADE,
-    company_id UUID NOT NULL REFERENCES companies(company_id) ON DELETE CASCADE,
+    org_id UUID NOT NULL REFERENCES organizations(org_id) ON DELETE CASCADE,
     handler_user_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
     handler_name_snapshot TEXT NOT NULL,
     handler_role_id_snapshot UUID,
@@ -1002,18 +1013,18 @@ CREATE TABLE IF NOT EXISTS company_chat_sessions (
         )),
     message_count INTEGER DEFAULT 0,
     transferred_to UUID REFERENCES users(user_id) ON DELETE SET NULL,
-    transferred_from_session_id UUID REFERENCES company_chat_sessions(session_id) ON DELETE SET NULL,
+    transferred_from_session_id UUID REFERENCES organization_chat_sessions(session_id) ON DELETE SET NULL,
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_ccs_active
-ON company_chat_sessions (conversation_id, company_id) WHERE status = 'ACTIVE';
-CREATE INDEX IF NOT EXISTS idx_ccs_company ON company_chat_sessions(company_id, started_at DESC);
-CREATE INDEX IF NOT EXISTS idx_ccs_handler ON company_chat_sessions(handler_user_id, status);
-CREATE INDEX IF NOT EXISTS idx_ccs_timeout ON company_chat_sessions(status, last_activity_at) WHERE status = 'ACTIVE';
+ON organization_chat_sessions (conversation_id, org_id) WHERE status = 'ACTIVE';
+CREATE INDEX IF NOT EXISTS idx_ccs_company ON organization_chat_sessions(org_id, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_ccs_handler ON organization_chat_sessions(handler_user_id, status);
+CREATE INDEX IF NOT EXISTS idx_ccs_timeout ON organization_chat_sessions(status, last_activity_at) WHERE status = 'ACTIVE';
 
 ALTER TABLE messages
-ADD COLUMN IF NOT EXISTS session_id UUID REFERENCES company_chat_sessions(session_id) ON DELETE SET NULL;
+ADD COLUMN IF NOT EXISTS session_id UUID REFERENCES organization_chat_sessions(session_id) ON DELETE SET NULL;
 CREATE INDEX IF NOT EXISTS idx_messages_session_id ON messages(session_id);
 
 DO $$ BEGIN
@@ -1028,9 +1039,9 @@ END $$;
 -- ---------------------------------------------------------
 
 -- Company Connection Requests (pending/rejected/blocked)
-CREATE TABLE IF NOT EXISTS company_connection_requests (
+CREATE TABLE IF NOT EXISTS organization_connection_requests (
   request_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  company_id UUID NOT NULL REFERENCES companies(company_id) ON DELETE CASCADE,
+  org_id UUID NOT NULL REFERENCES organizations(org_id) ON DELETE CASCADE,
   user_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
   initiated_by UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
   status VARCHAR(20) DEFAULT 'pending' CHECK (status IN ('pending', 'accepted', 'rejected', 'blocked')),
@@ -1039,26 +1050,26 @@ CREATE TABLE IF NOT EXISTS company_connection_requests (
   expires_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ DEFAULT now(),
   updated_at TIMESTAMPTZ DEFAULT now(),
-  UNIQUE (company_id, user_id)
+  UNIQUE (org_id, user_id)
 );
 
 -- Company Connections (accepted, bidirectional)
-CREATE TABLE IF NOT EXISTS company_connections (
+CREATE TABLE IF NOT EXISTS organization_connections (
   connection_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  company_id UUID NOT NULL REFERENCES companies(company_id) ON DELETE CASCADE,
+  org_id UUID NOT NULL REFERENCES organizations(org_id) ON DELETE CASCADE,
   user_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
   created_at TIMESTAMPTZ DEFAULT now(),
-  UNIQUE (company_id, user_id)
+  UNIQUE (org_id, user_id)
 );
 
--- Add counter cache to companies for 1M user scale performance
-ALTER TABLE companies ADD COLUMN IF NOT EXISTS followers_count INTEGER DEFAULT 0;
+-- Add counter cache to organizations for 1M user scale performance
+ALTER TABLE organizations ADD COLUMN IF NOT EXISTS followers_count INTEGER DEFAULT 0;
 
 -- Index for receiver (user) to see invitations
-CREATE INDEX IF NOT EXISTS idx_company_conn_req_user_id ON company_connection_requests(user_id);
+CREATE INDEX IF NOT EXISTS idx_company_conn_req_user_id ON organization_connection_requests(user_id);
 
 -- Index for company to see its connections
-CREATE INDEX IF NOT EXISTS idx_company_conn_company_id ON company_connections(company_id);
+CREATE INDEX IF NOT EXISTS idx_company_conn_company_id ON organization_connections(org_id);
 
 -- ---------------------------------------------------------
 -- SOCIAL SYSTEM INDEXING (26/02/2026)
@@ -1073,7 +1084,7 @@ ON followers(following_id, follower_id);
 
 -- 2. Index for Company Followers
 CREATE INDEX IF NOT EXISTS idx_company_followers_company_id
-ON company_followers(company_id, user_id);
+ON organization_followers(org_id, user_id);
 
 -- 3. Composite index for connections
 CREATE INDEX IF NOT EXISTS idx_connections_bidirectional
@@ -1089,7 +1100,7 @@ ON connections(user_id, connected_user_id);
 CREATE TABLE IF NOT EXISTS job_offers (
   offer_id     UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   job_id       UUID NOT NULL REFERENCES jobs(job_id) ON DELETE CASCADE,
-  company_id   UUID NOT NULL REFERENCES companies(company_id) ON DELETE CASCADE,
+  org_id   UUID NOT NULL REFERENCES organizations(org_id) ON DELETE CASCADE,
   user_id      UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
   sent_by      UUID NOT NULL REFERENCES users(user_id),
   message      TEXT,
@@ -1102,23 +1113,75 @@ CREATE TABLE IF NOT EXISTS job_offers (
 );
 
 CREATE INDEX IF NOT EXISTS idx_job_offers_user ON job_offers(user_id, status);
-CREATE INDEX IF NOT EXISTS idx_job_offers_company ON job_offers(company_id, status);
+CREATE INDEX IF NOT EXISTS idx_job_offers_company ON job_offers(org_id, status);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_job_offers_no_dup ON job_offers(job_id, user_id) WHERE status = 'pending';
 
 -- ---------------------------------------------------------
 -- COMPANY NOTIFICATION PREFERENCES (03/03/2026)
 -- ---------------------------------------------------------
-CREATE TABLE IF NOT EXISTS company_notification_preferences (
+CREATE TABLE IF NOT EXISTS organization_notification_preferences (
     user_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
-    company_id UUID REFERENCES companies(company_id) ON DELETE CASCADE,
+    org_id UUID REFERENCES organizations(org_id) ON DELETE CASCADE,
     events_enabled BOOLEAN DEFAULT TRUE,
     jobs_enabled BOOLEAN DEFAULT TRUE,
     posts_enabled BOOLEAN DEFAULT TRUE,
     announcements_enabled BOOLEAN DEFAULT TRUE,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW(),
-    PRIMARY KEY (user_id, company_id)
+    PRIMARY KEY (user_id, org_id)
 );
 
-CREATE INDEX IF NOT EXISTS idx_cnp_company_id ON company_notification_preferences(company_id);
-CREATE INDEX IF NOT EXISTS idx_cnp_user_company ON company_notification_preferences(user_id, company_id);
+CREATE INDEX IF NOT EXISTS idx_cnp_company_id ON organization_notification_preferences(org_id);
+CREATE INDEX IF NOT EXISTS idx_cnp_user_company ON organization_notification_preferences(user_id, org_id);
+
+
+-- ---------------------------------------------------------
+-- INSTITUTION TABLES
+-- ---------------------------------------------------------
+CREATE TABLE institution_enrollments (
+    enrollment_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    org_id UUID NOT NULL REFERENCES organizations(org_id) ON DELETE CASCADE,
+    user_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    role VARCHAR(50) NOT NULL CHECK (role IN ('STUDENT', 'FACULTY', 'ALUMNI')),
+    verification_method VARCHAR(50) NOT NULL CHECK (verification_method IN ('EMAIL', 'ID_UPLOAD', 'MANUAL')),
+    status VARCHAR(20) DEFAULT 'PENDING' CHECK (status IN ('PENDING', 'VERIFIED', 'REJECTED')),
+    document_url VARCHAR(255),
+    verified_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE(org_id, user_id)
+);
+
+CREATE OR REPLACE FUNCTION update_enrollment_updated_at_column()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.updated_at = NOW();
+    RETURN NEW;
+END;
+$$ language 'plpgsql';
+
+CREATE TRIGGER update_institution_enrollments_updated_at
+    BEFORE UPDATE ON institution_enrollments
+    FOR EACH ROW
+    EXECUTE FUNCTION update_enrollment_updated_at_column();
+
+
+-- ---------------------------------------------------------
+-- UNIVERSAL SHARES
+-- ---------------------------------------------------------
+CREATE TABLE shares (
+    id            BIGSERIAL PRIMARY KEY,
+    sender_id     TEXT NOT NULL,
+    receiver_id   TEXT,
+    entity_type   VARCHAR(50) NOT NULL,
+    entity_id     TEXT NOT NULL,
+    share_method  VARCHAR(20) NOT NULL,
+    created_at    TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_shares_entity ON shares(entity_type, entity_id);
+CREATE INDEX IF NOT EXISTS idx_shares_sender ON shares(sender_id);
+CREATE INDEX IF NOT EXISTS idx_shares_created_at ON shares(created_at);
+
+CREATE INDEX IF NOT EXISTS idx_messages_entity ON messages(entity_type, entity_id);
+CREATE INDEX IF NOT EXISTS idx_notifications_entity ON notifications(entity_type, entity_id);
