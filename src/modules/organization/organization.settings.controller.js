@@ -333,9 +333,11 @@ exports.updateNotificationPreferences = async (req, res) => {
         }
 
         // Upsert preferences
+        const getVal = (val) => val !== undefined ? Boolean(val) : null;
+
         const result = await pool.query(
             `INSERT INTO organization_notification_preferences (user_id, org_id, events_enabled, jobs_enabled, posts_enabled)
-             VALUES ($1, $2, $3, $4, $5)
+             VALUES ($1, $2, COALESCE($3, true), COALESCE($4, true), COALESCE($5, true))
              ON CONFLICT (user_id, org_id)
              DO UPDATE SET
                 events_enabled = COALESCE($3, organization_notification_preferences.events_enabled),
@@ -343,7 +345,7 @@ exports.updateNotificationPreferences = async (req, res) => {
                 posts_enabled = COALESCE($5, organization_notification_preferences.posts_enabled),
                 updated_at = NOW()
              RETURNING *`,
-            [userId, companyId, events_enabled, jobs_enabled, posts_enabled]
+            [userId, companyId, getVal(events_enabled), getVal(jobs_enabled), getVal(posts_enabled)]
         );
 
         res.json(result.rows[0]);

@@ -65,7 +65,6 @@ async function resolveEntity(entityType, entityId) {
         if (redisClient.isOpen) {
             const cached = await redisClient.get(cacheKey);
             if (cached) {
-                console.log(`[EntityResolver] Cache HIT → ${cacheKey}`);
                 return JSON.parse(cached);
             }
         }
@@ -81,7 +80,6 @@ async function resolveEntity(entityType, entityId) {
     try {
         if (redisClient.isOpen) {
             await redisClient.setEx(cacheKey, CACHE_TTL, JSON.stringify(preview));
-            console.log(`[EntityResolver] Cache SET → ${cacheKey} (TTL ${CACHE_TTL}s)`);
         }
     } catch (err) {
         console.warn("[EntityResolver] Redis write error:", err.message);

@@ -6,8 +6,8 @@ const pool = require("../../../core/db/pool");
  */
 async function resolve(companyId) {
     const res = await pool.query(
-        `SELECT company_id, name, logo_url, industry, slug, slogan
-         FROM companies WHERE company_id = $1 AND is_deleted = FALSE`,
+        `SELECT org_id as company_id, name, logo_url, industry, slug, slogan
+         FROM organizations WHERE org_id = $1 AND is_deleted = FALSE`,
         [companyId]
     );
     if (res.rowCount === 0) return null;
@@ -19,7 +19,7 @@ async function resolve(companyId) {
         title: c.name,
         subtitle: c.slogan || c.industry || "Company",
         image: c.logo_url,
-        url: `/company/${c.slug || companyId}`,
+        url: `/organization/${c.slug || companyId}`,
     };
 }
 

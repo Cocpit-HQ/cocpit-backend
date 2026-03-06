@@ -376,10 +376,16 @@ async function shareEntity(senderId, payload) {
         throw { status: 400, message: `Invalid shareMethod: ${shareMethod}. Supported: message, notification, copy_link` };
     }
 
-    // Validate share rules (e.g., user profile → company blocked)
+    // Validate share rules (e.g., user profile → company blocked, users → companies blocked)
     const targetType = payload.targetType || "user";
     if (payload.targetId) {
-        await validateShareRules({ entityType, entityId, receiverType: targetType });
+        await validateShareRules({
+            senderId,
+            entityType,
+            entityId,
+            receiverType: targetType,
+            senderOrgId: payload.senderOrgId
+        });
     }
 
     // Route to handler

@@ -14,14 +14,24 @@ const pool = require("../../core/db/pool");
  * Validate a share request against business rules.
  *
  * @param {object} params
+ * @param {string} params.senderId      - the ID of the user sending the share
  * @param {string} params.entityType    - "post" | "profile" | "company" | "job" | "event"
  * @param {string} params.entityId      - the ID of the entity being shared
  * @param {string} params.receiverType  - "user" | "company"
+ * @param {string} params.senderOrgId   - the ID of the organization if sender is acting as a company
  * @throws {{ status: number, message: string }} if a rule is violated
  */
-async function validateShareRules({ entityType, entityId, receiverType }) {
-    // Rule: Only USER profiles are blocked from being shared with companies.
-    // Company profiles (entityType="company" or profile owned by a company) are always allowed.
+async function validateShareRules({ senderId, entityType, entityId, receiverType, senderOrgId }) {
+    // 1. New Global Rule: Users cannot share ANY content with Company accounts.
+    // Companies (senderOrgId exists) can share with anyone.
+    if (!senderOrgId && receiverType === "company") {
+        throw { status: 400, message: "Users cannot share content with company accounts." };
+    }
+
+    // 2. Specific Rule: Only USER profiles are blocked from being shared with companies.
+    // (This might be redundant now if ALL users are blocked from sharing with companies,
+    // but what if a company tries to share a USER profile with a company? The old rule 
+    // blocked that. Let's keep the entity-specific check for completeness).
     if (entityType === "profile" && receiverType === "company") {
         // Look up the profile owner's account type
         const result = await pool.query(
