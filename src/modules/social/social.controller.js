@@ -219,7 +219,7 @@ exports.unfollowUser = async (req, res) => {
 // Follow a company
 exports.followCompany = async (req, res) => {
     const userId = req.user.sub;
-    const { companyId } = req.params;
+    const companyId = req.params.companyId || req.params.orgId;
 
     const client = await pool.connect();
     try {
@@ -268,7 +268,7 @@ exports.followCompany = async (req, res) => {
 // Unfollow a company
 exports.unfollowCompany = async (req, res) => {
     const userId = req.user.sub;
-    const { companyId } = req.params;
+    const companyId = req.params.companyId || req.params.orgId;
 
     const client = await pool.connect();
     try {
@@ -356,7 +356,7 @@ exports.unfollowCompany = async (req, res) => {
 // Get company relationship status
 exports.getCompanyRelationship = async (req, res) => {
     const userId = req.user.sub;
-    const { companyId } = req.params;
+    const companyId = req.params.companyId || req.params.orgId;
 
     try {
         const result = await pool.query(
@@ -378,7 +378,7 @@ exports.getCompanyRelationship = async (req, res) => {
 
 // Get company followers list
 exports.getCompanyFollowers = async (req, res) => {
-    const { companyId } = req.params;
+    const companyId = req.params.companyId || req.params.orgId;
     const { search } = req.query;
 
     try {
@@ -408,7 +408,8 @@ exports.getCompanyFollowers = async (req, res) => {
 
 // Remove a follower from a company (admin action)
 exports.removeCompanyFollower = async (req, res) => {
-    const { companyId, followerId } = req.params;
+    const { followerId } = req.params;
+    const companyId = req.params.companyId || req.params.orgId;
 
     const client = await pool.connect();
     try {

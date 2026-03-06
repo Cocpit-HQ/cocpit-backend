@@ -332,7 +332,13 @@ exports.shareProfile = async (req, res) => {
     // Validate share rules (e.g., user profile → company blocked)
     try {
         const entityType = profileType === 'company' ? 'company' : 'profile';
-        await validateShareRules({ entityType, entityId: profileId, receiverType });
+        await validateShareRules({
+            senderId,
+            entityType,
+            entityId: profileId,
+            receiverType,
+            senderOrgId
+        });
     } catch (ruleErr) {
         return res.status(ruleErr.status || 400).json({ message: ruleErr.message });
     }

@@ -113,7 +113,7 @@ router.post("/organizations/:orgId/cover", requireAuth, requireOrgPermission("MA
 router.delete("/organizations/:orgId/cover", requireAuth, requireOrgPermission("MANAGE_SETTINGS"), settingsController.deleteCover);
 
 // --- NOTIFICATIONS ---
-router.get("/organizations/:orgId/notification-preferences", requireAuth, requireOrgPermission("VIEW_MEMBERS"), settingsController.getNotificationPreferences);
-router.put("/organizations/:orgId/notification-preferences", requireAuth, requireOrgPermission("MANAGE_SETTINGS"), settingsController.updateNotificationPreferences);
+router.get("/organizations/:orgId/notification-preferences", requireAuth, settingsController.getNotificationPreferences);
+router.put("/organizations/:orgId/notification-preferences", requireAuth, settingsController.updateNotificationPreferences);
 
 module.exports = router;
