@@ -14,6 +14,7 @@
 const pool = require("../../core/db/pool");
 const socketService = require("../../core/infrastructure/socket.service");
 const { resolveEntity, generateEntityUrl } = require("./entityResolver");
+const { validateShareRules } = require("./shareRules");
 
 // ─── Share Tracking (non-blocking) ──────────────────────────
 
@@ -226,14 +227,39 @@ async function shareViaNotification(senderId, { entityType, entityId, targetId, 
             senderAvatar = userRes.rows[0]?.avatar_url || null;
         }
 
-        // 3. Build notification text
-        const notifText = `${senderName} shared a ${entityType} with you`;
+        // 3. Resolve entity slug/account_name/name for navigation and notification text
+        let entitySlug = null;
+        let entityAccountName = null;
+        let entityName = null;
+        if (entityType === "company") {
+            const orgRes = await client.query(
+                `SELECT slug, name FROM organizations WHERE org_id = $1`, [entityId]
+            );
+            entitySlug = orgRes.rows[0]?.slug || null;
+            entityName = orgRes.rows[0]?.name || null;
+        } else if (entityType === "profile") {
+            const profileRes = await client.query(
+                `SELECT account_name, full_name FROM users WHERE user_id = $1`, [entityId]
+            );
+            entityAccountName = profileRes.rows[0]?.account_name || null;
+            entityName = profileRes.rows[0]?.full_name || null;
+        }
+
+        // 4. Build notification text
+        let notifText;
+        if (entityName) {
+            notifText = `${senderName} shared ${entityName}'s ${entityType} with you`;
+        } else {
+            notifText = `${senderName} shared a ${entityType} with you`;
+        }
 
         // 4. Build metadata for navigation
         const metadata = {
             entityType,
             entityId,
             ...(senderOrgId ? { org_id: senderOrgId } : {}),
+            ...(entitySlug ? { slug: entitySlug } : {}),
+            ...(entityAccountName ? { account_name: entityAccountName } : {}),
         };
 
         // 5. Insert notification
@@ -348,6 +374,12 @@ async function shareEntity(senderId, payload) {
     const handler = SHARE_METHODS[shareMethod];
     if (!handler) {
         throw { status: 400, message: `Invalid shareMethod: ${shareMethod}. Supported: message, notification, copy_link` };
+    }
+
+    // Validate share rules (e.g., user profile → company blocked)
+    const targetType = payload.targetType || "user";
+    if (payload.targetId) {
+        await validateShareRules({ entityType, entityId, receiverType: targetType });
     }
 
     // Route to handler
