@@ -252,7 +252,7 @@ exports.getOrganization = async (req, res) => {
 };
 
 exports.updateOrganization = async (req, res) => {
-    const { companyId } = req.params;
+    const { orgId } = req.params;
     const userId = req.user.sub;
     const { name, slogan, industry, size, website, location, description, logo_url, cover_url, headline } = req.body;
 
@@ -274,7 +274,7 @@ exports.updateOrganization = async (req, res) => {
         await client.query("BEGIN");
 
         // 1. RBAC Check (MANAGE_COMPANY_DETAILS)
-        const canEdit = await checkOrgPermission(client, companyId, userId, 'MANAGE_COMPANY_DETAILS');
+        const canEdit = await checkOrgPermission(client, orgId, userId, 'MANAGE_COMPANY_DETAILS');
         if (!canEdit) throw new Error("Forbidden: You do not have permission to update organization details");
 
         // 2. Update
@@ -296,14 +296,14 @@ exports.updateOrganization = async (req, res) => {
         `;
 
         const result = await client.query(updateQuery, [
-            name, slogan, industry, size, website, location, description, logo_url, cover_url, headline ? headline.trim() : null, companyId
+            name, slogan, industry, size, website, location, description, logo_url, cover_url, headline ? headline.trim() : null, orgId
         ]);
 
         const updatedCompany = result.rows[0];
 
         // 3. Audit Log
         await logAudit(client, {
-            entityId: companyId,
+            entityId: orgId,
             actorId: userId,
             action: 'UPDATE',
             metadata: { changes: req.body } // Simplified metadata
@@ -329,7 +329,7 @@ exports.updateOrganization = async (req, res) => {
 };
 
 exports.deleteOrganization = async (req, res) => {
-    const { companyId } = req.params;
+    const { orgId } = req.params;
     const userId = req.user.sub;
 
     const client = await pool.connect();
@@ -337,8 +337,12 @@ exports.deleteOrganization = async (req, res) => {
         await client.query("BEGIN");
 
         // 1. RBAC
-        const isOwner = await checkOrgPermission(client, companyId, userId, '*');
-        if (!isOwner) throw new Error("Forbidden: Only OWNER can delete organization");
+        const isOwner = await checkOrgPermission(client, orgId, userId, '*');
+
+        // Diagnostic Logging
+        console.log(`[DeleteOrg] Attempt: orgId=${orgId}, userId=${userId}, isOwner=${isOwner}`);
+
+        if (!isOwner) throw new Error("Forbidden: Only authorized administrators (Owner/Admin) can delete this organization");
 
         const { password } = req.body;
         if (!password) {
@@ -354,15 +358,15 @@ exports.deleteOrganization = async (req, res) => {
         // 2. Soft Delete
         await client.query(
             `UPDATE organizations SET is_deleted = TRUE, deleted_at = NOW() WHERE org_id = $1`,
-            [companyId]
+            [orgId]
         );
 
         // Lifecycle: End all active sessions for this company
         const chatSessionCtrl = require("../messaging/chatSession.controller");
-        await chatSessionCtrl.endAllSessionsForCompany(client, companyId, userId);
+        await chatSessionCtrl.endAllSessionsForOrganization(client, orgId, userId);
 
         await logAudit(client, {
-            entityId: companyId,
+            entityId: orgId,
             actorId: userId,
             action: 'DELETE',
             metadata: {}

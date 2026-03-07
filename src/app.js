@@ -18,7 +18,7 @@ const organizationRoutes = require("./modules/organization/organization.routes")
 const shareRoutes = require("./modules/share/share.routes");
 
 const app = express();
-app.set("trust proxy", true);
+app.set("trust proxy", 1);
 
 const corsOptions = {
   origin: function (origin, callback) {

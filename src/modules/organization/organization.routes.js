@@ -39,10 +39,10 @@ router.delete("/organizations/:orgId/members/:memberId", requireAuth, requireOrg
 router.post("/organizations/:orgId/leave", requireAuth, membersController.leaveOrganization);
 
 // Legacy Member Aliases
-router.post("/companies/:companyId/members/invite", requireAuth, requireOrgPermission("INVITE_MEMBERS"), organizationActionLimiter, membersController.inviteMember);
-router.get("/companies/:companyId/members", requireAuth, requireOrgPermission("VIEW_MEMBERS"), membersController.getMembers);
-router.delete("/companies/:companyId/members/:memberId", requireAuth, requireOrgPermission("REMOVE_MEMBERS"), membersController.removeMember);
-router.post("/companies/:companyId/leave", requireAuth, membersController.leaveOrganization);
+router.post("/companies/:orgId/members/invite", requireAuth, requireOrgPermission("INVITE_MEMBERS"), organizationActionLimiter, membersController.inviteMember);
+router.get("/companies/:orgId/members", requireAuth, requireOrgPermission("VIEW_MEMBERS"), membersController.getMembers);
+router.delete("/companies/:orgId/members/:memberId", requireAuth, requireOrgPermission("REMOVE_MEMBERS"), membersController.removeMember);
+router.post("/companies/:orgId/leave", requireAuth, membersController.leaveOrganization);
 
 // --- INSTITUTION ENROLLMENT ---
 router.post("/organizations/:orgId/enroll", requireAuth, institutionController.requestEnrollment);
@@ -56,14 +56,14 @@ router.post("/organizations/:orgId/verify/domain", requireAuth, requireOrgPermis
 router.post("/organizations/:orgId/verify/edu-email", requireAuth, requireOrgPermission("MANAGE_VERIFICATION"), verifyController.verifyByEduEmail);
 router.post("/organizations/:orgId/verify/document", requireAuth, requireOrgPermission("MANAGE_VERIFICATION"), verifyController.submitDocumentVerification);
 
-router.post("/companies/:companyId/verify/domain", requireAuth, requireOrgPermission("MANAGE_SETTINGS"), otpGenerationLimiter, verifyController.verifyDomain);
+router.post("/companies/:orgId/verify/domain", requireAuth, requireOrgPermission("MANAGE_SETTINGS"), otpGenerationLimiter, verifyController.verifyDomain);
 
 // --- MANAGEMENT ---
 router.post("/organizations/:orgId/transfer-ownership", requireAuth, organizationActionLimiter, membersController.transferOwnership);
 router.put("/organizations/:orgId", requireAuth, requireOrgPermission("MANAGE_COMPANY_DETAILS"), organizationController.updateOrganization);
 router.delete("/organizations/:orgId", requireAuth, requireOrgPermission("MANAGE_COMPANY"), organizationActionLimiter, organizationController.deleteOrganization);
 
-router.put("/companies/:companyId", requireAuth, requireOrgPermission("MANAGE_COMPANY_DETAILS"), organizationController.updateOrganization);
+router.put("/companies/:orgId", requireAuth, requireOrgPermission("MANAGE_COMPANY_DETAILS"), organizationController.updateOrganization);
 
 // --- ADMIN ---
 router.get("/admin/verifications/queue", requireAuth, requireRoles(["Admin"]), verifyController.getVerificationQueue);
@@ -87,7 +87,7 @@ router.delete("/organizations/:orgId/gallery/:galleryId", requireAuth, requireOr
 // --- ADVOCACY & POSTS ---
 router.post("/organizations/:orgId/posts/:postId/notify", requireAuth, requireOrgPermission("MANAGE_COMPANY"), postsController.notifyEmployees);
 router.get("/organizations/:orgId/posts", optionalAuth, postsController.getOrganizationPosts);
-router.get("/companies/:companyId/posts", optionalAuth, postsController.getOrganizationPosts);
+router.get("/companies/:orgId/posts", optionalAuth, postsController.getOrganizationPosts);
 
 // --- JOBS ---
 router.get("/organizations/:orgId/jobs", optionalAuth, organizationJobsController.getOrganizationJobs);
@@ -95,7 +95,7 @@ router.post("/organizations/:orgId/jobs", requireAuth, requireOrgPermission("POS
 router.put("/organizations/:orgId/jobs/:jobId", requireAuth, requireOrgPermission("POST_JOBS"), organizationJobsController.updateOrganizationJob);
 router.delete("/organizations/:orgId/jobs/:jobId", requireAuth, requireOrgPermission("POST_JOBS"), organizationJobsController.deleteOrganizationJob);
 
-router.get("/companies/:companyId/jobs", optionalAuth, organizationJobsController.getOrganizationJobs);
+router.get("/companies/:orgId/jobs", optionalAuth, organizationJobsController.getOrganizationJobs);
 
 // --- ROLES & PERMISSIONS ---
 router.get("/organizations/:orgId/roles", requireAuth, roleController.getOrganizationRoles);

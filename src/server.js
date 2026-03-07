@@ -11,7 +11,7 @@ const server = http.createServer(app);
 
 const PORT = process.env.PORT || 5000;
 
-app.set("trust proxy", true);
+// Redundant app.set("trust proxy", true) removed to prevent overwriting app.js settings
 initSocket(server);
 startSessionTimeoutWorker();
 

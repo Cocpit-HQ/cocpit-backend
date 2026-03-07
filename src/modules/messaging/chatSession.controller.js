@@ -703,7 +703,7 @@ exports.endAllSessionsForOrganization = async (client, orgId, actorId) => {
          WHERE org_id = $1 
            AND status = 'ACTIVE'
          RETURNING session_id`,
-        [companyId]
+        [orgId]
     );
     return result.rows;
 };
