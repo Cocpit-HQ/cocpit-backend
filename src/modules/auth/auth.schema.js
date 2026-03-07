@@ -22,6 +22,11 @@ const registerSchema = z.object({
         invalid_type_error: "Invalid account type",
       }
     ),
+    otp: z.string({
+      required_error: "OTP is required",
+    }).length(6, {
+      message: "OTP must be exactly 6 digits",
+    }),
   }),
 });
 
@@ -57,6 +62,11 @@ const resetPasswordSchema = z.object({
       required_error: "New password is required",
     }).min(6, {
       message: "Password must be at least 6 characters long",
+    }),
+    otp: z.string({
+      required_error: "OTP is required",
+    }).length(6, {
+      message: "OTP must be exactly 6 digits",
     }),
   }),
 });

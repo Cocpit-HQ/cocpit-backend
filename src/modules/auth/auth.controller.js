@@ -3,13 +3,19 @@
  * Parses request, calls service, sends response. No SQL. No business logic.
  */
 const authService = require("./auth.service");
+const otpService = require("./otp.service");
 
 // ─── Register ──────────────────────────────────────────────────────────────────
 
 exports.register = async (req, res) => {
-    const { email, password, fullName, accountType } = req.body;
+    const { email, password, fullName, accountType, otp } = req.body;
 
     try {
+        const otpResult = await otpService.verifyOTP(email, otp);
+        if (otpResult.error) {
+            return res.status(otpResult.error.status).json({ message: otpResult.error.message });
+        }
+
         const result = await authService.registerUser({ email, password, fullName, accountType });
 
         if (result.error) {

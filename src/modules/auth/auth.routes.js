@@ -4,6 +4,7 @@ const router = express.Router();
 const authController = require("./auth.controller");
 const sessionController = require("./session.controller");
 const passwordResetController = require("./passwordReset.controller");
+const otpRoutes = require("./otp.routes");
 
 const { requireAuth, requireActiveSession } = require("../../core/middlewares/auth.middleware");
 const { requireRoles } = require("../../core/middlewares/role.middleware");
@@ -31,6 +32,7 @@ const passwordResetLimiter = createRateLimit({
 });
 
 // Auth
+router.use("/", otpRoutes);
 router.post("/register", authLimiter, validate(registerSchema), authController.register);
 router.post("/login", authLimiter, validate(loginSchema), authController.login);
 router.post("/refresh", validate(refreshTokenSchema), authController.refreshToken);

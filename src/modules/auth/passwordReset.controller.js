@@ -1,13 +1,22 @@
 const { resetPassword } = require("./passwordReset.service");
+const otpService = require("./otp.service");
 
 /**
  * Reset password controller
  * POST /auth/reset-password
  */
 exports.resetPassword = async (req, res) => {
-    const { email, newPassword } = req.body;
+    const { email, newPassword, otp } = req.body;
 
     try {
+        const otpResult = await otpService.verifyOTP(email, otp);
+        if (otpResult.error) {
+            return res.status(otpResult.error.status).json({
+                message: otpResult.error.message,
+                success: false,
+            });
+        }
+
         const result = await resetPassword(email, newPassword);
 
         res.status(200).json({
