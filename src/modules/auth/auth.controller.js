@@ -146,3 +146,81 @@ exports.getMe = async (req, res) => {
         res.status(500).json({ message: "Internal server error" });
     }
 };
+
+// ─── Google Login ──────────────────────────────────────────────────────────────
+
+/**
+ * POST /auth/google
+ *
+ * Accepts a Google ID token (from the frontend Google Identity Services SDK)
+ * and either signs in or creates a new user.
+ *
+ * Request body:
+ *   { idToken: string, accountType?: "Student" | "Fresher" | "Employer" | "Admin" }
+ *   accountType is required only for new user sign-ups.
+ *
+ * Response (same shape as /auth/login):
+ *   { accessToken: string, user: { id, email, full_name, avatar_url, roles, onboarding_complete, account_name } }
+ *   Refresh token is set as an httpOnly cookie.
+ *
+ * Example request:
+ *   POST /auth/google
+ *   Content-Type: application/json
+ *   { "idToken": "eyJhbGci...", "accountType": "Student" }
+ *
+ * Example response:
+ *   201 (new user) or 200 (existing user)
+ *   {
+ *     "accessToken": "eyJhbGci...",
+ *     "user": {
+ *       "id": "uuid",
+ *       "email": "user@gmail.com",
+ *       "full_name": "John Doe",
+ *       "avatar_url": "https://lh3.googleusercontent.com/...",
+ *       "roles": ["Student"],
+ *       "onboarding_complete": false,
+ *       "account_name": null
+ *     }
+ *   }
+ */
+exports.googleLogin = async (req, res) => {
+    const { idToken, accountType } = req.body;
+    const userAgent = req.headers["user-agent"] || "unknown";
+    const ipAddress = req.ip || "unknown";
+
+    if (!idToken) {
+        return res.status(400).json({ message: "idToken is required" });
+    }
+
+    try {
+        const result = await authService.googleLogin({ idToken, accountType, userAgent, ipAddress });
+
+        if (result.error) {
+            return res.status(result.error.status).json({ message: result.error.message });
+        }
+
+        // Set refresh token cookie — identical to email/password login
+        res.cookie("refreshToken", result.refreshToken, {
+            ...authService.COOKIE_OPTIONS,
+            maxAge: 7 * 24 * 60 * 60 * 1000,
+        });
+
+        const statusCode = result.isNewUser ? 201 : 200;
+
+        console.log(`✅ Google login successful: ${result.user.email} (${result.isNewUser ? "new" : "existing"})`);
+
+        return res.status(statusCode).json({
+            accessToken: result.accessToken,
+            user: result.user,
+        });
+    } catch (err) {
+        console.error("❌ Google login error:", err);
+
+        // Handle duplicate google_id constraint violation
+        if (err.code === "23505" && err.constraint?.includes("google_id")) {
+            return res.status(409).json({ message: "This Google account is already linked to another user" });
+        }
+
+        return res.status(500).json({ message: "Internal server error" });
+    }
+};

@@ -86,6 +86,42 @@ const getUserPasswordHash = async (userId) => {
     return result.rows[0]?.password_hash || null;
 };
 
+// ─── Google Auth Queries ────────────────────────────────────────────────────────
+
+const findUserByGoogleId = async (googleId) => {
+    const result = await pool.query(
+        `SELECT user_id, email, full_name, avatar_url, is_onboarding_complete, account_name, google_id, auth_provider
+     FROM users WHERE google_id = $1`,
+        [googleId]
+    );
+    return result.rows[0] || null;
+};
+
+/**
+ * Creates a new user via Google OAuth.
+ * password_hash is NULL because the user authenticated through Google.
+ */
+const createGoogleUser = async (email, fullName, googleId, avatarUrl) => {
+    const result = await pool.query(
+        `INSERT INTO users (email, full_name, google_id, auth_provider, password_hash, avatar_url)
+     VALUES ($1, $2, $3, 'google', NULL, $4)
+     RETURNING user_id, email, full_name, avatar_url`,
+        [email, fullName, googleId, avatarUrl]
+    );
+    return result.rows[0];
+};
+
+/**
+ * Links a Google ID to an existing local (email/password) user.
+ * This enables "Sign in with Google" for users who originally registered with email.
+ */
+const linkGoogleId = async (userId, googleId) => {
+    await pool.query(
+        `UPDATE users SET google_id = $1, updated_at = NOW() WHERE user_id = $2`,
+        [googleId, userId]
+    );
+};
+
 const getOnboardingStatus = async (userId) => {
     const result = await pool.query(
         `SELECT is_onboarding_complete FROM users WHERE user_id = $1`,
@@ -201,6 +237,10 @@ module.exports = {
     getUserProfile,
     getUserPasswordHash,
     getOnboardingStatus,
+    // Google Auth
+    findUserByGoogleId,
+    createGoogleUser,
+    linkGoogleId,
     // Sessions
     getActiveSessions,
     getDetailedSessions,

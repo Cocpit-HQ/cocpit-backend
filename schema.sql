@@ -1200,3 +1200,16 @@ CREATE TABLE IF NOT EXISTS email_otps (
 
 CREATE INDEX IF NOT EXISTS idx_email_otps_email ON email_otps(email);
 
+-- 10/03/2026 Google OAuth Support
+ALTER TABLE users ADD COLUMN IF NOT EXISTS auth_provider VARCHAR(20) DEFAULT 'local';
+ALTER TABLE users ADD COLUMN IF NOT EXISTS google_id VARCHAR(255) UNIQUE;
+ALTER TABLE users ALTER COLUMN password_hash DROP NOT NULL;
+
+ALTER TABLE users ADD CONSTRAINT password_or_social
+CHECK (
+  (auth_provider = 'local' AND password_hash IS NOT NULL)
+  OR
+  (auth_provider != 'local')
+) NOT VALID;
+
+ALTER TABLE users VALIDATE CONSTRAINT password_or_social;
