@@ -1,7 +1,7 @@
 const crypto = require("crypto");
 const bcrypt = require("bcrypt");
 // Use the exact path to pool, adjusting based on codebase architecture
-const pool = require("../../db/pool");
+const pool = require('../../core/db/pool');
 const emailService = require("../../core/services/email.service");
 
 // Expiry in minutes (default 5)

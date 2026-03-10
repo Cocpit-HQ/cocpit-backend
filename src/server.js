@@ -1,4 +1,7 @@
 require("dotenv").config();
+require("newrelic");
+const express = require("express");
+
 // Server Entry Point
 const app = require("./app");
 const http = require("http");
@@ -10,6 +13,12 @@ const { processStoryExpirations } = require("./workers/storyExpiryWorker");
 const server = http.createServer(app);
 
 const PORT = process.env.PORT || 5000;
+
+if (process.env.NEW_RELIC_LICENSE_KEY) {
+  console.log("✅ New Relic monitoring connected");
+} else {
+  console.log("❌ New Relic license key missing");
+}
 
 // Redundant app.set("trust proxy", true) removed to prevent overwriting app.js settings
 initSocket(server);
