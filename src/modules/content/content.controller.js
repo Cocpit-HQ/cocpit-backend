@@ -2493,10 +2493,66 @@ exports.getStories = async (req, res) => {
                 (s.author_org_id IS NOT NULL) AS is_company,
                 -- 4. Counts
                 (SELECT COUNT(*) FROM story_views sv WHERE sv.story_id = s.story_id)::int AS view_count,
-                (SELECT COUNT(*) FROM story_reactions sr WHERE sr.story_id = s.story_id AND sr.reaction_type = 'true')::int AS like_count
+                (SELECT COUNT(*) FROM story_reactions sr WHERE sr.story_id = s.story_id AND sr.reaction_type = 'true')::int AS like_count,
+                -- Shared Post Data
+                CASE 
+                    WHEN s.shared_post_id IS NULL THEN NULL
+                    WHEN (
+                        -- 1. Private: Author only
+                        (sp.visibility = 'private' AND sp.author_id = $1)
+                        OR
+                        -- 2. Public + Personal: Connections only
+                        (sp.visibility = 'public' AND sp_cat.name = 'Personal' AND (
+                            sp.author_id = $1
+                            OR EXISTS (
+                                SELECT 1 FROM followers f1 
+                                JOIN followers f2 ON f1.follower_id = f2.following_id AND f1.following_id = f2.follower_id 
+                                WHERE f1.follower_id = $1 AND f1.following_id = sp.author_id
+                            )
+                        ))
+                        OR
+                        -- 3. Public + Other: Everyone
+                        (sp.visibility = 'public' AND (sp_cat.name != 'Personal' OR sp_cat.name IS NULL))
+                    ) THEN
+                        json_build_object(
+                            'is_accessible', true,
+                            'post_id', sp.post_id,
+                            'content', sp.content,
+                            'author', json_build_object(
+                                'user_id', sp_u.user_id,
+                                'full_name', sp_u.full_name,
+                                'avatar_url', sp_u.avatar_url
+                            ),
+                            'media', (SELECT json_agg(json_build_object('url', url, 'media_type', media_type)) FROM post_media WHERE post_id = sp.post_id)
+                        )
+                    -- Failure Analysis
+                    WHEN sp.visibility = 'private' THEN json_build_object(
+                        'is_accessible', false, 
+                        'reason', 'private',
+                        'author', json_build_object(
+                            'user_id', sp_u.user_id,
+                            'full_name', sp_u.full_name,
+                            'avatar_url', sp_u.avatar_url
+                        )
+                    )
+                    WHEN (sp.visibility = 'public' AND sp_cat.name = 'Personal') THEN json_build_object(
+                        'is_accessible', false, 
+                        'reason', 'personal_connection',
+                        'author', json_build_object(
+                            'user_id', sp_u.user_id,
+                            'full_name', sp_u.full_name,
+                            'avatar_url', sp_u.avatar_url
+                        )
+                    )
+                    ELSE 
+                        json_build_object('is_accessible', false, 'reason', 'unknown')
+                END AS "sharedPost"
             FROM stories s
             JOIN users u ON s.author_id = u.user_id
             LEFT JOIN organizations comp ON s.author_org_id = comp.org_id
+            LEFT JOIN posts sp ON s.shared_post_id = sp.post_id
+            LEFT JOIN users sp_u ON sp.author_id = sp_u.user_id
+            LEFT JOIN post_categories sp_cat ON sp.category_id = sp_cat.category_id
             WHERE s.expires_at > now()
             AND (
                 s.author_id = ANY($2)
@@ -2506,7 +2562,6 @@ exports.getStories = async (req, res) => {
             `,
             [userId, followingIds, companyId || null]
         );
-
         res.json(result.rows);
     } catch (err) {
         console.error("Get stories error:", err);
@@ -2860,10 +2915,25 @@ exports.createStory = async (req, res) => {
                 (s.author_org_id IS NOT NULL) AS is_company,
                 0 AS view_count,
                 0 AS like_count,
-                null AS shared_post
+                CASE 
+                    WHEN s.shared_post_id IS NULL THEN NULL
+                    ELSE json_build_object(
+                        'is_accessible', true,
+                        'post_id', sp.post_id,
+                        'content', sp.content,
+                        'author', json_build_object(
+                            'user_id', sp_u.user_id,
+                            'full_name', sp_u.full_name,
+                            'avatar_url', sp_u.avatar_url
+                        ),
+                        'media', (SELECT json_agg(json_build_object('url', url, 'media_type', media_type)) FROM post_media WHERE post_id = sp.post_id)
+                    )
+                END AS shared_post
             FROM stories s
             JOIN users u ON s.author_id = u.user_id
             LEFT JOIN organizations comp ON s.author_org_id = comp.org_id
+            LEFT JOIN posts sp ON s.shared_post_id = sp.post_id
+            LEFT JOIN users sp_u ON sp.author_id = sp_u.user_id
             WHERE s.story_id = $1
             `,
             [story_id]
