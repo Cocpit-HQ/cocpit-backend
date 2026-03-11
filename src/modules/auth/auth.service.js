@@ -81,7 +81,7 @@ const loginUser = async ({ email, password, userAgent, ipAddress }) => {
         sid: sessionId,
     });
 
-    const hashedRefresh = await bcrypt.hash(refreshToken, 12);
+    const hashedRefresh = crypto.createHash("sha256").update(refreshToken).digest("hex");
 
     // 5. Enforce device limit (transaction)
     await authRepo.beginTransaction();
@@ -135,8 +135,26 @@ const refreshTokens = async (refreshTokenValue) => {
         return { error: { status: 401, code: "SESSION_INVALID", message: "Session not found or terminated" } };
     }
 
-    // 3. Validate token hash
-    const isValid = await bcrypt.compare(refreshTokenValue, session.token_hash);
+    // 3. Validate token hash (Backward compatibility for legacy bcrypt hashes)
+    let isValid = false;
+    
+    // Check if the stored hash is a bcrypt hash (starts with $2b$ or $2a$ and is ~60 chars long)
+    if (session.token_hash && session.token_hash.startsWith("$2")) {
+        isValid = await bcrypt.compare(refreshTokenValue, session.token_hash);
+    } else {
+        // Otherwise, it's our new SHA-256 hex string
+        const expectedHash = crypto.createHash("sha256").update(refreshTokenValue).digest("hex");
+        // Use timingSafeEqual to prevent timing attacks, ensuring both are buffers of the exact same length
+        try {
+            isValid = crypto.timingSafeEqual(
+                Buffer.from(expectedHash, "hex"),
+                Buffer.from(session.token_hash, "hex")
+            );
+        } catch (e) {
+            isValid = false; // Fails if lengths don't match or other buffer issues
+        }
+    }
+
     if (!isValid) {
         await authRepo.deleteSession(sessionId);
         return { error: { status: 401, code: "SESSION_INVALID", message: "Security breach detected: session terminated" } };
@@ -159,7 +177,8 @@ const refreshTokens = async (refreshTokenValue) => {
         sid: sessionId,
     });
 
-    const hashedNewRefreshToken = await bcrypt.hash(newRefreshToken, 12);
+    // Hash the rotated token with fast SHA-256
+    const hashedNewRefreshToken = crypto.createHash("sha256").update(newRefreshToken).digest("hex");
     await authRepo.updateSessionToken(sessionId, hashedNewRefreshToken);
 
     return { accessToken: newAccessToken, refreshToken: newRefreshToken };
@@ -280,7 +299,7 @@ const googleLogin = async ({ idToken, accountType, userAgent, ipAddress }) => {
         sid: sessionId,
     });
 
-    const hashedRefresh = await bcrypt.hash(refreshToken, 12);
+    const hashedRefresh = crypto.createHash("sha256").update(refreshToken).digest("hex");
 
     // ── Step 4: Store session (respects existing 10-device limit) ──
     await authRepo.beginTransaction();

@@ -53,6 +53,18 @@ app.use((req, res, next) => {
   next();
 });
 
+// Middleware to log request latency for monitoring performance
+app.use((req, res, next) => {
+  const start = performance.now();
+  res.on('finish', () => {
+    const duration = Math.round(performance.now() - start);
+    if (req.originalUrl.includes('/auth/')) {
+       console.log(`⏱️ [PERF] [${req.method}] ${req.originalUrl} took ${duration}ms`);
+    }
+  });
+  next();
+});
+
 // Routes
 app.use("/api/auth", authRoutes);
 app.use("/api", profileRoutes); // /api/profile...
