@@ -221,13 +221,14 @@ const deleteSkillMapping = async (profileId, skillId) => {
 
 const getCompanyRoles = async (userId) => {
     const result = await pool.query(
-        `SELECT c.org_id, c.name, c.slug, c.logo_url, cr.name as role,
-            cm.is_primary_display, cm.is_role_visible, cr.priority
+        `SELECT c.org_id as company_id, c.org_id, c.name, c.slug, c.logo_url,
+            COALESCE(cr.name, cm.role) as role,
+            cm.is_primary_display, cm.is_role_visible, COALESCE(cr.priority, 0) as priority
      FROM organization_members cm
      JOIN organizations c ON cm.org_id = c.org_id
-     JOIN organization_roles cr ON cm.role_id = cr.role_id
-     WHERE cm.user_id = $1
-     ORDER BY cm.is_primary_display DESC, cr.priority DESC, c.name ASC`,
+     LEFT JOIN organization_roles cr ON cm.role_id = cr.role_id
+     WHERE cm.user_id = $1 AND c.is_deleted = FALSE
+     ORDER BY cm.is_primary_display DESC, priority DESC, c.name ASC`,
         [userId]
     );
     return result.rows;

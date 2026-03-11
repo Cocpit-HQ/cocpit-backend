@@ -4,6 +4,7 @@
  */
 const profileRepo = require("./profile.repository");
 const { checkBlockStatus } = require("../../core/utils/blockCheck");
+const pool = require("../../core/db/pool");
 
 // ─── Get Profile ────────────────────────────────────────────────────────────────
 

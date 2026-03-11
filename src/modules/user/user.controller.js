@@ -308,17 +308,20 @@ exports.getUserProfile = async (req, res) => {
       `
       SELECT 
         c.org_id, 
+        c.org_id as company_id,
         c.name, 
         c.slug, 
         c.logo_url, 
-        cr.name as role,
-        cm.is_primary_display
+        COALESCE(cr.name, cm.role) as role,
+        cm.is_primary_display,
+        cm.is_role_visible
       FROM organization_members cm
       JOIN organizations c ON cm.org_id = c.org_id
-      JOIN organization_roles cr ON cm.role_id = cr.role_id
+      LEFT JOIN organization_roles cr ON cm.role_id = cr.role_id
       WHERE cm.user_id = $1 
       AND cm.is_role_visible = TRUE
-      ORDER BY cm.is_primary_display DESC, cr.priority DESC, c.name ASC
+      AND c.is_deleted = FALSE
+      ORDER BY cm.is_primary_display DESC, COALESCE(cr.priority, 0) DESC, c.name ASC
       `,
       [targetUserId]
     );
