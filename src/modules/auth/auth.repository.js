@@ -210,13 +210,23 @@ const findSessionByUserAndId = async (userId, sessionId) => {
     return result.rows[0] || null;
 };
 
-const updateSessionToken = async (sessionId, newTokenHash) => {
-    await pool.query(
-        `UPDATE refresh_tokens
-     SET token_hash = $1, expires_at = now() + interval '7 days'
-     WHERE session_id = $2`,
-        [newTokenHash, sessionId]
-    );
+const updateSessionToken = async (sessionId, newTokenHash, expectedCurrentHash) => {
+    const hasExpectedHash = typeof expectedCurrentHash === "string" && expectedCurrentHash.length > 0;
+    const query = hasExpectedHash
+        ? `UPDATE refresh_tokens
+           SET token_hash = $1, expires_at = now() + interval '7 days'
+           WHERE session_id = $2 AND token_hash = $3
+           RETURNING session_id`
+        : `UPDATE refresh_tokens
+           SET token_hash = $1, expires_at = now() + interval '7 days'
+           WHERE session_id = $2
+           RETURNING session_id`;
+    const params = hasExpectedHash
+        ? [newTokenHash, sessionId, expectedCurrentHash]
+        : [newTokenHash, sessionId];
+
+    const result = await pool.query(query, params);
+    return result.rowCount > 0;
 };
 
 // ─── Transaction Helpers ────────────────────────────────────────────────────────

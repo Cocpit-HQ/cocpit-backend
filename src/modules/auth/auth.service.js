@@ -9,14 +9,88 @@ const { hashPassword, comparePassword } = require("../../core/utils/password");
 const { signAccessToken, signRefreshToken, verifyRefreshToken, verifyAccessToken } = require("../../core/utils/jwt");
 const { verifyGoogleToken } = require("./googleAuth.service");
 const authRepo = require("./auth.repository");
+const redisClient = require("../../core/db/redis");
 
 const MAX_DEVICES = 10;
+const REFRESH_REPLAY_WINDOW_SECONDS = Math.max(1, Number(process.env.REFRESH_REPLAY_WINDOW_SECONDS || 15));
+const LOCAL_REFRESH_REPLAY_FALLBACK_TTL_MS = REFRESH_REPLAY_WINDOW_SECONDS * 1000;
+const localRefreshReplayCache = new Map();
 
 const COOKIE_OPTIONS = {
     httpOnly: true,
     secure: true,
     sameSite: "None",
     path: "/",
+};
+
+const hashTokenSha256 = (value) => crypto.createHash("sha256").update(value).digest("hex");
+
+const buildRefreshReplayKey = (userId, sessionId, presentedTokenHash) =>
+    `auth:refresh-replay:${userId}:${sessionId}:${presentedTokenHash}`;
+
+const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const setLocalRefreshReplay = (key, payload) => {
+    localRefreshReplayCache.set(key, {
+        payload,
+        expiresAt: Date.now() + LOCAL_REFRESH_REPLAY_FALLBACK_TTL_MS,
+    });
+};
+
+const getLocalRefreshReplay = (key) => {
+    const entry = localRefreshReplayCache.get(key);
+    if (!entry) return null;
+    if (entry.expiresAt <= Date.now()) {
+        localRefreshReplayCache.delete(key);
+        return null;
+    }
+    return entry.payload;
+};
+
+const cacheRefreshReplay = async (userId, sessionId, presentedTokenHash, tokens) => {
+    const payload = { accessToken: tokens.accessToken, refreshToken: tokens.refreshToken };
+    const key = buildRefreshReplayKey(userId, sessionId, presentedTokenHash);
+
+    setLocalRefreshReplay(key, payload);
+
+    if (!redisClient.isOpen) return;
+    try {
+        await redisClient.setEx(key, REFRESH_REPLAY_WINDOW_SECONDS, JSON.stringify(payload));
+    } catch (err) {
+        console.warn("[Auth] Failed to write refresh replay cache to Redis:", err.message);
+    }
+};
+
+const getRefreshReplay = async (userId, sessionId, presentedTokenHash) => {
+    const key = buildRefreshReplayKey(userId, sessionId, presentedTokenHash);
+
+    if (redisClient.isOpen) {
+        try {
+            const cached = await redisClient.get(key);
+            if (cached) {
+                const parsed = JSON.parse(cached);
+                if (parsed?.accessToken && parsed?.refreshToken) {
+                    setLocalRefreshReplay(key, parsed);
+                    return parsed;
+                }
+            }
+        } catch (err) {
+            console.warn("[Auth] Failed to read refresh replay cache from Redis:", err.message);
+        }
+    }
+
+    return getLocalRefreshReplay(key);
+};
+
+const waitForRefreshReplay = async (userId, sessionId, presentedTokenHash, maxAttempts = 12, delayMs = 50) => {
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+        const replay = await getRefreshReplay(userId, sessionId, presentedTokenHash);
+        if (replay) return replay;
+        if (attempt < maxAttempts - 1) {
+            await wait(delayMs);
+        }
+    }
+    return null;
 };
 
 // ─── Registration ──────────────────────────────────────────────────────────────
@@ -128,6 +202,7 @@ const refreshTokens = async (refreshTokenValue) => {
     }
 
     const { sub: userId, sid: sessionId } = payload;
+    const presentedRefreshHash = hashTokenSha256(refreshTokenValue);
 
     // 2. Find session in DB
     const session = await authRepo.findSessionByUserAndId(userId, sessionId);
@@ -143,7 +218,7 @@ const refreshTokens = async (refreshTokenValue) => {
         isValid = await bcrypt.compare(refreshTokenValue, session.token_hash);
     } else {
         // Otherwise, it's our new SHA-256 hex string
-        const expectedHash = crypto.createHash("sha256").update(refreshTokenValue).digest("hex");
+        const expectedHash = presentedRefreshHash;
         // Use timingSafeEqual to prevent timing attacks, ensuring both are buffers of the exact same length
         try {
             isValid = crypto.timingSafeEqual(
@@ -156,6 +231,12 @@ const refreshTokens = async (refreshTokenValue) => {
     }
 
     if (!isValid) {
+        const replay = await getRefreshReplay(userId, sessionId, presentedRefreshHash);
+        if (replay) {
+            console.log("[Auth] Replay-safe refresh hit. Returning cached rotated tokens.");
+            return replay;
+        }
+
         await authRepo.deleteSession(sessionId);
         return { error: { status: 401, code: "SESSION_INVALID", message: "Security breach detected: session terminated" } };
     }
@@ -178,10 +259,23 @@ const refreshTokens = async (refreshTokenValue) => {
     });
 
     // Hash the rotated token with fast SHA-256
-    const hashedNewRefreshToken = crypto.createHash("sha256").update(newRefreshToken).digest("hex");
-    await authRepo.updateSessionToken(sessionId, hashedNewRefreshToken);
+    const hashedNewRefreshToken = hashTokenSha256(newRefreshToken);
+    const rotated = await authRepo.updateSessionToken(sessionId, hashedNewRefreshToken, session.token_hash);
 
-    return { accessToken: newAccessToken, refreshToken: newRefreshToken };
+    // Another request rotated first. Return cached tokens for the same presented refresh token.
+    if (!rotated) {
+        const replay = await waitForRefreshReplay(userId, sessionId, presentedRefreshHash);
+        if (replay) {
+            console.log("[Auth] Concurrent refresh detected. Returning replay-cached tokens.");
+            return replay;
+        }
+        return { error: { status: 401, code: "SESSION_INVALID", message: "Session refresh conflict. Please retry." } };
+    }
+
+    const rotatedTokens = { accessToken: newAccessToken, refreshToken: newRefreshToken };
+    await cacheRefreshReplay(userId, sessionId, presentedRefreshHash, rotatedTokens);
+
+    return rotatedTokens;
 };
 
 // ─── Logout ────────────────────────────────────────────────────────────────────
