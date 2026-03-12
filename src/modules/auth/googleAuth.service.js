@@ -5,13 +5,13 @@
  */
 const { OAuth2Client } = require("google-auth-library");
 
-const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
+const client = new OAuth2Client();
 
 /**
  * Verifies a Google ID token and extracts the user payload.
  *
  * Security decisions:
- * - `audience` is set to GOOGLE_CLIENT_ID to ensure the token was issued for THIS app.
+ * - `audience` is set to approved client IDs to ensure the token was issued for THIS app.
  *   Without this, an attacker could reuse a token issued for a different app.
  * - `email_verified` is checked to prevent account creation with unverified emails,
  *   which could lead to account takeover if the email is later claimed by the real owner.
@@ -21,9 +21,14 @@ const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
  * @throws {Error} If verification fails for any reason (expired, invalid aud, tampered).
  */
 const verifyGoogleToken = async (idToken) => {
+    const audience = [process.env.GOOGLE_CLIENT_ID];
+    if (process.env.ANDROID_CLIENT_ID) {
+        audience.push(process.env.ANDROID_CLIENT_ID);
+    }
+
     const ticket = await client.verifyIdToken({
         idToken,
-        audience: process.env.GOOGLE_CLIENT_ID,
+        audience: audience,
     });
 
     const payload = ticket.getPayload();
