@@ -128,9 +128,12 @@ exports.createJob = async (req, res) => {
     industry,
     easy_apply = false,
     actively_hiring = false,
+    org_id,
 
     skills = []
   } = req.body;
+  
+  const postedAsCompany = !!org_id;
 
   const client = await pool.connect();
 
@@ -145,17 +148,19 @@ exports.createJob = async (req, res) => {
         recruiter_id, title, company_name, org_id, location,
         description, salary_min, salary_max, job_type,
         work_mode, company_type, experience_level,
-        about_company, industry, easy_apply, actively_hiring
+        about_company, industry, easy_apply, actively_hiring,
+        posted_as_company
       )
       VALUES
-      ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+      ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
       RETURNING *
       `,
       [
-        userId, title, company_name, req.body.org_id || null, location,
+        userId, title, company_name, org_id || null, location,
         description, minSalary, maxSalary, job_type,
         work_mode, company_type, experience_level,
-        about_company, industry, easy_apply, actively_hiring
+        about_company, industry, easy_apply, actively_hiring,
+        postedAsCompany
       ]
     );
 
@@ -936,6 +941,7 @@ exports.updateJob = async (req, res) => {
     industry,
     easy_apply,
     actively_hiring,
+    org_id,
     skills = []
   } = req.body;
 
@@ -980,8 +986,9 @@ exports.updateJob = async (req, res) => {
         description = $4, salary_min = $5, salary_max = $6,
         job_type = $7, work_mode = $8, company_type = $9,
         experience_level = $10, about_company = $11, industry = $12,
-        easy_apply = $13, actively_hiring = $14
-      WHERE job_id = $15
+        easy_apply = $13, actively_hiring = $14, org_id = $15,
+        posted_as_company = $16
+      WHERE job_id = $17
       RETURNING *
       `,
       [
@@ -989,7 +996,8 @@ exports.updateJob = async (req, res) => {
         description, safeMinSalary, safeMaxSalary,
         job_type, work_mode, company_type,
         experience_level, about_company, industry,
-        easy_apply, actively_hiring, id
+        easy_apply, actively_hiring, org_id || null,
+        !!org_id, id
       ]
     );
 
