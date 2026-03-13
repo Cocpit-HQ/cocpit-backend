@@ -2799,11 +2799,19 @@ exports.getGroupedStories = async (req, res) => {
 
         // Sort Groups
         groups.sort((a, b) => {
-            // 1. Current user always first
+            // Always keep current user first
             if (a.is_current_user) return -1;
             if (b.is_current_user) return 1;
 
-            // 2. Latest story DESC
+            // Check if groups have unseen stories
+            const aHasUnseen = a.stories.some(s => !s.has_viewed);
+            const bHasUnseen = b.stories.some(s => !s.has_viewed);
+
+            // Unseen stories should appear first
+            if (aHasUnseen && !bHasUnseen) return -1;
+            if (!aHasUnseen && bHasUnseen) return 1;
+
+            // If both same (both seen or both unseen) sort by latest story
             if (a.latest_story_at && b.latest_story_at) {
                 return new Date(b.latest_story_at) - new Date(a.latest_story_at);
             }
