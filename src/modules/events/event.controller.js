@@ -52,6 +52,23 @@ const assertEventOrgPermission = async (req, orgId, permissions, queryable = poo
     }
 };
 
+function getEventStatus(event) {
+    const now = new Date()
+
+    const registrationDeadline = event.registration_deadline ? new Date(event.registration_deadline) : null
+    const start = event.start_time ? new Date(event.start_time) : null
+    const end = event.end_time ? new Date(event.end_time) : null
+
+    if (end && now > end) return "expired"
+
+    if (start && now >= start && (!end || now <= end)) return "live"
+
+    if (registrationDeadline && now > registrationDeadline) return "registration_closed"
+
+    return "upcoming"
+}
+
+
 // ─── List Events (with filtering + cursor pagination) ───────────────────────────
 
 exports.getEvents = async (req, res) => {
@@ -85,6 +102,9 @@ exports.getEvents = async (req, res) => {
         if (startDate) { values.push(startDate); query += ` AND e.start_time >= $${values.length}`; }
         if (endDate) { values.push(endDate); query += ` AND e.start_time <= $${values.length}`; }
 
+        // Filter out expired events by default
+        query += ` AND (e.end_time IS NULL OR e.end_time > NOW())`;
+
         if (cursor) {
             try {
                 const decoded = Buffer.from(cursor, "base64").toString("ascii");
@@ -102,7 +122,12 @@ exports.getEvents = async (req, res) => {
         values.push(limitNum + 1);
         query += ` LIMIT $${values.length}`;
 
-        const items = await eventRepo.queryEvents(query, values);
+        const rawItems = await eventRepo.queryEvents(query, values);
+        const items = rawItems.map(item => ({
+            ...item,
+            event_status: getEventStatus(item)
+        }));
+
         let nextCursor = null;
         let hasMore = false;
 
@@ -126,7 +151,12 @@ exports.getEventById = async (req, res) => {
     try {
         const event = await eventRepo.getEventById(req.params.id.trim());
         if (!event) return res.status(404).json({ message: "Event not found" });
-        res.json(event);
+        
+        const eventWithStatus = {
+            ...event,
+            event_status: getEventStatus(event)
+        };
+        res.json(eventWithStatus);
     } catch (err) {
         console.error("Get event by id error:", err);
         res.status(500).json({ message: "Internal server error" });
@@ -234,7 +264,11 @@ exports.checkRegistrationStatus = async (req, res) => {
 
 exports.getMyRegisteredEvents = async (req, res) => {
     try {
-        const events = await eventRepo.getMyRegisteredEvents(req.user.sub);
+        const rawEvents = await eventRepo.getMyRegisteredEvents(req.user.sub);
+        const events = rawEvents.map(event => ({
+            ...event,
+            event_status: getEventStatus(event)
+        }));
         res.json(events);
     } catch (err) {
         console.error("Get my registered events error:", err);
@@ -250,7 +284,11 @@ exports.getMyCreatedEvents = async (req, res) => {
         if (requestedOrgId) {
             await assertEventOrgPermission(req, requestedOrgId, ["VIEW_ANALYTICS", "CREATE_CONTENT", "MANAGE_COMPANY"]);
         }
-        const events = await eventRepo.getMyCreatedEvents(userId, requestedOrgId);
+        const rawEvents = await eventRepo.getMyCreatedEvents(userId, companyId);
+        const events = rawEvents.map(event => ({
+            ...event,
+            event_status: getEventStatus(event)
+        }));
         res.json(events);
     } catch (err) {
         console.error("Get my created events error:", err);
@@ -287,7 +325,11 @@ exports.unsaveEvent = async (req, res) => {
 
 exports.getMySavedEvents = async (req, res) => {
     try {
-        const events = await eventRepo.getMySavedEvents(req.user.sub);
+        const rawEvents = await eventRepo.getMySavedEvents(req.user.sub);
+        const events = rawEvents.map(event => ({
+            ...event,
+            event_status: getEventStatus(event)
+        }));
         res.json(events);
     } catch (err) {
         console.error("Get saved events error:", err);
@@ -338,7 +380,11 @@ exports.updateEvent = async (req, res) => {
         if (updates.length === 0) return res.json({ message: "No changes provided" });
 
         const updated = await eventRepo.updateEvent(eventId, updates, values);
-        res.json({ message: "Event updated successfully", event: updated });
+        const updatedWithStatus = {
+            ...updated,
+            event_status: getEventStatus(updated)
+        };
+        res.json({ message: "Event updated successfully", event: updatedWithStatus });
     } catch (err) {
         console.error("Update event error:", err);
         res.status(500).json({ message: "Internal server error" });

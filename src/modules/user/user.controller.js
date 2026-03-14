@@ -149,24 +149,12 @@ exports.getUserProfile = async (req, res) => {
       );
 
       if (viewCheck.rowCount === 0) {
-        const client = await pool.connect();
-        try {
-          await client.query('BEGIN');
-          await client.query(
-            `INSERT INTO profile_views (viewer_id, profile_owner_id) VALUES ($1, $2)`,
-            [currentUserId, targetUserId]
-          );
-          await client.query(
-            `UPDATE profiles SET profile_views_count = COALESCE(profile_views_count, 0) + 1 WHERE user_id = $1`,
-            [targetUserId]
-          );
-          await client.query('COMMIT');
-        } catch (e) {
-          await client.query('ROLLBACK');
-          console.error("View count update failed", e);
-        } finally {
-          client.release();
-        }
+        await pool.query(
+          `INSERT INTO profile_views 
+           (viewer_id, profile_owner_id, profile_type)
+           VALUES ($1, $2, 'user')`,
+          [currentUserId, targetUserId]
+        );
       }
     }
     // ---------------------------
