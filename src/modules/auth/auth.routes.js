@@ -39,6 +39,8 @@ router.post("/google", authLimiter, authController.googleLogin);
 router.post("/refresh", validate(refreshTokenSchema), authController.refreshToken);
 router.post("/logout", authController.logout);
 router.get("/me", requireAuth, authController.getMe);
+router.get("/actor-context", requireAuth, authController.getActorContext);
+router.post("/actor-context", requireAuth, authController.setActorContext);
 
 // Sessions
 router.get("/sessions", requireAuth, sessionController.getSessions);

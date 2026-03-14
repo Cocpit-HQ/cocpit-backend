@@ -9,6 +9,20 @@ const socketService = require("../../core/infrastructure/socket.service");
 const { logAudit } = require("../../core/infrastructure/audit.service");
 const { checkRateLimit } = require("../../core/utils/sessionRateLimiter");
 
+const CHAT_VIEW_PERMISSIONS = [
+    'VIEW_ORGANIZATION_CHATS',
+    'MANAGE_ORGANIZATION_CHATS',
+    'VIEW_COMPANY_CHATS',
+    'MANAGE_COMPANY_CHATS',
+];
+
+const CHAT_MANAGE_PERMISSIONS = [
+    'MANAGE_ORGANIZATION_CHATS',
+    'VIEW_ORGANIZATION_CHATS',
+    'MANAGE_COMPANY_CHATS',
+    'VIEW_COMPANY_CHATS',
+];
+
 // Feature flag check
 function isFeatureEnabled(orgId) {
     // Environment-level flag
@@ -28,17 +42,96 @@ function isValidTransition(from, to) {
     return VALID_TRANSITIONS[from]?.includes(to) || false;
 }
 
+function hasAnyPermission(permissions = [], requiredPermissions = []) {
+    if (permissions.includes('*')) return true;
+    return requiredPermissions.some((permission) => permissions.includes(permission));
+}
+
+function getRequestedOrganizationActorId(req, fallbackOrgId = null) {
+    const actorOrgId = req.actor?.type === 'ORGANIZATION' ? req.actor.orgId : null;
+
+    if (actorOrgId && fallbackOrgId && actorOrgId !== fallbackOrgId) {
+        const err = new Error("Active organization actor does not match requested organization");
+        err.statusCode = 403;
+        throw err;
+    }
+
+    return actorOrgId;
+}
+
+async function getChatActorContext(client, req, orgId, { requiredPermissions = [] } = {}) {
+    if (req.actor?.type === 'ORGANIZATION') {
+        if (req.actor.orgId !== orgId) {
+            const err = new Error("Active organization actor does not match requested organization");
+            err.statusCode = 403;
+            throw err;
+        }
+
+        const actorPermissions = req.actor.permissions || [];
+        if (!hasAnyPermission(actorPermissions, requiredPermissions)) {
+            const err = new Error("Missing required organization chat permission");
+            err.statusCode = 403;
+            throw err;
+        }
+
+        return {
+            userId: req.user.sub,
+            roleId: req.actor.roleId || null,
+            roleName: req.actor.roleName || null,
+            permissions: actorPermissions,
+        };
+    }
+
+    const memberRes = await client.query(
+        `SELECT cm.user_id, cm.role_id, cr.name AS role_name, cr.permissions
+         FROM organization_members cm
+         LEFT JOIN organization_roles cr ON cm.role_id = cr.role_id
+         WHERE cm.org_id = $1 AND cm.user_id = $2 AND cm.status = 'ACTIVE'`,
+        [orgId, req.user.sub]
+    );
+    if (memberRes.rowCount === 0) {
+        const err = new Error("Not an active member of this organization");
+        err.statusCode = 403;
+        throw err;
+    }
+
+    const member = memberRes.rows[0];
+    const permissions = member.permissions || [];
+    if (!hasAnyPermission(permissions, requiredPermissions)) {
+        const err = new Error("Missing required organization chat permission");
+        err.statusCode = 403;
+        throw err;
+    }
+
+    return {
+        userId: req.user.sub,
+        roleId: member.role_id || null,
+        roleName: member.role_name || null,
+        permissions,
+    };
+}
+
 /**
  * POST /api/organization-chat-sessions/claim
- * Body: { conversationId, orgId }
+ * Body: { conversationId }
  */
 exports.claimSession = async (req, res) => {
     const userId = req.user.sub;
-    const { conversationId, orgId, companyId } = req.body;
-    const targetOrgId = orgId || companyId;
+    const { conversationId } = req.body;
+    let targetOrgId;
 
-    if (!conversationId || !targetOrgId || conversationId === 'new') {
-        return res.status(400).json({ message: "Valid conversationId and orgId are required" });
+    try {
+        targetOrgId = getRequestedOrganizationActorId(req);
+    } catch (err) {
+        return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
+    }
+
+    if (!targetOrgId) {
+        return res.status(403).json({ message: "Organization actor context is required" });
+    }
+
+    if (!conversationId || conversationId === 'new') {
+        return res.status(400).json({ message: "Valid conversationId is required" });
     }
 
     // Feature flag
@@ -56,29 +149,14 @@ exports.claimSession = async (req, res) => {
     try {
         await client.query('BEGIN ISOLATION LEVEL SERIALIZABLE');
 
-        // 1. RBAC: verify membership + permissions
-        const memberRes = await client.query(
-            `SELECT cm.user_id, cr.name AS role_name, cr.role_id, cr.permissions
-             FROM organization_members cm
-             LEFT JOIN organization_roles cr ON cm.role_id = cr.role_id
-             WHERE cm.org_id = $1 AND cm.user_id = $2 AND cm.status = 'ACTIVE'`,
-            [targetOrgId, userId]
-        );
-        if (memberRes.rowCount === 0) {
+        let actorContext;
+        try {
+            actorContext = await getChatActorContext(client, req, targetOrgId, {
+                requiredPermissions: CHAT_MANAGE_PERMISSIONS,
+            });
+        } catch (err) {
             await client.query('ROLLBACK');
-            return res.status(403).json({ message: "Not an active member of this organization" });
-        }
-
-        const member = memberRes.rows[0];
-        const permissions = member.permissions || [];
-        const hasPermission = permissions.includes('*') ||
-            permissions.includes('MANAGE_ORGANIZATION_CHATS') ||
-            permissions.includes('VIEW_ORGANIZATION_CHATS') ||
-            permissions.includes('MANAGE_COMPANY_CHATS') ||
-            permissions.includes('VIEW_COMPANY_CHATS');
-        if (!hasPermission) {
-            await client.query('ROLLBACK');
-            return res.status(403).json({ message: "Missing MANAGE_ORGANIZATION_CHATS permission" });
+            return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
         }
 
         // 2. Verify conversation exists and company is a participant
@@ -135,7 +213,7 @@ exports.claimSession = async (req, res) => {
               status)
              VALUES ($1, $2, $3, $4, $5, $6, 'ACTIVE')
              RETURNING session_id, started_at`,
-            [conversationId, targetOrgId, userId, handlerName, member.role_id || null, member.role_name || null]
+            [conversationId, targetOrgId, userId, handlerName, actorContext.roleId, actorContext.roleName]
         );
         const session = insertRes.rows[0];
 
@@ -211,6 +289,11 @@ exports.releaseSession = async (req, res) => {
 
         const session = sessionRes.rows[0];
 
+        if (req.actor?.type === 'ORGANIZATION' && req.actor.orgId !== session.org_id) {
+            await client.query('ROLLBACK');
+            return res.status(403).json({ message: "Active organization actor does not match requested organization" });
+        }
+
         // Only the handler can release their own session
         if (session.handler_user_id !== userId) {
             await client.query('ROLLBACK');
@@ -264,7 +347,7 @@ exports.releaseSession = async (req, res) => {
     } catch (err) {
         await client.query('ROLLBACK');
         console.error("Error in releaseSession:", err);
-        return res.status(500).json({ message: "Internal server error" });
+        return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
     } finally {
         client.release();
     }
@@ -272,16 +355,26 @@ exports.releaseSession = async (req, res) => {
 
 /**
  * POST /api/organization-chat-sessions/takeover
- * Body: { conversationId, orgId }
+ * Body: { conversationId }
  * Requires FORCE_TAKEOVER permission
  */
 exports.takeoverSession = async (req, res) => {
     const userId = req.user.sub;
-    const { conversationId, orgId, companyId } = req.body;
-    const targetOrgId = orgId || companyId;
+    const { conversationId } = req.body;
+    let targetOrgId;
 
-    if (!conversationId || !targetOrgId || conversationId === 'new') {
-        return res.status(400).json({ message: "Valid conversationId and orgId are required" });
+    try {
+        targetOrgId = getRequestedOrganizationActorId(req);
+    } catch (err) {
+        return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
+    }
+
+    if (!targetOrgId) {
+        return res.status(403).json({ message: "Organization actor context is required" });
+    }
+
+    if (!conversationId || conversationId === 'new') {
+        return res.status(400).json({ message: "Valid conversationId is required" });
     }
 
     if (!isFeatureEnabled(targetOrgId)) {
@@ -310,25 +403,14 @@ exports.takeoverSession = async (req, res) => {
     try {
         await client.query('BEGIN ISOLATION LEVEL SERIALIZABLE');
 
-        // 1. RBAC: verify FORCE_TAKEOVER permission
-        const memberRes = await client.query(
-            `SELECT cm.user_id, cr.name AS role_name, cr.role_id, cr.permissions
-             FROM organization_members cm
-             LEFT JOIN organization_roles cr ON cm.role_id = cr.role_id
-             WHERE cm.org_id = $1 AND cm.user_id = $2 AND cm.status = 'ACTIVE'`,
-            [targetOrgId, userId]
-        );
-        if (memberRes.rowCount === 0) {
+        let actorContext;
+        try {
+            actorContext = await getChatActorContext(client, req, targetOrgId, {
+                requiredPermissions: ['FORCE_TAKEOVER'],
+            });
+        } catch (err) {
             await client.query('ROLLBACK');
-            return res.status(403).json({ message: "Not an active member of this organization" });
-        }
-
-        const member = memberRes.rows[0];
-        const permissions = member.permissions || [];
-        const hasTakeoverPerm = permissions.includes('*') || permissions.includes('FORCE_TAKEOVER');
-        if (!hasTakeoverPerm) {
-            await client.query('ROLLBACK');
-            return res.status(403).json({ message: "Missing FORCE_TAKEOVER permission" });
+            return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
         }
 
         // 2. Self-guard
@@ -390,7 +472,7 @@ exports.takeoverSession = async (req, res) => {
              VALUES ($1, $2, $3, $4, $5, $6, 'ACTIVE', $7)
              RETURNING session_id, started_at`,
             [conversationId, targetOrgId, userId, handlerName,
-                member.role_id || null, member.role_name || null,
+                actorContext.roleId, actorContext.roleName,
                 oldSession.session_id]
         );
         const newSession = newSessionRes.rows[0];
@@ -454,14 +536,24 @@ exports.takeoverSession = async (req, res) => {
 
 /**
  * GET /api/organization-chat-sessions/active
- * Query: ?conversationId=...&orgId=...
+ * Query: ?conversationId=...
  */
 exports.getActiveSession = async (req, res) => {
-    const { conversationId, orgId, companyId } = req.query;
-    const targetOrgId = orgId || companyId;
+    const { conversationId } = req.query;
+    let targetOrgId;
 
-    if (!conversationId || !targetOrgId) {
-        return res.status(400).json({ message: "conversationId and orgId are required" });
+    try {
+        targetOrgId = getRequestedOrganizationActorId(req);
+    } catch (err) {
+        return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
+    }
+
+    if (!targetOrgId) {
+        return res.status(403).json({ message: "Organization actor context is required" });
+    }
+
+    if (!conversationId) {
+        return res.status(400).json({ message: "conversationId is required" });
     }
 
     // Handle "new" conversation flow (not yet created)
@@ -497,15 +589,21 @@ exports.getActiveSession = async (req, res) => {
 
 /**
  * GET /api/organization-chat-sessions/history
- * Query: ?orgId=...&memberId=...&page=1&limit=20
+ * Query: ?memberId=...&page=1&limit=20
  * Requires VIEW_ORGANIZATION_CHATS permission
  */
 exports.getSessionHistory = async (req, res) => {
-    const { orgId, companyId, memberId, startDate, endDate, page = 1, limit = 20 } = req.query;
-    const targetOrgId = orgId || companyId;
+    const { memberId, startDate, endDate, page = 1, limit = 20 } = req.query;
+    let targetOrgId;
+
+    try {
+        targetOrgId = getRequestedOrganizationActorId(req);
+    } catch (err) {
+        return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
+    }
 
     if (!targetOrgId) {
-        return res.status(400).json({ message: "orgId is required" });
+        return res.status(403).json({ message: "Organization actor context is required" });
     }
 
     if (!isFeatureEnabled(targetOrgId)) {
@@ -516,21 +614,9 @@ exports.getSessionHistory = async (req, res) => {
     const safeLimit = Math.min(parseInt(limit) || 20, 100);
 
     try {
-        // RBAC check
-        const userId = req.user.sub;
-        const memberCheck = await pool.query(
-            `SELECT cr.permissions FROM organization_members cm
-             LEFT JOIN organization_roles cr ON cm.role_id = cr.role_id
-             WHERE cm.org_id = $1 AND cm.user_id = $2 AND cm.status = 'ACTIVE'`,
-            [targetOrgId, userId]
-        );
-        if (memberCheck.rowCount === 0) {
-            return res.status(403).json({ message: "Not a member of this organization" });
-        }
-        const perms = memberCheck.rows[0].permissions || [];
-        if (!perms.includes('*') && !perms.includes('VIEW_ORGANIZATION_CHATS') && !perms.includes('MANAGE_ORGANIZATION_CHATS') && !perms.includes('VIEW_COMPANY_CHATS') && !perms.includes('MANAGE_COMPANY_CHATS')) {
-            return res.status(403).json({ message: "Missing VIEW_ORGANIZATION_CHATS permission" });
-        }
+        await getChatActorContext(pool, req, targetOrgId, {
+            requiredPermissions: CHAT_VIEW_PERMISSIONS,
+        });
 
         let query = `
             SELECT ccs.session_id, ccs.conversation_id, ccs.handler_user_id,
@@ -592,7 +678,7 @@ exports.getSessionHistory = async (req, res) => {
         });
     } catch (err) {
         console.error("Error in getSessionHistory:", err);
-        return res.status(500).json({ message: "Internal server error" });
+        return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
     }
 };
 
@@ -616,21 +702,12 @@ exports.getSessionMessages = async (req, res) => {
 
         const session = sessionRes.rows[0];
 
-        // RBAC: Check if requester has VIEW_ORGANIZATION_CHATS for this organization
-        const userId = req.user.sub;
-        const memberCheck = await pool.query(
-            `SELECT cr.permissions FROM organization_members cm
-             LEFT JOIN organization_roles cr ON cm.role_id = cr.role_id
-             WHERE cm.org_id = $1 AND cm.user_id = $2 AND cm.status = 'ACTIVE'`,
-            [session.org_id, userId]
-        );
-
-        if (memberCheck.rowCount === 0) {
-            return res.status(403).json({ message: "Not a member of the organization" });
-        }
-        const perms = memberCheck.rows[0].permissions || [];
-        if (!perms.includes('*') && !perms.includes('VIEW_COMPANY_CHATS') && !perms.includes('MANAGE_COMPANY_CHATS')) {
-            return res.status(403).json({ message: "Missing VIEW_COMPANY_CHATS permission" });
+        try {
+            await getChatActorContext(pool, req, session.org_id, {
+                requiredPermissions: CHAT_VIEW_PERMISSIONS,
+            });
+        } catch (err) {
+            return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
         }
 
         // Fetch messages with session_id

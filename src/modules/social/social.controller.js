@@ -5,6 +5,7 @@ const { connected } = require("node:process");
 const { formatDistanceToNow } = require('date-fns');
 const socketService = require("../../core/infrastructure/socket.service");
 const { checkRateLimit } = require("../../core/utils/sessionRateLimiter");
+const { hasActorPermission } = require("../../core/middlewares/actor-context.middleware");
 
 // Helper function for timeAgo
 const timeAgo = (date) => {
@@ -20,6 +21,53 @@ const timeAgo = (date) => {
     interval = seconds / 60;
     if (interval > 1) return Math.floor(interval) + "m";
     return Math.floor(seconds) + "s";
+};
+
+const getRequestedOrganizationActorId = (req, fallbackOrgId = null) => {
+    const actorOrgId = req.actor?.type === "ORGANIZATION" ? req.actor.orgId : null;
+
+    if (actorOrgId && fallbackOrgId && actorOrgId !== fallbackOrgId) {
+        const err = new Error("Active organization actor does not match requested organization");
+        err.statusCode = 403;
+        throw err;
+    }
+
+    return actorOrgId;
+};
+
+const getSocialActorScope = (req, fallbackOrgId = null) => {
+    const userId = req.user?.sub || req.user?.user_id;
+    const orgId = getRequestedOrganizationActorId(req, fallbackOrgId);
+
+    return {
+        userId,
+        orgId,
+        isOrgActor: !!orgId,
+    };
+};
+
+const getRouteOrganizationId = (req) => req.params.companyId || req.params.orgId || null;
+
+const assertSocialActorPermission = (req, permission) => {
+    if (req.actor?.type !== "ORGANIZATION") {
+        return;
+    }
+
+    if (!hasActorPermission(req.actor.permissions || [], permission)) {
+        const err = new Error(`You do not have permission: ${permission}`);
+        err.statusCode = 403;
+        throw err;
+    }
+};
+
+const getOrganizationConnectionActorScope = (req) => {
+    const orgId = getRouteOrganizationId(req);
+    const actorScope = getSocialActorScope(req, orgId);
+
+    return {
+        ...actorScope,
+        companyId: actorScope.orgId || orgId,
+    };
 };
 
 // Follow another user
@@ -1176,7 +1224,15 @@ exports.getConnectionCount = async (req, res) => {
 
 // Get all conversations of logged-in user
 exports.getConversations = async (req, res) => {
-    const userId = req.user.sub;
+    let actorScope;
+
+    try {
+        actorScope = getSocialActorScope(req, req.query.companyId || null);
+    } catch (err) {
+        return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
+    }
+
+    const { userId, orgId: companyId } = actorScope;
 
     try {
         const result = await pool.query(
@@ -1297,7 +1353,7 @@ WHERE ($2::uuid IS NULL OR NOT EXISTS (
 ))
 
 ORDER BY COALESCE(m.created_at, c.last_message_at, c.updated_at) DESC NULLS LAST;
-  `, [userId, req.query.companyId || null]
+  `, [userId, companyId]
         );
 
         const unreadCountsResult = await pool.query(
@@ -1320,7 +1376,7 @@ ORDER BY COALESCE(m.created_at, c.last_message_at, c.updated_at) DESC NULLS LAST
     AND m.created_at > cp.last_read_at
     AND m.created_at >= cp.joined_at
   GROUP BY m.conversation_id
-  `, [userId, req.query.companyId || null]
+  `, [userId, companyId]
         );
 
         const unreadMap = {};
@@ -1339,27 +1395,23 @@ ORDER BY COALESCE(m.created_at, c.last_message_at, c.updated_at) DESC NULLS LAST
 
     } catch (err) {
         console.error("Get conversations error:", err);
-        res.status(500).json({ message: "Internal server error" });
+        res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
     }
 };
 
 exports.deleteConversation = async (req, res) => {
     const conversationId = req.params.id;
-    const userId = req.user.sub;
-    const companyId = req.query.companyId || null;
+    let actorScope;
 
     try {
-        // RBAC: If deleting as company, verify the user is a member
-        if (companyId) {
-            const memberCheck = await pool.query(
-                'SELECT 1 FROM organization_members WHERE org_id = $1 AND user_id = $2',
-                [companyId, userId]
-            );
-            if (memberCheck.rowCount === 0) {
-                return res.status(403).json({ message: "Forbidden: Not a company member" });
-            }
-        }
+        actorScope = getSocialActorScope(req, req.query.companyId || null);
+    } catch (err) {
+        return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
+    }
 
+    const { userId, orgId: companyId } = actorScope;
+
+    try {
         // Delete conversation only if the requester is a participant
         const result = await pool.query(
             `DELETE FROM conversations 
@@ -1383,13 +1435,22 @@ exports.deleteConversation = async (req, res) => {
         res.status(200).json({ message: "Conversation deleted successfully", conversationId: conversationId });
     } catch (err) {
         console.error("Delete conversation error:", err);
-        res.status(500).json({ message: "Internal server error" });
+        res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
     }
 };
 // Send a message to a user (auto-create 1-on-1 conversation if needed)
 exports.sendMessage = async (req, res) => {
-    const senderId = req.user.sub;
-    const { targetUserId, text_content, shared_post_id, authorCompanyId } = req.body;
+    let actorScope;
+
+    try {
+        actorScope = getSocialActorScope(req, req.body?.authorCompanyId || null);
+    } catch (err) {
+        return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
+    }
+
+    const senderId = actorScope.userId;
+    const authorCompanyId = actorScope.orgId;
+    const { targetUserId, text_content, shared_post_id } = req.body;
     const images = req.files; // Array of files from multer
 
     const trimmedText = text_content?.trim() || '';
@@ -1408,21 +1469,18 @@ exports.sendMessage = async (req, res) => {
         try {
             await client.query('BEGIN ISOLATION LEVEL SERIALIZABLE');
 
-            // RBAC: If acting as company, verify membership
             let senderName, senderAvatar;
             if (authorCompanyId) {
-                const memberCheck = await client.query(
-                    `SELECT c.name, c.logo_url FROM organization_members cm 
-                 JOIN organizations c ON cm.org_id = c.org_id
-                 WHERE cm.org_id = $1 AND cm.user_id = $2`,
-                    [authorCompanyId, senderId]
+                const orgRes = await client.query(
+                    `SELECT name, logo_url FROM organizations WHERE org_id = $1`,
+                    [authorCompanyId]
                 );
-                if (memberCheck.rowCount === 0) {
+                if (orgRes.rowCount === 0) {
                     await client.query('ROLLBACK');
-                    return res.status(403).json({ message: "Forbidden: You are not a member of this company" });
+                    return res.status(404).json({ message: "Company not found" });
                 }
-                senderName = memberCheck.rows[0].name;
-                senderAvatar = memberCheck.rows[0].logo_url;
+                senderName = orgRes.rows[0].name;
+                senderAvatar = orgRes.rows[0].logo_url;
 
                 // Session check: if feature enabled, require active session
                 const sessionFeatureEnabled = (() => {
@@ -1811,7 +1869,7 @@ exports.sendMessage = async (req, res) => {
             }
             console.error("Error in sendMessage:", err);
             if (!res.headersSent) {
-                res.status(500).json({ message: "Internal server error" });
+                res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
             }
             break; // Exit retry loop on non-serialization errors
         }
@@ -1819,29 +1877,23 @@ exports.sendMessage = async (req, res) => {
     client.release();
 };
 exports.markConversationRead = async (req, res) => {
-    const userId = req.user.sub;
     const {
         conversationId
     } = req.params;
+    let actorScope;
 
-    const companyId = req.body?.companyId || null;
+    try {
+        actorScope = getSocialActorScope(req, req.body?.companyId || null);
+    } catch (err) {
+        return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
+    }
+
+    const { userId, orgId: companyId } = actorScope;
 
     const client = await pool.connect();
 
     try {
         await client.query("BEGIN");
-
-        // RBAC: If marking as company, verify the user is a member
-        if (companyId) {
-            const memberCheck = await client.query(
-                'SELECT 1 FROM organization_members WHERE org_id = $1 AND user_id = $2',
-                [companyId, userId]
-            );
-            if (memberCheck.rowCount === 0) {
-                await client.query('ROLLBACK');
-                return res.status(403).json({ message: "Forbidden: Not a company member" });
-            }
-        }
 
         // 1. Update the participant's last_read_at timestamp
         const result = await client.query(
@@ -1927,8 +1979,8 @@ exports.markConversationRead = async (req, res) => {
     } catch (err) {
         await client.query("ROLLBACK");
         console.error("Mark conversation read error:", err);
-        res.status(500).json({
-            message: "Internal server error"
+        res.status(err.statusCode || 500).json({
+            message: err.message || "Internal server error"
         });
     } finally {
         client.release();
@@ -1939,12 +1991,19 @@ exports.getMessageSeenBy = async (req, res) => {
     const {
         messageId
     } = req.params;
-    const userId = req.user.sub;
+    let actorScope;
+
+    try {
+        actorScope = getSocialActorScope(req, req.query.companyId || null);
+    } catch (err) {
+        return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
+    }
+
+    const { userId, orgId: companyId } = actorScope;
 
     try {
         // Validation: Verify user is part of the conversation this message belongs to
         // (Optional but recommended for security)
-        const companyId = req.query.companyId || null;
         const accessCheck = await pool.query(
             `
             SELECT 1 
@@ -1986,32 +2045,22 @@ exports.getMessageSeenBy = async (req, res) => {
 
     } catch (err) {
         console.error("Get message seen by error:", err);
-        res.status(500).json({
-            message: "Internal server error"
+        res.status(err.statusCode || 500).json({
+            message: err.message || "Internal server error"
         });
     }
 };
 
 // Get all messages in a conversation
 exports.getMessages = async (req, res) => {
-    const userId = req.user.sub;
     const conversation_id = req.params.id;
     const limit = parseInt(req.query.limit) || 50;
     let before = req.query.before || null;
+    let actorScope;
 
     try {
-        const companyId = req.query.companyId || null;
-
-        // RBAC: If requesting as company, verify membership
-        if (companyId) {
-            const memberCheck = await pool.query(
-                'SELECT 1 FROM organization_members WHERE org_id = $1 AND user_id = $2',
-                [companyId, userId]
-            );
-            if (memberCheck.rowCount === 0) {
-                return res.status(403).json({ message: "Forbidden: Not a company member" });
-            }
-        }
+        actorScope = getSocialActorScope(req, req.query.companyId || null);
+        const { userId, orgId: companyId } = actorScope;
 
         // Robust UUID check (standard 8-4-4-4-12 hex with hyphens)
         const isUUID = (str) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(str);
@@ -2045,7 +2094,7 @@ exports.getMessages = async (req, res) => {
                 ($3::uuid IS NULL AND cp.user_id = $2)
              )
              LIMIT 1`,
-            [conversation_id, userId, req.query.companyId || null]
+            [conversation_id, userId, companyId]
         );
 
         if (partCheck.rowCount === 0)
@@ -2147,7 +2196,8 @@ exports.getMessages = async (req, res) => {
              AND ($3::timestamp IS NULL OR m.created_at < $3::timestamp)
              ORDER BY m.created_at DESC
              LIMIT $5`,
-            [conversation_id, is_group, before, userId, limit, req.query.companyId || null]
+            [conversation_id, is_group, before, userId, limit, companyId]
+            
         );
 
         // Process messages: Filter "delete for me" and mask "delete for everyone"
@@ -2183,7 +2233,7 @@ exports.getMessages = async (req, res) => {
         res.json(comments);
     } catch (err) { // added catch block close logic check 
         console.error("Get messages error:", err);
-        res.status(500).json({ message: "Internal server error" });
+        res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
     }
 };
 
@@ -2303,12 +2353,20 @@ exports.editMessage = async (req, res) => {
 // Get all notifications for logged-in user
 // Get all notifications for logged-in user
 exports.getNotifications = async (req, res) => {
-    const userId = req.user.sub;
-    const { companyId } = req.query;
+    let actorScope;
+
+    try {
+        actorScope = getSocialActorScope(req, req.query.companyId || null);
+    } catch (err) {
+        return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
+    }
+
+    const { userId, orgId: companyId } = actorScope;
 
     try {
         let query = `
             SELECT n.*, 
+                n.recipient_org_id as recipient_company_id,
                 CASE 
                     WHEN (n.metadata->>'org_id') IS NOT NULL THEN c.name 
                     ELSE u.full_name 
@@ -2328,24 +2386,32 @@ exports.getNotifications = async (req, res) => {
             WHERE 
         `;
 
-        const params = [];
-        let paramIdx = 1;
-
         if (companyId) {
-            // Verify user is part of company (optional but good)
-            query += ` n.recipient_org_id = $${paramIdx} `;
-            params.push(companyId);
+            query += `
+                n.recipient_org_id = $1
+                AND NOT EXISTS (
+                    SELECT 1
+                    FROM blocks b
+                    WHERE b.blocker_id = $1
+                    AND b.blocked_id = n.sender_id
+                )
+            `;
         } else {
-            query += ` n.user_id = $${paramIdx} AND n.recipient_org_id IS NULL `;
-            params.push(userId);
+            query += `
+                n.user_id = $1
+                AND n.recipient_org_id IS NULL
+                AND NOT EXISTS (
+                    SELECT 1
+                    FROM blocks b
+                    WHERE b.blocker_id = $1
+                    AND b.blocked_id = n.sender_id
+                )
+            `;
         }
-
-        // Common filters
-        query += ` AND NOT EXISTS (SELECT 1 FROM blocks WHERE blocker_id = $${companyId ? paramIdx : paramIdx} AND blocked_id = n.sender_id) `;
 
         query += ` ORDER BY n.created_at DESC`;
 
-        const result = await pool.query(query, params);
+        const result = await pool.query(query, [companyId || userId]);
         res.json(result.rows);
     } catch (err) {
         console.error("Get notifications error:", err);
@@ -2355,17 +2421,28 @@ exports.getNotifications = async (req, res) => {
 
 // Mark a notification as read
 exports.markNotificationRead = async (req, res) => {
-    const userId = req.user.sub;
     const { id } = req.params;
+    let actorScope;
 
     try {
-        const result = await pool.query(
-            `UPDATE notifications 
-       SET is_read = TRUE 
-       WHERE notification_id = $1 AND (user_id = $2 OR recipient_org_id IN (SELECT org_id FROM organization_members WHERE user_id = $2))
-    RETURNING * `,
-            [id, userId]
-        );
+        actorScope = getSocialActorScope(req, req.query.companyId || req.body?.companyId || null);
+    } catch (err) {
+        return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
+    }
+
+    const { userId, orgId: companyId } = actorScope;
+
+    try {
+        const query = companyId
+            ? `UPDATE notifications
+               SET is_read = TRUE
+               WHERE notification_id = $1 AND recipient_org_id = $2
+               RETURNING *`
+            : `UPDATE notifications
+               SET is_read = TRUE
+               WHERE notification_id = $1 AND user_id = $2 AND recipient_org_id IS NULL
+               RETURNING *`;
+        const result = await pool.query(query, [id, companyId || userId]);
 
         if (result.rowCount === 0)
             return res.status(404).json({ message: "Notification not found" });
@@ -2385,23 +2462,21 @@ exports.markNotificationRead = async (req, res) => {
 
 // Mark ALL notifications as read
 exports.markAllNotificationsRead = async (req, res) => {
-    const userId = req.user.sub;
-    const { companyId } = req.body;
+    let actorScope;
+
+    try {
+        actorScope = getSocialActorScope(req, req.body?.companyId || req.query.companyId || null);
+    } catch (err) {
+        return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
+    }
+
+    const { userId, orgId: companyId } = actorScope;
 
     try {
         let query = `UPDATE notifications SET is_read = TRUE WHERE is_read = FALSE`;
         const params = [];
 
         if (companyId) {
-            // Validate membership
-            const memberCheck = await pool.query(
-                "SELECT 1 FROM organization_members WHERE org_id = $1 AND user_id = $2",
-                [companyId, userId]
-            );
-            if (memberCheck.rowCount === 0) {
-                return res.status(403).json({ message: "Not authorized for this company" });
-            }
-
             query += ` AND recipient_org_id = $1`;
             params.push(companyId);
         } else {
@@ -2688,8 +2763,17 @@ exports.getProfileStats = async (req, res) => {
  * Company (owner/admin) sends request to user
  */
 exports.sendCompanyConnectionRequest = async (req, res) => {
-    const { companyId, userId: targetUserId } = req.params;
-    const initiatorId = req.user.sub;
+    let actorScope;
+
+    try {
+        actorScope = getOrganizationConnectionActorScope(req);
+        assertSocialActorPermission(req, "MANAGE_CONNECTIONS");
+    } catch (err) {
+        return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
+    }
+
+    const { companyId, userId: initiatorId } = actorScope;
+    const { userId: targetUserId } = req.params;
     const { message } = req.body;
 
     const client = await pool.connect();
@@ -2750,9 +2834,9 @@ exports.sendCompanyConnectionRequest = async (req, res) => {
         };
 
         const notifRes = await client.query(
-            `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, recipient_org_id) 
-             VALUES ($1, $2, $3, $4, $5, NULL) RETURNING *`,
-            [targetUserId, initiatorId, "company_connection_request", notificationData.text, companyId]
+            `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, recipient_org_id, metadata) 
+             VALUES ($1, $2, $3, $4, $5, NULL, $6) RETURNING *`,
+            [targetUserId, initiatorId, "company_connection_request", notificationData.text, companyId, JSON.stringify({ org_id: companyId })]
         );
 
         socketService.notifyUser(targetUserId, "notification", {
@@ -2771,7 +2855,7 @@ exports.sendCompanyConnectionRequest = async (req, res) => {
     } catch (err) {
         await client.query('ROLLBACK');
         console.error("Send company connection error:", err);
-        res.status(500).json({ message: "Internal server error" });
+        res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
     } finally {
         client.release();
     }
@@ -2782,9 +2866,21 @@ exports.sendCompanyConnectionRequest = async (req, res) => {
  * User accepts/rejects request from company
  */
 exports.handleCompanyConnectionRequest = async (req, res) => {
-    const { companyId } = req.params;
     const { status } = req.body; // 'accepted' or 'rejected'
     const userId = req.user.sub;
+    let companyId;
+
+    try {
+        if (req.actor?.type === "ORGANIZATION") {
+            const err = new Error("Use personal actor context to respond to company connection requests");
+            err.statusCode = 403;
+            throw err;
+        }
+
+        companyId = getRequestedOrganizationActorId(req, getRouteOrganizationId(req));
+    } catch (err) {
+        return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
+    }
 
     if (!['accepted', 'rejected'].includes(status)) {
         return res.status(400).json({ message: "Invalid action" });
@@ -2931,7 +3027,7 @@ exports.handleCompanyConnectionRequest = async (req, res) => {
     } catch (err) {
         await client.query('ROLLBACK');
         console.error("Handle company connection error:", err);
-        res.status(500).json({ message: "Internal server error" });
+        res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
     } finally {
         client.release();
     }
@@ -2941,7 +3037,17 @@ exports.handleCompanyConnectionRequest = async (req, res) => {
  * cancelCompanyConnectionRequest
  */
 exports.cancelCompanyConnectionRequest = async (req, res) => {
-    const { companyId, userId: targetUserId } = req.params;
+    let actorScope;
+
+    try {
+        actorScope = getOrganizationConnectionActorScope(req);
+        assertSocialActorPermission(req, "MANAGE_CONNECTIONS");
+    } catch (err) {
+        return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
+    }
+
+    const { companyId } = actorScope;
+    const { userId: targetUserId } = req.params;
 
     try {
         await pool.query(
@@ -2959,7 +3065,29 @@ exports.cancelCompanyConnectionRequest = async (req, res) => {
  * removeCompanyConnection
  */
 exports.removeCompanyConnection = async (req, res) => {
-    const { companyId, userId: targetUserId } = req.params;
+    let actorScope;
+
+    try {
+        actorScope = getOrganizationConnectionActorScope(req);
+    } catch (err) {
+        return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
+    }
+
+    const { companyId, userId } = actorScope;
+    const { userId: targetUserId } = req.params;
+
+    try {
+        const isTargetUser = userId === targetUserId;
+        const isOrgManager = req.actor?.type === "ORGANIZATION";
+
+        if (isOrgManager) {
+            assertSocialActorPermission(req, "MANAGE_CONNECTIONS");
+        } else if (!isTargetUser) {
+            return res.status(403).json({ message: "Not authorized to remove this company connection" });
+        }
+    } catch (err) {
+        return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
+    }
 
     const client = await pool.connect();
     try {
@@ -3016,8 +3144,16 @@ exports.removeCompanyConnection = async (req, res) => {
  * authority: organization_connections (for 'connected') -> organization_connection_requests (for 'pending')
  */
 exports.getCompanyConnectionStatus = async (req, res) => {
-    const { companyId, userId: targetUserId } = req.params;
-    const currentUserId = req.user.sub;
+    let actorScope;
+
+    try {
+        actorScope = getOrganizationConnectionActorScope(req);
+    } catch (err) {
+        return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
+    }
+
+    const { companyId, userId: currentUserId } = actorScope;
+    const { userId: targetUserId } = req.params;
 
     try {
         // 1. Check direct connection

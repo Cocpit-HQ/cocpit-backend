@@ -4,6 +4,7 @@
  */
 const authService = require("./auth.service");
 const otpService = require("./otp.service");
+const actorContextService = require("./actorContext.service");
 
 // ─── Register ──────────────────────────────────────────────────────────────────
 
@@ -144,6 +145,59 @@ exports.getMe = async (req, res) => {
     } catch (err) {
         console.error("GetMe error:", err);
         res.status(500).json({ message: "Internal server error" });
+    }
+};
+
+exports.getActorContext = async (req, res) => {
+    try {
+        const result = await actorContextService.getActorContext(
+            req.user.sub,
+            req.cookies?.[actorContextService.ACTOR_CONTEXT_COOKIE_NAME]
+        );
+
+        if (result.clearCookie) {
+            res.clearCookie(
+                actorContextService.ACTOR_CONTEXT_COOKIE_NAME,
+                actorContextService.ACTOR_CONTEXT_COOKIE_OPTIONS
+            );
+        }
+
+        return res.json({
+            actor: result.actor,
+            organizations: result.organizations,
+            source: result.source,
+        });
+    } catch (err) {
+        console.error("Get actor context error:", err);
+        return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
+    }
+};
+
+exports.setActorContext = async (req, res) => {
+    try {
+        const result = await actorContextService.setActorContext(req.user.sub, req.body);
+
+        if (result.cookieValue) {
+            res.cookie(
+                actorContextService.ACTOR_CONTEXT_COOKIE_NAME,
+                result.cookieValue,
+                actorContextService.ACTOR_CONTEXT_COOKIE_OPTIONS
+            );
+        } else {
+            res.clearCookie(
+                actorContextService.ACTOR_CONTEXT_COOKIE_NAME,
+                actorContextService.ACTOR_CONTEXT_COOKIE_OPTIONS
+            );
+        }
+
+        return res.json({
+            actor: result.actor,
+            organizations: result.organizations,
+            source: result.source,
+        });
+    } catch (err) {
+        console.error("Set actor context error:", err);
+        return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
     }
 };
 

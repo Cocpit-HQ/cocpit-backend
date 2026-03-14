@@ -7,6 +7,50 @@ const { logAudit } = require("../../core/infrastructure/audit.service");
 const { checkOrgPermission } = require("../../core/utils/rbac");
 const pool = require("../../core/db/pool");
 const { notifyOrgFollowers } = require("../../services/notification.service");
+const { hasActorPermission } = require("../../core/middlewares/actor-context.middleware");
+
+const getRequestedOrganizationActorId = (req, fallbackOrgId = null) => {
+    const actorOrgId = req.actor?.type === "ORGANIZATION" ? req.actor.orgId : null;
+
+    if (actorOrgId && fallbackOrgId && actorOrgId !== fallbackOrgId) {
+        const err = new Error("Active organization actor does not match requested organization");
+        err.statusCode = 403;
+        throw err;
+    }
+
+    return actorOrgId;
+};
+
+const hasAnyActorPermission = (actorPermissions, permissions) => {
+    if (!permissions) return true;
+    const list = Array.isArray(permissions) ? permissions : [permissions];
+    return list.some((permission) => hasActorPermission(actorPermissions || [], permission));
+};
+
+const assertEventOrgPermission = async (req, orgId, permissions, queryable = pool) => {
+    if (!orgId) return;
+
+    if (req.actor?.type === "ORGANIZATION") {
+        if (req.actor.orgId !== orgId) {
+            const err = new Error("Active organization actor does not match requested organization");
+            err.statusCode = 403;
+            throw err;
+        }
+        if (!hasAnyActorPermission(req.actor.permissions, permissions)) {
+            const err = new Error("Not authorized for this organization");
+            err.statusCode = 403;
+            throw err;
+        }
+        return;
+    }
+
+    const ok = await checkOrgPermission(queryable, orgId, req.user.sub, permissions);
+    if (!ok) {
+        const err = new Error("Not authorized for this organization");
+        err.statusCode = 403;
+        throw err;
+    }
+};
 
 // ─── List Events (with filtering + cursor pagination) ───────────────────────────
 
@@ -16,6 +60,7 @@ exports.getEvents = async (req, res) => {
 
     try {
         const userId = req.user ? req.user.sub : null;
+        const filterOrgId = typeof filterCompanyId === "string" ? filterCompanyId : null;
         const values = [userId];
 
         let query = `SELECT e.*, COALESCE(c.name, u.full_name) as organizer_name,
@@ -28,7 +73,7 @@ exports.getEvents = async (req, res) => {
       LEFT JOIN event_saves es ON es.event_id = e.event_id AND es.user_id = $1
       WHERE 1=1`;
 
-        if (filterCompanyId && filterCompanyId !== 'undefined') { values.push(filterCompanyId); query += ` AND e.org_id = $${values.length}`; }
+        if (filterOrgId && filterOrgId !== 'undefined') { values.push(filterOrgId); query += ` AND e.org_id = $${values.length}`; }
         else if (filterUserId && filterUserId !== 'undefined') { values.push(filterUserId); query += ` AND e.organizer_id = $${values.length}`; }
         if (q) { values.push(`%${q}%`); const idx = values.length; query += ` AND (e.title ILIKE $${idx} OR e.description ILIKE $${idx} OR e.location ILIKE $${idx} OR u.full_name ILIKE $${idx} OR c.name ILIKE $${idx})`; }
         if (title) { values.push(`%${title}%`); query += ` AND e.title ILIKE $${values.length}`; }
@@ -94,16 +139,16 @@ exports.createEvent = async (req, res) => {
     try {
         const userId = req.user.sub;
         const { title, description, category, eventType, virtualLink, location,
-            startTime, endTime, maxAttendees, registrationDeadline, waitlist, companyId } = req.body;
+            startTime, endTime, maxAttendees, registrationDeadline, waitlist } = req.body;
 
         if (!title || !description || !startTime) return res.status(400).json({ message: "Please fill all required fields" });
         if (eventType === "Online" && !virtualLink) return res.status(400).json({ message: "Virtual link is required for online events" });
 
+        const requestedOrgId = getRequestedOrganizationActorId(req);
         let finalCompanyId = null;
-        if (companyId) {
-            const canPost = await checkOrgPermission(pool, companyId, userId, "CREATE_CONTENT");
-            if (!canPost) return res.status(403).json({ message: "You do not have permission to post events for this organization." });
-            finalCompanyId = companyId;
+        if (requestedOrgId) {
+            await assertEventOrgPermission(req, requestedOrgId, ["CREATE_CONTENT", "MANAGE_COMPANY"]);
+            finalCompanyId = requestedOrgId;
         }
 
         const bannerUrl = req.file ? req.file.path : null;
@@ -127,7 +172,7 @@ exports.createEvent = async (req, res) => {
         res.status(201).json({ message: "Event created successfully", eventId });
     } catch (error) {
         console.error(error);
-        res.status(500).json({ message: "Error creating event" });
+        res.status(error.statusCode || 500).json({ message: error.message || "Error creating event" });
     }
 };
 
@@ -199,18 +244,17 @@ exports.getMyRegisteredEvents = async (req, res) => {
 
 exports.getMyCreatedEvents = async (req, res) => {
     const userId = req.user.sub;
-    const { companyId } = req.query;
 
     try {
-        if (companyId) {
-            const canView = await checkOrgPermission(pool, companyId, userId, "VIEW_ANALYTICS") || await checkOrgPermission(pool, companyId, userId, "CREATE_CONTENT");
-            if (!canView) return res.status(403).json({ message: "Forbidden" });
+        const requestedOrgId = getRequestedOrganizationActorId(req);
+        if (requestedOrgId) {
+            await assertEventOrgPermission(req, requestedOrgId, ["VIEW_ANALYTICS", "CREATE_CONTENT", "MANAGE_COMPANY"]);
         }
-        const events = await eventRepo.getMyCreatedEvents(userId, companyId);
+        const events = await eventRepo.getMyCreatedEvents(userId, requestedOrgId);
         res.json(events);
     } catch (err) {
         console.error("Get my created events error:", err);
-        res.status(500).json({ message: "Internal server error" });
+        res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
     }
 };
 
@@ -266,8 +310,12 @@ exports.updateEvent = async (req, res) => {
 
         let authorized = event.organizer_id === userId;
         if (!authorized && event.org_id) {
-            authorized = await checkOrgPermission(pool, event.org_id, userId, "MANAGE_COMPANY");
-            if (!authorized) authorized = await checkOrgPermission(pool, event.org_id, userId, "CREATE_CONTENT");
+            try {
+                await assertEventOrgPermission(req, event.org_id, ["MANAGE_COMPANY", "CREATE_CONTENT"]);
+                authorized = true;
+            } catch (err) {
+                return res.status(err.statusCode || 403).json({ message: err.message || "Not authorized to update this event" });
+            }
         }
         if (!authorized) return res.status(403).json({ message: "Not authorized to update this event" });
 
@@ -307,8 +355,12 @@ exports.deleteEvent = async (req, res) => {
 
         let authorized = event.organizer_id === userId;
         if (!authorized && event.org_id) {
-            authorized = await checkOrgPermission(pool, event.org_id, userId, "MANAGE_COMPANY");
-            if (!authorized) authorized = await checkOrgPermission(pool, event.org_id, userId, "CREATE_CONTENT");
+            try {
+                await assertEventOrgPermission(req, event.org_id, ["MANAGE_COMPANY", "CREATE_CONTENT"]);
+                authorized = true;
+            } catch (err) {
+                return res.status(err.statusCode || 403).json({ message: err.message || "Not authorized to delete this event" });
+            }
         }
         if (!authorized) return res.status(403).json({ message: "Not authorized to delete this event" });
 

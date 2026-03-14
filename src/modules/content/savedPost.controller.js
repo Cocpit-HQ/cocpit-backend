@@ -1,18 +1,40 @@
 const pool = require("../../core/db/pool");
 
+const getRequestedOrganizationActorId = (req, fallbackOrgId = null) => {
+    const actorOrgId = req.actor?.type === "ORGANIZATION" ? req.actor.orgId : null;
+
+    if (actorOrgId && fallbackOrgId && actorOrgId !== fallbackOrgId) {
+        const err = new Error("Active organization actor does not match requested organization");
+        err.statusCode = 403;
+        throw err;
+    }
+
+    return actorOrgId;
+};
+
+const getSavedPostActorScope = (req, fallbackOrgId = null) => {
+    const orgId = getRequestedOrganizationActorId(req, fallbackOrgId);
+
+    return {
+        userId: req.user.sub,
+        orgId,
+        isOrgActor: !!orgId,
+    };
+};
+
 // 1️⃣ Create Folder
 exports.createFolder = async (req, res) => {
     const { name, companyId } = req.body;
-    const userId = req.user.sub;
 
     if (!name || name.trim() === "") {
         return res.status(400).json({ success: false, message: "Folder name is required" });
     }
 
     try {
+        const { userId, orgId } = getSavedPostActorScope(req, companyId || null);
         const result = await pool.query(
             `INSERT INTO saved_folders (user_id, org_id, name) VALUES ($1, $2, $3) RETURNING *`,
-            [userId, companyId || null, name.trim()]
+            [userId, orgId, name.trim()]
         );
         return res.status(201).json({ success: true, folder: result.rows[0] });
     } catch (error) {
@@ -20,17 +42,15 @@ exports.createFolder = async (req, res) => {
             return res.status(409).json({ success: false, message: "Folder with this name already exists" });
         }
         console.error("Create Folder Error:", error);
-        return res.status(500).json({ success: false, message: "Server error" });
+        return res.status(error.statusCode || 500).json({ success: false, message: error.message || "Server error" });
     }
 };
 
 // 2️⃣ Get Folders
 exports.getFolders = async (req, res) => {
-    const userId = req.user.sub;
     const { companyId } = req.query;
     try {
-        const actorId = companyId || userId;
-        const isOrgActor = !!companyId;
+        const { userId, orgId, isOrgActor } = getSavedPostActorScope(req, companyId || null);
 
         // Get folders with post counts
         const result = await pool.query(
@@ -41,12 +61,12 @@ exports.getFolders = async (req, res) => {
                  ${isOrgActor ? 'sf.org_id = $2::uuid' : 'sf.org_id IS NULL'}
              )
              ORDER BY sf.created_at DESC`,
-            isOrgActor ? [userId, companyId] : [userId]
+            isOrgActor ? [userId, orgId] : [userId]
         );
         return res.status(200).json({ success: true, folders: result.rows });
     } catch (error) {
         console.error("Get Folders Error:", error);
-        return res.status(500).json({ success: false, message: "Server error" });
+        return res.status(error.statusCode || 500).json({ success: false, message: error.message || "Server error" });
     }
 };
 
@@ -54,22 +74,20 @@ exports.getFolders = async (req, res) => {
 exports.renameFolder = async (req, res) => {
     const { folderId } = req.params;
     const { name, companyId } = req.body;
-    const userId = req.user.sub;
 
     if (!name || name.trim() === "") {
         return res.status(400).json({ success: false, message: "New name is required" });
     }
 
     try {
-        const actorId = companyId || userId;
-        const isOrgActor = !!companyId;
+        const { userId, orgId, isOrgActor } = getSavedPostActorScope(req, companyId || null);
 
         const result = await pool.query(
             `UPDATE saved_folders SET name = $1, updated_at = NOW() 
              WHERE folder_id = $2 AND user_id = $3 AND (
                  ${isOrgActor ? 'org_id = $4::uuid' : 'org_id IS NULL'}
              ) RETURNING *`,
-            isOrgActor ? [name.trim(), folderId, userId, companyId] : [name.trim(), folderId, userId]
+            isOrgActor ? [name.trim(), folderId, userId, orgId] : [name.trim(), folderId, userId]
         );
 
         if (result.rowCount === 0) {
@@ -82,7 +100,7 @@ exports.renameFolder = async (req, res) => {
             return res.status(409).json({ success: false, message: "Folder with this name already exists" });
         }
         console.error("Rename Folder Error:", error);
-        return res.status(500).json({ success: false, message: "Server error" });
+        return res.status(error.statusCode || 500).json({ success: false, message: error.message || "Server error" });
     }
 };
 
@@ -90,15 +108,14 @@ exports.renameFolder = async (req, res) => {
 exports.deleteFolder = async (req, res) => {
     const { folderId } = req.params;
     const { companyId } = req.query;
-    const userId = req.user.sub;
 
     try {
-        const isOrgActor = !!companyId;
+        const { userId, orgId, isOrgActor } = getSavedPostActorScope(req, companyId || null);
         const result = await pool.query(
             `DELETE FROM saved_folders WHERE folder_id = $1 AND user_id = $2 AND (
                 ${isOrgActor ? 'org_id = $3::uuid' : 'org_id IS NULL'}
             ) RETURNING *`,
-            isOrgActor ? [folderId, userId, companyId] : [folderId, userId]
+            isOrgActor ? [folderId, userId, orgId] : [folderId, userId]
         );
 
         if (result.rowCount === 0) {
@@ -108,7 +125,7 @@ exports.deleteFolder = async (req, res) => {
         return res.status(200).json({ success: true, message: "Folder deleted" });
     } catch (error) {
         console.error("Delete Folder Error:", error);
-        return res.status(500).json({ success: false, message: "Server error" });
+        return res.status(error.statusCode || 500).json({ success: false, message: error.message || "Server error" });
     }
 };
 
@@ -117,17 +134,16 @@ exports.deleteFolder = async (req, res) => {
 exports.toggleSavePost = async (req, res) => {
     const { postId } = req.params;
     const { folderId, companyId } = req.body; // Optional. If present, we force save/move.
-    const userId = req.user.sub;
 
     try {
-        const isOrgActor = !!companyId;
+        const { userId, orgId, isOrgActor } = getSavedPostActorScope(req, companyId || null);
 
         // Check if already saved
         const existing = await pool.query(
             `SELECT * FROM saved_post WHERE user_id = $1 AND post_id = $2 AND (
                 ${isOrgActor ? 'org_id = $3::uuid' : 'org_id IS NULL'}
             )`,
-            isOrgActor ? [userId, postId, companyId] : [userId, postId]
+            isOrgActor ? [userId, postId, orgId] : [userId, postId]
         );
 
         if (folderId !== undefined) {
@@ -137,14 +153,14 @@ exports.toggleSavePost = async (req, res) => {
                     `UPDATE saved_post SET folder_id = $1, saved_at = NOW() WHERE user_id = $2 AND post_id = $3 AND (
                         ${isOrgActor ? 'org_id = $4::uuid' : 'org_id IS NULL'}
                     )`,
-                    isOrgActor ? [folderId, userId, postId, companyId] : [folderId, userId, postId]
+                    isOrgActor ? [folderId, userId, postId, orgId] : [folderId, userId, postId]
                 );
                 return res.status(200).json({ success: true, saved: true, message: "Post moved to folder" });
             } else {
                 // Insert with folder
                 await pool.query(
                     `INSERT INTO saved_post (user_id, org_id, post_id, folder_id) VALUES ($1, $2, $3, $4)`,
-                    [userId, companyId || null, postId, folderId]
+                    [userId, orgId, postId, folderId]
                 );
                 return res.status(200).json({ success: true, saved: true, message: "Post saved to folder" });
             }
@@ -157,7 +173,7 @@ exports.toggleSavePost = async (req, res) => {
                 `DELETE FROM saved_post WHERE user_id = $1 AND post_id = $2 AND (
                     ${isOrgActor ? 'org_id = $3::uuid' : 'org_id IS NULL'}
                 )`,
-                isOrgActor ? [userId, postId, companyId] : [userId, postId]
+                isOrgActor ? [userId, postId, orgId] : [userId, postId]
             );
             return res.status(200).json({ success: true, saved: false, message: "Post unsaved" });
         }
@@ -165,25 +181,24 @@ exports.toggleSavePost = async (req, res) => {
         // Save (Default NULL folder)
         await pool.query(
             `INSERT INTO saved_post (user_id, org_id, post_id) VALUES ($1, $2, $3)`,
-            [userId, companyId || null, postId]
+            [userId, orgId, postId]
         );
 
         return res.status(200).json({ success: true, saved: true, message: "Post saved" });
 
     } catch (error) {
         console.error("Toggle Save Error:", error);
-        return res.status(500).json({ success: false, message: "Server error" });
+        return res.status(error.statusCode || 500).json({ success: false, message: error.message || "Server error" });
     }
 };
 
 // 6️⃣ Get Saved Posts (with Folder support)
 exports.getSavedPosts = async (req, res) => {
-    const userId = req.user.sub;
     const { folderId, page = 1, limit = 20, companyId } = req.query; // Added pagination
     const offset = (page - 1) * limit;
 
     try {
-        const isOrgActor = !!companyId;
+        const { userId, orgId, isOrgActor } = getSavedPostActorScope(req, companyId || null);
         let queryParams = [userId];
         let queryText = `SELECT 
             p.*, 
@@ -220,10 +235,10 @@ exports.getSavedPosts = async (req, res) => {
          LEFT JOIN organizations comp_auth ON comp_auth.org_id = p.author_org_id
          WHERE sp.user_id = $1 AND (
              ${isOrgActor ? 'sp.org_id = $2::uuid' : 'sp.org_id IS NULL'}
-         )`;
+        )`;
 
         let paramIndex = isOrgActor ? 3 : 2;
-        if (isOrgActor) queryParams.push(companyId);
+        if (isOrgActor) queryParams.push(orgId);
 
         if (folderId === 'null' || folderId === 'unsorted') {
             queryText += ` AND sp.folder_id IS NULL`;
@@ -245,7 +260,7 @@ exports.getSavedPosts = async (req, res) => {
 
     } catch (error) {
         console.error("Get Saved Posts Error:", error);
-        return res.status(500).json({ success: false, message: "Server error" });
+        return res.status(error.statusCode || 500).json({ success: false, message: error.message || "Server error" });
     }
 };
 
@@ -253,15 +268,14 @@ exports.getSavedPosts = async (req, res) => {
 exports.checkIfPostSaved = async (req, res) => {
     const { postId } = req.params;
     const { companyId } = req.query;
-    const userId = req.user.sub;
 
     try {
-        const isOrgActor = !!companyId;
+        const { userId, orgId, isOrgActor } = getSavedPostActorScope(req, companyId || null);
         const result = await pool.query(
             `SELECT folder_id FROM saved_post WHERE user_id = $1 AND post_id = $2 AND (
                 ${isOrgActor ? 'org_id = $3::uuid' : 'org_id IS NULL'}
             )`,
-            isOrgActor ? [userId, postId, companyId] : [userId, postId]
+            isOrgActor ? [userId, postId, orgId] : [userId, postId]
         );
 
         return res.status(200).json({
@@ -272,6 +286,6 @@ exports.checkIfPostSaved = async (req, res) => {
 
     } catch (error) {
         console.error("Check Saved Error:", error);
-        return res.status(500).json({ success: false, message: "Server error" });
+        return res.status(error.statusCode || 500).json({ success: false, message: error.message || "Server error" });
     }
 };

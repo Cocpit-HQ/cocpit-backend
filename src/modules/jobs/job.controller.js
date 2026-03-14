@@ -3,6 +3,50 @@ const { buildJobFilters } = require("../../core/utils/jobQueryBuilder");
 const { logAudit } = require("../../core/infrastructure/audit.service");
 const { checkOrgPermission } = require("../../core/utils/rbac");
 const { notifyOrgFollowers } = require("../../services/notification.service");
+const { hasActorPermission } = require("../../core/middlewares/actor-context.middleware");
+
+const getRequestedOrganizationActorId = (req, fallbackOrgId = null) => {
+  const actorOrgId = req.actor?.type === "ORGANIZATION" ? req.actor.orgId : null;
+
+  if (actorOrgId && fallbackOrgId && actorOrgId !== fallbackOrgId) {
+    const err = new Error("Active organization actor does not match requested organization");
+    err.statusCode = 403;
+    throw err;
+  }
+
+  return actorOrgId;
+};
+
+const hasAnyActorPermission = (actorPermissions, permissions) => {
+  if (!permissions) return true;
+  const list = Array.isArray(permissions) ? permissions : [permissions];
+  return list.some((permission) => hasActorPermission(actorPermissions || [], permission));
+};
+
+const assertOrgPermission = async (req, orgId, permissions, queryable = pool) => {
+  if (!orgId) return;
+
+  if (req.actor?.type === "ORGANIZATION") {
+    if (req.actor.orgId !== orgId) {
+      const err = new Error("Active organization actor does not match requested organization");
+      err.statusCode = 403;
+      throw err;
+    }
+    if (!hasAnyActorPermission(req.actor.permissions, permissions)) {
+      const err = new Error("Not authorized for this organization");
+      err.statusCode = 403;
+      throw err;
+    }
+    return;
+  }
+
+  const ok = await checkOrgPermission(queryable, orgId, req.user.sub, permissions);
+  if (!ok) {
+    const err = new Error("Not authorized for this organization");
+    err.statusCode = 403;
+    throw err;
+  }
+};
 
 exports.getAllJobs = async (req, res) => {
   const { limit = 10, cursor } = req.query;
@@ -133,7 +177,15 @@ exports.createJob = async (req, res) => {
     skills = []
   } = req.body;
   
-  const postedAsCompany = !!org_id;
+  let requestedOrgId = null;
+  try {
+    requestedOrgId = getRequestedOrganizationActorId(req, org_id || null);
+    await assertOrgPermission(req, requestedOrgId, ["POST_JOBS", "MANAGE_COMPANY"]);
+  } catch (err) {
+    return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
+  }
+
+  const postedAsCompany = !!requestedOrgId;
 
   const client = await pool.connect();
 
@@ -156,7 +208,7 @@ exports.createJob = async (req, res) => {
       RETURNING *
       `,
       [
-        userId, title, company_name, org_id || null, location,
+        userId, title, company_name, requestedOrgId || null, location,
         description, minSalary, maxSalary, job_type,
         work_mode, company_type, experience_level,
         about_company, industry, easy_apply, actively_hiring,
@@ -251,6 +303,9 @@ exports.createJob = async (req, res) => {
 exports.applyJob = async (req, res) => {
   const { id } = req.params; // job_id
   const userId = req.user.sub;
+  if (req.actor?.type === "ORGANIZATION") {
+    return res.status(403).json({ message: "You cannot apply as an organization" });
+  }
 
   // Take other fields from request body
   const { full_name, email, phone, cover_note } = req.body;
@@ -593,6 +648,7 @@ exports.getMyApplications = async (req, res) => {
 
 exports.getMyJobs = async (req, res) => {
   const recruiterId = req.user.sub; // logged-in recruiter
+  const actorOrgId = req.actor?.type === "ORGANIZATION" ? req.actor.orgId : null;
   const {
     title,
     location,
@@ -616,11 +672,10 @@ exports.getMyJobs = async (req, res) => {
         (SELECT COUNT(*)::int FROM job_applications ja_count WHERE ja_count.job_id = j.job_id) as applicants_count
       FROM jobs j
       LEFT JOIN users u ON j.recruiter_id = u.user_id
-      WHERE j.recruiter_id = $1 
+      WHERE ${actorOrgId ? "j.org_id = $1 AND j.posted_as_company IS TRUE" : "j.recruiter_id = $1 AND (j.posted_as_company IS FALSE OR j.posted_as_company IS NULL)"}
         AND j.is_active = TRUE 
-        AND (j.posted_as_company IS FALSE OR j.posted_as_company IS NULL)
     `;
-    const params = [recruiterId];
+    const params = [actorOrgId || recruiterId];
     let paramCount = 2;
 
     // Optional filters
@@ -729,22 +784,23 @@ exports.getMyJobs = async (req, res) => {
 
 exports.getDashboardStats = async (req, res) => {
   const userId = req.user.sub;
+  const actorOrgId = req.actor?.type === "ORGANIZATION" ? req.actor.orgId : null;
 
   try {
     const stats = await pool.query(`
       SELECT
-        COUNT(j.job_id) FILTER (WHERE j.is_active = TRUE AND (j.posted_as_company IS FALSE OR j.posted_as_company IS NULL)) as "activeJobs",
-        COUNT(j.job_id) FILTER (WHERE j.posted_as_company IS FALSE OR j.posted_as_company IS NULL) as "totalJobs",
+        COUNT(j.job_id) FILTER (WHERE j.is_active = TRUE ${actorOrgId ? "AND j.posted_as_company IS TRUE" : "AND (j.posted_as_company IS FALSE OR j.posted_as_company IS NULL)"}) as "activeJobs",
+        COUNT(j.job_id) FILTER (WHERE ${actorOrgId ? "j.posted_as_company IS TRUE" : "(j.posted_as_company IS FALSE OR j.posted_as_company IS NULL)"}) as "totalJobs",
         (
            SELECT COUNT(*) 
            FROM job_applications ja 
            JOIN jobs j2 ON ja.job_id = j2.job_id 
-           WHERE j2.recruiter_id = $1
+           WHERE ${actorOrgId ? "j2.org_id = $1" : "j2.recruiter_id = $1"}
         ) as "totalApplicants"
       FROM jobs j
-      WHERE j.recruiter_id = $1 
-        AND (j.posted_as_company IS FALSE OR j.posted_as_company IS NULL)
-    `, [userId]);
+      WHERE ${actorOrgId ? "j.org_id = $1" : "j.recruiter_id = $1"}
+        AND ${actorOrgId ? "j.posted_as_company IS TRUE" : "(j.posted_as_company IS FALSE OR j.posted_as_company IS NULL)"}
+    `, [actorOrgId || userId]);
 
     const data = stats.rows[0];
 
@@ -777,11 +833,14 @@ exports.getJobApplicants = async (req, res) => {
 
     const { org_id, recruiter_id } = jobCheck.rows[0];
     let isAuthorized = recruiter_id === userId;
-
     if (!isAuthorized && org_id) {
-      isAuthorized = await checkOrgPermission(pool, org_id, userId, ['VIEW_APPLICANTS', 'MANAGE_APPLICANTS', 'MANAGE_COMPANY']);
+      try {
+        await assertOrgPermission(req, org_id, ['VIEW_APPLICANTS', 'MANAGE_APPLICANTS', 'MANAGE_COMPANY']);
+        isAuthorized = true;
+      } catch (err) {
+        return res.status(err.statusCode || 403).json({ message: err.message || "Not authorized to view applicants for this job" });
+      }
     }
-
     if (!isAuthorized) {
       return res.status(403).json({ message: "Not authorized to view applicants for this job" });
     }
@@ -899,11 +958,14 @@ exports.deleteJob = async (req, res) => {
 
     const { org_id, recruiter_id } = jobCheck.rows[0];
     let isAuthorized = recruiter_id === userId;
-
     if (!isAuthorized && org_id) {
-      isAuthorized = await checkOrgPermission(pool, org_id, userId, ['POST_JOBS', 'MANAGE_COMPANY']);
+      try {
+        await assertOrgPermission(req, org_id, ['POST_JOBS', 'MANAGE_COMPANY']);
+        isAuthorized = true;
+      } catch (err) {
+        return res.status(err.statusCode || 403).json({ message: err.message || "Not authorized to delete this job" });
+      }
     }
-
     if (!isAuthorized) {
       return res.status(403).json({ message: "Not authorized to delete this job" });
     }
@@ -967,11 +1029,15 @@ exports.updateJob = async (req, res) => {
 
     const { org_id, recruiter_id } = checkRes.rows[0];
     let isAuthorized = recruiter_id === userId;
-
     if (!isAuthorized && org_id) {
-      isAuthorized = await checkOrgPermission(client, org_id, userId, ['POST_JOBS', 'MANAGE_COMPANY']);
+      try {
+        await assertOrgPermission(req, org_id, ['POST_JOBS', 'MANAGE_COMPANY'], client);
+        isAuthorized = true;
+      } catch (err) {
+        await client.query("ROLLBACK");
+        return res.status(err.statusCode || 403).json({ message: err.message || "Not authorized to update this job" });
+      }
     }
-
     if (!isAuthorized) {
       await client.query("ROLLBACK");
       return res.status(403).json({ message: "Not authorized to update this job" });
@@ -1111,11 +1177,14 @@ exports.updateApplicationStatus = async (req, res) => {
 
     const { recruiter_id, org_id } = check.rows[0];
     let isAuthorized = recruiter_id === userId;
-
     if (!isAuthorized && org_id) {
-      isAuthorized = await checkOrgPermission(pool, org_id, userId, ['MANAGE_APPLICANTS', 'MANAGE_COMPANY']);
+      try {
+        await assertOrgPermission(req, org_id, ['MANAGE_APPLICANTS', 'MANAGE_COMPANY']);
+        isAuthorized = true;
+      } catch (err) {
+        return res.status(err.statusCode || 403).json({ message: err.message || "Not authorized" });
+      }
     }
-
     if (!isAuthorized) return res.status(403).json({ message: "Not authorized" });
 
     // 2. Build Update Query

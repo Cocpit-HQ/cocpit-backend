@@ -2,14 +2,35 @@ const pool = require("../../core/db/pool");
 const AppError = require("../../core/errors/AppError");
 
 const { checkOrgPermission } = require("../../core/utils/rbac");
+const { hasActorPermission } = require("../../core/middlewares/actor-context.middleware");
+
+const getRequestedOrganizationActorId = (req, fallbackOrgId = null) => {
+    const actorOrgId = req.actor?.type === "ORGANIZATION" ? req.actor.orgId : null;
+
+    if (actorOrgId && fallbackOrgId && actorOrgId !== fallbackOrgId) {
+        const err = new Error("Active organization actor does not match requested organization");
+        err.statusCode = 403;
+        throw err;
+    }
+
+    return actorOrgId || fallbackOrgId;
+};
 
 exports.getOverview = async (req, res) => {
-    const { orgId: companyId } = req.params;
+    let companyId;
+    try {
+        companyId = getRequestedOrganizationActorId(req, req.params.orgId);
+    } catch (err) {
+        return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
+    }
     const userId = req.user.sub;
 
     const client = await pool.connect();
     try {
-        if (!(await checkOrgPermission(client, companyId, userId, 'VIEW_ANALYTICS'))) {
+        const canView = req.actor?.type === "ORGANIZATION"
+            ? hasActorPermission(req.actor.permissions || [], "VIEW_ANALYTICS")
+            : await checkOrgPermission(client, companyId, userId, 'VIEW_ANALYTICS');
+        if (!canView) {
             throw new AppError("Forbidden: You do not have permission to view analytics", 403);
         }
 
@@ -68,12 +89,20 @@ exports.getOverview = async (req, res) => {
 };
 
 exports.getEngagement = async (req, res) => {
-    const { orgId: companyId } = req.params;
+    let companyId;
+    try {
+        companyId = getRequestedOrganizationActorId(req, req.params.orgId);
+    } catch (err) {
+        return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
+    }
     const userId = req.user.sub;
 
     const client = await pool.connect();
     try {
-        if (!(await checkOrgPermission(client, companyId, userId, 'VIEW_ANALYTICS'))) {
+        const canView = req.actor?.type === "ORGANIZATION"
+            ? hasActorPermission(req.actor.permissions || [], "VIEW_ANALYTICS")
+            : await checkOrgPermission(client, companyId, userId, 'VIEW_ANALYTICS');
+        if (!canView) {
             throw new AppError("Forbidden: You do not have permission to view analytics", 403);
         }
 
@@ -101,7 +130,10 @@ exports.getEngagement = async (req, res) => {
                 (SELECT COUNT(*) FROM post_comments pc WHERE pc.post_id = p.post_id) as comment_count
              FROM posts p
              WHERE p.author_org_id = $1
-             ORDER BY (like_count + comment_count) DESC
+             ORDER BY (
+                (SELECT COUNT(*) FROM post_likes pl2 WHERE pl2.post_id = p.post_id) +
+                (SELECT COUNT(*) FROM post_comments pc2 WHERE pc2.post_id = p.post_id)
+             ) DESC
              LIMIT 5`,
             [companyId]
         );
@@ -120,12 +152,20 @@ exports.getEngagement = async (req, res) => {
 };
 
 exports.getJobs = async (req, res) => {
-    const { orgId: companyId } = req.params;
+    let companyId;
+    try {
+        companyId = getRequestedOrganizationActorId(req, req.params.orgId);
+    } catch (err) {
+        return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
+    }
     const userId = req.user.sub;
 
     const client = await pool.connect();
     try {
-        if (!(await checkOrgPermission(client, companyId, userId, 'VIEW_ANALYTICS'))) {
+        const canView = req.actor?.type === "ORGANIZATION"
+            ? hasActorPermission(req.actor.permissions || [], "VIEW_ANALYTICS")
+            : await checkOrgPermission(client, companyId, userId, 'VIEW_ANALYTICS');
+        if (!canView) {
             throw new AppError("Forbidden: You do not have permission to view job analytics", 403);
         }
 
@@ -162,7 +202,12 @@ exports.getJobs = async (req, res) => {
 };
 
 exports.getAuditLogs = async (req, res) => {
-    const { orgId: companyId } = req.params;
+    let companyId;
+    try {
+        companyId = getRequestedOrganizationActorId(req, req.params.orgId);
+    } catch (err) {
+        return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
+    }
     const userId = req.user.sub;
     const { page = 1, limit = 20, action, actorId } = req.query;
     const offset = (page - 1) * limit;
@@ -170,7 +215,9 @@ exports.getAuditLogs = async (req, res) => {
     const client = await pool.connect();
     try {
         // PERMISSIONS: Only OWNER and ADMIN can view audit logs (requires MANAGE_COMPANY)
-        const canViewAudit = await checkOrgPermission(client, companyId, userId, 'MANAGE_COMPANY');
+        const canViewAudit = req.actor?.type === "ORGANIZATION"
+            ? hasActorPermission(req.actor.permissions || [], "MANAGE_COMPANY")
+            : await checkOrgPermission(client, companyId, userId, 'MANAGE_COMPANY');
         if (!canViewAudit) throw new AppError("Forbidden: Only Admins can view audit logs", 403);
 
         // Build Query

@@ -25,7 +25,14 @@ module.exports.initSocket = async (httpServer) => {
       }
     },
     methods: ["GET", "POST", "OPTIONS", "PUT", "DELETE"],
-    allowedHeaders: ['Content-Type', 'Authorization', 'x-company-id'],
+    allowedHeaders: [
+      'Content-Type',
+      'Authorization',
+      'x-actor-type',
+      'x-actor-id',
+      'x-company-id',
+      'x-org-id',
+    ],
     credentials: true,
   };
 

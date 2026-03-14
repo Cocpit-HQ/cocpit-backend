@@ -7,12 +7,50 @@ const cloudinary = require("../../core/infrastructure/cloudinary.client");
 const { checkOrgPermission } = require("../../core/utils/rbac");
 const { notifyOrgFollowers } = require("../../services/notification.service");
 
+const getRequestedOrganizationActorId = (req, fallbackOrgId = null) => {
+    const actorOrgId = req.actor?.type === "ORGANIZATION" ? req.actor.orgId : null;
+
+    if (actorOrgId && fallbackOrgId && actorOrgId !== fallbackOrgId) {
+        const err = new Error("Active organization actor does not match requested organization");
+        err.statusCode = 403;
+        throw err;
+    }
+
+    return actorOrgId;
+};
+
+const getContentActorScope = (req, fallbackOrgId = null) => {
+    const userId = req.user?.sub || req.user?.user_id;
+    const orgId = getRequestedOrganizationActorId(req, fallbackOrgId);
+
+    return {
+        userId,
+        orgId,
+        isOrgActor: !!orgId,
+    };
+};
+
+const getOptionalContentActorScope = (req, _fallbackOrgId = null) => {
+    const userId = req.user?.sub || req.user?.user_id || null;
+
+    if (!userId) {
+        return {
+            userId: null,
+            orgId: null,
+            isOrgActor: false,
+        };
+    }
+
+    return getContentActorScope(req);
+};
+
 // --- Feed / Posts ---
 exports.getPublicFeed = async (req, res) => {
-    const { cursorCreatedAt, cursorPostId, companyId } = req.query;
+    const { cursorCreatedAt, cursorPostId, companyId: requestedCompanyId } = req.query;
     const limit = 10;
 
     try {
+        const actorScope = getOptionalContentActorScope(req, requestedCompanyId || null);
         const params = [];
         let cursorCondition = "";
 
@@ -28,12 +66,12 @@ exports.getPublicFeed = async (req, res) => {
         const limitParamIdx = params.length;
 
         // 3. User ID and Company ID (needed for subqueries)
-        const userId = req.user ? req.user.sub : null;
+        const userId = actorScope.userId;
 
         params.push(userId);
         const userParamIdx = params.length;
 
-        params.push(companyId || null);
+        params.push(actorScope.orgId || null);
         const companyParamIdx = params.length;
 
         const query = `
@@ -288,23 +326,23 @@ exports.getPublicFeed = async (req, res) => {
 };
 
 exports.getMyPosts = async (req, res) => {
-    const userId = req.user.sub;
     const {
         category,
         cursorCreatedAt,
         cursorPostId,
         limit = 10,
-        companyId
+        companyId: requestedCompanyId
     } = req.query;
 
     try {
-        const actorId = companyId || userId;
-        const isOrgActor = !!companyId;
-        const params = [actorId];
-        let idx = 2;
+        const { userId, orgId: companyId, isOrgActor } = getContentActorScope(req, requestedCompanyId || null);
+        const params = [userId, companyId || null];
+        const userParamIdx = 1;
+        const orgParamIdx = 2;
+        let idx = 3;
         let whereClause = isOrgActor
-            ? `WHERE p.author_org_id = $1::uuid`
-            : `WHERE p.author_id = $1 AND p.author_org_id IS NULL`;
+            ? `WHERE p.author_org_id = $${orgParamIdx}::uuid`
+            : `WHERE p.author_id = $${userParamIdx} AND p.author_org_id IS NULL`;
 
         // ✅ Category filter (skip if "All")
         if (category && category !== "All") {
@@ -328,8 +366,8 @@ exports.getMyPosts = async (req, res) => {
             p.shared_post_id IS NULL 
             OR NOT EXISTS (
                 SELECT 1 FROM blocks b 
-                WHERE (b.blocker_id = $1 AND b.blocked_id = sp.author_id)
-                   OR (b.blocker_id = sp.author_id AND b.blocked_id = $1)
+                WHERE (b.blocker_id = $${userParamIdx} AND b.blocked_id = sp.author_id)
+                   OR (b.blocker_id = sp.author_id AND b.blocked_id = $${userParamIdx})
             )
         )
         `;
@@ -362,21 +400,21 @@ exports.getMyPosts = async (req, res) => {
                                         SELECT 1 FROM post_likes pl_me 
                                         WHERE pl_me.post_id = p.post_id 
                                         AND (
-                                            ${isOrgActor ? 'pl_me.org_id = $1::uuid' : 'pl_me.user_id = $1 AND pl_me.org_id IS NULL'}
+                                            ${isOrgActor ? `pl_me.org_id = $${orgParamIdx}::uuid` : `pl_me.user_id = $${userParamIdx} AND pl_me.org_id IS NULL`}
                                         )
                                     ) AS is_liked,
                                     EXISTS(
                                         SELECT 1 FROM post_comments pc_me 
                                         WHERE pc_me.post_id = p.post_id 
                                         AND (
-                                            ${isOrgActor ? 'pc_me.author_org_id = $1::uuid' : 'pc_me.author_id = $1 AND pc_me.author_org_id IS NULL'}
+                                            ${isOrgActor ? `pc_me.author_org_id = $${orgParamIdx}::uuid` : `pc_me.author_id = $${userParamIdx} AND pc_me.author_org_id IS NULL`}
                                         )
                                     ) AS is_commented,
                                     EXISTS(
                                         SELECT 1 FROM saved_post sp_me 
-                                        WHERE sp_me.post_id = p.post_id AND sp_me.user_id = $1
+                                        WHERE sp_me.post_id = p.post_id AND sp_me.user_id = $${userParamIdx}
                                         AND (
-                                            ${isOrgActor ? 'sp_me.org_id = $1::uuid' : 'sp_me.org_id IS NULL'}
+                                            ${isOrgActor ? `sp_me.org_id = $${orgParamIdx}::uuid` : 'sp_me.org_id IS NULL'}
                                         )
                                     ) AS is_saved,
                                         COALESCE(cc.comment_count, 0) AS comment_count,
@@ -390,15 +428,15 @@ exports.getMyPosts = async (req, res) => {
                                                     json_build_object('is_accessible', false, 'reason', 'deleted')
                                                 WHEN (
                                                     -- 1. Private: Author only
-                                                    (sp.visibility = 'private' AND sp.author_id = $1)
+                                                    (sp.visibility = 'private' AND sp.author_id = $${userParamIdx})
                                                     OR
                                                     -- 2. Public + Personal: Connections only
                                                     (sp.visibility = 'public' AND sp_cat.name = 'Personal' AND (
-                                                        sp.author_id = $1
+                                                        sp.author_id = $${userParamIdx}
                                                         OR EXISTS (
                                                             SELECT 1 FROM followers f1 
                                                             JOIN followers f2 ON f1.follower_id = f2.following_id AND f1.following_id = f2.follower_id 
-                                                            WHERE f1.follower_id = $1 AND f1.following_id = sp.author_id
+                                                            WHERE f1.follower_id = $${userParamIdx} AND f1.following_id = sp.author_id
                                                         )
                                                     ))
                                                     OR
@@ -420,7 +458,15 @@ exports.getMyPosts = async (req, res) => {
                                                         'media', COALESCE(sp_media.media, '[]'::json),
                                                         'like_count', (SELECT COUNT(*) FROM post_likes pl WHERE pl.post_id = sp.post_id)::int,
                                                         'comment_count', (SELECT COUNT(*) FROM post_comments pc WHERE pc.post_id = sp.post_id)::int,
-                                                        'is_liked', EXISTS(SELECT 1 FROM post_likes pl WHERE pl.post_id = sp.post_id AND pl.user_id = $1)
+                                                        'is_liked', EXISTS(
+                                                            SELECT 1 FROM post_likes pl
+                                                            WHERE pl.post_id = sp.post_id
+                                                            AND (
+                                                                ($${orgParamIdx}::uuid IS NOT NULL AND pl.org_id = $${orgParamIdx}::uuid)
+                                                                OR
+                                                                ($${orgParamIdx}::uuid IS NULL AND pl.user_id = $${userParamIdx} AND pl.org_id IS NULL)
+                                                            )
+                                                        )
                                                     )
                                                 -- Failure Analysis
                                                 WHEN sp.visibility = 'private' THEN json_build_object(
@@ -503,7 +549,7 @@ exports.getMyPosts = async (req, res) => {
                     SELECT pv_u.option_id FROM poll_votes pv_u 
                     WHERE pv_u.poll_id = pp.poll_id 
                     AND (
-                        ${isOrgActor ? 'pv_u.org_id = $1::uuid' : 'pv_u.voter_id = $1 AND pv_u.org_id IS NULL'}
+                        ${isOrgActor ? `pv_u.org_id = $${orgParamIdx}::uuid` : `pv_u.voter_id = $${userParamIdx} AND pv_u.org_id IS NULL`}
                     )
                 ),
             'options', COALESCE(po.options, '[]':: json),
@@ -685,26 +731,21 @@ exports.getMyPosts = async (req, res) => {
 
 //--- POST INTEGRATION ---
 exports.createPost = async (req, res) => {
-    const userId = req.user.sub;
-    let { content, category, visibility, media_urls, post_type, title, poll_options, poll_duration, companyId } = req.body; // category is name, media_urls is array
+    let actorScope;
+
+    try {
+        actorScope = getContentActorScope(req, req.body?.companyId || null);
+    } catch (err) {
+        return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
+    }
+
+    const { userId, orgId: companyId } = actorScope;
+    let { content, category, visibility, media_urls, post_type, title, poll_options, poll_duration } = req.body; // category is name, media_urls is array
 
     const client = await pool.connect();
-    const { checkOrgPermission } = require("../../core/utils/rbac");
 
     try {
         await client.query('BEGIN');
-
-        // Company Authorization Check
-        if (companyId) {
-            const memberCheck = await client.query(
-                `SELECT 1 FROM organization_members WHERE org_id = $1 AND user_id = $2`,
-                [companyId, userId]
-            );
-            if (memberCheck.rowCount === 0) {
-                await client.query('ROLLBACK');
-                return res.status(403).json({ message: "Not authorized to act as this company" });
-            }
-        }
 
         // 0. If reposting, check if original is Personal or already reposted
         if (req.body.shared_post_id) {
@@ -722,8 +763,15 @@ exports.createPost = async (req, res) => {
 
             // Check for Duplicate
             const duplicateCheck = await client.query(
-                `SELECT post_id FROM posts WHERE author_id = $1 AND shared_post_id = $2`,
-                [userId, req.body.shared_post_id]
+                `SELECT post_id
+                 FROM posts
+                 WHERE shared_post_id = $1
+                   AND (
+                        ($3::uuid IS NOT NULL AND author_org_id = $3::uuid)
+                        OR
+                        ($3::uuid IS NULL AND author_id = $2 AND author_org_id IS NULL)
+                   )`,
+                [req.body.shared_post_id, userId, companyId || null]
             );
             if (duplicateCheck.rowCount > 0) {
                 await client.query('ROLLBACK');
@@ -980,7 +1028,7 @@ exports.createPost = async (req, res) => {
     } catch (err) {
         await client.query('ROLLBACK');
         console.error("Create post error:", err);
-        res.status(500).json({ message: "Internal server error" });
+        res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
     } finally {
         client.release();
     }
@@ -988,10 +1036,10 @@ exports.createPost = async (req, res) => {
 
 exports.getPostById = async (req, res) => {
     const postId = req.params.id;
-    const userId = req.user ? req.user.sub : null;
-    const { companyId } = req.query;
+    const { companyId: requestedCompanyId } = req.query;
 
     try {
+        const { userId, orgId: companyId } = getContentActorScope(req, requestedCompanyId || null);
         const query = `SELECT 
     p.*, 
     COALESCE(comp.name, u.full_name) AS author_name,
@@ -1210,7 +1258,7 @@ WHERE p.post_id = $1;
 
         // STRICT BLOCK CHECK
         const post = result.rows[0];
-        if (userId && post.author_id !== userId) {
+        if (userId && !post.author_org_id && post.author_id !== userId) {
             const isBlocked = await checkBlockStatus(userId, post.author_id);
             if (isBlocked) {
                 return res.status(404).json({ message: "Post not found" });
@@ -1226,8 +1274,16 @@ WHERE p.post_id = $1;
 
 exports.updatePostById = async (req, res) => {
     const postId = req.params.id;
-    const userId = req.user.sub;
     const { content, category, visibility, media_urls, post_type, title } = req.body;
+    let actorScope;
+
+    try {
+        actorScope = getContentActorScope(req, req.body?.companyId || null);
+    } catch (err) {
+        return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
+    }
+
+    const { userId, orgId } = actorScope;
 
     if (!postId || !userId) {
         return res.status(400).json({ message: "postId and userId are required" });
@@ -1255,7 +1311,9 @@ exports.updatePostById = async (req, res) => {
         if (author_id === userId && !author_org_id) {
             canEdit = true;
         } else if (author_org_id) {
-            if (author_id === userId) {
+            if (orgId && author_org_id === orgId) {
+                canEdit = true;
+            } else if (author_id === userId) {
                 canEdit = true;
             } else {
                 canEdit = await checkOrgPermission(client, author_org_id, userId, ['MANAGE_COMPANY', 'CREATE_CONTENT']);
@@ -1437,7 +1495,7 @@ WHERE p.post_id = $1;
     } catch (err) {
         await client.query('ROLLBACK');
         console.error("Update post error:", err);
-        res.status(500).json({ message: "Internal server error" });
+        res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
     } finally {
         client.release();
     }
@@ -1447,7 +1505,15 @@ WHERE p.post_id = $1;
 
 exports.deletePost = async (req, res) => {
     const postId = req.params.id;
-    const userId = req.user.sub;
+    let actorScope;
+
+    try {
+        actorScope = getContentActorScope(req, req.body?.companyId || null);
+    } catch (err) {
+        return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
+    }
+
+    const { userId, orgId } = actorScope;
 
     if (!postId || !userId) {
         return res.status(400).json({ message: "postId and userId are required" });
@@ -1478,7 +1544,9 @@ exports.deletePost = async (req, res) => {
         } else if (author_org_id) {
             // Company Post -> Check Company Permissions
             // Allow if Author (User acting as company) OR if has MANAGE_COMPANY / CREATE_CONTENT
-            if (author_id === userId) {
+            if (orgId && author_org_id === orgId) {
+                canDelete = true;
+            } else if (author_id === userId) {
                 canDelete = true;
             } else {
                 canDelete = await checkOrgPermission(client, author_org_id, userId, ['MANAGE_COMPANY', 'CREATE_CONTENT']);
@@ -1522,7 +1590,7 @@ exports.deletePost = async (req, res) => {
     } catch (err) {
         await client.query('ROLLBACK');
         console.error("Delete post error:", err);
-        res.status(500).json({ message: "Internal server error" });
+        res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
     } finally {
         client.release();
     }
@@ -1530,22 +1598,20 @@ exports.deletePost = async (req, res) => {
 
 // --- POLL INTERACTION ---
 exports.voteInPoll = async (req, res) => {
-    const userId = req.user.sub;
     const { id: postId } = req.params;
-    const { option_id, companyId } = req.body;
+    const { option_id } = req.body;
+
+    let actorScope;
 
     try {
-        // Company Authorization Check
-        if (companyId) {
-            const memberCheck = await pool.query(
-                `SELECT 1 FROM organization_members WHERE org_id = $1 AND user_id = $2`,
-                [companyId, userId]
-            );
-            if (memberCheck.rowCount === 0) {
-                return res.status(403).json({ message: "Not authorized to act as this company" });
-            }
-        }
+        actorScope = getContentActorScope(req, req.body?.companyId || null);
+    } catch (err) {
+        return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
+    }
 
+    const { userId, orgId: companyId } = actorScope;
+
+    try {
         // 1. Check if poll exists and if it's still active using DB logic
         const pollRes = await pool.query(
             `SELECT pp.poll_id, 
@@ -1587,14 +1653,21 @@ exports.voteInPoll = async (req, res) => {
 
     } catch (err) {
         console.error("Vote error:", err);
-        return res.status(500).json({ message: "Internal server error" });
+        return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
     }
 }
 
 exports.removeVote = async (req, res) => {
-    const userId = req.user.sub;
     const { id: postId } = req.params;
-    const { companyId } = req.body;
+    let actorScope;
+
+    try {
+        actorScope = getContentActorScope(req, req.body?.companyId || null);
+    } catch (err) {
+        return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
+    }
+
+    const { userId, orgId: companyId } = actorScope;
 
     try {
         const pollRes = await pool.query(
@@ -1625,28 +1698,24 @@ exports.removeVote = async (req, res) => {
         res.status(200).json({ message: "Vote removed successfully" });
     } catch (err) {
         console.error("Remove vote error:", err);
-        return res.status(500).json({ message: "Internal server error" });
+        return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
     }
 };
 
 // --- SOCIAL ENGAGEMENT ---
 exports.toggleLike = async (req, res) => {
-    const userId = req.user.sub;
     const postId = req.params.id;
-    const { companyId } = req.body;
+    let actorScope;
 
     try {
-        // Company Authorization Check
-        if (companyId) {
-            const memberCheck = await pool.query(
-                `SELECT 1 FROM organization_members WHERE org_id = $1 AND user_id = $2`,
-                [companyId, userId]
-            );
-            if (memberCheck.rowCount === 0) {
-                return res.status(403).json({ message: "Not authorized to act as this company" });
-            }
-        }
+        actorScope = getContentActorScope(req, req.body?.companyId || null);
+    } catch (err) {
+        return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
+    }
 
+    const { userId, orgId: companyId } = actorScope;
+
+    try {
         // 1️⃣ Check if already liked
         let alreadyLiked;
         if (companyId) {
@@ -1751,14 +1820,22 @@ exports.toggleLike = async (req, res) => {
 
     } catch (err) {
         console.error("Toggle like error:", err);
-        return res.status(500).json({ message: "Internal server error" });
+        return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
     }
 };
 
 exports.addComment = async (req, res) => {
-    const userId = req.user.sub;
     const postId = req.params.id;
-    const { content, parent_id, companyId } = req.body; // Added companyId
+    const { content, parent_id } = req.body; // Added companyId
+    let actorScope;
+
+    try {
+        actorScope = getContentActorScope(req, req.body?.companyId || null);
+    } catch (err) {
+        return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
+    }
+
+    const { userId, orgId: companyId } = actorScope;
 
     if (!postId || !userId || !content || !content.trim()) {
         console.error('[addComment] Missing required fields', { postId, userId, hasContent: !!content });
@@ -1771,17 +1848,6 @@ exports.addComment = async (req, res) => {
     }
 
     try {
-        // Company Authorization Check
-        if (companyId) {
-            const memberCheck = await pool.query(
-                `SELECT 1 FROM organization_members WHERE org_id = $1 AND user_id = $2`,
-                [companyId, userId]
-            );
-            if (memberCheck.rowCount === 0) {
-                return res.status(403).json({ message: "Not authorized to act as this company" });
-            }
-        }
-
         const post = await pool.query(`select post_id, author_id, author_org_id from posts where post_id = $1`, [postId])
 
         if (post.rowCount === 0) {
@@ -2005,14 +2071,22 @@ exports.addComment = async (req, res) => {
 
     } catch (err) {
         console.error("Add comment error:", err);
-        return res.status(500).json({ message: "Internal server error" })
+        return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" })
     }
 }
 
 exports.updateComment = async (req, res) => {
-    const userId = req.user.sub;
     const commentId = req.params.commentId;
-    const { content, companyId } = req.body;
+    const { content } = req.body;
+    let actorScope;
+
+    try {
+        actorScope = getContentActorScope(req, req.body?.companyId || null);
+    } catch (err) {
+        return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
+    }
+
+    const { userId, orgId: companyId } = actorScope;
 
     if (!commentId) {
         return res.status(400).json({ message: "commentId is required" });
@@ -2065,15 +2139,21 @@ exports.updateComment = async (req, res) => {
 
     } catch (err) {
         console.error("Update comment error:", err);
-        return res.status(500).json({ message: "Internal server error" });
+        return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
     }
 };
 
 exports.deleteComment = async (req, res) => {
-    const userId = req.user.sub;
     const commentId = req.params.commentId;
+    let actorScope;
 
-    const { companyId } = req.body;
+    try {
+        actorScope = getContentActorScope(req, req.body?.companyId || null);
+    } catch (err) {
+        return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
+    }
+
+    const { userId, orgId: companyId } = actorScope;
 
     if (!userId || !commentId) {
         return res.status(400).json({ message: "userId and commentId are required" });
@@ -2145,31 +2225,27 @@ exports.deleteComment = async (req, res) => {
         res.status(200).json({ message: "Comment deleted", deletedCommentId: commentId });
     } catch (err) {
         console.error("Delete comment error:", err);
-        return res.status(500).json({ message: "Internal server error" });
+        return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
     }
 };
 
 exports.toggleCommentLike = async (req, res) => {
-    const userId = req.user.sub;
     const { commentId } = req.params;
-    const { companyId } = req.body;
+    let actorScope;
+
+    try {
+        actorScope = getContentActorScope(req, req.body?.companyId || null);
+    } catch (err) {
+        return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
+    }
+
+    const { userId, orgId: companyId } = actorScope;
 
     if (!commentId || !userId) {
         return res.status(400).json({ message: "Comment ID and user ID are required" });
     }
 
     try {
-        // Company Authorization Check
-        if (companyId) {
-            const memberCheck = await pool.query(
-                `SELECT 1 FROM organization_members WHERE org_id = $1 AND user_id = $2`,
-                [companyId, userId]
-            );
-            if (memberCheck.rowCount === 0) {
-                return res.status(403).json({ message: "Not authorized to act as this company" });
-            }
-        }
-
         // Check if comment exists
         const commentCheck = await pool.query(
             `SELECT comment_id, author_id, author_org_id, post_id FROM post_comments WHERE comment_id = $1`,
@@ -2289,13 +2365,22 @@ exports.toggleCommentLike = async (req, res) => {
         });
     } catch (err) {
         console.error("Toggle comment like error:", err);
-        res.status(500).json({ message: "Internal server error" });
+        res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
     }
 };
 
 // Toggle pin on a comment (post owner only)
 exports.toggleCommentPin = async (req, res) => {
-    const { companyId } = req.body;
+    const { commentId } = req.params;
+    let actorScope;
+
+    try {
+        actorScope = getContentActorScope(req, req.body?.companyId || null);
+    } catch (err) {
+        return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
+    }
+
+    const { userId, orgId: companyId } = actorScope;
 
     if (!commentId || !userId) {
         return res.status(400).json({ message: "Comment ID and user ID are required" });
@@ -2356,19 +2441,19 @@ exports.toggleCommentPin = async (req, res) => {
         });
     } catch (err) {
         console.error("Toggle comment pin error:", err);
-        res.status(500).json({ message: "Internal server error" });
+        res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
     }
 };
 
 exports.getComments = async (req, res) => {
     const postId = req.params.id;
-    const userId = req.user ? req.user.sub : null; // Optional auth
-    const { companyId } = req.query;
+    const { companyId: requestedCompanyId } = req.query;
 
     if (!postId) {
         return res.status(400).json({ message: "postId is required" })
     }
     try {
+        const { userId, orgId: companyId } = getContentActorScope(req, requestedCompanyId || null);
         const post = await pool.query(`select post_id from posts where post_id = $1`, [postId])
         if (post.rowCount === 0) {
             return res.status(404).json({ message: "Post not found" })
@@ -2448,8 +2533,17 @@ exports.getComments = async (req, res) => {
 
 //--- STORIES INTEGRATION ---
 exports.getStories = async (req, res) => {
-    const userId = req.user.sub;
-    const companyId = req.headers['x-company-id'];
+    let userId;
+    let companyId;
+
+    try {
+        const actorScope = getContentActorScope(req);
+        userId = actorScope.userId;
+        companyId = actorScope.orgId;
+    } catch (err) {
+        return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
+    }
+
     try {
         // Fetch following IDs (including companies)
         const followingRes = await pool.query(`
@@ -2570,8 +2664,16 @@ exports.getStories = async (req, res) => {
 };
 
 exports.getGroupedStories = async (req, res) => {
-    const userId = req.user.sub;
-    const companyId = req.headers['x-company-id'];
+    let userId;
+    let companyId;
+
+    try {
+        const actorScope = getContentActorScope(req);
+        userId = actorScope.userId;
+        companyId = actorScope.orgId;
+    } catch (err) {
+        return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
+    }
 
     try {
         let currentEntityId = userId;
@@ -2581,19 +2683,13 @@ exports.getGroupedStories = async (req, res) => {
 
         // 1. Determine Context (Company vs User)
         if (companyId) {
-            const memberCheck = await pool.query(
-                `SELECT 1 FROM organization_members WHERE org_id = $1 AND user_id = $2`,
-                [companyId, userId]
-            );
-            if (memberCheck.rowCount > 0) {
-                const compRes = await pool.query(`SELECT org_id, name, logo_url FROM organizations WHERE org_id = $1`, [companyId]);
-                if (compRes.rowCount > 0) {
-                    const comp = compRes.rows[0];
-                    currentEntityId = comp.org_id;
-                    currentEntityName = "Your Company"; // UI can override
-                    currentEntityAvatar = comp.logo_url;
-                    isCompanyContext = true;
-                }
+            const compRes = await pool.query(`SELECT org_id, name, logo_url FROM organizations WHERE org_id = $1`, [companyId]);
+            if (compRes.rowCount > 0) {
+                const comp = compRes.rows[0];
+                currentEntityId = comp.org_id;
+                currentEntityName = "Your Company"; // UI can override
+                currentEntityAvatar = comp.logo_url;
+                isCompanyContext = true;
             }
         }
 
@@ -2844,7 +2940,15 @@ exports.getStoryRecommendations = async (req, res) => {
 
 exports.createStory = async (req, res) => {
     // Extract user ID from JWT — support both .sub and .user_id
-    const userId = req.user?.sub || req.user?.user_id;
+    let actorScope;
+
+    try {
+        actorScope = getContentActorScope(req);
+    } catch (err) {
+        return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
+    }
+
+    const { userId, orgId: companyId } = actorScope;
     if (!userId) {
         return res.status(401).json({ message: "Unauthorized: user not identified" });
     }
@@ -2864,21 +2968,8 @@ exports.createStory = async (req, res) => {
         return res.status(400).json({ message: "media_url is required" });
     }
 
-    const companyId = req.headers['x-company-id']; // Optional company context
-
     try {
-        let authorCompanyId = null;
-
-        if (companyId) {
-            const memberCheck = await pool.query(
-                `SELECT 1 FROM organization_members WHERE org_id = $1 AND user_id = $2`,
-                [companyId, userId]
-            );
-            if (memberCheck.rowCount === 0) {
-                return res.status(403).json({ message: "Not authorized to act as this company" });
-            }
-            authorCompanyId = companyId;
-        }
+        const authorCompanyId = companyId || null;
 
         // Derive media_type from URL extension if not provided
         const type = media_type || (media_url.toLowerCase().match(/\.(mp4|webm|mov)$/) ? 'video' : 'image');
@@ -2960,7 +3051,15 @@ exports.createStory = async (req, res) => {
 
 exports.deleteStory = async (req, res) => {
     const storyId = req.params.id;
-    const userId = req.user.sub;
+    let actorScope;
+
+    try {
+        actorScope = getContentActorScope(req);
+    } catch (err) {
+        return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
+    }
+
+    const { userId, orgId } = actorScope;
 
     if (!storyId) {
         return res.status(400).json({ message: "storyId is required" });
@@ -2969,8 +3068,15 @@ exports.deleteStory = async (req, res) => {
     try {
         // Delete from DB and get the Cloudinary public_id for cleanup
         const result = await pool.query(
-            `DELETE FROM stories WHERE story_id = $1 AND author_id = $2 RETURNING story_id, cld_public_id, media_type`,
-            [storyId, userId]
+            `DELETE FROM stories
+             WHERE story_id = $1
+               AND (
+                    ($3::uuid IS NOT NULL AND author_org_id = $3::uuid)
+                    OR
+                    ($3::uuid IS NULL AND author_id = $2 AND author_org_id IS NULL)
+               )
+             RETURNING story_id, cld_public_id, media_type`,
+            [storyId, userId, orgId || null]
         );
 
         if (result.rowCount === 0) {
@@ -2994,8 +3100,16 @@ exports.deleteStory = async (req, res) => {
 
 exports.viewStory = async (req, res) => {
     const story_id = req.params.id;
-    const viewer_id = req.user.sub;
-    const { companyId } = req.body; // Optional: View as company
+    let actorScope;
+
+    try {
+        actorScope = getContentActorScope(req, req.body?.companyId || null);
+    } catch (err) {
+        return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
+    }
+
+    const viewer_id = actorScope.userId;
+    const companyId = actorScope.orgId;
 
     try {
         const storyRes = await pool.query(
@@ -3010,16 +3124,6 @@ exports.viewStory = async (req, res) => {
 
         // If viewing as Company
         if (companyId) {
-            // 1. Verify user is a member of the company
-            const memberCheck = await pool.query(
-                `SELECT 1 FROM organization_members WHERE org_id = $1 AND user_id = $2`,
-                [companyId, viewer_id]
-            );
-
-            if (memberCheck.rowCount === 0) {
-                return res.status(403).json({ message: "Not authorized to act as this company" });
-            }
-
             // 2. Record View (Company Logic)
             // We record the view if the Company hasn't viewed it yet.
             // We ignore author_id check strictly for now, or we can say companies owned by author also don't count?
@@ -3071,9 +3175,17 @@ exports.viewStory = async (req, res) => {
 
 exports.reactToStory = async (req, res) => {
     const { id: storyId } = req.params;
-    const userId = req.user.sub;
     const { reaction } = req.body; // true = like, false = undo
-    const companyId = req.headers['x-company-id']; // Optional company context
+    let actorScope;
+
+    try {
+        actorScope = getContentActorScope(req);
+    } catch (err) {
+        return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
+    }
+
+    const userId = actorScope.userId;
+    const companyId = actorScope.orgId;
 
     const client = await pool.connect();
 
@@ -3085,14 +3197,6 @@ exports.reactToStory = async (req, res) => {
         let reactorUserId = userId; // Default to user
 
         if (companyId) {
-            // Verify membership
-            const memberCheck = await client.query(
-                `SELECT 1 FROM organization_members WHERE org_id = $1 AND user_id = $2`,
-                [companyId, userId]
-            );
-            if (memberCheck.rowCount === 0) {
-                return res.status(403).json({ message: "Not authorized to act as this company" });
-            }
             reactorCompanyId = companyId;
             reactorUserId = null; // Reactions are attributed to Company, not User+Company? 
             // DB schema: user_id is nullable? No, schema says `user_id UUID REFERENCES users`. I made it nullable in migration?
@@ -3253,12 +3357,20 @@ exports.reactToStory = async (req, res) => {
 };
 
 exports.getStoryDetailsById = async (req, res) => {
-    const userId = req.user.sub;
+    let actorScope;
+
+    try {
+        actorScope = getContentActorScope(req);
+    } catch (err) {
+        return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
+    }
+
+    const { userId, orgId } = actorScope;
     const { id: storyId } = req.params;
 
     try {
         const permission = await pool.query(
-            `SELECT author_id FROM stories WHERE story_id = $1`,
+            `SELECT author_id, author_org_id FROM stories WHERE story_id = $1`,
             [storyId]
         );
 
@@ -3266,8 +3378,11 @@ exports.getStoryDetailsById = async (req, res) => {
             return res.status(404).json({ message: "Story not found" });
         }
 
-
-        if (permission.rows[0].author_id !== userId) {
+        const story = permission.rows[0];
+        const canView = orgId
+            ? story.author_org_id === orgId
+            : (story.author_id === userId && !story.author_org_id);
+        if (!canView) {
             return res.status(403).json({ message: "You don't have permission to view these details" });
         }
         const result = await pool.query(`
@@ -3320,18 +3435,30 @@ exports.getStoryDetailsById = async (req, res) => {
 };
 
 exports.getPollAnalytics = async (req, res) => {
-    const userId = req.user.sub;
     const { id: postId } = req.params;
+    let actorScope;
+
+    try {
+        actorScope = getContentActorScope(req, req.query?.companyId || null);
+    } catch (err) {
+        return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
+    }
+
+    const { userId, orgId } = actorScope;
 
     try {
         // 1. Verify ownership
         const postRes = await pool.query(
-            `SELECT author_id FROM posts WHERE post_id = $1`,
+            `SELECT author_id, author_org_id FROM posts WHERE post_id = $1`,
             [postId]
         );
 
         if (postRes.rowCount === 0) return res.status(404).json({ message: "Post not found" });
-        if (postRes.rows[0].author_id !== userId) {
+        const post = postRes.rows[0];
+        const canViewAnalytics = orgId
+            ? post.author_org_id === orgId
+            : (post.author_id === userId && !post.author_org_id);
+        if (!canViewAnalytics) {
             return res.status(403).json({ message: "Only the poll author can view analytics" });
         }
 
@@ -3384,33 +3511,31 @@ exports.getPollAnalytics = async (req, res) => {
 
     } catch (err) {
         console.error("Get poll analytics error:", err);
-        return res.status(500).json({ message: "Internal server error" });
+        return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
     }
 };
 
 // --- STORY COMMENTS ---
 exports.addStoryComment = async (req, res) => {
-    const userId = req.user.sub;
     const storyId = req.params.id;
     const { content } = req.body;
-    const companyId = req.headers['x-company-id']; // Optional company context
+    let actorScope;
+
+    try {
+        actorScope = getContentActorScope(req);
+    } catch (err) {
+        return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
+    }
+
+    const userId = actorScope.userId;
+    const companyId = actorScope.orgId;
 
     if (!storyId || !userId || !content || !content.trim()) {
         return res.status(400).json({ message: "all fields are required" })
     }
 
     try {
-        let authorCompanyId = null;
-        if (companyId) {
-            const memberCheck = await pool.query(
-                `SELECT 1 FROM organization_members WHERE org_id = $1 AND user_id = $2`,
-                [companyId, userId]
-            );
-            if (memberCheck.rowCount === 0) {
-                return res.status(403).json({ message: "Not authorized to act as this company" });
-            }
-            authorCompanyId = companyId;
-        }
+        const authorCompanyId = companyId || null;
 
         const story = await pool.query(`select story_id, author_id, media_url from stories where story_id = $1`, [storyId])
 
@@ -3522,7 +3647,15 @@ exports.getStoryComments = async (req, res) => {
 }
 
 exports.deleteStoryComment = async (req, res) => {
-    const userId = req.user.sub;
+    let actorScope;
+
+    try {
+        actorScope = getContentActorScope(req);
+    } catch (err) {
+        return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
+    }
+
+    const { userId, orgId } = actorScope;
     const commentId = req.params.comment_id;
 
     if (!userId || !commentId) {
@@ -3533,8 +3666,15 @@ exports.deleteStoryComment = async (req, res) => {
         // Allow author of comment OR author of story to delete
         // For simplicity, let's start with author of comment
         const result = await pool.query(
-            `DELETE FROM story_comments WHERE comment_id = $1 AND author_id = $2 RETURNING comment_id`,
-            [commentId, userId]
+            `DELETE FROM story_comments
+             WHERE comment_id = $1
+               AND (
+                    ($3::uuid IS NOT NULL AND author_org_id = $3::uuid)
+                    OR
+                    ($3::uuid IS NULL AND author_id = $2 AND author_org_id IS NULL)
+               )
+             RETURNING comment_id`,
+            [commentId, userId, orgId || null]
         );
 
         if (result.rowCount === 0) {
