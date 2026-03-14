@@ -117,7 +117,7 @@ const getMyRegisteredEvents = async (userId) => {
      LEFT JOIN users u ON e.organizer_id = u.user_id
      LEFT JOIN organizations c ON e.org_id = c.org_id
      LEFT JOIN event_saves es ON es.event_id = e.event_id AND es.user_id = $1
-     WHERE er.user_id = $1 ORDER BY e.start_time ASC`,
+     WHERE er.user_id = $1 AND (e.end_time IS NULL OR e.end_time > NOW()) ORDER BY e.start_time ASC`,
         [userId]
     );
     return result.rows;
