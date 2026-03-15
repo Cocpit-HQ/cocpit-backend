@@ -121,6 +121,7 @@ exports.logout = async (req, res) => {
         await authService.logoutUser(accessToken);
 
         res.clearCookie("refreshToken", authService.COOKIE_OPTIONS);
+        res.clearCookie(actorContextService.ACTOR_CONTEXT_COOKIE_NAME, actorContextService.ACTOR_CONTEXT_COOKIE_OPTIONS);
         console.log("✅ [BE] Logout completed");
         return res.status(200).json({ message: "Logged out successfully" });
     } catch (err) {

@@ -139,26 +139,14 @@ exports.getUserProfile = async (req, res) => {
 
 
   try {
-    // --- View Counting Logic ---
+    // --- Centralized View Counting Logic (Redis + Atomic DB) ---
     if (targetUserId !== currentUserId) {
-      const viewCheck = await pool.query(
-        `SELECT view_id FROM profile_views 
-         WHERE viewer_id = $1 AND profile_owner_id = $2 
-         AND viewed_at > NOW() - INTERVAL '24 hours'`,
-        [currentUserId, targetUserId]
-      );
-
-      if (viewCheck.rowCount === 0) {
-        await pool.query(
-          `INSERT INTO profile_views 
-           (viewer_id, profile_owner_id, profile_type)
-           VALUES ($1, $2, 'user')
-           ON CONFLICT DO NOTHING`,
-          [currentUserId, targetUserId]
-        );
-      }
+        const dashboardService = require("../dashboard/dashboard.service");
+        // Fire and forget view recording to keep profile load fast
+        dashboardService.addProfileView(currentUserId, targetUserId, 'user')
+            .catch(err => console.error("Error recording user profile view:", err));
     }
-    // ---------------------------
+    // -----------------------------------------------------------
 
     // 1. Fetch User & Profile Data
     const userQuery = `

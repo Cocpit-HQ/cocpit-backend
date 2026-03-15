@@ -676,11 +676,15 @@ CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 CREATE TABLE IF NOT EXISTS profile_views (
     view_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     viewer_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
-    profile_owner_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
-    viewed_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+    profile_owner_id UUID NOT NULL,
+    profile_type TEXT NOT NULL CHECK (profile_type IN ('user', 'organization')),
+    viewed_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    view_date DATE GENERATED ALWAYS AS ((viewed_at AT TIME ZONE 'UTC')::date) STORED
 );
 
 CREATE INDEX idx_profile_views_lookup ON profile_views(viewer_id, profile_owner_id, viewed_at);
+CREATE INDEX idx_profile_views_owner ON profile_views(profile_type, profile_owner_id);
+-- Removed unique_daily_profile_view to allow multiple views per day to increment count
 
 --20-01-26 -- student account type added 
 ALTER TABLE profiles
