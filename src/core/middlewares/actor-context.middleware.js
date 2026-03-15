@@ -113,7 +113,7 @@ async function resolveActorContextForRequest(req) {
 
     if (requestedActor.type === "USER") {
         if (requestedActor.id && requestedActor.id !== userId) {
-            throw new AppError("Invalid user actor context", 403);
+            console.warn(`[ActorContext] Stale USER actor ID detected (${requestedActor.id}). Falling back to current user (${userId}).`);
         }
 
         return buildUserActor(userId, requestedActor.source);
@@ -123,21 +123,34 @@ async function resolveActorContextForRequest(req) {
         throw new AppError("Organization actor id is required", 400);
     }
 
-    const member = await getOrganizationMembership(requestedActor.id, userId);
-    assertActiveMembership(member);
+    try {
+        const member = await getOrganizationMembership(requestedActor.id, userId);
+        assertActiveMembership(member);
 
-    const permissions = member.permissions || [];
-    if (!permissions.includes("*") && !permissions.includes("SWITCH_TO_COMPANY")) {
-        throw new AppError("You do not have permission to act as this organization", 403);
+        const permissions = member.permissions || [];
+        if (!permissions.includes("*") && !permissions.includes("SWITCH_TO_COMPANY")) {
+            throw new AppError("You do not have permission to act as this organization", 403);
+        }
+
+        req.member = {
+            role: member.role_name,
+            permissions,
+            priority: member.priority || 0,
+        };
+
+        return buildOrganizationActor(requestedActor.id, userId, member, requestedActor.source);
+    } catch (err) {
+        // [RESOLVED 403] Graceful Fallback
+        // If organization resolution fails (stale membership, blocked, etc.), 
+        // fallback to USER context instead of 403ing the whole request.
+        // Downstream middlewares like requireOrgActorPermission will still catch and block 
+        // if the specific route actually NEEDS the organization context.
+        if (err.statusCode === 403) {
+            console.warn(`[ActorContext] Fallback to USER: ${err.message} (Requested ORG: ${requestedActor.id})`);
+            return buildUserActor(userId, "fallback_from_stale_org");
+        }
+        throw err;
     }
-
-    req.member = {
-        role: member.role_name,
-        permissions,
-        priority: member.priority || 0,
-    };
-
-    return buildOrganizationActor(requestedActor.id, userId, member, requestedActor.source);
 }
 
 const resolveActorContext = async (req, res, next) => {

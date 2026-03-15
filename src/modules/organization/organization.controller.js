@@ -207,9 +207,15 @@ exports.getOrganization = async (req, res) => {
 
         const company = result.rows[0];
 
-        // Audit Log for Analytics (Async, don't block response)
-        // We need a client for this. Since we used pool.query above, we don't have a transaction client.
-        // It's fine to fire and forget or use pool.
+        // Unified Profile View Tracking (Redis + Atomic DB)
+        if (userId && company.org_id) {
+            const dashboardService = require("../dashboard/dashboard.service");
+            // Fire and forget to keep response fast
+            dashboardService.addProfileView(userId, company.org_id, 'organization')
+                .catch(err => console.error("Error recording organization profile view:", err));
+        }
+
+        // Audit Log for Analytics (Legacy / Additional logging)
         if (userId && company.org_id) {
             (async () => {
                 const auditClient = await pool.connect();

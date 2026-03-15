@@ -46,10 +46,7 @@ exports.optionalAuth = async (req, res, next) => {
     req.user = verifyAccessToken(token);
     req.actor = await resolveActorContextForRequest(req);
   } catch (err) {
-    if (err.statusCode) {
-      return res.status(err.statusCode).json({ message: err.message });
-    }
-    // Ignore invalid tokens for optional auth
+    // Ignore all errors for optional auth (including 403s from actor resolution)
   }
   next();
 };

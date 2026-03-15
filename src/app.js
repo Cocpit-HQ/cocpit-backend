@@ -15,6 +15,8 @@ const onboardingRoutes = require("./modules/auth/onboarding.routes");
 const messagingRoutes = require("./modules/messaging/messaging.routes");
 const organizationRoutes = require("./modules/organization/organization.routes");
 const shareRoutes = require("./modules/share/share.routes");
+const dashboardRoutes = require("./modules/dashboard/dashboard.routes");
+
 
 const app = express();
 app.set("trust proxy", 1);
@@ -71,6 +73,7 @@ app.use((req, res, next) => {
   next();
 });
 
+app.use("/api/dashboard", dashboardRoutes);
 app.use("/api/auth", authRoutes);
 app.use("/api", profileRoutes);
 app.use("/api/jobs", jobRoutes);
@@ -83,6 +86,7 @@ app.use("/api/onboarding", onboardingRoutes);
 app.use("/api", organizationRoutes);
 app.use("/api", messagingRoutes);
 app.use("/api", shareRoutes);
+
 
 const errorHandler = require("./core/middlewares/error.middleware");
 app.use(errorHandler);
