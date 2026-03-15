@@ -10,15 +10,20 @@ const { notifyOrgFollowers } = require("../../services/notification.service");
 const { hasActorPermission } = require("../../core/middlewares/actor-context.middleware");
 
 const getRequestedOrganizationActorId = (req, fallbackOrgId = null) => {
+    // 1. Prefer Explicit Actor Header Context
     const actorOrgId = req.actor?.type === "ORGANIZATION" ? req.actor.orgId : null;
 
-    if (actorOrgId && fallbackOrgId && actorOrgId !== fallbackOrgId) {
-        const err = new Error("Active organization actor does not match requested organization");
-        err.statusCode = 403;
-        throw err;
+    if (actorOrgId) {
+        if (fallbackOrgId && actorOrgId !== fallbackOrgId) {
+            const err = new Error("Active organization actor does not match requested organization");
+            err.statusCode = 403;
+            throw err;
+        }
+        return actorOrgId;
     }
 
-    return actorOrgId;
+    // 2. Fallback to Passed companyId
+    return fallbackOrgId;
 };
 
 const hasAnyActorPermission = (actorPermissions, permissions) => {
@@ -280,9 +285,9 @@ exports.getMyCreatedEvents = async (req, res) => {
     const userId = req.user.sub;
 
     try {
-        const requestedOrgId = getRequestedOrganizationActorId(req);
-        if (requestedOrgId) {
-            await assertEventOrgPermission(req, requestedOrgId, ["VIEW_ANALYTICS", "CREATE_CONTENT", "MANAGE_COMPANY"]);
+        const companyId = getRequestedOrganizationActorId(req, req.query.companyId || null);
+        if (companyId) {
+            await assertEventOrgPermission(req, companyId, ["VIEW_ANALYTICS", "CREATE_CONTENT", "MANAGE_COMPANY"]);
         }
         const rawEvents = await eventRepo.getMyCreatedEvents(userId, companyId);
         const events = rawEvents.map(event => ({

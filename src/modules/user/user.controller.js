@@ -152,7 +152,8 @@ exports.getUserProfile = async (req, res) => {
         await pool.query(
           `INSERT INTO profile_views 
            (viewer_id, profile_owner_id, profile_type)
-           VALUES ($1, $2, 'user')`,
+           VALUES ($1, $2, 'user')
+           ON CONFLICT DO NOTHING`,
           [currentUserId, targetUserId]
         );
       }

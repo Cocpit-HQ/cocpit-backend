@@ -8,15 +8,21 @@ const { checkOrgPermission } = require("../../core/utils/rbac");
 const { notifyOrgFollowers } = require("../../services/notification.service");
 
 const getRequestedOrganizationActorId = (req, fallbackOrgId = null) => {
+    // 1. Prefer Explicit Actor Header Context
     const actorOrgId = req.actor?.type === "ORGANIZATION" ? req.actor.orgId : null;
 
-    if (actorOrgId && fallbackOrgId && actorOrgId !== fallbackOrgId) {
-        const err = new Error("Active organization actor does not match requested organization");
-        err.statusCode = 403;
-        throw err;
+    if (actorOrgId) {
+        if (fallbackOrgId && actorOrgId !== fallbackOrgId) {
+            const err = new Error("Active organization actor does not match requested organization");
+            err.statusCode = 403;
+            throw err;
+        }
+        return actorOrgId;
     }
 
-    return actorOrgId;
+    // 2. Fallback to Passed companyId if user has permission to act as that company
+    // This is useful for requests where headers might be stripped or for specific API calls
+    return fallbackOrgId;
 };
 
 const getContentActorScope = (req, fallbackOrgId = null) => {
@@ -3360,7 +3366,7 @@ exports.getStoryDetailsById = async (req, res) => {
     let actorScope;
 
     try {
-        actorScope = getContentActorScope(req);
+        actorScope = getContentActorScope(req, req.query.companyId || null);
     } catch (err) {
         return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
     }

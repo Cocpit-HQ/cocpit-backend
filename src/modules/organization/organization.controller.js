@@ -99,9 +99,9 @@ exports.createOrganization = async (req, res) => {
             ownerRoleName = 'Owner';
             roles = [
                 { name: 'Owner', color: '#FFD700', permissions: ["*"], priority: 100, is_system: true },
-                { name: 'Admin', color: '#FF0000', permissions: ["SWITCH_TO_COMPANY", "MANAGE_COMPANY", "MANAGE_COMPANY_DETAILS", "MANAGE_SETTINGS", "MANAGE_ROLES", "MANAGE_MEMBERS", "INVITE_MEMBERS", "REMOVE_MEMBERS", "VIEW_MEMBERS", "POST_JOBS", "VIEW_APPLICANTS", "MANAGE_APPLICANTS", "CREATE_CONTENT", "MANAGE_COMMENTS", "VIEW_ANALYTICS"], priority: 90, is_system: true },
+                { name: 'Admin', color: '#FF0000', permissions: ["SWITCH_TO_COMPANY", "MANAGE_COMPANY", "MANAGE_COMPANY_DETAILS", "MANAGE_SETTINGS", "MANAGE_ROLES", "MANAGE_MEMBERS", "INVITE_MEMBERS", "REMOVE_MEMBERS", "VIEW_MEMBERS", "POST_JOBS", "VIEW_JOBS", "MANAGE_JOBS", "VIEW_APPLICANTS", "MANAGE_APPLICANTS", "CREATE_CONTENT", "MANAGE_COMMENTS", "VIEW_ANALYTICS"], priority: 90, is_system: true },
                 { name: 'Editor', color: '#00FF00', permissions: ["SWITCH_TO_COMPANY", "CREATE_CONTENT", "VIEW_ANALYTICS", "VIEW_MEMBERS", "MANAGE_COMPANY_DETAILS"], priority: 60, is_system: true },
-                { name: 'Recruiter', color: '#0000FF', permissions: ["SWITCH_TO_COMPANY", "POST_JOBS", "VIEW_APPLICANTS", "MANAGE_APPLICANTS", "VIEW_MEMBERS"], priority: 50, is_system: true },
+                { name: 'Recruiter', color: '#0000FF', permissions: ["SWITCH_TO_COMPANY", "POST_JOBS", "VIEW_JOBS", "VIEW_APPLICANTS", "MANAGE_APPLICANTS", "VIEW_MEMBERS"], priority: 50, is_system: true },
                 { name: 'Analyst', color: '#800080', permissions: ["SWITCH_TO_COMPANY", "VIEW_ANALYTICS", "VIEW_MEMBERS"], priority: 40, is_system: true }
             ];
         }
