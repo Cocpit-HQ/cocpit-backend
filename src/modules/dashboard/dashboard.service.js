@@ -41,16 +41,37 @@ const addProfileView = async (viewerId, profileOwnerIdentifier, profileType) => 
   const today = `${nowDate.getFullYear()}-${String(nowDate.getMonth() + 1).padStart(2, '0')}-${String(nowDate.getDate()).padStart(2, '0')}`;
   const cacheKey = `profile_view:${viewerId}:${profileOwnerId}:${profileType}:${today}`;
 
-  // Atomic distributed cache check (24h TTL)
-  const isNewView = await redis.set(
-    cacheKey,
-    "1",
-    "NX",
-    "EX",
-    86400
-  );
+  // 1. In-memory safety fallback (protects against Redis downtime + extra layer)
+  if (!global.viewSafetyMap) {
+    global.viewSafetyMap = new Map();
+    // Cleanup old keys every hour
+    setInterval(() => {
+      const now = Date.now();
+      for (const [key, timestamp] of global.viewSafetyMap.entries()) {
+        if (now - timestamp > 3600000) global.viewSafetyMap.delete(key);
+      }
+    }, 3600000);
+  }
 
-  if (!isNewView) return;
+  if (global.viewSafetyMap.has(cacheKey)) return;
+  global.viewSafetyMap.set(cacheKey, Date.now());
+
+  // 2. Redis distributed cache check (24h TTL)
+  if (redis.status === "ready") {
+    try {
+      const isNewView = await redis.set(
+        cacheKey,
+        "1",
+        "NX",
+        "EX",
+        86400
+      );
+      if (!isNewView) return;
+    } catch (err) {
+      // Logic continues to DB if Redis fails, but in-memory map already caught near-duplicates
+      console.warn("[DashboardService] Redis cache check skipped during view tracking");
+    }
+  }
 
   try {
     const { rows } = await pool.query(
