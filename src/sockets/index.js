@@ -40,6 +40,9 @@ module.exports.initSocket = async (httpServer) => {
     cors: corsOptions,
   });
 
+  // Initialize Service immediately so other modules can use it
+  socketService.init(io);
+
   // Redis Adapter Setup
   const redisUrl = process.env.REDIS_URL ||
     (process.env.REDIS_HOST ? `redis://${process.env.REDIS_HOST}:${process.env.REDIS_PORT || 6379}` : null);
@@ -47,14 +50,19 @@ module.exports.initSocket = async (httpServer) => {
   if (redisUrl) {
     try {
       const pubClient = createClient({ url: redisUrl });
+      
+      // Mandatory error handlers to prevent process crash
+      pubClient.on("error", (err) => { /* Silently handled to prevent crashes */ });
+      
       const subClient = pubClient.duplicate();
+      subClient.on("error", (err) => { /* Silently handled to prevent crashes */ });
 
       await Promise.all([pubClient.connect(), subClient.connect()]);
 
       io.adapter(createAdapter(pubClient, subClient));
       console.log("✅ Redis adapter initialized for Socket.IO");
     } catch (err) {
-      console.error("❌ Redis connection failed, falling back to in-memory adapter:", err.message);
+      console.warn("⚠️ Redis unavailable for Socket.IO adapter. Falling back to in-memory.");
       // We don't exit process, just fallback to default memory adapter
     }
   } else {
@@ -80,8 +88,7 @@ module.exports.initSocket = async (httpServer) => {
     }
   });
 
-  // Initialize Service
-  socketService.init(io);
+  // Initialized Service earlier
 
   // Connection Handler
   io.on("connection", (socket) => {

@@ -1,49 +1,21 @@
-const redis = require("redis");
+const masterRedis = require("../cache/redis");
 
-// Get Redis URL from env or default
-const REDIS_URL = process.env.REDIS_URL || "redis://localhost:6379";
-
-const redisClient = redis.createClient({
-    url: REDIS_URL,
-    socket: {
-        // Limit retries to prevent infinite spam if Redis is missing
-        reconnectStrategy: (retries) => {
-            if (retries > 5) {
-                console.warn("⚠️ Redis connection failed. Running without cache.");
-                return new Error("Redis connection failed");
-            }
-            return Math.min(retries * 200, 2000); // Backoff: 200ms -> 2s
+/**
+ * Compatibility Proxy for node-redis
+ * This ensures all components use a single, throttled, exponential-backoff client.
+ */
+const proxy = new Proxy(masterRedis, {
+    get(target, prop) {
+        if (prop === 'isOpen') {
+            return target.status === 'ready';
         }
-    }
-});
-
-// Handle errors to prevent process crash
-redisClient.on("error", (err) => {
-    // Suppress repeated connection errors
-    if (err.code === 'ECONNREFUSED' || err.message.includes('ECONNREFUSED')) {
-        return;
-    }
-    console.error("Redis Client Error:", err.message);
-});
-
-redisClient.on("connect", () => {
-    console.log("✅ Redis Client Connected");
-});
-
-redisClient.on("reconnecting", () => {
-    // console.log("Redis reconnecting...");
-});
-
-// Auto-connect
-(async () => {
-    try {
-        if (!redisClient.isOpen) {
-            await redisClient.connect();
+        if (prop === 'connect') {
+            return async () => { /* Already handled by master auto-connect */ };
         }
-    } catch (err) {
-        // Initial connection failed
-        console.warn("⚠️ Initial Redis connection failed. Running without cache.");
+        // Return property from masterRedis
+        const val = target[prop];
+        return typeof val === 'function' ? val.bind(target) : val;
     }
-})();
+});
 
-module.exports = redisClient;
+module.exports = proxy;

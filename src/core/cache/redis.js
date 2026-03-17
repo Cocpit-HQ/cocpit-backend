@@ -18,20 +18,23 @@ const redis = new Redis({
   },
 });
 
-let lastErrorLog = 0;
-const LOG_THROTTLE = 10000; // Log once every 10 seconds
+// Compatibility helper for node-redis setEx
+redis.setEx = async (key, seconds, value) => {
+  return redis.set(key, value, "EX", seconds);
+};
+
+let hasLoggedUnavailable = false;
 
 redis.on("connect", () => {
   console.log("✅ Redis connected");
-  lastErrorLog = 0;
+  hasLoggedUnavailable = false;
 });
 
 redis.on("error", (err) => {
-  const now = Date.now();
   if (err.code === "ECONNREFUSED") {
-    if (now - lastErrorLog > LOG_THROTTLE) {
+    if (!hasLoggedUnavailable) {
       console.warn("⚠️ Redis unavailable. Running without cache.");
-      lastErrorLog = now;
+      hasLoggedUnavailable = true;
     }
   } else {
     console.error("❌ Redis error:", err);

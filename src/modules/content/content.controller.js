@@ -792,7 +792,7 @@ exports.createPost = async (req, res) => {
                 post_type = 'poll';
             } else if (media_urls && Array.isArray(media_urls) && media_urls.length > 0) {
                 const firstUrl = media_urls[0];
-                post_type = firstUrl.toLowerCase().match(/\.(mp4|webm|mov)$/) ? 'video' : 'image';
+                post_type = firstUrl.toLowerCase().match(/\.(mp4|webm|mov)(\?|#|$)/) ? 'video' : 'image';
             } else {
                 post_type = 'article';
             }
@@ -915,7 +915,7 @@ exports.createPost = async (req, res) => {
         // 3. Insert Media (Parallel Optimized)
         if (media_urls && Array.isArray(media_urls) && media_urls.length > 0) {
             const mediaPromises = media_urls.map(url => {
-                let currentType = url.toLowerCase().match(/\.(mp4|webm|mov)$/) ? 'video' : 'image';
+                let currentType = url.toLowerCase().match(/\.(mp4|webm|mov)(\?|#|$)/) ? 'video' : 'image';
                 type = currentType; // Keep a reference to one type for response (legacy behavior)
                 return client.query(
                     `INSERT INTO post_media (post_id, url, media_type) VALUES ($1, $2, $3)`,
@@ -1423,7 +1423,7 @@ exports.updatePostById = async (req, res) => {
             await client.query(`DELETE FROM post_media WHERE post_id = $1`, [postId]);
 
             for (const url of media_urls) {
-                const type = url.match(/\.(mp4|webm|mov)$/i) ? "video" : "image";
+                const type = url.match(/\.(mp4|webm|mov)(\?|#|$)/i) ? "video" : "image";
                 await client.query(
                     `INSERT INTO post_media (post_id, url, media_type)
        VALUES ($1, $2, $3)`,
@@ -2978,7 +2978,7 @@ exports.createStory = async (req, res) => {
         const authorCompanyId = companyId || null;
 
         // Derive media_type from URL extension if not provided
-        const type = media_type || (media_url.toLowerCase().match(/\.(mp4|webm|mov)$/) ? 'video' : 'image');
+        const type = media_type || (media_url.toLowerCase().match(/\.(mp4|webm|mov)(\?|#|$)/) ? 'video' : 'image');
 
         // Snapshot-based: everything is immediately ready (no server-side rendering)
         const result = await pool.query(

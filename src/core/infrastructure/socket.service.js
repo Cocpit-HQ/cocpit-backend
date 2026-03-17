@@ -9,6 +9,13 @@ class SocketService {
     this.io = io;
   }
 
+  _warnUninitialized() {
+    if (!this._hasWarned) {
+      console.warn("SocketService: io not initialized. Some events may be dropped during startup.");
+      this._hasWarned = true;
+    }
+  }
+
   /**
    * Notify a specific user
    * @param {string} userId
@@ -17,7 +24,7 @@ class SocketService {
    */
   notifyUser(userId, event, payload) {
     if (!this.io) {
-      console.warn("SocketService: io not initialized");
+      this._warnUninitialized();
       return;
     }
     const room = getUserRoom(userId);
@@ -31,7 +38,7 @@ class SocketService {
    */
   leaveConversation(userId, conversationId) {
     if (!this.io) {
-      console.warn("SocketService: io not initialized");
+      this._warnUninitialized();
       return;
     }
     const userRoom = getUserRoom(userId);
@@ -48,7 +55,7 @@ class SocketService {
    */
   notifyConversation(conversationId, event, payload) {
     if (!this.io) {
-      console.warn("SocketService: io not initialized");
+      this._warnUninitialized();
       return;
     }
     const room = getConversationRoom(conversationId);
@@ -63,7 +70,7 @@ class SocketService {
    */
   notifyStory(storyId, event, payload) {
     if (!this.io) {
-      console.warn("SocketService: io not initialized");
+      this._warnUninitialized();
       return;
     }
     const room = getStoryRoom(storyId);
@@ -78,7 +85,7 @@ class SocketService {
    */
   notifyOrg(orgId, event, payload) {
     if (!this.io) {
-      console.warn("SocketService: io not initialized");
+      this._warnUninitialized();
       return;
     }
     const room = getOrgRoom(orgId);
@@ -97,7 +104,7 @@ class SocketService {
    */
   broadcastStatus(userId, status, relatedUserIds) {
     if (!this.io) {
-      console.warn("SocketService: io not initialized");
+      this._warnUninitialized();
       return;
     }
     if (!relatedUserIds || relatedUserIds.length === 0) return;
@@ -118,7 +125,10 @@ class SocketService {
    * @returns {boolean}
    */
   isUserOnline(userId) {
-    if (!this.io) return false;
+    if (!this.io) {
+      this._warnUninitialized();
+      return false;
+    }
     const room = getUserRoom(userId);
     // io.sockets.adapter.rooms is a Map where key is room name and value is Set of socket IDs
     return this.io.sockets.adapter.rooms.has(room);

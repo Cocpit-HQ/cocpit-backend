@@ -21,7 +21,9 @@ if (process.env.NEW_RELIC_LICENSE_KEY) {
 }
 
 // Redundant app.set("trust proxy", true) removed to prevent overwriting app.js settings
+// Initialize Socket.IO (backgrounded to avoid hanging on Redis connect)
 initSocket(server);
+
 startSessionTimeoutWorker();
 
 // Start simple job expiry worker (Every 15 minutes)
