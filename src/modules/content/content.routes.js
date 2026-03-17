@@ -60,4 +60,5 @@ router.post("/stories/:id/comments", requireAuth, contentController.addStoryComm
 router.get("/stories/:id/comments", requireAuth, contentController.getStoryComments);
 router.delete("/stories/comments/:comment_id", requireAuth, contentController.deleteStoryComment);
 
+
 module.exports = router;

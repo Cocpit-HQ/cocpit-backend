@@ -1,6 +1,7 @@
 const pool = require("../../core/db/pool");
 const AppError = require("../../core/errors/AppError");
 const current_user = require("../profile/profile.controller");
+const dashboardService = require("../dashboard/dashboard.service");
 
 /**
  * GET /api/users/search
@@ -80,6 +81,16 @@ exports.searchUsers = async (req, res) => {
 
     const result = await pool.query(queryText, queryParams);
 
+    // Track search appearances
+    if (result.rows.length > 0) {
+      result.rows.forEach(profile => {
+        // Map COMPANY to organization for schema compatibility
+        const profileType = profile.type === 'COMPANY' ? 'organization' : 'user';
+        dashboardService.addSearchAppearance(currentUserId, profile.id, profileType)
+          .catch(err => console.error("Error recording search appearance:", err));
+      });
+    }
+
     return res.status(200).json(result.rows);
   } catch (err) {
     console.error("Search users error:", err);
@@ -141,7 +152,6 @@ exports.getUserProfile = async (req, res) => {
   try {
     // --- Centralized View Counting Logic (Redis + Atomic DB) ---
     if (targetUserId !== currentUserId) {
-        const dashboardService = require("../dashboard/dashboard.service");
         // Fire and forget view recording to keep profile load fast
         dashboardService.addProfileView(currentUserId, targetUserId, 'user')
             .catch(err => console.error("Error recording user profile view:", err));
