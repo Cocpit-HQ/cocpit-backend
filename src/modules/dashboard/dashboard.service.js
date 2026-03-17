@@ -113,19 +113,114 @@ const getProfileViewCount = async (profileOwnerIdentifier, profileType) => {
 };
 
 /**
+ * Add search appearance
+ * One appearance per user per profile per day
+ */
+const addSearchAppearance = async (viewerId, profileOwnerId, profileType) => {
+  if (!profileOwnerId || !profileType) return;
+
+  try {
+    await pool.query(
+      `
+      INSERT INTO search_appearances
+      (viewer_id, profile_owner_id, profile_type, appearance_date)
+      VALUES ($1,$2,$3,CURRENT_DATE)
+      ON CONFLICT ON CONSTRAINT unique_daily_search
+      DO NOTHING
+      `,
+      [viewerId, profileOwnerId, profileType]
+    );
+  } catch (err) {
+    if (err.code !== "23505") return; // Silently handle duplicate key
+    console.error("Error adding search appearance:", err);
+  }
+};
+
+/**
+ * Get total search appearances
+ */
+const getSearchAppearanceCount = async (profileOwnerId, profileType) => {
+  const { rows } = await pool.query(
+    `
+    SELECT COUNT(*)::int AS total
+    FROM search_appearances
+    WHERE profile_owner_id = $1
+    AND profile_type = $2
+    `,
+    [profileOwnerId, profileType]
+  );
+
+  return rows[0].total;
+};
+
+/**
+ * Get connection request count for an actor
+ * For users: counts pending connection requests received
+ * For organizations: counts pending organization connection requests
+ * @param {string} actorId
+ * @param {'user'|'organization'} actorType
+ * @returns {Promise<number>}
+ */
+const getConnectionCount = async (actorId, actorType) => {
+  if (actorType === "organization") {
+    const { rows } = await pool.query(
+      `SELECT COUNT(*)::int AS count FROM organization_connection_requests WHERE org_id = $1 AND status = 'pending'`,
+      [actorId]
+    );
+    return rows[0].count;
+  }
+
+  // User actor: pending connection requests received
+  const { rows } = await pool.query(
+    `SELECT COUNT(*)::int AS count FROM connection_requests WHERE receiver_id = $1 AND status = 'pending'`,
+    [actorId]
+  );
+  return rows[0].count;
+};
+
+/**
+ * Get total post impressions for an actor
+ * @param {string} actorId
+ * @param {'user'|'organization'} actorType
+ * @returns {Promise<number>}
+ */
+const getPostImpressionsCount = async (actorId, actorType) => {
+  const query = actorType === "organization"
+    ? `SELECT COUNT(*)::int AS count FROM post_impressions pi 
+       JOIN posts p ON pi.post_id = p.post_id 
+       WHERE p.author_org_id = $1`
+    : `SELECT COUNT(*)::int AS count FROM post_impressions pi
+       JOIN posts p ON pi.post_id = p.post_id
+       WHERE p.author_id = $1 AND p.author_org_id IS NULL`;
+
+  const { rows } = await pool.query(query, [actorId]);
+  return rows[0].count;
+};
+
+/**
  * Get dashboard statistics for an actor (user or organization)
+ * Uses Promise.all for parallel execution
  * @param {string} actorId
  * @param {'USER'|'ORGANIZATION'} actorType
  * @returns {Promise<Object>}
  */
 const getStats = async (actorId, actorType) => {
+  const type = actorType.toLowerCase();
+
+  const [totalViews, searchAppearances, totalConnections, totalImpressions] = await Promise.all([
+    getProfileViewCount(actorId, type),
+    getSearchAppearanceCount(actorId, type),
+    getConnectionCount(actorId, type),
+    getPostImpressionsCount(actorId, type),
+  ]);
+
   return {
     overview: {
-      totalViews: await getProfileViewCount(actorId, actorType.toLowerCase()),
-      totalConnections: 0,
-      activeJobs: 0,
+      totalViews,
+      searchAppearances,
+      totalConnections,
+      totalImpressions,
     },
-    recentActivity: [],
   };
 };
 
@@ -133,4 +228,8 @@ module.exports = {
   getStats,
   addProfileView,
   getProfileViewCount,
+  addSearchAppearance,
+  getSearchAppearanceCount,
+  getConnectionCount,
+  getPostImpressionsCount,
 };

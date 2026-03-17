@@ -1217,3 +1217,25 @@ CHECK (
 ) NOT VALID;
 
 ALTER TABLE users VALIDATE CONSTRAINT password_or_social;
+
+-- 15/03/2026 Search Appearances 
+CREATE TABLE search_appearances (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+
+    viewer_id UUID,
+    profile_owner_id UUID NOT NULL,
+
+    profile_type TEXT NOT NULL
+        CHECK (profile_type IN ('user','organization')),
+
+    appearance_date DATE NOT NULL DEFAULT CURRENT_DATE,
+
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+ALTER TABLE search_appearances
+ADD CONSTRAINT unique_daily_search
+UNIQUE (viewer_id, profile_owner_id, profile_type, appearance_date);
+
+CREATE INDEX idx_search_appearance_owner_type
+ON search_appearances(profile_owner_id, profile_type);

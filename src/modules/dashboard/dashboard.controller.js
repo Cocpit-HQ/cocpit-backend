@@ -1,5 +1,6 @@
 const dashboardService = require("./dashboard.service");
 const { sendSuccess } = require("../../core/response/success");
+const pool = require("../../core/db/pool");
 
 const getDashboardStats = async (req, res) => {
   try {
@@ -39,8 +40,73 @@ const getProfileViews = async (req, res) => {
   }
 };
 
+const getSearchAppearanceCount = async (req, res) => {
+  const { profileId, profileType } = req.params;
+
+  try {
+    const count = await dashboardService.getSearchAppearanceCount(profileId, profileType);
+    return sendSuccess(res, { profileId, profileType, searchAppearances: count }, 200, "Search appearance count retrieved successfully");
+  } catch (err) {
+    console.error("Get search appearance count error:", err);
+    return res.status(500).json({ message: "Internal server error" });
+  }
+};
+
+const recordImpression = async (req, res) => {
+  const { id: postId } = req.params;
+  
+  // Use actor context if available
+  const userId = req.user?.sub || req.user?.id || null;
+  const companyId = req.actor?.type === "ORGANIZATION" ? req.actor.orgId : null;
+
+  try {
+    console.log(`[DEBUG] Attempting to record impression for post: ${postId}, actor: ${userId || 'anonymous'}`);
+
+    // Build a unique key for Redis debouncing for authenticated actors
+    if (userId) {
+      const actorType = companyId ? 'organization' : 'user';
+      const actorIdentifier = companyId || userId;
+      const redisKey = `impression:${postId}:${actorType}:${actorIdentifier}`;
+
+      // Check if impression was recently recorded (5 minutes = 300 seconds)
+      const redis = require("../../core/cache/redis");
+      const exists = await redis.get(redisKey);
+      if (exists) {
+        console.log(`[DEBUG] Impression already recorded in Redis for ${redisKey}`);
+        return res.status(204).send(); // No Content - already recorded
+      }
+
+      // Set Redis key with 5-minute expiry
+      await redis.set(redisKey, "1", "EX", 300);
+
+      // Record in Database
+      await pool.query(
+        `INSERT INTO post_impressions (post_id, viewer_id, viewer_org_id)
+                 VALUES ($1, $2, $3)`,
+        [postId, userId, companyId || null]
+      );
+      console.log(`[DEBUG] Impression recorded in DB for post ${postId}`);
+    } else {
+      // Anonymous impression
+      await pool.query(
+        `INSERT INTO post_impressions (post_id) VALUES ($1)`,
+        [postId]
+      );
+      console.log(`[DEBUG] Anonymous impression recorded in DB for post ${postId}`);
+    }
+
+    res.status(204).send();
+  } catch (err) {
+    console.error(`[ERROR] Record impression error for post ${postId}:`, err.message);
+    // Fail silently for user experience, but log for debugging
+    res.status(204).send();
+  }
+};
+
 module.exports = {
   getDashboardStats,
   recordProfileView,
   getProfileViews,
+  getSearchAppearanceCount,
+  recordImpression,
 };
