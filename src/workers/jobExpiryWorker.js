@@ -7,7 +7,12 @@ const pool = require("../core/db/pool");
 const processJobExpirations = async () => {
     let client;
     try {
-        client = await pool.connect();
+        try {
+            client = await pool.connect();
+        } catch (connErr) {
+            console.warn("[JobExpiryWorker] Database connection unavailable. Skipping sweep.");
+            return;
+        }
         await client.query("BEGIN");
 
         // 1. Find jobs that need to expire

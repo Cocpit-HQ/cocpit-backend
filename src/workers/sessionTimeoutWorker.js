@@ -15,7 +15,13 @@ const SWEEP_INTERVAL_MS = 2 * 60 * 1000; // 2 minutes
 let intervalId = null;
 
 async function sweepTimedOutSessions() {
-    const client = await pool.connect();
+    let client;
+    try {
+        client = await pool.connect();
+    } catch (connErr) {
+        console.warn("[SessionWorker] Database connection unavailable. Skipping sweep.");
+        return;
+    }
     try {
         await client.query('BEGIN');
 

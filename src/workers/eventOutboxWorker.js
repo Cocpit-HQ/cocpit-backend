@@ -13,7 +13,12 @@ const processEventOutbox = async () => {
 
     let client;
     try {
-        client = await pool.connect();
+        try {
+            client = await pool.connect();
+        } catch (connErr) {
+            console.warn("[EventOutboxWorker] Database connection unavailable. Skipping sweep.");
+            return;
+        }
         await client.query("BEGIN");
 
         // Fetch up to 50 pending events and lock them

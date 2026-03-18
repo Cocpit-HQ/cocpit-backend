@@ -12,7 +12,12 @@ const cloudinary = require("../core/infrastructure/cloudinary.client");
 const processStoryExpirations = async () => {
     let client;
     try {
-        client = await pool.connect();
+        try {
+            client = await pool.connect();
+        } catch (connErr) {
+            console.warn("[StoryExpiryWorker] Database connection unavailable. Skipping sweep.");
+            return;
+        }
 
         // 1. Find expired stories with their Cloudinary public_ids
         const expiredRes = await client.query(`
