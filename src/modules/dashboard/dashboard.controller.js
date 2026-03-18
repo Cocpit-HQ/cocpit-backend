@@ -60,7 +60,7 @@ const recordImpression = async (req, res) => {
   const companyId = req.actor?.type === "ORGANIZATION" ? req.actor.orgId : null;
 
   try {
-    console.log(`[DEBUG] Attempting to record impression for post: ${postId}, actor: ${userId || 'anonymous'}`);
+
 
     // Build a unique key for Redis debouncing for authenticated actors
     if (userId) {
@@ -70,14 +70,22 @@ const recordImpression = async (req, res) => {
 
       // Check if impression was recently recorded (5 minutes = 300 seconds)
       const redis = require("../../core/cache/redis");
-      const exists = await redis.get(redisKey);
+      const isRedisReady = redis.status === "ready";
+      
+      let exists = false;
+      if (isRedisReady) {
+        exists = await redis.get(redisKey);
+      }
+      
       if (exists) {
-        console.log(`[DEBUG] Impression already recorded in Redis for ${redisKey}`);
+
         return res.status(204).send(); // No Content - already recorded
       }
 
-      // Set Redis key with 5-minute expiry
-      await redis.set(redisKey, "1", "EX", 300);
+      // Set Redis key with 5-minute expiry only if Redis is ready
+      if (isRedisReady) {
+        await redis.set(redisKey, "1", "EX", 300);
+      }
 
       // Record in Database
       await pool.query(
@@ -85,14 +93,14 @@ const recordImpression = async (req, res) => {
                  VALUES ($1, $2, $3)`,
         [postId, userId, companyId || null]
       );
-      console.log(`[DEBUG] Impression recorded in DB for post ${postId}`);
+
     } else {
       // Anonymous impression
       await pool.query(
         `INSERT INTO post_impressions (post_id) VALUES ($1)`,
         [postId]
       );
-      console.log(`[DEBUG] Anonymous impression recorded in DB for post ${postId}`);
+
     }
 
     res.status(204).send();
