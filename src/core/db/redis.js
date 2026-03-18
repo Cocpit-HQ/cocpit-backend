@@ -12,8 +12,32 @@ const proxy = new Proxy(masterRedis, {
         if (prop === 'connect') {
             return async () => { /* Already handled by master auto-connect */ };
         }
-        // Return property from masterRedis
-        const val = target[prop];
+
+        // Handle node-redis v4+ camelCase mapping to ioredis lowercase
+        let actualProp = prop;
+        if (typeof prop === 'string') {
+            const camelToSnake = {
+                'sAdd': 'sadd',
+                'sMembers': 'smembers',
+                'sRem': 'srem',
+                'sIsMember': 'sismember',
+                'setEx': 'setex',
+                'pSetEx': 'psetex',
+                'del': 'del',
+                'hSet': 'hset',
+                'hGet': 'hget',
+                'hGetAll': 'hgetall',
+                'hDel': 'hdel',
+            };
+            if (camelToSnake[prop]) {
+                actualProp = camelToSnake[prop];
+            } else if (prop.length > 1 && prop.startsWith('s') && prop[1] === prop[1].toUpperCase()) {
+                // Heuristic for set commands: sAdd, sMembers, etc.
+                actualProp = prop.toLowerCase();
+            }
+        }
+
+        const val = target[actualProp];
         return typeof val === 'function' ? val.bind(target) : val;
     }
 });

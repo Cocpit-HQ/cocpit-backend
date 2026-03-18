@@ -139,7 +139,8 @@ class BlockModel {
                 await redisClient.sAdd(key, ids);
                 await redisClient.expire(key, CACHE_TTL);
             } else {
-                await redisClient.set(key + ":empty", "1", { EX: CACHE_TTL });
+                // Use positional arguments for better compatibility
+                await redisClient.set(key + ":empty", "1", "EX", CACHE_TTL);
             }
         } catch (err) {
             console.warn("Redis caching error:", err.message);
