@@ -134,6 +134,7 @@ CREATE TABLE posts (
   content TEXT,
   visibility visibility_type DEFAULT 'public',
   shared_post_id UUID REFERENCES posts(post_id) ON DELETE SET NULL,
+  shared_job_id UUID REFERENCES jobs(job_id) ON DELETE SET NULL,
   created_at TIMESTAMPTZ DEFAULT now(),
   updated_at TIMESTAMPTZ DEFAULT now(),
   post_type  AS ENUM ('image', 'video', 'article', 'poll') NOT NULL

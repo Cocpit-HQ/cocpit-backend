@@ -156,6 +156,24 @@ exports.getPublicFeed = async (req, res) => {
 
             --Shared Post Data
             CASE 
+                
+                WHEN p.shared_job_id IS NOT NULL THEN
+                    json_build_object(
+                         'is_accessible', true,
+                         'job_id', sj.job_id,
+                         'title', sj.title,
+                         'company_name', sj.company_name,
+                         'location', sj.location,
+                         'job_type', sj.job_type,
+                         'work_mode', sj.work_mode,
+                         'salary_min', sj.salary_min,
+                         'salary_max', sj.salary_max,
+                         'company_logo', sj_comp.logo_url,
+                         'created_at', sj.created_at,
+                         'is_active', sj.is_active,
+                         'company_slug', sj_comp.slug,
+                         'shared_entity_type', 'job'
+                    )
                 WHEN p.shared_post_id IS NULL THEN NULL
                 WHEN sp.post_id IS NULL THEN 
                     json_build_object('is_accessible', false, 'reason', 'deleted')
@@ -264,6 +282,8 @@ exports.getPublicFeed = async (req, res) => {
         LEFT JOIN users sp_u ON sp.author_id = sp_u.user_id
         LEFT JOIN organizations sp_comp ON sp_comp.org_id = sp.author_org_id
         LEFT JOIN post_categories sp_cat ON sp.category_id = sp_cat.category_id
+        LEFT JOIN jobs sj ON p.shared_job_id = sj.job_id
+        LEFT JOIN organizations sj_comp ON sj.org_id = sj_comp.org_id
 
         WHERE p.visibility = 'public'
         AND (p.is_removed IS FALSE OR p.is_removed IS NULL)
@@ -429,7 +449,25 @@ exports.getMyPosts = async (req, res) => {
 
                                              --Shared Post Data
                                             CASE 
-                                                WHEN p.shared_post_id IS NULL THEN NULL
+                                                
+                WHEN p.shared_job_id IS NOT NULL THEN
+                    json_build_object(
+                         'is_accessible', true,
+                         'job_id', sj.job_id,
+                         'title', sj.title,
+                         'company_name', sj.company_name,
+                         'location', sj.location,
+                         'job_type', sj.job_type,
+                         'work_mode', sj.work_mode,
+                         'salary_min', sj.salary_min,
+                         'salary_max', sj.salary_max,
+                         'company_logo', sj_comp.logo_url,
+                         'created_at', sj.created_at,
+                         'is_active', sj.is_active,
+                         'company_slug', sj_comp.slug,
+                         'shared_entity_type', 'job'
+                    )
+                WHEN p.shared_post_id IS NULL THEN NULL
                                                 WHEN sp.post_id IS NULL THEN 
                                                     json_build_object('is_accessible', false, 'reason', 'deleted')
                                                 WHEN (
@@ -507,6 +545,8 @@ exports.getMyPosts = async (req, res) => {
        LEFT JOIN users sp_u ON sp.author_id = sp_u.user_id
        LEFT JOIN organizations sp_comp ON sp_comp.org_id = sp.author_org_id
        LEFT JOIN post_categories sp_cat ON sp.category_id = sp_cat.category_id
+        LEFT JOIN jobs sj ON p.shared_job_id = sj.job_id
+        LEFT JOIN organizations sj_comp ON sj.org_id = sj_comp.org_id
        LEFT JOIN(
              SELECT post_id, json_agg(json_build_object('url', url, 'media_type', media_type)) as media
            FROM post_media
@@ -883,10 +923,10 @@ exports.createPost = async (req, res) => {
 
         // 2. Insert Post
         const postResult = await client.query(
-            ` INSERT INTO posts (author_id, category_id, content, visibility,post_type,title, shared_post_id, author_org_id)
-      VALUES ($1, $2, $3, $4,$5,$6, $7, $8)
+            ` INSERT INTO posts (author_id, category_id, content, visibility,post_type,title, shared_post_id, shared_job_id, author_org_id)
+      VALUES ($1, $2, $3, $4,$5,$6, $7, $8, $9)
       RETURNING post_id, created_at
-      `, [userId, categoryId, content, visibility || 'public', post_type, title, req.body.shared_post_id || null, companyId || null]
+      `, [userId, categoryId, content, visibility || 'public', post_type, title, req.body.shared_post_id || null, req.body.shared_job_id || null, companyId || null]
         );
 
         const postId = postResult.rows[0].post_id;
@@ -1137,7 +1177,25 @@ exports.getPostById = async (req, res) => {
 
     -- Shared Post Data
     CASE 
-        WHEN p.shared_post_id IS NULL THEN NULL
+        
+                WHEN p.shared_job_id IS NOT NULL THEN
+                    json_build_object(
+                         'is_accessible', true,
+                         'job_id', sj.job_id,
+                         'title', sj.title,
+                         'company_name', sj.company_name,
+                         'location', sj.location,
+                         'job_type', sj.job_type,
+                         'work_mode', sj.work_mode,
+                         'salary_min', sj.salary_min,
+                         'salary_max', sj.salary_max,
+                         'company_logo', sj_comp.logo_url,
+                         'created_at', sj.created_at,
+                         'is_active', sj.is_active,
+                         'company_slug', sj_comp.slug,
+                         'shared_entity_type', 'job'
+                    )
+                WHEN p.shared_post_id IS NULL THEN NULL
         WHEN sp.post_id IS NULL THEN 
             json_build_object('is_accessible', false, 'reason', 'deleted')
         WHEN (
@@ -1247,6 +1305,8 @@ LEFT JOIN posts sp ON p.shared_post_id = sp.post_id
 LEFT JOIN users sp_u ON sp.author_id = sp_u.user_id
 LEFT JOIN organizations sp_comp ON sp_comp.org_id = sp.author_org_id
 LEFT JOIN post_categories sp_cat ON sp.category_id = sp_cat.category_id
+        LEFT JOIN jobs sj ON p.shared_job_id = sj.job_id
+        LEFT JOIN organizations sj_comp ON sj.org_id = sj_comp.org_id
 LEFT JOIN (
     SELECT post_id, json_agg(json_build_object('url', url, 'media_type', media_type)) as media
     FROM post_media
@@ -2653,6 +2713,8 @@ exports.getStories = async (req, res) => {
             LEFT JOIN posts sp ON s.shared_post_id = sp.post_id
             LEFT JOIN users sp_u ON sp.author_id = sp_u.user_id
             LEFT JOIN post_categories sp_cat ON sp.category_id = sp_cat.category_id
+        LEFT JOIN jobs sj ON sp.shared_job_id = sj.job_id
+        LEFT JOIN organizations sj_comp ON sj.org_id = sj_comp.org_id
             WHERE s.expires_at > now()
             AND (
                 s.author_id = ANY($2)
@@ -2819,6 +2881,8 @@ exports.getGroupedStories = async (req, res) => {
             LEFT JOIN posts sp ON s.shared_post_id = sp.post_id
             LEFT JOIN users sp_u ON sp.author_id = sp_u.user_id
             LEFT JOIN post_categories sp_cat ON sp.category_id = sp_cat.category_id
+        LEFT JOIN jobs sj ON sp.shared_job_id = sj.job_id
+        LEFT JOIN organizations sj_comp ON sj.org_id = sj_comp.org_id
             WHERE s.expires_at > now()
             AND (
                 s.author_id = $2
@@ -3385,9 +3449,12 @@ exports.getStoryDetailsById = async (req, res) => {
         }
 
         const story = permission.rows[0];
-        const canView = orgId
-            ? story.author_org_id === orgId
-            : (story.author_id === userId && !story.author_org_id);
+
+        // Allow access if the requesting user is the story's author (regardless of which
+        // profile context they are currently browsing in — personal or company).
+        // Also allow if their active company org is the story's authoring org.
+        const canView = story.author_id === userId || (orgId && story.author_org_id === orgId);
+
         if (!canView) {
             return res.status(403).json({ message: "You don't have permission to view these details" });
         }
