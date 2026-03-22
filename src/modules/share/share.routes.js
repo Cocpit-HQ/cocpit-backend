@@ -34,5 +34,8 @@ router.post("/share/feed", requireAuth, shareController.shareToFeed);
 // Share to Story — delegates to content.controller.createStory
 router.post("/share/story", requireAuth, shareController.shareToStory);
 
+// Share Job to Story
+router.post("/share/job-to-story", requireAuth, shareController.shareJobToStory);
+
 module.exports = router;
 
