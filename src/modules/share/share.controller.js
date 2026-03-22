@@ -758,3 +758,58 @@ exports.shareToStory = async (req, res) => {
     req.body = { ...req.body, shared_post_id: postId };
     return contentController.createStory(req, res);
 };
+
+/**
+ * Share Job to Story
+ * POST /api/share/job-to-story
+ */
+exports.shareJobToStory = async (req, res) => {
+    const pool = require("../../core/db/pool");
+    const contentController = require("../content/content.controller");
+    const { jobId, title, company_name, location, avatar } = req.body;
+
+    if (!jobId) return res.status(400).json({ message: "jobId is required" });
+
+    try {
+        let jobMetadata = {
+            type: "job",
+            job_id: jobId,
+            title: title,
+            company_name: company_name,
+            location: location,
+            logo: avatar,
+            backgroundStyle: "bg-gradient-to-br from-blue-600 to-indigo-700"
+        };
+
+        // If title or company_name is missing, fetch from DB as fallback
+        if (!title || !company_name) {
+            const jobRes = await pool.query(
+                `SELECT job_id, title, company_name, location, salary_min, salary_max 
+                 FROM jobs 
+                 WHERE job_id = $1 AND is_active = TRUE`,
+                [jobId]
+            );
+
+            if (jobRes.rowCount > 0) {
+                const job = jobRes.rows[0];
+                jobMetadata.job_id = job.job_id || jobId;
+                jobMetadata.title = job.title;
+                jobMetadata.company_name = job.company_name;
+                jobMetadata.location = job.location || location;
+                jobMetadata.salary_min = job.salary_min;
+                jobMetadata.salary_max = job.salary_max;
+            }
+        }
+
+        // Final payload for contentController.createStory
+        req.body.story_metadata = jobMetadata;
+        req.body.media_type = "image";
+        req.body.media_url = "job-structured-data";
+
+        // Delegate to content controller to create the actual story record
+        return contentController.createStory(req, res);
+    } catch (err) {
+        console.error("[ShareController] shareJobToStory error:", err);
+        res.status(500).json({ message: "Internal server error" });
+    }
+};
