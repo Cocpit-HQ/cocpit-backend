@@ -1,0 +1,11 @@
+version: 2
+authtoken: 3BNbt9XbcJDIBiEz4Pd31BA1sy8_fC9DE2XQXH7Qu2vLfVYp
+tunnels:
+  frontend:
+    proto: http
+    addr: 3000
+    host_header: rewrite
+  backend:
+    proto: http
+    addr: 5000
+    host_header: rewrite

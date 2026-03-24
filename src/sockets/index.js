@@ -16,6 +16,8 @@ module.exports.initSocket = async (httpServer) => {
       if (!origin ||
         origin.match(/^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/) ||
         origin.match(/^http:\/\/192\.168\.\d+\.\d+(:\d+)?$/) ||
+        origin.match(/^https:\/\/.*\.ngrok-free\.(app|dev)$/) ||
+        origin.match(/^https:\/\/.*\.loca\.lt$/) ||
         origin === "https://frontend.cocpit.in") {
         callback(null, true);
       } else if (process.env.ALLOWED_ORIGINS && process.env.ALLOWED_ORIGINS.includes(origin)) {
