@@ -475,30 +475,41 @@ exports.validateTicket = async (req, res) => {
     const routeEventId = req.params.id;
     const { ticketId, eventId: bodyEventId } = req.body;
 
+    console.log("[ValidateTicket] Route eventId:", routeEventId);
+    console.log("[ValidateTicket] Body ticketId:", ticketId, "bodyEventId:", bodyEventId);
+
     try {
         if (!ticketId) {
             return res.status(400).json({ message: "Ticket ID is required" });
         }
 
-        // ticketId is in format "eventId_userId"
-        const parts = ticketId.split("_");
-        if (parts.length < 2) {
-            return res.status(400).json({ message: "Invalid ticket format" });
+        // Extract userId from ticketId (format: "eventId_userId")
+        // Both are UUIDs (no underscores), separated by a single underscore
+        const underscoreIdx = ticketId.indexOf("_");
+        let ticketEventId, ticketUserId;
+
+        if (underscoreIdx > 0) {
+            ticketEventId = ticketId.substring(0, underscoreIdx);
+            ticketUserId = ticketId.substring(underscoreIdx + 1);
+        } else {
+            // Fallback: use bodyEventId and try ticketId as a standalone identifier
+            ticketEventId = bodyEventId || routeEventId;
+            ticketUserId = ticketId;
         }
 
-        // UUID has dashes, so rejoin properly: first 5 segments = eventId, last 5 = userId
-        // Format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx_xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
-        const midpoint = ticketId.indexOf("_");
-        const ticketEventId = ticketId.substring(0, midpoint);
-        const ticketUserId = ticketId.substring(midpoint + 1);
+        console.log("[ValidateTicket] Parsed ticketEventId:", ticketEventId, "ticketUserId:", ticketUserId);
+
+        // Use bodyEventId if available and matches, otherwise use parsed ticketEventId
+        const qrEventId = bodyEventId || ticketEventId;
 
         // Verify the ticket belongs to this event
-        if (ticketEventId !== routeEventId) {
+        if (qrEventId !== routeEventId) {
+            console.log("[ValidateTicket] MISMATCH: qrEventId:", qrEventId, "!== routeEventId:", routeEventId);
             return res.status(400).json({ message: "This ticket is not for this event" });
         }
 
-        // Check if registration exists
-        const isRegistered = await eventRepo.checkRegistration(ticketEventId, ticketUserId);
+        // Check if registration exists using the ROUTE event ID (authoritative)
+        const isRegistered = await eventRepo.checkRegistration(routeEventId, ticketUserId);
         if (!isRegistered) {
             return res.status(404).json({ message: "No registration found for this ticket" });
         }
@@ -509,14 +520,14 @@ exports.validateTicket = async (req, res) => {
                 `UPDATE event_registrations SET checked_in_at = NOW() 
                  WHERE event_id = $1 AND user_id = $2 AND checked_in_at IS NULL
                  RETURNING checked_in_at`,
-                [ticketEventId, ticketUserId]
+                [routeEventId, ticketUserId]
             );
 
             if (result.rowCount === 0) {
                 // Could be already checked in or column doesn't exist
                 const checkResult = await pool.query(
                     `SELECT checked_in_at FROM event_registrations WHERE event_id = $1 AND user_id = $2`,
-                    [ticketEventId, ticketUserId]
+                    [routeEventId, ticketUserId]
                 );
                 if (checkResult.rows[0]?.checked_in_at) {
                     return res.status(409).json({
