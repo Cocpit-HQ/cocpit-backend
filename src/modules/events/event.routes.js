@@ -8,6 +8,8 @@ router.get("/me/events/created", requireAuth, eventController.getMyCreatedEvents
 router.get("/me/events/registered", requireAuth, eventController.getMyRegisteredEvents);
 router.get("/me/events/saved", requireAuth, eventController.getMySavedEvents);
 
+router.get("/:id/ticket", requireAuth, eventController.getTicket);
+router.post("/:id/tickets/validate", requireAuth, eventController.validateTicket);
 router.get("/:id/registration-status", requireAuth, eventController.checkRegistrationStatus);
 router.post("/:id/register", requireAuth, eventController.registerForEvent);
 router.delete("/:id/register", requireAuth, eventController.unregisterFromEvent);

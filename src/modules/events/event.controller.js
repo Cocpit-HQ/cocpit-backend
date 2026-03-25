@@ -8,6 +8,7 @@ const { checkOrgPermission } = require("../../core/utils/rbac");
 const pool = require("../../core/db/pool");
 const { notifyOrgFollowers } = require("../../services/notification.service");
 const { hasActorPermission } = require("../../core/middlewares/actor-context.middleware");
+const QRCode = require("qrcode");
 
 const getRequestedOrganizationActorId = (req, fallbackOrgId = null) => {
     // 1. Prefer Explicit Actor Header Context
@@ -419,6 +420,134 @@ exports.deleteEvent = async (req, res) => {
         res.json({ message: "Event deleted successfully" });
     } catch (err) {
         console.error("Delete event error:", err);
+        res.status(500).json({ message: "Internal server error" });
+    }
+};
+
+// ─── Get Ticket ─────────────────────────────────────────────────────────────────
+
+exports.getTicket = async (req, res) => {
+    const userId = req.user.sub;
+    const eventId = req.params.id;
+
+    try {
+        const ticket = await eventRepo.getTicketByEventAndUser(eventId, userId);
+        if (!ticket) {
+            return res.status(404).json({ message: "No ticket found. You may not be registered for this event." });
+        }
+
+        const startTime = new Date(ticket.start_time);
+        const ticketId = `${ticket.event_id}_${ticket.user_id}`;
+        const qrPayload = JSON.stringify({
+            ticketId,
+            eventId: ticket.event_id,
+            userId: ticket.user_id,
+        });
+        const qrDataUrl = await QRCode.toDataURL(qrPayload, { width: 300, margin: 2 });
+
+        res.json({
+            ticketId,
+            eventId: ticket.event_id,
+            userId: ticket.user_id,
+            name: ticket.name,
+            email: ticket.email,
+            mobile: ticket.mobile_number,
+            eventName: ticket.event_title,
+            date: startTime.toLocaleDateString(),
+            time: startTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            location: ticket.event_type === 'Online' ? (ticket.virtual_link || 'Online') : (ticket.location || 'TBA'),
+            organizerName: ticket.organizer_name || 'Unknown',
+            organizerEmail: ticket.organizer_email || undefined,
+            qrCode: qrDataUrl,
+            createdAt: ticket.registered_at,
+            status: 'confirmed',
+            checkedInAt: null,
+        });
+    } catch (err) {
+        console.error("Get ticket error:", err);
+        res.status(500).json({ message: "Internal server error" });
+    }
+};
+
+// ─── Validate Ticket (Check-In) ─────────────────────────────────────────────────
+
+exports.validateTicket = async (req, res) => {
+    const routeEventId = req.params.id;
+    const { ticketId, eventId: bodyEventId } = req.body;
+
+    try {
+        if (!ticketId) {
+            return res.status(400).json({ message: "Ticket ID is required" });
+        }
+
+        // ticketId is in format "eventId_userId"
+        const parts = ticketId.split("_");
+        if (parts.length < 2) {
+            return res.status(400).json({ message: "Invalid ticket format" });
+        }
+
+        // UUID has dashes, so rejoin properly: first 5 segments = eventId, last 5 = userId
+        // Format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx_xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+        const midpoint = ticketId.indexOf("_");
+        const ticketEventId = ticketId.substring(0, midpoint);
+        const ticketUserId = ticketId.substring(midpoint + 1);
+
+        // Verify the ticket belongs to this event
+        if (ticketEventId !== routeEventId) {
+            return res.status(400).json({ message: "This ticket is not for this event" });
+        }
+
+        // Check if registration exists
+        const isRegistered = await eventRepo.checkRegistration(ticketEventId, ticketUserId);
+        if (!isRegistered) {
+            return res.status(404).json({ message: "No registration found for this ticket" });
+        }
+
+        // Try to check-in (update checked_in_at if column exists, otherwise just confirm)
+        try {
+            const result = await pool.query(
+                `UPDATE event_registrations SET checked_in_at = NOW() 
+                 WHERE event_id = $1 AND user_id = $2 AND checked_in_at IS NULL
+                 RETURNING checked_in_at`,
+                [ticketEventId, ticketUserId]
+            );
+
+            if (result.rowCount === 0) {
+                // Could be already checked in or column doesn't exist
+                const checkResult = await pool.query(
+                    `SELECT checked_in_at FROM event_registrations WHERE event_id = $1 AND user_id = $2`,
+                    [ticketEventId, ticketUserId]
+                );
+                if (checkResult.rows[0]?.checked_in_at) {
+                    return res.status(409).json({
+                        message: "Already checked in",
+                        ticketId,
+                        checkedInAt: checkResult.rows[0].checked_in_at,
+                    });
+                }
+            }
+
+            res.json({
+                message: "✅ Check-in successful!",
+                user: ticketUserId,
+                ticketId,
+                checkedInAt: result.rows[0]?.checked_in_at || new Date().toISOString(),
+            });
+        } catch (dbErr) {
+            // If checked_in_at column doesn't exist, just confirm the ticket is valid
+            if (dbErr.message?.includes("checked_in_at")) {
+                res.json({
+                    message: "✅ Ticket is valid! (Check-in tracking not enabled)",
+                    user: ticketUserId,
+                    ticketId,
+                    checkedInAt: new Date().toISOString(),
+                });
+            } else {
+                throw dbErr;
+            }
+        }
+    } catch (err) {
+        console.error("Validate ticket error:", err);
         res.status(500).json({ message: "Internal server error" });
     }
 };
