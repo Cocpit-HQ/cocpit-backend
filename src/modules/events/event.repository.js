@@ -178,9 +178,39 @@ const getMySavedEvents = async (userId) => {
     return result.rows;
 };
 
+// ─── Ticket ─────────────────────────────────────────────────────────────────────
+
+const getTicketByEventAndUser = async (eventId, userId) => {
+    const result = await pool.query(
+        `SELECT
+            er.event_id,
+            er.user_id,
+            er.name,
+            er.email,
+            er.mobile_number,
+            er.registered_at,
+            e.title AS event_title,
+            e.start_time,
+            e.end_time,
+            e.location,
+            e.event_type,
+            e.virtual_link,
+            COALESCE(c.name, u.full_name) AS organizer_name,
+            u.email AS organizer_email
+        FROM event_registrations er
+        JOIN events e ON er.event_id = e.event_id
+        LEFT JOIN users u ON e.organizer_id = u.user_id
+        LEFT JOIN organizations c ON e.org_id = c.org_id
+        WHERE er.event_id = $1 AND er.user_id = $2`,
+        [eventId, userId]
+    );
+    return result.rows[0] || null;
+};
+
 module.exports = {
     queryEvents, getEventById, createEvent, getEventOwnership, updateEvent, deleteEvent,
     checkRegistration, getRegistrationCount, getEventCapacity, registerUser, unregisterUser,
     getMyRegisteredEvents, getMyCreatedEvents,
     eventExists, saveEvent, unsaveEvent, getMySavedEvents,
+    getTicketByEventAndUser,
 };
