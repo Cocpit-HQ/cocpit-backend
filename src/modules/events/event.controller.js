@@ -239,9 +239,43 @@ exports.registerForEvent = async (req, res) => {
         }
 
         await eventRepo.registerUser(eventId, userId, { name, email, mobile_number, company_name, job_title });
-        res.status(201).json({ message: "Registered successfully" });
-    } catch (err) {
-        console.error(err);
+        
+        // Fetch the ticket we just created to return it to the frontend
+        const ticket = await eventRepo.getTicketByEventAndUser(eventId, userId);
+        let ticketData = null;
+        
+        if (ticket) {
+            const ticketId = `${ticket.event_id}_${ticket.user_id}`;
+            const qrPayload = JSON.stringify({
+                ticketId,
+                eventId: ticket.event_id,
+                userId: ticket.user_id,
+            });
+            const qrDataUrl = await QRCode.toDataURL(qrPayload, { width: 300, margin: 2 });
+            
+            ticketData = {
+                ticketId,
+                qrCode: qrDataUrl,
+                eventName: ticket.event_title,
+                name: ticket.name,
+                email: ticket.email,
+                mobile: ticket.mobile_number,
+                date: ticket.start_time ? new Date(ticket.start_time).toLocaleDateString() : 'TBD',
+                time: ticket.start_time ? new Date(ticket.start_time).toLocaleTimeString() : 'TBD',
+                location: ticket.location,
+                organizerName: ticket.organizer_name,
+                organizerEmail: ticket.organizer_email,
+                userId: ticket.user_id,
+                eventId: ticket.event_id,
+            };
+        }
+
+        res.status(201).json({ 
+            message: "Registered successfully",
+            ticket: ticketData
+        });
+    } catch (error) {
+        console.error(error);
         res.status(500).json({ message: "Server error" });
     }
 };
@@ -489,8 +523,8 @@ exports.validateTicket = async (req, res) => {
         let ticketEventId, ticketUserId;
 
         if (underscoreIdx > 0) {
-            ticketEventId = ticketId.substring(0, underscoreIdx);
-            ticketUserId = ticketId.substring(underscoreIdx + 1);
+            ticketEventId = ticketId.substring(0, underscoreIdx).toLowerCase();
+            ticketUserId = ticketId.substring(underscoreIdx + 1).toLowerCase();
         } else {
             // Fallback: use bodyEventId and try ticketId as a standalone identifier
             ticketEventId = bodyEventId || routeEventId;
@@ -500,12 +534,29 @@ exports.validateTicket = async (req, res) => {
         console.log("[ValidateTicket] Parsed ticketEventId:", ticketEventId, "ticketUserId:", ticketUserId);
 
         // Use bodyEventId if available and matches, otherwise use parsed ticketEventId
-        const qrEventId = bodyEventId || ticketEventId;
+        const qrEventId = (bodyEventId || ticketEventId).toLowerCase();
 
         // Verify the ticket belongs to this event
-        if (qrEventId !== routeEventId) {
+        if (qrEventId !== routeEventId.toLowerCase()) {
             console.log("[ValidateTicket] MISMATCH: qrEventId:", qrEventId, "!== routeEventId:", routeEventId);
-            return res.status(400).json({ message: "This ticket is not for this event" });
+            
+            // Fetch titles for both events to provide a clear error message
+            let scannedEventTitle = "Unknown Event";
+            let routeEventTitle = "Current Event";
+            try {
+                const [scannedRes, routeRes] = await Promise.all([
+                    eventRepo.getEventById(qrEventId),
+                    eventRepo.getEventById(routeEventId)
+                ]);
+                if (scannedRes) scannedEventTitle = scannedRes.title;
+                if (routeRes) routeEventTitle = routeRes.title;
+            } catch (e) { /* ignore */ }
+
+            return res.status(400).json({ 
+                message: `This ticket is for "${scannedEventTitle}". It cannot be used for "${routeEventTitle}".`,
+                scannedEventTitle,
+                routeEventTitle
+            });
         }
 
         // Check if registration exists using the ROUTE event ID (authoritative)
