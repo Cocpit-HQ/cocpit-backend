@@ -16,7 +16,8 @@ const getEventById = async (eventId) => {
         `SELECT e.*, COALESCE(c.name, u.full_name) as organizer_name,
             c.name as company_name, c.logo_url as company_logo,
             u.full_name as user_name, u.avatar_url as user_avatar,
-            COUNT(er.user_id) AS registered_count
+            COUNT(DISTINCT er.user_id) AS registered_count,
+            (SELECT COUNT(*)::int FROM attendance a WHERE a.event_id = $1) AS checked_in_count
      FROM events e
      LEFT JOIN users u ON e.organizer_id = u.user_id
      LEFT JOIN organizations c ON e.org_id = c.org_id
@@ -111,6 +112,7 @@ const getMyRegisteredEvents = async (userId) => {
     const result = await pool.query(
         `SELECT e.*, COALESCE(c.name, u.full_name) as organizer_name, c.name as company_name,
             (SELECT COUNT(*)::int FROM event_registrations er WHERE er.event_id = e.event_id) AS registered_count,
+            (SELECT COUNT(*)::int FROM attendance a WHERE a.event_id = e.event_id) AS checked_in_count,
             CASE WHEN es.event_id IS NOT NULL THEN true ELSE false END AS "isSaved"
      FROM event_registrations er
      JOIN events e ON er.event_id = e.event_id
@@ -126,6 +128,7 @@ const getMyRegisteredEvents = async (userId) => {
 const getMyCreatedEvents = async (userId, companyId = null) => {
     let query = `SELECT e.*, COALESCE(c.name, u.full_name) as organizer_name, c.name as company_name,
     (SELECT COUNT(*)::int FROM event_registrations er WHERE er.event_id = e.event_id) AS registered_count,
+    (SELECT COUNT(*)::int FROM attendance a WHERE a.event_id = e.event_id) AS checked_in_count,
     CASE WHEN es.event_id IS NOT NULL THEN true ELSE false END AS "isSaved"
     FROM events e LEFT JOIN users u ON e.organizer_id = u.user_id
     LEFT JOIN organizations c ON e.org_id = c.org_id
@@ -168,7 +171,8 @@ const unsaveEvent = async (userId, eventId) => {
 const getMySavedEvents = async (userId) => {
     const result = await pool.query(
         `SELECT e.*, COALESCE(c.name, u.full_name) as organizer_name, c.name as company_name,
-            (SELECT COUNT(*)::int FROM event_registrations er WHERE er.event_id = e.event_id) AS registered_count
+            (SELECT COUNT(*)::int FROM event_registrations er WHERE er.event_id = e.event_id) AS registered_count,
+            (SELECT COUNT(*)::int FROM attendance a WHERE a.event_id = e.event_id) AS checked_in_count
      FROM event_saves es JOIN events e ON es.event_id = e.event_id
      LEFT JOIN users u ON e.organizer_id = u.user_id
      LEFT JOIN organizations c ON e.org_id = c.org_id
@@ -207,10 +211,34 @@ const getTicketByEventAndUser = async (eventId, userId) => {
     return result.rows[0] || null;
 };
 
+// ─── Participants ───────────────────────────────────────────────────────────────
+
+const getEventParticipants = async (eventId) => {
+    const [registeredRes, attendedRes] = await Promise.all([
+        pool.query(
+            `SELECT u.user_id, u.full_name, u.email, u.avatar_url, er.registered_at
+             FROM event_registrations er
+             JOIN users u ON u.user_id = er.user_id
+             WHERE er.event_id = $1
+             ORDER BY er.registered_at DESC`,
+            [eventId]
+        ),
+        pool.query(
+            `SELECT u.user_id, u.full_name, u.email, u.avatar_url, a.checked_in_at
+             FROM attendance a
+             JOIN users u ON u.user_id = a.user_id
+             WHERE a.event_id = $1
+             ORDER BY a.checked_in_at DESC`,
+            [eventId]
+        ),
+    ]);
+    return { registered: registeredRes.rows, attended: attendedRes.rows };
+};
+
 module.exports = {
     queryEvents, getEventById, createEvent, getEventOwnership, updateEvent, deleteEvent,
     checkRegistration, getRegistrationCount, getEventCapacity, registerUser, unregisterUser,
     getMyRegisteredEvents, getMyCreatedEvents,
     eventExists, saveEvent, unsaveEvent, getMySavedEvents,
-    getTicketByEventAndUser,
+    getTicketByEventAndUser, getEventParticipants,
 };
