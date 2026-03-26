@@ -1240,3 +1240,15 @@ UNIQUE (viewer_id, profile_owner_id, profile_type, appearance_date);
 
 CREATE INDEX idx_search_appearance_owner_type
 ON search_appearances(profile_owner_id, profile_type);
+
+-- 25/03/2026 Attendance Table (QR Check-In)
+CREATE TABLE IF NOT EXISTS attendance (
+    attendance_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    event_id UUID NOT NULL REFERENCES events(event_id) ON DELETE CASCADE,
+    user_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    ticket_id VARCHAR(100) NOT NULL,
+    checked_in_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE (event_id, user_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_attendance_event ON attendance(event_id);

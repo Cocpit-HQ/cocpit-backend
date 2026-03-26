@@ -90,6 +90,7 @@ exports.getEvents = async (req, res) => {
       c.name as company_name, c.logo_url as company_logo,
       u.full_name as user_name, u.avatar_url as user_avatar,
       (SELECT COUNT(*)::int FROM event_registrations er WHERE er.event_id = e.event_id) AS registered_count,
+      (SELECT COUNT(*)::int FROM attendance a WHERE a.event_id = e.event_id) AS checked_in_count,
       CASE WHEN es.event_id IS NOT NULL THEN true ELSE false END AS "isSaved"
       FROM events e LEFT JOIN users u ON e.organizer_id = u.user_id
       LEFT JOIN organizations c ON e.org_id = c.org_id
@@ -565,51 +566,75 @@ exports.validateTicket = async (req, res) => {
             return res.status(404).json({ message: "No registration found for this ticket" });
         }
 
-        // Try to check-in (update checked_in_at if column exists, otherwise just confirm)
+        // 1. Check if already marked in attendance table
+        const attendanceRes = await pool.query(
+            `SELECT checked_in_at FROM attendance WHERE event_id = $1 AND user_id = $2`,
+            [routeEventId, ticketUserId]
+        );
+
+        if (attendanceRes.rows[0]?.checked_in_at) {
+            return res.status(409).json({
+                message: "This ticket has already been checked in. ❌",
+                ticketId,
+                checkedInAt: attendanceRes.rows[0].checked_in_at,
+            });
+        }
+
+        // 2. Mark attendance (insert into attendance table)
         try {
-            const result = await pool.query(
-                `UPDATE event_registrations SET checked_in_at = NOW() 
-                 WHERE event_id = $1 AND user_id = $2 AND checked_in_at IS NULL
+            const insertResult = await pool.query(
+                `INSERT INTO attendance (event_id, user_id, ticket_id)
+                 VALUES ($1, $2, $3)
                  RETURNING checked_in_at`,
-                [routeEventId, ticketUserId]
+                [routeEventId, ticketUserId, ticketId]
             );
 
-            if (result.rowCount === 0) {
-                // Could be already checked in or column doesn't exist
-                const checkResult = await pool.query(
-                    `SELECT checked_in_at FROM event_registrations WHERE event_id = $1 AND user_id = $2`,
-                    [routeEventId, ticketUserId]
-                );
-                if (checkResult.rows[0]?.checked_in_at) {
-                    return res.status(409).json({
-                        message: "Already checked in",
-                        ticketId,
-                        checkedInAt: checkResult.rows[0].checked_in_at,
-                    });
-                }
-            }
-
             res.json({
-                message: "✅ Check-in successful!",
+                message: "Entry Allowed ✅ Check-in successful!",
                 user: ticketUserId,
                 ticketId,
-                checkedInAt: result.rows[0]?.checked_in_at || new Date().toISOString(),
+                checkedInAt: insertResult.rows[0].checked_in_at,
             });
         } catch (dbErr) {
-            // If checked_in_at column doesn't exist, just confirm the ticket is valid
-            if (dbErr.message?.includes("checked_in_at")) {
-                res.json({
-                    message: "✅ Ticket is valid! (Check-in tracking not enabled)",
-                    user: ticketUserId,
+            // Handle race condition / duplicate insert
+            if (dbErr.code === "23505") {
+                return res.status(409).json({
+                    message: "This ticket has already been checked in. ❌",
                     ticketId,
-                    checkedInAt: new Date().toISOString(),
                 });
-            } else {
-                throw dbErr;
             }
+            throw dbErr;
         }
     } catch (err) {
         console.error("Validate ticket error:", err);
         res.status(500).json({ message: "Internal server error" });
+    }
+};
+
+// ─── Get Participants (Registered + Attended) ────────────────────────────────────
+
+exports.getEventParticipants = async (req, res) => {
+    const userId = req.user.sub;
+    const eventId = req.params.id;
+
+    try {
+        // Verify ownership / org permission
+        const event = await eventRepo.getEventOwnership(eventId);
+        if (!event) return res.status(404).json({ message: "Event not found" });
+
+        let authorized = event.organizer_id === userId;
+        if (!authorized && event.org_id) {
+            try {
+                await assertEventOrgPermission(req, event.org_id, ["VIEW_ANALYTICS", "MANAGE_COMPANY"]);
+                authorized = true;
+            } catch (_) { /* not authorized via org */ }
+        }
+        if (!authorized) return res.status(403).json({ message: "Not authorized to view participants" });
+
+        const participants = await eventRepo.getEventParticipants(eventId);
+        res.json(participants);
+    } catch (err) {
+        console.error("Get participants error:", err);
+        res.status(500).json({ message: "Error fetching participants" });
     }
 };
