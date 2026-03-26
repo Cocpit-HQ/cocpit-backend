@@ -19,7 +19,7 @@ const getFullProfile = async (userId) => {
 };
 
 const updateUserFields = async (userId, fields) => {
-    const { full_name, headline, job_title, company_name, school, degree, location, about_text, mobile_number } = fields;
+    const { full_name, headline, job_title, company_name, school, degree, location, about_text, mobile_number, account_name } = fields;
     await pool.query("BEGIN");
     await pool.query(
         `UPDATE users
