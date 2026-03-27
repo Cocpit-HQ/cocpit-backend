@@ -14,6 +14,7 @@ const { organizationActionLimiter, otpGenerationLimiter } = require("../../core/
 const { uploadAvatar, uploadCover } = require("../../core/middlewares/upload.middleware");
 const { requireRoles } = require("../../core/middlewares/role.middleware");
 const institutionController = require("./institution.controller");
+const hierarchyController = require("./organization.hierarchy.controller");
 
 // --- PUBLIC & SHARED ---
 router.get("/organizations/check-slug", optionalAuth, organizationController.checkSlug);
@@ -21,6 +22,9 @@ router.get("/companies/check-slug", optionalAuth, organizationController.checkSl
 
 router.get("/organizations/mine", requireAuth, organizationController.getUserOrganizations);
 router.get("/companies/mine", requireAuth, organizationController.getUserOrganizations);
+
+router.get("/organizations/search", optionalAuth, organizationController.searchOrganizations);
+router.get("/companies/search", optionalAuth, organizationController.searchOrganizations);
 
 router.get("/organizations/:slug", optionalAuth, organizationController.getOrganization);
 router.get("/companies/:slug", optionalAuth, organizationController.getOrganization);
@@ -115,5 +119,21 @@ router.delete("/organizations/:orgId/cover", requireAuth, requireOrgPermission("
 // --- NOTIFICATIONS ---
 router.get("/organizations/:orgId/notification-preferences", requireAuth, settingsController.getNotificationPreferences);
 router.put("/organizations/:orgId/notification-preferences", requireAuth, settingsController.updateNotificationPreferences);
+
+// --- HIERARCHY ---
+// Public: list sub-organizations of an org
+router.get("/organizations/:orgId/children", optionalAuth, hierarchyController.getOrganizationChildren);
+
+// Child org sends a request to associate under a parent
+router.post("/organizations/:orgId/parent-request", requireAuth, hierarchyController.sendParentRequest);
+
+// Parent org admin views pending requests from potential children
+router.get("/organizations/:orgId/parent-requests", requireAuth, requireOrgPermission("MANAGE_MEMBERS"), hierarchyController.getPendingParentRequests);
+
+// Parent org admin approves or rejects a request
+router.patch("/organizations/:orgId/parent-requests/:requestId", requireAuth, requireOrgPermission("MANAGE_MEMBERS"), hierarchyController.respondToParentRequest);
+
+// Child org owner removes the parent association
+router.delete("/organizations/:orgId/parent", requireAuth, hierarchyController.removeParent);
 
 module.exports = router;

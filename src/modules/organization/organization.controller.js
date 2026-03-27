@@ -1,6 +1,7 @@
 const pool = require("../../core/db/pool");
 const AppError = require("../../core/errors/AppError");
 const { checkOrgPermission } = require("../../core/utils/rbac");
+const { wouldCreateCycle } = require("./organization.hierarchy.controller");
 
 // Helper for Audit Logging
 const logAudit = async (client, { entityId, actorId, action, metadata = {} }) => {
@@ -18,7 +19,7 @@ const { requireOrgPermission } = require("../../core/middlewares/organization.au
 
 exports.createOrganization = async (req, res) => {
     const userId = req.user.sub;
-    const { name, slug, email, industry, size, website, location, description } = req.body;
+    const { name, slug, email, industry, size, website, location, description, parent_org_id } = req.body;
 
     // 1. Validation
     if (!name || !slug) {
@@ -73,13 +74,28 @@ exports.createOrganization = async (req, res) => {
         // 4. Create Organization (Company or Institution)
         const entityType = req.body.entity_type === 'INSTITUTION' ? 'INSTITUTION' : 'COMPANY';
 
+        // 4a. Validate parent_org_id if provided
+        if (parent_org_id) {
+            const parentRes = await client.query(
+                `SELECT org_id, is_deleted, parent_org_id FROM organizations WHERE org_id = $1`,
+                [parent_org_id]
+            );
+            if (parentRes.rowCount === 0 || parentRes.rows[0].is_deleted) {
+                throw new AppError('Parent organization not found', 404);
+            }
+            if (parentRes.rows[0].parent_org_id) {
+                throw new AppError('The target organization is already a sub-organization. Nesting beyond one level is not supported.', 400);
+            }
+        }
+
         const insertCompanyText = `
-      INSERT INTO organizations (name, slug, email, industry, size, website, location, description, slogan, entity_type)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+      INSERT INTO organizations (name, slug, email, industry, size, website, location, description, slogan, entity_type, parent_org_id)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
       RETURNING *
     `;
         const companyRes = await client.query(insertCompanyText, [
-            name, slug, email, industry, size, website, location, description, req.body.slogan, entityType
+            name, slug, email, industry, size, website, location, description, req.body.slogan, entityType,
+            parent_org_id || null
         ]);
         const company = companyRes.rows[0];
 
@@ -195,8 +211,19 @@ exports.getOrganization = async (req, res) => {
             FROM organization_members cm 
             JOIN organization_roles cr ON cm.role_id = cr.role_id 
             WHERE cm.org_id = c.org_id AND cm.user_id = $2
-        ) as viewer_role_data` : 'NULL as viewer_role_data'}
+        ) as viewer_role_data` : 'NULL as viewer_role_data'},
+        CASE WHEN p.org_id IS NOT NULL THEN
+            json_build_object(
+                'org_id',   p.org_id,
+                'name',     p.name,
+                'slug',     p.slug,
+                'logo_url', p.logo_url,
+                'entity_type', p.entity_type
+            )
+        ELSE NULL END AS parent_org,
+        (SELECT COUNT(*) FROM organizations ch WHERE ch.parent_org_id = c.org_id AND ch.is_deleted = FALSE) AS children_count
        FROM organizations c
+       LEFT JOIN organizations p ON c.parent_org_id = p.org_id AND p.is_deleted = FALSE
        WHERE c.slug = $1 AND c.is_deleted = FALSE`,
             userId ? [slug, userId] : [slug]
         );
@@ -361,7 +388,14 @@ exports.deleteOrganization = async (req, res) => {
         const isValid = await comparePassword(password, userRes.rows[0].password_hash);
         if (!isValid) throw new AppError("Invalid password", 401);
 
-        // 2. Soft Delete
+        // 2a. Nullify children's parent reference before soft-deleting
+        // Keeps children as independent top-level orgs rather than orphaning them.
+        await client.query(
+            `UPDATE organizations SET parent_org_id = NULL, updated_at = NOW() WHERE parent_org_id = $1`,
+            [orgId]
+        );
+
+        // 2b. Soft Delete
         await client.query(
             `UPDATE organizations SET is_deleted = TRUE, deleted_at = NOW() WHERE org_id = $1`,
             [orgId]
@@ -420,6 +454,33 @@ exports.getUserOrganizations = async (req, res) => {
         res.json(result.rows);
     } catch (err) {
         console.error("Get user organizations error:", err);
+        res.status(500).json({ message: "Internal server error" });
+    } finally {
+        client.release();
+    }
+};
+
+exports.searchOrganizations = async (req, res) => {
+    const { q } = req.query;
+    if (!q || q.trim().length === 0) {
+        return res.json([]);
+    }
+    const searchTerm = `%${q.trim()}%`;
+    const limit = parseInt(req.query.limit) || 10;
+
+    const client = await pool.connect();
+    try {
+        const result = await client.query(
+            `SELECT org_id, name, slug, logo_url, entity_type, location, industry, headline 
+             FROM organizations 
+             WHERE (name ILIKE $1 OR slug ILIKE $1) AND is_deleted = FALSE
+             ORDER BY name ASC 
+             LIMIT $2`,
+            [searchTerm, limit]
+        );
+        res.json(result.rows);
+    } catch (err) {
+        console.error("Search organizations error:", err);
         res.status(500).json({ message: "Internal server error" });
     } finally {
         client.release();

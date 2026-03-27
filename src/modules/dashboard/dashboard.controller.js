@@ -23,6 +23,9 @@ const recordProfileView = async (req, res) => {
     const totalViews = await dashboardService.getProfileViewCount(profileOwnerId, profileType);
     return sendSuccess(res, { totalViews }, 200, "Profile view recorded successfully");
   } catch (err) {
+    if (err.message === "Profile not found") {
+      return res.status(404).json({ message: "Profile not found" });
+    }
     console.error("Record profile view error:", err);
     return res.status(500).json({ message: "Internal server error" });
   }
@@ -35,6 +38,9 @@ const getProfileViews = async (req, res) => {
     const totalViews = await dashboardService.getProfileViewCount(profileOwnerId, profileType);
     return sendSuccess(res, { profileOwnerId, profileType, totalViews }, 200, "Profile view count retrieved successfully");
   } catch (err) {
+    if (err.message === "Profile not found") {
+      return res.status(404).json({ message: "Profile not found" });
+    }
     console.error("Get profile views error:", err);
     return res.status(500).json({ message: "Internal server error" });
   }
@@ -47,6 +53,9 @@ const getSearchAppearanceCount = async (req, res) => {
     const count = await dashboardService.getSearchAppearanceCount(profileId, profileType);
     return sendSuccess(res, { profileId, profileType, searchAppearances: count }, 200, "Search appearance count retrieved successfully");
   } catch (err) {
+    if (err.message === "Profile not found") {
+      return res.status(404).json({ message: "Profile not found" });
+    }
     console.error("Get search appearance count error:", err);
     return res.status(500).json({ message: "Internal server error" });
   }
