@@ -5,7 +5,7 @@ const { checkBlockStatus } = require("../../core/utils/blockCheck");
 const { logAudit } = require("../../core/infrastructure/audit.service");
 const cloudinary = require("../../core/infrastructure/cloudinary.client");
 const { checkOrgPermission } = require("../../core/utils/rbac");
-const { notifyOrgFollowers } = require("../../services/notification.service");
+const { notifyOrgFollowers, notifyBroadcastToChildOrgs } = require("../../services/notification.service");
 
 const getRequestedOrganizationActorId = (req, fallbackOrgId = null) => {
     // 1. Prefer Explicit Actor Header Context
@@ -93,6 +93,24 @@ exports.getPublicFeed = async (req, res) => {
             COALESCE(comp.slug, u.account_name) AS author_slug,
             (p.author_org_id IS NOT NULL) AS is_organization_post,
             (comp.entity_type = 'INSTITUTION') AS is_institution_post,
+            CASE 
+                WHEN p.is_broadcast = TRUE AND (
+                    -- Viewer is the author org
+                    ($${companyParamIdx}::uuid IS NOT NULL AND p.author_org_id = $${companyParamIdx}::uuid)
+                    OR
+                    -- Viewer is an org and is a child of the author org
+                    ($${companyParamIdx}::uuid IS NOT NULL AND EXISTS (SELECT 1 FROM organizations child WHERE child.org_id = $${companyParamIdx}::uuid AND child.parent_org_id = p.author_org_id))
+                    OR
+                    -- Viewer is a user and is a member of the author org or child org
+                    ($${companyParamIdx}::uuid IS NULL AND EXISTS (
+                        SELECT 1 FROM organization_members om 
+                        JOIN organizations o ON o.org_id = om.org_id
+                        WHERE om.user_id = $${userParamIdx} AND om.status = 'ACTIVE'
+                          AND (o.org_id = p.author_org_id OR o.parent_org_id = p.author_org_id)
+                    ))
+                ) THEN TRUE 
+                ELSE FALSE 
+            END AS is_broadcast,
 
             pc.name AS category_name,
 
@@ -285,7 +303,39 @@ exports.getPublicFeed = async (req, res) => {
         LEFT JOIN jobs sj ON p.shared_job_id = sj.job_id
         LEFT JOIN organizations sj_comp ON sj.org_id = sj_comp.org_id
 
-        WHERE p.visibility = 'public'
+        WHERE (
+            -- 1. Normal public posts (unchanged)
+            (p.visibility = 'public' AND (p.is_broadcast IS FALSE OR p.is_broadcast IS NULL))
+            OR
+            -- 2. Broadcasts: visible to MEMBERS of child orgs (high-trust relationship)
+            (
+                p.is_broadcast = TRUE
+                AND p.broadcast_scope = 'CHILDREN'
+                AND p.author_org_id IN (
+                    SELECT o.parent_org_id
+                    FROM organizations o
+                    JOIN organization_members om ON om.org_id = o.org_id
+                    WHERE om.user_id = $${userParamIdx}
+                      AND om.status = 'ACTIVE'
+                      AND o.parent_org_id IS NOT NULL
+                )
+            )
+            OR
+            -- 3. Broadcasts: visible to FOLLOWERS of child orgs (discovery — 1 level only)
+            --    User follows Org B → sees Org A (parent of B) official broadcasts
+            --    No notification is sent for this arm (members-only for alerts)
+            (
+                p.is_broadcast = TRUE
+                AND p.broadcast_scope = 'CHILDREN'
+                AND p.author_org_id IN (
+                    SELECT o.parent_org_id
+                    FROM organizations o
+                    JOIN organization_followers of_rel ON of_rel.org_id = o.org_id
+                    WHERE of_rel.user_id = $${userParamIdx}
+                      AND o.parent_org_id IS NOT NULL
+                )
+            )
+        )
         AND (p.is_removed IS FALSE OR p.is_removed IS NULL)
         AND NOT EXISTS (
             SELECT 1 FROM blocks b 
@@ -786,7 +836,7 @@ exports.createPost = async (req, res) => {
     }
 
     const { userId, orgId: companyId } = actorScope;
-    let { content, category, visibility, media_urls, post_type, title, poll_options, poll_duration } = req.body; // category is name, media_urls is array
+    let { content, category, visibility, media_urls, post_type, title, poll_options, poll_duration, is_broadcast } = req.body; // category is name, media_urls is array
 
     const client = await pool.connect();
 
@@ -921,12 +971,51 @@ exports.createPost = async (req, res) => {
         }
 
 
+        // 1b. Broadcast guards
+        if (is_broadcast) {
+            // Guard 1: must be org context
+            if (!companyId) {
+                await client.query('ROLLBACK');
+                return res.status(400).json({ message: "Broadcasts can only be sent by organizations." });
+            }
+
+            // Guard 2: must have MANAGE_COMPANY permission
+            const canBroadcast = await checkOrgPermission(client, companyId, userId, ['MANAGE_COMPANY']);
+            if (!canBroadcast) {
+                await client.query('ROLLBACK');
+                return res.status(403).json({ message: "Only organization admins can send broadcasts." });
+            }
+
+            // Guard 3: org must have at least one child
+            const childrenRes = await client.query(
+                `SELECT COUNT(*) FROM organizations WHERE parent_org_id = $1 AND is_deleted = FALSE`,
+                [companyId]
+            );
+            if (parseInt(childrenRes.rows[0].count) === 0) {
+                await client.query('ROLLBACK');
+                return res.status(400).json({ message: "Your organization has no sub-organizations to broadcast to." });
+            }
+
+            // Guard 4: rate limit — 1 broadcast per 10 minutes
+            const recentBroadcast = await client.query(
+                `SELECT 1 FROM posts
+                 WHERE author_org_id = $1 AND is_broadcast = TRUE
+                 AND created_at > NOW() - INTERVAL '30 seconds'
+                 LIMIT 1`,
+                [companyId]
+            );
+            if (recentBroadcast.rowCount > 0) {
+                await client.query('ROLLBACK');
+                return res.status(429).json({ message: "You recently sent a broadcast. Please wait 30 seconds before sending another." });
+            }
+        }
+
         // 2. Insert Post
         const postResult = await client.query(
-            ` INSERT INTO posts (author_id, category_id, content, visibility,post_type,title, shared_post_id, shared_job_id, author_org_id)
-      VALUES ($1, $2, $3, $4,$5,$6, $7, $8, $9)
+            ` INSERT INTO posts (author_id, category_id, content, visibility, post_type, title, shared_post_id, shared_job_id, author_org_id, is_broadcast, broadcast_scope)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
       RETURNING post_id, created_at
-      `, [userId, categoryId, content, visibility || 'public', post_type, title, req.body.shared_post_id || null, req.body.shared_job_id || null, companyId || null]
+      `, [userId, categoryId, content, visibility || 'public', post_type, title, req.body.shared_post_id || null, req.body.shared_job_id || null, companyId || null, is_broadcast ? true : false, is_broadcast ? 'CHILDREN' : null]
         );
 
         const postId = postResult.rows[0].post_id;
@@ -1053,6 +1142,12 @@ exports.createPost = async (req, res) => {
                 referenceId: postId,
                 metadata: { post_title: title || content?.substring(0, 50) },
             }).catch(err => console.error("Post notification error:", err));
+
+            // Broadcast: notify all members of all child orgs (fire-and-forget)
+            if (is_broadcast) {
+                notifyBroadcastToChildOrgs(companyId, postId, content).catch(err => console.error("Broadcast notification error:", err));
+            }
+
         }
 
         res.status(201).json({

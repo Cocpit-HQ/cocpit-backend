@@ -106,4 +106,110 @@ async function notifyOrgFollowers(orgId, category, notificationData) {
     }
 }
 
-module.exports = { notifyOrgFollowers };
+/**
+ * Send a broadcast notification to all members of all child organizations.
+ * 
+ * @param {string} parentOrgId - The parent organization sending the broadcast
+ * @param {string} postId - The broadcasted post ID
+ * @param {string} postContent - Summary of the post content
+ */
+async function notifyBroadcastToChildOrgs(parentOrgId, postId, postContent) {
+    try {
+        // 1. Get info about the parent organization
+        const parentRes = await pool.query(
+            `SELECT name, logo_url, slug FROM organizations WHERE org_id = $1`,
+            [parentOrgId]
+        );
+        if (parentRes.rowCount === 0) return;
+        const parent = parentRes.rows[0];
+
+        // 2. Find all unique active members and their respective child organizations
+        const recipientsRes = await pool.query(
+            `SELECT om.user_id, child.org_id as child_org_id
+             FROM organization_members om
+             JOIN organizations child ON om.org_id = child.org_id
+             WHERE child.parent_org_id = $1 
+               AND child.is_deleted = FALSE 
+               AND om.status = 'ACTIVE'`,
+            [parentOrgId]
+        );
+
+        if (recipientsRes.rowCount === 0) {
+            console.log(`ℹ️ No members found in child organizations for broadcast from ${parent.name}`);
+            return;
+        }
+
+        // Deduplicate users for personal notifications
+        const uniqueUsers = new Set();
+        const personalRecipients = [];
+        
+        // Map orgs to one representative user (needed because user_id might be required/expected)
+        const orgRepUsers = new Map();
+
+        for (const row of recipientsRes.rows) {
+            if (!uniqueUsers.has(row.user_id)) {
+                uniqueUsers.add(row.user_id);
+                personalRecipients.push(row.user_id);
+            }
+            if (!orgRepUsers.has(row.child_org_id)) {
+                orgRepUsers.set(row.child_org_id, row.user_id);
+            }
+        }
+
+        const type = "BROADCAST";
+        const text = `📢 published an official announcement: ${postContent.substring(0, 100)}${postContent.length > 100 ? "..." : ""}`;
+
+        // 3. Bulk insert notifications (Personal + Company)
+        const values = [];
+        const placeholders = [];
+        let paramIdx = 1;
+
+        // Add personal notifications (recipient_org_id = NULL)
+        for (const userId of personalRecipients) {
+            placeholders.push(`($${paramIdx}, $${paramIdx + 1}, $${paramIdx + 2}, $${paramIdx + 3}, $${paramIdx + 4}, $${paramIdx + 5}, $${paramIdx + 6})`);
+            values.push(userId, null, type, text, postId, JSON.stringify({ org_id: parentOrgId, is_broadcast: true }), null);
+            paramIdx += 7;
+        }
+
+        // Add organization notifications (recipient_org_id = orgId)
+        for (const [orgId, repUserId] of orgRepUsers.entries()) {
+            placeholders.push(`($${paramIdx}, $${paramIdx + 1}, $${paramIdx + 2}, $${paramIdx + 3}, $${paramIdx + 4}, $${paramIdx + 5}, $${paramIdx + 6})`);
+            values.push(repUserId, null, type, text, postId, JSON.stringify({ org_id: parentOrgId, is_broadcast: true }), orgId);
+            paramIdx += 7;
+        }
+
+        const insertQuery = `
+            INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata, recipient_org_id)
+            VALUES ${placeholders.join(", ")}
+            RETURNING notification_id, user_id, recipient_org_id
+        `;
+
+        const insertRes = await pool.query(insertQuery, values);
+
+        // 4. Emit real-time updates via Socket.IO
+        // Note: For company notifications, the active socket for 'repUserId' will receive it.
+        // If other admins are logged in, they will see it upon refresh.
+        for (const row of insertRes.rows) {
+            socketService.notifyUser(row.user_id, "notification", {
+                notification_id: row.notification_id,
+                type,
+                text,
+                reference_id: postId,
+                is_read: false,
+                created_at: new Date().toISOString(),
+                actor_name: parent.name,
+                actor_avatar: parent.logo_url,
+                actor_slug: parent.slug,
+                is_organization_actor: true,
+                metadata: { org_id: parentOrgId, is_broadcast: true },
+                recipient_org_id: row.recipient_org_id
+            });
+        }
+
+        console.log(`✅ Broadcast alert sent to ${personalRecipients.length} personal feeds and ${orgRepUsers.size} organization feeds for ${parent.name}`);
+    } catch (err) {
+        console.error("notifyBroadcastToChildOrgs error:", err);
+    }
+}
+
+module.exports = { notifyOrgFollowers, notifyBroadcastToChildOrgs };

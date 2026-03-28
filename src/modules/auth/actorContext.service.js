@@ -45,6 +45,7 @@ async function getOrganizationsForUser(userId) {
         `SELECT c.*,
                 cm.status,
                 cm.expires_at,
+                (SELECT COUNT(*) FROM organizations WHERE parent_org_id = c.org_id AND is_deleted = FALSE) as children_count,
                 json_build_object(
                     'name', cr.name,
                     'permissions', cr.permissions,

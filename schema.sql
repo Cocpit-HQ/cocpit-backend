@@ -137,7 +137,10 @@ CREATE TABLE posts (
   shared_job_id UUID REFERENCES jobs(job_id) ON DELETE SET NULL,
   created_at TIMESTAMPTZ DEFAULT now(),
   updated_at TIMESTAMPTZ DEFAULT now(),
-  post_type  AS ENUM ('image', 'video', 'article', 'poll') NOT NULL
+  post_type  AS ENUM ('image', 'video', 'article', 'poll') NOT NULL,
+  -- Cross-org Broadcast (28/03/2026)
+  is_broadcast BOOLEAN NOT NULL DEFAULT FALSE,
+  broadcast_scope VARCHAR(20) DEFAULT 'CHILDREN'
 );
 
 CREATE TABLE post_polls (
@@ -1252,3 +1255,30 @@ CREATE TABLE IF NOT EXISTS attendance (
 );
 
 CREATE INDEX IF NOT EXISTS idx_attendance_event ON attendance(event_id);
+
+-- ---------------------------------------------------------
+-- 28/03/2026 Migration: Org Hierarchy + Cross-Org Broadcasts
+-- ---------------------------------------------------------
+
+-- 1. Add parent_org_id to organizations (Org Hierarchy MVP)
+ALTER TABLE organizations
+ADD COLUMN IF NOT EXISTS parent_org_id UUID REFERENCES organizations(org_id) ON DELETE SET NULL;
+
+CREATE INDEX IF NOT EXISTS idx_org_parent
+ON organizations (parent_org_id)
+WHERE parent_org_id IS NOT NULL AND is_deleted = FALSE;
+
+-- 2. Add broadcast flag to posts (Cross-Org Broadcasts)
+ALTER TABLE posts
+  ADD COLUMN IF NOT EXISTS is_broadcast BOOLEAN NOT NULL DEFAULT FALSE,
+  ADD COLUMN IF NOT EXISTS broadcast_scope VARCHAR(20) DEFAULT 'CHILDREN';
+
+-- Index for efficient broadcast feed lookups
+CREATE INDEX IF NOT EXISTS idx_posts_broadcast
+ON posts (author_org_id, is_broadcast, created_at DESC)
+WHERE is_broadcast = TRUE;
+
+-- Index for efficient per-user membership lookups (used in broadcast feed query)
+CREATE INDEX IF NOT EXISTS idx_org_members_user_status
+ON organization_members (user_id, status)
+WHERE status = 'ACTIVE';
