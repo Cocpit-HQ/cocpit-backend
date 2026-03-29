@@ -315,9 +315,25 @@ exports.applyJob = async (req, res) => {
   }
 
   // Take other fields from request body
-  const { full_name, email, phone, cover_note } = req.body;
+  let { full_name, email, phone, mobile_number, cover_note } = req.body;
+  const contactPhone = phone || mobile_number;
 
   try {
+    // If name or email missing, fetch from user profile for robustness
+    if (!full_name || !email) {
+      const userResult = await pool.query(
+        `SELECT full_name, email FROM users WHERE user_id = $1`,
+        [userId]
+      );
+      if (userResult.rowCount > 0) {
+        full_name = full_name || userResult.rows[0].full_name;
+        email = email || userResult.rows[0].email;
+      }
+    }
+
+    if (!full_name || !email) {
+      return res.status(400).json({ message: "Name and Email are required for application" });
+    }
     // Check if job exists
     const jobCheck = await pool.query(`SELECT org_id, recruiter_id FROM jobs WHERE job_id = $1`, [id]);
     if (jobCheck.rowCount === 0) {
@@ -376,7 +392,7 @@ exports.applyJob = async (req, res) => {
        (job_id, applicant_id, full_name, email, phone, resume_url, cover_note)
        VALUES ($1,$2,$3,$4,$5,$6,$7)
        RETURNING application_id`,
-      [id, userId, full_name, email, phone, resume_url, cover_note]
+      [id, userId, full_name, email, contactPhone, resume_url, cover_note]
     );
 
     const appId = appResult.rows[0].application_id;
@@ -576,7 +592,8 @@ exports.getMyApplications = async (req, res) => {
   }
 
   try {
-    const { conditions, values, nextIndex } = buildJobFilters(req.query, 2);
+    const { status: applicationStatus, ...filterParams } = req.query;
+    const { conditions, values, nextIndex } = buildJobFilters(filterParams, 2);
 
     // Base params: userId is $1
     const params = [userId, ...values];
@@ -598,12 +615,10 @@ exports.getMyApplications = async (req, res) => {
     // Status Filters
     if (status) {
       const s = status.toLowerCase();
-      if (s === 'in past' || s === 'in-past') {
-        // Include: Closed jobs OR Rejected applications OR Submitted Tasks
-        baseQuery += ` AND (j.is_active = FALSE OR ja.current_status = 'Rejected' OR ja.screening_submitted_at IS NOT NULL)`;
-      } else if (s === 'applied') {
-        // Include: Active jobs AND Not Rejected AND Task Not Submitted (or not required)
-        baseQuery += ` AND j.is_active = TRUE AND ja.current_status != 'Rejected' AND ja.screening_submitted_at IS NULL`;
+      if (s === 'applied' || s === 'in past' || s === 'in-past') {
+        // Now 'Applied' shows everything that was previously split between Applied and In Past.
+        // We only exclude 'Offer' related statuses if they are handled in the 'Offers' tab.
+        baseQuery += ` AND (ja.current_status NOT ILIKE 'Offer%' OR ja.current_status IS NULL)`;
       }
     }
 
