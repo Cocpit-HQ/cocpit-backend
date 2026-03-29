@@ -19,9 +19,7 @@ exports.createOrganizationJob = async (req, res) => {
         salary_visibility = "PUBLIC",
         job_type,
         work_mode,
-        company_type,
         experience_level,
-        about_company,
         industry,
         easy_apply = false,
         actively_hiring = false,
@@ -56,8 +54,8 @@ exports.createOrganizationJob = async (req, res) => {
       (
         recruiter_id, title, company_name, org_id, location,
         description, salary_min, salary_max, job_type,
-        work_mode, company_type, experience_level,
-        about_company, industry, easy_apply, actively_hiring,
+        work_mode, null, experience_level,
+        null, industry, easy_apply, actively_hiring,
         posted_as_company, status, expires_at, salary_currency, salary_period, salary_visibility
       )
       VALUES
@@ -67,8 +65,8 @@ exports.createOrganizationJob = async (req, res) => {
             [
                 userId, title, companyName, companyId, location,
                 description, salary_min, salary_max, job_type,
-                work_mode, company_type, experience_level,
-                about_company, industry, easy_apply, actively_hiring,
+                work_mode, null, experience_level,
+                null, industry, easy_apply, actively_hiring,
                 true, status, expires_at || null, salary_currency, salary_period, salary_visibility
             ]
         );

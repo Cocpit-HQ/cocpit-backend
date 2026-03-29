@@ -16,6 +16,7 @@ const getEventById = async (eventId) => {
         `SELECT e.*, COALESCE(c.name, u.full_name) as organizer_name,
             c.name as company_name, c.logo_url as company_logo,
             u.full_name as user_name, u.avatar_url as user_avatar,
+            COALESCE(e.organizer_email, u.email) as organizer_email,
             COUNT(DISTINCT er.user_id) AS registered_count,
             (SELECT COUNT(*)::int FROM attendance a WHERE a.event_id = $1) AS checked_in_count
      FROM events e
@@ -23,7 +24,7 @@ const getEventById = async (eventId) => {
      LEFT JOIN organizations c ON e.org_id = c.org_id
      LEFT JOIN event_registrations er ON e.event_id = er.event_id
      WHERE e.event_id = $1
-     GROUP BY e.event_id, u.full_name, c.name, c.logo_url, u.avatar_url`,
+     GROUP BY e.event_id, u.full_name, u.email, c.name, c.logo_url, u.avatar_url`,
         [eventId]
     );
     return result.rows[0] || null;
@@ -31,15 +32,15 @@ const getEventById = async (eventId) => {
 
 const createEvent = async (data) => {
     const { organizerId, companyId, title, description, category, eventType, location, virtualLink,
-        startTime, endTime, bannerUrl, maxAttendees, waitlist, registrationDeadline } = data;
+        startTime, endTime, bannerUrl, maxAttendees, waitlist, registrationDeadline, organizerEmail } = data;
     const result = await pool.query(
         `INSERT INTO events (organizer_id, org_id, title, description, category, event_type, location,
-       virtual_link, start_time, end_time, banner_url, max_attendees, waitlist_enabled, registration_deadline)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) RETURNING event_id`,
+       virtual_link, start_time, end_time, banner_url, max_attendees, waitlist_enabled, registration_deadline, organizer_email)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) RETURNING event_id`,
         [organizerId, companyId, title, description, category, eventType,
             eventType === "InPerson" ? location : null, eventType === "Online" ? virtualLink : null,
             startTime, endTime, bannerUrl, maxAttendees ? Number(maxAttendees) : null,
-            Boolean(waitlist), registrationDeadline]
+            Boolean(waitlist), registrationDeadline, organizerEmail]
     );
     return result.rows[0].event_id;
 };
@@ -126,7 +127,9 @@ const getMyRegisteredEvents = async (userId) => {
 };
 
 const getMyCreatedEvents = async (userId, companyId = null) => {
-    let query = `SELECT e.*, COALESCE(c.name, u.full_name) as organizer_name, c.name as company_name,
+    let query = `SELECT e.*, COALESCE(c.name, u.full_name) as organizer_name,
+    COALESCE(e.organizer_email, u.email) as organizer_email,
+    c.name as company_name,
     (SELECT COUNT(*)::int FROM event_registrations er WHERE er.event_id = e.event_id) AS registered_count,
     (SELECT COUNT(*)::int FROM attendance a WHERE a.event_id = e.event_id) AS checked_in_count,
     CASE WHEN es.event_id IS NOT NULL THEN true ELSE false END AS "isSaved"
@@ -200,7 +203,7 @@ const getTicketByEventAndUser = async (eventId, userId) => {
             e.event_type,
             e.virtual_link,
             COALESCE(c.name, u.full_name) AS organizer_name,
-            u.email AS organizer_email
+            COALESCE(e.organizer_email, u.email) AS organizer_email
         FROM event_registrations er
         JOIN events e ON er.event_id = e.event_id
         LEFT JOIN users u ON e.organizer_id = u.user_id

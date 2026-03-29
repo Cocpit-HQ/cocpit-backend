@@ -1,0 +1,24 @@
+=== DB SKILLS BEFORE TEST ===
+[]
+
+=== LOGIN ===
+Status: 200
+
+=== ADD SKILL ===
+Status: 201
+Body: {"message":"Skills added successfully","skills":[{"skill_id":"6e231e06-34ef-4281-9879-c109a69780a2","name":"Debugtest"}]}
+
+=== DB SKILLS AFTER ADD ===
+[
+  {
+    "skill_id": "6e231e06-34ef-4281-9879-c109a69780a2",
+    "name": "Debugtest"
+  }
+]
+
+=== GET PROFILE (simulates refresh) ===
+Status: 200
+Skills from API: [{"skill_id":"6e231e06-34ef-4281-9879-c109a69780a2","name":"Debugtest"}]
+
+=== VERDICT ===
+✅ Skills ARE returned by the API after refresh
