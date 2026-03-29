@@ -9,6 +9,10 @@ const processJobExpirations = async () => {
     try {
         try {
             client = await pool.connect();
+            // Handle connection drops/reset while client is in use
+            client.once('error', (err) => {
+                console.error("[JobExpiryWorker] Unexpected client error:", err.message);
+            });
         } catch (connErr) {
             console.warn("[JobExpiryWorker] Database connection unavailable. Skipping sweep.");
             return;
