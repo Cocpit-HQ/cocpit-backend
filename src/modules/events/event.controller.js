@@ -176,14 +176,16 @@ exports.createEvent = async (req, res) => {
     try {
         const userId = req.user.sub;
         const { title, description, category, eventType, virtualLink, location,
-            startTime, endTime, maxAttendees, registrationDeadline, waitlist } = req.body;
+            startTime, endTime, maxAttendees, registrationDeadline, waitlist, companyId, organizerEmail } = req.body;
 
         if (!title || !description || !startTime) return res.status(400).json({ message: "Please fill all required fields" });
         if (eventType === "Online" && !virtualLink) return res.status(400).json({ message: "Virtual link is required for online events" });
 
-        const requestedOrgId = getRequestedOrganizationActorId(req);
+        // Use companyId from body as fallback if no active organization actor header is present
+        const requestedOrgId = getRequestedOrganizationActorId(req, companyId);
+        
         let finalCompanyId = null;
-        if (requestedOrgId) {
+        if (requestedOrgId && requestedOrgId !== "me") {
             await assertEventOrgPermission(req, requestedOrgId, ["CREATE_CONTENT", "MANAGE_COMPANY"]);
             finalCompanyId = requestedOrgId;
         }
@@ -191,7 +193,7 @@ exports.createEvent = async (req, res) => {
         const bannerUrl = req.file ? req.file.path : null;
         const eventId = await eventRepo.createEvent({
             organizerId: userId, companyId: finalCompanyId, title, description, category, eventType,
-            location, virtualLink, startTime, endTime, bannerUrl, maxAttendees, waitlist, registrationDeadline,
+            location, virtualLink, startTime, endTime, bannerUrl, maxAttendees, waitlist, registrationDeadline, organizerEmail
         });
 
         if (finalCompanyId) {
@@ -384,7 +386,7 @@ exports.updateEvent = async (req, res) => {
     const userId = req.user.sub;
     const eventId = req.params.id;
     const { title, description, category, eventType, virtualLink, location, startTime, endTime,
-        maxAttendees, registrationDeadline, waitlist } = req.body;
+        maxAttendees, registrationDeadline, waitlist, organizerEmail } = req.body;
     const bannerUrl = req.file ? req.file.path : undefined;
 
     try {
@@ -417,6 +419,20 @@ exports.updateEvent = async (req, res) => {
         if (registrationDeadline) add("registration_deadline", registrationDeadline);
         if (waitlist !== undefined) add("waitlist_enabled", Boolean(waitlist));
         if (bannerUrl) add("banner_url", bannerUrl);
+
+        // Support changing organizer account (Post As)
+        const companyId = req.body.companyId;
+        if (companyId !== undefined) {
+            const requestedOrgId = getRequestedOrganizationActorId(req, companyId);
+            const finalOrgId = (requestedOrgId && requestedOrgId !== "me") ? requestedOrgId : null;
+
+            if (finalOrgId) {
+                await assertEventOrgPermission(req, finalOrgId, ["MANAGE_COMPANY", "CREATE_CONTENT"]);
+            }
+            add("org_id", finalOrgId);
+        }
+
+        if (organizerEmail !== undefined) add("organizer_email", organizerEmail);
 
         if (updates.length === 0) return res.json({ message: "No changes provided" });
 

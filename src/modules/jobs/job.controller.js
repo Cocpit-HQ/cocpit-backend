@@ -159,16 +159,14 @@ exports.createJob = async (req, res) => {
 
   const {
     title,
-    company_name,
     location,
     description,
     minSalary,
     maxSalary,
     job_type,
     work_mode,
-    company_type,
+    // company_type removed
     experience_level,
-    about_company,
     industry,
     easy_apply = false,
     actively_hiring = false,
@@ -178,9 +176,18 @@ exports.createJob = async (req, res) => {
   } = req.body;
   
   let requestedOrgId = null;
+  let resolvedCompanyName = "";
   try {
     requestedOrgId = getRequestedOrganizationActorId(req, org_id || null);
     await assertOrgPermission(req, requestedOrgId, ["POST_JOBS", "MANAGE_COMPANY"]);
+    
+    if (requestedOrgId) {
+       const orgRes = await pool.query('SELECT name FROM organizations WHERE org_id = $1', [requestedOrgId]);
+       if(orgRes.rows.length) resolvedCompanyName = orgRes.rows[0].name;
+    } else {
+       const userRes = await pool.query('SELECT full_name FROM users WHERE user_id = $1', [userId]);
+       if(userRes.rows.length) resolvedCompanyName = userRes.rows[0].full_name;
+    }
   } catch (err) {
     return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
   }
@@ -208,10 +215,10 @@ exports.createJob = async (req, res) => {
       RETURNING *
       `,
       [
-        userId, title, company_name, requestedOrgId || null, location,
+        userId, title, resolvedCompanyName, requestedOrgId || null, location,
         description, minSalary, maxSalary, job_type,
-        work_mode, company_type, experience_level,
-        about_company, industry, easy_apply, actively_hiring,
+        work_mode, null, experience_level,
+        null, industry, easy_apply, actively_hiring,
         postedAsCompany
       ]
     );
@@ -990,16 +997,14 @@ exports.updateJob = async (req, res) => {
 
   const {
     title,
-    company_name,
     location,
     description,
     minSalary,
     maxSalary,
     job_type,
     work_mode,
-    company_type,
+    // company_type removed
     experience_level,
-    about_company,
     industry,
     easy_apply,
     actively_hiring,
@@ -1043,6 +1048,15 @@ exports.updateJob = async (req, res) => {
       return res.status(403).json({ message: "Not authorized to update this job" });
     }
 
+    let resolvedCompanyName = oldJobData.company_name;
+    if (org_id) {
+       const orgRes = await client.query('SELECT name FROM organizations WHERE org_id = $1', [org_id]);
+       if(orgRes.rows.length) resolvedCompanyName = orgRes.rows[0].name;
+    } else if (recruiter_id) {
+       const userRes = await client.query('SELECT full_name FROM users WHERE user_id = $1', [recruiter_id]);
+       if(userRes.rows.length) resolvedCompanyName = userRes.rows[0].full_name;
+    }
+
     // 2. Update job details
     const updateRes = await client.query(
       `
@@ -1051,17 +1065,17 @@ exports.updateJob = async (req, res) => {
         title = $1, company_name = $2, location = $3,
         description = $4, salary_min = $5, salary_max = $6,
         job_type = $7, work_mode = $8, company_type = $9,
-        experience_level = $10, about_company = $11, industry = $12,
+        experience_level = $10, about_company = null, industry = $12,
         easy_apply = $13, actively_hiring = $14, org_id = $15,
         posted_as_company = $16
       WHERE job_id = $17
       RETURNING *
       `,
       [
-        title, company_name, location,
+        title, resolvedCompanyName, location,
         description, safeMinSalary, safeMaxSalary,
-        job_type, work_mode, company_type,
-        experience_level, about_company, industry,
+        job_type, work_mode, null,
+        experience_level, null, industry,
         easy_apply, actively_hiring, org_id || null,
         !!org_id, id
       ]

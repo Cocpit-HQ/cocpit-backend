@@ -1,0 +1,76 @@
+=== COLUMNS ===
+[
+  {
+    "table_name": "skills",
+    "column_name": "skill_id",
+    "data_type": "uuid"
+  },
+  {
+    "table_name": "skills",
+    "column_name": "name",
+    "data_type": "text"
+  },
+  {
+    "table_name": "user_skills",
+    "column_name": "profile_id",
+    "data_type": "uuid"
+  },
+  {
+    "table_name": "user_skills",
+    "column_name": "skill_id",
+    "data_type": "uuid"
+  }
+]
+
+=== INDEXES ===
+[
+  {
+    "tablename": "skills",
+    "indexname": "skills_pkey",
+    "indexdef": "CREATE UNIQUE INDEX skills_pkey ON public.skills USING btree (skill_id)"
+  },
+  {
+    "tablename": "skills",
+    "indexname": "skills_name_key",
+    "indexdef": "CREATE UNIQUE INDEX skills_name_key ON public.skills USING btree (name)"
+  },
+  {
+    "tablename": "skills",
+    "indexname": "unique_skill_lower",
+    "indexdef": "CREATE UNIQUE INDEX unique_skill_lower ON public.skills USING btree (lower(name))"
+  },
+  {
+    "tablename": "user_skills",
+    "indexname": "user_skills_pkey",
+    "indexdef": "CREATE UNIQUE INDEX user_skills_pkey ON public.user_skills USING btree (profile_id, skill_id)"
+  }
+]
+
+=== CONSTRAINTS ===
+[
+  {
+    "conname": "skills_pkey",
+    "contype": "p",
+    "def": "PRIMARY KEY (skill_id)"
+  },
+  {
+    "conname": "skills_name_key",
+    "contype": "u",
+    "def": "UNIQUE (name)"
+  },
+  {
+    "conname": "user_skills_pkey",
+    "contype": "p",
+    "def": "PRIMARY KEY (profile_id, skill_id)"
+  },
+  {
+    "conname": "user_skills_profile_id_fkey",
+    "contype": "f",
+    "def": "FOREIGN KEY (profile_id) REFERENCES profiles(profile_id) ON DELETE CASCADE"
+  },
+  {
+    "conname": "user_skills_skill_id_fkey",
+    "contype": "f",
+    "def": "FOREIGN KEY (skill_id) REFERENCES skills(skill_id) ON DELETE CASCADE"
+  }
+]

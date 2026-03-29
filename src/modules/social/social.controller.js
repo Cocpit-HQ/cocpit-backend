@@ -1265,6 +1265,7 @@ SELECT
     COALESCE(u.user_id, comp.org_id) AS other_user_id,
     u.headline AS other_user_headline,
     CASE WHEN comp.org_id IS NOT NULL THEN 'COMPANY' ELSE 'USER' END as other_user_type,
+    COALESCE(comp.slug, u.account_name) AS other_user_slug,
     
     -- Identify the sender profile for the current view
     cp.is_active,
