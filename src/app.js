@@ -16,6 +16,7 @@ const messagingRoutes = require("./modules/messaging/messaging.routes");
 const organizationRoutes = require("./modules/organization/organization.routes");
 const shareRoutes = require("./modules/share/share.routes");
 const dashboardRoutes = require("./modules/dashboard/dashboard.routes");
+const reportRoutes = require("./modules/report/report.routes");
 
 
 const app = express();
@@ -76,6 +77,7 @@ app.use((req, res, next) => {
 });
 
 app.use("/api/dashboard", dashboardRoutes);
+app.use("/api", reportRoutes);
 app.use("/api/auth", authRoutes);
 app.use("/api", profileRoutes);
 app.use("/api/jobs", jobRoutes);
