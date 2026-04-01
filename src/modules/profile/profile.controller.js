@@ -259,7 +259,7 @@ exports.deleteResume = async (req, res) => {
 
 exports.addExperience = async (req, res) => {
     try {
-        const profileId = await profileRepo.getProfileId(req.user.sub);
+        const profileId = await profileRepo.ensureProfileId(req.user.sub);
         if (!profileId) return res.status(404).json({ message: "Profile not found" });
         const experience = await profileRepo.addExperience(profileId, req.body);
         res.status(201).json({ message: "Experience added successfully", experience });
@@ -303,7 +303,7 @@ exports.deleteExperience = async (req, res) => {
 
 exports.addEducation = async (req, res) => {
     try {
-        const profileId = await profileRepo.getProfileId(req.user.sub);
+        const profileId = await profileRepo.ensureProfileId(req.user.sub);
         if (!profileId) return res.status(404).json({ message: "Profile not found" });
         const education = await profileRepo.addEducation(profileId, req.body);
         res.status(201).json({ message: "Education added successfully", education });
@@ -362,18 +362,32 @@ exports.addSkills = async (req, res) => {
     try {
         await client.query("BEGIN");
 
-        const { rows } = await client.query(`SELECT profile_id FROM profiles WHERE user_id = $1`, [req.user.sub]);
-        if (!rows.length) throw new Error("PROFILE_NOT_FOUND");
-        const profileId = rows[0].profile_id;
+        const profileId = await profileRepo.ensureProfileId(req.user.sub);
+        if (!profileId) throw new Error("PROFILE_NOT_FOUND");
 
         await client.query(`INSERT INTO skills (name) SELECT UNNEST($1::text[]) ON CONFLICT (lower(name)) DO NOTHING RETURNING skill_id, name`, [skillList]);
-        const { rows: skills } = await client.query(`SELECT skill_id, name FROM skills WHERE lower(name) IN (SELECT lower(unnest($1::text[])))`, [skillList]);
+        
+        const { rows: skills } = await client.query(
+            `SELECT skill_id, name FROM skills WHERE lower(name) IN (SELECT lower(s) FROM UNNEST($1::text[]) AS s)`, 
+            [skillList]
+        );
 
-        const values = skills.map((s, i) => `($1, $${i + 2})`).join(",");
-        await client.query(`INSERT INTO user_skills (profile_id, skill_id) VALUES ${values} ON CONFLICT DO NOTHING`, [profileId, ...skills.map(s => s.skill_id)]);
+        if (skills.length > 0) {
+            const values = skills.map((s, i) => `($1, $${i + 2})`).join(",");
+            await client.query(
+                `INSERT INTO user_skills (profile_id, skill_id) VALUES ${values} ON CONFLICT DO NOTHING`, 
+                [profileId, ...skills.map(s => s.skill_id)]
+            );
+        }
 
         await client.query("COMMIT");
-        res.status(201).json({ message: "Skills added successfully", skills });
+
+        // Fetch ALL skills for this profile to return to frontend
+        const allSkills = await profileRepo.getSkills(profileId);
+        res.status(201).json({ 
+            message: "Skills updated successfully", 
+            skills: allSkills 
+        });
     } catch (err) {
         await client.query("ROLLBACK");
         if (err.message === "PROFILE_NOT_FOUND") return res.status(404).json({ message: "Profile not found" });
@@ -423,19 +437,6 @@ exports.updateSkill = async (req, res) => {
         res.status(500).json({ message: "Internal server error" });
     } finally {
         client.release();
-    }
-};
-
-exports.deleteSkill = async (req, res) => {
-    try {
-        const profileId = await profileRepo.getProfileId(req.user.sub);
-        if (!profileId) return res.status(404).json({ message: "Profile not found" });
-        const deleted = await profileRepo.deleteSkillMapping(profileId, req.params.id);
-        if (!deleted) return res.status(404).json({ message: "Skill not found or not authorized to delete" });
-        res.json({ message: "Skill removed successfully", skillId: req.params.id });
-    } catch (err) {
-        console.error("Delete skill error:", err);
-        res.status(500).json({ message: "Internal server error" });
     }
 };
 

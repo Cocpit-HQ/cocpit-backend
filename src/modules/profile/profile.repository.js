@@ -103,6 +103,19 @@ const getProfileId = async (userId) => {
     return result.rows[0]?.profile_id || null;
 };
 
+const ensureProfileId = async (userId, accountType = "Student") => {
+    let profileId = await getProfileId(userId);
+    if (!profileId) {
+        const result = await pool.query(
+            `INSERT INTO profiles (user_id, open_to, availability, work_preference) 
+             VALUES ($1, $2, $3, $4) RETURNING profile_id`,
+            [userId, accountType === "Employer" ? "Full-time" : "Freelance", "Immediate", "Remote"]
+        );
+        profileId = result.rows[0].profile_id;
+    }
+    return profileId;
+};
+
 // ─── Experiences ────────────────────────────────────────────────────────────────
 
 const getExperiences = async (profileId) => {
@@ -295,7 +308,7 @@ module.exports = {
     getFullProfile, updateUserFields, updateAvatarUrl, getAvatarUrl, updateCoverUrl,
     getIdentity, updateIdentity,
     getResume, getLatestResume, replaceResume, deleteResume,
-    getProfileId,
+    getProfileId, ensureProfileId,
     getExperiences, addExperience, findExperience, updateExperience, deleteExperience,
     getEducations, addEducation, updateEducation, deleteEducation,
     getSkills, deleteSkillMapping,
