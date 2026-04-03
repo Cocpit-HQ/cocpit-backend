@@ -1,3 +1,4 @@
+const { incrementUserHashtagScore } = require("../../services/recommendation.service");
 /**
  * Profile Controller (Thin)
  * Parses request, calls repository, sends response. No SQL. Minimal business logic.
@@ -381,6 +382,22 @@ exports.addSkills = async (req, res) => {
         }
 
         await client.query("COMMIT");
+        
+        // Recommendation System Phase 1: Boost affinity safely out of transaction
+        try {
+            // We need to extract the skill names from what was just added
+            // Let's assume req.body.skills is an array of objects or strings 
+            // e.g. [{ skill_name: 'React' }] or ['React']
+            let skillNames = [];
+            if (Array.isArray(req.body?.skills)) {
+                skillNames = req.body.skills.map(s => typeof s === 'string' ? s : s.skill_name || s.name).filter(Boolean);
+            }
+            if (skillNames.length > 0) {
+                const userId = req.user.userId || req.user.id || req.user.sub || req.body.userId;
+                incrementUserHashtagScore(userId, 5, skillNames, null).catch(() => {});
+            }
+        } catch(e) {}
+
 
         // Fetch ALL skills for this profile to return to frontend
         const allSkills = await profileRepo.getSkills(profileId);
