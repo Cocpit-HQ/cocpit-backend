@@ -2696,9 +2696,10 @@ exports.getComments = async (req, res) => {
 exports.getStories = async (req, res) => {
     let userId;
     let companyId;
+    const { companyId: requestedCompanyId } = req.query;
 
     try {
-        const actorScope = getContentActorScope(req);
+        const actorScope = getContentActorScope(req, requestedCompanyId || null);
         userId = actorScope.userId;
         companyId = actorScope.orgId;
     } catch (err) {
@@ -2829,9 +2830,10 @@ exports.getStories = async (req, res) => {
 exports.getGroupedStories = async (req, res) => {
     let userId;
     let companyId;
+    const { companyId: requestedCompanyId } = req.query;
 
     try {
-        const actorScope = getContentActorScope(req);
+        const actorScope = getContentActorScope(req, requestedCompanyId || null);
         userId = actorScope.userId;
         companyId = actorScope.orgId;
     } catch (err) {
@@ -3106,9 +3108,10 @@ exports.getStoryRecommendations = async (req, res) => {
 exports.createStory = async (req, res) => {
     // Extract user ID from JWT — support both .sub and .user_id
     let actorScope;
+    const { companyId: requestedCompanyId } = req.query;
 
     try {
-        actorScope = getContentActorScope(req);
+        actorScope = getContentActorScope(req, requestedCompanyId || null);
     } catch (err) {
         return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
     }
@@ -3217,9 +3220,10 @@ exports.createStory = async (req, res) => {
 exports.deleteStory = async (req, res) => {
     const storyId = req.params.id;
     let actorScope;
+    const { companyId: requestedCompanyId } = req.query;
 
     try {
-        actorScope = getContentActorScope(req);
+        actorScope = getContentActorScope(req, requestedCompanyId || null);
     } catch (err) {
         return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
     }
@@ -3232,19 +3236,23 @@ exports.deleteStory = async (req, res) => {
 
     try {
         // Delete from DB and get the Cloudinary public_id for cleanup
+        // Allow deletion if:
+        //   1. Acting as company AND story was authored by that company (author_org_id match)
+        //   2. The underlying user is the story author (author_id match) — regardless of current profile context
         const result = await pool.query(
             `DELETE FROM stories
              WHERE story_id = $1
                AND (
                     ($3::uuid IS NOT NULL AND author_org_id = $3::uuid)
                     OR
-                    ($3::uuid IS NULL AND author_id = $2 AND author_org_id IS NULL)
+                    (author_id = $2)
                )
              RETURNING story_id, cld_public_id, media_type`,
             [storyId, userId, orgId || null]
         );
 
         if (result.rowCount === 0) {
+            console.warn(`[deleteStory] 404 — storyId=${storyId}, userId=${userId}, orgId=${orgId || 'null'}`);
             return res.status(404).json({ message: "Story not found or unauthorized", storyId, userId });
         }
 
@@ -3340,11 +3348,11 @@ exports.viewStory = async (req, res) => {
 
 exports.reactToStory = async (req, res) => {
     const { id: storyId } = req.params;
-    const { reaction } = req.body; // true = like, false = undo
+    const { reaction, companyId: requestedCompanyId } = req.body; // true = like, false = undo
     let actorScope;
 
     try {
-        actorScope = getContentActorScope(req);
+        actorScope = getContentActorScope(req, requestedCompanyId || null);
     } catch (err) {
         return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
     }
@@ -3686,11 +3694,11 @@ exports.getPollAnalytics = async (req, res) => {
 // --- STORY COMMENTS ---
 exports.addStoryComment = async (req, res) => {
     const storyId = req.params.id;
-    const { content } = req.body;
+    const { content, companyId: requestedCompanyId } = req.body;
     let actorScope;
 
     try {
-        actorScope = getContentActorScope(req);
+        actorScope = getContentActorScope(req, requestedCompanyId || null);
     } catch (err) {
         return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
     }
@@ -3774,7 +3782,16 @@ exports.addStoryComment = async (req, res) => {
 
 exports.getStoryComments = async (req, res) => {
     const storyId = req.params.id;
-    const userId = req.user ? req.user.sub : null;
+    const { companyId: requestedCompanyId } = req.query;
+    let actorScope;
+
+    try {
+        actorScope = getOptionalContentActorScope(req, requestedCompanyId || null);
+    } catch (err) {
+        return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
+    }
+
+    const { userId } = actorScope;
 
     if (!storyId) {
         return res.status(400).json({ message: "storyId is required" })
@@ -3816,9 +3833,10 @@ exports.getStoryComments = async (req, res) => {
 
 exports.deleteStoryComment = async (req, res) => {
     let actorScope;
+    const { companyId: requestedCompanyId } = req.query;
 
     try {
-        actorScope = getContentActorScope(req);
+        actorScope = getContentActorScope(req, requestedCompanyId || null);
     } catch (err) {
         return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
     }
