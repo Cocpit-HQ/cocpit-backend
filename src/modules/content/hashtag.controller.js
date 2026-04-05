@@ -37,11 +37,19 @@ exports.getHashtagPosts = async (req, res) => {
         const companyParamIdx = 2;
         const tagParamIdx = 3;
 
-        // Get matching post IDs (lightweight query)
-        // Ideally cached, but running direct DB for safety to respect strict chronological order first.
-        // Caching post visibility is heavily tied to user ID. We will restrict the fetched pool via DB safely.
-        
-        // Construct the full hydration query enforcing visibility on the tag.
+        // 1. Get Tag Metadata (real post count from post_hashtags)
+        const tagRes = await pool.query(
+            `SELECT h.tag, COUNT(ph.post_id)::int as usage_count
+             FROM hashtags h
+             LEFT JOIN post_hashtags ph ON ph.hashtag_id = h.hashtag_id
+             LEFT JOIN posts p ON p.post_id = ph.post_id AND p.is_removed IS NOT TRUE
+             WHERE lower(h.tag) = $1
+             GROUP BY h.hashtag_id, h.tag`,
+            [lowerTag]
+        );
+        const tagMetadata = tagRes.rows[0] || { tag: lowerTag, usage_count: 0 };
+
+        // 2. Hydrate Feed
         const query = `
             SELECT
                 ${getPostHydrationSelect(companyParamIdx, userParamIdx)}
@@ -68,7 +76,8 @@ exports.getHashtagPosts = async (req, res) => {
 
         res.json({
             posts: rows,
-            nextCursor: last ? { cursorPostId: last.post_id } : null
+            nextCursor: last ? { cursorPostId: last.post_id } : null,
+            hashtag: tagMetadata
         });
     } catch (err) {
         console.error("Error in getHashtagPosts:", err);
@@ -77,17 +86,50 @@ exports.getHashtagPosts = async (req, res) => {
 };
 
 exports.getTrendingHashtags = async (req, res) => {
-    if (!redisClient.isOpen) {
-        return res.json({ tags: [] });
-    }
-    
     try {
-        const trending = await redisClient.zRevRangeWithScores("trending_hashtags", 0, 9);
-        const formatted = trending.map(t => ({
-            tag: t.value,
-            usage_count: typeof t.score === 'number' ? t.score : parseFloat(t.score)
-        }));
-        
+        let tagNames = [];
+
+        // Use Redis for trending order (which tags are hot)
+        if (redisClient.isOpen) {
+            try {
+                const trending = await redisClient.zRevRangeWithScores("trending_hashtags", 0, 9);
+                tagNames = trending.map(t => t.value);
+            } catch (redisErr) {
+                console.warn("Redis trending fetch failed, falling back to DB:", redisErr.message);
+            }
+        }
+
+        // Fallback: get top hashtags from DB directly (24h window)
+        if (tagNames.length === 0) {
+            const { rows } = await pool.query(`
+                SELECT h.tag, COUNT(ph.post_id)::int as usage_count
+                FROM hashtags h
+                JOIN post_hashtags ph ON ph.hashtag_id = h.hashtag_id
+                JOIN posts p ON p.post_id = ph.post_id AND p.is_removed IS NOT TRUE
+                WHERE p.created_at > NOW() - INTERVAL '24 hours'
+                GROUP BY h.hashtag_id, h.tag
+                ORDER BY usage_count DESC
+                LIMIT 10
+            `);
+            return res.json({ tags: rows });
+        }
+
+        // Get actual post counts from DB for the trending tags
+        const { rows } = await pool.query(`
+            SELECT h.tag, COUNT(ph.post_id)::int as usage_count
+            FROM hashtags h
+            LEFT JOIN post_hashtags ph ON ph.hashtag_id = h.hashtag_id
+            LEFT JOIN posts p ON p.post_id = ph.post_id AND p.is_removed IS NOT TRUE
+            WHERE h.tag = ANY($1)
+            GROUP BY h.hashtag_id, h.tag
+        `, [tagNames]);
+
+        // Maintain Redis ordering but use real counts
+        const countMap = new Map(rows.map(r => [r.tag, r.usage_count]));
+        const formatted = tagNames
+            .map(tag => ({ tag, usage_count: countMap.get(tag) || 0 }))
+            .filter(t => t.usage_count > 0);
+
         res.json({ tags: formatted });
     } catch (err) {
         console.error("Error in getTrendingHashtags:", err);
@@ -96,21 +138,90 @@ exports.getTrendingHashtags = async (req, res) => {
 };
 
 exports.searchHashtags = async (req, res) => {
-    const { q } = req.query;
-    if (!q || q.length < 2) return res.json({ tags: [] });
+    let { q } = req.query;
+    if (!q || q.length < 1) return res.json({ tags: [] });
+
+    // Remove leading # if present and lowercase/trim
+    const query = q.startsWith('#') ? q.slice(1).trim().toLowerCase() : q.trim().toLowerCase();
+    
+    // If query is just "#", show trending hashtags instead of "No matches"
+    if (query.length < 1) {
+        try {
+            const { rows } = await pool.query(`
+                SELECT h.tag, COALESCE(usage_count, 0) as usage_count, posts_count, last_used_at
+                FROM hashtags h
+                WHERE last_used_at > NOW() - INTERVAL '48 hours'
+                ORDER BY usage_count DESC, last_used_at DESC NULLS LAST
+                LIMIT 10
+            `);
+            return res.json({ tags: rows, source: 'trending_fallback' });
+        } catch (err) {
+            return res.json({ tags: [] });
+        }
+    }
+
+    const cacheKey = `hashtag_search:${query}`;
 
     try {
-        const { rows } = await pool.query(`
-            SELECT tag, usage_count 
-            FROM hashtags 
-            WHERE tag ILIKE $1
-            ORDER BY usage_count DESC
-            LIMIT 10
-        `, [`${q.toLowerCase()}%`]);
+        // 1. Check Redis Cache (Non-blocking)
+        if (redisClient.isOpen) {
+            try {
+                const cached = await redisClient.get(cacheKey);
+                if (cached) {
+                    return res.json({ tags: JSON.parse(cached), source: 'cache' });
+                }
+            } catch (cacheErr) {
+                console.warn("[searchHashtags] Redis cache fetch failed:", cacheErr.message);
+            }
+        }
 
-        res.json({ tags: rows });
+        // 2. Complex Scoring Query (Instagram-like)
+        // Match: Exact (100) > Prefix (70) > Partial (40)
+        // Popularity: Natural log growth (max 30)
+        // Recency: 24h bonus (20), 7d bonus (10)
+        const { rows } = await pool.query(`
+            SELECT 
+                tag, 
+                COALESCE(usage_count, 0) as usage_count, 
+                COALESCE(posts_count, 0) as posts_count,
+                last_used_at,
+                (
+                    CASE 
+                        WHEN lower(tag) = $1 THEN 100
+                        WHEN lower(tag) LIKE $1 || '%' THEN 70
+                        WHEN lower(tag) LIKE '%' || $1 || '%' THEN 40
+                        ELSE 0
+                    END
+                    + LEAST(LN(COALESCE(usage_count, 0) + 1) * 10, 30)
+                    + CASE 
+                        WHEN last_used_at > NOW() - INTERVAL '1 day' THEN 20
+                        WHEN last_used_at > NOW() - INTERVAL '7 days' THEN 10
+                        ELSE 0
+                    END
+                ) AS score
+            FROM hashtags 
+            WHERE tag ILIKE '%' || $1 || '%'
+            ORDER BY score DESC NULLS LAST
+            LIMIT 10
+        `, [query]);
+
+        // 3. Cache results for 60 seconds (Non-blocking)
+        if (redisClient.isOpen && rows.length > 0) {
+            try {
+                // Determine if we need specialized set logic based on proxy limitations
+                await redisClient.set(cacheKey, JSON.stringify(rows));
+                await redisClient.expire(cacheKey, 60);
+            } catch (cacheErr) {
+                console.warn("[searchHashtags] Redis cache set failed:", cacheErr.message);
+            }
+        }
+
+        res.json({ tags: rows, source: 'db' });
     } catch (err) {
         console.error("Error in searchHashtags:", err);
-        res.status(500).json({ message: "Internal server error" });
+        res.status(500).json({ 
+            message: "Internal server error",
+            details: process.env.NODE_ENV === 'development' ? err.message : undefined 
+        });
     }
 };

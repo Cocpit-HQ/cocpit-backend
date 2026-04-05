@@ -126,6 +126,42 @@ CREATE TABLE post_categories (
   name TEXT UNIQUE NOT NULL -- 'Personal', 'Professional', 'Achievement' ,'All'
 );
 
+-- ---------------------------------------------------------
+-- HASHTAG SYSTEM
+-- ---------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS hashtags (
+    hashtag_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tag VARCHAR(30) UNIQUE NOT NULL,
+    type VARCHAR(20) DEFAULT 'normal' CHECK (type IN ('normal', 'intent')),
+    usage_count INTEGER DEFAULT 1,
+    created_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- Lowercase tag indexing
+CREATE UNIQUE INDEX IF NOT EXISTS idx_hashtags_name ON hashtags(LOWER(tag));
+
+-- Junction table for posts and hashtags
+CREATE TABLE IF NOT EXISTS post_hashtags (
+    post_id UUID REFERENCES posts(post_id) ON DELETE CASCADE,
+    hashtag_id UUID REFERENCES hashtags(hashtag_id) ON DELETE CASCADE,
+    created_at TIMESTAMPTZ DEFAULT now(),
+    PRIMARY KEY (post_id, hashtag_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_post_hashtags_hashtag_id ON post_hashtags(hashtag_id);
+
+-- User-Hashtag scores for recommendation tracking
+CREATE TABLE IF NOT EXISTS user_hashtag_scores (
+    user_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    hashtag_id UUID NOT NULL REFERENCES hashtags(hashtag_id) ON DELETE CASCADE,
+    score INT DEFAULT 0 NOT NULL,
+    last_updated TIMESTAMP DEFAULT NOW() NOT NULL,
+    PRIMARY KEY (user_id, hashtag_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_hashtag_scores_score ON user_hashtag_scores(score DESC);
+
 CREATE TABLE posts (
   post_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   author_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
@@ -142,6 +178,9 @@ CREATE TABLE posts (
   is_broadcast BOOLEAN NOT NULL DEFAULT FALSE,
   broadcast_scope VARCHAR(20) DEFAULT 'CHILDREN'
 );
+
+CREATE INDEX IF NOT EXISTS idx_posts_author_created ON posts(author_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_posts_visibility_broadcast ON posts(visibility, is_broadcast) INCLUDE (post_id);
 
 CREATE TABLE post_polls (
   poll_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -235,6 +274,38 @@ CREATE TABLE organization_tech_stack (
     UNIQUE(org_id, name)
 );
 
+CREATE TABLE IF NOT EXISTS org_parent_requests (
+    request_id    UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
+    child_org_id  UUID         NOT NULL REFERENCES organizations(org_id) ON DELETE CASCADE,
+    parent_org_id UUID         NOT NULL REFERENCES organizations(org_id) ON DELETE CASCADE,
+    requested_by  UUID         NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    status        VARCHAR(20)  DEFAULT 'PENDING'
+                               CHECK (status IN ('PENDING', 'ACCEPTED', 'REJECTED')),
+    message       TEXT,
+    created_at    TIMESTAMPTZ  DEFAULT NOW(),
+    updated_at    TIMESTAMPTZ  DEFAULT NOW(),
+    -- Only one active request per child org at any time
+    UNIQUE(child_org_id)
+);
+
+-- Index for parent org to quickly fetch incoming requests
+CREATE INDEX IF NOT EXISTS idx_opr_parent_org
+ON org_parent_requests(parent_org_id, status);
+
+-- Trigger: keep updated_at fresh on status changes
+CREATE OR REPLACE FUNCTION update_opr_updated_at()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.updated_at = NOW();
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_opr_updated_at
+    BEFORE UPDATE ON org_parent_requests
+    FOR EACH ROW
+    EXECUTE FUNCTION update_opr_updated_at();
+
 CREATE TABLE poll_options (
   option_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   poll_id UUID NOT NULL
@@ -320,6 +391,10 @@ CREATE TABLE stories (
   expires_at TIMESTAMPTZ NOT NULL, -- usually created_at + 24h
   created_at TIMESTAMPTZ DEFAULT now()
 );
+
+CREATE INDEX IF NOT EXISTS idx_stories_metadata_job_type 
+ON stories ((story_metadata->>'type')) 
+WHERE (story_metadata->>'type' = 'job');
 
 CREATE TABLE story_views (
   story_id UUID REFERENCES stories(story_id) ON DELETE CASCADE,
@@ -551,11 +626,16 @@ CREATE TABLE event_outbox (
   topic VARCHAR(255) NOT NULL,
   payload JSONB NOT NULL,
   status VARCHAR(20) DEFAULT 'PENDING' CHECK (status IN ('PENDING', 'PROCESSED', 'FAILED')),
+  retry_count INTEGER DEFAULT 0,
+  next_retry_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ DEFAULT now(),
   processed_at TIMESTAMPTZ
 );
 
 CREATE INDEX IF NOT EXISTS idx_event_outbox_pending ON event_outbox(status) WHERE status = 'PENDING';
+CREATE INDEX IF NOT EXISTS idx_event_outbox_retry 
+ON event_outbox(status, next_retry_at) 
+WHERE status = 'PENDING';
 
 CREATE TABLE job_reports (
   report_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -659,6 +739,15 @@ CREATE TABLE event_saves (
   saved_at TIMESTAMPTZ DEFAULT now(),
 
   PRIMARY KEY (user_id, event_id)
+);
+
+CREATE TABLE IF NOT EXISTS tickets (
+    ticket_id VARCHAR(50) PRIMARY KEY,
+    event_id UUID REFERENCES events(event_id) ON DELETE CASCADE,
+    user_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
+    status VARCHAR(20) DEFAULT 'valid',
+    checked_in_at TIMESTAMP,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 

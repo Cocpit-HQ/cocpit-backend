@@ -7,8 +7,9 @@ router.post(
   "/upload",
   upload.array("files", 5),
   (req, res) => {
+    console.log("[UploadRoute] Uploaded files:", req.files?.length);
     const urls = req.files.map(file => {
-      // ... existing map logic ...
+      console.log("[UploadRoute] File Mapping:", file.originalname, file.path);
       return {
         url: file.path,
         media_type: file.resource_type

@@ -839,6 +839,14 @@ exports.createPost = async (req, res) => {
         );
 
         const postId = postResult.rows[0].post_id;
+
+        // --- HASHTAG INTEGRATION (OUTBOX) ---
+        // Emit event for async processing in eventOutboxWorker.js
+        await client.query(
+            `INSERT INTO event_outbox (topic, payload) VALUES ($1, $2)`,
+            ['POST_CREATED', JSON.stringify({ post_id: postId, companyId: companyId || null })]
+        );
+
         let pollId;
         if (post_type === 'poll' && poll_options) {
             const pollRes = await client.query(
@@ -1389,6 +1397,13 @@ exports.updatePostById = async (req, res) => {
                 await client.query("ROLLBACK");
                 return res.status(404).json({ message: "Post not found or unauthorized" });
             }
+
+            // --- HASHTAG INTEGRATION (OUTBOX) ---
+            // Rebuild hashtags on update for consistency
+            await client.query(
+                `INSERT INTO event_outbox (topic, payload) VALUES ($1, $2)`,
+                ['POST_UPDATED', JSON.stringify({ post_id: postId, companyId: orgId || null })]
+            );
         }
 
 

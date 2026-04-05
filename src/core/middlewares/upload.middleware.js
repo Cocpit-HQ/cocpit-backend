@@ -29,6 +29,7 @@ if (hasCloudinary) {
   storage = new CloudinaryStorage({
     cloudinary,
     params: async (req, file) => {
+      console.log("[UploadMiddleware] Processing file:", file.originalname, file.mimetype);
       const isVideo = file.mimetype.startsWith("video");
       return {
         folder: "posts",
