@@ -28,17 +28,68 @@ const proxy = new Proxy(masterRedis, {
                 'hGet': 'hget',
                 'hGetAll': 'hgetall',
                 'hDel': 'hdel',
+                'zRevRange': 'zrevrange',
+                'zRevRangeWithScores': 'zrevrange',
+                'zRangeWithScores': 'zrange',
+                'zAdd': 'zadd',
+                'zRem': 'zrem',
             };
             if (camelToSnake[prop]) {
                 actualProp = camelToSnake[prop];
-            } else if (prop.length > 1 && prop.startsWith('s') && prop[1] === prop[1].toUpperCase()) {
-                // Heuristic for set commands: sAdd, sMembers, etc.
+            } else if (prop.length > 1 && /^[slz][A-Z]/.test(prop)) {
+                // Heuristic for set(s), list(l), and sorted set(z) commands: sAdd, lPush, zIncrBy, etc.
                 actualProp = prop.toLowerCase();
             }
         }
 
         const val = target[actualProp];
-        return typeof val === 'function' ? val.bind(target) : val;
+        if (typeof val === 'function' && typeof prop === 'string') {
+            return async (...args) => {
+                // Transform zAdd({score, value}) object format to ioredis zadd(score, member) format
+                if (prop === 'zAdd' && args.length >= 2) {
+                    const key = args[0];
+                    const members = args.slice(1);
+                    const flatArgs = [key];
+                    for (const m of members) {
+                        if (m && typeof m === 'object' && 'score' in m && 'value' in m) {
+                            flatArgs.push(m.score, m.value);
+                        }
+                    }
+                    if (flatArgs.length > 1) {
+                        args = flatArgs;
+                    }
+                }
+
+                const isWithScores = prop.includes('WithScores') || args.includes('WITHSCORES') || args.includes('withscores');
+                
+                // Add WITHSCORES to arguments if it was a WithScores method call
+                if (prop.includes('WithScores') && !args.map(a => String(a).toUpperCase()).includes('WITHSCORES')) {
+                    args.push('WITHSCORES');
+                }
+
+                try {
+                    const result = await val.apply(target, args);
+
+                    // Transform ioredis [val, score, val, score] into node-redis [{value, score}]
+                    if (isWithScores && Array.isArray(result)) {
+                        const transformed = [];
+                        for (let i = 0; i < result.length; i += 2) {
+                            transformed.push({
+                                value: result[i],
+                                score: parseFloat(result[i + 1])
+                            });
+                        }
+                        return transformed;
+                    }
+
+                    return result;
+                } catch (err) {
+                    console.error(`[Redis Proxy] Error executing command '${actualProp}':`, err.message);
+                    throw err;
+                }
+            };
+        }
+        return val;
     }
 });
 
