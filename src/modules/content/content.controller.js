@@ -177,7 +177,8 @@ exports.getMyPosts = async (req, res) => {
     } = req.query;
 
     try {
-        const { userId, orgId: companyId, isOrgActor } = getContentActorScope(req, requestedCompanyId || null);
+        const actorScope = getContentActorScope(req, requestedCompanyId || null);
+        const { userId, orgId: companyId, isOrgActor } = actorScope;
         const params = [userId, companyId || null];
         const userParamIdx = 1;
         const orgParamIdx = 2;
