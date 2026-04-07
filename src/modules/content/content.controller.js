@@ -840,13 +840,7 @@ exports.createPost = async (req, res) => {
 
         const postId = postResult.rows[0].post_id;
 
-        // --- HASHTAG INTEGRATION (OUTBOX) ---
-        // Emit event for async processing in eventOutboxWorker.js
-        await client.query(
-            `INSERT INTO event_outbox (topic, payload) VALUES ($1, $2)`,
-            ['POST_CREATED', JSON.stringify({ post_id: postId, companyId: companyId || null })]
-        );
-
+        // Removed event outbox insert for POST_CREATED
         let pollId;
         if (post_type === 'poll' && poll_options) {
             const pollRes = await client.query(
@@ -971,12 +965,16 @@ exports.createPost = async (req, res) => {
                 metadata: { post_title: title || content?.substring(0, 50) },
             }).catch(err => console.error("Post notification error:", err));
 
-            // Broadcast: notify all members of all child orgs (fire-and-forget)
+        // Broadcast: notify all members of all child orgs (fire-and-forget)
             if (is_broadcast) {
                 notifyBroadcastToChildOrgs(companyId, postId, content).catch(err => console.error("Broadcast notification error:", err));
             }
 
         }
+
+        // Handle Hashtags asynchronously without outbox
+        const { processHashtags } = require("../../workers/eventOutboxWorker");
+        processHashtags(pool, 'POST_CREATED', postId).catch(err => console.error("Hashtag process error:", err));
 
         res.status(201).json({
             message: "Post created", postId,
@@ -1398,12 +1396,7 @@ exports.updatePostById = async (req, res) => {
                 return res.status(404).json({ message: "Post not found or unauthorized" });
             }
 
-            // --- HASHTAG INTEGRATION (OUTBOX) ---
-            // Rebuild hashtags on update for consistency
-            await client.query(
-                `INSERT INTO event_outbox (topic, payload) VALUES ($1, $2)`,
-                ['POST_UPDATED', JSON.stringify({ post_id: postId, companyId: orgId || null })]
-            );
+            // Removed event outbox insert for POST_UPDATED
         }
 
 
@@ -1443,6 +1436,9 @@ exports.updatePostById = async (req, res) => {
 
         await client.query('COMMIT');
 
+        // Handle Hashtags asynchronously without outbox
+        const { processHashtags } = require("../../workers/eventOutboxWorker");
+        processHashtags(pool, 'POST_UPDATED', postId).catch(err => console.error("Hashtag process error:", err));
 
         const query = `
 SELECT 

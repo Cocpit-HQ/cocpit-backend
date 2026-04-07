@@ -36,10 +36,7 @@ setInterval(() => {
   processStoryExpirations();
 }, 15 * 60 * 1000);
 
-// Start Event Outbox Processor (Every 5 seconds)
-setInterval(() => {
-  processEventOutbox();
-}, 5 * 1000);
+// Event Outbox Processor disabled
 
 server.listen(PORT, '0.0.0.0', () => {
   console.log('Server running on port ' + PORT);

@@ -445,22 +445,20 @@ class GroupChatService {
         const group = await GroupChatModel.getGroupDetails(groupId);
         if (!group) return null;
 
+        // Try to identify the requesting user's status for UI hints (optional)
         const participant = await GroupChatModel.getParticipant(groupId, userId);
-        const isInactive = participant ? !!participant.left_at : true;
+        
+        // Always fetch active members for the mention system to work correctly
+        const members = await GroupChatModel.getGroupMembers(groupId) || [];
+        
 
-        if (isInactive) {
-            // For inactive users, return a "frozen" view with members as they were when user left
-            const members = await GroupChatModel.getGroupMembers(groupId, participant?.left_at);
-            return {
-                ...group,
-                is_inactive: true,
-                left_at: participant ? participant.left_at : null,
-                members: members // Show members who joined before user left
-            };
-        }
-
-        const members = await GroupChatModel.getGroupMembers(groupId);
-        return { ...group, members, is_inactive: false };
+        
+        return { 
+            ...group, 
+            members, 
+            is_inactive: participant ? !!participant.left_at : false,
+            left_at: participant ? participant.left_at : null
+        };
     }
     static async sendMessage(senderId, groupId, content, type, media = [], previewText = null) {
         // 1. Verify user is member of group
@@ -470,6 +468,13 @@ class GroupChatService {
         if (!members.find(m => m.user_id == senderId)) {
             console.error("User not member:", senderId);
             throw new Error("User is not a member of this group");
+        }
+
+        // Extract mentions (@Username)
+        let mentionedUsernames = [];
+        if (content) {
+            const mentionMatches = content.match(/@([a-zA-Z0-9_]+)/g);
+            mentionedUsernames = mentionMatches ? mentionMatches.map(m => m.substring(1)) : [];
         }
 
         // 2. Create message
@@ -492,25 +497,60 @@ class GroupChatService {
             is_own: false // Will be determined by client
         };
 
-        // Notify all members
         // Notify all members via room broadcast for the message itself
         socketService.notifyConversation(groupId, 'new_message', enrichedMessage);
+        
+        // Handle Mentions
+        const mentionedGroupMembers = [];
+        if (mentionedUsernames.length > 0) {
+            // Filter group members by account_name (case insensitive)
+            for (const member of members) {
+                if (
+                    member.user_id !== senderId && 
+                    member.account_name && 
+                    mentionedUsernames.some(u => u.toLowerCase() === member.account_name.toLowerCase())
+                ) {
+                    mentionedGroupMembers.push(member);
+                }
+            }
+
+            for (const mentionedMember of mentionedGroupMembers) {
+                // Here we avoid checking block status for group chats, but we can if we want to. For now skip.
+                const notifText = `${sender.full_name} mentioned you in a group chat`;
+                const meta = {
+                    message_id: message.message_id,
+                    conversation_id: groupId,
+                    isGroup: true
+                };
+
+                await pool.query(
+                    `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata) 
+                     VALUES ($1, $2, $3, $4, $5, $6)`,
+                    [mentionedMember.user_id, senderId, 'mention', notifText, groupId, JSON.stringify(meta)]
+                );
+            }
+        }
 
         // Notify list update (MessagingPage listens to this) via individual notifications
         members.forEach(member => {
             // Suppress notification toast for the sender themselves
             if (member.user_id !== senderId) {
+                // If the user was mentioned, override default message notification with a mention one
+                const isMentioned = mentionedGroupMembers.some(m => m.user_id === member.user_id);
+                
                 socketService.notifyUser(member.user_id, 'notification', {
-                    type: 'message',
+                    type: isMentioned ? 'mention' : 'message',
                     from: senderId,
                     senderName: sender.full_name,
                     senderAvatar: sender.avatar_url,
                     conversationId: groupId,
                     isGroup: true,
-                    text: previewText || content // Use previewText if available
+                    text: isMentioned ? `${sender.full_name} mentioned you in a group chat` : (previewText || content) // Use previewText if available
                 });
             }
         });
+
+
 
         return { ...message, media: mediaRecords };
     }
