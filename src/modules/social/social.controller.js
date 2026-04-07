@@ -2382,7 +2382,7 @@ exports.getNotifications = async (req, res) => {
                 cr.status as request_status
             FROM notifications n 
             LEFT JOIN users u ON n.sender_id = u.user_id 
-            LEFT JOIN organizations c ON (n.metadata->>'org_id')::uuid = c.org_id
+            LEFT JOIN organizations c ON NULLIF(n.metadata->>'org_id', '')::uuid = c.org_id
             LEFT JOIN connection_requests cr ON n.sender_id = cr.sender_id AND n.user_id = cr.receiver_id AND cr.status = 'pending'
             WHERE 
         `;

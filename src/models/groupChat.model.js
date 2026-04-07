@@ -131,18 +131,26 @@ class GroupChatModel {
 
     static async getGroupMembers(groupId, maxJoinedAt = null) {
         const query = maxJoinedAt ?
-            `SELECT DISTINCT ON (u.user_id) u.user_id, u.full_name, u.avatar_url, u.headline, cp.joined_at, cp.role
+            `SELECT DISTINCT ON (COALESCE(u.user_id, c.org_id)) 
+                COALESCE(u.user_id, c.org_id) as user_id, 
+                u.account_name, u.account_name as username, u.full_name, u.avatar_url, 
+                c.name as org_name, c.logo_url as org_logo, cp.joined_at, cp.role
              FROM conversation_participants cp
-             JOIN users u ON cp.user_id = u.user_id
+             LEFT JOIN users u ON cp.user_id = u.user_id
+             LEFT JOIN organizations c ON cp.org_id = c.org_id
              WHERE cp.conversation_id = $1 
              AND cp.joined_at <= $2
              AND (cp.left_at IS NULL OR cp.left_at > $2)
-             ORDER BY u.user_id, cp.joined_at DESC` :
-            `SELECT DISTINCT ON (u.user_id) u.user_id, u.full_name, u.avatar_url, u.headline, cp.joined_at, cp.role
+             ORDER BY COALESCE(u.user_id, c.org_id), cp.joined_at DESC` :
+            `SELECT DISTINCT ON (COALESCE(u.user_id, c.org_id)) 
+                COALESCE(u.user_id, c.org_id) as user_id, 
+                u.account_name, u.account_name as username, u.full_name, u.avatar_url, 
+                c.name as org_name, c.logo_url as org_logo, cp.joined_at, cp.role
              FROM conversation_participants cp
-             JOIN users u ON cp.user_id = u.user_id
+             LEFT JOIN users u ON cp.user_id = u.user_id
+             LEFT JOIN organizations c ON cp.org_id = c.org_id
              WHERE cp.conversation_id = $1 AND cp.left_at IS NULL
-             ORDER BY u.user_id, cp.joined_at DESC`;
+             ORDER BY COALESCE(u.user_id, c.org_id), cp.joined_at DESC`;
 
         const params = maxJoinedAt ? [groupId, maxJoinedAt] : [groupId];
         const result = await pool.query(query, params);

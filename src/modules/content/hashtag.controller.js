@@ -42,7 +42,7 @@ exports.getHashtagPosts = async (req, res) => {
             `SELECT h.tag, COUNT(ph.post_id)::int as usage_count
              FROM hashtags h
              LEFT JOIN post_hashtags ph ON ph.hashtag_id = h.hashtag_id
-             LEFT JOIN posts p ON p.post_id = ph.post_id AND p.is_removed IS NOT TRUE
+             LEFT JOIN posts p ON p.post_id = ph.post_id
              WHERE lower(h.tag) = $1
              GROUP BY h.hashtag_id, h.tag`,
             [lowerTag]
@@ -105,7 +105,7 @@ exports.getTrendingHashtags = async (req, res) => {
                 SELECT h.tag, COUNT(ph.post_id)::int as usage_count
                 FROM hashtags h
                 JOIN post_hashtags ph ON ph.hashtag_id = h.hashtag_id
-                JOIN posts p ON p.post_id = ph.post_id AND p.is_removed IS NOT TRUE
+                JOIN posts p ON p.post_id = ph.post_id
                 WHERE p.created_at > NOW() - INTERVAL '24 hours'
                 GROUP BY h.hashtag_id, h.tag
                 ORDER BY usage_count DESC
@@ -119,7 +119,7 @@ exports.getTrendingHashtags = async (req, res) => {
             SELECT h.tag, COUNT(ph.post_id)::int as usage_count
             FROM hashtags h
             LEFT JOIN post_hashtags ph ON ph.hashtag_id = h.hashtag_id
-            LEFT JOIN posts p ON p.post_id = ph.post_id AND p.is_removed IS NOT TRUE
+            LEFT JOIN posts p ON p.post_id = ph.post_id
             WHERE h.tag = ANY($1)
             GROUP BY h.hashtag_id, h.tag
         `, [tagNames]);

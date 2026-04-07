@@ -1409,3 +1409,23 @@ CREATE TABLE IF NOT EXISTS reports (
 -- Index for admin moderation (Phase 2)
 CREATE INDEX IF NOT EXISTS idx_reports_target ON reports(target_type, target_id);
 CREATE INDEX IF NOT EXISTS idx_reports_reporter ON reports(reporter_id);
+
+-- ---------------------------------------------------------
+-- Missing tables (blocks, post_impressions)
+-- ---------------------------------------------------------
+CREATE TABLE IF NOT EXISTS blocks (
+    blocker_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    blocked_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    PRIMARY KEY (blocker_id, blocked_id),
+    CHECK (blocker_id <> blocked_id)
+);
+
+CREATE TABLE IF NOT EXISTS post_impressions (
+    impression_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    post_id UUID NOT NULL REFERENCES posts(post_id) ON DELETE CASCADE,
+    viewer_id UUID REFERENCES users(user_id) ON DELETE SET NULL,
+    viewer_org_id UUID REFERENCES organizations(org_id) ON DELETE SET NULL,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_post_impressions_post_id ON post_impressions(post_id);

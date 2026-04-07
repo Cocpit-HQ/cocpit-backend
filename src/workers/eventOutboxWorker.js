@@ -28,9 +28,8 @@ const processEventOutbox = async () => {
             FOR UPDATE SKIP LOCKED
         `);
 
-        console.log(`[EventOutboxWorker] Found ${pendingRes.rowCount} pending events.`);
-
         if (pendingRes.rowCount > 0) {
+            console.log(`[EventOutboxWorker] Found ${pendingRes.rowCount} pending events.`);
             for (const event of pendingRes.rows) {
                 try {
                     console.log(`[EventOutboxWorker] Processing event ${event.event_id} (${event.topic})...`);
