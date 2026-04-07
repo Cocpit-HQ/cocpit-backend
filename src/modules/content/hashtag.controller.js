@@ -150,7 +150,7 @@ exports.searchHashtags = async (req, res) => {
             const { rows } = await pool.query(`
                 SELECT h.tag, COALESCE(usage_count, 0) as usage_count, posts_count, last_used_at
                 FROM hashtags h
-                WHERE last_used_at > NOW() - INTERVAL '48 hours'
+                WHERE COALESCE(usage_count, 0) > 0
                 ORDER BY usage_count DESC, last_used_at DESC NULLS LAST
                 LIMIT 10
             `);
@@ -177,8 +177,8 @@ exports.searchHashtags = async (req, res) => {
 
         // 2. Complex Scoring Query (Instagram-like)
         // Match: Exact (100) > Prefix (70) > Partial (40)
-        // Popularity: Natural log growth (max 30)
-        // Recency: 24h bonus (20), 7d bonus (10)
+        // Popularity: usage_count is primary ranking factor (weight 0.7)
+        // Recency: minor tiebreaker (weight 0.3)
         const { rows } = await pool.query(`
             SELECT 
                 tag, 
@@ -192,16 +192,16 @@ exports.searchHashtags = async (req, res) => {
                         WHEN lower(tag) LIKE '%' || $1 || '%' THEN 40
                         ELSE 0
                     END
-                    + LEAST(LN(COALESCE(usage_count, 0) + 1) * 10, 30)
+                    + COALESCE(usage_count, 0) * 5
                     + CASE 
-                        WHEN last_used_at > NOW() - INTERVAL '1 day' THEN 20
-                        WHEN last_used_at > NOW() - INTERVAL '7 days' THEN 10
+                        WHEN last_used_at > NOW() - INTERVAL '1 day' THEN 10
+                        WHEN last_used_at > NOW() - INTERVAL '7 days' THEN 5
                         ELSE 0
                     END
                 ) AS score
             FROM hashtags 
             WHERE tag ILIKE '%' || $1 || '%'
-            ORDER BY score DESC NULLS LAST
+            ORDER BY score DESC, usage_count DESC NULLS LAST
             LIMIT 10
         `, [query]);
 
