@@ -7,8 +7,10 @@ const { logAudit } = require("../../core/infrastructure/audit.service");
 const { checkOrgPermission } = require("../../core/utils/rbac");
 const pool = require("../../core/db/pool");
 const { notifyOrgFollowers } = require("../../services/notification.service");
-const { hasActorPermission } = require("../../core/middlewares/actor-context.middleware");
+const { logActivity, removeActivity } = require("../../core/services/activityLogger");
 const QRCode = require("qrcode");
+const { hasActorPermission } = require("../../core/middlewares/actor-context.middleware");
+
 
 const getRequestedOrganizationActorId = (req, fallbackOrgId = null) => {
     // 1. Prefer Explicit Actor Header Context
@@ -277,7 +279,11 @@ exports.registerForEvent = async (req, res) => {
             message: "Registered successfully",
             ticket: ticketData
         });
+
+        // 📝 Log Activity: Attend Event
+        logActivity(userId, 'attend_event', 'event', eventId);
     } catch (error) {
+
         console.error(error);
         res.status(500).json({ message: "Server error" });
     }
@@ -289,7 +295,11 @@ exports.unregisterFromEvent = async (req, res) => {
         if (!isRegistered) return res.status(400).json({ message: "You are not registered for this event" });
         await eventRepo.unregisterUser(req.params.id, req.user.sub);
         res.json({ message: "Successfully unregistered from event" });
+
+        // 📝 Remove Activity: Attend Event
+        removeActivity(req.user.sub, 'attend_event', req.params.id);
     } catch (err) {
+
         console.error("Unregister error:", err);
         res.status(500).json({ message: "Internal server error" });
     }
