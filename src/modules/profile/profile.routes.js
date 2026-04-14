@@ -5,41 +5,41 @@ const { requireAuth, requireActiveSession } = require("../../core/middlewares/au
 const { uploadResume, uploadAvatar, uploadCover } = require("../../core/middlewares/upload.middleware");
 
 // Profile
-router.get("/profile/me", requireAuth, profileController.getMyProfile);
-router.put("/profile/me", requireAuth, requireActiveSession, profileController.updateProfile);
-router.get("/profile/:id", requireAuth, profileController.getProfile);
+router.get("/me", requireAuth, profileController.getMyProfile);
+router.put("/me", requireAuth, requireActiveSession, profileController.updateProfile);
+router.get("/:id", requireAuth, profileController.getProfile);
 
 // Avatar
-router.post("/profile/avatar", requireAuth, requireActiveSession, uploadAvatar.single("avatar"), profileController.uploadOrReplaceAvatar);
-router.get("/profile/avatar", requireAuth, profileController.getAvatar);
-router.delete("/profile/avatar", requireAuth, requireActiveSession, profileController.deleteAvatar);
+router.post("/avatar", requireAuth, requireActiveSession, uploadAvatar.single("avatar"), profileController.uploadOrReplaceAvatar);
+router.get("/avatar", requireAuth, profileController.getAvatar);
+router.delete("/avatar", requireAuth, requireActiveSession, profileController.deleteAvatar);
 
 // Cover Photo
-router.post("/profile/cover", requireAuth, requireActiveSession, uploadCover.single("cover"), profileController.uploadOrReplaceCoverPhoto);
-router.delete("/profile/cover", requireAuth, requireActiveSession, profileController.deleteCoverPhoto);
+router.post("/cover", requireAuth, requireActiveSession, uploadCover.single("cover"), profileController.uploadOrReplaceCoverPhoto);
+router.delete("/cover", requireAuth, requireActiveSession, profileController.deleteCoverPhoto);
 
 // Identity
-router.get("/profile/identity", requireAuth, profileController.getIdentity);
-router.put("/profile/identity", requireAuth, requireActiveSession, profileController.updateIdentity);
+router.get("/identity", requireAuth, profileController.getIdentity);
+router.put("/identity", requireAuth, requireActiveSession, profileController.updateIdentity);
 
 // Resume
-router.post("/profile/resume", requireAuth, requireActiveSession, uploadResume.single("resume"), profileController.uploadOrReplaceResume);
-router.get("/profile/resume", requireAuth, profileController.getResume);
-router.delete("/profile/resume", requireAuth, requireActiveSession, profileController.deleteResume);
+router.post("/resume", requireAuth, requireActiveSession, uploadResume.single("resume"), profileController.uploadOrReplaceResume);
+router.get("/resume", requireAuth, profileController.getResume);
+router.delete("/resume", requireAuth, requireActiveSession, profileController.deleteResume);
 
 // Experiences
-router.post("/profile/experiences", requireAuth, requireActiveSession, profileController.addExperience);
-router.put("/profile/experiences/:id", requireAuth, requireActiveSession, profileController.updateExperience);
-router.delete("/profile/experiences/:id", requireAuth, requireActiveSession, profileController.deleteExperience);
+router.post("/experiences", requireAuth, requireActiveSession, profileController.addExperience);
+router.put("/experiences/:id", requireAuth, requireActiveSession, profileController.updateExperience);
+router.delete("/experiences/:id", requireAuth, requireActiveSession, profileController.deleteExperience);
 
 // Educations
-router.post("/profile/educations", requireAuth, requireActiveSession, profileController.addEducation);
-router.put("/profile/educations/:id", requireAuth, requireActiveSession, profileController.updateEducation);
-router.delete("/profile/educations/:id", requireAuth, requireActiveSession, profileController.deleteEducation);
+router.post("/educations", requireAuth, requireActiveSession, profileController.addEducation);
+router.put("/educations/:id", requireAuth, requireActiveSession, profileController.updateEducation);
+router.delete("/educations/:id", requireAuth, requireActiveSession, profileController.deleteEducation);
 
 // Skills
-router.post("/profile/skills", requireAuth, requireActiveSession, profileController.addSkills);
-router.put("/profile/skills/:id", requireAuth, requireActiveSession, profileController.updateSkill);
-router.delete("/profile/skills/:id", requireAuth, requireActiveSession, profileController.deleteSkill);
+router.post("/skills", requireAuth, requireActiveSession, profileController.addSkills);
+router.put("/skills/:id", requireAuth, requireActiveSession, profileController.updateSkill);
+router.delete("/skills/:id", requireAuth, requireActiveSession, profileController.deleteSkill);
 
 module.exports = router;
