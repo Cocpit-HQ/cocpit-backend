@@ -80,9 +80,9 @@ app.use((req, res, next) => {
 });
 
 app.use("/api/dashboard", dashboardRoutes);
-app.use("/api", reportRoutes);
+app.use("/api/report", reportRoutes);
 app.use("/api/auth", authRoutes);
-app.use("/api", profileRoutes);
+app.use("/api/profile", profileRoutes);
 app.use("/api/jobs", jobRoutes);
 app.use("/api", contentRoutes);
 app.use("/api", hashtagRoutes);
