@@ -223,6 +223,7 @@ exports.getOrganization = async (req, res) => {
         ELSE NULL END AS parent_org,
         (SELECT COUNT(*) FROM organizations ch WHERE ch.parent_org_id = c.org_id AND ch.is_deleted = FALSE) AS children_count
        FROM organizations c
+       LEFT JOIN organizations p ON c.parent_org_id = p.org_id
        WHERE (c.slug = $1 OR (
            $1 ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' 
            AND c.org_id = $1::uuid

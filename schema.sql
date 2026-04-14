@@ -1453,3 +1453,21 @@ ON user_activity_log(user_id, entity_type, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_activity_created 
 ON user_activity_log(created_at DESC);
 
+CREATE TABLE user_activities (
+  id SERIAL PRIMARY KEY,
+  user_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+  action VARCHAR(50) NOT NULL,
+  metadata JSONB,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE user_intent_scores (
+  user_id UUID PRIMARY KEY REFERENCES users(user_id) ON DELETE CASCADE,
+
+  job_seeker_score INT DEFAULT 0,
+  creator_score INT DEFAULT 0,
+  event_score INT DEFAULT 0,
+
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
