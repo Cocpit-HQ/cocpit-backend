@@ -7,6 +7,9 @@ const { logAudit } = require("../../core/infrastructure/audit.service");
 const cloudinary = require("../../core/infrastructure/cloudinary.client");
 const { checkOrgPermission } = require("../../core/utils/rbac");
 const { notifyOrgFollowers, notifyBroadcastToChildOrgs } = require("../../services/notification.service");
+const { logActivity, removeActivity } = require("../../core/services/activityLogger");
+
+
 
 const getRequestedOrganizationActorId = (req, fallbackOrgId = null) => {
     // 1. Prefer Explicit Actor Header Context
@@ -993,7 +996,17 @@ exports.createPost = async (req, res) => {
                 options: poll_options // Now contains objects with option_id
             }
         });
+
+        // 📝 Log Activity: Repost
+        if (req.body.shared_post_id || req.body.shared_job_id) {
+            logActivity(userId, 'repost_post', 'post', postId, { 
+                shared_post_id: req.body.shared_post_id,
+                shared_job_id: req.body.shared_job_id,
+                is_broadcast: !!is_broadcast
+            });
+        }
     } catch (err) {
+
         await client.query('ROLLBACK');
         console.error("Create post error:", err);
         res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
@@ -1644,7 +1657,11 @@ exports.voteInPoll = async (req, res) => {
 
         res.status(200).json({ message: "Vote recorded successfully" });
 
+        // 📝 Log Activity: Poll Vote
+        logActivity(userId, 'vote_poll', 'poll', poll_id, { option_id, post_id: postId });
+
     } catch (err) {
+
         console.error("Vote error:", err);
         return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
     }
@@ -1689,7 +1706,11 @@ exports.removeVote = async (req, res) => {
         }
 
         res.status(200).json({ message: "Vote removed successfully" });
+
+        // 📝 Remove Activity: Poll Vote
+        removeActivity(userId, 'vote_poll', poll_id);
     } catch (err) {
+
         console.error("Remove vote error:", err);
         return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
     }
@@ -1739,7 +1760,11 @@ exports.toggleLike = async (req, res) => {
                 );
             }
             liked = false;
+
+            // 📝 Remove Activity: Like Post
+            removeActivity(userId, 'like_post', postId);
         } else {
+
             // 3️⃣ Like
             if (companyId) {
                 await pool.query(
@@ -1753,6 +1778,10 @@ exports.toggleLike = async (req, res) => {
                 );
             }
             liked = true;
+
+            // 📝 Log Activity: Like Post
+            logActivity(userId, 'like_post', 'post', postId);
+
 
             // 🔔 Notify Author
             // Fetch post author
@@ -1795,7 +1824,11 @@ exports.toggleLike = async (req, res) => {
                     );
                 }
             }
+
+            // 📝 Log Activity: Like Post
+            logActivity(userId, 'like_post', 'post', postId);
         }
+
 
         // 4️⃣ Get UPDATED count
         const countResult = await pool.query(
@@ -2057,10 +2090,18 @@ exports.addComment = async (req, res) => {
             }
         }
 
+        // 📝 Log Activity: Comment Post
+        logActivity(userId, 'comment_post', 'post', postId, { 
+            comment_id: newComment.comment_id, 
+            comment: content.slice(0, 100) 
+        });
+
         return res.status(200).json({
             message: "comment added",
             comment: newComment
         })
+
+
 
     } catch (err) {
         console.error("Add comment error:", err);

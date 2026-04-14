@@ -18,6 +18,8 @@ const organizationRoutes = require("./modules/organization/organization.routes")
 const shareRoutes = require("./modules/share/share.routes");
 const dashboardRoutes = require("./modules/dashboard/dashboard.routes");
 const reportRoutes = require("./modules/report/report.routes");
+const activityRoutes = require("./modules/activity/activity.routes");
+
 
 
 const app = express();
@@ -91,7 +93,9 @@ app.use("/api", uploadRoutes);
 app.use("/api/onboarding", onboardingRoutes);
 app.use("/api", organizationRoutes);
 app.use("/api", messagingRoutes);
+app.use("/api", activityRoutes);
 app.use("/api", shareRoutes);
+
 
 
 const errorHandler = require("./core/middlewares/error.middleware");

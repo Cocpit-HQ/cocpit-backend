@@ -4,6 +4,8 @@ const { logAudit } = require("../../core/infrastructure/audit.service");
 const { checkOrgPermission } = require("../../core/utils/rbac");
 const { notifyOrgFollowers } = require("../../services/notification.service");
 const { hasActorPermission } = require("../../core/middlewares/actor-context.middleware");
+const { logActivity } = require("../../core/services/activityLogger");
+
 
 const getRequestedOrganizationActorId = (req, fallbackOrgId = null) => {
   const actorOrgId = req.actor?.type === "ORGANIZATION" ? req.actor.orgId : null;
@@ -97,7 +99,18 @@ exports.getAllJobs = async (req, res) => {
 
     const result = await pool.query(query, params);
     res.json(result.rows);
+
+    // 📝 Log Activity: Search Jobs
+    const searchText = req.query.q || req.query.title || req.query.search || req.query.keyword || "";
+
+    if (userId && searchText) {
+      logActivity(userId, 'search_job', 'job', null, { query: searchText });
+    }
+
+
+
   } catch (err) {
+
     if (err.code === '23514' && err.constraint === 'salary_valid') {
       return res.status(400).json({
         field: "salary",
@@ -148,7 +161,13 @@ exports.getJobById = async (req, res) => {
     }
 
     res.json(result.rows[0]);
+
+    // 📝 Log Activity: View Job
+    if (userId) {
+      logActivity(userId, 'view_job', 'job', id);
+    }
   } catch (err) {
+
     console.error("Get job error:", err);
     res.status(500).json({ message: "Internal server error" });
   }
