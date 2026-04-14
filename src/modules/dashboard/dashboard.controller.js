@@ -1,12 +1,24 @@
 const dashboardService = require("./dashboard.service");
 const { sendSuccess } = require("../../core/response/success");
 const pool = require("../../core/db/pool");
+const { getUserType } = require("../../utils/personaHelper");
 
 const getDashboardStats = async (req, res) => {
   try {
     const actorId = req.actor?.id || req.user.sub || req.user.id;
     const actorType = req.actor?.type || "USER";
     const stats = await dashboardService.getStats(actorId, actorType);
+
+    // 🎯 Intent Layer Integration: Add Persona/Intent only for Users
+    if (actorType === "USER") {
+      const intent = await dashboardService.getIntentScores(actorId);
+      const hasCreatedPost = await dashboardService.checkUserCreatedPost(actorId);
+      const userType = getUserType(intent, hasCreatedPost);
+      
+      stats.intent = intent;
+      stats.userType = userType;
+    }
+
     return sendSuccess(res, stats, 200, "Dashboard statistics retrieved successfully");
   } catch (err) {
     console.error("Get dashboard stats error:", err);

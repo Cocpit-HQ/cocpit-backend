@@ -1,3 +1,4 @@
+const { sanitizeContent } = require("../../utils/contentSanitizer");
 const pool = require("../../core/db/pool");
 const { buildJobFilters } = require("../../core/utils/jobQueryBuilder");
 const { logAudit } = require("../../core/infrastructure/audit.service");
@@ -5,6 +6,7 @@ const { checkOrgPermission } = require("../../core/utils/rbac");
 const { notifyOrgFollowers } = require("../../services/notification.service");
 const { hasActorPermission } = require("../../core/middlewares/actor-context.middleware");
 const { logActivity } = require("../../core/services/activityLogger");
+const { logActivity: logIntentActivity } = require("../../utils/activityLogger");
 
 
 const getRequestedOrganizationActorId = (req, fallbackOrgId = null) => {
@@ -165,6 +167,7 @@ exports.getJobById = async (req, res) => {
     // 📝 Log Activity: View Job
     if (userId) {
       logActivity(userId, 'view_job', 'job', id);
+      logIntentActivity({ userId, action: "view_job", metadata: { jobId: id } });
     }
   } catch (err) {
 
@@ -176,7 +179,7 @@ exports.getJobById = async (req, res) => {
 exports.createJob = async (req, res) => {
   const userId = req.user.sub;
 
-  const {
+  let {
     title,
     location,
     description,
@@ -193,19 +196,24 @@ exports.createJob = async (req, res) => {
 
     skills = []
   } = req.body;
-  
+
+  // Sanitize user-generated content
+  title = sanitizeContent(title);
+  description = sanitizeContent(description);
+  industry = sanitizeContent(industry);
+
   let requestedOrgId = null;
   let resolvedCompanyName = "";
   try {
     requestedOrgId = getRequestedOrganizationActorId(req, org_id || null);
     await assertOrgPermission(req, requestedOrgId, ["POST_JOBS", "MANAGE_COMPANY"]);
-    
+
     if (requestedOrgId) {
-       const orgRes = await pool.query('SELECT name FROM organizations WHERE org_id = $1', [requestedOrgId]);
-       if(orgRes.rows.length) resolvedCompanyName = orgRes.rows[0].name;
+      const orgRes = await pool.query('SELECT name FROM organizations WHERE org_id = $1', [requestedOrgId]);
+      if (orgRes.rows.length) resolvedCompanyName = orgRes.rows[0].name;
     } else {
-       const userRes = await pool.query('SELECT full_name FROM users WHERE user_id = $1', [userId]);
-       if(userRes.rows.length) resolvedCompanyName = userRes.rows[0].full_name;
+      const userRes = await pool.query('SELECT full_name FROM users WHERE user_id = $1', [userId]);
+      if (userRes.rows.length) resolvedCompanyName = userRes.rows[0].full_name;
     }
   } catch (err) {
     return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
@@ -335,6 +343,9 @@ exports.applyJob = async (req, res) => {
 
   // Take other fields from request body
   let { full_name, email, phone, mobile_number, cover_note } = req.body;
+  
+  // Sanitize user-generated content
+  cover_note = sanitizeContent(cover_note);
   const contactPhone = phone || mobile_number;
 
   try {
@@ -423,6 +434,9 @@ exports.applyJob = async (req, res) => {
     );
 
     res.status(201).json({ message: "Application submitted successfully", applicationId: appId });
+
+    // 🎯 Intent Layer: Log Apply Job
+    logIntentActivity({ userId, action: "apply_job", metadata: { jobId: id, applicationId: appId } });
   } catch (err) {
     console.error("Apply job error:", err);
     res.status(500).json({ message: "Internal server error" });
@@ -510,6 +524,9 @@ exports.saveJob = async (req, res) => {
     }
 
     res.status(201).json({ message: "Job saved successfully" });
+
+    // 🎯 Intent Layer: Log Save Job
+    logIntentActivity({ userId, action: "save_job", metadata: { jobId } });
   } catch (err) {
     console.error("Save job error:", err);
     res.status(500).json({ message: "Internal server error" });
@@ -1029,7 +1046,7 @@ exports.updateJob = async (req, res) => {
   const { id } = req.params;
   const userId = req.user.sub;
 
-  const {
+  let {
     title,
     location,
     description,
@@ -1045,6 +1062,11 @@ exports.updateJob = async (req, res) => {
     org_id,
     skills = []
   } = req.body;
+
+  // Sanitize user-generated content
+  title = sanitizeContent(title);
+  description = sanitizeContent(description);
+  industry = sanitizeContent(industry);
 
   // Sanitize integer fields - default to 0 if empty because DB has NOT NULL constraint
   const safeMinSalary = (minSalary === "" || minSalary === null || minSalary === undefined) ? 0 : parseInt(minSalary);
@@ -1084,11 +1106,11 @@ exports.updateJob = async (req, res) => {
 
     let resolvedCompanyName = oldJobData.company_name;
     if (org_id) {
-       const orgRes = await client.query('SELECT name FROM organizations WHERE org_id = $1', [org_id]);
-       if(orgRes.rows.length) resolvedCompanyName = orgRes.rows[0].name;
+      const orgRes = await client.query('SELECT name FROM organizations WHERE org_id = $1', [org_id]);
+      if (orgRes.rows.length) resolvedCompanyName = orgRes.rows[0].name;
     } else if (recruiter_id) {
-       const userRes = await client.query('SELECT full_name FROM users WHERE user_id = $1', [recruiter_id]);
-       if(userRes.rows.length) resolvedCompanyName = userRes.rows[0].full_name;
+      const userRes = await client.query('SELECT full_name FROM users WHERE user_id = $1', [recruiter_id]);
+      if (userRes.rows.length) resolvedCompanyName = userRes.rows[0].full_name;
     }
 
     // 2. Update job details
