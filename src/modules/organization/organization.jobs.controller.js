@@ -157,7 +157,7 @@ exports.getOrganizationJobs = async (req, res) => {
     // We enforce the query filter.
 
     try {
-        let conditions = ["j.org_id = $1"];
+        let conditions = ["j.org_id = $1", "j.is_active = TRUE"];
         let params = [companyId];
         let paramCount = 2;
 
@@ -220,7 +220,7 @@ exports.updateOrganizationJob = async (req, res) => {
         title, location, description,
         salary_min, salary_max, salary_currency, salary_period, salary_visibility,
         job_type, work_mode, experience_level, industry, easy_apply, actively_hiring,
-        status, expires_at
+        status, expires_at, is_active
     } = req.body;
 
     const client = await pool.connect();
@@ -266,12 +266,13 @@ exports.updateOrganizationJob = async (req, res) => {
                 easy_apply = COALESCE($13, easy_apply),
                 actively_hiring = COALESCE($14, actively_hiring),
                 status = COALESCE($15, status),
-                expires_at = COALESCE($16, expires_at)
-            WHERE job_id = $17
+                expires_at = COALESCE($16, expires_at),
+                is_active = COALESCE($17, is_active)
+            WHERE job_id = $18
             RETURNING *
         `, [
             title, location, description, salary_min, salary_max, salary_currency, salary_period, salary_visibility,
-            job_type, work_mode, experience_level, industry, easy_apply, actively_hiring, status, expires_at, jobId
+            job_type, work_mode, experience_level, industry, easy_apply, actively_hiring, status, expires_at, is_active, jobId
         ]);
 
         const updatedJob = updateRes.rows[0];
@@ -310,5 +311,6 @@ exports.updateOrganizationJob = async (req, res) => {
 exports.deleteOrganizationJob = async (req, res) => {
     // Soft delete equivalent
     req.body.status = 'CLOSED';
+    req.body.is_active = false;
     return exports.updateOrganizationJob(req, res);
 };
