@@ -1028,11 +1028,15 @@ exports.deleteJob = async (req, res) => {
       return res.status(403).json({ message: "Not authorized to delete this job" });
     }
 
-    // Soft delete by setting is_active = FALSE
-    await pool.query(
-      `UPDATE jobs SET is_active = FALSE WHERE job_id = $1`,
+    // Soft delete by setting is_active = FALSE and status = 'CLOSED' for consistency
+    const result = await pool.query(
+      `UPDATE jobs SET is_active = FALSE, status = 'CLOSED' WHERE job_id = $1`,
       [id]
     );
+
+    if (result.rowCount === 0) {
+      return res.status(404).json({ message: "Job not found or already deleted" });
+    }
 
     res.json({ message: "Job deleted successfully" });
   } catch (err) {
