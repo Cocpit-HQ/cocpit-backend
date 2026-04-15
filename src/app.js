@@ -93,7 +93,7 @@ app.use("/api", uploadRoutes);
 app.use("/api/onboarding", onboardingRoutes);
 app.use("/api", organizationRoutes);
 app.use("/api", messagingRoutes);
-app.use("/api", activityRoutes);
+app.use("/api/activity", activityRoutes);
 app.use("/api", shareRoutes);
 
 
