@@ -1,4 +1,5 @@
 const pool = require("../../core/db/pool");
+const { logActivity: logIntentActivity } = require("../../utils/activityLogger");
 
 const getRequestedOrganizationActorId = (req, fallbackOrgId = null) => {
     const actorOrgId = req.actor?.type === "ORGANIZATION" ? req.actor.orgId : null;
@@ -183,6 +184,9 @@ exports.toggleSavePost = async (req, res) => {
             `INSERT INTO saved_post (user_id, org_id, post_id) VALUES ($1, $2, $3)`,
             [userId, orgId, postId]
         );
+
+        // 🎯 Intent Layer: Log Save Post
+        logIntentActivity({ userId, action: "save_post", metadata: { postId, orgId } });
 
         return res.status(200).json({ success: true, saved: true, message: "Post saved" });
 

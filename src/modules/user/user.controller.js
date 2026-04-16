@@ -47,8 +47,7 @@ exports.searchUsers = async (req, res) => {
             NULL::text as industry
           FROM users u
           LEFT JOIN profiles p ON u.user_id = p.user_id
-          WHERE u.user_id != $1
-          AND (u.full_name ILIKE $2 OR u.account_name ILIKE $2)
+          WHERE (u.full_name ILIKE $2 OR u.account_name ILIKE $2)
           ${userAccountFilter}
           AND NOT EXISTS (
             SELECT 1 FROM blocks b 
@@ -733,8 +732,7 @@ exports.getSuggestedUsers = async (req, res) => {
         (SELECT COUNT(*) FROM followers WHERE following_id = u.user_id) as followers_count
       FROM users u
       LEFT JOIN profiles p ON u.user_id = p.user_id
-      WHERE u.user_id != $1
-      AND NOT EXISTS (
+      WHERE NOT EXISTS (
         SELECT 1 FROM followers WHERE follower_id = $1 AND following_id = u.user_id
       )
       AND NOT EXISTS (

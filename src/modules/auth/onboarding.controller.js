@@ -18,7 +18,7 @@ exports.checkAccountName = async (req, res) => {
 };
 
 exports.completeOnboarding = async (req, res) => {
-  const { account_name } = req.body;
+  const { account_name, location_id } = req.body;
   const userId = req.user.sub;
 
   // 1. Check if file is uploaded
@@ -51,17 +51,31 @@ exports.completeOnboarding = async (req, res) => {
       return res.status(409).json({ message: "Account name already taken" });
     }
 
-    // 4. Update user
+    // 4. Validate location_id against DB and fetch canonical name (never trust frontend string)
+    const locationResult = await pool.query(
+      "SELECT id, name FROM locations WHERE id = $1",
+      [location_id]
+    );
+
+    if (locationResult.rowCount === 0) {
+      return res.status(400).json({ message: "Invalid location selected" });
+    }
+
+    const locationName = locationResult.rows[0].name;
+
+    // 5. Update user
     const avatarUrl = req.files[0].path;
 
     await pool.query(
       `UPDATE users
        SET account_name = $1,
            avatar_url = $2,
+           location = $3,
+           location_id = $4,
            is_onboarding_complete = TRUE,
            updated_at = NOW()
-       WHERE user_id = $3`,
-      [account_name, avatarUrl, userId]
+       WHERE user_id = $5`,
+      [account_name, avatarUrl, locationName, location_id, userId]
     );
 
     return res.status(200).json({
@@ -69,6 +83,8 @@ exports.completeOnboarding = async (req, res) => {
       user: {
         account_name,
         avatar_url: avatarUrl,
+        location: locationName,
+        location_id,
         is_onboarding_complete: true
       }
     });

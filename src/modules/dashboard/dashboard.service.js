@@ -224,6 +224,30 @@ const getStats = async (actorId, actorType) => {
   };
 };
 
+/**
+ * Fetches user intent scores
+ * @param {string} userId
+ */
+const getIntentScores = async (userId) => {
+    const { rows } = await pool.query(
+        "SELECT job_seeker_score, creator_score, event_score FROM user_intent_scores WHERE user_id = $1",
+        [userId]
+    );
+    return rows[0] || { job_seeker_score: 0, creator_score: 0, event_score: 0 };
+};
+
+/**
+ * Checks if a user has created any posts
+ * @param {string} userId
+ */
+const checkUserCreatedPost = async (userId) => {
+    const { rows } = await pool.query(
+        "SELECT 1 FROM posts WHERE author_id = $1 AND author_org_id IS NULL LIMIT 1",
+        [userId]
+    );
+    return rows.length > 0;
+};
+
 module.exports = {
   getStats,
   addProfileView,
@@ -232,4 +256,6 @@ module.exports = {
   getSearchAppearanceCount,
   getConnectionCount,
   getPostImpressionsCount,
+  getIntentScores,
+  checkUserCreatedPost,
 };

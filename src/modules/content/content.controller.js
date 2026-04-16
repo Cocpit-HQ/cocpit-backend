@@ -1,5 +1,6 @@
 const { incrementUserHashtagScore } = require("../../services/recommendation.service");
 const { ur, vi } = require("zod/locales");
+const { sanitizeContent } = require("../../utils/contentSanitizer");
 const pool = require("../../core/db/pool");
 const socketService = require("../../core/infrastructure/socket.service");
 const { checkBlockStatus } = require("../../core/utils/blockCheck");
@@ -8,6 +9,7 @@ const cloudinary = require("../../core/infrastructure/cloudinary.client");
 const { checkOrgPermission } = require("../../core/utils/rbac");
 const { notifyOrgFollowers, notifyBroadcastToChildOrgs } = require("../../services/notification.service");
 const { logActivity, removeActivity } = require("../../core/services/activityLogger");
+const { logActivity: logIntentActivity } = require("../../utils/activityLogger");
 
 
 
@@ -103,46 +105,46 @@ exports.getPublicFeed = async (req, res) => {
             if (!cursorPostId && actorScope.userId) {
                 const redisClient = require("../../core/db/redis");
                 const { getHashtagPostsInternal } = require("./hashtag.controller"); // We will export an internal getter
-                
+
                 if (redisClient.isOpen) {
                     const topTags = await redisClient.zRevRange(`user:${actorScope.userId}:interests`, 0, 4);
                     if (topTags && topTags.length > 0) {
                         // Rotation: pick 1 random tag
                         const randomTag = topTags[Math.floor(Math.random() * topTags.length)];
-                        
+
                         let suggestedPostIds = await redisClient.lRange(`feed:hashtag:${randomTag}`, 0, 0);
-                        
+
                         // Wait, DB fallback if Redis feed cache is missing
                         if (!suggestedPostIds || suggestedPostIds.length === 0) {
-                             const { rows: dbFallback } = await pool.query(`
+                            const { rows: dbFallback } = await pool.query(`
                                 SELECT p.post_id FROM posts p 
                                 JOIN post_hashtags ph ON p.post_id = ph.post_id 
                                 JOIN hashtags h ON h.hashtag_id = ph.hashtag_id
                                 WHERE h.tag = $1 ORDER BY p.created_at DESC LIMIT 1
                              `, [randomTag]);
-                             suggestedPostIds = dbFallback.map(r => r.post_id);
+                            suggestedPostIds = dbFallback.map(r => r.post_id);
                         }
-                        
+
                         if (suggestedPostIds.length > 0) {
-                             // Rather than rewrite hashtag feed, let's just do a tiny exact match query
-                             const { getPostHydrationSelect, getPostHydrationJoins, getPublicFeedWhere } = require("../../core/queries/postHydration.query");
-                             const { rows: hydratedSuggestions } = await pool.query(`
+                            // Rather than rewrite hashtag feed, let's just do a tiny exact match query
+                            const { getPostHydrationSelect, getPostHydrationJoins, getPublicFeedWhere } = require("../../core/queries/postHydration.query");
+                            const { rows: hydratedSuggestions } = await pool.query(`
                                 SELECT ${getPostHydrationSelect(2, 1)}
                                 ${getPostHydrationJoins()}
                                 ${getPublicFeedWhere(1)}
                                 AND p.post_id = ANY($3::uuid[])
                              `, [actorScope.userId, actorScope.orgId || null, suggestedPostIds]);
-                             
-                             if (hydratedSuggestions && hydratedSuggestions.length > 0) {
-                                  hydratedSuggestions[0].is_suggested = true;
-                                  hydratedSuggestions[0].suggested_reason = `Because you follow #${randomTag}`;
-                                  // Splice at index 3
-                                  if (finalRows.length > 3) {
-                                      finalRows.splice(3, 0, hydratedSuggestions[0]);
-                                  } else {
-                                      finalRows.push(hydratedSuggestions[0]);
-                                  }
-                             }
+
+                            if (hydratedSuggestions && hydratedSuggestions.length > 0) {
+                                hydratedSuggestions[0].is_suggested = true;
+                                hydratedSuggestions[0].suggested_reason = `Because you follow #${randomTag}`;
+                                // Splice at index 3
+                                if (finalRows.length > 3) {
+                                    finalRows.splice(3, 0, hydratedSuggestions[0]);
+                                } else {
+                                    finalRows.push(hydratedSuggestions[0]);
+                                }
+                            }
                         }
                     }
                 }
@@ -465,46 +467,46 @@ exports.getMyPosts = async (req, res) => {
             if (!cursorPostId && actorScope.userId) {
                 const redisClient = require("../../core/db/redis");
                 const { getHashtagPostsInternal } = require("./hashtag.controller"); // We will export an internal getter
-                
+
                 if (redisClient.isOpen) {
                     const topTags = await redisClient.zRevRange(`user:${actorScope.userId}:interests`, 0, 4);
                     if (topTags && topTags.length > 0) {
                         // Rotation: pick 1 random tag
                         const randomTag = topTags[Math.floor(Math.random() * topTags.length)];
-                        
+
                         let suggestedPostIds = await redisClient.lRange(`feed:hashtag:${randomTag}`, 0, 0);
-                        
+
                         // Wait, DB fallback if Redis feed cache is missing
                         if (!suggestedPostIds || suggestedPostIds.length === 0) {
-                             const { rows: dbFallback } = await pool.query(`
+                            const { rows: dbFallback } = await pool.query(`
                                 SELECT p.post_id FROM posts p 
                                 JOIN post_hashtags ph ON p.post_id = ph.post_id 
                                 JOIN hashtags h ON h.hashtag_id = ph.hashtag_id
                                 WHERE h.tag = $1 ORDER BY p.created_at DESC LIMIT 1
                              `, [randomTag]);
-                             suggestedPostIds = dbFallback.map(r => r.post_id);
+                            suggestedPostIds = dbFallback.map(r => r.post_id);
                         }
-                        
+
                         if (suggestedPostIds.length > 0) {
-                             // Rather than rewrite hashtag feed, let's just do a tiny exact match query
-                             const { getPostHydrationSelect, getPostHydrationJoins, getPublicFeedWhere } = require("../../core/queries/postHydration.query");
-                             const { rows: hydratedSuggestions } = await pool.query(`
+                            // Rather than rewrite hashtag feed, let's just do a tiny exact match query
+                            const { getPostHydrationSelect, getPostHydrationJoins, getPublicFeedWhere } = require("../../core/queries/postHydration.query");
+                            const { rows: hydratedSuggestions } = await pool.query(`
                                 SELECT ${getPostHydrationSelect(2, 1)}
                                 ${getPostHydrationJoins()}
                                 ${getPublicFeedWhere(1)}
                                 AND p.post_id = ANY($3::uuid[])
                              `, [actorScope.userId, actorScope.orgId || null, suggestedPostIds]);
-                             
-                             if (hydratedSuggestions && hydratedSuggestions.length > 0) {
-                                  hydratedSuggestions[0].is_suggested = true;
-                                  hydratedSuggestions[0].suggested_reason = `Because you follow #${randomTag}`;
-                                  // Splice at index 3
-                                  if (finalRows.length > 3) {
-                                      finalRows.splice(3, 0, hydratedSuggestions[0]);
-                                  } else {
-                                      finalRows.push(hydratedSuggestions[0]);
-                                  }
-                             }
+
+                            if (hydratedSuggestions && hydratedSuggestions.length > 0) {
+                                hydratedSuggestions[0].is_suggested = true;
+                                hydratedSuggestions[0].suggested_reason = `Because you follow #${randomTag}`;
+                                // Splice at index 3
+                                if (finalRows.length > 3) {
+                                    finalRows.splice(3, 0, hydratedSuggestions[0]);
+                                } else {
+                                    finalRows.push(hydratedSuggestions[0]);
+                                }
+                            }
                         }
                     }
                 }
@@ -661,6 +663,13 @@ exports.createPost = async (req, res) => {
 
     const { userId, orgId: companyId } = actorScope;
     let { content, category, visibility, media_urls, post_type, title, poll_options, poll_duration, is_broadcast } = req.body; // category is name, media_urls is array
+    
+    // Sanitize user-generated content
+    content = sanitizeContent(content);
+    title = sanitizeContent(title);
+    if (poll_options && Array.isArray(poll_options)) {
+        poll_options = poll_options.map(opt => sanitizeContent(opt));
+    }
 
     const client = await pool.connect();
 
@@ -969,7 +978,7 @@ exports.createPost = async (req, res) => {
                 metadata: { post_title: title || content?.substring(0, 50) },
             }).catch(err => console.error("Post notification error:", err));
 
-        // Broadcast: notify all members of all child orgs (fire-and-forget)
+            // Broadcast: notify all members of all child orgs (fire-and-forget)
             if (is_broadcast) {
                 notifyBroadcastToChildOrgs(companyId, postId, content).catch(err => console.error("Broadcast notification error:", err));
             }
@@ -979,6 +988,9 @@ exports.createPost = async (req, res) => {
         // Handle Hashtags asynchronously without outbox
         const { processHashtags } = require("../../workers/eventOutboxWorker");
         processHashtags(pool, 'POST_CREATED', postId).catch(err => console.error("Hashtag process error:", err));
+
+        // 🎯 Intent Layer: Log Create Post
+        logIntentActivity({ userId, action: "create_post", metadata: { postId, postType: post_type, category } });
 
         res.status(201).json({
             message: "Post created", postId,
@@ -999,11 +1011,13 @@ exports.createPost = async (req, res) => {
 
         // 📝 Log Activity: Repost
         if (req.body.shared_post_id || req.body.shared_job_id) {
-            logActivity(userId, 'repost_post', 'post', postId, { 
+            logActivity(userId, 'repost_post', 'post', postId, {
                 shared_post_id: req.body.shared_post_id,
                 shared_job_id: req.body.shared_job_id,
                 is_broadcast: !!is_broadcast
             });
+            // 🎯 Intent Layer: Log Share Post
+            logIntentActivity({ userId, action: "share_post", metadata: { postId, sharedPostId: req.body.shared_post_id, sharedJobId: req.body.shared_job_id } });
         }
     } catch (err) {
 
@@ -1275,7 +1289,14 @@ WHERE p.post_id = $1;
 
 exports.updatePostById = async (req, res) => {
     const postId = req.params.id;
-    const { content, category, visibility, media_urls, post_type, title } = req.body;
+    let { content, category, visibility, media_urls, post_type, title, poll_options } = req.body;
+
+    // Sanitize user-generated content
+    content = sanitizeContent(content);
+    title = sanitizeContent(title);
+    if (poll_options && Array.isArray(poll_options)) {
+        poll_options = poll_options.map(opt => sanitizeContent(opt));
+    }
     let actorScope;
 
     try {
@@ -1657,6 +1678,9 @@ exports.voteInPoll = async (req, res) => {
 
         res.status(200).json({ message: "Vote recorded successfully" });
 
+        // 🎯 Intent Layer: Log Poll Vote
+        logIntentActivity({ userId, action: "vote_poll", metadata: { postId, pollId: poll_id, optionId: option_id } });
+
         // 📝 Log Activity: Poll Vote
         logActivity(userId, 'vote_poll', 'poll', poll_id, { option_id, post_id: postId });
 
@@ -1852,7 +1876,10 @@ exports.toggleLike = async (req, res) => {
 
 exports.addComment = async (req, res) => {
     const postId = req.params.id;
-    const { content, parent_id } = req.body; // Added companyId
+    let { content, parent_id } = req.body; // Added companyId
+    
+    // Sanitize user-generated content
+    content = sanitizeContent(content);
     let actorScope;
 
     try {
@@ -2091,10 +2118,13 @@ exports.addComment = async (req, res) => {
         }
 
         // 📝 Log Activity: Comment Post
-        logActivity(userId, 'comment_post', 'post', postId, { 
-            comment_id: newComment.comment_id, 
-            comment: content.slice(0, 100) 
+        logActivity(userId, 'comment_post', 'post', postId, {
+            comment_id: newComment.comment_id,
+            comment: content.slice(0, 100)
         });
+
+        // 🎯 Intent Layer: Log Comment
+        logIntentActivity({ userId, action: "comment_post", metadata: { postId, commentId: newComment.comment_id } });
 
         return res.status(200).json({
             message: "comment added",
@@ -2111,7 +2141,10 @@ exports.addComment = async (req, res) => {
 
 exports.updateComment = async (req, res) => {
     const commentId = req.params.commentId;
-    const { content } = req.body;
+    let { content } = req.body;
+    
+    // Sanitize user-generated content
+    content = sanitizeContent(content);
     let actorScope;
 
     try {
@@ -2994,7 +3027,7 @@ exports.createStory = async (req, res) => {
         return res.status(401).json({ message: "Unauthorized: user not identified" });
     }
 
-    const {
+    let {
         title,
         media_url,        // The baked snapshot URL (image or video) from Cloudinary
         description,
@@ -3003,6 +3036,10 @@ exports.createStory = async (req, res) => {
         shared_post_id,
         story_metadata,   // Optional: edit metadata for re-editing (hybrid approach)
     } = req.body;
+
+    // Sanitize user-generated content
+    title = sanitizeContent(title);
+    description = sanitizeContent(description);
 
     // --- Validate required fields ---
     if (!media_url) {
@@ -3567,7 +3604,10 @@ exports.getPollAnalytics = async (req, res) => {
 // --- STORY COMMENTS ---
 exports.addStoryComment = async (req, res) => {
     const storyId = req.params.id;
-    const { content, companyId: requestedCompanyId } = req.body;
+    let { content, companyId: requestedCompanyId } = req.body;
+
+    // Sanitize user-generated content
+    content = sanitizeContent(content);
     let actorScope;
 
     try {

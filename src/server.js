@@ -10,6 +10,7 @@ const { startSessionTimeoutWorker } = require("./workers/sessionTimeoutWorker");
 const { processJobExpirations } = require("./workers/jobExpiryWorker");
 const { processEventOutbox } = require("./workers/eventOutboxWorker");
 const { processStoryExpirations } = require("./workers/storyExpiryWorker");
+const { sweepActivityLogs, runDailyDecay } = require("./workers/intentEngine");
 const server = http.createServer(app);
 
 const PORT = process.env.PORT || 5000;
@@ -35,6 +36,16 @@ setInterval(() => {
 setInterval(() => {
   processStoryExpirations();
 }, 15 * 60 * 1000);
+
+// Start Intent Layer Sweep (Every 5 minutes)
+setInterval(() => {
+  sweepActivityLogs();
+}, 5 * 60 * 1000);
+
+// Start Intent Layer Daily Decay (Every 24 hours)
+setInterval(() => {
+  runDailyDecay();
+}, 24 * 60 * 60 * 1000);
 
 // Event Outbox Processor disabled
 

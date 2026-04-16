@@ -26,6 +26,7 @@ CREATE TABLE users (
   school TEXT,
   degree TEXT,
   location TEXT,
+  location_id INT,                    -- FK to locations table (set after seeding)
   about_text TEXT,
   created_at TIMESTAMPTZ DEFAULT now(),
   updated_at TIMESTAMPTZ DEFAULT now(),
@@ -1453,3 +1454,43 @@ ON user_activity_log(user_id, entity_type, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_activity_created 
 ON user_activity_log(created_at DESC);
 
+CREATE TABLE user_activities (
+  id SERIAL PRIMARY KEY,
+  user_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+  action VARCHAR(50) NOT NULL,
+  metadata JSONB,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE user_intent_scores (
+  user_id UUID PRIMARY KEY REFERENCES users(user_id) ON DELETE CASCADE,
+
+  job_seeker_score INT DEFAULT 0,
+  creator_score INT DEFAULT 0,
+  event_score INT DEFAULT 0,
+
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- ---------------------------------------------------------
+-- LOCATIONS AUTOCOMPLETE
+-- Last modified: 2026-04-15
+-- ---------------------------------------------------------
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+
+CREATE TABLE locations (
+    id SERIAL PRIMARY KEY,
+    name TEXT NOT NULL,          -- Formatted display string: "City, State, Country"
+    city TEXT,
+    state TEXT,
+    country TEXT,
+    latitude FLOAT,
+    longitude FLOAT
+);
+
+-- GIN index for fast trigram-based ILIKE search on location names
+CREATE INDEX idx_location_name 
+ON locations USING gin (name gin_trgm_ops);
+
+-- Index on users.location_id for fast geo-based JOIN/filter queries
+CREATE INDEX idx_users_location_id ON users(location_id);
