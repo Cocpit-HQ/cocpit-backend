@@ -21,6 +21,9 @@ const completeOnboardingSchema = z.object({
       .min(3, "Account name must be at least 3 characters")
       .max(30, "Account name must be at most 30 characters")
       .regex(accountNameRegex, "Account name can only contain lowercase letters, numbers, and underscores"),
+    location_id: z.coerce.number({
+      required_error: "Location is required"
+    }).int().positive("Please select a valid location"),
   }),
 });
 

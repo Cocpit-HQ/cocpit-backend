@@ -19,6 +19,7 @@ const shareRoutes = require("./modules/share/share.routes");
 const dashboardRoutes = require("./modules/dashboard/dashboard.routes");
 const reportRoutes = require("./modules/report/report.routes");
 const activityRoutes = require("./modules/activity/activity.routes");
+const locationRoutes = require("./modules/location/location.routes");
 
 
 
@@ -95,9 +96,7 @@ app.use("/api", organizationRoutes);
 app.use("/api", messagingRoutes);
 app.use("/api", activityRoutes);
 app.use("/api", shareRoutes);
-
-
-
+app.use("/api", locationRoutes);
 const errorHandler = require("./core/middlewares/error.middleware");
 app.use(errorHandler);
 
