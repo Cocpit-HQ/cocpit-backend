@@ -17,7 +17,7 @@ const {
 router.patch("/role", requireAuth, validate(saveRoleSchema), onboardingController.saveRole);
 router.patch("/details", requireAuth, validate(saveDetailsSchema), onboardingController.saveDetails);
 router.patch("/interests", requireAuth, validate(saveInterestsSchema), onboardingController.saveInterests);
-router.patch("/skills", requireAuth, validate(saveSkillsSchema), onboardingController.saveSkills);
+router.patch("/skills", requireAuth, onboardingController.saveSkills);
 router.post("/complete", requireAuth, validate(completeOnboardingSchema), onboardingController.completeOnboarding);
 
 module.exports = router;

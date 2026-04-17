@@ -4,6 +4,8 @@
  */
 const pool = require("../../core/db/pool");
 
+const getClient = async () => pool.connect();
+
 exports.saveRole = async (req, res) => {
     const userId = req.user?.sub;
     const { role } = req.body;
@@ -161,69 +163,56 @@ exports.saveInterests = async (req, res) => {
 };
 
 exports.saveSkills = async (req, res) => {
-    const userId = req.user?.sub;
-    const { skills } = req.body;
+    const { name } = req.body;
 
+    if (!Array.isArray(name) || name.length === 0) {
+        return res.status(400).json({ success: false, message: "Name must be a non-empty array" });
+    }
+
+    const skillList = [...new Set(
+        name.filter(s => typeof s === "string")
+            .map(s => s.trim().toLowerCase().replace(/\s+/g, " ").split(" ").map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(" "))
+            .filter(Boolean)
+    )];
+
+    if (!skillList.length) return res.status(400).json({ success: false, message: "No valid skills provided" });
+
+    const client = await getClient();
     try {
-        // Validate min 3
-        if (!skills || skills.length < 3) {
-            return res.status(400).json({ success: false, message: "Minimum 3 skills required" });
-        }
+        await client.query("BEGIN");
 
-        await pool.query('BEGIN');
+        const profileId = req.user?.sub;
+        if (!profileId) throw new Error("PROFILE_NOT_FOUND");
 
-        const profileRes = await pool.query(`SELECT profile_id FROM profiles WHERE user_id = $1`, [userId]);
+        await client.query(`INSERT INTO skills (name) SELECT UNNEST($1::text[]) ON CONFLICT 
+            (lower(name)) DO NOTHING RETURNING skill_id, name`, [skillList]);
 
-        if (profileRes.rowCount > 0) {
-            const profileId = profileRes.rows[0].profile_id;
-
-            // Clear existing skills for this user
-            await pool.query(`DELETE FROM user_skills WHERE profile_id = $1`, [profileId]);
-
-            for (const skillName of skills) {
-                // Insert skill into core table if it doesn't already exist
-                await pool.query(
-                    `INSERT INTO skills (name) VALUES ($1) ON CONFLICT (name) DO NOTHING`,
-                    [skillName.toLowerCase()]
-                );
-
-                // Get skill id
-                const skillRes = await pool.query(
-                    `SELECT skill_id FROM skills WHERE name = $1`,
-                    [skillName.toLowerCase()]
-                );
-
-                if (skillRes.rowCount > 0) {
-                    const skillId = skillRes.rows[0].skill_id;
-                    // Map to user_skills
-                    await pool.query(
-                        `INSERT INTO user_skills (profile_id, skill_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
-                        [profileId, skillId]
-                    );
-                }
-            }
-        }
-
-        // Let's also update the users.skills if it is used (optional fallback based on schema ambiguity)
-        await pool.query(
-            `UPDATE users 
-             SET skills = $1, 
-                 updated_at = NOW() 
-             WHERE user_id = $2`,
-            [skills, userId]
+        const { rows: skills } = await client.query(
+            `SELECT skill_id, name FROM skills WHERE lower(name) IN (SELECT lower(s) FROM UNNEST($1::text[]) AS s)`,
+            [skillList]
         );
 
-        await pool.query('COMMIT');
+        if (skills.length > 0) {
+            const values = skills.map((s, i) => `($1, $${i + 2})`).join(",");
+            await client.query(
+                `INSERT INTO user_skills (profile_id, skill_id) VALUES ${values} ON CONFLICT DO NOTHING`,
+                [profileId, ...skills.map(s => s.skill_id)]
+            );
+        }
 
-        return res.status(200).json({
+        await client.query("COMMIT");
+
+        res.status(201).json({
             success: true,
-            message: "Skills saved successfully",
-            data: { skills }
+            message: "Skills updated successfully",
         });
     } catch (err) {
-        await pool.query('ROLLBACK');
-        console.error("Save skills error:", err);
-        return res.status(500).json({ success: false, message: "Internal server error" });
+        await client.query("ROLLBACK");
+        if (err.message === "PROFILE_NOT_FOUND") return res.status(404).json({ success: false, message: "Profile not found" });
+        console.error("Add skills error:", err);
+        res.status(500).json({ success: false, message: "Internal server error" });
+    } finally {
+        client.release();
     }
 };
 
