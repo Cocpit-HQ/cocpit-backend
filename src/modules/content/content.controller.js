@@ -2126,9 +2126,54 @@ exports.addComment = async (req, res) => {
         // 🎯 Intent Layer: Log Comment
         logIntentActivity({ userId, action: "comment_post", metadata: { postId, commentId: newComment.comment_id } });
 
+        // 4️⃣ Return FULL comment object with author JOINs for immediate frontend mapping
+        const fullCommentRes = await pool.query(
+            `
+      SELECT 
+        c.comment_id,
+        c.content,
+        c.parent_id,
+        c.created_at,
+        c.is_pinned,
+        c.pinned_at,
+        c.pinned_by,
+        u.user_id AS author_id,
+        
+        CASE 
+            WHEN c.author_org_id IS NOT NULL THEN comp.name 
+            ELSE u.full_name 
+        END AS full_name,
+
+        CASE 
+            WHEN c.author_org_id IS NOT NULL THEN comp.slug 
+            ELSE u.account_name 
+        END AS account_name,
+
+        CASE 
+            WHEN c.author_org_id IS NOT NULL THEN comp.logo_url 
+            ELSE u.avatar_url 
+        END AS avatar_url,
+        COALESCE(comp.slug, u.account_name) AS author_slug,
+        (c.author_org_id IS NOT NULL) AS is_organization_comment,
+        CASE 
+            WHEN c.author_org_id IS NOT NULL THEN comp.slogan 
+            ELSE u.headline 
+        END AS headline,
+
+        c.author_org_id,
+        0 AS like_count,
+        false AS is_liked
+      FROM post_comments c
+      JOIN users u ON c.author_id = u.user_id
+      LEFT JOIN organizations comp ON c.author_org_id = comp.org_id
+      WHERE c.comment_id = $1
+      `,
+            [newComment.comment_id]
+        );
+
         return res.status(200).json({
             message: "comment added",
-            comment: newComment
+            comment: fullCommentRes.rows[0]
         })
 
 
