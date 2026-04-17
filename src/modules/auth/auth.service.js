@@ -95,7 +95,7 @@ const waitForRefreshReplay = async (userId, sessionId, presentedTokenHash, maxAt
 
 // ─── Registration ──────────────────────────────────────────────────────────────
 
-const registerUser = async ({ email, password, fullName, accountType }) => {
+const registerUser = async ({ email, password }) => {
     const normalizedEmail = email.toLowerCase();
 
     const exists = await authRepo.checkEmailExists(normalizedEmail);
@@ -104,15 +104,17 @@ const registerUser = async ({ email, password, fullName, accountType }) => {
     }
 
     const passwordHash = await hashPassword(password);
-    const user = await authRepo.createUser(normalizedEmail, passwordHash, fullName);
+    const user = await authRepo.createUser(normalizedEmail, passwordHash, "", false);
 
-    let roleName;
-    if (accountType === "Admin") roleName = "Admin";
-    else if (accountType === "Employer") roleName = "Employer";
-    else roleName = "Student";
+    // as per new design set it later with new data 
+    // let roleName;
+    // if (accountType === "Admin") roleName = "Admin";
+    // else if (accountType === "Employer") roleName = "Employer";
+    // else roleName = "Student";
 
-    await authRepo.assignRole(user.user_id, roleName);
-    await authRepo.createProfile(user.user_id, accountType);
+    // await authRepo.assignRole(user.user_id, roleName);
+
+    await authRepo.createProfile(user.user_id);
 
     return { user };
 };
