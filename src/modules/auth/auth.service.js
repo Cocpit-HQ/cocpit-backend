@@ -98,25 +98,40 @@ const waitForRefreshReplay = async (userId, sessionId, presentedTokenHash, maxAt
 const registerUser = async ({ email, password }) => {
     const normalizedEmail = email.toLowerCase();
 
-    const exists = await authRepo.checkEmailExists(normalizedEmail);
-    if (exists) {
-        return { error: { status: 409, message: "Email already registered" } };
+    const client = await pool.connect();
+
+    try {
+        await client.query("BEGIN");
+
+        const exists = await authRepo.checkEmailExists(normalizedEmail, client);
+        if (exists) {
+            await client.query("ROLLBACK");
+            return { error: { status: 409, message: "Email already registered" } };
+        }
+
+        const passwordHash = await hashPassword(password);
+
+        const user = await authRepo.createUser(
+            normalizedEmail,
+            passwordHash,
+            "",
+            false,
+            client
+        );
+
+        await authRepo.createProfile(user.user_id, client);
+
+        await client.query("COMMIT");
+
+        return { user };
+
+    } catch (err) {
+        await client.query("ROLLBACK");
+        console.error("Register transaction failed:", err);
+        return { error: { status: 500, message: "Registration failed" } };
+    } finally {
+        client.release();
     }
-
-    const passwordHash = await hashPassword(password);
-    const user = await authRepo.createUser(normalizedEmail, passwordHash, "", false);
-
-    // as per new design set it later with new data 
-    // let roleName;
-    // if (accountType === "Admin") roleName = "Admin";
-    // else if (accountType === "Employer") roleName = "Employer";
-    // else roleName = "Student";
-
-    // await authRepo.assignRole(user.user_id, roleName);
-
-    await authRepo.createProfile(user.user_id);
-
-    return { user };
 };
 
 // ─── Login ─────────────────────────────────────────────────────────────────────
@@ -214,7 +229,7 @@ const refreshTokens = async (refreshTokenValue) => {
 
     // 3. Validate token hash (Backward compatibility for legacy bcrypt hashes)
     let isValid = false;
-    
+
     // Check if the stored hash is a bcrypt hash (starts with $2b$ or $2a$ and is ~60 chars long)
     if (session.token_hash && session.token_hash.startsWith("$2")) {
         isValid = await bcrypt.compare(refreshTokenValue, session.token_hash);
