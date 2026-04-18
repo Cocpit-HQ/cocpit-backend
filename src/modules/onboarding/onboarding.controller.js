@@ -250,3 +250,92 @@ exports.completeOnboarding = async (req, res) => {
         return res.status(500).json({ success: false, message: "Internal server error" });
     }
 };
+
+// TODO: Modular Profile and Location Update APIs
+
+exports.updateProfile = async (req, res) => {
+    const userId = req.user?.sub;
+    const { account_name, full_name, avatar_url } = req.body;
+
+    // Validate account_name if present
+    if (account_name !== undefined && (!account_name || String(account_name).trim() === "")) {
+        return res.status(400).json({ success: false, message: "Account name cannot be empty" });
+    }
+
+    try {
+        const result = await pool.query(
+            `UPDATE users
+             SET account_name = COALESCE($1, account_name),
+                 full_name = COALESCE($2, full_name),
+                 avatar_url = COALESCE($3, avatar_url),
+                 updated_at = NOW()
+             WHERE user_id = $4
+             RETURNING *`,
+            [
+                account_name !== undefined ? account_name : null,
+                full_name !== undefined ? full_name : null,
+                avatar_url !== undefined ? avatar_url : null,
+                userId
+            ]
+        );
+
+        if (result.rowCount === 0) {
+            return res.status(404).json({ success: false, message: "User not found" });
+        }
+
+        return res.status(200).json({
+            success: true,
+            message: "Profile updated successfully",
+            data: result.rows[0]
+        });
+
+    } catch (err) {
+        console.error("Update profile error:", err);
+        if (err.code === '23505') {
+            return res.status(409).json({ success: false, message: "Account name already taken" });
+        }
+        return res.status(500).json({ success: false, message: "Internal server error" });
+    }
+};
+
+exports.updateLocation = async (req, res) => {
+    const userId = req.user?.sub;
+    const { location_id, location } = req.body;
+
+    // Validate location_id and location if present
+    if (location_id !== undefined && (!location_id || String(location_id).trim() === "")) {
+        return res.status(400).json({ success: false, message: "Valid location_id is required" });
+    }
+    if (location !== undefined && (!location || String(location).trim() === "")) {
+        return res.status(400).json({ success: false, message: "Valid location is required" });
+    }
+
+    try {
+        const result = await pool.query(
+            `UPDATE users
+             SET location_id = COALESCE($1, location_id),
+                 location = COALESCE($2, location),
+                 updated_at = NOW()
+             WHERE user_id = $3
+             RETURNING *`,
+            [
+                location_id !== undefined ? location_id : null,
+                location !== undefined ? location : null,
+                userId
+            ]
+        );
+
+        if (result.rowCount === 0) {
+            return res.status(404).json({ success: false, message: "User not found" });
+        }
+
+        return res.status(200).json({
+            success: true,
+            message: "Location updated successfully",
+            data: result.rows[0]
+        });
+    } catch (err) {
+        console.error("Update location error:", err);
+        return res.status(500).json({ success: false, message: "Internal server error" });
+    }
+};

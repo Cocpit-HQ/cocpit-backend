@@ -18,6 +18,8 @@ router.patch("/role", requireAuth, validate(saveRoleSchema), onboardingControlle
 router.patch("/details", requireAuth, validate(saveDetailsSchema), onboardingController.saveDetails);
 router.patch("/interests", requireAuth, validate(saveInterestsSchema), onboardingController.saveInterests);
 router.patch("/skills", requireAuth, onboardingController.saveSkills);
+router.patch("/profile", requireAuth, onboardingController.updateProfile);
+router.patch("/location", requireAuth, onboardingController.updateLocation);
 router.post("/complete", requireAuth, validate(completeOnboardingSchema), onboardingController.completeOnboarding);
 
 module.exports = router;
