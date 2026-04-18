@@ -14,6 +14,7 @@ const {
 } = require("./onboarding.schema");
 
 // Multi-step onboarding routes
+router.get("/check-account-name", requireAuth, onboardingController.checkAccountName);
 router.patch("/role", requireAuth, validate(saveRoleSchema), onboardingController.saveRole);
 router.patch("/details", requireAuth, validate(saveDetailsSchema), onboardingController.saveDetails);
 router.patch("/interests", requireAuth, validate(saveInterestsSchema), onboardingController.saveInterests);

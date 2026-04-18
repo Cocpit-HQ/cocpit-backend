@@ -340,6 +340,23 @@ exports.updateLocation = async (req, res) => {
     }
 };
 
+exports.checkAccountName = async (req, res) => {
+    const { account_name } = req.query;
+
+    try {
+        const result = await pool.query(
+            "SELECT 1 FROM users WHERE lower(account_name) = lower($1)",
+            [account_name]
+        );
+
+        const available = result.rowCount === 0;
+        return res.json({ available });
+    } catch (err) {
+        console.error("Check account name error:", err);
+        return res.status(500).json({ message: "Internal server error" });
+    }
+};
+
 const getProfileId = async (userId) => {
     const result = await pool.query(`SELECT profile_id FROM profiles WHERE user_id = $1`, [userId]);
     return result.rows[0]?.profile_id || null;
