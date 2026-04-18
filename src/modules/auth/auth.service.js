@@ -10,6 +10,7 @@ const { signAccessToken, signRefreshToken, verifyRefreshToken, verifyAccessToken
 const { verifyGoogleToken } = require("./googleAuth.service");
 const authRepo = require("./auth.repository");
 const redisClient = require("../../core/db/redis");
+const pool = require("../../core/db/pool");
 
 const MAX_DEVICES = 10;
 const REFRESH_REPLAY_WINDOW_SECONDS = Math.max(1, Number(process.env.REFRESH_REPLAY_WINDOW_SECONDS || 15));
