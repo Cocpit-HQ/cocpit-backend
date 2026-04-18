@@ -181,7 +181,7 @@ exports.saveSkills = async (req, res) => {
     try {
         await client.query("BEGIN");
 
-        const profileId = req.user?.sub;
+        const profileId = await getProfileId(req.user?.sub);
         if (!profileId) throw new Error("PROFILE_NOT_FOUND");
 
         await client.query(`INSERT INTO skills (name) SELECT UNNEST($1::text[]) ON CONFLICT 
@@ -338,4 +338,9 @@ exports.updateLocation = async (req, res) => {
         console.error("Update location error:", err);
         return res.status(500).json({ success: false, message: "Internal server error" });
     }
+};
+
+const getProfileId = async (userId) => {
+    const result = await pool.query(`SELECT profile_id FROM profiles WHERE user_id = $1`, [userId]);
+    return result.rows[0]?.profile_id || null;
 };
