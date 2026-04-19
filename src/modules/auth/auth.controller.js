@@ -7,9 +7,9 @@ const otpService = require("./otp.service");
 const actorContextService = require("./actorContext.service");
 
 // ─── Register ──────────────────────────────────────────────────────────────────
-
+// changed api as per new figma design
 exports.register = async (req, res) => {
-    const { email, password, fullName, accountType, otp } = req.body;
+    const { email, password, otp } = req.body;
 
     try {
         const otpResult = await otpService.verifyOTP(email, otp);
@@ -17,7 +17,7 @@ exports.register = async (req, res) => {
             return res.status(otpResult.error.status).json({ message: otpResult.error.message });
         }
 
-        const result = await authService.registerUser({ email, password, fullName, accountType });
+        const result = await authService.registerUser({ email, password });
 
         if (result.error) {
             return res.status(result.error.status).json({ message: result.error.message });

@@ -24,12 +24,12 @@ const checkEmailExists = async (email) => {
     return result.rowCount > 0;
 };
 
-const createUser = async (email, passwordHash, fullName) => {
-    const result = await pool.query(
-        `INSERT INTO users (email, password_hash, full_name)
-     VALUES ($1, $2, $3)
-     RETURNING user_id, email, full_name`,
-        [email, passwordHash, fullName]
+const createUser = async (email, passwordHash, fullName = "", is_onboarding_complete = false, client) => {
+    const result = await client.query(
+        `INSERT INTO users (email, password_hash,full_name,is_onboarding_complete)
+     VALUES ($1, $2, $3, $4)
+     RETURNING user_id, email`,
+        [email, passwordHash, fullName, is_onboarding_complete]
     );
     return result.rows[0];
 };
@@ -42,10 +42,10 @@ const assignRole = async (userId, roleName) => {
     );
 };
 
-const createProfile = async (userId, accountType) => {
-    await pool.query(
-        `INSERT INTO profiles (user_id, account_type) VALUES ($1, $2)`,
-        [userId, accountType]
+const createProfile = async (userId, client) => {
+    await client.query(
+        `INSERT INTO profiles (user_id) VALUES ($1)`,
+        [userId]
     );
 };
 
