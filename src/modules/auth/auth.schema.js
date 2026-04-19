@@ -12,16 +12,6 @@ const registerSchema = z.object({
     }).min(6, {
       message: "Password must be at least 6 characters long",
     }),
-    fullName: z.string({
-      required_error: "Full name is required",
-    }),
-    accountType: z.enum(
-      ["Fresher", "Employee", "Student", "Freelancer", "Employer", "Admin"],
-      {
-        required_error: "Account type is required",
-        invalid_type_error: "Invalid account type",
-      }
-    ),
     otp: z.string({
       required_error: "OTP is required",
     }).length(6, {
