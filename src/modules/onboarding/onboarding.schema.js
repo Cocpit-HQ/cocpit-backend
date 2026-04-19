@@ -10,20 +10,30 @@ const { z } = require("zod");
 // - onboardingStep (enum: ROLE, DETAILS, INTERESTS, SKILLS)
 // - isOnboardingComplete (boolean, default false)
 
-const roleEnum = z.enum(["student2", "working", "freelancer", "open_to_work", "Employer", "User"], {
-  required_error: "Role is required",
-  invalid_type_error: "Invalid role value",
-});
+const allowedRoles = ["student", "working", "freelancer", "open_to_work"];
 
 const saveRoleSchema = z.object({
   body: z.object({
-    role: roleEnum,
-  }),
+    role: z
+      .string({
+        required_error: "Role is required",
+        invalid_type_error: "Role must be a string",
+      })
+      .trim()
+      .min(1, "Role cannot be empty")
+      .transform((val) =>
+        val.toLowerCase().replace(/\s+/g, "_") // "Open To Work" → "open_to_work"
+      )
+      .refine((val) => allowedRoles.includes(val), {
+        message:
+          "Invalid role. Allowed values: student, working, freelancer, open to work",
+      }),
+  }).strict(), // 🔒 ensures only one field (role) is allowed
 });
 
 const saveDetailsSchema = z.object({
   body: z.object({
-    role: roleEnum,
+    role: allowedRoles,
     education: z.array(
       z.object({
         school_name: z.string().optional(),
@@ -68,25 +78,63 @@ const saveDetailsSchema = z.object({
 
 const saveInterestsSchema = z.object({
   body: z.object({
-    interests: z.array(z.string(), {
-      required_error: "Interests are required",
-    }).min(3, "Please select at least 3 interests"),
+    interests: z
+      .array(
+        z.string()
+          .trim()                          // removes extra spaces
+          .min(1, "Interest cannot be empty") // ❌ prevents "" or "   "
+      )
+      .min(3, "Please select at least 3 interests"),
   }),
 });
 
 const saveSkillsSchema = z.object({
   body: z.object({
-    skills: z.array(z.string(), {
-      required_error: "Skills are required",
-    }).min(3, "Please select at least 3 skills"),
+    skills: z
+      .array(
+        z.string().min(1, "Skill cannot be empty") // ❌ prevents ""
+      )
+      .min(3, "Please select at least 3 skills"), // ✅ minimum 3 skills
   }),
 });
 
-const completeOnboardingSchema = z.object({
+const updateProfileSchema = z.object({
   body: z.object({
-    // Add additional validation here if needed for completion payload
-    onboardingStep: z.enum(["ROLE", "DETAILS", "INTERESTS", "SKILLS"]).optional(),
-    isOnboardingComplete: z.boolean().default(false).optional(),
+    account_name: z
+      .string({
+        required_error: "Account name is required",
+        invalid_type_error: "Account name must be a string",
+      })
+      .trim()
+      .min(1, "Account name cannot be empty"),
+
+    full_name: z
+      .string({
+        required_error: "Full name is required",
+        invalid_type_error: "Full name must be a string",
+      })
+      .trim()
+      .min(1, "Full name cannot be empty"),
+
+    avatar_url: z
+      .string({
+        invalid_type_error: "Avatar URL must be a string",
+      })
+      .trim()
+      .url("Avatar URL must be a valid URL")
+      .optional(), // ✅ optional now
+  }),
+});
+
+const updateLocationSchema = z.object({
+  body: z.object({
+    location_id: z.string({
+      required_error: "Location ID is required",
+    }),
+
+    location: z.string({
+      required_error: "Location is required",
+    }),
   }),
 });
 
@@ -95,5 +143,6 @@ module.exports = {
   saveDetailsSchema,
   saveInterestsSchema,
   saveSkillsSchema,
-  completeOnboardingSchema,
+  updateProfileSchema,
+  updateLocationSchema
 };
