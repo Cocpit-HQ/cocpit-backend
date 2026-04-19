@@ -21,6 +21,7 @@ const reportRoutes = require("./modules/report/report.routes");
 const activityRoutes = require("./modules/activity/activity.routes");
 const locationRoutes = require("./modules/location/location.routes");
 const configRoutes = require("./modules/config/config.routes");
+const deviceRoutes = require("./modules/device/device.routes");
 
 
 
@@ -99,6 +100,7 @@ app.use("/api/activity", activityRoutes);
 app.use("/api", shareRoutes);
 app.use("/api", locationRoutes);
 app.use("/api/config", configRoutes);
+app.use("/api/device", deviceRoutes);
 const errorHandler = require("./core/middlewares/error.middleware");
 app.use(errorHandler);
 

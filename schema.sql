@@ -49,6 +49,7 @@ CREATE TABLE user_roles (
 CREATE TABLE refresh_tokens (
   token_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
+  session_id UUID UNIQUE NOT NULL, -- Logical session identifier
   token_hash TEXT NOT NULL,
   expires_at TIMESTAMPTZ NOT NULL,
   created_at TIMESTAMPTZ DEFAULT now(),
@@ -1494,3 +1495,25 @@ ON locations USING gin (name gin_trgm_ops);
 
 -- Index on users.location_id for fast geo-based JOIN/filter queries
 CREATE INDEX idx_users_location_id ON users(location_id);
+-- 2026-04-19: Device management for push notifications
+CREATE TABLE IF NOT EXISTS device_sessions (
+    device_session_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    session_id UUID NOT NULL REFERENCES refresh_tokens(session_id) ON DELETE CASCADE,
+    device_id TEXT NOT NULL,
+    fcm_token TEXT,
+    platform TEXT NOT NULL CHECK (platform IN ('android', 'ios', 'web')),
+    is_active BOOLEAN DEFAULT TRUE,
+    last_active_at TIMESTAMPTZ DEFAULT NOW(),
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE(device_id, session_id)
+);
+
+CREATE INDEX idx_device_sessions_active_user ON device_sessions(user_id) WHERE is_active = TRUE;
+CREATE INDEX idx_device_sessions_session_id ON device_sessions(session_id);
+
+CREATE TRIGGER update_device_sessions_updated_at
+BEFORE UPDATE ON device_sessions
+FOR EACH ROW
+EXECUTE FUNCTION update_updated_at_column();
