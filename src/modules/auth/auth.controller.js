@@ -7,7 +7,7 @@ const otpService = require("./otp.service");
 const actorContextService = require("./actorContext.service");
 
 // ─── Register ──────────────────────────────────────────────────────────────────
-
+// changed api as per new figma design
 exports.register = async (req, res) => {
     const { email, password, otp } = req.body;
 

@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - develop
 
 jobs:
   deploy:
@@ -13,24 +14,29 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Set environment variables
+        shell: powershell
+        run: |
+          if ("${{ github.ref }}" -eq "refs/heads/main") {
+            echo "DEST=C:\Users\Administrator\Desktop\COCPIT BACKEND\cocpit-backend-prod" >> $env:GITHUB_ENV
+            echo "PM2_NAME=cocpit-backend-prod" >> $env:GITHUB_ENV
+          } else {
+            echo "DEST=C:\Users\Administrator\Desktop\COCPIT BACKEND\cocpit-backend-staging" >> $env:GITHUB_ENV
+            echo "PM2_NAME=cocpit-backend-staging" >> $env:GITHUB_ENV
+          }
+
       - name: Sync and Restart PM2
         shell: powershell
         run: |
-          # 1. Define destination path
-          $destPath = "C:\Users\Administrator\Desktop\COCPIT BACKEND\cocpit-backend"
+          $destPath = "${{ env.DEST }}"
           
-          # 2. Sync files (ONLY ONE COMMAND NEEDED)
-          # This mirrors the folder but PROTECTS the .env file from deletion
           robocopy . "$destPath" /MIR /XF .env /XD .git node_modules _work
           
-          # 3. Navigate to Desktop folder
           cd "$destPath"
           
-          # 4. Update dependencies
           npm install --production
           
-          # 5. Restart PM2 with PowerShell-safe logic
-          pm2 reload cocpit-backend --update-env
+          pm2 reload $env:PM2_NAME --update-env
           if (-not $?) {
-              pm2 start src/server.js --name cocpit-backend
+              pm2 start src/server.js --name $env:PM2_NAME
           }
