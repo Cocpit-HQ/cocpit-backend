@@ -1517,3 +1517,48 @@ CREATE TRIGGER update_device_sessions_updated_at
 BEFORE UPDATE ON device_sessions
 FOR EACH ROW
 EXECUTE FUNCTION update_updated_at_column();
+
+-- 21/04/2026 - INTEREST SYSTEM (Production Grade)
+CREATE TABLE interests (
+    interest_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name TEXT NOT NULL,
+    slug TEXT NOT NULL UNIQUE,      
+    category TEXT,                 
+    icon_url TEXT,                 
+    usage_count INTEGER DEFAULT 0, 
+    is_active BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE UNIQUE INDEX idx_interests_name_lower ON interests(LOWER(name));
+
+CREATE TABLE user_interests (
+    user_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
+    interest_id UUID REFERENCES interests(interest_id) ON DELETE CASCADE,
+    source TEXT NOT NULL CHECK (source IN ('onboarding', 'like', 'view', 'search', 'follow')),
+    score FLOAT DEFAULT 0 CHECK (score >= 0),
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    PRIMARY KEY (user_id, interest_id)
+);
+
+CREATE INDEX idx_ui_user_score ON user_interests(user_id, score DESC);
+CREATE INDEX idx_ui_interest ON user_interests(interest_id);
+
+CREATE TABLE interest_hashtags (
+    interest_id UUID REFERENCES interests(interest_id) ON DELETE CASCADE,
+    hashtag_id UUID REFERENCES hashtags(hashtag_id) ON DELETE CASCADE,
+    created_at TIMESTAMPTZ DEFAULT now(),
+    PRIMARY KEY (interest_id, hashtag_id)
+);
+
+CREATE TRIGGER trg_user_interests_updated
+    BEFORE UPDATE ON user_interests
+    FOR EACH ROW
+    EXECUTE FUNCTION update_updated_at_column();
+
+CREATE TRIGGER trg_interests_updated
+    BEFORE UPDATE ON interests
+    FOR EACH ROW
+    EXECUTE FUNCTION update_updated_at_column();

@@ -133,32 +133,80 @@ exports.saveInterests = async (req, res) => {
     const userId = req.user?.sub;
     const { interests } = req.body;
 
+    const client = await pool.connect();
     try {
         // Validate min 3
         if (!interests || interests.length < 3) {
             return res.status(400).json({ success: false, message: "Minimum 3 interests required" });
         }
 
-        // Update interests, Set onboardingStep = 'SKILLS'
-        // Assuming `interests` array column is handled in the users or related table
-        const result = await pool.query(
-            `UPDATE users 
-             SET interests = $1, 
-                 onboarding_step = 'SKILLS', 
-                 updated_at = NOW() 
-             WHERE user_id = $2
-             RETURNING *`,
-            [interests, userId] // Node pg converts JS arrays into postgres arrays
+        await client.query('BEGIN');
+
+        // 1. Resolve interest IDs from curated list (names or slugs)
+        const interestData = await client.query(
+            `SELECT interest_id, name FROM interests 
+             WHERE (LOWER(name) = ANY(SELECT LOWER(u) FROM UNNEST($1::text[]) u)
+             OR slug = ANY($1::text[]))
+             AND is_active = TRUE`,
+            [interests]
         );
+
+        if (interestData.rowCount < interests.length) {
+            await client.query('ROLLBACK');
+            return res.status(400).json({ 
+                success: false, 
+                message: "Some selected interests are invalid or not found in our curated list." 
+            });
+        }
+
+        const interestIds = interestData.rows.map(r => r.interest_id);
+
+        // 2. Capped Upsert into user_interests (Preserving 'onboarding' as primary source)
+        for (const interestId of interestIds) {
+            await client.query(
+                `INSERT INTO user_interests (user_id, interest_id, source, score)
+                 VALUES ($1, $2, 'onboarding', 5.0)
+                 ON CONFLICT (user_id, interest_id) 
+                 DO UPDATE SET 
+                    score = LEAST(user_interests.score + EXCLUDED.score, 100.0),
+                    updated_at = NOW()`,
+                [userId, interestId]
+            );
+        }
+
+        // 3. Increment usage count for interests
+        await client.query(
+            `UPDATE interests 
+             SET usage_count = usage_count + 1 
+             WHERE interest_id = ANY($1::uuid[])`,
+            [interestIds]
+        );
+
+        // 4. Update onboarding_step in users table
+        await client.query(
+            `UPDATE users 
+             SET onboarding_step = 'SKILLS', 
+                 updated_at = NOW() 
+             WHERE user_id = $1`,
+            [userId]
+        );
+
+        await client.query('COMMIT');
 
         return res.status(200).json({
             success: true,
             message: "Interests saved successfully",
-            data: { interests }
+            data: { 
+                selected_count: interestData.rowCount,
+                interests: interestData.rows.map(r => r.name)
+            }
         });
     } catch (err) {
+        await client.query('ROLLBACK');
         console.error("Save interests error:", err);
         return res.status(500).json({ success: false, message: "Internal server error" });
+    } finally {
+        client.release();
     }
 };
 
