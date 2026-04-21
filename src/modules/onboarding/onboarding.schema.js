@@ -9,8 +9,7 @@ const { z } = require("zod");
 // - skills (array)
 // - onboardingStep (enum: ROLE, DETAILS, INTERESTS, SKILLS)
 // - isOnboardingComplete (boolean, default false)
-
-const allowedRoles = ["student", "working", "freelancer", "open_to_work"];
+const allowedRoles = ["student", "working", "freelancer", "not_working"];
 
 const saveRoleSchema = z.object({
   body: z.object({
@@ -22,54 +21,67 @@ const saveRoleSchema = z.object({
       .trim()
       .min(1, "Role cannot be empty")
       .transform((val) =>
-        val.toLowerCase().replace(/\s+/g, "_") // "Open To Work" → "open_to_work"
+        val.toLowerCase().replace(/\s+/g, "_") // "Not Working" → "not_working"
       )
       .refine((val) => allowedRoles.includes(val), {
         message:
-          "Invalid role. Allowed values: student, working, freelancer, open to work",
+          "Invalid role. Allowed values: student, working, freelancer, not_working",
       }),
   }).strict(), // 🔒 ensures only one field (role) is allowed
 });
 
 const saveDetailsSchema = z.object({
   body: z.object({
-    role: allowedRoles,
-    education: z.array(
-      z.object({
-        school_name: z.string().optional(),
-        degree: z.string().optional(),
-        field_of_study: z.string().optional()
-      }).passthrough()
-    ).optional(),
-    company: z.string().optional(),
-    workRole: z.string().optional(),
+    role: z.enum(["student", "working", "freelancer", "not_working"], {
+      required_error: "Role is required",
+      invalid_type_error: "Role must be one of the allowed roles",
+    }),
+    school_name: z.string().optional(),
+    degree: z.string().optional(),
+    title: z.string().optional(),
+    company_name: z.string().optional(),
+    headline: z.string().optional(),
   }).superRefine((data, ctx) => {
-    if (data.role === "student2") {
-      if (!data.education || data.education.length < 1) {
+    if (data.role === "student" || data.role === "not_working") {
+      if (!data.school_name || data.school_name.trim() === "") {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
-          message: "At least one education entry is required for students",
-          path: ["education"],
+          message: "School name is required",
+          path: ["school_name"],
+        });
+      }
+      if (!data.degree || data.degree.trim() === "") {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Degree is required",
+          path: ["degree"],
         });
       }
     }
 
     if (data.role === "working") {
-      if (!data.company || data.company.trim() === "") {
+      if (!data.title || data.title.trim() === "") {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
-          message: "Company is required for working professionals",
-          path: ["company"],
+          message: "Title is required",
+          path: ["title"],
+        });
+      }
+      if (!data.company_name || data.company_name.trim() === "") {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Company name is required",
+          path: ["company_name"],
         });
       }
     }
 
-    if (["working", "freelancer", "open_to_work"].includes(data.role)) {
-      if (!data.workRole || data.workRole.trim() === "") {
+    if (data.role === "freelancer") {
+      if (!data.headline || data.headline.trim() === "") {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
-          message: "Work role is required",
-          path: ["workRole"],
+          message: "Headline is required",
+          path: ["headline"],
         });
       }
     }
