@@ -22,6 +22,8 @@ const activityRoutes = require("./modules/activity/activity.routes");
 const locationRoutes = require("./modules/location/location.routes");
 const configRoutes = require("./modules/config/config.routes");
 const deviceRoutes = require("./modules/device/device.routes");
+const { optionalAuth } = require("./core/middlewares/auth.middleware");
+const { enforceOnboarding } = require("./core/middlewares/onboarding.middleware");
 
 
 
@@ -84,9 +86,17 @@ app.use((req, res, next) => {
   next();
 });
 
+app.use("/api/auth", authRoutes);
+app.use("/api/onboarding", onboardingRoutes);
+app.use("/api/config", configRoutes);
+
+// Global Onboarding Enforcement for all other /api routes
+// optionalAuth extracts user from token without blocking; enforceOnboarding blocks if onboarding is incomplete
+app.use("/api", optionalAuth);
+app.use("/api", enforceOnboarding);
+
 app.use("/api/dashboard", dashboardRoutes);
 app.use("/api/report", reportRoutes);
-app.use("/api/auth", authRoutes);
 app.use("/api/profile", profileRoutes);
 app.use("/api/jobs", jobRoutes);
 app.use("/api", contentRoutes);
@@ -95,13 +105,11 @@ app.use("/api/events", eventRoutes);
 app.use("/api", socialRoutes);
 app.use("/api/users", userRoutes);
 app.use("/api", uploadRoutes);
-app.use("/api/onboarding", onboardingRoutes);
 app.use("/api", organizationRoutes);
 app.use("/api", messagingRoutes);
 app.use("/api/activity", activityRoutes);
 app.use("/api", shareRoutes);
 app.use("/api", locationRoutes);
-app.use("/api/config", configRoutes);
 app.use("/api/device", deviceRoutes);
 const errorHandler = require("./core/middlewares/error.middleware");
 app.use(errorHandler);

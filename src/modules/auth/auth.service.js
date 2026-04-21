@@ -83,115 +83,49 @@ const getRefreshReplay = async (userId, sessionId, presentedTokenHash) => {
     return getLocalRefreshReplay(key);
 };
 
-const waitForRefreshReplay = async (userId, sessionId, presentedTokenHash, maxAttempts = 12, delayMs = 50) => {
-    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-        const replay = await getRefreshReplay(userId, sessionId, presentedTokenHash);
-        if (replay) return replay;
-        if (attempt < maxAttempts - 1) {
-            await wait(delayMs);
-        }
+const _createDbSession = async (client, userId, sessionId, hashedRefresh, userAgent, ipAddress) => {
+    const activeSessions = await authRepo.getActiveSessions(userId);
+    if (activeSessions.length >= MAX_DEVICES) {
+        await authRepo.deleteSession(activeSessions[0].session_id);
     }
-    return null;
+    await authRepo.insertSession(sessionId, userId, hashedRefresh, userAgent, ipAddress);
 };
 
-// ─── Registration ──────────────────────────────────────────────────────────────
-
-const registerUser = async ({ email, password }) => {
-    const normalizedEmail = email.toLowerCase();
-
-    const client = await pool.connect();
-
-    try {
-        await client.query("BEGIN");
-
-        const exists = await authRepo.checkEmailExists(normalizedEmail, client);
-        if (exists) {
-            await client.query("ROLLBACK");
-            return { error: { status: 409, message: "Email already registered" } };
-        }
-
-        const passwordHash = await hashPassword(password);
-
-        const user = await authRepo.createUser(
-            normalizedEmail,
-            passwordHash,
-            "",
-            false,
-            client
-        );
-
-        await authRepo.createProfile(user.user_id, client);
-
-        await client.query("COMMIT");
-
-        return { user };
-
-    } catch (err) {
-        await client.query("ROLLBACK");
-        console.error("Register transaction failed:", err);
-        return { error: { status: 500, message: "Registration failed" } };
-    } finally {
-        client.release();
-    }
-};
-
-// ─── Login ─────────────────────────────────────────────────────────────────────
-
-const loginUser = async ({ email, password, userAgent, ipAddress }) => {
-    const normalizedEmail = email.toLowerCase();
+const initializeUserSession = async (user, userAgent, ipAddress) => {
     const sessionId = crypto.randomUUID();
+    const userId = user.user_id;
 
-    // 1. Find user
-    const user = await authRepo.findUserByEmail(normalizedEmail);
-    if (!user) {
-        return { error: { status: 401, message: "User not found" } };
-    }
+    // 1. Fetch roles
+    const roles = await authRepo.getUserRoles(userId);
 
-    // 2. Validate password
-    // Guard: Google-only users have NULL password_hash — reject gracefully.
-    if (!user.password_hash) {
-        return { error: { status: 401, message: "This account uses Google Sign-In. Please log in with Google." } };
-    }
-    const isValid = await comparePassword(password, user.password_hash);
-    if (!isValid) {
-        return { error: { status: 401, message: "Invalid credentials" } };
-    }
-
-    // 3. Fetch roles
-    const roles = await authRepo.getUserRoles(user.user_id);
-
-    // 4. Generate tokens
+    // 2. Generate tokens
     const accessToken = signAccessToken({
-        sub: user.user_id,
+        sub: userId,
         sid: sessionId,
         roles,
         onboarding_complete: user.is_onboarding_complete,
     });
 
     const refreshToken = signRefreshToken({
-        sub: user.user_id,
+        sub: userId,
         sid: sessionId,
     });
 
     const hashedRefresh = crypto.createHash("sha256").update(refreshToken).digest("hex");
 
-    // 5. Enforce device limit (transaction)
+    // 3. Enforce device limit and store session in DB
     await authRepo.beginTransaction();
     try {
-        const activeSessions = await authRepo.getActiveSessions(user.user_id);
-        if (activeSessions.length >= MAX_DEVICES) {
-            await authRepo.deleteSession(activeSessions[0].session_id);
-        }
-        await authRepo.insertSession(sessionId, user.user_id, hashedRefresh, userAgent, ipAddress);
+        await _createDbSession(null, userId, sessionId, hashedRefresh, userAgent, ipAddress);
         await authRepo.commitTransaction();
     } catch (err) {
         await authRepo.rollbackTransaction();
         throw err;
     }
 
-    // 6. Warm block cache (async, non-blocking)
+    // 4. Warm block cache (async, non-blocking)
     const BlockModel = require("../../models/block.model");
-    BlockModel.cacheBlocks(user.user_id).catch(e => console.error("Block cache warm-up failed", e));
+    BlockModel.cacheBlocks(userId).catch(e => console.error("Block cache warm-up failed", e));
 
     return {
         accessToken,
@@ -206,6 +140,86 @@ const loginUser = async ({ email, password, userAgent, ipAddress }) => {
             account_name: user.account_name,
         },
     };
+};
+
+const waitForRefreshReplay = async (userId, sessionId, presentedTokenHash, maxAttempts = 12, delayMs = 50) => {
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+        const replay = await getRefreshReplay(userId, sessionId, presentedTokenHash);
+        if (replay) return replay;
+        if (attempt < maxAttempts - 1) {
+            await wait(delayMs);
+        }
+    }
+    return null;
+};
+
+// ─── Registration ──────────────────────────────────────────────────────────────
+
+const registerUser = async ({ email, password, userAgent, ipAddress }) => {
+    const normalizedEmail = email.toLowerCase();
+    const client = await pool.connect();
+
+    try {
+        await client.query("BEGIN");
+
+        const exists = await authRepo.checkEmailExists(normalizedEmail, client);
+        if (exists) {
+            await client.query("ROLLBACK");
+            return { error: { status: 409, message: "Email already registered" } };
+        }
+
+        const passwordHash = await hashPassword(password);
+
+        let user = await authRepo.createUser(
+            normalizedEmail,
+            passwordHash,
+            "",
+            false,
+            client
+        );
+
+        await authRepo.createProfile(user.user_id, client);
+
+        await client.query("COMMIT");
+
+        // Auto-login: Initialize session after successful user/profile creation
+        // We use the full user object (refetched or correctly populated)
+        const fullUser = await authRepo.findUserByEmail(normalizedEmail);
+        const session = await initializeUserSession(fullUser, userAgent, ipAddress);
+
+        return session;
+
+    } catch (err) {
+        await client.query("ROLLBACK");
+        console.error("Register transaction failed:", err);
+        return { error: { status: 500, message: "Registration failed" } };
+    } finally {
+        client.release();
+    }
+};
+
+// ─── Login ─────────────────────────────────────────────────────────────────────
+
+const loginUser = async ({ email, password, userAgent, ipAddress }) => {
+    const normalizedEmail = email.toLowerCase();
+
+    // 1. Find user
+    const user = await authRepo.findUserByEmail(normalizedEmail);
+    if (!user) {
+        return { error: { status: 401, message: "User not found" } };
+    }
+
+    // 2. Validate password
+    if (!user.password_hash) {
+        return { error: { status: 401, message: "This account uses Google Sign-In. Please log in with Google." } };
+    }
+    const isValid = await comparePassword(password, user.password_hash);
+    if (!isValid) {
+        return { error: { status: 401, message: "Invalid credentials" } };
+    }
+
+    // 3. Initialize session (Shared logic)
+    return initializeUserSession(user, userAgent, ipAddress);
 };
 
 // ─── Refresh Token ─────────────────────────────────────────────────────────────
@@ -458,6 +472,7 @@ const verifyPasswordForAction = async (userId, password) => {
 module.exports = {
     registerUser,
     loginUser,
+    initializeUserSession,
     googleLogin,
     refreshTokens,
     logoutUser,

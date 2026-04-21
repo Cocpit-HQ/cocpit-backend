@@ -1,4 +1,6 @@
 const pool = require("../../core/db/pool");
+const { signAccessToken } = require("../../core/utils/jwt");
+const authRepo = require("./auth.repository");
 
 exports.checkAccountName = async (req, res) => {
   const { account_name } = req.query;
@@ -21,6 +23,7 @@ exports.completeOnboarding = async (req, res) => {
   const { account_name, location_id, full_name, finish } = req.body;
   const shouldFinish = finish === "true" || finish === true;
   const userId = req.user.sub;
+  const sessionId = req.user.sid; // Keep the same session ID
 
   try {
     // 1. Fetch current user data
@@ -34,6 +37,14 @@ exports.completeOnboarding = async (req, res) => {
     }
 
     const currentUser = userResult.rows[0];
+
+    // Misuse Protection: If onboarding is already finished and they try to finish again, block or ignore
+    if (currentUser.is_onboarding_complete && shouldFinish) {
+      return res.status(400).json({ 
+        message: "Onboarding already completed",
+        code: "ONBOARDING_ALREADY_FINISHED" 
+      });
+    }
 
     // 2. Avatar logic: Use new file if uploaded, otherwise keep existing
     let finalAvatarUrl = currentUser.avatar_url;
@@ -82,8 +93,21 @@ exports.completeOnboarding = async (req, res) => {
       [account_name || null, finalAvatarUrl || null, locationName || null, finalLocationId || null, full_name || null, shouldFinish, userId]
     );
 
+    // 6. If finishing, generate a new accessToken with onboarding_complete: true
+    let newToken = null;
+    if (shouldFinish) {
+      const roles = await authRepo.getUserRoles(userId);
+      newToken = signAccessToken({
+        sub: userId,
+        sid: sessionId, // Consistency: Use same session ID
+        roles,
+        onboarding_complete: true
+      });
+    }
+
     return res.status(200).json({
-      message: "Onboarding updated successfully",
+      message: shouldFinish ? "Onboarding completed successfully" : "Onboarding updated successfully",
+      accessToken: newToken, // Return new token only on finish
       user: {
         account_name: account_name || currentUser.existing_account_name,
         avatar_url: finalAvatarUrl,
