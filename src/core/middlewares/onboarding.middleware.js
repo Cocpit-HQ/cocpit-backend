@@ -13,10 +13,13 @@ exports.enforceOnboarding = async (req, res, next) => {
     "/api/onboarding",
     "/api/device",
     "/api/config",
-    "/uploads", // Allow access to static files (e.g., for seeing the avatar being uploaded)
+    "/uploads",
+    "/api/location",
+    "/api/profile/skills",
+    "/api/profile/interest" // Allow access to static files (e.g., for seeing the avatar being uploaded)
   ];
 
-  const isWhitelisted = whitelistedPaths.some((path) => 
+  const isWhitelisted = whitelistedPaths.some((path) =>
     req.originalUrl.startsWith(path)
   );
 
