@@ -57,75 +57,54 @@ exports.saveRole = async (req, res) => {
 };
 exports.saveDetails = async (req, res) => {
     const userId = req.user?.sub;
-    const { role, education, company, workRole } = req.body;
+    const { role, school_name, degree, title, company_name, headline } = req.body;
 
+    const allowedRoles = ["student", "working", "freelancer", "not_working"];
+    if (!allowedRoles.includes(role)) {
+        return res.status(400).json({ success: false, message: "Invalid role" });
+    }
+
+    const client = await getClient();
     try {
-        await pool.query('BEGIN'); // Using same query style with transactions when multiple tables
+        await client.query('BEGIN');
 
-        if (role === 'student2') {
-            // Get profile_id for education insertion (Auth module pattern)
-            const profileRes = await pool.query(
-                `SELECT profile_id FROM profiles WHERE user_id = $1`,
-                [userId]
+        const profileId = await getProfileId(userId);
+        if (!profileId) throw new Error("PROFILE_NOT_FOUND");
+
+        if (role === 'student' || role === 'not_working') {
+            await client.query(
+                `INSERT INTO educations (profile_id, school_name, degree)
+                 VALUES ($1, $2, $3)`,
+                [profileId, school_name, degree]
             );
-
-            if (profileRes.rowCount > 0 && education && Array.isArray(education)) {
-                const profileId = profileRes.rows[0].profile_id;
-
-                // Clear existing educations during onboarding flow sync
-                await pool.query(`DELETE FROM educations WHERE profile_id = $1`, [profileId]);
-
-                // Insert new educations
-                for (const edu of education) {
-                    await pool.query(
-                        `INSERT INTO educations (profile_id, school_name, degree, field_of_study)
-                         VALUES ($1, $2, $3, $4)`,
-                        [profileId, edu.school_name || edu.school, edu.degree, edu.field_of_study]
-                    );
-                }
-            }
-
-            // Update step
-            await pool.query(
-                `UPDATE users SET onboarding_step = 'INTERESTS', updated_at = NOW() WHERE user_id = $1`,
-                [userId]
-            );
-
         } else if (role === 'working') {
-            // Update company + workRole for working professional
-            await pool.query(
-                `UPDATE users 
-                 SET company_name = $1, 
-                     job_title = $2, 
-                     onboarding_step = 'INTERESTS', 
-                     updated_at = NOW() 
-                 WHERE user_id = $3`,
-                [company, workRole, userId]
+            await client.query(
+                `INSERT INTO experiences (profile_id, title, company_name)
+                 VALUES ($1, $2, $3)`,
+                [profileId, title, company_name]
             );
-
-        } else if (role === 'freelancer' || role === 'open_to_work') {
-            // Update workRole for freelancer / open to work
-            await pool.query(
+        } else if (role === 'freelancer') {
+            await client.query(
                 `UPDATE users 
-                 SET job_title = $1, 
-                     onboarding_step = 'INTERESTS', 
-                     updated_at = NOW() 
+                 SET headline = $1 
                  WHERE user_id = $2`,
-                [workRole, userId]
+                [headline, userId]
             );
         }
 
-        await pool.query('COMMIT');
+        await client.query('COMMIT');
 
         return res.status(200).json({
             success: true,
-            message: "Details saved successfully",
-            data: { role, education, company, workRole }
+            message: "Details saved successfully"
         });
     } catch (err) {
-        await pool.query('ROLLBACK');
+        await client.query('ROLLBACK');
+        if (err.message === "PROFILE_NOT_FOUND") return res.status(404).json({ success: false, message: "Profile not found" });
         console.error("Save details error:", err);
         return res.status(500).json({ success: false, message: "Internal server error" });
+    } finally {
+        client.release();
     }
 };
 
@@ -303,7 +282,11 @@ exports.completeOnboarding = async (req, res) => {
 
 exports.updateProfile = async (req, res) => {
     const userId = req.user?.sub;
-    const { account_name, full_name, avatar_url } = req.body;
+    let { account_name, full_name, avatar_url } = req.body;
+
+    if (req.files && req.files.length > 0) {
+        avatar_url = req.files[0].path.replace(/\\/g, "/");
+    }
 
     // Validate account_name if present
     if (account_name !== undefined && (!account_name || String(account_name).trim() === "")) {

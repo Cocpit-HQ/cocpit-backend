@@ -13,13 +13,14 @@ const {
     updateProfileSchema,
     updateLocationSchema
 } = require("./onboarding.schema");
+const { uploadAvatar } = require("../../core/middlewares/upload.middleware");
 
 // Multi-step onboarding routes
 router.get("/check-account-name", requireAuth, onboardingController.checkAccountName);
 router.patch("/role", requireAuth, validate(saveRoleSchema), onboardingController.saveRole);
 router.patch("/interests", requireAuth, validate(saveInterestsSchema), onboardingController.saveInterests);
 router.patch("/skills", requireAuth, validate(saveSkillsSchema), onboardingController.saveSkills);
-router.patch("/profile", requireAuth, validate(updateProfileSchema), onboardingController.updateProfile);
+router.patch("/profile", requireAuth, uploadAvatar.single("avatar"), validate(updateProfileSchema), onboardingController.updateProfile);
 router.patch("/location", requireAuth, validate(updateLocationSchema), onboardingController.updateLocation);
 router.post("/complete", requireAuth, onboardingController.completeOnboarding);
 
