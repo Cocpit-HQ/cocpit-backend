@@ -4,6 +4,16 @@
  */
 const pool = require("../../core/db/pool");
 
+const ONBOARDING_STEPS = {
+    ROLE: "ROLE",
+    DETAILS: "DETAILS",
+    INTERESTS: "INTERESTS",
+    SKILLS: "SKILLS",
+    PROFILE: "PROFILE",
+    LOCATION: "LOCATION",
+    COMPLETE: "COMPLETE",
+};
+
 const getClient = async () => pool.connect();
 
 exports.saveRole = async (req, res) => {
@@ -41,12 +51,17 @@ exports.saveRole = async (req, res) => {
             [userId, roleId]
         );
 
+        await client.query(
+            `UPDATE users SET onboarding_step = $1, updated_at = NOW() WHERE user_id = $2`,
+            [ONBOARDING_STEPS.DETAILS, userId]
+        );
+
         await client.query('COMMIT');
 
         return res.status(200).json({
             success: true,
             message: "Role saved successfully",
-            data: {}
+            data: { next_step: ONBOARDING_STEPS.DETAILS }
         });
 
     } catch (err) {
@@ -91,11 +106,17 @@ exports.saveDetails = async (req, res) => {
             );
         }
 
+        await client.query(
+            `UPDATE users SET onboarding_step = $1, updated_at = NOW() WHERE user_id = $2`,
+            [ONBOARDING_STEPS.INTERESTS, userId]
+        );
+
         await client.query('COMMIT');
 
         return res.status(200).json({
             success: true,
-            message: "Details saved successfully"
+            message: "Details saved successfully",
+            data: { next_step: ONBOARDING_STEPS.INTERESTS }
         });
     } catch (err) {
         await client.query('ROLLBACK');
@@ -163,10 +184,10 @@ exports.saveInterests = async (req, res) => {
         // 4. Update onboarding_step in users table
         await client.query(
             `UPDATE users 
-             SET onboarding_step = 'SKILLS', 
+             SET onboarding_step = $1, 
                  updated_at = NOW() 
-             WHERE user_id = $1`,
-            [userId]
+             WHERE user_id = $2`,
+            [ONBOARDING_STEPS.SKILLS, userId]
         );
 
         await client.query('COMMIT');
@@ -176,7 +197,8 @@ exports.saveInterests = async (req, res) => {
             message: "Interests saved successfully",
             data: { 
                 selected_count: interestData.rowCount,
-                interests: interestData.rows.map(r => r.name)
+                interests: interestData.rows.map(r => r.name),
+                next_step: ONBOARDING_STEPS.SKILLS
             }
         });
     } catch (err) {
@@ -226,11 +248,17 @@ exports.saveSkills = async (req, res) => {
             );
         }
 
+        await client.query(
+            `UPDATE users SET onboarding_step = $1, updated_at = NOW() WHERE user_id = $2`,
+            [ONBOARDING_STEPS.PROFILE, req.user?.sub]
+        );
+
         await client.query("COMMIT");
 
         res.status(201).json({
             success: true,
             message: "Skills updated successfully",
+            data: { next_step: ONBOARDING_STEPS.PROFILE }
         });
     } catch (err) {
         await client.query("ROLLBACK");
@@ -313,10 +341,15 @@ exports.updateProfile = async (req, res) => {
             return res.status(404).json({ success: false, message: "User not found" });
         }
 
+        await pool.query(
+            `UPDATE users SET onboarding_step = $1 WHERE user_id = $2`,
+            [ONBOARDING_STEPS.LOCATION, userId]
+        );
+
         return res.status(200).json({
             success: true,
             message: "Profile updated successfully",
-            data: result.rows[0]
+            data: { ...result.rows[0], next_step: ONBOARDING_STEPS.LOCATION }
         });
 
     } catch (err) {
@@ -359,10 +392,15 @@ exports.updateLocation = async (req, res) => {
             return res.status(404).json({ success: false, message: "User not found" });
         }
 
+        await pool.query(
+            `UPDATE users SET onboarding_step = $1 WHERE user_id = $2`,
+            [ONBOARDING_STEPS.COMPLETE, userId]
+        );
+
         return res.status(200).json({
             success: true,
             message: "Location updated successfully",
-            data: result.rows[0]
+            data: { ...result.rows[0], next_step: ONBOARDING_STEPS.COMPLETE }
         });
     } catch (err) {
         console.error("Update location error:", err);
