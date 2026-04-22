@@ -107,6 +107,7 @@ exports.refreshToken = async (req, res) => {
 
         return res.status(200).json({
             accessToken: result.accessToken,
+            refreshToken: result.refreshToken,
         });
     } catch (err) {
         console.error("Refresh token error:", err);
