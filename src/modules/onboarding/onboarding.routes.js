@@ -14,6 +14,17 @@ const {
     updateLocationSchema
 } = require("./onboarding.schema");
 const { uploadAvatar } = require("../../core/middlewares/upload.middleware");
+const { createRateLimit } = require("../../core/middlewares/rateLimit.middleware");
+
+// Rate limiter for onboarding steps to prevent spamming
+const onboardingLimiter = createRateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 50,
+    message: "Too many onboarding attempts, please try again later."
+});
+
+// Apply rate limiting to all onboarding routes
+router.use(onboardingLimiter);
 
 // Multi-step onboarding routes
 router.get("/check-account-name", requireAuth, onboardingController.checkAccountName);
