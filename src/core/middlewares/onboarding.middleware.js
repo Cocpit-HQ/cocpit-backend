@@ -14,35 +14,6 @@ const HARD_BLOCKED_ROUTES = [
   "/api/social"
 ];
 
-/**
- * Controlled access rules for users in the onboarding phase.
- * Each rule defines a path, allowed method, and matching strategy.
- */
-const ONBOARDING_ALLOWED_ROUTES = [
-  // Auth & Identity
-  { path: "/api/auth/me", method: "GET", exact: true },
-  { path: "/api/auth/logout", method: "POST", exact: true },
-  { path: "/api/auth/actor-context", method: "GET", exact: true },
-  
-  // Onboarding Core
-  { path: "/api/onboarding", method: "GET", prefix: true },
-  { path: "/api/onboarding", method: "POST", prefix: true },
-  { path: "/api/onboarding", method: "PATCH", prefix: true },
-  
-  // Profile Self-Service (Limited)
-  { path: "/api/profile/me", method: "GET", exact: true },
-  { path: "/api/profile/identity", method: "GET", exact: true },
-  { path: "/api/profile/avatar", method: "GET", exact: true },
-  { path: "/api/profile/skills", method: "GET", exact: true },
-  { path: "/api/profile/interests", method: "GET", exact: true },
-  { path: "/api/profile/educations", method: "GET", exact: true },
-  { path: "/api/profile/companies", method: "GET", exact: true },
-  
-  // Metadata & Config
-  { path: "/api/location", method: "GET", prefix: true },
-  { path: "/api/config", method: "GET", exact: true },
-  { path: "/uploads", method: "GET", prefix: true }
-];
 
 /**
  * Middleware to enforce onboarding completion.
@@ -57,25 +28,13 @@ exports.enforceOnboarding = async (req, res, next) => {
     return next();
   }
 
-  // 2. Structured Route Matching
-  const isAllowed = ONBOARDING_ALLOWED_ROUTES.some((route) => {
-    const pathMatch = route.exact
-      ? path === route.path
-      : route.prefix
-      ? path.startsWith(route.path + "/") || path === route.path
-      : false;
-
-    const methodMatch = route.method === "ANY" || route.method === method;
-
-    return pathMatch && methodMatch;
-  });
-
-  // 3. Explicit Hard Block Check (Safety Layer)
+  // 2. Explicit Hard Block Check (Safety Layer)
   const isHardBlocked = HARD_BLOCKED_ROUTES.some((blockedPath) =>
     path.startsWith(blockedPath)
   );
 
-  if (isAllowed && !isHardBlocked) {
+  // 3. If it's NOT a hard blocked route, allow free access for flexibility during onboarding
+  if (!isHardBlocked) {
     return next();
   }
 
@@ -100,7 +59,7 @@ exports.enforceOnboarding = async (req, res, next) => {
 
     if (!is_onboarding_complete) {
       console.warn(`[Onboarding] Access denied for user ${req.user.sub} to ${method} ${path}`);
-      
+
       return res.status(403).json({
         code: "ONBOARDING_REQUIRED",
         message: "Please complete your onboarding to access this feature.",
