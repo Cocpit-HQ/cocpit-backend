@@ -21,17 +21,17 @@ exports.saveRole = async (req, res) => {
     try {
         await client.query('BEGIN');
 
-        let roleRes = await client.query(`SELECT id FROM roles WHERE role_name = $1`, [role]);
+        let roleRes = await client.query(`SELECT role_id FROM roles WHERE role_name = $1`, [role]);
         let roleId;
 
         if (roleRes.rowCount > 0) {
-            roleId = roleRes.rows[0].id;
+            roleId = roleRes.rows[0].role_id;
         } else {
             const insertRoleRes = await client.query(
-                `INSERT INTO roles (role_name) VALUES ($1) RETURNING id`,
+                `INSERT INTO roles (role_name) VALUES ($1) RETURNING role_id`,
                 [role]
             );
-            roleId = insertRoleRes.rows[0].id;
+            roleId = insertRoleRes.rows[0].role_id;
         }
 
         await client.query(
