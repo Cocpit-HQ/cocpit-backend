@@ -17,49 +17,55 @@ exports.saveRole = async (req, res) => {
         });
     }
 
+    const client = await getClient();
     try {
-        const query = `
-            WITH role_data AS (
-                SELECT role_id 
-                FROM roles 
-                WHERE role_name = $1
-            ),
-            updated AS (
-                UPDATE user_roles ur
-                SET role_id = rd.role_id,
-                    assigned_at = NOW()
-                FROM role_data rd
-                WHERE ur.user_id = $2
-                RETURNING ur.*
-            )
-            INSERT INTO user_roles (user_id, role_id)
-            SELECT $2, role_id FROM role_data
-            WHERE NOT EXISTS (SELECT 1 FROM updated)
-            RETURNING *;
-        `;
+        await client.query('BEGIN');
 
-        await pool.query(query, [role, userId]);
+        let roleRes = await client.query(`SELECT id FROM roles WHERE role_name = $1`, [role]);
+        let roleId;
 
-        // ✅ If no error → success
+        if (roleRes.rowCount > 0) {
+            roleId = roleRes.rows[0].id;
+        } else {
+            const insertRoleRes = await client.query(
+                `INSERT INTO roles (role_name) VALUES ($1) RETURNING id`,
+                [role]
+            );
+            roleId = insertRoleRes.rows[0].id;
+        }
+
+        await client.query(
+            `INSERT INTO user_roles (user_id, role_id)
+             VALUES ($1, $2)
+             ON CONFLICT DO NOTHING`,
+            [userId, roleId]
+        );
+
+        await client.query('COMMIT');
+
         return res.status(200).json({
             success: true,
-            message: "Role assigned/updated successfully"
+            message: "Role saved successfully",
+            data: {}
         });
 
     } catch (err) {
+        await client.query('ROLLBACK');
         console.error("Save role error:", err);
 
         return res.status(500).json({
             success: false,
-            message: "Failed to assign/update role"
+            message: "Failed to save role"
         });
+    } finally {
+        client.release();
     }
 };
 exports.saveDetails = async (req, res) => {
     const userId = req.user?.sub;
-    const { role, school_name, degree, title, company_name, headline } = req.body;
+    const { role, school_name, degree, title, company_name } = req.body;
 
-    const allowedRoles = ["student", "working", "freelancer", "not_working"];
+    const allowedRoles = ["student", "fresher", "intern", "self_employed", "employed", "unemployed"];
     if (!allowedRoles.includes(role)) {
         return res.status(400).json({ success: false, message: "Invalid role" });
     }
@@ -71,24 +77,17 @@ exports.saveDetails = async (req, res) => {
         const profileId = await getProfileId(userId);
         if (!profileId) throw new Error("PROFILE_NOT_FOUND");
 
-        if (role === 'student' || role === 'not_working') {
+        if (["student", "fresher", "intern"].includes(role)) {
             await client.query(
                 `INSERT INTO educations (profile_id, school_name, degree)
                  VALUES ($1, $2, $3)`,
                 [profileId, school_name, degree]
             );
-        } else if (role === 'working') {
+        } else if (["self_employed", "employed"].includes(role)) {
             await client.query(
                 `INSERT INTO experiences (profile_id, title, company_name)
                  VALUES ($1, $2, $3)`,
                 [profileId, title, company_name]
-            );
-        } else if (role === 'freelancer') {
-            await client.query(
-                `UPDATE users 
-                 SET headline = $1 
-                 WHERE user_id = $2`,
-                [headline, userId]
             );
         }
 
