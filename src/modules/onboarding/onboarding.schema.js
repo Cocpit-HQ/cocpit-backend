@@ -32,8 +32,10 @@ const saveDetailsSchema = z.object({
       required_error: "Role is required",
       invalid_type_error: "Role must be one of the allowed roles",
     }),
-    school_name: z.string().optional(),
+    school_name: z.string().min(3, "School name must be at least 3 characters").trim().optional(),
+    school_org_id: z.string().uuid("Invalid organization ID").nullable().optional(),
     degree: z.string().optional(),
+    field_of_study: z.string().nullable().optional(),
     title: z.string().optional(),
     company_name: z.string().optional(),
   }).superRefine((data, ctx) => {
@@ -80,6 +82,8 @@ const saveInterestsSchema = z.object({
         z.string()
           .trim()                          // removes extra spaces
           .min(1, "Interest cannot be empty") // ❌ prevents "" or "   "
+          .max(50, "Interest cannot exceed 50 characters")
+
       )
       .min(3, "Please select at least 3 interests")
       .max(7, "Please select up to 7 interests"),

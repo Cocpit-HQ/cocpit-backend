@@ -464,23 +464,33 @@ exports.getUserOrganizations = async (req, res) => {
 };
 
 exports.searchOrganizations = async (req, res) => {
-    const { q } = req.query;
+    const { q, entity_type } = req.query;
     if (!q || q.trim().length === 0) {
         return res.json([]);
     }
-    const searchTerm = `%${q.trim()}%`;
+    const rawSearchTerm = q.trim();
+    const searchTerm = `%${rawSearchTerm}%`;
     const limit = parseInt(req.query.limit) || 10;
 
     const client = await pool.connect();
     try {
-        const result = await client.query(
-            `SELECT org_id, name, slug, logo_url, entity_type, location, industry, headline 
+        let queryStr = `
+             SELECT org_id, name, slug, logo_url, entity_type, location, industry, headline,
+                    similarity(name, $1) AS score
              FROM organizations 
-             WHERE (name ILIKE $1 OR slug ILIKE $1) AND is_deleted = FALSE
-             ORDER BY name ASC 
-             LIMIT $2`,
-            [searchTerm, limit]
-        );
+             WHERE (name ILIKE $2 OR slug ILIKE $2) AND is_deleted = FALSE
+        `;
+        const queryParams = [rawSearchTerm, searchTerm];
+
+        if (entity_type) {
+            queryParams.push(entity_type);
+            queryStr += ` AND entity_type = $${queryParams.length}`;
+        }
+
+        queryStr += ` ORDER BY score DESC, name ASC LIMIT $${queryParams.length + 1}`;
+        queryParams.push(limit);
+
+        const result = await client.query(queryStr, queryParams);
         res.json(result.rows);
     } catch (err) {
         console.error("Search organizations error:", err);
