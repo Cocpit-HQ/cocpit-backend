@@ -81,7 +81,8 @@ const saveInterestsSchema = z.object({
           .trim()                          // removes extra spaces
           .min(1, "Interest cannot be empty") // ❌ prevents "" or "   "
       )
-      .min(3, "Please select at least 3 interests"),
+      .min(3, "Please select at least 3 interests")
+      .max(7, "Please select up to 7 interests"),
   }),
 });
 

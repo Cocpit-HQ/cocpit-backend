@@ -134,54 +134,68 @@ exports.saveInterests = async (req, res) => {
 
     const client = await pool.connect();
     try {
-        // Validate min 3
-        if (!interests || interests.length < 3) {
-            return res.status(400).json({ success: false, message: "Minimum 3 interests required" });
+        if (!interests || !Array.isArray(interests) || interests.length < 3 || interests.length > 7) {
+            return res.status(400).json({ success: false, message: "Please select between 3 and 7 interests" });
+        }
+
+        const validInterests = [...new Set(interests.filter(i => typeof i === "string" && i.trim().length > 0).map(i => i.trim()))];
+        if (validInterests.length < 3 || validInterests.length > 7) {
+            return res.status(400).json({ success: false, message: "Please select between 3 and 7 valid unique interests" });
         }
 
         await client.query('BEGIN');
 
-        // 1. Resolve interest IDs from curated list (names or slugs)
+        // 1. Fetch existing interests using single query
+        const normalizedInput = validInterests.map(i => i.toLowerCase());
         const interestData = await client.query(
-            `SELECT interest_id, name FROM interests 
-             WHERE (LOWER(name) = ANY(SELECT LOWER(u) FROM UNNEST($1::text[]) u)
-             OR slug = ANY($1::text[]))
-             AND is_active = TRUE`,
-            [interests]
+            `SELECT interest_id, name FROM interests WHERE LOWER(name) = ANY($1::text[])`,
+            [normalizedInput]
         );
 
-        if (interestData.rowCount < interests.length) {
-            await client.query('ROLLBACK');
-            return res.status(400).json({ 
-                success: false, 
-                message: "Some selected interests are invalid or not found in our curated list." 
-            });
+        let finalInterestIds = interestData.rows.map(r => r.interest_id);
+        const existingNames = new Set(interestData.rows.map(r => r.name.toLowerCase()));
+
+        // 2. Identify missing interests
+        const missingInterests = validInterests.filter(name => !existingNames.has(name.toLowerCase()));
+
+        // 3. Bulk insert missing interests (dynamically creating them)
+        if (missingInterests.length > 0) {
+            const valuesParams = missingInterests.map((_, i) => `($${i * 2 + 1}, $${i * 2 + 2})`).join(", ");
+            const insertParams = [];
+            for (const name of missingInterests) {
+                const slug = name.toLowerCase().trim().replace(/\s+/g, '-');
+                insertParams.push(name, slug);
+            }
+            
+            const insertResult = await client.query(
+                `INSERT INTO interests (name, slug) VALUES ${valuesParams} RETURNING interest_id`,
+                insertParams
+            );
+            finalInterestIds.push(...insertResult.rows.map(r => r.interest_id));
         }
 
-        const interestIds = interestData.rows.map(r => r.interest_id);
-
-        // 2. Capped Upsert into user_interests (Preserving 'onboarding' as primary source)
-        for (const interestId of interestIds) {
+        // 4. Batch mapping assignment into user_interests
+        if (finalInterestIds.length > 0) {
+            const values = finalInterestIds.map((_, i) => `($1, $${i + 2}, 'onboarding', 5.0)`).join(", ");
             await client.query(
                 `INSERT INTO user_interests (user_id, interest_id, source, score)
-                 VALUES ($1, $2, 'onboarding', 5.0)
-                 ON CONFLICT (user_id, interest_id) 
-                 DO UPDATE SET 
+                 VALUES ${values}
+                 ON CONFLICT (user_id, interest_id) DO UPDATE SET 
                     score = LEAST(user_interests.score + EXCLUDED.score, 100.0),
                     updated_at = NOW()`,
-                [userId, interestId]
+                [userId, ...finalInterestIds]
+            );
+
+            // Increment usage count for interests natively
+            await client.query(
+                `UPDATE interests 
+                 SET usage_count = usage_count + 1 
+                 WHERE interest_id = ANY($1::uuid[])`,
+                [finalInterestIds]
             );
         }
 
-        // 3. Increment usage count for interests
-        await client.query(
-            `UPDATE interests 
-             SET usage_count = usage_count + 1 
-             WHERE interest_id = ANY($1::uuid[])`,
-            [interestIds]
-        );
-
-        // 4. Update onboarding_step in users table
+        // Update onboarding_step in users table
         await client.query(
             `UPDATE users 
              SET onboarding_step = $1, 

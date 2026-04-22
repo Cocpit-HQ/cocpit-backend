@@ -7,7 +7,6 @@ const { uploadResume, uploadAvatar, uploadCover } = require("../../core/middlewa
 // Profile
 router.get("/me", requireAuth, profileController.getMyProfile);
 router.put("/me", requireAuth, requireActiveSession, profileController.updateProfile);
-router.get("/:id", requireAuth, profileController.getProfile);
 
 // Avatar
 router.post("/avatar", requireAuth, requireActiveSession, uploadAvatar.single("avatar"), profileController.uploadOrReplaceAvatar);
@@ -38,8 +37,18 @@ router.put("/educations/:id", requireAuth, requireActiveSession, profileControll
 router.delete("/educations/:id", requireAuth, requireActiveSession, profileController.deleteEducation);
 
 // Skills
+router.get("/skills", requireAuth, profileController.getSkills);
 router.post("/skills", requireAuth, requireActiveSession, profileController.addSkills);
 router.put("/skills/:id", requireAuth, requireActiveSession, profileController.updateSkill);
 router.delete("/skills/:id", requireAuth, requireActiveSession, profileController.deleteSkill);
+
+// Interests
+router.get("/interests", requireAuth, profileController.getInterests);
+
+// Reference Lists
+router.get("/educations", requireAuth, profileController.getEducationList);
+router.get("/companies", requireAuth, profileController.getCompanyList);
+
+router.get("/:id", requireAuth, profileController.getProfile);
 
 module.exports = router;

@@ -33,6 +33,10 @@ const ONBOARDING_ALLOWED_ROUTES = [
   { path: "/api/profile/me", method: "GET", exact: true },
   { path: "/api/profile/identity", method: "GET", exact: true },
   { path: "/api/profile/avatar", method: "GET", exact: true },
+  { path: "/api/profile/skills", method: "GET", exact: true },
+  { path: "/api/profile/interests", method: "GET", exact: true },
+  { path: "/api/profile/educations", method: "GET", exact: true },
+  { path: "/api/profile/companies", method: "GET", exact: true },
   
   // Metadata & Config
   { path: "/api/location", method: "GET", prefix: true },
