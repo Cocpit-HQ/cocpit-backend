@@ -367,22 +367,22 @@ exports.addSkills = async (req, res) => {
         if (!profileId) throw new Error("PROFILE_NOT_FOUND");
 
         await client.query(`INSERT INTO skills (name) SELECT UNNEST($1::text[]) ON CONFLICT (lower(name)) DO NOTHING RETURNING skill_id, name`, [skillList]);
-        
+
         const { rows: skills } = await client.query(
-            `SELECT skill_id, name FROM skills WHERE lower(name) IN (SELECT lower(s) FROM UNNEST($1::text[]) AS s)`, 
+            `SELECT skill_id, name FROM skills WHERE lower(name) IN (SELECT lower(s) FROM UNNEST($1::text[]) AS s)`,
             [skillList]
         );
 
         if (skills.length > 0) {
             const values = skills.map((s, i) => `($1, $${i + 2})`).join(",");
             await client.query(
-                `INSERT INTO user_skills (profile_id, skill_id) VALUES ${values} ON CONFLICT DO NOTHING`, 
+                `INSERT INTO user_skills (profile_id, skill_id) VALUES ${values} ON CONFLICT DO NOTHING`,
                 [profileId, ...skills.map(s => s.skill_id)]
             );
         }
 
         await client.query("COMMIT");
-        
+
         // Recommendation System Phase 1: Boost affinity safely out of transaction
         try {
             // We need to extract the skill names from what was just added
@@ -394,16 +394,16 @@ exports.addSkills = async (req, res) => {
             }
             if (skillNames.length > 0) {
                 const userId = req.user.userId || req.user.id || req.user.sub || req.body.userId;
-                incrementUserHashtagScore(userId, 5, skillNames, null).catch(() => {});
+                incrementUserHashtagScore(userId, 5, skillNames, null).catch(() => { });
             }
-        } catch(e) {}
+        } catch (e) { }
 
 
         // Fetch ALL skills for this profile to return to frontend
         const allSkills = await profileRepo.getSkills(profileId);
-        res.status(201).json({ 
-            message: "Skills updated successfully", 
-            skills: allSkills 
+        res.status(201).json({
+            message: "Skills updated successfully",
+            skills: allSkills
         });
     } catch (err) {
         await client.query("ROLLBACK");
@@ -466,6 +466,191 @@ exports.deleteSkill = async (req, res) => {
         res.json({ message: "Skill removed successfully", skillId: req.params.id });
     } catch (err) {
         console.error("Delete skill error:", err);
+        res.status(500).json({ message: "Internal server error" });
+    }
+};
+
+// ─── Reference Data (Interests & Skills) ─────────────────────────────────────────
+
+exports.getInterests = async (req, res) => {
+    try {
+        const { page = 1, search = "" } = req.query;
+        const pageNumber = parseInt(page, 10) || 1;
+        const limit = 10;
+        const offset = (pageNumber - 1) * limit;
+
+        let query = "SELECT interest_id AS id, name FROM interests WHERE is_active = true";
+        const params = [];
+
+        if (search) {
+            params.push(`%${search}%`);
+            query += ` AND name ILIKE $${params.length}`;
+        }
+
+        query += ` ORDER BY name ASC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`;
+        params.push(limit, offset);
+
+        const result = await pool.query(query, params);
+
+        res.json(result.rows);
+    } catch (err) {
+        console.error("Get interests error:", err);
+        res.status(500).json({ message: "Internal server error" });
+    }
+};
+
+exports.getSkills = async (req, res) => {
+    try {
+        const { page = 1, search = "" } = req.query;
+        const pageNumber = parseInt(page, 10) || 1;
+        const limit = 10;
+        const offset = (pageNumber - 1) * limit;
+
+        let query = "SELECT skill_id AS id, name FROM skills";
+        const params = [];
+
+        if (search) {
+            params.push(`%${search}%`);
+            query += ` WHERE name ILIKE $${params.length}`;
+        }
+
+        query += ` ORDER BY name ASC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`;
+        params.push(limit, offset);
+
+        const result = await pool.query(query, params);
+
+        res.json(result.rows);
+    } catch (err) {
+        console.error("Get skills error:", err);
+        res.status(500).json({ message: "Internal server error" });
+    }
+};
+
+exports.getEducationList = async (req, res) => {
+    try {
+        const { school_search = "", degree_search = "" } = req.query;
+
+        let schoolQuery = "SELECT school_name FROM educations";
+        let degreeQuery = "SELECT degree FROM educations";
+
+        const schoolParams = [];
+        const degreeParams = [];
+
+        // 🎯 School filter
+        if (school_search) {
+            schoolParams.push(`%${school_search}%`);
+            schoolQuery += ` WHERE LOWER(school_name) LIKE LOWER($1)`;
+        } else {
+            schoolQuery += " LIMIT 50";
+        }
+
+        // 🎯 Degree filter
+        if (degree_search) {
+            degreeParams.push(`%${degree_search}%`);
+            degreeQuery += ` WHERE LOWER(degree) LIKE LOWER($1)`;
+        } else {
+            degreeQuery += " LIMIT 50";
+        }
+
+        // 🔥 Run both queries separately
+        const [schoolResult, degreeResult] = await Promise.all([
+            pool.query(schoolQuery, schoolParams),
+            pool.query(degreeQuery, degreeParams),
+        ]);
+
+        // 🔥 Deduplication
+        const uniqueSchools = new Map();
+        const uniqueDegrees = new Map();
+
+        schoolResult.rows.forEach(row => {
+            if (row.school_name) {
+                const key = row.school_name.toLowerCase().trim();
+                if (!uniqueSchools.has(key)) {
+                    uniqueSchools.set(key, row.school_name);
+                }
+            }
+        });
+
+        degreeResult.rows.forEach(row => {
+            if (row.degree) {
+                const key = row.degree.toLowerCase().trim();
+                if (!uniqueDegrees.has(key)) {
+                    uniqueDegrees.set(key, row.degree);
+                }
+            }
+        });
+
+        return res.json({
+            degrees: Array.from(uniqueDegrees.values()),
+            school_names: Array.from(uniqueSchools.values()),
+        });
+
+    } catch (err) {
+        console.error("Get education list error:", err);
+        res.status(500).json({ message: "Internal server error" });
+    }
+};
+exports.getCompanyList = async (req, res) => {
+    try {
+        const { company_search = "", title_search = "" } = req.query;
+
+        let companyQuery = "SELECT company_name FROM experiences";
+        let titleQuery = "SELECT title FROM experiences";
+
+        const companyParams = [];
+        const titleParams = [];
+
+        // 🎯 Company filter
+        if (company_search) {
+            companyParams.push(`%${company_search}%`);
+            companyQuery += ` WHERE LOWER(company_name) LIKE LOWER($1)`;
+        } else {
+            companyQuery += " LIMIT 50";
+        }
+
+        // 🎯 Title filter
+        if (title_search) {
+            titleParams.push(`%${title_search}%`);
+            titleQuery += ` WHERE LOWER(title) LIKE LOWER($1)`;
+        } else {
+            titleQuery += " LIMIT 50";
+        }
+
+        // 🔥 Run both queries separately
+        const [companyResult, titleResult] = await Promise.all([
+            pool.query(companyQuery, companyParams),
+            pool.query(titleQuery, titleParams),
+        ]);
+
+        // 🔥 Deduplication
+        const uniqueCompanies = new Map();
+        const uniqueTitles = new Map();
+
+        companyResult.rows.forEach(row => {
+            if (row.company_name) {
+                const key = row.company_name.toLowerCase().trim();
+                if (!uniqueCompanies.has(key)) {
+                    uniqueCompanies.set(key, row.company_name);
+                }
+            }
+        });
+
+        titleResult.rows.forEach(row => {
+            if (row.title) {
+                const key = row.title.toLowerCase().trim();
+                if (!uniqueTitles.has(key)) {
+                    uniqueTitles.set(key, row.title);
+                }
+            }
+        });
+
+        return res.json({
+            titles: Array.from(uniqueTitles.values()),
+            company_names: Array.from(uniqueCompanies.values())
+        });
+
+    } catch (err) {
+        console.error("Get company list error:", err);
         res.status(500).json({ message: "Internal server error" });
     }
 };
