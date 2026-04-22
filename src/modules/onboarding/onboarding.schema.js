@@ -9,7 +9,7 @@ const { z } = require("zod");
 // - skills (array)
 // - onboardingStep (enum: ROLE, DETAILS, INTERESTS, SKILLS)
 // - isOnboardingComplete (boolean, default false)
-const allowedRoles = ["student", "working", "freelancer", "not_working"];
+const allowedRoles = ["student", "fresher", "intern", "self_employed", "employed", "unemployed"];
 
 const saveRoleSchema = z.object({
   body: z.object({
@@ -22,17 +22,13 @@ const saveRoleSchema = z.object({
       .min(1, "Role cannot be empty")
       .transform((val) =>
         val.toLowerCase().replace(/\s+/g, "_") // "Not Working" → "not_working"
-      )
-      .refine((val) => allowedRoles.includes(val), {
-        message:
-          "Invalid role. Allowed values: student, working, freelancer, not_working",
-      }),
+      ),
   }).strict(), // 🔒 ensures only one field (role) is allowed
 });
 
 const saveDetailsSchema = z.object({
   body: z.object({
-    role: z.enum(["student", "working", "freelancer", "not_working"], {
+    role: z.enum(["student", "fresher", "intern", "self_employed", "employed", "unemployed"], {
       required_error: "Role is required",
       invalid_type_error: "Role must be one of the allowed roles",
     }),
@@ -40,9 +36,8 @@ const saveDetailsSchema = z.object({
     degree: z.string().optional(),
     title: z.string().optional(),
     company_name: z.string().optional(),
-    headline: z.string().optional(),
   }).superRefine((data, ctx) => {
-    if (data.role === "student" || data.role === "not_working") {
+    if (["student", "fresher", "intern"].includes(data.role)) {
       if (!data.school_name || data.school_name.trim() === "") {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
@@ -59,7 +54,7 @@ const saveDetailsSchema = z.object({
       }
     }
 
-    if (data.role === "working") {
+    if (["self_employed", "employed"].includes(data.role)) {
       if (!data.title || data.title.trim() === "") {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
@@ -72,16 +67,6 @@ const saveDetailsSchema = z.object({
           code: z.ZodIssueCode.custom,
           message: "Company name is required",
           path: ["company_name"],
-        });
-      }
-    }
-
-    if (data.role === "freelancer") {
-      if (!data.headline || data.headline.trim() === "") {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: "Headline is required",
-          path: ["headline"],
         });
       }
     }
@@ -127,14 +112,6 @@ const updateProfileSchema = z.object({
       })
       .trim()
       .min(1, "Full name cannot be empty"),
-
-    avatar_url: z
-      .string({
-        invalid_type_error: "Avatar URL must be a string",
-      })
-      .trim()
-      .url("Avatar URL must be a valid URL")
-      .optional(), // ✅ optional now
   }),
 });
 
