@@ -202,7 +202,8 @@ exports.getSkills = async (req, res) => {
         const dataRes = await pool.query(
             `SELECT skill_id, name
              FROM skills
-             WHERE ($1::text IS NULL OR name ILIKE $1)
+             WHERE is_active = TRUE
+               AND ($1::text IS NULL OR name ILIKE $1)
                AND ($2::text IS NULL OR LOWER(name) > LOWER($2))
                AND name !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
              ORDER BY LOWER(name) ASC
