@@ -29,6 +29,9 @@ router.use(onboardingLimiter);
 // Multi-step onboarding routes
 router.get("/check-account-name", requireAuth, onboardingController.checkAccountName);
 router.patch("/role", requireAuth, validate(saveRoleSchema), onboardingController.saveRole);
+
+// GET /interests — paginated + searchable master interest list (feeds the onboarding UI)
+router.get("/interests", requireAuth, onboardingController.getInterests);
 router.patch("/interests", requireAuth, validate(saveInterestsSchema), onboardingController.saveInterests);
 router.patch("/skills", requireAuth, validate(saveSkillsSchema), onboardingController.saveSkills);
 router.patch("/profile", requireAuth, uploadAvatar.single("avatar"), validate(updateProfileSchema), onboardingController.updateProfile);
