@@ -78,7 +78,7 @@ exports.saveRole = async (req, res) => {
 };
 exports.saveDetails = async (req, res) => {
     const userId = req.user?.sub;
-    const { role, school_name, degree, title, company_name } = req.body;
+    const { role, school_name, school_org_id, degree, field_of_study, title, company_name } = req.body;
 
     const allowedRoles = ["student", "fresher", "intern", "self_employed", "employed", "unemployed"];
     if (!allowedRoles.includes(role)) {
@@ -94,9 +94,9 @@ exports.saveDetails = async (req, res) => {
 
         if (["student", "fresher", "intern"].includes(role)) {
             await client.query(
-                `INSERT INTO educations (profile_id, school_name, degree)
-                 VALUES ($1, $2, $3)`,
-                [profileId, school_name, degree]
+                `INSERT INTO educations (profile_id, school_name, school_org_id, degree, field_of_study)
+                 VALUES ($1, $2, $3, $4, $5)`,
+                [profileId, school_name, school_org_id || null, degree, field_of_study || null]
             );
         } else if (["self_employed", "employed"].includes(role)) {
             await client.query(
@@ -138,40 +138,60 @@ exports.saveInterests = async (req, res) => {
             return res.status(400).json({ success: false, message: "Please select between 3 and 7 interests" });
         }
 
-        const validInterests = [...new Set(interests.filter(i => typeof i === "string" && i.trim().length > 0).map(i => i.trim()))];
-        if (validInterests.length < 3 || validInterests.length > 7) {
+        const rawInterests = interests
+            .filter(i => typeof i === "string" && i.trim().length > 0)
+            .map(i => i.trim());
+
+        // Deduplicate by slug to prevent same-request collisions
+        const uniqueMap = new Map();
+        for (const name of rawInterests) {
+            const slug = name.toLowerCase().replace(/\s+/g, '-');
+            if (!uniqueMap.has(slug)) {
+                uniqueMap.set(slug, name);
+            }
+        }
+        
+        const deduplicatedNames = Array.from(uniqueMap.values());
+        const deduplicatedSlugs = Array.from(uniqueMap.keys());
+
+        if (deduplicatedNames.length < 3 || deduplicatedNames.length > 7) {
             return res.status(400).json({ success: false, message: "Please select between 3 and 7 valid unique interests" });
         }
 
         await client.query('BEGIN');
 
-        // 1. Fetch existing interests using single query
-        const normalizedInput = validInterests.map(i => i.toLowerCase());
+        // 1. Fetch existing interests using slug (fixes divergent formatting bugs)
         const interestData = await client.query(
-            `SELECT interest_id, name FROM interests WHERE LOWER(name) = ANY($1::text[])`,
-            [normalizedInput]
+            `SELECT interest_id, slug FROM interests WHERE slug = ANY($1::text[])`,
+            [deduplicatedSlugs]
         );
 
         let finalInterestIds = interestData.rows.map(r => r.interest_id);
-        const existingNames = new Set(interestData.rows.map(r => r.name.toLowerCase()));
+        const existingSlugs = new Set(interestData.rows.map(r => r.slug));
 
         // 2. Identify missing interests
-        const missingInterests = validInterests.filter(name => !existingNames.has(name.toLowerCase()));
+        const missingEntries = Array.from(uniqueMap.entries()).filter(([slug]) => !existingSlugs.has(slug));
 
-        // 3. Bulk insert missing interests (dynamically creating them)
-        if (missingInterests.length > 0) {
-            const valuesParams = missingInterests.map((_, i) => `($${i * 2 + 1}, $${i * 2 + 2})`).join(", ");
+        // 3. Bulk insert missing interests safely
+        if (missingEntries.length > 0) {
+            const valuesParams = missingEntries.map((_, i) => `($${i * 2 + 1}, $${i * 2 + 2})`).join(", ");
             const insertParams = [];
-            for (const name of missingInterests) {
-                const slug = name.toLowerCase().trim().replace(/\s+/g, '-');
+            for (const [slug, name] of missingEntries) {
                 insertParams.push(name, slug);
             }
             
-            const insertResult = await client.query(
-                `INSERT INTO interests (name, slug) VALUES ${valuesParams} RETURNING interest_id`,
+            await client.query(
+                `INSERT INTO interests (name, slug) VALUES ${valuesParams} ON CONFLICT (slug) DO NOTHING`,
                 insertParams
             );
-            finalInterestIds.push(...insertResult.rows.map(r => r.interest_id));
+
+            // Re-fetch to get IDs of newly inserted, handling concurrent inserts gracefully
+            const missingSlugs = missingEntries.map(([slug]) => slug);
+            const newInterestData = await client.query(
+                `SELECT interest_id FROM interests WHERE slug = ANY($1::text[])`,
+                [missingSlugs]
+            );
+            finalInterestIds.push(...newInterestData.rows.map(r => r.interest_id));
         }
 
         // 4. Batch mapping assignment into user_interests
@@ -225,7 +245,7 @@ exports.saveInterests = async (req, res) => {
 };
 
 exports.saveSkills = async (req, res) => {
-    const { name } = req.body;
+    const { skills: name } = req.body;
 
     if (!Array.isArray(name) || name.length === 0) {
         return res.status(400).json({ success: false, message: "Name must be a non-empty array" });
@@ -264,7 +284,7 @@ exports.saveSkills = async (req, res) => {
 
         await client.query(
             `UPDATE users SET onboarding_step = $1, updated_at = NOW() WHERE user_id = $2`,
-            [ONBOARDING_STEPS.PROFILE, req.user?.sub]
+            [ONBOARDING_STEPS.COMPLETE, req.user?.sub]
         );
 
         await client.query("COMMIT");
@@ -288,15 +308,13 @@ exports.completeOnboarding = async (req, res) => {
     const userId = req.user?.sub;
 
     try {
-        // Validate all required fields are present
-        const userRes = await pool.query(`SELECT role FROM users WHERE user_id = $1`, [userId]);
+        // Validate user exists before completing
+        const userRes = await pool.query(`SELECT user_id FROM users WHERE user_id = $1`, [userId]);
         if (userRes.rowCount === 0) {
             return res.status(404).json({ success: false, message: "User not found" });
         }
 
-        const role = userRes.rows[0].role;
-        // Proceeding to complete
-        // Update: isOnboardingComplete = true, onboardingStep = NULL (or final state)
+        // Mark onboarding as complete
 
         const result = await pool.query(
             `UPDATE users 
@@ -408,7 +426,7 @@ exports.updateLocation = async (req, res) => {
 
         await pool.query(
             `UPDATE users SET onboarding_step = $1 WHERE user_id = $2`,
-            [ONBOARDING_STEPS.COMPLETE, userId]
+            [ONBOARDING_STEPS.ROLE, userId]
         );
 
         return res.status(200).json({
