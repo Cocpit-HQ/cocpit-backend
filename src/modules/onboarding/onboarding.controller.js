@@ -181,7 +181,7 @@ exports.saveInterests = async (req, res) => {
             }
             
             await client.query(
-                `INSERT INTO interests (name, slug) VALUES ${valuesParams} ON CONFLICT (slug) DO NOTHING`,
+                `INSERT INTO interests (name, slug) VALUES ${valuesParams} ON CONFLICT DO NOTHING`,
                 insertParams
             );
 
@@ -230,8 +230,7 @@ exports.saveInterests = async (req, res) => {
             success: true,
             message: "Interests saved successfully",
             data: { 
-                selected_count: interestData.rowCount,
-                interests: interestData.rows.map(r => r.name),
+                selected_count: finalInterestIds.length,
                 next_step: ONBOARDING_STEPS.SKILLS
             }
         });
@@ -292,7 +291,7 @@ exports.saveSkills = async (req, res) => {
         res.status(201).json({
             success: true,
             message: "Skills updated successfully",
-            data: { next_step: ONBOARDING_STEPS.PROFILE }
+            data: { next_step: ONBOARDING_STEPS.COMPLETE }
         });
     } catch (err) {
         await client.query("ROLLBACK");
