@@ -12,7 +12,7 @@ const eventRoutes = require("./modules/events/event.routes");
 const socialRoutes = require("./modules/social/social.routes");
 const userRoutes = require("./modules/user/user.routes");
 const uploadRoutes = require("./modules/upload/upload.routes");
-const onboardingRoutes = require("./modules/auth/onboarding.routes");
+const onboardingRoutes = require("./modules/onboarding/onboarding.routes");
 const messagingRoutes = require("./modules/messaging/messaging.routes");
 const organizationRoutes = require("./modules/organization/organization.routes");
 const shareRoutes = require("./modules/share/share.routes");
@@ -21,6 +21,9 @@ const reportRoutes = require("./modules/report/report.routes");
 const activityRoutes = require("./modules/activity/activity.routes");
 const locationRoutes = require("./modules/location/location.routes");
 const configRoutes = require("./modules/config/config.routes");
+const deviceRoutes = require("./modules/device/device.routes");
+const { optionalAuth } = require("./core/middlewares/auth.middleware");
+const { enforceOnboarding } = require("./core/middlewares/onboarding.middleware");
 
 
 
@@ -34,12 +37,14 @@ const corsOptions = {
       origin.match(/^http:\/\/192\.168\.\d+\.\d+(:\d+)?$/) ||
       origin.match(/^https:\/\/.*\.ngrok-free\.(app|dev)$/) ||
       origin.match(/^https:\/\/.*\.loca\.lt$/) ||
-      origin === "https://frontend.cocpit.in") {
+      origin === "https://frontend.cocpit.in" ||
+      origin === "https://staging.cocpit.in"
+    ) {
       callback(null, true);
     } else if (process.env.ALLOWED_ORIGINS && process.env.ALLOWED_ORIGINS.includes(origin)) {
       callback(null, true);
     } else {
-      callback(new Error("Not allowed by CORS"));
+      callback(new Error('Not allowed by CORS'));
     }
   },
   methods: "GET,POST,PUT,DELETE,PATCH,OPTIONS",
@@ -81,10 +86,18 @@ app.use((req, res, next) => {
   next();
 });
 
-app.use("/api/dashboard", dashboardRoutes);
-app.use("/api", reportRoutes);
 app.use("/api/auth", authRoutes);
-app.use("/api", profileRoutes);
+app.use("/api/onboarding", onboardingRoutes);
+app.use("/api/config", configRoutes);
+
+// Global Onboarding Enforcement for all other /api routes
+// optionalAuth extracts user from token without blocking; enforceOnboarding blocks if onboarding is incomplete
+app.use("/api", optionalAuth);
+app.use("/api", enforceOnboarding);
+
+app.use("/api/dashboard", dashboardRoutes);
+app.use("/api/report", reportRoutes);
+app.use("/api/profile", profileRoutes);
 app.use("/api/jobs", jobRoutes);
 app.use("/api", contentRoutes);
 app.use("/api", hashtagRoutes);
@@ -92,13 +105,12 @@ app.use("/api/events", eventRoutes);
 app.use("/api", socialRoutes);
 app.use("/api/users", userRoutes);
 app.use("/api", uploadRoutes);
-app.use("/api/onboarding", onboardingRoutes);
 app.use("/api", organizationRoutes);
 app.use("/api", messagingRoutes);
-app.use("/api", activityRoutes);
+app.use("/api/activity", activityRoutes);
 app.use("/api", shareRoutes);
 app.use("/api", locationRoutes);
-app.use("/api/config", configRoutes);
+app.use("/api/device", deviceRoutes);
 const errorHandler = require("./core/middlewares/error.middleware");
 app.use(errorHandler);
 

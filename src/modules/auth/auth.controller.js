@@ -7,9 +7,11 @@ const otpService = require("./otp.service");
 const actorContextService = require("./actorContext.service");
 
 // ─── Register ──────────────────────────────────────────────────────────────────
-
+// changed api as per new figma design
 exports.register = async (req, res) => {
     const { email, password, otp } = req.body;
+    const userAgent = req.headers["user-agent"] || "unknown";
+    const ipAddress = req.ip || "unknown";
 
     try {
         const otpResult = await otpService.verifyOTP(email, otp);
@@ -17,14 +19,22 @@ exports.register = async (req, res) => {
             return res.status(otpResult.error.status).json({ message: otpResult.error.message });
         }
 
-        const result = await authService.registerUser({ email, password });
+        const result = await authService.registerUser({ email, password, userAgent, ipAddress });
 
         if (result.error) {
             return res.status(result.error.status).json({ message: result.error.message });
         }
 
+        // Set refresh token cookie — now enabled for registration too
+        res.cookie("refreshToken", result.refreshToken, {
+            ...authService.COOKIE_OPTIONS,
+            maxAge: 7 * 24 * 60 * 60 * 1000,
+        });
+
         res.status(201).json({
             message: "User registered successfully",
+            accessToken: result.accessToken,
+            refreshToken: result.refreshToken,
             user: result.user,
         });
     } catch (err) {
@@ -97,6 +107,7 @@ exports.refreshToken = async (req, res) => {
 
         return res.status(200).json({
             accessToken: result.accessToken,
+            refreshToken: result.refreshToken,
         });
     } catch (err) {
         console.error("Refresh token error:", err);
