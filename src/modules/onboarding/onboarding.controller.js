@@ -547,11 +547,12 @@ exports.updateLocation = async (req, res) => {
 
 exports.checkAccountName = async (req, res) => {
     const { account_name } = req.query;
+    const userId = req.user?.sub;
 
     try {
         const result = await pool.query(
-            "SELECT 1 FROM users WHERE lower(account_name) = lower($1)",
-            [account_name]
+            "SELECT 1 FROM users WHERE lower(account_name) = lower($1) AND user_id != $2",
+            [account_name, userId]
         );
 
         const available = result.rowCount === 0;
