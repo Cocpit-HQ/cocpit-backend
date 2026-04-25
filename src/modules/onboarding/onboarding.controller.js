@@ -89,8 +89,12 @@ exports.saveDetails = async (req, res) => {
     try {
         await client.query('BEGIN');
 
-        const profileId = await getProfileId(userId);
-        if (!profileId) throw new Error("PROFILE_NOT_FOUND");
+        let profileId = await getProfileId(userId);
+        if (!profileId) {
+            console.log(`[Onboarding] Profile missing for user ${userId}. Auto-creating...`);
+            await authRepo.createProfile(userId, role, client);
+            profileId = await getProfileId(userId);
+        }
 
         if (["student", "fresher", "intern"].includes(role)) {
             await client.query(

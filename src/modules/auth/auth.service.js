@@ -179,7 +179,7 @@ const registerUser = async ({ email, password, userAgent, ipAddress }) => {
             client
         );
 
-        await authRepo.createProfile(user.user_id, client);
+        await authRepo.createProfile(user.user_id, "Student", client);
 
         await client.query("COMMIT");
 

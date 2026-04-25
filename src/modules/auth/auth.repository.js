@@ -42,10 +42,10 @@ const assignRole = async (userId, roleName) => {
     );
 };
 
-const createProfile = async (userId, client) => {
+const createProfile = async (userId, accountType = "Student", client = pool) => {
     await client.query(
-        `INSERT INTO profiles (user_id) VALUES ($1)`,
-        [userId]
+        `INSERT INTO profiles (user_id, account_type) VALUES ($1, $2)`,
+        [userId, accountType]
     );
 };
 

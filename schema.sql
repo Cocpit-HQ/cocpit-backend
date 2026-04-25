@@ -64,7 +64,7 @@ CREATE TABLE profiles (
   profile_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id UUID UNIQUE REFERENCES users(user_id) ON DELETE CASCADE,
   -- Identity Chips
-  account_type TEXT NOT NULL CHECK (account_type IN ('Fresher', 'Employee', 'Student', 'Freelancer', 'Employer')),
+  account_type TEXT NOT NULL CHECK (account_type IN ('Fresher', 'Employee', 'Student', 'Freelancer', 'Employer', 'Admin')),
   open_to TEXT, -- e.g., 'Full-time', 'Freelance'
   availability TEXT, -- e.g., 'Immediate'
   work_preference TEXT, -- e.g., 'Remote', 'Hybrid'
