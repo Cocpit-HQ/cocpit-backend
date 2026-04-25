@@ -118,6 +118,7 @@ const initializeUserSession = async (user, userAgent, ipAddress) => {
     try {
         await _createDbSession(null, userId, sessionId, hashedRefresh, userAgent, ipAddress);
         await authRepo.commitTransaction();
+        console.log(`[Auth] ✅ Session created successfully for user: ${userId}`);
     } catch (err) {
         await authRepo.rollbackTransaction();
         throw err;

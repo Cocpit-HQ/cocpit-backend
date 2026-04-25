@@ -432,9 +432,13 @@ exports.completeOnboarding = async (req, res) => {
 
     try {
         // Validate user exists before completing
-        const userRes = await pool.query(`SELECT user_id FROM users WHERE user_id = $1`, [userId]);
+        const userRes = await pool.query(`SELECT user_id, is_onboarding_complete FROM users WHERE user_id = $1`, [userId]);
         if (userRes.rowCount === 0) {
             return res.status(404).json({ success: false, message: "User not found" });
+        }
+
+        if (userRes.rows[0].is_onboarding_complete) {
+            return res.status(400).json({ success: false, error: "Already completed" });
         }
 
         // Mark onboarding as complete
@@ -449,9 +453,20 @@ exports.completeOnboarding = async (req, res) => {
             [userId]
         );
 
+        console.log(`[Onboarding] ✅ Completed successfully for user: ${userId}`);
+
+        const { signAccessToken } = require("../../core/utils/jwt");
+        const newAccessToken = signAccessToken({
+            sub: userId,
+            sid: req.user?.sid,
+            roles: req.user?.roles || [],
+            onboarding_complete: true,
+        });
+
         return res.status(200).json({
             success: true,
             message: "Onboarding completed successfully",
+            accessToken: newAccessToken,
             data: result.rows[0]
         });
     } catch (err) {

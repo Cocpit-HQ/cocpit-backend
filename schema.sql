@@ -58,6 +58,42 @@ CREATE TABLE refresh_tokens (
   ip_address INET NOT NULL
 );
 
+-- Track devices and link them to specific user sessions and FCM tokens
+CREATE TABLE device_sessions (
+    device_id TEXT NOT NULL,
+    user_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    session_id UUID NOT NULL REFERENCES refresh_tokens(session_id) ON DELETE CASCADE,
+    fcm_token TEXT NOT NULL,
+    device_type VARCHAR(20) DEFAULT 'unknown' CHECK (device_type IN ('android', 'ios', 'web', 'unknown')),
+    is_active BOOLEAN DEFAULT TRUE,
+    last_active_at TIMESTAMPTZ DEFAULT now(),
+    created_at TIMESTAMPTZ DEFAULT now(),
+    updated_at TIMESTAMPTZ DEFAULT now(),
+    
+    CONSTRAINT unique_user_device UNIQUE (user_id, device_id),
+    CONSTRAINT unique_fcm_token UNIQUE (fcm_token)
+);
+
+CREATE INDEX idx_device_sessions_user_id ON device_sessions(user_id);
+CREATE INDEX idx_device_sessions_session_id ON device_sessions(session_id);
+CREATE INDEX idx_device_sessions_fcm_token ON device_sessions(fcm_token);
+CREATE INDEX idx_device_sessions_user_active ON device_sessions(user_id, is_active);
+
+CREATE OR REPLACE FUNCTION update_device_sessions_active_at()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.last_active_at = now();
+    NEW.updated_at = now();
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_device_sessions_active_at
+    BEFORE UPDATE ON device_sessions
+    FOR EACH ROW
+    EXECUTE FUNCTION update_device_sessions_active_at();
+
+
 CREATE TABLE profiles (
   profile_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id UUID UNIQUE REFERENCES users(user_id) ON DELETE CASCADE,
