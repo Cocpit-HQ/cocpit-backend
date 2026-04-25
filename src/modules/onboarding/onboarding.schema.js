@@ -92,7 +92,7 @@ const saveInterestsSchema = z.object({
 
 const saveSkillsSchema = z.object({
   body: z.object({
-    name: z
+    skills: z
       .array(
         z.string().min(1, "Skill cannot be empty") // ❌ prevents ""
       )

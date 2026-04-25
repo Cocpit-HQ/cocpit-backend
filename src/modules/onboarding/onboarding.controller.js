@@ -350,14 +350,14 @@ exports.saveInterests = async (req, res) => {
 };
 
 exports.saveSkills = async (req, res) => {
-    const { skills: name } = req.body;
+    const { skills } = req.body;
 
-    if (!Array.isArray(name) || name.length === 0) {
-        return res.status(400).json({ success: false, message: "Name must be a non-empty array" });
+    if (!Array.isArray(skills) || skills.length === 0) {
+        return res.status(400).json({ success: false, message: "Skills must be a non-empty array" });
     }
 
     const skillList = [...new Set(
-        inputSkills.filter(s => typeof s === "string")
+        skills.filter(s => typeof s === "string")
             .map(s => s.trim().toLowerCase().replace(/\s+/g, " ").split(" ").map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(" "))
             .filter(Boolean)
     )];
