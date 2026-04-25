@@ -3,6 +3,7 @@
  * Scaffolding for multi-step onboarding flow.
  */
 const pool = require("../../core/db/pool");
+const authRepo = require("../auth/auth.repository");
 
 const ONBOARDING_STEPS = {
     ROLE: "ROLE",
