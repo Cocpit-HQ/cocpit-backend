@@ -15,14 +15,14 @@ const upsertDeviceSession = async ({ userId, sessionId, deviceId, fcmToken, plat
 
         // 1. Upsert the new device registration
         const query = `
-            INSERT INTO device_sessions (device_id, user_id, session_id, fcm_token, device_type, is_active)
+            INSERT INTO device_sessions (device_id, user_id, session_id, fcm_token, platform, is_active)
             VALUES ($1, $2, $3, $4, $5, TRUE)
-            ON CONFLICT (user_id, device_id) 
+            ON CONFLICT (device_id, session_id) 
             DO UPDATE SET 
-                session_id = EXCLUDED.session_id,
                 fcm_token = EXCLUDED.fcm_token,
-                is_active = TRUE
-            RETURNING device_id;
+                is_active = TRUE,
+                updated_at = NOW()
+            RETURNING device_session_id;
         `;
         const params = [deviceId, userId, sessionId, fcmToken, platform];
         const result = await client.query(query, params);
