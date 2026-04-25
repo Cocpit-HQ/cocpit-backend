@@ -357,12 +357,14 @@ exports.saveSkills = async (req, res) => {
     }
 
     const skillList = [...new Set(
-        name.filter(s => typeof s === "string")
+        inputSkills.filter(s => typeof s === "string")
             .map(s => s.trim().toLowerCase().replace(/\s+/g, " ").split(" ").map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(" "))
             .filter(Boolean)
     )];
 
-    if (!skillList.length) return res.status(400).json({ success: false, message: "No valid skills provided" });
+    if (skillList.length < 3 || skillList.length > 7) {
+        return res.status(400).json({ success: false, message: "Please select between 3 and 7 valid unique skills" });
+    }
 
     const client = await getClient();
     try {
@@ -371,19 +373,35 @@ exports.saveSkills = async (req, res) => {
         const profileId = await getProfileId(req.user?.sub);
         if (!profileId) throw new Error("PROFILE_NOT_FOUND");
 
-        await client.query(`INSERT INTO skills (name) SELECT UNNEST($1::text[]) ON CONFLICT 
-            (lower(name)) DO NOTHING RETURNING skill_id, name`, [skillList]);
-
-        const { rows: skills } = await client.query(
-            `SELECT skill_id, name FROM skills WHERE lower(name) IN (SELECT lower(s) FROM UNNEST($1::text[]) AS s)`,
-            [skillList]
+        // 1. Fetch existing skills using single query
+        const normalizedInput = skillList.map(s => s.toLowerCase());
+        const skillData = await client.query(
+            `SELECT skill_id, name FROM skills WHERE LOWER(name) = ANY($1::text[])`,
+            [normalizedInput]
         );
 
-        if (skills.length > 0) {
-            const values = skills.map((s, i) => `($1, $${i + 2})`).join(",");
+        let finalSkillIds = skillData.rows.map(r => r.skill_id);
+        const existingNames = new Set(skillData.rows.map(r => r.name.toLowerCase()));
+
+        // 2. Identify missing skills
+        const missingSkills = skillList.filter(name => !existingNames.has(name.toLowerCase()));
+
+        // 3. Bulk insert missing skills (dynamically creating them)
+        if (missingSkills.length > 0) {
+            const valuesParams = missingSkills.map((_, i) => `($${i + 1})`).join(", ");
+            const insertResult = await client.query(
+                `INSERT INTO skills (name) VALUES ${valuesParams} RETURNING skill_id`,
+                missingSkills
+            );
+            finalSkillIds.push(...insertResult.rows.map(r => r.skill_id));
+        }
+
+        // 4. Batch mapping assignment into user_skills
+        if (finalSkillIds.length > 0) {
+            const values = finalSkillIds.map((_, i) => `($1, $${i + 2})`).join(",");
             await client.query(
                 `INSERT INTO user_skills (profile_id, skill_id) VALUES ${values} ON CONFLICT DO NOTHING`,
-                [profileId, ...skills.map(s => s.skill_id)]
+                [profileId, ...finalSkillIds]
             );
         }
 

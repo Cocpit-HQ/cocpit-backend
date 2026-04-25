@@ -92,11 +92,12 @@ const saveInterestsSchema = z.object({
 
 const saveSkillsSchema = z.object({
   body: z.object({
-    skills: z
+    name: z
       .array(
         z.string().min(1, "Skill cannot be empty") // ❌ prevents ""
       )
-      .min(3, "Please select at least 3 skills"), // ✅ minimum 3 skills
+      .min(3, "Please select at least 3 skills")
+      .max(7, "Please select up to 7 skills"),
   }),
 });
 

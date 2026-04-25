@@ -1562,3 +1562,17 @@ CREATE TRIGGER trg_interests_updated
     BEFORE UPDATE ON interests
     FOR EACH ROW
     EXECUTE FUNCTION update_updated_at_column();
+
+-- User Tagging in Posts
+CREATE TABLE IF NOT EXISTS post_tags (
+    tag_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    post_id UUID NOT NULL REFERENCES posts(post_id) ON DELETE CASCADE,
+    tagged_user_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    is_active_tag BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMPTZ DEFAULT now(),
+    updated_at TIMESTAMPTZ DEFAULT now(),
+    CONSTRAINT unique_post_user_tag UNIQUE(post_id, tagged_user_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_post_tags_post_id ON post_tags(post_id);
+CREATE INDEX IF NOT EXISTS idx_post_tags_user_id ON post_tags(tagged_user_id);
