@@ -373,18 +373,11 @@ const googleLogin = async ({ idToken, accountType, userAgent, ipAddress }) => {
             // (the UNIQUE constraint on google_id handles this at DB level too)
             await authRepo.linkGoogleId(user.user_id, googleId);
         } else {
-            // Case 3: Brand new user — accountType is REQUIRED
-            if (!accountType) {
-                return {
-                    error: {
-                        status: 400,
-                        message: "accountType is required for new Google sign-ups",
-                    },
-                };
-            }
+            // Case 3: Brand new user — accountType defaults to Student if not provided
+            const finalAccountType = accountType || "Student";
 
             const validTypes = ["Fresher", "Student", "Employer", "Admin"];
-            if (!validTypes.includes(accountType)) {
+            if (!validTypes.includes(finalAccountType)) {
                 return {
                     error: {
                         status: 400,
@@ -398,12 +391,12 @@ const googleLogin = async ({ idToken, accountType, userAgent, ipAddress }) => {
 
             // Assign role — same logic as standard registration
             let roleName;
-            if (accountType === "Admin") roleName = "Admin";
-            else if (accountType === "Employer") roleName = "Employer";
+            if (finalAccountType === "Admin") roleName = "Admin";
+            else if (finalAccountType === "Employer") roleName = "Employer";
             else roleName = "Student";
 
             await authRepo.assignRole(user.user_id, roleName);
-            await authRepo.createProfile(user.user_id, accountType);
+            await authRepo.createProfile(user.user_id, finalAccountType);
 
             isNewUser = true;
         }
