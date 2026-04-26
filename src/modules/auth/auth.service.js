@@ -179,16 +179,31 @@ const registerUser = async ({ email, password, userAgent, ipAddress }) => {
             client
         );
 
+        // Assign default Student role — inside transaction so it's atomic
+        await authRepo.assignRole(user.user_id, "Student", client);
+
         await authRepo.createProfile(user.user_id, "Student", client);
 
         await client.query("COMMIT");
 
-        // Auto-login: Initialize session after successful user/profile creation
-        // We use the full user object (refetched or correctly populated)
+        // Refetch full user after commit
         const fullUser = await authRepo.findUserByEmail(normalizedEmail);
-        const session = await initializeUserSession(fullUser, userAgent, ipAddress);
 
-        return session;
+        // Auto-login: Initialize session after successful user/profile creation
+        // If session creation fails, user still exists and can log in manually.
+        try {
+            const session = await initializeUserSession(fullUser, userAgent, ipAddress);
+            return session;
+        } catch (sessionErr) {
+            console.error("[Auth] Session creation failed after registration — user can log in manually:", sessionErr);
+            return {
+                error: {
+                    status: 503,
+                    message: "Account created successfully, but we couldn't log you in automatically. Please sign in.",
+                    code: "SESSION_INIT_FAILED",
+                },
+            };
+        }
 
     } catch (err) {
         await client.query("ROLLBACK");

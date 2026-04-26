@@ -34,8 +34,8 @@ const createUser = async (email, passwordHash, fullName = "", is_onboarding_comp
     return result.rows[0];
 };
 
-const assignRole = async (userId, roleName) => {
-    await pool.query(
+const assignRole = async (userId, roleName, client = pool) => {
+    await client.query(
         `INSERT INTO user_roles (user_id, role_id)
      SELECT $1, role_id FROM roles WHERE role_name = $2`,
         [userId, roleName]

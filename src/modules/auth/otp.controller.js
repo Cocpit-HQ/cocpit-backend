@@ -3,10 +3,17 @@ const otpService = require("./otp.service");
 /**
  * Request an OTP
  * POST /api/auth/request-otp
+ *
+ * Body: { email: string, purpose: "signup" | "password_reset" }
+ *
+ * Security notes:
+ *   - "signup" returns 409 if email is already registered (intentional UX: redirect to sign in)
+ *   - "password_reset" always returns 200 regardless of whether the account exists,
+ *     preventing account enumeration attacks. OTP is only sent internally if the account exists.
  */
 const requestOTP = async (req, res, next) => {
     try {
-        const { email } = req.body;
+        const { email, purpose = "signup" } = req.body;
 
         if (!email) {
             return res.status(400).json({
@@ -14,11 +21,25 @@ const requestOTP = async (req, res, next) => {
             });
         }
 
-        // Always return success to prevent email enumeration,
-        // or depending on requirements, validate if user exists first.
-        const result = await otpService.requestOTP(email);
+        const validPurposes = ["signup", "password_reset"];
+        if (!validPurposes.includes(purpose)) {
+            return res.status(400).json({
+                message: "Invalid purpose. Must be 'signup' or 'password_reset'."
+            });
+        }
+
+        const result = await otpService.requestOTP(email, purpose);
 
         if (result && result.error) {
+            // For password_reset, NEVER expose whether the email exists — always return 200
+            // For signup, surface errors (e.g. 409 duplicate) so the user knows to sign in
+            if (purpose === "password_reset") {
+                // Swallow the error — respond generically regardless
+                return res.status(200).json({
+                    success: true,
+                    message: "If an account exists with that email, an OTP has been sent."
+                });
+            }
             return res.status(result.error.status).json({
                 message: result.error.message
             });
@@ -26,10 +47,11 @@ const requestOTP = async (req, res, next) => {
 
         return res.status(200).json({
             success: true,
-            message: "If that email is valid, an OTP has been sent."
+            message: purpose === "password_reset"
+                ? "If an account exists with that email, an OTP has been sent."
+                : "If that email is valid, an OTP has been sent."
         });
     } catch (error) {
-        // If it's a known error, we could catch it, else pass to error handler
         console.error("Error requesting OTP:", error);
         next(error);
     }
