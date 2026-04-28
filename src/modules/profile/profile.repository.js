@@ -29,7 +29,7 @@ const updateUserFields = async (userId, fields) => {
          location = COALESCE($7, location), about_text = COALESCE($8, about_text),
          mobile_number = COALESCE($9, mobile_number),account_name = COALESCE($10, account_name), updated_at = now()
      WHERE user_id = $11`,
-        [full_name, headline, job_title, company_name, school, degree, location, about_text, mobile_number,account_name, userId]
+        [full_name, headline, job_title, company_name, school, degree, location, about_text, mobile_number, account_name, userId]
     );
     await pool.query("COMMIT");
 };
@@ -123,7 +123,26 @@ const getExperiences = async (profileId) => {
         `SELECT * FROM experiences WHERE profile_id = $1 ORDER BY start_date DESC`,
         [profileId]
     );
-    return result.rows;
+
+    return groupByCompany(result.rows);
+};
+
+const groupByCompany = (rows) => {
+    const grouped = {};
+
+    rows.forEach(exp => {
+        if (!grouped[exp.company_name]) {
+            grouped[exp.company_name] = [];
+        }
+        grouped[exp.company_name].push(exp);
+    });
+
+    return Object.keys(grouped).map(company => ({
+        company_name: company,
+        experiences: grouped[company].sort(
+            (a, b) => new Date(b.start_date) - new Date(a.start_date)
+        )
+    }));
 };
 
 const addExperience = async (profileId, data) => {
