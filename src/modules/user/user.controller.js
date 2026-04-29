@@ -198,7 +198,7 @@ exports.getUserProfile = async (req, res) => {
     // 3. Fetch Educations
     const educationsQuery = `
       SELECT
-        education_id, school_name, degree, field_of_study, start_date, end_date, description
+        education_id, school_name, degree, field_of_study, location, start_date, end_date, description
       FROM educations
       WHERE profile_id = (SELECT profile_id FROM profiles WHERE user_id = $1)
       ORDER BY start_date DESC

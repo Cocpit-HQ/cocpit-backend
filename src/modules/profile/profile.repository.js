@@ -198,11 +198,11 @@ const getEducations = async (profileId) => {
 };
 
 const addEducation = async (profileId, data) => {
-    const { school_name, degree, field_of_study, start_date, end_date, description } = data;
+    const { school_name, degree, field_of_study, location, start_date, end_date, description } = data;
     const result = await pool.query(
-        `INSERT INTO educations (profile_id, school_name, degree, field_of_study, start_date, end_date, description)
-     VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
-        [profileId, school_name, degree, field_of_study, start_date, end_date, description]
+        `INSERT INTO educations (profile_id, school_name, degree, field_of_study, location, start_date, end_date, description)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
+        [profileId, school_name, degree, field_of_study, location, start_date, end_date, description]
     );
     return result.rows[0];
 };

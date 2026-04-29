@@ -119,6 +119,7 @@ CREATE TABLE educations (
   school_name TEXT NOT NULL,
   degree TEXT,
   field_of_study TEXT,
+  location TEXT,
   start_date DATE,
   end_date DATE,
   description TEXT,

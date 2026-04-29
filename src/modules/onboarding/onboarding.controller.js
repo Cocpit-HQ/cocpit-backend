@@ -79,7 +79,7 @@ exports.saveRole = async (req, res) => {
 };
 exports.saveDetails = async (req, res) => {
     const userId = req.user?.sub;
-    const { role, school_name, school_org_id, degree, field_of_study, title, company_name } = req.body;
+    const { role, school_name, school_org_id, degree, field_of_study, location, title, company_name } = req.body;
 
     const allowedRoles = ["student", "fresher", "intern", "self_employed", "employed", "unemployed"];
     if (!allowedRoles.includes(role)) {
@@ -99,9 +99,9 @@ exports.saveDetails = async (req, res) => {
 
         if (["student", "fresher", "intern"].includes(role)) {
             await client.query(
-                `INSERT INTO educations (profile_id, school_name, school_org_id, degree, field_of_study)
-                 VALUES ($1, $2, $3, $4, $5)`,
-                [profileId, school_name, school_org_id || null, degree, field_of_study || null]
+                `INSERT INTO educations (profile_id, school_name, school_org_id, degree, field_of_study, location)
+                 VALUES ($1, $2, $3, $4, $5, $6)`,
+                [profileId, school_name, school_org_id || null, degree, field_of_study || null, location || null]
             );
         } else if (["self_employed", "employed"].includes(role)) {
             await client.query(

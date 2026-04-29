@@ -306,7 +306,8 @@ exports.addEducation = async (req, res) => {
     try {
         const profileId = await profileRepo.ensureProfileId(req.user.sub);
         if (!profileId) return res.status(404).json({ message: "Profile not found" });
-        const education = await profileRepo.addEducation(profileId, req.body);
+        const { school_name, degree, field_of_study, location, start_date, end_date, description } = req.body;
+        const education = await profileRepo.addEducation(profileId, { school_name, degree, field_of_study, location, start_date, end_date, description });
         res.status(201).json({ message: "Education added successfully", education });
     } catch (err) {
         console.error("Add education error:", err);
@@ -318,8 +319,8 @@ exports.updateEducation = async (req, res) => {
     try {
         const profileId = await profileRepo.getProfileId(req.user.sub);
         if (!profileId) return res.status(404).json({ message: "Profile not found" });
-        const { school_name, degree, field_of_study, start_date, end_date, description } = req.body;
-        const data = { school_name, degree, field_of_study, start_date, end_date, description };
+        const { school_name, degree, field_of_study, location, start_date, end_date, description } = req.body;
+        const data = { school_name, degree, field_of_study, location, start_date, end_date, description };
         const education = await profileRepo.updateEducation(req.params.id, profileId, data);
         if (!education) return res.status(400).json({ message: "No fields provided to update" });
         res.json({ message: "Education updated successfully", education });
