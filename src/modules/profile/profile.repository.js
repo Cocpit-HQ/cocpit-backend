@@ -146,11 +146,11 @@ const groupByCompany = (rows) => {
 };
 
 const addExperience = async (profileId, data) => {
-    const { title, company_name, location, start_date, end_date, is_current, description } = data;
+    const { title, company_name, location, work_type, work_mode, start_date, end_date, is_current, description } = data;
     const result = await pool.query(
-        `INSERT INTO experiences (profile_id, title, company_name, location, start_date, end_date, is_current, description)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
-        [profileId, title, company_name, location, start_date, end_date, is_current ?? false, description]
+        `INSERT INTO experiences (profile_id, title, company_name, location, work_type, work_mode, start_date, end_date, is_current, description)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,
+        [profileId, title, company_name, location, work_type, work_mode, start_date, end_date, is_current ?? false, description]
     );
     return result.rows[0];
 };
