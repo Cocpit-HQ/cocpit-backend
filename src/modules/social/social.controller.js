@@ -512,19 +512,21 @@ exports.removeCompanyFollower = async (req, res) => {
 
 exports.getFollowers = async (req, res) => {
     const userId = req.params.id;
+    const requesterId = req.user.sub;
     const { search } = req.query;
 
     try {
         let query = `
-            SELECT u.user_id, u.full_name, u.avatar_url, u.headline, f.created_at, 'user' as type
+            SELECT u.user_id, u.full_name, u.avatar_url, u.headline, f.created_at, 'user' as type,
+                   (EXISTS (SELECT 1 FROM followers WHERE follower_id = $2 AND following_id = u.user_id)) as is_following_back
             FROM followers f 
             JOIN users u ON f.follower_id = u.user_id 
             WHERE f.following_id = $1
         `;
-        const params = [userId];
+        const params = [userId, requesterId];
 
         if (search) {
-            query += ` AND (u.full_name ILIKE $2 OR u.headline ILIKE $2)`;
+            query += ` AND (u.full_name ILIKE $3 OR u.headline ILIKE $3)`;
             params.push(`%${search}%`);
         }
 
