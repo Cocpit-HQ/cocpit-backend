@@ -262,7 +262,8 @@ exports.addExperience = async (req, res) => {
     try {
         const profileId = await profileRepo.ensureProfileId(req.user.sub);
         if (!profileId) return res.status(404).json({ message: "Profile not found" });
-        const experience = await profileRepo.addExperience(profileId, req.body);
+        const { title, company_name, location, work_type, work_mode, start_date, end_date, is_current, description } = req.body;
+        const experience = await profileRepo.addExperience(profileId, { title, company_name, location, work_type, work_mode, start_date, end_date, is_current, description });
         res.status(201).json({ message: "Experience added successfully", experience });
     } catch (err) {
         console.error("Add experience error:", err);
@@ -276,8 +277,8 @@ exports.updateExperience = async (req, res) => {
         if (!profileId) return res.status(404).json({ message: "Profile not found" });
         const existing = await profileRepo.findExperience(req.params.id, profileId);
         if (!existing) return res.status(404).json({ message: "Experience not found or not authorized" });
-        const { title, company_name, location, start_date, end_date, is_current, description } = req.body;
-        const data = { title, company_name, location, start_date, end_date, is_current, description };
+        const { title, company_name, location, work_type, work_mode, start_date, end_date, is_current, description } = req.body;
+        const data = { title, company_name, location, work_type, work_mode, start_date, end_date, is_current, description };
         const experience = await profileRepo.updateExperience(req.params.id, profileId, data);
         if (!experience) return res.status(400).json({ message: "No fields provided to update" });
         res.json({ message: "Experience updated successfully", experience });

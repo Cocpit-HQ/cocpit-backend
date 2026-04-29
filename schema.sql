@@ -100,6 +100,8 @@ CREATE TABLE experiences (
   title TEXT NOT NULL,
   company_name TEXT NOT NULL,
   location TEXT,
+  work_type TEXT,
+  work_mode TEXT,
   start_date DATE,
   end_date DATE, -- NULL if current
   is_current BOOLEAN DEFAULT FALSE,
