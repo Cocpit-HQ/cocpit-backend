@@ -11,6 +11,7 @@ router.delete("/users/:id/unfollow", requireAuth, socialController.unfollowUser)
 router.get("/users/:id/followers/count", socialController.getFollowersCount);
 router.get("/users/:id/followers", socialController.getFollowers);
 router.get("/users/:id/following", socialController.getFollowing);
+router.delete("/users/followers/:followerId", requireAuth, socialController.removeFollower);
 
 // Company/Organization Follow
 router.post("/companies/:companyId/follow", requireAuth, socialController.followCompany);
