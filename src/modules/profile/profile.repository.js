@@ -128,21 +128,38 @@ const getExperiences = async (profileId) => {
 };
 
 const groupByCompany = (rows) => {
-    const grouped = {};
+    if (!rows || rows.length === 0) return [];
 
-    rows.forEach(exp => {
-        if (!grouped[exp.company_name]) {
-            grouped[exp.company_name] = [];
+    // Step 1: Sort experiences by latest start_date first
+    const sortedRows = [...rows].sort(
+        (a, b) => new Date(b.start_date) - new Date(a.start_date)
+    );
+
+    const grouped = [];
+    let currentGroup = null;
+
+    for (const exp of sortedRows) {
+        const normalizedCompany = exp.company_name.toLowerCase().trim();
+
+        // Group only if previous consecutive company is same
+        if (
+            currentGroup &&
+            currentGroup.normalized_company === normalizedCompany
+        ) {
+            currentGroup.experiences.push(exp);
+        } else {
+            currentGroup = {
+                company_name: exp.company_name, // preserve original display name
+                normalized_company: normalizedCompany, // internal comparison only
+                experiences: [exp],
+            };
+
+            grouped.push(currentGroup);
         }
-        grouped[exp.company_name].push(exp);
-    });
+    }
 
-    return Object.keys(grouped).map(company => ({
-        company_name: company,
-        experiences: grouped[company].sort(
-            (a, b) => new Date(b.start_date) - new Date(a.start_date)
-        )
-    }));
+    // Remove helper field before returning response
+    return grouped.map(({ normalized_company, ...rest }) => rest);
 };
 
 const addExperience = async (profileId, data) => {
