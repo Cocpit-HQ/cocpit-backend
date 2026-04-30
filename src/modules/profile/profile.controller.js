@@ -61,7 +61,7 @@ exports.getProfile = async (req, res) => {
         res.json({
             user: {
                 id: u.user_id, account_name: u.account_name, name: u.full_name, headline: u.headline, avatar: u.avatar_url,
-                cover_image: u.cover_image_url, location: u.location, about: u.about_text,
+                cover_image: u.cover_image_url, location: u.location, about: u.about_text,website:u.website,
                 email: u.email, mobile_number: u.mobile_number,
                 followers_count: parseInt(counts.followers_count), following_count: parseInt(counts.following_count),
                 connections_count: parseInt(counts.connections_count),
@@ -93,7 +93,7 @@ exports.getMyProfile = async (req, res) => {
 exports.updateProfile = async (req, res) => {
     const userId = req.user.sub;
     const { full_name, headline, job_title, company_name, school, degree, location, about_text, mobile_number,
-        account_name } = req.body;
+        account_name, website } = req.body;
 
     if (full_name && full_name.trim().length < 3) return res.status(400).json({ message: "Full name must be at least 3 characters" });
     if (headline && headline.length > 120) return res.status(400).json({ message: "Headline cannot exceed 120 characters" });
@@ -103,6 +103,7 @@ exports.updateProfile = async (req, res) => {
     if (degree && degree.length > 100) return res.status(400).json({ message: "Degree cannot exceed 100 characters" });
     if (location && location.length > 150) return res.status(400).json({ message: "Location cannot exceed 150 characters" });
     if (about_text && about_text.length > 500) return res.status(400).json({ message: "About section cannot exceed 500 characters" });
+    if (website && website.length > 255) return res.status(400).json({ message: "Website cannot exceed 255 characters" });
     // Validate account_name (username) if provided
     if (account_name !== undefined) {
         const usernameRegex = /^[a-zA-Z0-9_-]{3,30}$/;

@@ -8,7 +8,7 @@ const pool = require("../../core/db/pool");
 
 const getFullProfile = async (userId) => {
     const result = await pool.query(
-        `SELECT u.user_id, u.full_name, u.headline, u.avatar_url, u.cover_image_url, u.location, u.about_text, u.email, u.mobile_number, u.account_name, u.created_at,
+        `SELECT u.user_id, u.full_name, u.headline, u.avatar_url, u.cover_image_url, u.location, u.about_text, u.email, u.mobile_number, u.account_name, u.website, u.created_at,
             p.profile_id, p.open_to, p.availability, p.work_preference, p.profile_views_count, p.search_appearances_count
      FROM users u
      LEFT JOIN profiles p ON u.user_id = p.user_id
@@ -19,7 +19,7 @@ const getFullProfile = async (userId) => {
 };
 
 const updateUserFields = async (userId, fields) => {
-    const { full_name, headline, job_title, company_name, school, degree, location, about_text, mobile_number, account_name } = fields;
+    const { full_name, headline, job_title, company_name, school, degree, location, about_text, mobile_number, account_name, website } = fields;
     await pool.query("BEGIN");
     await pool.query(
         `UPDATE users
@@ -27,9 +27,9 @@ const updateUserFields = async (userId, fields) => {
          job_title = COALESCE($3, job_title), company_name = COALESCE($4, company_name),
          school = COALESCE($5, school), degree = COALESCE($6, degree),
          location = COALESCE($7, location), about_text = COALESCE($8, about_text),
-         mobile_number = COALESCE($9, mobile_number),account_name = COALESCE($10, account_name), updated_at = now()
-     WHERE user_id = $11`,
-        [full_name, headline, job_title, company_name, school, degree, location, about_text, mobile_number, account_name, userId]
+         mobile_number = COALESCE($9, mobile_number),account_name = COALESCE($10, account_name), website = COALESCE($11, website), updated_at = now()
+     WHERE user_id = $12`,
+        [full_name, headline, job_title, company_name, school, degree, location, about_text, mobile_number, account_name, website, userId]
     );
     await pool.query("COMMIT");
 };
