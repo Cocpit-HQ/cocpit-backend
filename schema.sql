@@ -97,17 +97,27 @@ CREATE TABLE user_skills (
 CREATE TABLE experiences (
   experience_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   profile_id UUID REFERENCES profiles(profile_id) ON DELETE CASCADE,
+  org_id UUID REFERENCES organizations(org_id) ON DELETE SET NULL,
   title TEXT NOT NULL,
   company_name TEXT NOT NULL,
   location TEXT,
   work_type TEXT,
   work_mode TEXT,
-  start_date DATE,
+  start_date DATE NOT NULL,
   end_date DATE, -- NULL if current
   is_current BOOLEAN DEFAULT FALSE,
   description TEXT,
-  created_at TIMESTAMPTZ DEFAULT now()
+  created_at TIMESTAMPTZ DEFAULT now(),
+  CONSTRAINT chk_experience_date_range CHECK (end_date IS NULL OR end_date >= start_date)
 );
+
+-- Index for organization linking performance
+CREATE INDEX IF NOT EXISTS idx_experiences_org_id ON experiences(org_id);
+
+-- Enforce only one active role per company at a time
+CREATE UNIQUE INDEX IF NOT EXISTS idx_one_current_role_per_company
+    ON experiences (profile_id, LOWER(TRIM(company_name)))
+    WHERE is_current = true;
 
 CREATE TABLE experience_skills (
   experience_id UUID REFERENCES experiences(experience_id) ON DELETE CASCADE,

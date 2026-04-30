@@ -120,11 +120,23 @@ const ensureProfileId = async (userId, accountType = "Student") => {
 
 const getExperiences = async (profileId) => {
     const result = await pool.query(
+        `SELECT e.*, o.logo_url 
+         FROM experiences e 
+         LEFT JOIN organizations o ON e.org_id = o.org_id 
+         WHERE e.profile_id = $1 
+         ORDER BY e.start_date DESC`,
+        [profileId]
+    );
+    return groupByCompany(result.rows);
+};
+
+/** Returns flat (ungrouped) experience rows for a profile — used for validation checks */
+const getExperiencesByProfileId = async (profileId) => {
+    const result = await pool.query(
         `SELECT * FROM experiences WHERE profile_id = $1 ORDER BY start_date DESC`,
         [profileId]
     );
-
-    return groupByCompany(result.rows);
+    return result.rows;
 };
 
 const groupByCompany = (rows) => {
@@ -139,18 +151,23 @@ const groupByCompany = (rows) => {
     let currentGroup = null;
 
     for (const exp of sortedRows) {
-        const normalizedCompany = exp.company_name.toLowerCase().trim();
+        const normalizedName = exp.company_name.toLowerCase().trim();
+        const orgId = exp.org_id;
 
-        // Group only if previous consecutive company is same
-        if (
-            currentGroup &&
-            currentGroup.normalized_company === normalizedCompany
-        ) {
+        // Group only if previous consecutive company is same (by org_id or by name)
+        const isSameGroup = currentGroup && (
+            (orgId && currentGroup.org_id === orgId) ||
+            (!orgId && !currentGroup.org_id && currentGroup.normalized_company === normalizedName)
+        );
+
+        if (isSameGroup) {
             currentGroup.experiences.push(exp);
         } else {
             currentGroup = {
-                company_name: exp.company_name, // preserve original display name
-                normalized_company: normalizedCompany, // internal comparison only
+                company_name: exp.company_name, 
+                logo_url: exp.logo_url,
+                org_id: orgId,
+                normalized_company: normalizedName,
                 experiences: [exp],
             };
 
@@ -159,15 +176,15 @@ const groupByCompany = (rows) => {
     }
 
     // Remove helper field before returning response
-    return grouped.map(({ normalized_company, ...rest }) => rest);
+    return grouped.map(({ normalized_company, org_id, ...rest }) => rest);
 };
 
 const addExperience = async (profileId, data) => {
-    const { title, company_name, location, work_type, work_mode, start_date, end_date, is_current, description } = data;
+    const { title, company_name, location, work_type, work_mode, start_date, end_date, is_current, description, org_id } = data;
     const result = await pool.query(
-        `INSERT INTO experiences (profile_id, title, company_name, location, work_type, work_mode, start_date, end_date, is_current, description)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,
-        [profileId, title, company_name, location, work_type, work_mode, start_date, end_date, is_current ?? false, description]
+        `INSERT INTO experiences (profile_id, title, company_name, location, work_type, work_mode, start_date, end_date, is_current, description, org_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *`,
+        [profileId, title, company_name, location, work_type, work_mode, start_date, end_date, is_current ?? false, description, org_id || null]
     );
     return result.rows[0];
 };
@@ -345,7 +362,7 @@ module.exports = {
     getIdentity, updateIdentity,
     getResume, getLatestResume, replaceResume, deleteResume,
     getProfileId, ensureProfileId,
-    getExperiences, addExperience, findExperience, updateExperience, deleteExperience,
+    getExperiences, getExperiencesByProfileId, addExperience, findExperience, updateExperience, deleteExperience,
     getEducations, addEducation, updateEducation, deleteEducation,
     getSkills, deleteSkillMapping,
     getCompanyRoles, getSocialCounts, getRelationshipInfo,
