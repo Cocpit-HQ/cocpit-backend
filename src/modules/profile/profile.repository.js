@@ -197,11 +197,17 @@ const findExperience = async (experienceId, profileId) => {
     return result.rows[0] || null;
 };
 
+const ALLOWED_EXPERIENCE_COLUMNS = new Set([
+    'title', 'company_name', 'location', 'work_type', 'work_mode',
+    'start_date', 'end_date', 'is_current', 'description', 'org_id',
+]);
+
 const updateExperience = async (experienceId, profileId, data) => {
     const fields = [];
     const values = [];
     let idx = 1;
     for (const [key, val] of Object.entries(data)) {
+        if (!ALLOWED_EXPERIENCE_COLUMNS.has(key)) continue; // drop unknown / sensitive columns
         if (val !== undefined) { fields.push(`${key} = $${idx++}`); values.push(val); }
     }
     if (fields.length === 0) return null;

@@ -7,6 +7,82 @@ const profileRepo = require("./profile.repository");
 const { checkBlockStatus } = require("../../core/utils/blockCheck");
 const pool = require("../../core/db/pool");
 
+// ─── Experience Validation Helpers ──────────────────────────────────────────────
+
+/**
+ * Returns true if two date ranges overlap.
+ * A null end date means "currently active" — treated as the far future.
+ */
+const FAR_FUTURE = new Date('9999-12-31');
+const datesOverlap = (aStart, aEnd, bStart, bEnd) => {
+    const a1 = new Date(aStart);
+    const a2 = aEnd ? new Date(aEnd) : FAR_FUTURE;
+    const b1 = new Date(bStart);
+    const b2 = bEnd ? new Date(bEnd) : FAR_FUTURE;
+    return a1 < b2 && b1 < a2;
+};
+
+/**
+ * Determines the severity of adding a new is_current role when others already exist.
+ * Uses a work_type × work_mode matrix to decide:
+ *   'block'  — Full-time On-site + Full-time On-site (physically impossible)
+ *   'warn'   — Unusual but plausible (e.g. two full-time roles, >3 simultaneous)
+ *   'allow'  — Normal (freelance, contract, part-time, remote combinations)
+ */
+const getMultipleCurrentSeverity = (activeRoles, newWorkType, newWorkMode) => {
+    if (!activeRoles || activeRoles.length === 0) return 'allow';
+
+    const norm = (s) => (s || '').toLowerCase().replace(/-/g, ' ').trim();
+    const newType = norm(newWorkType);
+    const newMode = norm(newWorkMode);
+
+    // >3 simultaneous present roles — always warn regardless of type
+    if (activeRoles.length >= 3) return 'warn';
+
+    for (const e of activeRoles) {
+        const eType = norm(e.work_type);
+        const eMode = norm(e.work_mode);
+
+        const newIsFullTime = newType === 'full time';
+        const eIsFullTime   = eType  === 'full time';
+        const newIsOnsite   = newMode === 'on site' || newMode === 'onsite';
+        const eIsOnsite     = eMode  === 'on site'  || eMode  === 'onsite';
+
+        // ── BLOCK ───────────────────────────────────────────────────────────────
+        // Two full-time on-site roles simultaneously is physically impossible.
+        if (newIsFullTime && newIsOnsite && eIsFullTime && eIsOnsite) return 'block';
+
+        // ── ALLOW ───────────────────────────────────────────────────────────────
+        // Freelance, Contract, Part-time, Internship can coexist with anything.
+        const flexTypes = ['freelance', 'contract', 'part time', 'internship'];
+        if (flexTypes.includes(newType) || flexTypes.includes(eType)) continue;
+
+        // Two remote roles of any type — no physical constraint.
+        if (newMode === 'remote' && eMode === 'remote') continue;
+
+        // ── WARN ────────────────────────────────────────────────────────────────
+        // Everything else that isn't obviously fine (e.g. two full-time roles).
+        return 'warn';
+    }
+
+    return 'allow';
+};
+
+/**
+ * Builds the human-readable conflict message for warn / block responses.
+ */
+const describeConflict = (activeRoles, newWorkType, newWorkMode, severity) => {
+    const first = activeRoles[0];
+    const count = activeRoles.length;
+    if (severity === 'block') {
+        return `You already have a full-time on-site role ("${first.title}" at "${first.company_name}"). Two simultaneous full-time on-site positions are not possible — please end the existing role first.`;
+    }
+    if (count >= 3) {
+        return `You currently have ${count} active roles marked as present. This is unusual — please make sure all are intentional.`;
+    }
+    return `You already have an active role ("${first.title}" at "${first.company_name}"). Adding another current role is allowed for freelance / remote work, but make sure this is intentional.`;
+};
+
 // ─── Get Profile ────────────────────────────────────────────────────────────────
 
 exports.getProfile = async (req, res) => {
@@ -266,7 +342,7 @@ exports.addExperience = async (req, res) => {
 
         const { title, company_name, location, work_type, work_mode, start_date, end_date, is_current, description, org_id } = req.body;
 
-        // ── Validation ──────────────────────────────────────────────────────────
+        // ── Basic validation ──────────────────────────────────────────────────────
         if (!start_date) {
             return res.status(422).json({ message: "Start date is required" });
         }
@@ -277,25 +353,47 @@ exports.addExperience = async (req, res) => {
             return res.status(422).json({ message: "End date must be after start date" });
         }
 
-        // One active role per company (controller-level, normalized)
-        if (is_current) {
-            const companyNorm = (company_name || "").trim().toLowerCase();
-            const existing = await profileRepo.getExperiencesByProfileId(profileId);
-            const conflict = existing.find(
-                (e) =>
-                    e.is_current &&
-                    (e.company_name || "").trim().toLowerCase() === companyNorm
-            );
-            if (conflict) {
+        const allExperiences = await profileRepo.getExperiencesByProfileId(profileId);
+        const companyNorm = (company_name || "").trim().toLowerCase();
+        const newEnd = is_current ? null : end_date;
+
+        // ── Same-company date overlap (hard block) ────────────────────────────────
+        // Two roles at the same company must not have overlapping date ranges.
+        const sameCompany = allExperiences.filter(e => {
+            if (!companyNorm) return false;
+            return (org_id && e.org_id === org_id) ||
+                   (!org_id && !e.org_id && (e.company_name || "").trim().toLowerCase() === companyNorm);
+        });
+        for (const e of sameCompany) {
+            if (datesOverlap(start_date, newEnd, e.start_date, e.end_date)) {
                 return res.status(422).json({
-                    message: `You already have an active role at "${conflict.company_name}". End it before adding a new current role there.`,
+                    message: `Date range overlaps with your existing "${e.title}" role at "${e.company_name}". Adjust your dates or edit the existing record first.`,
+                    code: 'DATE_OVERLAP',
                 });
             }
         }
-        // ────────────────────────────────────────────────────────────────────────
+
+        // ── Multiple is_current check (work_type × work_mode matrix) ─────────────
+        let warning = undefined;
+        if (is_current) {
+            const activeRoles = allExperiences.filter(e => e.is_current || !e.end_date);
+            if (activeRoles.length > 0) {
+                const severity = getMultipleCurrentSeverity(activeRoles, work_type, work_mode);
+                if (severity === 'block') {
+                    return res.status(422).json({
+                        message: describeConflict(activeRoles, work_type, work_mode, severity),
+                        code: 'MULTIPLE_CURRENT_BLOCKED',
+                    });
+                }
+                if (severity === 'warn') {
+                    warning = describeConflict(activeRoles, work_type, work_mode, severity);
+                }
+            }
+        }
+        // ─────────────────────────────────────────────────────────────────────────
 
         const experience = await profileRepo.addExperience(profileId, { title, company_name, location, work_type, work_mode, start_date, end_date, is_current, description, org_id });
-        res.status(201).json({ message: "Experience added successfully", experience });
+        res.status(201).json({ message: "Experience added successfully", experience, warning });
     } catch (err) {
         console.error("Add experience error:", err);
         res.status(500).json({ message: "Internal server error" });
@@ -311,11 +409,16 @@ exports.updateExperience = async (req, res) => {
 
         const { title, company_name, location, work_type, work_mode, start_date, end_date, is_current, description, org_id } = req.body;
 
-        // ── Validation ──────────────────────────────────────────────────────────
-        const resolvedStart = start_date || existing.start_date;
-        const resolvedEnd = end_date !== undefined ? end_date : existing.end_date;
-        const resolvedCurrent = is_current !== undefined ? is_current : existing.is_current;
+        // ── Resolve effective values (merge patch with existing record) ────────────
+        const resolvedStart   = start_date   !== undefined ? start_date   : existing.start_date;
+        const resolvedEnd     = end_date     !== undefined ? end_date     : existing.end_date;
+        const resolvedCurrent = is_current   !== undefined ? is_current   : existing.is_current;
+        const resolvedCompany = company_name !== undefined ? company_name : existing.company_name;
+        const resolvedOrgId   = org_id       !== undefined ? org_id       : existing.org_id;
+        const resolvedWType   = work_type    !== undefined ? work_type    : existing.work_type;
+        const resolvedWMode   = work_mode    !== undefined ? work_mode    : existing.work_mode;
 
+        // ── Basic validation ──────────────────────────────────────────────────────
         if (!resolvedCurrent && !resolvedEnd) {
             return res.status(422).json({ message: "End date is required when not currently working" });
         }
@@ -323,28 +426,51 @@ exports.updateExperience = async (req, res) => {
             return res.status(422).json({ message: "End date must be after start date" });
         }
 
-        // One active role per company (skip check if this record is already the current one)
-        if (resolvedCurrent && !existing.is_current) {
-            const companyNorm = ((company_name || existing.company_name) || "").trim().toLowerCase();
-            const allExp = await profileRepo.getExperiencesByProfileId(profileId);
-            const conflict = allExp.find(
-                (e) =>
-                    e.is_current &&
-                    e.experience_id !== req.params.id &&
-                    (e.company_name || "").trim().toLowerCase() === companyNorm
-            );
-            if (conflict) {
+        // Fetch all OTHER experiences (exclude self from all checks)
+        const allExperiences = await profileRepo.getExperiencesByProfileId(profileId);
+        const otherExperiences = allExperiences.filter(e => e.experience_id !== req.params.id);
+        const companyNorm = (resolvedCompany || "").trim().toLowerCase();
+        const resolvedNewEnd = resolvedCurrent ? null : resolvedEnd;
+
+        // ── Same-company date overlap (hard block) ────────────────────────────────
+        const sameCompanyOthers = otherExperiences.filter(e => {
+            if (!companyNorm) return false;
+            return (resolvedOrgId && e.org_id === resolvedOrgId) ||
+                   (!resolvedOrgId && !e.org_id && (e.company_name || "").trim().toLowerCase() === companyNorm);
+        });
+        for (const e of sameCompanyOthers) {
+            if (datesOverlap(resolvedStart, resolvedNewEnd, e.start_date, e.end_date)) {
                 return res.status(422).json({
-                    message: `You already have an active role at "${conflict.company_name}". End it before marking another role as current there.`,
+                    message: `Date range overlaps with your existing "${e.title}" role at "${e.company_name}". Adjust your dates or edit the existing record first.`,
+                    code: 'DATE_OVERLAP',
                 });
             }
         }
-        // ────────────────────────────────────────────────────────────────────────
+
+        // ── Multiple is_current check (work_type × work_mode matrix) ─────────────
+        // Only run this check when transitioning a role from non-current → current.
+        let warning = undefined;
+        if (resolvedCurrent && !existing.is_current) {
+            const activeRoles = otherExperiences.filter(e => e.is_current || !e.end_date);
+            if (activeRoles.length > 0) {
+                const severity = getMultipleCurrentSeverity(activeRoles, resolvedWType, resolvedWMode);
+                if (severity === 'block') {
+                    return res.status(422).json({
+                        message: describeConflict(activeRoles, resolvedWType, resolvedWMode, severity),
+                        code: 'MULTIPLE_CURRENT_BLOCKED',
+                    });
+                }
+                if (severity === 'warn') {
+                    warning = describeConflict(activeRoles, resolvedWType, resolvedWMode, severity);
+                }
+            }
+        }
+        // ─────────────────────────────────────────────────────────────────────────
 
         const data = { title, company_name, location, work_type, work_mode, start_date, end_date, is_current, description, org_id };
         const experience = await profileRepo.updateExperience(req.params.id, profileId, data);
         if (!experience) return res.status(400).json({ message: "No fields provided to update" });
-        res.json({ message: "Experience updated successfully", experience });
+        res.json({ message: "Experience updated successfully", experience, warning });
     } catch (err) {
         console.error("Update experience error:", err);
         res.status(500).json({ message: "Internal server error" });
