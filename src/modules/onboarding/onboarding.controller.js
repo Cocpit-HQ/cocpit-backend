@@ -3,6 +3,7 @@
  * Scaffolding for multi-step onboarding flow.
  */
 const pool = require("../../core/db/pool");
+const authRepo = require("../auth/auth.repository");
 
 const ONBOARDING_STEPS = {
     ROLE: "ROLE",
@@ -78,7 +79,7 @@ exports.saveRole = async (req, res) => {
 };
 exports.saveDetails = async (req, res) => {
     const userId = req.user?.sub;
-    const { role, school_name, school_org_id, degree, field_of_study, title, company_name } = req.body;
+    const { role, school_name, school_org_id, degree, field_of_study, location, work_type, work_mode, title, company_name } = req.body;
 
     const allowedRoles = ["student", "fresher", "intern", "self_employed", "employed", "unemployed"];
     if (!allowedRoles.includes(role)) {
@@ -89,20 +90,24 @@ exports.saveDetails = async (req, res) => {
     try {
         await client.query('BEGIN');
 
-        const profileId = await getProfileId(userId);
-        if (!profileId) throw new Error("PROFILE_NOT_FOUND");
+        let profileId = await getProfileId(userId);
+        if (!profileId) {
+            console.log(`[Onboarding] Profile missing for user ${userId}. Auto-creating...`);
+            await authRepo.createProfile(userId, role, client);
+            profileId = await getProfileId(userId);
+        }
 
         if (["student", "fresher", "intern"].includes(role)) {
             await client.query(
-                `INSERT INTO educations (profile_id, school_name, school_org_id, degree, field_of_study)
-                 VALUES ($1, $2, $3, $4, $5)`,
-                [profileId, school_name, school_org_id || null, degree, field_of_study || null]
+                `INSERT INTO educations (profile_id, school_name, school_org_id, degree, field_of_study, location)
+                 VALUES ($1, $2, $3, $4, $5, $6)`,
+                [profileId, school_name, school_org_id || null, degree, field_of_study || null, location || null]
             );
         } else if (["self_employed", "employed"].includes(role)) {
             await client.query(
-                `INSERT INTO experiences (profile_id, title, company_name)
-                 VALUES ($1, $2, $3)`,
-                [profileId, title, company_name]
+                `INSERT INTO experiences (profile_id, title, company_name, location, work_type, work_mode)
+                 VALUES ($1, $2, $3, $4, $5, $6)`,
+                [profileId, title, company_name, location || null, work_type || null, work_mode || null]
             );
         }
 
@@ -202,7 +207,8 @@ exports.getSkills = async (req, res) => {
         const dataRes = await pool.query(
             `SELECT skill_id, name
              FROM skills
-             WHERE ($1::text IS NULL OR name ILIKE $1)
+             WHERE is_active = TRUE
+               AND ($1::text IS NULL OR name ILIKE $1)
                AND ($2::text IS NULL OR LOWER(name) > LOWER($2))
                AND name !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
              ORDER BY LOWER(name) ASC
@@ -349,19 +355,21 @@ exports.saveInterests = async (req, res) => {
 };
 
 exports.saveSkills = async (req, res) => {
-    const { skills: name } = req.body;
+    const { skills } = req.body;
 
-    if (!Array.isArray(name) || name.length === 0) {
-        return res.status(400).json({ success: false, message: "Name must be a non-empty array" });
+    if (!Array.isArray(skills) || skills.length === 0) {
+        return res.status(400).json({ success: false, message: "Skills must be a non-empty array" });
     }
 
     const skillList = [...new Set(
-        name.filter(s => typeof s === "string")
+        skills.filter(s => typeof s === "string")
             .map(s => s.trim().toLowerCase().replace(/\s+/g, " ").split(" ").map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(" "))
             .filter(Boolean)
     )];
 
-    if (!skillList.length) return res.status(400).json({ success: false, message: "No valid skills provided" });
+    if (skillList.length < 3 || skillList.length > 7) {
+        return res.status(400).json({ success: false, message: "Please select between 3 and 7 valid unique skills" });
+    }
 
     const client = await getClient();
     try {
@@ -370,19 +378,35 @@ exports.saveSkills = async (req, res) => {
         const profileId = await getProfileId(req.user?.sub);
         if (!profileId) throw new Error("PROFILE_NOT_FOUND");
 
-        await client.query(`INSERT INTO skills (name) SELECT UNNEST($1::text[]) ON CONFLICT 
-            (lower(name)) DO NOTHING RETURNING skill_id, name`, [skillList]);
-
-        const { rows: skills } = await client.query(
-            `SELECT skill_id, name FROM skills WHERE lower(name) IN (SELECT lower(s) FROM UNNEST($1::text[]) AS s)`,
-            [skillList]
+        // 1. Fetch existing skills using single query
+        const normalizedInput = skillList.map(s => s.toLowerCase());
+        const skillData = await client.query(
+            `SELECT skill_id, name FROM skills WHERE LOWER(name) = ANY($1::text[])`,
+            [normalizedInput]
         );
 
-        if (skills.length > 0) {
-            const values = skills.map((s, i) => `($1, $${i + 2})`).join(",");
+        let finalSkillIds = skillData.rows.map(r => r.skill_id);
+        const existingNames = new Set(skillData.rows.map(r => r.name.toLowerCase()));
+
+        // 2. Identify missing skills
+        const missingSkills = skillList.filter(name => !existingNames.has(name.toLowerCase()));
+
+        // 3. Bulk insert missing skills (dynamically creating them)
+        if (missingSkills.length > 0) {
+            const valuesParams = missingSkills.map((_, i) => `($${i + 1})`).join(", ");
+            const insertResult = await client.query(
+                `INSERT INTO skills (name) VALUES ${valuesParams} RETURNING skill_id`,
+                missingSkills
+            );
+            finalSkillIds.push(...insertResult.rows.map(r => r.skill_id));
+        }
+
+        // 4. Batch mapping assignment into user_skills
+        if (finalSkillIds.length > 0) {
+            const values = finalSkillIds.map((_, i) => `($1, $${i + 2})`).join(",");
             await client.query(
                 `INSERT INTO user_skills (profile_id, skill_id) VALUES ${values} ON CONFLICT DO NOTHING`,
-                [profileId, ...skills.map(s => s.skill_id)]
+                [profileId, ...finalSkillIds]
             );
         }
 
@@ -413,9 +437,13 @@ exports.completeOnboarding = async (req, res) => {
 
     try {
         // Validate user exists before completing
-        const userRes = await pool.query(`SELECT user_id FROM users WHERE user_id = $1`, [userId]);
+        const userRes = await pool.query(`SELECT user_id, is_onboarding_complete FROM users WHERE user_id = $1`, [userId]);
         if (userRes.rowCount === 0) {
             return res.status(404).json({ success: false, message: "User not found" });
+        }
+
+        if (userRes.rows[0].is_onboarding_complete) {
+            return res.status(400).json({ success: false, error: "Already completed" });
         }
 
         // Mark onboarding as complete
@@ -430,9 +458,20 @@ exports.completeOnboarding = async (req, res) => {
             [userId]
         );
 
+        console.log(`[Onboarding] ✅ Completed successfully for user: ${userId}`);
+
+        const { signAccessToken } = require("../../core/utils/jwt");
+        const newAccessToken = signAccessToken({
+            sub: userId,
+            sid: req.user?.sid,
+            roles: req.user?.roles || [],
+            onboarding_complete: true,
+        });
+
         return res.status(200).json({
             success: true,
             message: "Onboarding completed successfully",
+            accessToken: newAccessToken,
             data: result.rows[0]
         });
     } catch (err) {
@@ -546,11 +585,12 @@ exports.updateLocation = async (req, res) => {
 
 exports.checkAccountName = async (req, res) => {
     const { account_name } = req.query;
+    const userId = req.user?.sub;
 
     try {
         const result = await pool.query(
-            "SELECT 1 FROM users WHERE lower(account_name) = lower($1)",
-            [account_name]
+            "SELECT 1 FROM users WHERE lower(account_name) = lower($1) AND user_id != $2",
+            [account_name, userId]
         );
 
         const available = result.rowCount === 0;

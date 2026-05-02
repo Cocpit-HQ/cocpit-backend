@@ -9,8 +9,8 @@ const { z } = require("zod");
 const registerSchema = z.zod ? z : require("zod"); // Fallback for different zod versions
 const deviceRegisterSchema = z.object({
     deviceId: z.string().min(1),
-    fcmToken: z.string().optional(),
-    platform: z.enum(["android", "ios", "web"]),
+    fcmToken: z.string().min(1),
+    platform: z.enum(["android", "ios", "web", "unknown"]),
 });
 
 const registerDevice = async (req, res, next) => {
@@ -44,6 +44,8 @@ const registerDevice = async (req, res, next) => {
             fcmToken: fcmToken || null,
             platform
         });
+
+        console.log(`[Device] ✅ Device registered for user: ${userId}`);
 
         res.status(200).json({ message: "Device registered successfully" });
     } catch (err) {

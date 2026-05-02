@@ -118,6 +118,7 @@ const initializeUserSession = async (user, userAgent, ipAddress) => {
     try {
         await _createDbSession(null, userId, sessionId, hashedRefresh, userAgent, ipAddress);
         await authRepo.commitTransaction();
+        console.log(`[Auth] ✅ Session created successfully for user: ${userId}`);
     } catch (err) {
         await authRepo.rollbackTransaction();
         throw err;
@@ -178,16 +179,31 @@ const registerUser = async ({ email, password, userAgent, ipAddress }) => {
             client
         );
 
-        await authRepo.createProfile(user.user_id, client);
+        // Assign default Student role — inside transaction so it's atomic
+        await authRepo.assignRole(user.user_id, "Student", client);
+
+        await authRepo.createProfile(user.user_id, "Student", client);
 
         await client.query("COMMIT");
 
-        // Auto-login: Initialize session after successful user/profile creation
-        // We use the full user object (refetched or correctly populated)
+        // Refetch full user after commit
         const fullUser = await authRepo.findUserByEmail(normalizedEmail);
-        const session = await initializeUserSession(fullUser, userAgent, ipAddress);
 
-        return session;
+        // Auto-login: Initialize session after successful user/profile creation
+        // If session creation fails, user still exists and can log in manually.
+        try {
+            const session = await initializeUserSession(fullUser, userAgent, ipAddress);
+            return session;
+        } catch (sessionErr) {
+            console.error("[Auth] Session creation failed after registration — user can log in manually:", sessionErr);
+            return {
+                error: {
+                    status: 503,
+                    message: "Account created successfully, but we couldn't log you in automatically. Please sign in.",
+                    code: "SESSION_INIT_FAILED",
+                },
+            };
+        }
 
     } catch (err) {
         await client.query("ROLLBACK");
@@ -372,18 +388,11 @@ const googleLogin = async ({ idToken, accountType, userAgent, ipAddress }) => {
             // (the UNIQUE constraint on google_id handles this at DB level too)
             await authRepo.linkGoogleId(user.user_id, googleId);
         } else {
-            // Case 3: Brand new user — accountType is REQUIRED
-            if (!accountType) {
-                return {
-                    error: {
-                        status: 400,
-                        message: "accountType is required for new Google sign-ups",
-                    },
-                };
-            }
+            // Case 3: Brand new user — accountType defaults to Student if not provided
+            const finalAccountType = accountType || "Student";
 
             const validTypes = ["Fresher", "Student", "Employer", "Admin"];
-            if (!validTypes.includes(accountType)) {
+            if (!validTypes.includes(finalAccountType)) {
                 return {
                     error: {
                         status: 400,
@@ -397,12 +406,12 @@ const googleLogin = async ({ idToken, accountType, userAgent, ipAddress }) => {
 
             // Assign role — same logic as standard registration
             let roleName;
-            if (accountType === "Admin") roleName = "Admin";
-            else if (accountType === "Employer") roleName = "Employer";
+            if (finalAccountType === "Admin") roleName = "Admin";
+            else if (finalAccountType === "Employer") roleName = "Employer";
             else roleName = "Student";
 
             await authRepo.assignRole(user.user_id, roleName);
-            await authRepo.createProfile(user.user_id, accountType);
+            await authRepo.createProfile(user.user_id, finalAccountType);
 
             isNewUser = true;
         }

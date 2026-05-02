@@ -264,6 +264,55 @@ exports.unfollowUser = async (req, res) => {
     }
 };
 
+// Remove a follower (Force stop someone from following me)
+exports.removeFollower = async (req, res) => {
+    const userId = req.user.sub;
+    const followerId = req.params.followerId;
+
+    const client = await pool.connect();
+
+    try {
+        await client.query('BEGIN');
+
+        // 1. Delete from followers where follower_id = target AND following_id = me
+        const result = await client.query(
+            `DELETE FROM followers WHERE follower_id = $1 AND following_id = $2 RETURNING *`,
+            [followerId, userId]
+        );
+
+        if (result.rowCount === 0) {
+            await client.query('ROLLBACK');
+            return res.status(404).json({ message: "This user is not following you" });
+        }
+
+        // 2. If we were connected, break the connection
+        const deletedConnection = await client.query(
+            `DELETE FROM connections WHERE (user_id = $1 AND connected_user_id = $2) OR (user_id = $2 AND connected_user_id = $1) RETURNING *`,
+            [followerId, userId]
+        );
+
+        // 3. Clean up any connection requests
+        await client.query(
+            `DELETE FROM connection_requests WHERE (sender_id = $1 AND receiver_id = $2) OR (sender_id = $2 AND receiver_id = $1)`,
+            [followerId, userId]
+        );
+
+        await client.query('COMMIT');
+
+        // Socket notifications for UI update
+        socketService.notifyUser(userId, "relationshipUpdated", { userId: followerId, status: 'none' });
+        socketService.notifyUser(followerId, "relationshipUpdated", { userId: userId, status: 'none' });
+
+        res.json({ success: true, message: "Follower removed successfully", connectionRemoved: deletedConnection.rowCount > 0 });
+    } catch (err) {
+        await client.query('ROLLBACK');
+        console.error("Remove follower error:", err);
+        res.status(500).json({ message: "Internal server error" });
+    } finally {
+        client.release();
+    }
+};
+
 // Follow a company
 exports.followCompany = async (req, res) => {
     const userId = req.user.sub;
@@ -512,19 +561,21 @@ exports.removeCompanyFollower = async (req, res) => {
 
 exports.getFollowers = async (req, res) => {
     const userId = req.params.id;
+    const requesterId = req.user.sub;
     const { search } = req.query;
 
     try {
         let query = `
-            SELECT u.user_id, u.full_name, u.avatar_url, u.headline, f.created_at, 'user' as type
+            SELECT u.user_id, u.full_name, u.avatar_url, u.headline, f.created_at, 'user' as type,
+                   (EXISTS (SELECT 1 FROM followers WHERE follower_id = $2 AND following_id = u.user_id)) as is_following_back
             FROM followers f 
             JOIN users u ON f.follower_id = u.user_id 
             WHERE f.following_id = $1
         `;
-        const params = [userId];
+        const params = [userId, requesterId];
 
         if (search) {
-            query += ` AND (u.full_name ILIKE $2 OR u.headline ILIKE $2)`;
+            query += ` AND (u.full_name ILIKE $3 OR u.headline ILIKE $3)`;
             params.push(`%${search}%`);
         }
 

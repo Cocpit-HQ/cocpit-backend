@@ -31,12 +31,18 @@ const passwordResetLimiter = createRateLimit({
     message: "Too many password reset attempts, please try again later."
 });
 
+const refreshLimiter = createRateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 30, // Generous but protects against infinite loops
+    message: "Too many refresh attempts, please try again later."
+});
+
 // Auth
 router.use("/", otpRoutes);
 router.post("/register", authLimiter, validate(registerSchema), authController.register);
 router.post("/login", authLimiter, validate(loginSchema), authController.login);
 router.post("/google", authLimiter, authController.googleLogin);
-router.post("/refresh", validate(refreshTokenSchema), authController.refreshToken);
+router.post("/refresh", refreshLimiter, validate(refreshTokenSchema), authController.refreshToken);
 router.post("/logout", authController.logout);
 router.get("/me", requireAuth, authController.getMe);
 router.get("/actor-context", requireAuth, authController.getActorContext);

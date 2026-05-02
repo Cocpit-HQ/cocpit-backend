@@ -21,11 +21,40 @@ const generateSecureOTP = () => {
 /**
  * Generates, stores, and emails an OTP.
  * @param {string} email
+ * @param {"signup"|"password_reset"} purpose
+ *   - "signup": returns 409 immediately if email is already registered (no OTP sent)
+ *   - "password_reset": always returns generic 200 but only sends OTP if account exists
+ *     (prevents enumeration — attacker cannot tell if the account exists)
  */
-const requestOTP = async (email) => {
+const requestOTP = async (email, purpose = "signup") => {
     const normalizedEmail = email.toLowerCase().trim();
 
-    // 1. Rate Limit Check (3 per email per 60 seconds)
+    // ── Purpose-based pre-flight check ──────────────────────────────────────────
+    const userResult = await pool.query(
+        "SELECT 1 FROM users WHERE email = $1",
+        [normalizedEmail]
+    );
+    const userExists = userResult.rowCount > 0;
+
+    if (purpose === "signup") {
+        // Block registration if email is already taken — tell the user so they can sign in
+        if (userExists) {
+            return {
+                error: {
+                    status: 409,
+                    message: "An account with this email already exists. Please sign in instead.",
+                },
+            };
+        }
+    } else if (purpose === "password_reset") {
+        // Silent no-op — never reveal whether the email exists
+        // Controller always responds with a generic 200 success message either way
+        if (!userExists) {
+            return { success: true, silentNoOp: true };
+        }
+    }
+
+    // ── Rate Limit Check (3 per email per 60 seconds) ────────────────────────────
     const existing = await pool.query(
         `SELECT created_at, request_count FROM email_otps WHERE email = $1`,
         [normalizedEmail]
@@ -124,7 +153,7 @@ const verifyOTP = async (email, otp, consume = true) => {
         return { error: { status: 400, message: "Invalid verification code." } };
     }
 
-    // 5. Delete OTP record after successful validation
+    // 5. Delete OTP record after successful validation (single-use enforcement)
     if (consume) {
         await pool.query(`DELETE FROM email_otps WHERE email = $1`, [normalizedEmail]);
     }

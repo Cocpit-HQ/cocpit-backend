@@ -34,18 +34,28 @@ const createUser = async (email, passwordHash, fullName = "", is_onboarding_comp
     return result.rows[0];
 };
 
-const assignRole = async (userId, roleName) => {
-    await pool.query(
+const assignRole = async (userId, roleName, client = pool) => {
+    await client.query(
         `INSERT INTO user_roles (user_id, role_id)
      SELECT $1, role_id FROM roles WHERE role_name = $2`,
         [userId, roleName]
     );
 };
 
-const createProfile = async (userId, client) => {
+const createProfile = async (userId, arg1, arg2) => {
+    // Robust argument detection:
+    // userId is always first. 
+    // client is either arg1 or arg2 (the one with .query).
+    // accountType is either arg1 or arg2 (the one that is a string).
+    const client = (arg1 && typeof arg1.query === 'function') ? arg1 : 
+                   (arg2 && typeof arg2.query === 'function') ? arg2 : pool;
+                   
+    const accountType = (typeof arg1 === 'string') ? arg1 : 
+                        (typeof arg2 === 'string') ? arg2 : 'Student';
+
     await client.query(
-        `INSERT INTO profiles (user_id) VALUES ($1)`,
-        [userId]
+        `INSERT INTO profiles (user_id, account_type) VALUES ($1, $2)`,
+        [userId, accountType]
     );
 };
 

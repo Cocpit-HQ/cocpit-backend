@@ -276,7 +276,9 @@ exports.googleLogin = async (req, res) => {
         console.log(`✅ Google login successful: ${result.user.email} (${result.isNewUser ? "new" : "existing"})`);
 
         return res.status(statusCode).json({
+            message: result.isNewUser ? "Registration successful" : "Login successful",
             accessToken: result.accessToken,
+            refreshToken: result.refreshToken,
             user: result.user,
         });
     } catch (err) {

@@ -8,7 +8,7 @@ const pool = require("../../core/db/pool");
 
 const getFullProfile = async (userId) => {
     const result = await pool.query(
-        `SELECT u.user_id, u.full_name, u.headline, u.avatar_url, u.cover_image_url, u.location, u.about_text, u.email, u.mobile_number, u.account_name, u.created_at,
+        `SELECT u.user_id, u.full_name, u.headline, u.avatar_url, u.cover_image_url, u.location, u.about_text, u.email, u.mobile_number, u.account_name, u.website, u.created_at,
             p.profile_id, p.open_to, p.availability, p.work_preference, p.profile_views_count, p.search_appearances_count
      FROM users u
      LEFT JOIN profiles p ON u.user_id = p.user_id
@@ -19,7 +19,7 @@ const getFullProfile = async (userId) => {
 };
 
 const updateUserFields = async (userId, fields) => {
-    const { full_name, headline, job_title, company_name, school, degree, location, about_text, mobile_number, account_name } = fields;
+    const { full_name, headline, job_title, company_name, school, degree, location, about_text, mobile_number, account_name, website } = fields;
     await pool.query("BEGIN");
     await pool.query(
         `UPDATE users
@@ -27,9 +27,9 @@ const updateUserFields = async (userId, fields) => {
          job_title = COALESCE($3, job_title), company_name = COALESCE($4, company_name),
          school = COALESCE($5, school), degree = COALESCE($6, degree),
          location = COALESCE($7, location), about_text = COALESCE($8, about_text),
-         mobile_number = COALESCE($9, mobile_number),account_name = COALESCE($10, account_name), updated_at = now()
-     WHERE user_id = $11`,
-        [full_name, headline, job_title, company_name, school, degree, location, about_text, mobile_number,account_name, userId]
+         mobile_number = COALESCE($9, mobile_number),account_name = COALESCE($10, account_name), website = COALESCE($11, website), updated_at = now()
+     WHERE user_id = $12`,
+        [full_name, headline, job_title, company_name, school, degree, location, about_text, mobile_number, account_name, website, userId]
     );
     await pool.query("COMMIT");
 };
@@ -120,18 +120,71 @@ const ensureProfileId = async (userId, accountType = "Student") => {
 
 const getExperiences = async (profileId) => {
     const result = await pool.query(
+        `SELECT e.*, o.logo_url 
+         FROM experiences e 
+         LEFT JOIN organizations o ON e.org_id = o.org_id 
+         WHERE e.profile_id = $1 
+         ORDER BY e.start_date DESC`,
+        [profileId]
+    );
+    return groupByCompany(result.rows);
+};
+
+/** Returns flat (ungrouped) experience rows for a profile — used for validation checks */
+const getExperiencesByProfileId = async (profileId) => {
+    const result = await pool.query(
         `SELECT * FROM experiences WHERE profile_id = $1 ORDER BY start_date DESC`,
         [profileId]
     );
     return result.rows;
 };
 
+const groupByCompany = (rows) => {
+    if (!rows || rows.length === 0) return [];
+
+    // Step 1: Sort experiences by latest start_date first
+    const sortedRows = [...rows].sort(
+        (a, b) => new Date(b.start_date) - new Date(a.start_date)
+    );
+
+    const grouped = [];
+    let currentGroup = null;
+
+    for (const exp of sortedRows) {
+        const normalizedName = exp.company_name.toLowerCase().trim();
+        const orgId = exp.org_id;
+
+        // Group only if previous consecutive company is same (by org_id or by name)
+        const isSameGroup = currentGroup && (
+            (orgId && currentGroup.org_id === orgId) ||
+            (!orgId && !currentGroup.org_id && currentGroup.normalized_company === normalizedName)
+        );
+
+        if (isSameGroup) {
+            currentGroup.experiences.push(exp);
+        } else {
+            currentGroup = {
+                company_name: exp.company_name, 
+                logo_url: exp.logo_url,
+                org_id: orgId,
+                normalized_company: normalizedName,
+                experiences: [exp],
+            };
+
+            grouped.push(currentGroup);
+        }
+    }
+
+    // Remove helper field before returning response
+    return grouped.map(({ normalized_company, org_id, ...rest }) => rest);
+};
+
 const addExperience = async (profileId, data) => {
-    const { title, company_name, location, start_date, end_date, is_current, description } = data;
+    const { title, company_name, location, work_type, work_mode, start_date, end_date, is_current, description, org_id } = data;
     const result = await pool.query(
-        `INSERT INTO experiences (profile_id, title, company_name, location, start_date, end_date, is_current, description)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
-        [profileId, title, company_name, location, start_date, end_date, is_current ?? false, description]
+        `INSERT INTO experiences (profile_id, title, company_name, location, work_type, work_mode, start_date, end_date, is_current, description, org_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *`,
+        [profileId, title, company_name, location, work_type, work_mode, start_date, end_date, is_current ?? false, description, org_id || null]
     );
     return result.rows[0];
 };
@@ -179,11 +232,11 @@ const getEducations = async (profileId) => {
 };
 
 const addEducation = async (profileId, data) => {
-    const { school_name, degree, field_of_study, start_date, end_date, description } = data;
+    const { school_name, degree, field_of_study, location, start_date, end_date, description } = data;
     const result = await pool.query(
-        `INSERT INTO educations (profile_id, school_name, degree, field_of_study, start_date, end_date, description)
-     VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
-        [profileId, school_name, degree, field_of_study, start_date, end_date, description]
+        `INSERT INTO educations (profile_id, school_name, degree, field_of_study, location, start_date, end_date, description)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
+        [profileId, school_name, degree, field_of_study, location, start_date, end_date, description]
     );
     return result.rows[0];
 };
@@ -309,7 +362,7 @@ module.exports = {
     getIdentity, updateIdentity,
     getResume, getLatestResume, replaceResume, deleteResume,
     getProfileId, ensureProfileId,
-    getExperiences, addExperience, findExperience, updateExperience, deleteExperience,
+    getExperiences, getExperiencesByProfileId, addExperience, findExperience, updateExperience, deleteExperience,
     getEducations, addEducation, updateEducation, deleteEducation,
     getSkills, deleteSkillMapping,
     getCompanyRoles, getSocialCounts, getRelationshipInfo,

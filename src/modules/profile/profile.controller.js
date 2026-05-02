@@ -61,7 +61,7 @@ exports.getProfile = async (req, res) => {
         res.json({
             user: {
                 id: u.user_id, account_name: u.account_name, name: u.full_name, headline: u.headline, avatar: u.avatar_url,
-                cover_image: u.cover_image_url, location: u.location, about: u.about_text,
+                cover_image: u.cover_image_url, location: u.location, about: u.about_text,website:u.website,
                 email: u.email, mobile_number: u.mobile_number,
                 followers_count: parseInt(counts.followers_count), following_count: parseInt(counts.following_count),
                 connections_count: parseInt(counts.connections_count),
@@ -93,7 +93,7 @@ exports.getMyProfile = async (req, res) => {
 exports.updateProfile = async (req, res) => {
     const userId = req.user.sub;
     const { full_name, headline, job_title, company_name, school, degree, location, about_text, mobile_number,
-        account_name } = req.body;
+        account_name, website } = req.body;
 
     if (full_name && full_name.trim().length < 3) return res.status(400).json({ message: "Full name must be at least 3 characters" });
     if (headline && headline.length > 120) return res.status(400).json({ message: "Headline cannot exceed 120 characters" });
@@ -103,6 +103,7 @@ exports.updateProfile = async (req, res) => {
     if (degree && degree.length > 100) return res.status(400).json({ message: "Degree cannot exceed 100 characters" });
     if (location && location.length > 150) return res.status(400).json({ message: "Location cannot exceed 150 characters" });
     if (about_text && about_text.length > 500) return res.status(400).json({ message: "About section cannot exceed 500 characters" });
+    if (website && website.length > 255) return res.status(400).json({ message: "Website cannot exceed 255 characters" });
     // Validate account_name (username) if provided
     if (account_name !== undefined) {
         const usernameRegex = /^[a-zA-Z0-9_-]{3,30}$/;
@@ -262,7 +263,38 @@ exports.addExperience = async (req, res) => {
     try {
         const profileId = await profileRepo.ensureProfileId(req.user.sub);
         if (!profileId) return res.status(404).json({ message: "Profile not found" });
-        const experience = await profileRepo.addExperience(profileId, req.body);
+
+        const { title, company_name, location, work_type, work_mode, start_date, end_date, is_current, description, org_id } = req.body;
+
+        // ── Validation ──────────────────────────────────────────────────────────
+        if (!start_date) {
+            return res.status(422).json({ message: "Start date is required" });
+        }
+        if (!is_current && !end_date) {
+            return res.status(422).json({ message: "End date is required when not currently working" });
+        }
+        if (end_date && new Date(end_date) <= new Date(start_date)) {
+            return res.status(422).json({ message: "End date must be after start date" });
+        }
+
+        // One active role per company (controller-level, normalized)
+        if (is_current) {
+            const companyNorm = (company_name || "").trim().toLowerCase();
+            const existing = await profileRepo.getExperiencesByProfileId(profileId);
+            const conflict = existing.find(
+                (e) =>
+                    e.is_current &&
+                    (e.company_name || "").trim().toLowerCase() === companyNorm
+            );
+            if (conflict) {
+                return res.status(422).json({
+                    message: `You already have an active role at "${conflict.company_name}". End it before adding a new current role there.`,
+                });
+            }
+        }
+        // ────────────────────────────────────────────────────────────────────────
+
+        const experience = await profileRepo.addExperience(profileId, { title, company_name, location, work_type, work_mode, start_date, end_date, is_current, description, org_id });
         res.status(201).json({ message: "Experience added successfully", experience });
     } catch (err) {
         console.error("Add experience error:", err);
@@ -276,8 +308,40 @@ exports.updateExperience = async (req, res) => {
         if (!profileId) return res.status(404).json({ message: "Profile not found" });
         const existing = await profileRepo.findExperience(req.params.id, profileId);
         if (!existing) return res.status(404).json({ message: "Experience not found or not authorized" });
-        const { title, company_name, location, start_date, end_date, is_current, description } = req.body;
-        const data = { title, company_name, location, start_date, end_date, is_current, description };
+
+        const { title, company_name, location, work_type, work_mode, start_date, end_date, is_current, description, org_id } = req.body;
+
+        // ── Validation ──────────────────────────────────────────────────────────
+        const resolvedStart = start_date || existing.start_date;
+        const resolvedEnd = end_date !== undefined ? end_date : existing.end_date;
+        const resolvedCurrent = is_current !== undefined ? is_current : existing.is_current;
+
+        if (!resolvedCurrent && !resolvedEnd) {
+            return res.status(422).json({ message: "End date is required when not currently working" });
+        }
+        if (resolvedEnd && new Date(resolvedEnd) <= new Date(resolvedStart)) {
+            return res.status(422).json({ message: "End date must be after start date" });
+        }
+
+        // One active role per company (skip check if this record is already the current one)
+        if (resolvedCurrent && !existing.is_current) {
+            const companyNorm = ((company_name || existing.company_name) || "").trim().toLowerCase();
+            const allExp = await profileRepo.getExperiencesByProfileId(profileId);
+            const conflict = allExp.find(
+                (e) =>
+                    e.is_current &&
+                    e.experience_id !== req.params.id &&
+                    (e.company_name || "").trim().toLowerCase() === companyNorm
+            );
+            if (conflict) {
+                return res.status(422).json({
+                    message: `You already have an active role at "${conflict.company_name}". End it before marking another role as current there.`,
+                });
+            }
+        }
+        // ────────────────────────────────────────────────────────────────────────
+
+        const data = { title, company_name, location, work_type, work_mode, start_date, end_date, is_current, description, org_id };
         const experience = await profileRepo.updateExperience(req.params.id, profileId, data);
         if (!experience) return res.status(400).json({ message: "No fields provided to update" });
         res.json({ message: "Experience updated successfully", experience });
@@ -306,7 +370,8 @@ exports.addEducation = async (req, res) => {
     try {
         const profileId = await profileRepo.ensureProfileId(req.user.sub);
         if (!profileId) return res.status(404).json({ message: "Profile not found" });
-        const education = await profileRepo.addEducation(profileId, req.body);
+        const { school_name, degree, field_of_study, location, start_date, end_date, description } = req.body;
+        const education = await profileRepo.addEducation(profileId, { school_name, degree, field_of_study, location, start_date, end_date, description });
         res.status(201).json({ message: "Education added successfully", education });
     } catch (err) {
         console.error("Add education error:", err);
@@ -318,8 +383,8 @@ exports.updateEducation = async (req, res) => {
     try {
         const profileId = await profileRepo.getProfileId(req.user.sub);
         if (!profileId) return res.status(404).json({ message: "Profile not found" });
-        const { school_name, degree, field_of_study, start_date, end_date, description } = req.body;
-        const data = { school_name, degree, field_of_study, start_date, end_date, description };
+        const { school_name, degree, field_of_study, location, start_date, end_date, description } = req.body;
+        const data = { school_name, degree, field_of_study, location, start_date, end_date, description };
         const education = await profileRepo.updateEducation(req.params.id, profileId, data);
         if (!education) return res.status(400).json({ message: "No fields provided to update" });
         res.json({ message: "Education updated successfully", education });

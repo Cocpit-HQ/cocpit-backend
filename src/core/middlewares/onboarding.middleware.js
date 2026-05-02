@@ -14,10 +14,8 @@ const HARD_BLOCKED_ROUTES = [
   "/api/social"
 ];
 
-
 /**
- * Middleware to enforce onboarding completion.
- * Replaces fragile whitelist with structured Onboarding Access Control.
+ * Middleware to strictly enforce onboarding completion on specific routes.
  */
 exports.enforceOnboarding = async (req, res, next) => {
   const { method, originalUrl: path } = req;

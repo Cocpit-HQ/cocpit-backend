@@ -9,19 +9,45 @@ const pool = require("../../core/db/pool");
  * Uses an upsert-like logic to ensure (device_id, session_id) uniqueness.
  */
 const upsertDeviceSession = async ({ userId, sessionId, deviceId, fcmToken, platform }) => {
-    const query = `
-        INSERT INTO device_sessions (user_id, session_id, device_id, fcm_token, platform, is_active, updated_at)
-        VALUES ($1, $2, $3, $4, $5, TRUE, NOW())
-        ON CONFLICT (device_id, session_id) 
-        DO UPDATE SET 
-            fcm_token = EXCLUDED.fcm_token,
-            is_active = TRUE,
-            updated_at = NOW()
-        RETURNING device_session_id;
-    `;
-    const params = [userId, sessionId, deviceId, fcmToken, platform];
-    const result = await pool.query(query, params);
-    return result.rows[0];
+    const client = await pool.connect();
+    try {
+        await client.query("BEGIN");
+
+        // 1. Upsert the new device registration
+        const query = `
+            INSERT INTO device_sessions (device_id, user_id, session_id, fcm_token, platform, is_active)
+            VALUES ($1, $2, $3, $4, $5, TRUE)
+            ON CONFLICT (device_id, session_id) 
+            DO UPDATE SET 
+                fcm_token = EXCLUDED.fcm_token,
+                is_active = TRUE,
+                updated_at = NOW()
+            RETURNING device_session_id;
+        `;
+        const params = [deviceId, userId, sessionId, fcmToken, platform];
+        const result = await client.query(query, params);
+
+        // 2. Enforce max 5 devices limit (delete older devices if exceeding limit)
+        // Cleanup happens after insert, keeping the top 5 most recently active devices
+        await client.query(
+            `DELETE FROM device_sessions
+             WHERE user_id = $1 AND device_id NOT IN (
+                 SELECT device_id FROM device_sessions
+                 WHERE user_id = $1 
+                 ORDER BY last_active_at DESC 
+                 LIMIT 5
+             )`,
+            [userId]
+        );
+
+        await client.query("COMMIT");
+        return result.rows[0];
+    } catch (err) {
+        await client.query("ROLLBACK");
+        throw err;
+    } finally {
+        client.release();
+    }
 };
 
 /**

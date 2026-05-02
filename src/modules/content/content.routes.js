@@ -3,6 +3,9 @@ const router = express.Router();
 const contentController = require("./content.controller");
 const { toggleSavePost, getSavedPosts, checkIfPostSaved, createFolder, getFolders, renameFolder, deleteFolder } = require("./savedPost.controller");
 const { requireAuth, optionalAuth } = require("../../core/middlewares/auth.middleware");
+const { validate } = require("../../core/middlewares/validation.middleware");
+const postTagsController = require("./postTags.controller");
+const { syncTagsSchema } = require("./postTags.schema");
 
 // Feed & Discovery
 router.get("/All/feeds", optionalAuth, contentController.getPublicFeed);
@@ -14,6 +17,9 @@ router.get("/post/:id", requireAuth, contentController.getPostById);
 router.put("/post/:id", requireAuth, contentController.updatePostById);
 router.delete("/post/:id", requireAuth, contentController.deletePost);
 
+// Post Tags
+router.post("/posts/tags/sync", requireAuth, validate(syncTagsSchema), postTagsController.syncPostTags);
+router.get("/posts/tags", requireAuth, postTagsController.getActivePostTags);
 // Post Moderation
 router.post("/post/:id/flag", requireAuth, contentController.flagPost);
 // The moderation endpoint requires the exact orgId format to use our RBAC middleware
