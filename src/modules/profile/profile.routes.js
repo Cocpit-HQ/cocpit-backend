@@ -28,7 +28,8 @@ router.delete("/resume", requireAuth, requireActiveSession, profileController.de
 
 // Experiences
 router.post("/experiences", requireAuth, requireActiveSession, profileController.addExperience);
-router.put("/experiences/:id", requireAuth, requireActiveSession, profileController.updateExperience);
+router.patch("/experiences/:id", requireAuth, requireActiveSession, profileController.updateExperience);
+router.put("/experiences/:id", requireAuth, requireActiveSession, profileController.updateExperience); // kept for web backward-compat during migration
 router.delete("/experiences/:id", requireAuth, requireActiveSession, profileController.deleteExperience);
 
 // Educations

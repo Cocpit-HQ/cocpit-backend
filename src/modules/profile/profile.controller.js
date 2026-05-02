@@ -336,31 +336,61 @@ exports.deleteResume = async (req, res) => {
 // ─── Experiences ────────────────────────────────────────────────────────────────
 
 exports.addExperience = async (req, res) => {
+    const {
+        title, company_name, location, work_type, work_mode,
+        start_date, end_date, is_current, description, org_id,
+        // ── Atomic end-role fields ────────────────────────────────────────────────
+        end_current_role,    // boolean — end an existing active role in the same transaction
+        end_current_role_id, // UUID    — which experience to end (required if flag is true)
+        // end date of previous role = start_date of new role (same-day transition, no extra field)
+    } = req.body;
+
+    // ── Validate atomic end-role fields BEFORE touching the DB ───────────────────
+    if (end_current_role && !end_current_role_id) {
+        return res.status(422).json({
+            message: "end_current_role_id is required when end_current_role is true",
+            code: "END_ROLE_ID_MISSING",
+        });
+    }
+
+    // ── Basic validation ──────────────────────────────────────────────────────────
+    if (!start_date) {
+        return res.status(422).json({ message: "Start date is required" });
+    }
+    if (!is_current && !end_date) {
+        return res.status(422).json({ message: "End date is required when not currently working" });
+    }
+    if (end_date && new Date(end_date) < new Date(start_date)) {
+        return res.status(422).json({ message: "End date must be on or after start date" });
+    }
+
+    const client = await pool.connect();
     try {
         const profileId = await profileRepo.ensureProfileId(req.user.sub);
         if (!profileId) return res.status(404).json({ message: "Profile not found" });
 
-        const { title, company_name, location, work_type, work_mode, start_date, end_date, is_current, description, org_id } = req.body;
-
-        // ── Basic validation ──────────────────────────────────────────────────────
-        if (!start_date) {
-            return res.status(422).json({ message: "Start date is required" });
-        }
-        if (!is_current && !end_date) {
-            return res.status(422).json({ message: "End date is required when not currently working" });
-        }
-        if (end_date && new Date(end_date) <= new Date(start_date)) {
-            return res.status(422).json({ message: "End date must be after start date" });
-        }
-
+        // ── Cross-experience validation (runs before transaction opens) ───────────
+        // The role being ended is excluded from all checks — it will be closed atomically.
         const allExperiences = await profileRepo.getExperiencesByProfileId(profileId);
+
+        // ── Validate that the new start_date doesn't break the old role's date range ──
+        if (end_current_role && end_current_role_id && start_date) {
+            const roleToEnd = allExperiences.find(e => e.experience_id === end_current_role_id);
+            if (roleToEnd && roleToEnd.start_date && new Date(start_date) < new Date(roleToEnd.start_date)) {
+                return res.status(422).json({
+                    message: "The new role's start date cannot be before the current role's start date.",
+                    code: "END_ROLE_DATE_INVALID"
+                });
+            }
+        }
+
         const companyNorm = (company_name || "").trim().toLowerCase();
         const newEnd = is_current ? null : end_date;
 
         // ── Same-company date overlap (hard block) ────────────────────────────────
-        // Two roles at the same company must not have overlapping date ranges.
         const sameCompany = allExperiences.filter(e => {
             if (!companyNorm) return false;
+            if (end_current_role && e.experience_id === end_current_role_id) return false; // being ended
             return (org_id && e.org_id === org_id) ||
                    (!org_id && !e.org_id && (e.company_name || "").trim().toLowerCase() === companyNorm);
         });
@@ -376,7 +406,10 @@ exports.addExperience = async (req, res) => {
         // ── Multiple is_current check (work_type × work_mode matrix) ─────────────
         let warning = undefined;
         if (is_current) {
-            const activeRoles = allExperiences.filter(e => e.is_current || !e.end_date);
+            const activeRoles = allExperiences.filter(e =>
+                (e.is_current || !e.end_date) &&
+                !(end_current_role && e.experience_id === end_current_role_id) // exclude role being ended
+            );
             if (activeRoles.length > 0) {
                 const severity = getMultipleCurrentSeverity(activeRoles, work_type, work_mode);
                 if (severity === 'block') {
@@ -390,13 +423,46 @@ exports.addExperience = async (req, res) => {
                 }
             }
         }
-        // ─────────────────────────────────────────────────────────────────────────
 
-        const experience = await profileRepo.addExperience(profileId, { title, company_name, location, work_type, work_mode, start_date, end_date, is_current, description, org_id });
-        res.status(201).json({ message: "Experience added successfully", experience, warning });
+        // ── Atomic transaction: end old role + insert new role ────────────────────
+        await client.query('BEGIN');
+
+        // Step 1: End the existing role (only if requested)
+        let endedExperience = null;
+        if (end_current_role && end_current_role_id) {
+            endedExperience = await profileRepo.endExperienceById(
+                client, end_current_role_id, profileId,
+                start_date // new role's start = previous role's end (same-day transition)
+            );
+            if (!endedExperience) {
+                await client.query('ROLLBACK');
+                return res.status(404).json({
+                    message: "The experience to end was not found, not authorized, or is already ended",
+                    code: "END_ROLE_NOT_FOUND",
+                });
+            }
+        }
+
+        // Step 2: Insert the new experience
+        const experience = await profileRepo.addExperienceInTx(
+            client, profileId,
+            { title, company_name, location, work_type, work_mode, start_date, end_date, is_current, description, org_id }
+        );
+
+        await client.query('COMMIT');
+
+        res.status(201).json({
+            message: "Experience added successfully",
+            experience,
+            ...(endedExperience && { ended_experience: endedExperience }),
+            ...(warning && { warning }),
+        });
     } catch (err) {
+        await client.query('ROLLBACK');
         console.error("Add experience error:", err);
         res.status(500).json({ message: "Internal server error" });
+    } finally {
+        client.release();
     }
 };
 

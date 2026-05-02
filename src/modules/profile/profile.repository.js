@@ -124,7 +124,7 @@ const getExperiences = async (profileId) => {
          FROM experiences e 
          LEFT JOIN organizations o ON e.org_id = o.org_id 
          WHERE e.profile_id = $1 
-         ORDER BY e.start_date DESC`,
+         ORDER BY e.is_current DESC, e.start_date DESC`,
         [profileId]
     );
     return groupByCompany(result.rows);
@@ -133,7 +133,7 @@ const getExperiences = async (profileId) => {
 /** Returns flat (ungrouped) experience rows for a profile — used for validation checks */
 const getExperiencesByProfileId = async (profileId) => {
     const result = await pool.query(
-        `SELECT * FROM experiences WHERE profile_id = $1 ORDER BY start_date DESC`,
+        `SELECT * FROM experiences WHERE profile_id = $1 ORDER BY is_current DESC, start_date DESC`,
         [profileId]
     );
     return result.rows;
@@ -225,6 +225,42 @@ const deleteExperience = async (experienceId, profileId) => {
         [experienceId, profileId]
     );
     return result.rows[0] || null;
+};
+
+/**
+ * Ends a specific experience inside an existing pg transaction.
+ * Only succeeds if the experience belongs to this profile AND is still active.
+ * Returns the updated row, or null if not found / already ended.
+ */
+const endExperienceById = async (client, experienceId, profileId, endDate) => {
+    const result = await client.query(
+        `UPDATE experiences
+         SET is_current = false, end_date = $1
+         WHERE experience_id = $2
+           AND profile_id    = $3
+           AND is_current    = true
+         RETURNING *`,
+        [endDate, experienceId, profileId]
+    );
+    return result.rows[0] || null;
+};
+
+/**
+ * Inserts a new experience inside an existing pg transaction.
+ */
+const addExperienceInTx = async (client, profileId, data) => {
+    const { title, company_name, location, work_type, work_mode,
+            start_date, end_date, is_current, description, org_id } = data;
+    const result = await client.query(
+        `INSERT INTO experiences
+             (profile_id, title, company_name, location, work_type, work_mode,
+              start_date, end_date, is_current, description, org_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+         RETURNING *`,
+        [profileId, title, company_name, location, work_type, work_mode,
+         start_date, end_date, is_current ?? false, description, org_id || null]
+    );
+    return result.rows[0];
 };
 
 // ─── Educations ─────────────────────────────────────────────────────────────────
@@ -369,6 +405,7 @@ module.exports = {
     getResume, getLatestResume, replaceResume, deleteResume,
     getProfileId, ensureProfileId,
     getExperiences, getExperiencesByProfileId, addExperience, findExperience, updateExperience, deleteExperience,
+    endExperienceById, addExperienceInTx,
     getEducations, addEducation, updateEducation, deleteEducation,
     getSkills, deleteSkillMapping,
     getCompanyRoles, getSocialCounts, getRelationshipInfo,
