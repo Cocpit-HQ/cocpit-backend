@@ -240,6 +240,19 @@ exports.getMyPosts = async (req, res) => {
             (p.author_org_id IS NOT NULL) AS is_organization_post,
 
                         pc.name AS category_name,
+                        p.location,
+                        COALESCE(
+                            (SELECT json_agg(json_build_object(
+                                'id', u_tag.user_id,
+                                'full_name', u_tag.full_name,
+                                'account_name', u_tag.account_name,
+                                'avatar_url', u_tag.avatar_url
+                            ))
+                            FROM post_tags pt 
+                            JOIN users u_tag ON pt.tagged_user_id = u_tag.user_id
+                            WHERE pt.post_id = p.post_id AND pt.is_active_tag = true),
+                            '[]'::json
+                        ) AS tags,
 
                             COALESCE(pm.media, '[]':: json) AS media,
                                 COALESCE(lc.like_count, 0) AS like_count,
@@ -662,8 +675,8 @@ exports.createPost = async (req, res) => {
     }
 
     const { userId, orgId: companyId } = actorScope;
-    let { content, category, visibility, media_urls, post_type, title, poll_options, poll_duration, is_broadcast } = req.body; // category is name, media_urls is array
-    
+    let { content, category, visibility, media_urls, post_type, title, poll_options, poll_duration, is_broadcast, location } = req.body; // category is name, media_urls is array
+
     // Sanitize user-generated content
     content = sanitizeContent(content);
     title = sanitizeContent(title);
@@ -845,10 +858,10 @@ exports.createPost = async (req, res) => {
 
         // 2. Insert Post
         const postResult = await client.query(
-            ` INSERT INTO posts (author_id, category_id, content, visibility, post_type, title, shared_post_id, shared_job_id, author_org_id, is_broadcast, broadcast_scope)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+            ` INSERT INTO posts (author_id, category_id, content, visibility, post_type, title, shared_post_id, shared_job_id, author_org_id, is_broadcast, broadcast_scope, location)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
       RETURNING post_id, created_at
-      `, [userId, categoryId, content, visibility || 'public', post_type, title, req.body.shared_post_id || null, req.body.shared_job_id || null, companyId || null, is_broadcast ? true : false, is_broadcast ? 'CHILDREN' : null]
+      `, [userId, categoryId, content, visibility || 'public', post_type, title, req.body.shared_post_id || null, req.body.shared_job_id || null, companyId || null, is_broadcast ? true : false, is_broadcast ? 'CHILDREN' : null, location || null]
         );
 
         const postId = postResult.rows[0].post_id;
@@ -1042,6 +1055,19 @@ exports.getPostById = async (req, res) => {
     COALESCE(comp.slug, u.account_name) AS author_slug,
     (p.author_org_id IS NOT NULL) AS is_organization_post,
     c.name AS category_name,
+    p.location,
+    COALESCE(
+        (SELECT json_agg(json_build_object(
+            'id', u_tag.user_id,
+            'full_name', u_tag.full_name,
+            'account_name', u_tag.account_name,
+            'avatar_url', u_tag.avatar_url
+        ))
+        FROM post_tags pt 
+        JOIN users u_tag ON pt.tagged_user_id = u_tag.user_id
+        WHERE pt.post_id = p.post_id AND pt.is_active_tag = true),
+        '[]'::json
+    ) AS tags,
 
     -- Like Count
     (SELECT COUNT(*) FROM post_likes pl WHERE pl.post_id = p.post_id)::int AS like_count,
@@ -1289,7 +1315,7 @@ WHERE p.post_id = $1;
 
 exports.updatePostById = async (req, res) => {
     const postId = req.params.id;
-    let { content, category, visibility, media_urls, post_type, title, poll_options } = req.body;
+    let { content, category, visibility, media_urls, post_type, title, poll_options, location } = req.body;
 
     // Sanitize user-generated content
     content = sanitizeContent(content);
@@ -1363,6 +1389,12 @@ exports.updatePostById = async (req, res) => {
         if (content !== undefined) {
             updates.push(`content = $${index++}`);
             values.push(content);
+        }
+
+        // location
+        if (location !== undefined) {
+            updates.push(`location = $${index++}`);
+            values.push(location);
         }
 
         // visibility
@@ -1877,7 +1909,7 @@ exports.toggleLike = async (req, res) => {
 exports.addComment = async (req, res) => {
     const postId = req.params.id;
     let { content, parent_id } = req.body; // Added companyId
-    
+
     // Sanitize user-generated content
     content = sanitizeContent(content);
     let actorScope;
@@ -2187,7 +2219,7 @@ exports.addComment = async (req, res) => {
 exports.updateComment = async (req, res) => {
     const commentId = req.params.commentId;
     let { content } = req.body;
-    
+
     // Sanitize user-generated content
     content = sanitizeContent(content);
     let actorScope;

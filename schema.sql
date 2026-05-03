@@ -185,6 +185,7 @@ CREATE TABLE posts (
   category_id UUID REFERENCES post_categories(category_id),
   title TEXT,
   content TEXT,
+  location TEXT,
   visibility visibility_type DEFAULT 'public',
   shared_post_id UUID REFERENCES posts(post_id) ON DELETE SET NULL,
   shared_job_id UUID REFERENCES jobs(job_id) ON DELETE SET NULL,

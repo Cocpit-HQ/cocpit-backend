@@ -97,8 +97,6 @@ const sweepActivityLogs = async () => {
         `, [lastProcessedAt]);
 
         if (pendingRes.rowCount > 0) {
-            console.log(`[IntentEngine] Processing ${pendingRes.rowCount} new activities.`);
-
             const userScoreUpdates = {};
             let maxTimestamp = lastProcessedAt;
 
@@ -138,7 +136,6 @@ const sweepActivityLogs = async () => {
 
             // Save the highest timestamp
             await setCursor(client, maxTimestamp);
-            console.log(`[IntentEngine] Sweep completed. New cursor: ${maxTimestamp}`);
         }
 
     } catch (err) {

@@ -9,7 +9,7 @@ const pool = require("../../core/db/pool");
 const getFullProfile = async (userId) => {
     const result = await pool.query(
         `SELECT u.user_id, u.full_name, u.headline, u.avatar_url, u.cover_image_url, u.location, u.about_text, u.email, u.mobile_number, u.account_name, u.website, u.created_at,
-            p.profile_id, p.open_to, p.availability, p.work_preference, p.profile_views_count, p.search_appearances_count
+            p.profile_id, p.account_type, p.open_to, p.availability, p.work_preference, p.profile_views_count, p.search_appearances_count
      FROM users u
      LEFT JOIN profiles p ON u.user_id = p.user_id
      WHERE u.user_id = $1`,
@@ -57,12 +57,18 @@ const getIdentity = async (userId) => {
     return result.rows[0] || null;
 };
 
-const updateIdentity = async (userId, { open_to, availability, work_preference }) => {
-    const result = await pool.query(
-        `UPDATE profiles SET open_to = $1, availability = $2, work_preference = $3, updated_at = now()
-     WHERE user_id = $4 RETURNING *`,
-        [open_to, availability, work_preference, userId]
-    );
+const updateIdentity = async (userId, { open_to, availability, work_preference, account_type }) => {
+    let query = `UPDATE profiles SET open_to = $1, availability = $2, work_preference = $3`;
+    let params = [open_to, availability, work_preference];
+    let idx = 4;
+    if (account_type !== undefined) {
+        query += `, account_type = $${idx}`;
+        params.push(account_type);
+        idx++;
+    }
+    query += `, updated_at = now() WHERE user_id = $${idx} RETURNING *`;
+    params.push(userId);
+    const result = await pool.query(query, params);
     return result.rows[0] || null;
 };
 

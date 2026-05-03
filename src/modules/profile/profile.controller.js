@@ -138,7 +138,7 @@ exports.getProfile = async (req, res) => {
             user: {
                 id: u.user_id, account_name: u.account_name, name: u.full_name, headline: u.headline, avatar: u.avatar_url,
                 cover_image: u.cover_image_url, location: u.location, about: u.about_text,website:u.website,
-                email: u.email, mobile_number: u.mobile_number,
+                email: u.email, mobile_number: u.mobile_number, account_type: u.account_type,
                 followers_count: parseInt(counts.followers_count), following_count: parseInt(counts.following_count),
                 connections_count: parseInt(counts.connections_count),
                 open_to: u.open_to, availability: u.availability, work_preference: u.work_preference,
@@ -279,17 +279,22 @@ exports.getIdentity = async (req, res) => {
 };
 
 exports.updateIdentity = async (req, res) => {
-    const { open_to, availability, work_preference } = req.body;
-    const allowedOpenTo = ["Full-time", "Freelance", "Mentorship", "Consulting"];
-    const allowedAvailability = ["Immediate", "30 Days", "Casual Networking"];
-    const allowedWorkPreference = ["Remote", "Hybrid", "Onsite"];
+    const { open_to, availability, work_preference, account_type } = req.body;
+    const allowedOpenTo = ["Full-time", "Part-time", "Internship", "Freelance", "Connections"];
+    const allowedAvailability = ["Immediately", "Weekdays", "Weekends", "15 to 30 days", "Flexible", "On-demand", "Immediate", "30 Days"];
+    const allowedWorkPreference = ["Remote", "Hybrid", "On-site"];
+    const allowedAccountTypes = ["student", "fresher", "intern", "self_employed", "employed", "unemployed"];
 
     if (!allowedOpenTo.includes(open_to) || !allowedAvailability.includes(availability) || !allowedWorkPreference.includes(work_preference)) {
         return res.status(400).json({ message: "Invalid identity values" });
     }
 
+    if (account_type && !allowedAccountTypes.includes(account_type)) {
+        return res.status(400).json({ message: "Invalid account type" });
+    }
+
     try {
-        const identity = await profileRepo.updateIdentity(req.user.sub, { open_to, availability, work_preference });
+        const identity = await profileRepo.updateIdentity(req.user.sub, { open_to, availability, work_preference, account_type });
         if (!identity) return res.status(404).json({ message: "Profile not found" });
         res.json({ message: "Professional identity updated successfully", identity });
     } catch (err) {
