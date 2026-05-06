@@ -10,6 +10,8 @@ const { syncTagsSchema } = require("./postTags.schema");
 // Feed & Discovery
 router.get("/All/feeds", optionalAuth, contentController.getPublicFeed);
 router.get("/users/me/posts", requireAuth, contentController.getMyPosts);
+router.get("/users/me/posts/commented", requireAuth, contentController.getMyCommentedPosts);
+router.get("/users/me/posts/private", requireAuth, contentController.getMyPrivatePosts);
 
 // Posts (Image, Video, Article, Poll)
 router.post("/post", requireAuth, contentController.createPost);

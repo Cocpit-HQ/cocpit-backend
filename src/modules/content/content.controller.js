@@ -228,249 +228,11 @@ exports.getMyPosts = async (req, res) => {
 
         const query = `
         SELECT
-        p.post_id,
-            p.content,
-            p.created_at,
-            p.visibility,
-
-            COALESCE(p.author_org_id, u.user_id) AS author_id,
-            COALESCE(comp.name, u.full_name) AS author_name,
-            COALESCE(comp.logo_url, u.avatar_url) AS author_avatar,
-            COALESCE(comp.slug, u.account_name) AS author_slug,
-            (p.author_org_id IS NOT NULL) AS is_organization_post,
-
-                        pc.name AS category_name,
-                        p.location,
-                        COALESCE(
-                            (SELECT json_agg(json_build_object(
-                                'id', u_tag.user_id,
-                                'full_name', u_tag.full_name,
-                                'account_name', u_tag.account_name,
-                                'avatar_url', u_tag.avatar_url
-                            ))
-                            FROM post_tags pt 
-                            JOIN users u_tag ON pt.tagged_user_id = u_tag.user_id
-                            WHERE pt.post_id = p.post_id AND pt.is_active_tag = true),
-                            '[]'::json
-                        ) AS tags,
-
-                            COALESCE(pm.media, '[]':: json) AS media,
-                                COALESCE(lc.like_count, 0) AS like_count,
-                                    -- Identity Aware states
-                                    EXISTS(
-                                        SELECT 1 FROM post_likes pl_me 
-                                        WHERE pl_me.post_id = p.post_id 
-                                        AND (
-                                            ${isOrgActor ? `pl_me.org_id = $${orgParamIdx}::uuid` : `pl_me.user_id = $${userParamIdx} AND pl_me.org_id IS NULL`}
-                                        )
-                                    ) AS is_liked,
-                                    EXISTS(
-                                        SELECT 1 FROM post_comments pc_me 
-                                        WHERE pc_me.post_id = p.post_id 
-                                        AND (
-                                            ${isOrgActor ? `pc_me.author_org_id = $${orgParamIdx}::uuid` : `pc_me.author_id = $${userParamIdx} AND pc_me.author_org_id IS NULL`}
-                                        )
-                                    ) AS is_commented,
-                                    EXISTS(
-                                        SELECT 1 FROM saved_post sp_me 
-                                        WHERE sp_me.post_id = p.post_id AND sp_me.user_id = $${userParamIdx}
-                                        AND (
-                                            ${isOrgActor ? `sp_me.org_id = $${orgParamIdx}::uuid` : 'sp_me.org_id IS NULL'}
-                                        )
-                                    ) AS is_saved,
-                                        COALESCE(cc.comment_count, 0) AS comment_count,
-
-                                            pp.poll,
-
-                                             --Shared Post Data
-                                            CASE 
-                                                
-                WHEN p.shared_job_id IS NOT NULL THEN
-                    json_build_object(
-                         'is_accessible', true,
-                         'job_id', sj.job_id,
-                         'title', sj.title,
-                         'company_name', sj.company_name,
-                         'location', sj.location,
-                         'job_type', sj.job_type,
-                         'work_mode', sj.work_mode,
-                         'salary_min', sj.salary_min,
-                         'salary_max', sj.salary_max,
-                         'company_logo', sj_comp.logo_url,
-                         'created_at', sj.created_at,
-                         'is_active', sj.is_active,
-                         'company_slug', sj_comp.slug,
-                         'shared_entity_type', 'job'
-                    )
-                WHEN p.shared_post_id IS NULL THEN NULL
-                                                WHEN sp.post_id IS NULL THEN 
-                                                    json_build_object('is_accessible', false, 'reason', 'deleted')
-                                                WHEN (
-                                                    -- 1. Private: Author only
-                                                    (sp.visibility = 'private' AND sp.author_id = $${userParamIdx})
-                                                    OR
-                                                    -- 2. Public + Personal: Connections only
-                                                    (sp.visibility = 'public' AND sp_cat.name = 'Personal' AND (
-                                                        sp.author_id = $${userParamIdx}
-                                                        OR EXISTS (
-                                                            SELECT 1 FROM followers f1 
-                                                            JOIN followers f2 ON f1.follower_id = f2.following_id AND f1.following_id = f2.follower_id 
-                                                            WHERE f1.follower_id = $${userParamIdx} AND f1.following_id = sp.author_id
-                                                        )
-                                                    ))
-                                                    OR
-                                                    -- 3. Public + Other: Everyone
-                                                    (sp.visibility = 'public' AND (sp_cat.name != 'Personal' OR sp_cat.name IS NULL))
-                                                ) THEN
-                                                    json_build_object(
-                                                        'is_accessible', true,
-                                                        'post_id', sp.post_id,
-                                                        'content', sp.content,
-                                                        'created_at', sp.created_at,
-                                                         'author', json_build_object(
-                                                             'user_id', COALESCE(sp.author_org_id, sp_u.user_id),
-                                                             'full_name', COALESCE(sp_comp.name, sp_u.full_name),
-                                                             'avatar_url', COALESCE(sp_comp.logo_url, sp_u.avatar_url),
-                                                             'author_slug', COALESCE(sp_comp.slug, sp_u.account_name),
-                                                             'is_organization_post', (sp.author_org_id IS NOT NULL)
-                                                         ),
-                                                        'media', COALESCE(sp_media.media, '[]'::json),
-                                                        'like_count', (SELECT COUNT(*) FROM post_likes pl WHERE pl.post_id = sp.post_id)::int,
-                                                        'comment_count', (SELECT COUNT(*) FROM post_comments pc WHERE pc.post_id = sp.post_id)::int,
-                                                        'is_liked', EXISTS(
-                                                            SELECT 1 FROM post_likes pl
-                                                            WHERE pl.post_id = sp.post_id
-                                                            AND (
-                                                                ($${orgParamIdx}::uuid IS NOT NULL AND pl.org_id = $${orgParamIdx}::uuid)
-                                                                OR
-                                                                ($${orgParamIdx}::uuid IS NULL AND pl.user_id = $${userParamIdx} AND pl.org_id IS NULL)
-                                                            )
-                                                        )
-                                                    )
-                                                -- Failure Analysis
-                                                WHEN sp.visibility = 'private' THEN json_build_object(
-                                                    'is_accessible', false, 
-                                                    'reason', 'private',
-                                                    'author', json_build_object(
-                                                        'user_id', sp_u.user_id,
-                                                        'full_name', sp_u.full_name,
-                                                        'avatar_url', sp_u.avatar_url
-                                                    )
-                                                )
-                                                WHEN (sp.visibility = 'public' AND sp_cat.name = 'Personal') THEN json_build_object(
-                                                    'is_accessible', false, 
-                                                    'reason', 'personal_connection',
-                                                    'author', json_build_object(
-                                                        'user_id', sp_u.user_id,
-                                                        'full_name', sp_u.full_name,
-                                                        'avatar_url', sp_u.avatar_url
-                                                    )
-                                                )
-                                                ELSE
-                                                    json_build_object('is_accessible', false, 'reason', 'unknown')
-                                            END AS shared_post
-
-       FROM posts p
-       JOIN users u ON u.user_id = p.author_id
-       LEFT JOIN organizations comp ON comp.org_id = p.author_org_id
-       LEFT JOIN post_categories pc ON pc.category_id = p.category_id
- 
-         --Shared Post Joins
-       LEFT JOIN posts sp ON p.shared_post_id = sp.post_id
-       LEFT JOIN users sp_u ON sp.author_id = sp_u.user_id
-       LEFT JOIN organizations sp_comp ON sp_comp.org_id = sp.author_org_id
-       LEFT JOIN post_categories sp_cat ON sp.category_id = sp_cat.category_id
-        LEFT JOIN jobs sj ON p.shared_job_id = sj.job_id
-        LEFT JOIN organizations sj_comp ON sj.org_id = sj_comp.org_id
-       LEFT JOIN(
-             SELECT post_id, json_agg(json_build_object('url', url, 'media_type', media_type)) as media
-           FROM post_media
-           GROUP BY post_id
-         ) sp_media ON sp.post_id = sp_media.post_id
-
-        -- ✅ MEDIA
-      LEFT JOIN(
-            SELECT
-          pm.post_id,
-            json_agg(
-                json_build_object(
-                    'media_id', pm.media_id,
-                    'url', pm.url,
-                    'media_type', pm.media_type,
-                    'aspect_ratio', pm.aspect_ratio
-                )
-            ) AS media
-        FROM post_media pm
-        GROUP BY pm.post_id
-        ) pm ON pm.post_id = p.post_id
-
-        -- ✅ LIKE COUNT
-      LEFT JOIN(
-            SELECT post_id, COUNT(*) AS like_count
-        FROM post_likes
-        GROUP BY post_id
-        ) lc ON lc.post_id = p.post_id
-
-        -- ✅ COMMENT COUNT
-      LEFT JOIN(
-            SELECT post_id, COUNT(*) AS comment_count
-        FROM post_comments
-        GROUP BY post_id
-        ) cc ON cc.post_id = p.post_id
-
-        -- ✅ POLL
-      LEFT JOIN(
-            SELECT
-          pp.post_id,
-            json_build_object(
-                'poll_id', pp.poll_id,
-                'duration', COALESCE(pp.duration, '1 day'),
-                'total_votes', COALESCE(pv.total_votes, 0),
-                'user_vote', (
-                    SELECT pv_u.option_id FROM poll_votes pv_u 
-                    WHERE pv_u.poll_id = pp.poll_id 
-                    AND (
-                        ${isOrgActor ? `pv_u.org_id = $${orgParamIdx}::uuid` : `pv_u.voter_id = $${userParamIdx} AND pv_u.org_id IS NULL`}
-                    )
-                ),
-            'options', COALESCE(po.options, '[]':: json),
-            'is_active', (pp.created_at + COALESCE(pp.duration, '1 day'):: interval > NOW())
-          ) AS poll
-        FROM post_polls pp
-
-        LEFT JOIN(
-                SELECT
-            t.poll_id,
-                json_agg(
-                    json_build_object(
-                        'option_id', t.option_id,
-                        'option_text', t.option_text,
-                        'vote_count', t.vote_count
-                    )
-                ) AS options
-          FROM(
-                    SELECT
-              po.option_id,
-                    po.poll_id,
-                    po.option_text,
-                    COUNT(pv.vote_id) AS vote_count
-            FROM poll_options po
-            LEFT JOIN poll_votes pv ON pv.option_id = po.option_id
-            GROUP BY po.option_id, po.poll_id, po.option_text
-                ) t
-          GROUP BY t.poll_id
-            ) po ON po.poll_id = pp.poll_id
-
-        LEFT JOIN(
-                SELECT poll_id, COUNT(*) AS total_votes
-          FROM poll_votes
-          GROUP BY poll_id
-            ) pv ON pv.poll_id = pp.poll_id
-      ) pp ON pp.post_id = p.post_id
-
-      ${whereClause}
-      ORDER BY p.created_at DESC, p.post_id DESC
-      LIMIT $${idx};
+            ${getPostHydrationSelect(orgParamIdx, userParamIdx)}
+        ${getPostHydrationJoins()}
+        ${whereClause}
+        ORDER BY p.created_at DESC, p.post_id DESC
+        LIMIT $${idx}
         `;
 
         const { rows } = await pool.query(query, params);
@@ -541,6 +303,218 @@ exports.getMyPosts = async (req, res) => {
         });
     } catch (err) {
         console.error("Get user posts error:", err);
+        res.status(500).json({ message: "Internal server error" });
+    }
+};
+
+exports.getMyCommentedPosts = async (req, res) => {
+    const {
+        search,
+        cursorCreatedAt,
+        cursorPostId,
+        limit = 10,
+        companyId: requestedCompanyId
+    } = req.query;
+
+    try {
+        const actorScope = getContentActorScope(req, requestedCompanyId || null);
+        const { userId, orgId: companyId, isOrgActor } = actorScope;
+        const params = [userId];
+        const userParamIdx = 1;
+        let orgParamIdx = null;
+        let idx = 2;
+
+        if (isOrgActor) {
+            params.push(companyId);
+            orgParamIdx = 2;
+            idx = 3;
+        }
+
+        // Filter: Posts commented by the user, excluding their own posts (per user request)
+        let whereClause = isOrgActor
+            ? `WHERE EXISTS (SELECT 1 FROM post_comments pc_me WHERE pc_me.post_id = p.post_id AND pc_me.author_org_id = $${orgParamIdx}) AND p.author_org_id != $${orgParamIdx}`
+            : `WHERE EXISTS (SELECT 1 FROM post_comments pc_me WHERE pc_me.post_id = p.post_id AND pc_me.author_id = $${userParamIdx} AND pc_me.author_org_id IS NULL) AND p.author_id != $${userParamIdx}`;
+
+        if (search && search.trim() !== "") {
+            whereClause += ` AND p.content ILIKE $${idx} `;
+            params.push(`%${search.trim()}%`);
+            idx++;
+        }
+
+        if (cursorCreatedAt && cursorPostId) {
+            whereClause += ` AND (p.created_at, p.post_id) < ($${idx}, $${idx + 1}) `;
+            params.push(cursorCreatedAt, cursorPostId);
+            idx += 2;
+        }
+
+        params.push(limit);
+        const limitIdx = idx;
+
+        const query = `
+        SELECT
+            p.post_id,
+            p.content,
+            p.created_at,
+            p.visibility,
+            COALESCE(p.author_org_id, u.user_id) AS author_id,
+            COALESCE(comp.name, u.full_name) AS author_name,
+            COALESCE(comp.logo_url, u.avatar_url) AS author_avatar,
+            COALESCE(comp.slug, u.account_name) AS author_slug,
+            (p.author_org_id IS NOT NULL) AS is_organization_post,
+            pc.name AS category_name,
+            p.location,
+            COALESCE(pm.media, '[]'::json) AS media,
+            COALESCE(lc.like_count, 0) AS like_count,
+            EXISTS(SELECT 1 FROM post_likes pl_me WHERE pl_me.post_id = p.post_id AND (
+                ${isOrgActor ? `pl_me.org_id = $${orgParamIdx}::uuid` : `pl_me.user_id = $${userParamIdx} AND pl_me.org_id IS NULL`}
+            )) AS is_liked,
+            true AS is_commented,
+            EXISTS(SELECT 1 FROM saved_post sp_me WHERE sp_me.post_id = p.post_id AND sp_me.user_id = $${userParamIdx} AND (
+                ${isOrgActor ? `sp_me.org_id = $${orgParamIdx}::uuid` : 'sp_me.org_id IS NULL'}
+            )) AS is_saved,
+            COALESCE(cc.comment_count, 0) AS comment_count,
+            (
+                SELECT json_build_object(
+                    'comment_id', mc.comment_id,
+                    'content', mc.content,
+                    'created_at', mc.created_at,
+                    'author_id', COALESCE(mc.author_org_id, mc_u.user_id),
+                    'author_name', COALESCE(mc_comp.name, mc_u.full_name),
+                    'author_avatar', COALESCE(mc_comp.logo_url, mc_u.avatar_url),
+                    'author_title', mc_u.headline,
+                    'like_count', (SELECT COUNT(*) FROM comment_likes cl WHERE cl.comment_id = mc.comment_id)::int,
+                    'is_liked', EXISTS(SELECT 1 FROM comment_likes cl WHERE cl.comment_id = mc.comment_id AND (
+                        ${isOrgActor ? `cl.org_id = $${orgParamIdx}::uuid` : `cl.user_id = $${userParamIdx} AND cl.org_id IS NULL`}
+                    )),
+                    'reply_count', (SELECT COUNT(*) FROM post_comments rc WHERE rc.parent_id = mc.comment_id)::int
+                )
+                FROM post_comments mc
+                JOIN users mc_u ON mc_u.user_id = mc.author_id
+                LEFT JOIN organizations mc_comp ON mc_comp.org_id = mc.author_org_id
+                WHERE mc.post_id = p.post_id
+                AND (${isOrgActor ? `mc.author_org_id = $${orgParamIdx}::uuid` : `mc.author_id = $${userParamIdx} AND mc.author_org_id IS NULL`})
+                ORDER BY mc.created_at DESC
+                LIMIT 1
+            ) AS my_comment
+        FROM posts p
+        JOIN users u ON u.user_id = p.author_id
+        LEFT JOIN organizations comp ON comp.org_id = p.author_org_id
+        LEFT JOIN post_categories pc ON pc.category_id = p.category_id
+        LEFT JOIN (
+            SELECT pm.post_id, json_agg(json_build_object('media_id', pm.media_id, 'url', pm.url, 'media_type', pm.media_type)) AS media
+            FROM post_media pm GROUP BY pm.post_id
+        ) pm ON pm.post_id = p.post_id
+        LEFT JOIN (SELECT post_id, COUNT(*) AS like_count FROM post_likes GROUP BY post_id) lc ON lc.post_id = p.post_id
+        LEFT JOIN (SELECT post_id, COUNT(*) AS comment_count FROM post_comments GROUP BY post_id) cc ON cc.post_id = p.post_id
+        ${whereClause}
+        ORDER BY p.created_at DESC, p.post_id DESC
+        LIMIT $${limitIdx}
+        `;
+
+        const { rows } = await pool.query(query, params);
+        const last = rows[rows.length - 1];
+
+        res.json({
+            posts: rows,
+            nextCursor: last ? { cursorCreatedAt: last.created_at, cursorPostId: last.post_id } : null,
+        });
+    } catch (err) {
+        console.error("Get commented posts error:", err);
+        res.status(500).json({ message: "Internal server error" });
+    }
+};
+
+exports.getMyPrivatePosts = async (req, res) => {
+    const {
+        search,
+        cursorCreatedAt,
+        cursorPostId,
+        limit = 10,
+        companyId: requestedCompanyId
+    } = req.query;
+
+    try {
+        const actorScope = getContentActorScope(req, requestedCompanyId || null);
+        const { userId, orgId: companyId, isOrgActor } = actorScope;
+        const params = [userId];
+        const userParamIdx = 1;
+        let orgParamIdx = null;
+        let idx = 2;
+
+        if (isOrgActor) {
+            params.push(companyId);
+            orgParamIdx = 2;
+            idx = 3;
+        }
+
+        let whereClause = isOrgActor
+            ? `WHERE p.author_org_id = $${orgParamIdx} AND p.visibility = 'private'`
+            : `WHERE p.author_id = $${userParamIdx} AND p.author_org_id IS NULL AND p.visibility = 'private'`;
+
+        if (search && search.trim() !== "") {
+            whereClause += ` AND p.content ILIKE $${idx} `;
+            params.push(`%${search.trim()}%`);
+            idx++;
+        }
+
+        if (cursorCreatedAt && cursorPostId) {
+            whereClause += ` AND (p.created_at, p.post_id) < ($${idx}, $${idx + 1}) `;
+            params.push(cursorCreatedAt, cursorPostId);
+            idx += 2;
+        }
+
+        params.push(limit);
+        const limitIdx = idx;
+
+        const query = `
+        SELECT
+            p.post_id,
+            p.content,
+            p.created_at,
+            p.visibility,
+            COALESCE(p.author_org_id, u.user_id) AS author_id,
+            COALESCE(comp.name, u.full_name) AS author_name,
+            COALESCE(comp.logo_url, u.avatar_url) AS author_avatar,
+            COALESCE(comp.slug, u.account_name) AS author_slug,
+            (p.author_org_id IS NOT NULL) AS is_organization_post,
+            pc.name AS category_name,
+            p.location,
+            COALESCE(pm.media, '[]'::json) AS media,
+            COALESCE(lc.like_count, 0) AS like_count,
+            EXISTS(SELECT 1 FROM post_likes pl_me WHERE pl_me.post_id = p.post_id AND (
+                ${isOrgActor ? `pl_me.org_id = $${orgParamIdx}::uuid` : `pl_me.user_id = $${userParamIdx} AND pl_me.org_id IS NULL`}
+            )) AS is_liked,
+            EXISTS(SELECT 1 FROM post_comments pc_me WHERE pc_me.post_id = p.post_id AND (
+                ${isOrgActor ? `pc_me.author_org_id = $${orgParamIdx}::uuid` : `pc_me.author_id = $${userParamIdx} AND pc_me.author_org_id IS NULL`}
+            )) AS is_commented,
+            EXISTS(SELECT 1 FROM saved_post sp_me WHERE sp_me.post_id = p.post_id AND sp_me.user_id = $${userParamIdx} AND (
+                ${isOrgActor ? `sp_me.org_id = $${orgParamIdx}::uuid` : 'sp_me.org_id IS NULL'}
+            )) AS is_saved,
+            COALESCE(cc.comment_count, 0) AS comment_count
+        FROM posts p
+        JOIN users u ON u.user_id = p.author_id
+        LEFT JOIN organizations comp ON comp.org_id = p.author_org_id
+        LEFT JOIN post_categories pc ON pc.category_id = p.category_id
+        LEFT JOIN (
+            SELECT pm.post_id, json_agg(json_build_object('media_id', pm.media_id, 'url', pm.url, 'media_type', pm.media_type)) AS media
+            FROM post_media pm GROUP BY pm.post_id
+        ) pm ON pm.post_id = p.post_id
+        LEFT JOIN (SELECT post_id, COUNT(*) AS like_count FROM post_likes GROUP BY post_id) lc ON lc.post_id = p.post_id
+        LEFT JOIN (SELECT post_id, COUNT(*) AS comment_count FROM post_comments GROUP BY post_id) cc ON cc.post_id = p.post_id
+        ${whereClause}
+        ORDER BY p.created_at DESC, p.post_id DESC
+        LIMIT $${limitIdx}
+        `;
+
+        const { rows } = await pool.query(query, params);
+        const last = rows[rows.length - 1];
+
+        res.json({
+            posts: rows,
+            nextCursor: last ? { cursorCreatedAt: last.created_at, cursorPostId: last.post_id } : null,
+        });
+    } catch (err) {
+        console.error("Get private posts error:", err);
         res.status(500).json({ message: "Internal server error" });
     }
 };
@@ -2641,6 +2615,10 @@ exports.getComments = async (req, res) => {
           (SELECT COUNT(*)::int FROM comment_likes cl WHERE cl.comment_id = c.comment_id),
           0
         ) AS like_count,
+        COALESCE(
+          (SELECT COUNT(*)::int FROM post_comments pc WHERE pc.parent_id = c.comment_id),
+          0
+        ) AS reply_count,
         COALESCE(
           (SELECT EXISTS(SELECT 1 FROM comment_likes cl 
            WHERE cl.comment_id = c.comment_id 
