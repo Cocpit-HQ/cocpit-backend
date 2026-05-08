@@ -523,15 +523,17 @@ CREATE TABLE connections (
 
 
 
-CREATE TABLE conversations (
+CREATE TABLE IF NOT EXISTS conversations (
   conversation_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   is_group BOOLEAN DEFAULT FALSE,
   conversation_name TEXT,
+  group_headline TEXT CHECK (char_length(group_headline) <= 100),
   group_avatar TEXT,
   description TEXT,
+  created_by UUID REFERENCES users(user_id) ON DELETE CASCADE,
   admin_id UUID REFERENCES users(user_id) ON DELETE SET NULL,
   last_message TEXT,
-  last_message_at TIMESTAMPTZ,
+  last_message_at TIMESTAMPTZ DEFAULT now(),
   created_at TIMESTAMPTZ DEFAULT now(),
   updated_at TIMESTAMPTZ DEFAULT now()
 );

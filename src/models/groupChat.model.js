@@ -109,7 +109,7 @@ class GroupChatModel {
         const result = await pool.query(
             `SELECT gi.invitation_id, gi.conversation_id, gi.status, gi.created_at,
               COALESCE(c.conversation_name, 'Unnamed Group') as group_name, 
-              COALESCE(c.group_avatar, c.avatar_url) as group_avatar,
+              COALESCE(c.group_avatar) as group_avatar,
               u.full_name as inviter_name
        FROM group_invitations gi
        LEFT JOIN conversations c ON gi.conversation_id = c.conversation_id
@@ -247,6 +247,44 @@ class GroupChatModel {
              RETURNING *`,
             [avatarUrl, groupId]
         );
+        return result.rows[0];
+    }
+
+    static async updateGroupDetails(groupId, { name, headline, description, avatar }) {
+        const fields = [];
+        const values = [];
+        let idx = 1;
+
+        if (name !== undefined) {
+            fields.push(`conversation_name = $${idx++}`);
+            values.push(name);
+        }
+        if (headline !== undefined) {
+            fields.push(`group_headline = $${idx++}`);
+            values.push(headline);
+        }
+        if (description !== undefined) {
+            fields.push(`description = $${idx++}`);
+            values.push(description);
+        }
+        if (avatar !== undefined) {
+            fields.push(`group_avatar = $${idx++}`);
+            values.push(avatar);
+        }
+
+        if (fields.length === 0) return null;
+
+        fields.push(`updated_at = now()`);
+        values.push(groupId);
+
+        const query = `
+            UPDATE conversations 
+            SET ${fields.join(", ")} 
+            WHERE conversation_id = $${idx} 
+            RETURNING *
+        `;
+
+        const result = await pool.query(query, values);
         return result.rows[0];
     }
     static async updateGroupOwner(groupId, newAdminId) {

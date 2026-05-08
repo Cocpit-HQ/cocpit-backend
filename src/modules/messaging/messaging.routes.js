@@ -35,6 +35,7 @@ router.delete("/groups/:groupId/members/:userId", requireAuth, groupAdminMiddlew
 router.post("/groups/:groupId/members/:userId/promote", requireAuth, groupAdminMiddleware.requireGroupAdmin, groupChatCtrl.promoteToAdmin);
 router.post("/groups/:groupId/members/:userId/demote", requireAuth, groupAdminMiddleware.requireGroupAdmin, groupChatCtrl.demoteAdmin);
 router.put("/groups/:groupId/avatar", requireAuth, groupAdminMiddleware.requireGroupAdmin, groupChatCtrl.updateGroupAvatar);
+router.put("/groups/:groupId/details", requireAuth, groupAdminMiddleware.requireGroupAdmin, groupChatCtrl.updateGroupDetails);
 router.patch("/groups/:groupId/role", requireAuth, groupAdminMiddleware.requireGroupAdmin, groupChatCtrl.updateMemberRole);
 
 router.get("/groups/:groupId", requireAuth, groupChatCtrl.getGroupDetails);

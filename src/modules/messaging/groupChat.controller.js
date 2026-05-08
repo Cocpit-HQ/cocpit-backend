@@ -234,6 +234,68 @@ exports.updateGroupAvatar = async (req, res) => {
     }
 }
 
+exports.updateGroupDetails = async (req, res) => {
+    try {
+        // Part D — Extract and validate
+        const userId = req.user.sub || req.user.user_id;
+        const { groupId } = req.params;
+        const { name, headline, description, avatar } = req.body;
+
+        if (!groupId) {
+            return res.status(400).json({
+                success: false,
+                message: "Group ID is required"
+            });
+        }
+
+        if (name === undefined && headline === undefined && description === undefined && avatar === undefined) {
+            return res.status(400).json({
+                success: false,
+                message: "At least one field is required to update"
+            });
+        }
+
+        if (name !== undefined && !name.trim()) {
+            return res.status(400).json({
+                success: false,
+                message: "Group name cannot be empty"
+            });
+        }
+
+        // Part E — Build update object dynamically
+        const updateFields = {};
+        if (name !== undefined) updateFields.name = name.trim();
+        if (headline !== undefined) updateFields.headline = headline.trim();
+        if (description !== undefined) updateFields.description = description.trim();
+        if (avatar !== undefined) updateFields.avatar = avatar;
+
+        // Use same DB update pattern as updateGroupAvatar
+        const updatedGroup = await GroupChatService.updateGroupDetails(userId, groupId, updateFields);
+
+        if (!updatedGroup) {
+            return res.status(404).json({
+                success: false,
+                message: "Group not found"
+            });
+        }
+
+        // Part F — Response (match updateGroupAvatar pattern exactly)
+        return res.status(200).json({
+            success: true,
+            data: updatedGroup,
+            message: "Group details updated successfully"
+        });
+
+    } catch (err) {
+        // Match exact error handling from updateGroupAvatar
+        console.error("Update Group Details Error:", err);
+        res.status(403).json({
+            success: false,
+            message: err.message
+        });
+    }
+}
+
 exports.markGroupMessagesAsRead = async (req, res) => {
     try {
         const userId = req.user.sub || req.user.user_id;

@@ -714,6 +714,51 @@ class GroupChatService {
         return updatedGroup;
     }
 
+    static async updateGroupDetails(userId, groupId, updateData) {
+        // 1. Group existence check
+        const group = await GroupChatModel.getGroupDetails(groupId);
+        if (!group) throw new Error("Group not found");
+
+        // 2. RBAC Check: Must be active admin
+        const members = await GroupChatModel.getGroupMembers(groupId);
+        const updater = members.find(m => m.user_id == userId);
+        if (!updater || updater.role !== 'admin') {
+            throw new Error("Only an active group admin can update group details");
+        }
+
+        // 3. Update details
+        const updatedGroup = await GroupChatModel.updateGroupDetails(groupId, updateData);
+
+        // 4. System message
+        const userRes = await pool.query(`SELECT full_name FROM users WHERE user_id = $1`, [userId]);
+        const userName = userRes.rows[0]?.full_name || "Admin";
+
+        const systemMsg = await GroupChatModel.createMessage({
+            groupId,
+            senderId: userId,
+            content: `${userName} updated group details`,
+            type: 'system',
+            actionType: 'update_group_details'
+        });
+
+        // 5. Notify members
+        members.forEach(member => {
+            // Notify about group update
+            socketService.notifyUser(member.user_id, 'group_updated', updatedGroup);
+
+            // Notify about system message
+            socketService.notifyUser(member.user_id, 'new_message', {
+                ...systemMsg,
+                sender_name: 'System',
+                is_system: true,
+                conversation_id: groupId,
+                isGroup: true
+            });
+        });
+
+        return updatedGroup;
+    }
+
     static async markGroupMessagesAsRead(userId, groupId) {
         // 1. Verify user is member
         const members = await GroupChatModel.getGroupMembers(groupId);
