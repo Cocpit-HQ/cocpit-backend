@@ -9,7 +9,7 @@ const pool = require("../../core/db/pool");
 const getFullProfile = async (userId) => {
     const result = await pool.query(
         `SELECT u.user_id, u.full_name, u.headline, u.avatar_url, u.cover_image_url, u.location, u.about_text, u.email, u.mobile_number, u.account_name, u.website, u.created_at,
-            p.profile_id, p.account_type, p.open_to, p.availability, p.work_preference, p.profile_views_count, p.search_appearances_count
+            p.profile_id, p.account_type, p.open_to, p.availability, p.work_preference, p.profile_views_count, p.search_appearances_count, p.version
      FROM users u
      LEFT JOIN profiles p ON u.user_id = p.user_id
      WHERE u.user_id = $1`,
@@ -122,6 +122,41 @@ const ensureProfileId = async (userId, accountType = "Student") => {
     return profileId;
 };
 
+const getProfileVersion = async (profileId) => {
+    const result = await pool.query(`SELECT version FROM profiles WHERE profile_id = $1`, [profileId]);
+    return result.rows[0]?.version ?? 0;
+};
+
+const incrementProfileVersion = async (client, profileId, currentVersion) => {
+    const result = await client.query(
+        `UPDATE profiles SET version = version + 1, updated_at = now() 
+         WHERE profile_id = $1 AND version = $2 
+         RETURNING version`,
+        [profileId, currentVersion]
+    );
+    return result.rows[0]?.version || null;
+};
+
+// ─── Idempotency ──────────────────────────────────────────────────────────────
+
+const getIdempotentResponse = async (requestId) => {
+    const result = await pool.query(
+        `SELECT response_body, status_code FROM idempotent_requests WHERE request_id = $1`,
+        [requestId]
+    );
+    return result.rows[0] || null;
+};
+
+const saveIdempotentResponse = async (requestId, statusCode, responseBody) => {
+    await pool.query(
+        `INSERT INTO idempotent_requests (request_id, status_code, response_body)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (request_id) DO UPDATE 
+         SET status_code = EXCLUDED.status_code, response_body = EXCLUDED.response_body`,
+        [requestId, statusCode, JSON.stringify(responseBody)]
+    );
+};
+
 // ─── Experiences ────────────────────────────────────────────────────────────────
 
 const getExperiences = async (profileId) => {
@@ -190,7 +225,7 @@ const addExperience = async (profileId, data) => {
     const result = await pool.query(
         `INSERT INTO experiences (profile_id, title, company_name, location, work_type, work_mode, start_date, end_date, is_current, description, org_id)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *`,
-        [profileId, title, company_name, location, work_type, work_mode, start_date, end_date, is_current ?? false, description, org_id || null]
+        [profileId, title, company_name, location ?? null, work_type ?? null, work_mode ?? null, start_date, end_date ?? null, is_current ?? false, description ?? null, org_id ?? null]
     );
     return result.rows[0];
 };
@@ -233,6 +268,14 @@ const deleteExperience = async (experienceId, profileId) => {
     return result.rows[0] || null;
 };
 
+const deleteExperienceInTx = async (client, experienceId, profileId) => {
+    const result = await client.query(
+        `DELETE FROM experiences WHERE experience_id = $1 AND profile_id = $2 RETURNING *`,
+        [experienceId, profileId]
+    );
+    return result.rows[0] || null;
+};
+
 /**
  * Ends a specific experience inside an existing pg transaction.
  * Only succeeds if the experience belongs to this profile AND is still active.
@@ -263,10 +306,30 @@ const addExperienceInTx = async (client, profileId, data) => {
               start_date, end_date, is_current, description, org_id)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
          RETURNING *`,
-        [profileId, title, company_name, location, work_type, work_mode,
-         start_date, end_date, is_current ?? false, description, org_id || null]
+        [profileId, title, company_name, location ?? null, work_type ?? null, work_mode ?? null,
+         start_date, end_date ?? null, is_current ?? false, description ?? null, org_id ?? null]
     );
     return result.rows[0];
+};
+
+const updateExperienceInTx = async (client, experienceId, profileId, data) => {
+    const fields = [];
+    const values = [];
+    let idx = 1;
+    for (const [key, val] of Object.entries(data)) {
+        if (!ALLOWED_EXPERIENCE_COLUMNS.has(key)) continue;
+        if (val !== undefined) { 
+            fields.push(`${key} = $${idx++}`); 
+            values.push(val); 
+        }
+    }
+    if (fields.length === 0) return null;
+    values.push(experienceId, profileId);
+    const result = await client.query(
+        `UPDATE experiences SET ${fields.join(", ")} WHERE experience_id = $${idx++} AND profile_id = $${idx} RETURNING *`,
+        values
+    );
+    return result.rows[0] || null;
 };
 
 // ─── Educations ─────────────────────────────────────────────────────────────────
@@ -409,9 +472,10 @@ module.exports = {
     getFullProfile, updateUserFields, updateAvatarUrl, getAvatarUrl, updateCoverUrl,
     getIdentity, updateIdentity,
     getResume, getLatestResume, replaceResume, deleteResume,
-    getProfileId, ensureProfileId,
+    getProfileId, ensureProfileId, getProfileVersion, incrementProfileVersion,
+    getIdempotentResponse, saveIdempotentResponse,
     getExperiences, getExperiencesByProfileId, addExperience, findExperience, updateExperience, deleteExperience,
-    endExperienceById, addExperienceInTx,
+    endExperienceById, addExperienceInTx, updateExperienceInTx, deleteExperienceInTx,
     getEducations, addEducation, updateEducation, deleteEducation,
     getSkills, deleteSkillMapping,
     getCompanyRoles, getSocialCounts, getRelationshipInfo,

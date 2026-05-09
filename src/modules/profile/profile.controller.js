@@ -1,4 +1,5 @@
 const { incrementUserHashtagScore } = require("../../services/recommendation.service");
+const { z } = require("zod");
 /**
  * Profile Controller (Thin)
  * Parses request, calls repository, sends response. No SQL. Minimal business logic.
@@ -127,7 +128,11 @@ exports.getProfile = async (req, res) => {
         ]);
 
         const resume = resumeRow ? { originalName: resumeRow.file_name, url: resumeRow.file_url } : null;
-        const latestEducation = educations[0] ? { school: educations[0].school_name, degree: educations[0].degree } : null;
+        const latestEducation = educations[0] ? { 
+            school: educations[0].school_name, 
+            degree: educations[0].degree,
+            school_logo: educations[0].school_logo || null
+        } : null;
 
         let relationship = { isFollowing: false, isFollowedBy: false, connectionRequestStatus: null, connectionRequestId: null, connectionRequestSender: null };
         if (req.user && req.user.sub && req.user.sub !== u.user_id) {
@@ -148,6 +153,7 @@ exports.getProfile = async (req, res) => {
                 connection_request_id: relationship.connectionRequestId,
                 connection_request_sender: relationship.connectionRequestSender,
                 created_at: u.created_at,
+                version: u.version || 0,
             },
             experiences, educations, skills,
             company_roles: companyRoles,
@@ -463,11 +469,26 @@ exports.addExperience = async (req, res) => {
             ...(warning && { warning }),
         });
     } catch (err) {
-        await client.query('ROLLBACK');
+        if (client) await client.query('ROLLBACK');
         console.error("Add experience error:", err);
+
+        // Handle specific Postgres error codes
+        if (err.code === '23505') { // Unique Violation
+            return res.status(409).json({ 
+                message: "Conflict detected: Multiple current roles at the same company or duplicate entry.",
+                code: "UNIQUE_VIOLATION"
+            });
+        }
+        if (err.code === '23514') { // Check Constraint Violation
+            return res.status(422).json({ 
+                message: "Data integrity violation: Ensure dates are valid and start date is before end date.",
+                code: "CHECK_VIOLATION"
+            });
+        }
+
         res.status(500).json({ message: "Internal server error" });
     } finally {
-        client.release();
+        if (client) client.release();
     }
 };
 
@@ -544,6 +565,21 @@ exports.updateExperience = async (req, res) => {
         res.json({ message: "Experience updated successfully", experience, warning });
     } catch (err) {
         console.error("Update experience error:", err);
+
+        // Handle specific Postgres error codes
+        if (err.code === '23505') { // Unique Violation
+            return res.status(409).json({ 
+                message: "Conflict detected: Multiple current roles at the same company or duplicate entry.",
+                code: "UNIQUE_VIOLATION"
+            });
+        }
+        if (err.code === '23514') { // Check Constraint Violation
+            return res.status(422).json({ 
+                message: "Data integrity violation: Ensure dates are valid and start date is before end date.",
+                code: "CHECK_VIOLATION"
+            });
+        }
+
         res.status(500).json({ message: "Internal server error" });
     }
 };
@@ -914,5 +950,256 @@ exports.getCompanyList = async (req, res) => {
     } catch (err) {
         console.error("Get company list error:", err);
         res.status(500).json({ message: "Internal server error" });
+    }
+};
+// ─── Batch Experience API ───────────────────────────────────────────────────────
+
+const operationSchema = z.discriminatedUnion("type", [
+    z.object({
+        type: z.literal("CREATE"),
+        tempId: z.string(),
+        data: z.object({
+            title: z.string().min(1, "Title is required"),
+            company_name: z.string().min(1, "Company name is required"),
+            location: z.string().nullable().optional(),
+            work_type: z.string().nullable().optional(),
+            work_mode: z.string().nullable().optional(),
+            start_date: z.string(),
+            end_date: z.string().nullable().optional(),
+            is_current: z.boolean().optional(),
+            description: z.string().nullable().optional(),
+            org_id: z.string().uuid().nullable().optional(),
+        }),
+    }),
+    z.object({
+        type: z.literal("UPDATE"),
+        id: z.string().uuid(),
+        data: z.object({
+            title: z.string().optional(),
+            company_name: z.string().optional(),
+            location: z.string().nullable().optional(),
+            work_type: z.string().nullable().optional(),
+            work_mode: z.string().nullable().optional(),
+            start_date: z.string().optional(),
+            end_date: z.string().nullable().optional(),
+            is_current: z.boolean().optional(),
+            description: z.string().nullable().optional(),
+            org_id: z.string().uuid().nullable().optional(),
+        }),
+    }),
+    z.object({
+        type: z.literal("DELETE"),
+        id: z.string().uuid(),
+    }),
+]);
+
+const batchSchema = z.object({
+    requestId: z.string(),
+    version: z.number(),
+    operations: z.array(operationSchema),
+});
+
+exports.batchUpdateExperiences = async (req, res) => {
+    const parseResult = batchSchema.safeParse(req.body);
+    if (!parseResult.success) {
+        return res.status(400).json({
+            message: "Invalid batch payload",
+            errors: parseResult.error.errors
+        });
+    }
+
+    const { requestId, version, operations } = parseResult.data;
+    const userId = req.user.sub;
+
+    // 1. Idempotency Check
+    const cached = await profileRepo.getIdempotentResponse(requestId);
+    if (cached) {
+        return res.status(cached.status_code).json(JSON.parse(cached.response_body));
+    }
+
+    const client = await pool.connect();
+    try {
+        const profileId = await profileRepo.ensureProfileId(userId);
+        const currentVersion = await profileRepo.getProfileVersion(profileId);
+
+        // 2. Concurrency Control (Optimistic Locking)
+        if (currentVersion !== version) {
+            const errorResponse = {
+                message: "Profile has been updated by another request. Please refresh.",
+                code: "VERSION_CONFLICT",
+                currentVersion
+            };
+            return res.status(409).json(errorResponse);
+        }
+
+        // 3. Pre-validation & Simulation
+        const existingExperiences = await profileRepo.getExperiencesByProfileId(profileId);
+        let simulatedState = existingExperiences.map(e => ({ ...e }));
+        const errors = [];
+
+        // Apply operations to simulated state
+        for (let i = 0; i < operations.length; i++) {
+            const op = operations[i];
+            const opPathPrefix = `experiences.${i}`;
+
+            if (op.type === "DELETE") {
+                simulatedState = simulatedState.filter(e => e.experience_id !== op.id);
+            } else if (op.type === "UPDATE") {
+                const idx = simulatedState.findIndex(e => e.experience_id === op.id);
+                if (idx === -1) {
+                    errors.push({ path: opPathPrefix, message: "Experience not found" });
+                    continue;
+                }
+                simulatedState[idx] = { ...simulatedState[idx], ...op.data };
+                // Basic date validation
+                const { start_date, end_date, is_current } = simulatedState[idx];
+                if (!is_current && !end_date) {
+                    errors.push({ path: `${opPathPrefix}.end_date`, message: "End date is required" });
+                }
+                if (end_date && new Date(end_date) < new Date(start_date)) {
+                    errors.push({ path: `${opPathPrefix}.end_date`, message: "End date must be after start date" });
+                }
+            } else if (op.type === "CREATE") {
+                const newExp = { 
+                    experience_id: op.tempId, // temporary ID for simulation
+                    ...op.data,
+                    profile_id: profileId 
+                };
+                simulatedState.push(newExp);
+                // Basic date validation
+                const { start_date, end_date, is_current } = newExp;
+                if (!is_current && !end_date) {
+                    errors.push({ path: `${opPathPrefix}.data.end_date`, message: "End date is required" });
+                }
+                if (end_date && new Date(end_date) < new Date(start_date)) {
+                    errors.push({ path: `${opPathPrefix}.data.end_date`, message: "End date must be after start date" });
+                }
+            }
+        }
+
+        if (errors.length > 0) {
+            const errorResponse = { message: "Validation failed", errors };
+            return res.status(422).json(errorResponse);
+        }
+
+        // Cross-experience validation on simulated state
+        for (let i = 0; i < simulatedState.length; i++) {
+            const expA = simulatedState[i];
+            const companyNormA = (expA.company_name || "").trim().toLowerCase();
+            const endA = expA.is_current ? null : expA.end_date;
+
+            // Same-company overlap check
+            for (let j = i + 1; j < simulatedState.length; j++) {
+                const expB = simulatedState[j];
+                const companyNormB = (expB.company_name || "").trim().toLowerCase();
+                const endB = expB.is_current ? null : expB.end_date;
+
+                // align with DB index idx_one_current_role_per_company which is name-based
+                const isSameCompany = (expA.org_id && expB.org_id && expA.org_id === expB.org_id) ||
+                                     (companyNormA === companyNormB);
+
+                if (isSameCompany && datesOverlap(expA.start_date, endA, expB.start_date, endB)) {
+                    // Find which operation caused this (if any)
+                    const opIdx = operations.findIndex(op => 
+                        (op.type === "CREATE" && op.tempId === expA.experience_id) ||
+                        (op.type === "UPDATE" && op.id === expA.experience_id) ||
+                        (op.type === "CREATE" && op.tempId === expB.experience_id) ||
+                        (op.type === "UPDATE" && op.id === expB.experience_id)
+                    );
+                    const path = opIdx !== -1 ? `experiences.${opIdx}` : 'global';
+                    errors.push({ 
+                        path, 
+                        message: `Date overlap detected at "${expA.company_name}".` 
+                    });
+                }
+            }
+        }
+
+        // Multiple current roles check
+        const activeRoles = simulatedState.filter(e => e.is_current || !e.end_date);
+        if (activeRoles.length > 1) {
+            // Find the newest current role
+            const newest = [...activeRoles].sort((a, b) => new Date(b.start_date) - new Date(a.start_date))[0];
+            const severity = getMultipleCurrentSeverity(activeRoles.filter(r => r.experience_id !== newest.experience_id), newest.work_type, newest.work_mode);
+            
+            if (severity === 'block') {
+                const opIdx = operations.findIndex(op => 
+                    (op.type === "CREATE" && op.tempId === newest.experience_id) ||
+                    (op.type === "UPDATE" && op.id === newest.experience_id)
+                );
+                errors.push({ 
+                    path: opIdx !== -1 ? `experiences.${opIdx}.is_current` : 'global',
+                    message: describeConflict(activeRoles.filter(r => r.experience_id !== newest.experience_id), newest.work_type, newest.work_mode, severity)
+                });
+            }
+        }
+
+        if (errors.length > 0) {
+            const errorResponse = { message: "Validation failed", errors };
+            return res.status(422).json(errorResponse);
+        }
+
+        // 4. Transactional Execution
+        await client.query('BEGIN');
+
+        const idMap = {}; // tempId -> databaseId
+        
+        // Execute DELETEs first, then UPDATEs, then CREATEs to avoid transient constraint violations
+        const deleteOps = operations.filter(op => op.type === "DELETE");
+        const updateOps = operations.filter(op => op.type === "UPDATE");
+        const createOps = operations.filter(op => op.type === "CREATE");
+
+        for (const op of deleteOps) {
+            await profileRepo.deleteExperienceInTx(client, op.id, profileId);
+        }
+        for (const op of updateOps) {
+            await profileRepo.updateExperienceInTx(client, op.id, profileId, op.data);
+        }
+        for (const op of createOps) {
+            const newExp = await profileRepo.addExperienceInTx(client, profileId, op.data);
+            idMap[op.tempId] = newExp.experience_id;
+        }
+
+        // Increment version
+        const newVersion = await profileRepo.incrementProfileVersion(client, profileId, version);
+        if (!newVersion) {
+            await client.query('ROLLBACK');
+            return res.status(409).json({ message: "Version conflict during commit", code: "VERSION_CONFLICT" });
+        }
+
+        await client.query('COMMIT');
+
+        const successResponse = { 
+            message: "Batch update successful", 
+            idMap, 
+            newVersion 
+        };
+        
+        // 5. Save Idempotent Response
+        await profileRepo.saveIdempotentResponse(requestId, 200, successResponse);
+
+        res.json(successResponse);
+
+    } catch (err) {
+        if (client) await client.query('ROLLBACK');
+        console.error("Batch experience update error:", err);
+
+        // Handle specific Postgres error codes
+        if (err.code === '23505') { // Unique Violation
+            return res.status(409).json({ 
+                message: "Conflict detected: Multiple current roles at the same company or duplicate entry.",
+                code: "UNIQUE_VIOLATION"
+            });
+        }
+        if (err.code === '23514') { // Check Constraint Violation
+            return res.status(422).json({ 
+                message: "Data integrity violation: Ensure dates are valid and start date is before end date.",
+                code: "CHECK_VIOLATION"
+            });
+        }
+
+        res.status(500).json({ message: "Internal server error during batch update" });
+    } finally {
+        if (client) client.release();
     }
 };

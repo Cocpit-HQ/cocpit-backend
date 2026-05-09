@@ -175,6 +175,7 @@ exports.getPublicFeed = async (req, res) => {
 exports.getMyPosts = async (req, res) => {
     const {
         category,
+        filter,
         cursorCreatedAt,
         cursorPostId,
         limit = 10,
@@ -188,15 +189,31 @@ exports.getMyPosts = async (req, res) => {
         const userParamIdx = 1;
         const orgParamIdx = 2;
         let idx = 3;
-        let whereClause = isOrgActor
-            ? `WHERE p.author_org_id = $${orgParamIdx}::uuid`
-            : `WHERE p.author_id = $${userParamIdx} AND p.author_org_id IS NULL`;
+        let whereClause = "";
+        if (filter === 'Comments') {
+            whereClause = `WHERE EXISTS (SELECT 1 FROM post_comments pc_filter WHERE pc_filter.post_id = p.post_id AND ${isOrgActor ? `pc_filter.author_org_id = $${orgParamIdx}::uuid` : `pc_filter.author_id = $${userParamIdx} AND pc_filter.author_org_id IS NULL`})`;
+        } else {
+            whereClause = isOrgActor
+                ? `WHERE p.author_org_id = $${orgParamIdx}::uuid`
+                : `WHERE p.author_id = $${userParamIdx} AND p.author_org_id IS NULL`;
+        }
 
         // ✅ Category filter (skip if "All")
         if (category && category !== "All") {
             whereClause += ` AND pc.name = $${idx} `;
             params.push(category);
             idx++;
+        }
+
+        // ✅ Interaction Filter (remaining cases)
+        if (filter) {
+            if (filter === 'Post') {
+                whereClause += ` AND p.shared_post_id IS NULL AND p.shared_job_id IS NULL `;
+            } else if (filter === 'Repost') {
+                whereClause += ` AND (p.shared_post_id IS NOT NULL OR p.shared_job_id IS NOT NULL) `;
+            } else if (filter === 'Private post') {
+                whereClause += ` AND p.visibility = 'private' `;
+            }
         }
 
         // ✅ Cursor-based pagination (stable)
