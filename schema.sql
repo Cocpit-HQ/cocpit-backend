@@ -534,6 +534,7 @@ CREATE TABLE IF NOT EXISTS conversations (
   admin_id UUID REFERENCES users(user_id) ON DELETE SET NULL,
   last_message TEXT,
   last_message_at TIMESTAMPTZ DEFAULT now(),
+  is_requesting BOOLEAN DEFAULT FALSE,
   created_at TIMESTAMPTZ DEFAULT now(),
   updated_at TIMESTAMPTZ DEFAULT now()
 );

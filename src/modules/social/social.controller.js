@@ -1603,10 +1603,10 @@ exports.sendMessage = async (req, res) => {
                 // Company-to-User: look for a conversation where company is a participant AND target user is a participant
                 const existingConv = await client.query(
                     `SELECT c.conversation_id
-                 FROM conversations c
-                 JOIN conversation_participants cp1 ON c.conversation_id = cp1.conversation_id AND cp1.org_id = $1
-                 JOIN conversation_participants cp2 ON c.conversation_id = cp2.conversation_id AND cp2.user_id = $2
-                 WHERE c.is_group = FALSE`,
+                     FROM conversations c
+                     JOIN conversation_participants cp1 ON c.conversation_id = cp1.conversation_id AND cp1.org_id = $1
+                     JOIN conversation_participants cp2 ON c.conversation_id = cp2.conversation_id AND cp2.user_id = $2
+                     WHERE c.is_group = FALSE`,
                     [authorCompanyId, targetUserId]
                 );
 
@@ -1615,7 +1615,7 @@ exports.sendMessage = async (req, res) => {
                 } else {
                     // Create new conversation with company as one participant
                     const convRes = await client.query(
-                        `INSERT INTO conversations (is_group) VALUES (FALSE) RETURNING conversation_id`
+                        `INSERT INTO conversations (is_group, is_requesting) VALUES (FALSE, FALSE) RETURNING conversation_id`
                     );
                     conversationId = convRes.rows[0].conversation_id;
                     isNewConversation = true;
@@ -1635,10 +1635,10 @@ exports.sendMessage = async (req, res) => {
                 // User-to-Company: look for a conversation where user is a participant AND target company is a participant
                 const existingConv = await client.query(
                     `SELECT c.conversation_id
-                 FROM conversations c
-                 JOIN conversation_participants cp1 ON c.conversation_id = cp1.conversation_id AND cp1.user_id = $1
-                 JOIN conversation_participants cp2 ON c.conversation_id = cp2.conversation_id AND cp2.org_id = $2
-                 WHERE c.is_group = FALSE`,
+                     FROM conversations c
+                     JOIN conversation_participants cp1 ON c.conversation_id = cp1.conversation_id AND cp1.user_id = $1
+                     JOIN conversation_participants cp2 ON c.conversation_id = cp2.conversation_id AND cp2.org_id = $2
+                     WHERE c.is_group = FALSE`,
                     [senderId, targetUserId]
                 );
 
@@ -1646,7 +1646,7 @@ exports.sendMessage = async (req, res) => {
                     conversationId = existingConv.rows[0].conversation_id;
                 } else {
                     const convRes = await client.query(
-                        `INSERT INTO conversations (is_group) VALUES (FALSE) RETURNING conversation_id`
+                        `INSERT INTO conversations (is_group, is_requesting) VALUES (FALSE, FALSE) RETURNING conversation_id`
                     );
                     conversationId = convRes.rows[0].conversation_id;
 
@@ -1665,20 +1665,33 @@ exports.sendMessage = async (req, res) => {
                 // User-to-User: original logic
                 const existingConv = await client.query(
                     `SELECT c.conversation_id
-                 FROM conversations c
-                 JOIN conversation_participants cp1 ON c.conversation_id = cp1.conversation_id AND cp1.user_id = $1
-                 JOIN conversation_participants cp2 ON c.conversation_id = cp2.conversation_id AND cp2.user_id = $2
-                 WHERE c.is_group = FALSE`,
+                     FROM conversations c
+                     JOIN conversation_participants cp1 ON c.conversation_id = cp1.conversation_id AND cp1.user_id = $1
+                     JOIN conversation_participants cp2 ON c.conversation_id = cp2.conversation_id AND cp2.user_id = $2
+                     WHERE c.is_group = FALSE`,
                     [senderId, targetUserId]
                 );
 
                 if (existingConv.rowCount > 0) {
                     conversationId = existingConv.rows[0].conversation_id;
                 } else {
+                    // Check if target is following sender
+                    const followCheck = await client.query(
+                        `SELECT 1 FROM followers  
+                         WHERE follower_id = $1 AND following_id = $2`,
+                        [targetUserId, senderId]
+                    );
+
+                    const isRequesting = followCheck.rowCount === 0; // not following = requesting
+
                     const convRes = await client.query(
-                        `INSERT INTO conversations (is_group) VALUES (FALSE) RETURNING conversation_id`
+                        `INSERT INTO conversations (is_group, is_requesting) 
+                         VALUES (FALSE, $1) 
+                         RETURNING conversation_id`,
+                        [isRequesting]
                     );
                     conversationId = convRes.rows[0].conversation_id;
+                    isNewConversation = true;
 
                     await client.query(
                         `INSERT INTO conversation_participants (conversation_id, user_id) VALUES ($1, $2), ($1, $3)`,
@@ -1781,8 +1794,8 @@ exports.sendMessage = async (req, res) => {
 
                 const mediaRes = await client.query(
                     `INSERT INTO message_media (message_id, url, media_type) 
-                   VALUES ${placeholders} 
-                   RETURNING url, media_type`,
+                     VALUES ${placeholders} 
+                     RETURNING url, media_type`,
                     flatValues
                 );
                 mediaRecords = mediaRes.rows;
@@ -1792,24 +1805,24 @@ exports.sendMessage = async (req, res) => {
             let sharedPostData = null;
             if (shared_post_id) {
                 const spRes = await client.query(`
-                SELECT 
-                    p.post_id, p.content, p.created_at, 
-                    json_build_object('full_name', u.full_name, 'avatar_url', u.avatar_url) as author,
-                    (SELECT json_agg(json_build_object('url', url, 'media_type', media_type)) FROM post_media WHERE post_id = p.post_id) as media
-                FROM posts p
-                JOIN users u ON p.author_id = u.user_id
-                WHERE p.post_id = $1
-            `, [shared_post_id]);
+                    SELECT 
+                        p.post_id, p.content, p.created_at, 
+                        json_build_object('full_name', u.full_name, 'avatar_url', u.avatar_url) as author,
+                        (SELECT json_agg(json_build_object('url', url, 'media_type', media_type)) FROM post_media WHERE post_id = p.post_id) as media
+                    FROM posts p
+                    JOIN users u ON p.author_id = u.user_id
+                    WHERE p.post_id = $1
+                `, [shared_post_id]);
                 if (spRes.rowCount > 0) sharedPostData = spRes.rows[0];
             }
 
             // Update conversation timestamp and last message
             await client.query(
                 `UPDATE conversations 
-             SET updated_at = now(),
-                 last_message = $2,
-                 last_message_at = now()
-             WHERE conversation_id = $1`,
+                 SET updated_at = now(),
+                     last_message = $2,
+                     last_message_at = now()
+                 WHERE conversation_id = $1`,
                 [conversationId, previewText]
             );
             // Update session activity (within transaction)
@@ -2249,7 +2262,7 @@ exports.getMessages = async (req, res) => {
              ORDER BY m.created_at DESC
              LIMIT $5`,
             [conversation_id, is_group, before, userId, limit, companyId]
-            
+
         );
 
         // Process messages: Filter "delete for me" and mask "delete for everyone"

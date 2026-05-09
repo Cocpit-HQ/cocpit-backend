@@ -144,7 +144,7 @@ class GroupChatModel {
              ORDER BY COALESCE(u.user_id, c.org_id), cp.joined_at DESC` :
             `SELECT DISTINCT ON (COALESCE(u.user_id, c.org_id)) 
                 COALESCE(u.user_id, c.org_id) as user_id, 
-                u.account_name, u.account_name as username, u.full_name, u.avatar_url, 
+                u.account_name, u.account_name as username, u.full_name, u.avatar_url, u.headline, 
                 c.name as org_name, c.logo_url as org_logo, cp.joined_at, cp.role
              FROM conversation_participants cp
              LEFT JOIN users u ON cp.user_id = u.user_id
