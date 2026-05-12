@@ -2657,10 +2657,10 @@ exports.getComments = async (req, res) => {
         WHERE (b.blocker_id = $2 AND b.blocked_id = c.author_id) 
            OR (b.blocker_id = c.author_id AND b.blocked_id = $2)
       )
-      -- 2. Exclude hidden comments (LinkedIn-style per-user hide)
+      -- 2. Exclude hidden comments (Hiding a comment or its parent hides the thread)
       AND NOT EXISTS (
         SELECT 1 FROM hidden_comments hc
-        WHERE hc.comment_id = c.comment_id
+        WHERE (hc.comment_id = c.comment_id OR hc.comment_id = c.parent_id)
         AND (
             ($3::uuid IS NOT NULL AND hc.org_id = $3::uuid)
             OR
