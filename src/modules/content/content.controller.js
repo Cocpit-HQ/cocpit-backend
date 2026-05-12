@@ -2651,10 +2651,21 @@ exports.getComments = async (req, res) => {
       JOIN users u ON c.author_id = u.user_id
       LEFT JOIN organizations comp ON c.author_org_id = comp.org_id
       WHERE c.post_id = $1
+      -- 1. Exclude blocked users
       AND NOT EXISTS (
         SELECT 1 FROM blocks b 
         WHERE (b.blocker_id = $2 AND b.blocked_id = c.author_id) 
            OR (b.blocker_id = c.author_id AND b.blocked_id = $2)
+      )
+      -- 2. Exclude hidden comments (LinkedIn-style per-user hide)
+      AND NOT EXISTS (
+        SELECT 1 FROM hidden_comments hc
+        WHERE hc.comment_id = c.comment_id
+        AND (
+            ($3::uuid IS NOT NULL AND hc.org_id = $3::uuid)
+            OR
+            ($3::uuid IS NULL AND hc.user_id = $2 AND hc.org_id IS NULL)
+        )
       )
       ORDER BY 
         c.is_pinned DESC NULLS LAST,
@@ -2669,6 +2680,115 @@ exports.getComments = async (req, res) => {
         return res.status(500).json({ message: "Internal server error" })
     }
 }
+
+exports.hideComment = async (req, res) => {
+    const { commentId } = req.params;
+    let actorScope;
+
+    try {
+        actorScope = getContentActorScope(req, req.body?.companyId || null);
+    } catch (err) {
+        return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
+    }
+
+    const { userId, orgId: companyId } = actorScope;
+
+    try {
+        // Insert into hidden_comments
+        if (companyId) {
+            await pool.query(
+                `INSERT INTO hidden_comments (user_id, org_id, comment_id) 
+                 VALUES ($1, $2, $3) 
+                 ON CONFLICT (org_id, comment_id) WHERE org_id IS NOT NULL DO NOTHING`,
+                [userId, companyId, commentId]
+            );
+        } else {
+            await pool.query(
+                `INSERT INTO hidden_comments (user_id, comment_id) 
+                 VALUES ($1, $2) 
+                 ON CONFLICT (user_id, comment_id) WHERE org_id IS NULL DO NOTHING`,
+                [userId, commentId]
+            );
+        }
+
+        res.status(200).json({ message: "Comment hidden from your view", commentId });
+    } catch (err) {
+        console.error("Hide comment error:", err);
+        res.status(500).json({ message: "Internal server error" });
+    }
+};
+
+exports.unhideComment = async (req, res) => {
+    const { commentId } = req.params;
+    let actorScope;
+
+    try {
+        actorScope = getContentActorScope(req, req.body?.companyId || null);
+    } catch (err) {
+        return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
+    }
+
+    const { userId, orgId: companyId } = actorScope;
+
+    try {
+        if (companyId) {
+            await pool.query(
+                `DELETE FROM hidden_comments WHERE org_id = $1 AND comment_id = $2`,
+                [companyId, commentId]
+            );
+        } else {
+            await pool.query(
+                `DELETE FROM hidden_comments WHERE user_id = $1 AND comment_id = $2 AND org_id IS NULL`,
+                [userId, commentId]
+            );
+        }
+
+        res.status(200).json({ message: "Comment restored to your view", commentId });
+    } catch (err) {
+        console.error("Unhide comment error:", err);
+        res.status(500).json({ message: "Internal server error" });
+    }
+};
+
+exports.getHiddenComments = async (req, res) => {
+    let actorScope;
+    const { companyId: requestedCompanyId } = req.query;
+
+    try {
+        actorScope = getContentActorScope(req, requestedCompanyId || null);
+    } catch (err) {
+        return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
+    }
+
+    const { userId, orgId: companyId } = actorScope;
+
+    try {
+        const query = `
+            SELECT 
+                c.comment_id,
+                c.content,
+                c.created_at,
+                u.full_name as author_name,
+                u.avatar_url as author_avatar
+            FROM post_comments c
+            JOIN hidden_comments hc ON c.comment_id = hc.comment_id
+            JOIN users u ON c.author_id = u.user_id
+            WHERE 
+                (
+                    ($2::uuid IS NOT NULL AND hc.org_id = $2::uuid)
+                    OR
+                    ($2::uuid IS NULL AND hc.user_id = $1 AND hc.org_id IS NULL)
+                )
+            ORDER BY hc.created_at DESC
+        `;
+
+        const { rows } = await pool.query(query, [userId, companyId || null]);
+        res.status(200).json(rows);
+    } catch (err) {
+        console.error("Get hidden comments error:", err);
+        res.status(500).json({ message: "Internal server error" });
+    }
+};
 
 //--- STORIES INTEGRATION ---
 exports.getStories = async (req, res) => {
