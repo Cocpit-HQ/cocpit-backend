@@ -1886,6 +1886,15 @@ exports.sendMessage = async (req, res) => {
                 sender_name: senderName,
                 sender_avatar: senderAvatar
             };
+            const conversationEventPayload = {
+                conversationId,
+                lastMessageId: newMessage.message_id,
+                lastMessageText: previewText,
+                lastMessageAt: newMessage.created_at,
+                senderId,
+                targetUserId,
+                isNewConversation
+            };
 
             // Notify via socket
             if (targetIsCompany) {
@@ -1896,6 +1905,11 @@ exports.sendMessage = async (req, res) => {
                 );
                 for (const member of members.rows) {
                     socketService.notifyUser(member.user_id, "new_message", messageData);
+                    socketService.notifyUser(member.user_id, "conversation_updated", {
+                        ...conversationEventPayload,
+                        targetProfileType: "COMPANY",
+                        targetCompanyId: targetUserId
+                    });
                     socketService.notifyUser(member.user_id, "notification", {
                         type: "message",
                         from: senderId,
@@ -1910,6 +1924,10 @@ exports.sendMessage = async (req, res) => {
             } else {
                 // User→User or Company→User: notify target user directly
                 socketService.notifyUser(targetUserId, "new_message", messageData);
+                socketService.notifyUser(targetUserId, "conversation_updated", {
+                    ...conversationEventPayload,
+                    targetProfileType: "USER"
+                });
                 socketService.notifyUser(targetUserId, "notification", {
                     type: "message",
                     from: senderId,
@@ -1922,6 +1940,11 @@ exports.sendMessage = async (req, res) => {
             }
             // Notify sender as well
             socketService.notifyUser(senderId, "new_message", messageData);
+            socketService.notifyUser(senderId, "conversation_updated", {
+                ...conversationEventPayload,
+                targetProfileType: targetIsCompany ? "COMPANY" : "USER",
+                targetCompanyId: targetIsCompany ? targetUserId : null
+            });
 
             res.status(201).json({
                 conversationId,
