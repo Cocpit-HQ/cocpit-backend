@@ -1595,3 +1595,18 @@ CREATE TABLE IF NOT EXISTS post_tags (
 
 CREATE INDEX IF NOT EXISTS idx_post_tags_post_id ON post_tags(post_id);
 CREATE INDEX IF NOT EXISTS idx_post_tags_user_id ON post_tags(tagged_user_id);
+
+-- ---------------------------------------------------------
+-- COMMENT HIDING SYSTEM (LinkedIn Style)
+-- ---------------------------------------------------------
+CREATE TABLE IF NOT EXISTS hidden_comments (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    org_id UUID REFERENCES organizations(org_id) ON DELETE CASCADE,
+    comment_id UUID NOT NULL REFERENCES post_comments(comment_id) ON DELETE CASCADE,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Unique indexes to prevent duplicate hides per identity
+CREATE UNIQUE INDEX IF NOT EXISTS hidden_comments_user_idx ON hidden_comments (user_id, comment_id) WHERE org_id IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS hidden_comments_org_idx ON hidden_comments (org_id, comment_id) WHERE org_id IS NOT NULL;
