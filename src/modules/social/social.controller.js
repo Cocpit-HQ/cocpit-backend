@@ -6,6 +6,7 @@ const { formatDistanceToNow } = require('date-fns');
 const socketService = require("../../core/infrastructure/socket.service");
 const { checkRateLimit } = require("../../core/utils/sessionRateLimiter");
 const { hasActorPermission } = require("../../core/middlewares/actor-context.middleware");
+const { markConversationAsRead } = require("../../services/conversationRead.service");
 
 // Helper function for timeAgo
 const timeAgo = (date) => {
@@ -1328,6 +1329,7 @@ SELECT
     END AS is_deleted_user,
 
     -- Get the most recent message dynamically
+    m.message_id AS last_message_id,
     COALESCE(m.text_content, c.last_message) AS last_message_text,
     COALESCE(m.created_at, c.last_message_at, c.updated_at) AS last_message_at
 FROM conversations c
@@ -1367,6 +1369,7 @@ LEFT JOIN organizations comp ON cp_other.org_id = comp.org_id -- JOIN organizati
 -- LATERAL JOIN to find the latest VISIBLE message across ANY period
 LEFT JOIN LATERAL (
     SELECT 
+        msg.message_id,
         CASE 
             WHEN msg.is_deleted_for_everyone THEN 'This message was deleted'
             WHEN msg.shared_post_id IS NOT NULL THEN 'Shared a post'
@@ -1955,100 +1958,20 @@ exports.markConversationRead = async (req, res) => {
 
     const { userId, orgId: companyId } = actorScope;
 
-    const client = await pool.connect();
-
     try {
-        await client.query("BEGIN");
-
-        // 1. Update the participant's last_read_at timestamp
-        const result = await client.query(
-            `
-            UPDATE conversation_participants
-            SET last_read_at = NOW()
-            WHERE conversation_id = $1 
-            AND (
-                ($3::uuid IS NOT NULL AND org_id = $3)
-                OR
-                ($3::uuid IS NULL AND user_id = $2)
-            )
-            AND left_at IS NULL
-            RETURNING last_read_at
-            `,
-            [conversationId, userId, companyId]
-        );
-
-        // 2. Identify unread messages to mark as read
-        const unreadMessagesMsgIds = await client.query(
-            `
-            SELECT message_id FROM messages
-            WHERE conversation_id = $1
-            AND sender_id != $2
-            AND NOT EXISTS (
-                SELECT 1 FROM message_reads 
-                WHERE message_reads.message_id = messages.message_id 
-                AND message_reads.user_id = $2
-            )
-            `,
-            [conversationId, userId]
-        );
-
-        const unreadMsgIds = unreadMessagesMsgIds.rows.map(r => r.message_id);
-
-        if (unreadMsgIds.length > 0) {
-            // 3. Insert into message_reads
-            // Construct bulk insert values
-            const values = unreadMsgIds.map((msgId, idx) => `($${idx * 2 + 1}, $${idx * 2 + 2})`).join(', ');
-            const params = [];
-            unreadMsgIds.forEach(msgId => {
-                params.push(msgId, userId);
-            });
-
-            await client.query(
-                `INSERT INTO message_reads (message_id, user_id) VALUES ${values} ON CONFLICT DO NOTHING`,
-                params
-            );
-
-            // 4. Update 'messages.read_at' for backward compatibility (optional but good for 1-on-1 default logic)
-            // Mark messages as read if they weren't already
-            await client.query(
-                `
-                UPDATE messages
-                SET read_at = NOW()
-                WHERE message_id = ANY($1)
-                AND read_at IS NULL
-                `,
-                [unreadMsgIds]
-            );
-        }
-
-        await client.query("COMMIT");
-
-        const readAt = result.rows[0]?.last_read_at || new Date();
-
-        // 5. Emit read receipt via Socket
-        if (unreadMsgIds.length > 0) {
-            socketService.notifyConversation(conversationId, "messages_seen", {
-                conversationId,
-                readerId: userId, // Who read the messages
-                messageIds: unreadMsgIds, // Which messages were read
-                readAt: readAt,
-            });
-        }
+        const readResult = await markConversationAsRead({ conversationId, userId, companyId });
 
         res.json({
             message: "Conversation marked as read",
-            readAt: readAt,
-            readCount: unreadMsgIds.length
+            readAt: readResult.readAt,
+            readCount: readResult.readCount
         });
 
     } catch (err) {
-        await client.query("ROLLBACK");
         console.error("Mark conversation read error:", err);
         res.status(err.statusCode || 500).json({
             message: err.message || "Internal server error"
         });
-    } finally {
-        client.release();
     }
 };
 

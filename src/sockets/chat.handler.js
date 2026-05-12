@@ -1,5 +1,6 @@
 const pool = require("../core/db/pool");
 const { getConversationRoom } = require("../core/utils/socketRooms");
+const { markConversationAsRead } = require("../services/conversationRead.service");
 
 module.exports.registerChatHandlers = (io, socket) => {
   const userId = socket.userId;
@@ -83,6 +84,58 @@ module.exports.registerChatHandlers = (io, socket) => {
     socket.to(room).emit("stoppedTyping", {
       conversationId,
     });
+  });
+
+  // Mark Conversation as Read (socket path)
+  socket.on("markConversationRead", async (payload, callback) => {
+    try {
+      const conversationId = payload?.conversationId;
+      let companyId = payload?.companyId || null;
+
+      if (!conversationId) {
+        if (typeof callback === "function") callback({ success: false, message: "conversationId is required" });
+        return;
+      }
+
+      if (companyId) {
+        const membershipCheck = await pool.query(
+          `SELECT 1 FROM organization_members WHERE user_id = $1 AND org_id = $2 LIMIT 1`,
+          [userId, companyId]
+        );
+
+        if (membershipCheck.rowCount === 0) {
+          if (typeof callback === "function") callback({ success: false, message: "Invalid company context" });
+          return;
+        }
+      } else {
+        companyId = null;
+      }
+
+      const readResult = await markConversationAsRead({
+        conversationId,
+        userId,
+        companyId,
+      });
+
+      if (typeof callback === "function") {
+        callback({
+          success: true,
+          conversationId,
+          readAt: readResult.readAt,
+          readCount: readResult.readCount,
+          messageIds: readResult.messageIds,
+        });
+      }
+    } catch (err) {
+      if (typeof callback === "function") {
+        callback({
+          success: false,
+          message: err.message || "Failed to mark conversation as read",
+        });
+      } else {
+        socket.emit("error", { message: err.message || "Failed to mark conversation as read" });
+      }
+    }
   });
 
   /* =====================================================
