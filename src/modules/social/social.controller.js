@@ -580,6 +580,15 @@ exports.getFollowers = async (req, res) => {
             params.push(`%${search}%`);
         }
 
+        // Always exclude blocked users from the viewer's perspective
+        query += ` 
+            AND NOT EXISTS (
+                SELECT 1 FROM blocks b 
+                WHERE (b.blocker_id = $2 AND b.blocked_id = u.user_id)
+                   OR (b.blocker_id = u.user_id AND b.blocked_id = $2)
+            )
+        `;
+
         query += ` ORDER BY f.created_at DESC`;
 
         const result = await pool.query(query, params);
@@ -631,9 +640,22 @@ exports.getFollowing = async (req, res) => {
             params.push(`%${search}%`);
         }
 
+        const viewerId = req.user.sub;
+        const queryParams = [...params, viewerId];
+        const viewerIdx = queryParams.length;
+
+        // Apply block filtering to user follows
+        userQuery += `
+            AND NOT EXISTS (
+                SELECT 1 FROM blocks b 
+                WHERE (b.blocker_id = $${viewerIdx} AND b.blocked_id = u.user_id)
+                   OR (b.blocker_id = u.user_id AND b.blocked_id = $${viewerIdx})
+            )
+        `;
+
         const fullQuery = `(${userQuery}) UNION ALL (${companyQuery}) ORDER BY created_at DESC`;
 
-        const result = await pool.query(fullQuery, params);
+        const result = await pool.query(fullQuery, queryParams);
 
         const formattedConnections = result.rows.map(row => {
             const timeAgoVal = formatDistanceToNow(new Date(row.created_at), {
@@ -1236,6 +1258,17 @@ exports.getMyConnections = async (req, res) => {
             params.push(`%${search}%`);
         }
 
+        // Apply block filtering to connections
+        const viewerIdx = 1; // Always $1 for getMyConnections as we don't have a separate viewer param, but wait
+        // In getMyConnections, userId is the current user.
+        userQuery += `
+            AND NOT EXISTS (
+                SELECT 1 FROM blocks b 
+                WHERE (b.blocker_id = $1 AND b.blocked_id = u.user_id)
+                   OR (b.blocker_id = u.user_id AND b.blocked_id = $1)
+            )
+        `;
+
         const fullQuery = `(${userQuery}) UNION ALL (${companyQuery}) ORDER BY created_at DESC`;
         const result = await pool.query(fullQuery, params);
 
@@ -1353,16 +1386,19 @@ JOIN (
       ($2::uuid IS NULL AND cp_main.user_id = $1)
     GROUP BY conversation_id, user_id, org_id -- added org_id
 ) cp ON c.conversation_id = cp.conversation_id
--- For 1-on-1, join the other participant.
-LEFT JOIN conversation_participants cp_other ON c.conversation_id = cp_other.conversation_id 
-    AND (
-        -- If I am User, other is NOT me (User) AND NOT my Company (if applicable, though usually 1-on-1 is User-User or User-Company)
-        -- Simplified: Other participant is the one that is NOT the current context ID
-        ($2::uuid IS NOT NULL AND (cp_other.org_id != $2 OR cp_other.org_id IS NULL))
-        OR
-        ($2::uuid IS NULL AND (cp_other.user_id != $1 OR cp_other.user_id IS NULL))
-    )
-    AND c.is_group = FALSE
+-- For 1-on-1, join the other participant (LATERAL + LIMIT 1 prevents fan-out duplicates).
+LEFT JOIN LATERAL (
+    SELECT cp_o.user_id, cp_o.org_id
+    FROM conversation_participants cp_o
+    WHERE cp_o.conversation_id = c.conversation_id
+      AND c.is_group = FALSE
+      AND (
+          ($2::uuid IS NOT NULL AND (cp_o.org_id != $2 OR cp_o.org_id IS NULL))
+          OR
+          ($2::uuid IS NULL AND (cp_o.user_id != $1 OR cp_o.user_id IS NULL))
+      )
+    LIMIT 1
+) cp_other ON c.is_group = FALSE
 LEFT JOIN users u ON cp_other.user_id = u.user_id
 LEFT JOIN organizations comp ON cp_other.org_id = comp.org_id -- JOIN organizations for Company participants
 
@@ -1406,6 +1442,7 @@ WHERE ($2::uuid IS NULL OR NOT EXISTS (
     AND cp_self_guard.left_at IS NULL
     AND c.is_group = FALSE
 ))
+AND c.is_active = TRUE
 
 ORDER BY COALESCE(m.created_at, c.last_message_at, c.updated_at) DESC NULLS LAST;
   `, [userId, companyId]
@@ -1609,7 +1646,7 @@ exports.sendMessage = async (req, res) => {
                      FROM conversations c
                      JOIN conversation_participants cp1 ON c.conversation_id = cp1.conversation_id AND cp1.org_id = $1
                      JOIN conversation_participants cp2 ON c.conversation_id = cp2.conversation_id AND cp2.user_id = $2
-                     WHERE c.is_group = FALSE`,
+                     WHERE c.is_group = FALSE AND c.is_active = TRUE`,
                     [authorCompanyId, targetUserId]
                 );
 
@@ -1641,7 +1678,7 @@ exports.sendMessage = async (req, res) => {
                      FROM conversations c
                      JOIN conversation_participants cp1 ON c.conversation_id = cp1.conversation_id AND cp1.user_id = $1
                      JOIN conversation_participants cp2 ON c.conversation_id = cp2.conversation_id AND cp2.org_id = $2
-                     WHERE c.is_group = FALSE`,
+                     WHERE c.is_group = FALSE AND c.is_active = TRUE`,
                     [senderId, targetUserId]
                 );
 
@@ -1671,7 +1708,7 @@ exports.sendMessage = async (req, res) => {
                      FROM conversations c
                      JOIN conversation_participants cp1 ON c.conversation_id = cp1.conversation_id AND cp1.user_id = $1
                      JOIN conversation_participants cp2 ON c.conversation_id = cp2.conversation_id AND cp2.user_id = $2
-                     WHERE c.is_group = FALSE`,
+                     WHERE c.is_group = FALSE AND c.is_active = TRUE`,
                     [senderId, targetUserId]
                 );
 
@@ -2099,6 +2136,7 @@ exports.getMessages = async (req, res) => {
              FROM conversations c
              JOIN conversation_participants cp ON c.conversation_id = cp.conversation_id
              WHERE c.conversation_id = $1 
+             AND c.is_active = TRUE
              AND (
                 ($3::uuid IS NOT NULL AND cp.org_id = $3)
                 OR

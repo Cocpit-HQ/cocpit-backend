@@ -112,7 +112,7 @@ class GroupChatModel {
               COALESCE(c.group_avatar) as group_avatar,
               u.full_name as inviter_name
        FROM group_invitations gi
-       LEFT JOIN conversations c ON gi.conversation_id = c.conversation_id
+       LEFT JOIN conversations c ON gi.conversation_id = c.conversation_id AND c.is_active = TRUE
        LEFT JOIN users u ON gi.inviter_id = u.user_id
        WHERE gi.invitee_id = $1 AND gi.status = 'pending'`,
             [userId]
@@ -123,7 +123,7 @@ class GroupChatModel {
 
     static async getGroupDetails(groupId) {
         const groupRes = await pool.query(
-            `SELECT * FROM conversations WHERE conversation_id = $1 AND is_group = true`,
+            `SELECT * FROM conversations WHERE conversation_id = $1 AND is_group = true AND is_active = TRUE`,
             [groupId]
         );
         return groupRes.rows[0];

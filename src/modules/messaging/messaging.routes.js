@@ -51,4 +51,11 @@ router.post("/groups/:groupId/messages", requireAuth, require("../../core/middle
 router.post("/groups/:groupId/read", requireAuth, groupChatCtrl.markGroupMessagesAsRead);
 router.get("/groups/:groupId/messages/:messageId/read", requireAuth, groupChatCtrl.getMessageReadReceipts);
 
+// ═══════ Chat Request Actions ═══════
+router.put("/conversations/:conversationId/accept", requireAuth, groupChatCtrl.acceptChatRequest);
+router.put("/conversations/:conversationId/decline", requireAuth, groupChatCtrl.declineChatRequest);
+
+// ═══════ Messaging User Search ═══════
+router.get("/messaging/search/users", requireAuth, groupChatCtrl.searchUsersForMessaging);
+
 module.exports = router;

@@ -160,7 +160,7 @@ class GroupChatService {
             console.log(`[GroupChatService] User ${userId} leaving group ${groupId}`);
 
             // 0. Lock Conversation to prevent race conditions
-            await client.query(`SELECT 1 FROM conversations WHERE conversation_id = $1 FOR UPDATE`, [groupId]);
+            await client.query(`SELECT 1 FROM conversations WHERE conversation_id = $1 AND is_active = TRUE FOR UPDATE`, [groupId]);
 
             // 1. Get user name and role before leaving
             const memberRes = await client.query(
@@ -183,7 +183,7 @@ class GroupChatService {
             // 2. Dynamic Admin Promotion (Perform BEFORE updating the row)
             // Fetch current group owner info
             const groupRes = await client.query(
-                `SELECT admin_id FROM conversations WHERE conversation_id = $1`,
+                `SELECT admin_id FROM conversations WHERE conversation_id = $1 AND is_active = TRUE`,
                 [groupId]
             );
             const currentOwnerId = groupRes.rows[0]?.admin_id;
