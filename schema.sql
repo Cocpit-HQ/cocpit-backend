@@ -46,6 +46,16 @@ CREATE TABLE user_roles (
   PRIMARY KEY (user_id, role_id)
 );
 
+CREATE TABLE user_social_accounts (
+  user_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
+  provider VARCHAR(20) NOT NULL, -- e.g., 'google', 'apple'
+  provider_id VARCHAR(255) NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT now(),
+  PRIMARY KEY (provider, provider_id)
+);
+
+CREATE INDEX idx_user_social_accounts_user_id ON user_social_accounts(user_id);
+
 CREATE TABLE refresh_tokens (
   token_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
