@@ -1563,10 +1563,10 @@ exports.sendMessage = async (req, res) => {
         try {
             await client.query('BEGIN ISOLATION LEVEL SERIALIZABLE');
 
-            let senderName, senderAvatar;
+            let senderName, senderAvatar, senderSlug = null, senderHeadline = null;
             if (authorCompanyId) {
                 const orgRes = await client.query(
-                    `SELECT name, logo_url FROM organizations WHERE org_id = $1`,
+                    `SELECT name, logo_url, slug FROM organizations WHERE org_id = $1`,
                     [authorCompanyId]
                 );
                 if (orgRes.rowCount === 0) {
@@ -1575,6 +1575,7 @@ exports.sendMessage = async (req, res) => {
                 }
                 senderName = orgRes.rows[0].name;
                 senderAvatar = orgRes.rows[0].logo_url;
+                senderSlug = orgRes.rows[0].slug;
 
                 // Session check: if feature enabled, require active session
                 const sessionFeatureEnabled = (() => {
@@ -1595,7 +1596,7 @@ exports.sendMessage = async (req, res) => {
                 }
             } else {
                 const senderRes = await client.query(
-                    `SELECT full_name, avatar_url FROM users WHERE user_id = $1`,
+                    `SELECT full_name, avatar_url, headline, account_name FROM users WHERE user_id = $1`,
                     [senderId]
                 );
                 if (senderRes.rowCount === 0) {
@@ -1604,19 +1605,34 @@ exports.sendMessage = async (req, res) => {
                 }
                 senderName = senderRes.rows[0].full_name;
                 senderAvatar = senderRes.rows[0].avatar_url;
+                senderHeadline = senderRes.rows[0].headline;
+                senderSlug = senderRes.rows[0].account_name;
             }
 
-            // Determine if target is a user or a company
+            // Determine if target is a user or a company (fetch full profile for socket payload)
             const targetUserExists = await client.query(
-                `SELECT 1 FROM users WHERE user_id = $1`,
+                `SELECT user_id, full_name, avatar_url, headline, account_name FROM users WHERE user_id = $1`,
                 [targetUserId]
             );
             const targetCompanyExists = targetUserExists.rowCount === 0
-                ? await client.query(`SELECT 1 FROM organizations WHERE org_id = $1`, [targetUserId])
+                ? await client.query(`SELECT org_id, name, logo_url, slug FROM organizations WHERE org_id = $1`, [targetUserId])
                 : null;
 
             const targetIsUser = targetUserExists.rowCount > 0;
             const targetIsCompany = !targetIsUser && targetCompanyExists?.rowCount > 0;
+
+            // Capture target display info for socket payload
+            const targetName = targetIsUser
+                ? targetUserExists.rows[0].full_name
+                : (targetIsCompany ? targetCompanyExists.rows[0].name : null);
+            const targetAvatar = targetIsUser
+                ? targetUserExists.rows[0].avatar_url
+                : (targetIsCompany ? targetCompanyExists.rows[0].logo_url : null);
+            const targetHeadline = targetIsUser ? (targetUserExists.rows[0].headline || null) : null;
+            const targetSlug = targetIsUser
+                ? targetUserExists.rows[0].account_name
+                : (targetIsCompany ? targetCompanyExists.rows[0].slug : null);
+            const targetType = targetIsCompany ? 'COMPANY' : 'USER';
 
             if (!targetIsUser && !targetIsCompany) {
                 await client.query('ROLLBACK');
@@ -1743,6 +1759,14 @@ exports.sendMessage = async (req, res) => {
                     );
                 }
             }
+
+            // Fetch conversation metadata needed for socket payload
+            const convMeta = await client.query(
+                `SELECT is_requesting, created_at FROM conversations WHERE conversation_id = $1`,
+                [conversationId]
+            );
+            const convIsRequesting = convMeta.rows[0]?.is_requesting ?? false;
+            const convCreatedAt = convMeta.rows[0]?.created_at ?? null;
 
             // Insert the message
             // Determine message text for notifications/preview
@@ -1927,14 +1951,59 @@ exports.sendMessage = async (req, res) => {
                 sender_name: senderName,
                 sender_avatar: senderAvatar
             };
-            const conversationEventPayload = {
-                conversationId,
-                lastMessageId: newMessage.message_id,
-                lastMessageText: previewText,
-                lastMessageAt: newMessage.created_at,
-                senderId,
-                targetUserId,
-                isNewConversation
+            // ─── Base conversation shape (mirrors the REST API getConversations response) ───
+            // Fields that are the same regardless of who receives the event
+            const baseConvPayload = {
+                conversation_id: conversationId,
+                is_group: false,
+                is_active: true,
+                is_requesting: convIsRequesting,
+                created_at: convCreatedAt,
+                updated_at: newMessage.created_at,
+                is_new_conversation: isNewConversation,
+                description: null,
+                created_by: null,
+                group_headline: null,
+                conversation_name: null,
+                admin_id: null,
+                group_avatar: null,
+                // Last message
+                last_message: previewText,
+                last_message_text: previewText,
+                last_message_at: newMessage.created_at,
+                last_message_id: newMessage.message_id,
+                // Block status (message sent successfully → no blocks active)
+                is_blocked_by_me: false,
+                is_blocked_by_other: false,
+                // Author context (who sent this particular message)
+                sender_id: senderId,
+                author_company_id: authorCompanyId || null,
+            };
+
+            // ─── Receiver payload: other_user_* = SENDER info ───
+            const receiverConvPayload = {
+                ...baseConvPayload,
+                other_user_id: authorCompanyId ? authorCompanyId : senderId,
+                other_user_name: senderName,
+                other_user_avatar: senderAvatar,
+                other_user_headline: senderHeadline,
+                other_user_slug: senderSlug,
+                other_user_type: authorCompanyId ? 'COMPANY' : 'USER',
+                is_deleted_user: false,
+                unread_count: 1, // receiver always has at least 1 unread
+            };
+
+            // ─── Sender payload: other_user_* = TARGET info ───
+            const senderConvPayload = {
+                ...baseConvPayload,
+                other_user_id: targetUserId,
+                other_user_name: targetName,
+                other_user_avatar: targetAvatar,
+                other_user_headline: targetHeadline,
+                other_user_slug: targetSlug,
+                other_user_type: targetType,
+                is_deleted_user: false,
+                unread_count: 0, // sender has read their own message
             };
 
             // Notify via socket
@@ -1947,9 +2016,9 @@ exports.sendMessage = async (req, res) => {
                 for (const member of members.rows) {
                     socketService.notifyUser(member.user_id, "new_message", messageData);
                     socketService.notifyUser(member.user_id, "conversation_updated", {
-                        ...conversationEventPayload,
-                        targetProfileType: "COMPANY",
-                        targetCompanyId: targetUserId
+                        ...receiverConvPayload,
+                        target_profile_type: 'COMPANY',
+                        target_company_id: targetUserId
                     });
                     socketService.notifyUser(member.user_id, "notification", {
                         type: "message",
@@ -1966,8 +2035,8 @@ exports.sendMessage = async (req, res) => {
                 // User→User or Company→User: notify target user directly
                 socketService.notifyUser(targetUserId, "new_message", messageData);
                 socketService.notifyUser(targetUserId, "conversation_updated", {
-                    ...conversationEventPayload,
-                    targetProfileType: "USER"
+                    ...receiverConvPayload,
+                    target_profile_type: 'USER'
                 });
                 socketService.notifyUser(targetUserId, "notification", {
                     type: "message",
@@ -1982,9 +2051,9 @@ exports.sendMessage = async (req, res) => {
             // Notify sender as well
             socketService.notifyUser(senderId, "new_message", messageData);
             socketService.notifyUser(senderId, "conversation_updated", {
-                ...conversationEventPayload,
-                targetProfileType: targetIsCompany ? "COMPANY" : "USER",
-                targetCompanyId: targetIsCompany ? targetUserId : null
+                ...senderConvPayload,
+                target_profile_type: targetIsCompany ? 'COMPANY' : 'USER',
+                target_company_id: targetIsCompany ? targetUserId : null
             });
 
             res.status(201).json({
