@@ -1476,8 +1476,10 @@ ORDER BY COALESCE(m.created_at, c.last_message_at, c.updated_at) DESC NULLS LAST
             unreadMap[row.conversation_id] = row.unread_count;
         }
 
+
         const conversationsWithUnread = result.rows.map(c => ({
             ...c,
+            is_requesting: c.is_requesting && (c.created_by === userId) ? false : c.is_requesting,
             timeAgo: timeAgo(c.updated_at),
             unread_count: unreadMap[c.conversation_id] || 0
 
@@ -1655,7 +1657,8 @@ exports.sendMessage = async (req, res) => {
                 } else {
                     // Create new conversation with company as one participant
                     const convRes = await client.query(
-                        `INSERT INTO conversations (is_group, is_requesting) VALUES (FALSE, FALSE) RETURNING conversation_id`
+                        `INSERT INTO conversations (is_group, is_requesting, created_by) VALUES (FALSE, FALSE, $1) RETURNING conversation_id`,
+                        [senderId]
                     );
                     conversationId = convRes.rows[0].conversation_id;
                     isNewConversation = true;
@@ -1686,7 +1689,8 @@ exports.sendMessage = async (req, res) => {
                     conversationId = existingConv.rows[0].conversation_id;
                 } else {
                     const convRes = await client.query(
-                        `INSERT INTO conversations (is_group, is_requesting) VALUES (FALSE, FALSE) RETURNING conversation_id`
+                        `INSERT INTO conversations (is_group, is_requesting, created_by) VALUES (FALSE, FALSE, $1) RETURNING conversation_id`,
+                        [senderId]
                     );
                     conversationId = convRes.rows[0].conversation_id;
 
@@ -1725,10 +1729,10 @@ exports.sendMessage = async (req, res) => {
                     const isRequesting = followCheck.rowCount === 0; // not following = requesting
 
                     const convRes = await client.query(
-                        `INSERT INTO conversations (is_group, is_requesting) 
-                         VALUES (FALSE, $1) 
+                        `INSERT INTO conversations (is_group, is_requesting, created_by) 
+                         VALUES (FALSE, $1, $2) 
                          RETURNING conversation_id`,
-                        [isRequesting]
+                        [isRequesting, senderId]
                     );
                     conversationId = convRes.rows[0].conversation_id;
                     isNewConversation = true;
