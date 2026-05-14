@@ -2504,6 +2504,66 @@ exports.markAllNotificationsRead = async (req, res) => {
     }
 };
 
+// Delete a single notification
+exports.deleteNotification = async (req, res) => {
+    const { id } = req.params;
+    let actorScope;
+
+    try {
+        actorScope = getSocialActorScope(req, req.query.companyId || req.body?.companyId || null);
+    } catch (err) {
+        return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
+    }
+
+    const { userId, orgId: companyId } = actorScope;
+
+    try {
+        const query = companyId
+            ? `DELETE FROM notifications WHERE notification_id = $1 AND recipient_org_id = $2 RETURNING *`
+            : `DELETE FROM notifications WHERE notification_id = $1 AND user_id = $2 AND recipient_org_id IS NULL RETURNING *`;
+        const result = await pool.query(query, [id, companyId || userId]);
+
+        if (result.rowCount === 0)
+            return res.status(404).json({ message: "Notification not found" });
+
+        res.json({ message: "Notification deleted" });
+    } catch (err) {
+        console.error("Delete notification error:", err);
+        res.status(500).json({ message: "Internal server error" });
+    }
+};
+
+// Delete multiple notifications (bulk)
+exports.deleteNotificationsBulk = async (req, res) => {
+    const { ids } = req.body;
+    let actorScope;
+
+    if (!ids || !Array.isArray(ids) || ids.length === 0) {
+        return res.status(400).json({ message: "An array of notification ids is required" });
+    }
+
+    try {
+        actorScope = getSocialActorScope(req, req.body?.companyId || req.query.companyId || null);
+    } catch (err) {
+        return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
+    }
+
+    const { userId, orgId: companyId } = actorScope;
+
+    try {
+        const query = companyId
+            ? `DELETE FROM notifications WHERE notification_id = ANY($1::uuid[]) AND recipient_org_id = $2`
+            : `DELETE FROM notifications WHERE notification_id = ANY($1::uuid[]) AND user_id = $2 AND recipient_org_id IS NULL`;
+        await pool.query(query, [ids, companyId || userId]);
+
+        res.json({ message: "Notifications deleted" });
+    } catch (err) {
+        console.error("Delete notifications bulk error:", err);
+        res.status(500).json({ message: "Internal server error" });
+    }
+};
+
+
 
 /* =====================================================
    BLOCKING
