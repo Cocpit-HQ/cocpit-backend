@@ -96,39 +96,60 @@ const getUserPasswordHash = async (userId) => {
     return result.rows[0]?.password_hash || null;
 };
 
-// ─── Google Auth Queries ────────────────────────────────────────────────────────
+// ─── Social Auth Queries ────────────────────────────────────────────────────────
 
-const findUserByGoogleId = async (googleId) => {
+const findUserBySocialId = async (provider, providerId) => {
     const result = await pool.query(
-        `SELECT user_id, email, full_name, avatar_url, is_onboarding_complete, account_name, google_id, auth_provider
-     FROM users WHERE google_id = $1`,
-        [googleId]
+        `SELECT u.user_id, u.email, u.full_name, u.avatar_url, u.is_onboarding_complete, u.account_name, sa.provider, sa.provider_id
+         FROM users u
+         JOIN user_social_accounts sa ON u.user_id = sa.user_id
+         WHERE sa.provider = $1 AND sa.provider_id = $2`,
+        [provider, providerId]
     );
     return result.rows[0] || null;
 };
 
 /**
- * Creates a new user via Google OAuth.
- * password_hash is NULL because the user authenticated through Google.
+ * Creates a new user via Social OAuth.
+ * password_hash is NULL because the user authenticated through a social provider.
  */
-const createGoogleUser = async (email, fullName, googleId, avatarUrl) => {
-    const result = await pool.query(
-        `INSERT INTO users (email, full_name, google_id, auth_provider, password_hash, avatar_url)
-     VALUES ($1, $2, $3, 'google', NULL, $4)
-     RETURNING user_id, email, full_name, avatar_url`,
-        [email, fullName, googleId, avatarUrl]
-    );
-    return result.rows[0];
+const createSocialUser = async (email, fullName, provider, providerId, avatarUrl) => {
+    const client = await pool.connect();
+    try {
+        await client.query("BEGIN");
+        const result = await client.query(
+            `INSERT INTO users (email, full_name, password_hash, avatar_url)
+             VALUES ($1, $2, NULL, $3)
+             RETURNING user_id, email, full_name, avatar_url`,
+            [email, fullName, avatarUrl]
+        );
+        const user = result.rows[0];
+        
+        await client.query(
+            `INSERT INTO user_social_accounts (user_id, provider, provider_id)
+             VALUES ($1, $2, $3)`,
+            [user.user_id, provider, providerId]
+        );
+        await client.query("COMMIT");
+        return user;
+    } catch (e) {
+        await client.query("ROLLBACK");
+        throw e;
+    } finally {
+        client.release();
+    }
 };
 
 /**
- * Links a Google ID to an existing local (email/password) user.
- * This enables "Sign in with Google" for users who originally registered with email.
+ * Links a Social ID to an existing local (email/password) user.
+ * This enables "Sign in with X" for users who originally registered with email.
  */
-const linkGoogleId = async (userId, googleId) => {
+const linkSocialAccount = async (userId, provider, providerId) => {
     await pool.query(
-        `UPDATE users SET google_id = $1, updated_at = NOW() WHERE user_id = $2`,
-        [googleId, userId]
+        `INSERT INTO user_social_accounts (user_id, provider, provider_id)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (provider, provider_id) DO NOTHING`,
+        [userId, provider, providerId]
     );
 };
 
@@ -257,10 +278,10 @@ module.exports = {
     getUserProfile,
     getUserPasswordHash,
     getOnboardingStatus,
-    // Google Auth
-    findUserByGoogleId,
-    createGoogleUser,
-    linkGoogleId,
+    // Social Auth
+    findUserBySocialId,
+    createSocialUser,
+    linkSocialAccount,
     // Sessions
     getActiveSessions,
     getDetailedSessions,

@@ -16,6 +16,7 @@
   "type": "commonjs",
   "dependencies": {
     "@socket.io/redis-adapter": "^8.3.0",
+    "apple-signin-auth": "^2.0.0",
     "bcrypt": "^6.0.0",
     "cloudinary": "^1.41.3",
     "cookie-parser": "^1.4.7",
