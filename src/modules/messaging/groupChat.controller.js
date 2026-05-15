@@ -4,7 +4,22 @@ const pool = require("../../core/db/pool");
 exports.createGroup = async (req, res) => {
     try {
         const adminId = req.user.sub || req.user.user_id; // Check auth middleware formatting
-        const { name, description, avatarUrl, members } = req.body;
+        const { name, description } = req.body;
+        let { avatarUrl, members } = req.body;
+
+        // Extract avatar from file if uploaded (same as onboarding/profile pattern)
+        if (req.file) {
+            avatarUrl = req.file.path.replace(/\\/g, "/");
+        }
+
+        // Parse members if sent as JSON string (common for FormData)
+        if (typeof members === 'string') {
+            try {
+                members = JSON.parse(members);
+            } catch (e) {
+                console.error("Failed to parse members:", e);
+            }
+        }
 
         if (!name) return res.status(400).json({ message: "Group name is required" });
 

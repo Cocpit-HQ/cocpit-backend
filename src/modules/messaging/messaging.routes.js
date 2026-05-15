@@ -4,6 +4,7 @@ const chatSessionCtrl = require("./chatSession.controller");
 const groupChatCtrl = require("./groupChat.controller");
 const messageCtrl = require("./message.controller");
 const { requireAuth } = require("../../core/middlewares/auth.middleware");
+const { uploadAvatar } = require("../../core/middlewares/upload.middleware");
 const { sessionRateLimiter } = require("../../core/utils/sessionRateLimiter");
 const groupAdminMiddleware = require("../../core/middlewares/groupAdmin.middleware");
 
@@ -24,7 +25,7 @@ router.get("/company-chat-sessions/history", requireAuth, chatSessionCtrl.getSes
 router.get("/company-chat-sessions/:sessionId/messages", requireAuth, chatSessionCtrl.getSessionMessages);
 
 // ═══════ Group Chat ═══════
-router.post("/groups", requireAuth, groupChatCtrl.createGroup);
+router.post("/groups", requireAuth, uploadAvatar.single("avatar"), groupChatCtrl.createGroup);
 router.get("/groups/invitations", requireAuth, groupChatCtrl.getPendingInvitations);
 router.post("/groups/invitation/respond", requireAuth, groupChatCtrl.respondInvitation);
 
