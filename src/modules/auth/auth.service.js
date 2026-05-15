@@ -377,7 +377,7 @@ const socialLogin = async ({ provider, idToken, accountType, userAgent, ipAddres
     let isNewUser = false;
 
     // Case 1: Check if provider ID is already linked to an account
-    user = await authRepo.findUserByProviderId(provider, providerId);
+    user = await authRepo.findUserBySocialId(provider, providerId);
 
     if (!user) {
         // Case 2: Check if email exists (local account that hasn't linked this provider yet)
@@ -385,7 +385,7 @@ const socialLogin = async ({ provider, idToken, accountType, userAgent, ipAddres
 
         if (user) {
             // Link this provider account to the existing user
-            await authRepo.linkProviderId(user.user_id, provider, providerId);
+            await authRepo.linkSocialAccount(user.user_id, provider, providerId);
         } else {
             // Case 3: Brand new user — accountType defaults to Student if not provided
             const finalAccountType = accountType || "Student";
