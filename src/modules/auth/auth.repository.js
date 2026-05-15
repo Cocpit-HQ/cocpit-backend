@@ -117,11 +117,14 @@ const createSocialUser = async (email, fullName, provider, providerId, avatarUrl
     const client = await pool.connect();
     try {
         await client.query("BEGIN");
+        const normalizedProvider = String(provider || "").toLowerCase();
+        const isGoogle = normalizedProvider === "google";
+
         const result = await client.query(
-            `INSERT INTO users (email, full_name, password_hash, avatar_url)
-             VALUES ($1, $2, NULL, $3)
+            `INSERT INTO users (email, full_name, password_hash, avatar_url, auth_provider, google_id)
+             VALUES ($1, $2, NULL, $3, $4, $5)
              RETURNING user_id, email, full_name, avatar_url`,
-            [email, fullName, avatarUrl]
+            [email, fullName, avatarUrl, normalizedProvider || "google", isGoogle ? providerId : null]
         );
         const user = result.rows[0];
         
