@@ -219,12 +219,12 @@ class GroupChatModel {
         const result = await pool.query(query, [groupId, userId, role]);
         return result.rows[0];
     }
-    static async createMessage({ groupId, senderId, content, type = 'text', actionType = null, targetId = null, previewText = null }) {
+    static async createMessage({ groupId, senderId, content, type = 'text', actionType = null, targetId = null, previewText = null, replyMessageId = null }) {
         const result = await pool.query(
-            `INSERT INTO messages (conversation_id, sender_id, text_content, message_type, action_type, target_id) 
-       VALUES ($1, $2, $3, $4, $5, $6) 
+            `INSERT INTO messages (conversation_id, sender_id, text_content, message_type, action_type, target_id, replied_msg_id) 
+       VALUES ($1, $2, $3, $4, $5, $6, $7) 
        RETURNING *`,
-            [groupId, senderId, content, type, actionType, targetId]
+            [groupId, senderId, content, type, actionType, targetId, replyMessageId]
         );
 
         // Update conversation timestamp and last message for sorting

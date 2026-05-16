@@ -566,20 +566,19 @@ CREATE TABLE messages (
   message_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   conversation_id UUID REFERENCES conversations(conversation_id) ON DELETE CASCADE,
   sender_id UUID REFERENCES users(user_id) ON DELETE SET NULL,
-  --  receiver_id UUID REFERENCES users(user_id),
   text_content TEXT,
-  shared_post_id UUID, -- Reference to shared post (snapshot preserved even if post deleted)
-  shared_profile_id UUID, -- ID of the shared user or company profile
-  shared_profile_type VARCHAR(20), -- 'user' or 'company'
-  message_type TEXT DEFAULT 'text', -- 'text', 'system', 'profile_share', etc.
-  --story_id UUID REFERENCES stories(story_id),
-  action_type TEXT, -- 'add', 'leave', 'remove', 'create'
-  target_id UUID REFERENCES users(user_id) ON DELETE SET NULL, -- Subject of the action
+  shared_post_id UUID,
+  shared_profile_id UUID,
+  shared_profile_type VARCHAR(20),
+  message_type TEXT DEFAULT 'text',
+  action_type TEXT,
+  target_id UUID REFERENCES users(user_id) ON DELETE SET NULL,
   entity_type TEXT,
   entity_id TEXT,
-  author_org_id UUID REFERENCES organizations(org_id) ON DELETE SET NULL, -- acting as company
+  author_org_id UUID REFERENCES organizations(org_id) ON DELETE SET NULL,
+  replied_msg_id UUID NULL REFERENCES messages(message_id) ON DELETE SET NULL,
   created_at TIMESTAMPTZ DEFAULT now(),
-  read_at TIMESTAMPTZ, -- NULL if unread
+  read_at TIMESTAMPTZ,
   CONSTRAINT messages_shared_post_id_fkey FOREIGN KEY (shared_post_id) REFERENCES posts(post_id) ON DELETE SET NULL
 );
 

@@ -108,7 +108,7 @@ exports.sendMessage = async (req, res) => {
     try {
         const senderId = req.user.sub || req.user.user_id;
         const { groupId } = req.params;
-        const { content } = req.body;
+        const { content, replyMessageId } = req.body;
 
         let files = [];
         if (req.files) {
@@ -148,7 +148,7 @@ exports.sendMessage = async (req, res) => {
                 ? (media.length > 1 ? `${media.length} attachments` : (media[0].type === 'video' ? 'Sent a video' : (media[0].type === 'document' ? 'Sent a document' : 'Sent a photo')))
                 : 'Message');
 
-        await GroupChatService.sendMessage(senderId, groupId, content, messageType, media, previewText);
+        await GroupChatService.sendMessage(senderId, groupId, content, messageType, media, previewText, replyMessageId);
         res.status(201).json({ success: true });
     } catch (err) {
         console.error("SendMessage Error:", err);

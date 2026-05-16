@@ -1364,7 +1364,9 @@ SELECT
     -- Get the most recent message dynamically
     m.message_id AS last_message_id,
     COALESCE(m.text_content, c.last_message) AS last_message_text,
-    COALESCE(m.created_at, c.last_message_at, c.updated_at) AS last_message_at
+    COALESCE(m.created_at, c.last_message_at, c.updated_at) AS last_message_at,
+    m.replied_msg_id AS "replyMessageId",
+    m.reply_message
 FROM conversations c
 JOIN (
     -- Aggregate participation: Ensure one row per conversation for this user
@@ -1412,7 +1414,22 @@ LEFT JOIN LATERAL (
             WHEN msg.text_content IS NULL OR msg.text_content = '' THEN 'Attachment'
             ELSE msg.text_content
         END as text_content,
-        msg.created_at
+        msg.created_at,
+        msg.replied_msg_id,
+        CASE
+            WHEN msg.replied_msg_id IS NOT NULL THEN
+                (SELECT json_build_object(
+                    'message_id', rm.message_id,
+                    'text_content', rm.text_content,
+                    'sender_name', COALESCE(rc.name, ru.full_name, 'Deleted User'),
+                    'message_type', rm.message_type
+                ) 
+                FROM messages rm 
+                LEFT JOIN users ru ON rm.sender_id = ru.user_id
+                LEFT JOIN organizations rc ON rm.author_org_id = rc.org_id
+                WHERE rm.message_id = msg.replied_msg_id)
+            ELSE NULL
+        END AS reply_message
     FROM messages msg
     JOIN conversation_participants cp_msg ON cp_msg.conversation_id = msg.conversation_id 
     WHERE msg.conversation_id = c.conversation_id
@@ -1484,6 +1501,7 @@ ORDER BY COALESCE(m.created_at, c.last_message_at, c.updated_at) DESC NULLS LAST
             unread_count: unreadMap[c.conversation_id] || 0
 
         }));
+        // console.log("conversationsWithUnread", conversationsWithUnread);
 
         res.json(conversationsWithUnread);
 
@@ -1544,7 +1562,7 @@ exports.sendMessage = async (req, res) => {
 
     const senderId = actorScope.userId;
     const authorCompanyId = actorScope.orgId;
-    const { targetUserId, text_content, shared_post_id } = req.body;
+    const { targetUserId, text_content, shared_post_id, replyMessageId } = req.body;
     const images = req.files; // Array of files from multer
 
     const trimmedText = text_content?.trim() || '';
@@ -1839,9 +1857,9 @@ exports.sendMessage = async (req, res) => {
             }
 
             const msgRes = await client.query(
-                `INSERT INTO messages (conversation_id, sender_id, text_content, shared_post_id, author_org_id, sender_type, session_id)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
-                [conversationId, senderId, trimmedText || '', shared_post_id || null, authorCompanyId || null, authorCompanyId ? 'COMPANY' : 'USER', sessionId]
+                `INSERT INTO messages (conversation_id, sender_id, text_content, shared_post_id, author_org_id, sender_type, session_id, replied_msg_id)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
+                [conversationId, senderId, trimmedText || '', shared_post_id || null, authorCompanyId || null, authorCompanyId ? 'COMPANY' : 'USER', sessionId, replyMessageId || null]
             );
             const newMessage = msgRes.rows[0];
 
@@ -1944,8 +1962,26 @@ exports.sendMessage = async (req, res) => {
                 }
             }
 
+            let replyMessageData = null;
+            if (replyMessageId) {
+                const rmRes = await client.query(`
+                    SELECT 
+                        rm.message_id, 
+                        rm.text_content, 
+                        rm.message_type,
+                        COALESCE(rc.name, ru.full_name, 'Deleted User') as sender_name
+                    FROM messages rm
+                    LEFT JOIN users ru ON rm.sender_id = ru.user_id
+                    LEFT JOIN organizations rc ON rm.author_org_id = rc.org_id
+                    WHERE rm.message_id = $1
+                `, [replyMessageId]);
+                if (rmRes.rowCount > 0) replyMessageData = rmRes.rows[0];
+            }
+
             const messageData = {
                 ...newMessage,
+                replyMessageId: replyMessageId || null,
+                reply_message: replyMessageData,
                 media: mediaRecords,
                 shared_post: sharedPostData,
                 sender_name: senderName,
@@ -2294,7 +2330,22 @@ exports.getMessages = async (req, res) => {
                         ) FROM organizations pc WHERE pc.org_id = m.shared_profile_id AND pc.is_deleted = FALSE)
                     ELSE NULL
                 END AS shared_profile,
-                EXISTS(SELECT 1 FROM message_delete md WHERE md.message_id = m.message_id AND md.user_id = $4) as is_deleted_for_me
+                EXISTS(SELECT 1 FROM message_delete md WHERE md.message_id = m.message_id AND md.user_id = $4) as is_deleted_for_me,
+                m.replied_msg_id AS "replyMessageId",
+                CASE
+                    WHEN m.replied_msg_id IS NOT NULL THEN
+                        (SELECT json_build_object(
+                            'message_id', rm.message_id,
+                            'text_content', rm.text_content,
+                            'sender_name', COALESCE(rc.name, ru.full_name, 'Deleted User'),
+                            'message_type', rm.message_type
+                        ) 
+                        FROM messages rm 
+                        LEFT JOIN users ru ON rm.sender_id = ru.user_id
+                        LEFT JOIN organizations rc ON rm.author_org_id = rc.org_id
+                        WHERE rm.message_id = m.replied_msg_id)
+                    ELSE NULL
+                END AS reply_message
              FROM messages m
              LEFT JOIN users u ON m.sender_id = u.user_id
              LEFT JOIN organizations c ON m.author_org_id = c.org_id

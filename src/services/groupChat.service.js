@@ -460,7 +460,7 @@ class GroupChatService {
             left_at: participant ? participant.left_at : null
         };
     }
-    static async sendMessage(senderId, groupId, content, type, media = [], previewText = null) {
+    static async sendMessage(senderId, groupId, content, type, media = [], previewText = null, replyMessageId = null) {
         // 1. Verify user is member of group
         const members = await GroupChatModel.getGroupMembers(groupId);
         // console.log("Group Members:", members);
@@ -478,7 +478,7 @@ class GroupChatService {
         }
 
         // 2. Create message
-        const message = await GroupChatModel.createMessage({ groupId, senderId, content, type, previewText });
+        const message = await GroupChatModel.createMessage({ groupId, senderId, content, type, previewText, replyMessageId });
 
         // 3. Insert Media
         let mediaRecords = [];
@@ -486,11 +486,29 @@ class GroupChatService {
             mediaRecords = await GroupChatModel.addMessageMedia(message.message_id, media);
         }
 
+        let replyMessageData = null;
+        if (replyMessageId) {
+            const rmRes = await pool.query(`
+                SELECT 
+                    rm.message_id, 
+                    rm.text_content, 
+                    rm.message_type,
+                    COALESCE(rc.name, ru.full_name, 'Deleted User') as sender_name
+                FROM messages rm
+                LEFT JOIN users ru ON rm.sender_id = ru.user_id
+                LEFT JOIN organizations rc ON rm.author_org_id = rc.org_id
+                WHERE rm.message_id = $1
+            `, [replyMessageId]);
+            if (rmRes.rowCount > 0) replyMessageData = rmRes.rows[0];
+        }
+
         // 4. Emit socket event
         // Enriched message for frontend (needs sender details)
         const sender = members.find(m => m.user_id == senderId);
         const enrichedMessage = {
             ...message,
+            replyMessageId: replyMessageId || null,
+            reply_message: replyMessageData,
             media: mediaRecords, // Include media in socket event
             sender_name: sender.full_name,
             sender_avatar: sender.avatar_url,
