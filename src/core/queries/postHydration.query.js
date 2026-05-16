@@ -35,6 +35,20 @@ const getPostHydrationSelect = (companyParamIdx, userParamIdx) => `
     END AS is_broadcast,
 
     pc.name AS category_name,
+    p.location,
+
+    COALESCE(
+        (SELECT json_agg(json_build_object(
+            'id', u.user_id,
+            'full_name', u.full_name,
+            'account_name', u.account_name,
+            'avatar_url', u.avatar_url
+         ))
+         FROM post_tags pt 
+         JOIN users u ON pt.tagged_user_id = u.user_id
+         WHERE pt.post_id = p.post_id AND pt.is_active_tag = true),
+        '[]'::json
+    ) AS tags,
 
     COALESCE(
         (SELECT json_agg(json_build_object('url', pm.url, 'media_type', pm.media_type)) 
@@ -93,6 +107,23 @@ const getPostHydrationSelect = (companyParamIdx, userParamIdx) => `
         )
         FROM post_polls pp WHERE pp.post_id = p.post_id
     ) AS poll,
+    (
+        SELECT json_build_object(
+            'comment_id', pc_first.comment_id,
+            'content', pc_first.content,
+            'created_at', pc_first.created_at,
+            'author_id', COALESCE(pc_first.author_org_id, u_first.user_id),
+            'author_name', COALESCE(comp_first.name, u_first.full_name),
+            'author_avatar', COALESCE(comp_first.logo_url, u_first.avatar_url),
+            'author_title', u_first.headline
+        )
+        FROM post_comments pc_first
+        JOIN users u_first ON u_first.user_id = pc_first.author_id
+        LEFT JOIN organizations comp_first ON comp_first.org_id = pc_first.author_org_id
+        WHERE pc_first.post_id = p.post_id AND pc_first.parent_id IS NULL
+        ORDER BY pc_first.created_at ASC
+        LIMIT 1
+    ) AS first_comment,
 
     --Shared Post Data
     CASE 

@@ -1,9 +1,25 @@
 const GroupChatService = require("../../services/groupChat.service");
+const pool = require("../../core/db/pool");
 
 exports.createGroup = async (req, res) => {
     try {
         const adminId = req.user.sub || req.user.user_id; // Check auth middleware formatting
-        const { name, description, avatarUrl, members } = req.body;
+        const { name, description } = req.body;
+        let { avatarUrl, members } = req.body;
+
+        // Extract avatar from file if uploaded (same as onboarding/profile pattern)
+        if (req.file) {
+            avatarUrl = req.file.path.replace(/\\/g, "/");
+        }
+
+        // Parse members if sent as JSON string (common for FormData)
+        if (typeof members === 'string') {
+            try {
+                members = JSON.parse(members);
+            } catch (e) {
+                console.error("Failed to parse members:", e);
+            }
+        }
 
         if (!name) return res.status(400).json({ message: "Group name is required" });
 
@@ -92,7 +108,7 @@ exports.sendMessage = async (req, res) => {
     try {
         const senderId = req.user.sub || req.user.user_id;
         const { groupId } = req.params;
-        const { content } = req.body;
+        const { content, replyMessageId } = req.body;
 
         let files = [];
         if (req.files) {
@@ -132,7 +148,7 @@ exports.sendMessage = async (req, res) => {
                 ? (media.length > 1 ? `${media.length} attachments` : (media[0].type === 'video' ? 'Sent a video' : (media[0].type === 'document' ? 'Sent a document' : 'Sent a photo')))
                 : 'Message');
 
-        await GroupChatService.sendMessage(senderId, groupId, content, messageType, media, previewText);
+        await GroupChatService.sendMessage(senderId, groupId, content, messageType, media, previewText, replyMessageId);
         res.status(201).json({ success: true });
     } catch (err) {
         console.error("SendMessage Error:", err);
@@ -234,6 +250,68 @@ exports.updateGroupAvatar = async (req, res) => {
     }
 }
 
+exports.updateGroupDetails = async (req, res) => {
+    try {
+        // Part D — Extract and validate
+        const userId = req.user.sub || req.user.user_id;
+        const { groupId } = req.params;
+        const { name, headline, description, avatar } = req.body;
+
+        if (!groupId) {
+            return res.status(400).json({
+                success: false,
+                message: "Group ID is required"
+            });
+        }
+
+        if (name === undefined && headline === undefined && description === undefined && avatar === undefined) {
+            return res.status(400).json({
+                success: false,
+                message: "At least one field is required to update"
+            });
+        }
+
+        if (name !== undefined && !name.trim()) {
+            return res.status(400).json({
+                success: false,
+                message: "Group name cannot be empty"
+            });
+        }
+
+        // Part E — Build update object dynamically
+        const updateFields = {};
+        if (name !== undefined) updateFields.name = name.trim();
+        if (headline !== undefined) updateFields.headline = headline.trim();
+        if (description !== undefined) updateFields.description = description.trim();
+        if (avatar !== undefined) updateFields.avatar = avatar;
+
+        // Use same DB update pattern as updateGroupAvatar
+        const updatedGroup = await GroupChatService.updateGroupDetails(userId, groupId, updateFields);
+
+        if (!updatedGroup) {
+            return res.status(404).json({
+                success: false,
+                message: "Group not found"
+            });
+        }
+
+        // Part F — Response (match updateGroupAvatar pattern exactly)
+        return res.status(200).json({
+            success: true,
+            data: updatedGroup,
+            message: "Group details updated successfully"
+        });
+
+    } catch (err) {
+        // Match exact error handling from updateGroupAvatar
+        console.error("Update Group Details Error:", err);
+        res.status(403).json({
+            success: false,
+            message: err.message
+        });
+    }
+}
+
 exports.markGroupMessagesAsRead = async (req, res) => {
     try {
         const userId = req.user.sub || req.user.user_id;
@@ -262,3 +340,202 @@ exports.getMessageReadReceipts = async (req, res) => {
         res.status(500).json({ message: err.message });
     }
 }
+
+exports.acceptChatRequest = async (req, res) => {
+    try {
+        const userId = req.user.sub || req.user.user_id;
+        const { conversationId } = req.params;
+
+        if (!conversationId) {
+            return res.status(400).json({ message: "conversationId is required" });
+        }
+
+        const result = await pool.query(
+            `UPDATE conversations
+             SET is_requesting = FALSE, updated_at = now()
+             WHERE conversation_id = $1
+             RETURNING *`,
+            [conversationId]
+        );
+
+        if (result.rowCount === 0) {
+            return res.status(404).json({ message: "Conversation not found" });
+        }
+
+        return res.status(200).json({ success: true, message: "Chat request accepted", data: result.rows[0] });
+    } catch (err) {
+        console.error("Accept Chat Request Error:", err);
+        res.status(500).json({ message: "Internal server error" });
+    }
+};
+
+exports.declineChatRequest = async (req, res) => {
+    try {
+        const userId = req.user.sub || req.user.user_id;
+        const { conversationId } = req.params;
+
+        if (!conversationId) {
+            return res.status(400).json({ message: "conversationId is required" });
+        }
+
+        const result = await pool.query(
+            `UPDATE conversations
+             SET is_active = FALSE, updated_at = now()
+             WHERE conversation_id = $1
+             RETURNING *`,
+            [conversationId]
+        );
+
+        if (result.rowCount === 0) {
+            return res.status(404).json({ message: "Conversation not found" });
+        }
+
+        return res.status(200).json({ success: true, message: "Chat request declined", data: result.rows[0] });
+    } catch (err) {
+        console.error("Decline Chat Request Error:", err);
+        res.status(500).json({ message: "Internal server error" });
+    }
+};
+
+/**
+ * GET /messaging/search/users
+ *
+ * Searches users for messaging with priority ordering:
+ *   1 — Connected users (connections table)
+ *   2 — Following users (followers table, not in connections)
+ *   3 — All other users
+ *
+ * Supports optional text filter (q), cursor-based pagination (cursor), and limit.
+ *
+ * Cursor pattern matches event.controller.js:
+ *   - Fetch limit + 1 rows
+ *   - If more rows than limit: hasMore = true, pop extra, encode last row's user_id + priority as base64 cursor
+ *   - If <= limit rows: hasMore = false, nextCursor = null
+ *
+ * Response: { success, data, nextCursor, hasMore }
+ */
+exports.searchUsersForMessaging = async (req, res) => {
+    try {
+        const userId = req.user.sub || req.user.user_id;
+        const { q, cursor, limit: limitParam } = req.query;
+
+        // --- Input sanitization ---
+        const searchTerm = (typeof q === "string" && q.trim().length > 0)
+            ? q.trim().replace(/^['"]|['"]$/g, "")
+            : null;
+        const limitNum = Math.min(parseInt(limitParam) || 20, 100); // cap at 100
+
+        // --- Decode cursor ---
+        let cursorUserId = null;
+        let cursorPriority = null;
+        if (cursor) {
+            try {
+                const decoded = Buffer.from(cursor, "base64").toString("ascii");
+                const [cPriority, cUserId] = decoded.split("_");
+                if (cPriority && cUserId) {
+                    cursorPriority = parseInt(cPriority);
+                    cursorUserId = cUserId;
+                }
+            } catch (_) { /* invalid cursor — ignore, start from beginning */ }
+        }
+
+        // --- Build query parameters ---
+        // $1 = current userId (always)
+        // $2 = likeTerm (only when searchTerm present)
+        // remaining = cursor params if present
+        const values = [userId];
+        let likeTermIdx = null;
+        let nameFilter = "";
+
+        if (searchTerm) {
+            values.push(`%${searchTerm}%`);
+            likeTermIdx = values.length; // $2
+            nameFilter = `AND (u.full_name ILIKE $${likeTermIdx} OR u.account_name ILIKE $${likeTermIdx})`;
+        }
+
+        // Cursor WHERE clause
+        let cursorClause = "";
+        if (cursorPriority !== null && cursorUserId) {
+            values.push(cursorPriority);
+            const cPriorityIdx = values.length;
+            values.push(cursorUserId);
+            const cUserIdIdx = values.length;
+            // Rows come AFTER the cursor: higher priority number or same priority with later created_at
+            // Since we sort by (priority ASC, created_at DESC), "after cursor" means:
+            //   priority > cursorPriority
+            //   OR priority = cursorPriority AND user_id < cursorUserId (using user_id as tiebreak since created_at may not be stable)
+            cursorClause = `AND (
+                deduped_results.priority > $${cPriorityIdx}
+                OR (deduped_results.priority = $${cPriorityIdx} AND deduped_results.user_id > $${cUserIdIdx}::uuid)
+            )`;
+        }
+
+        // Limit: fetch one extra to detect next page
+        values.push(limitNum + 1);
+        const limitIdx = values.length;
+
+        const queryText = `
+            SELECT * FROM (
+                SELECT DISTINCT ON (user_id)
+                    user_id, full_name, account_name, headline, avatar_url, created_at,
+                    priority
+                FROM (
+                    SELECT
+                        u.user_id,
+                        u.full_name,
+                        u.account_name,
+                        u.headline,
+                        u.avatar_url,
+                        u.created_at,
+                        CASE
+                            -- 1. Connections
+                            WHEN EXISTS (SELECT 1 FROM connections c WHERE (c.user_id = $1 AND c.connected_user_id = u.user_id) OR (c.connected_user_id = $1 AND c.user_id = u.user_id)) THEN 1
+                            -- 2. Followers (They follow me)
+                            WHEN EXISTS (SELECT 1 FROM followers f WHERE f.following_id = $1 AND f.follower_id = u.user_id) THEN 2
+                            -- 3. Following (I follow them)
+                            WHEN EXISTS (SELECT 1 FROM followers f WHERE f.follower_id = $1 AND f.following_id = u.user_id) THEN 3
+                            ELSE 4
+                        END AS priority
+                    FROM users u
+                    WHERE u.user_id != $1
+                    ${nameFilter}
+                    AND NOT EXISTS (
+                        SELECT 1 FROM blocks b
+                        WHERE (b.blocker_id = $1 AND b.blocked_id = u.user_id)
+                           OR (b.blocker_id = u.user_id AND b.blocked_id = $1)
+                    )
+                ) AS unsorted_results
+                ORDER BY user_id, priority ASC
+            ) AS deduped_results
+            WHERE 1=1
+            ${cursorClause}
+            ORDER BY priority ASC, created_at DESC, user_id ASC
+            LIMIT $${limitIdx}
+        `;
+
+        const result = await pool.query(queryText, values);
+        const items = result.rows;
+
+        // --- Cursor pagination (matches event.controller.js pattern exactly) ---
+        let nextCursor = null;
+        let hasMore = false;
+
+        if (items.length > limitNum) {
+            hasMore = true;
+            items.pop(); // remove the extra row
+            const lastItem = items[items.length - 1];
+            // Encode cursor as base64: "priority_userId"
+            nextCursor = Buffer.from(`${lastItem.priority}_${lastItem.user_id}`).toString("base64");
+        }
+
+        return res.status(200).json({
+            success: true,
+            data: items,
+            nextCursor,
+            hasMore,
+        });
+    } catch (err) {
+        console.error("Search Users For Messaging Error:", err);
+        return res.status(500).json({ message: "Internal server error" });
+    }
+};

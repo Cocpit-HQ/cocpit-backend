@@ -6,6 +6,7 @@ const { formatDistanceToNow } = require('date-fns');
 const socketService = require("../../core/infrastructure/socket.service");
 const { checkRateLimit } = require("../../core/utils/sessionRateLimiter");
 const { hasActorPermission } = require("../../core/middlewares/actor-context.middleware");
+const { markConversationAsRead } = require("../../services/conversationRead.service");
 
 // Helper function for timeAgo
 const timeAgo = (date) => {
@@ -579,6 +580,15 @@ exports.getFollowers = async (req, res) => {
             params.push(`%${search}%`);
         }
 
+        // Always exclude blocked users from the viewer's perspective
+        query += ` 
+            AND NOT EXISTS (
+                SELECT 1 FROM blocks b 
+                WHERE (b.blocker_id = $2 AND b.blocked_id = u.user_id)
+                   OR (b.blocker_id = u.user_id AND b.blocked_id = $2)
+            )
+        `;
+
         query += ` ORDER BY f.created_at DESC`;
 
         const result = await pool.query(query, params);
@@ -630,9 +640,22 @@ exports.getFollowing = async (req, res) => {
             params.push(`%${search}%`);
         }
 
+        const viewerId = req.user.sub;
+        const queryParams = [...params, viewerId];
+        const viewerIdx = queryParams.length;
+
+        // Apply block filtering to user follows
+        userQuery += `
+            AND NOT EXISTS (
+                SELECT 1 FROM blocks b 
+                WHERE (b.blocker_id = $${viewerIdx} AND b.blocked_id = u.user_id)
+                   OR (b.blocker_id = u.user_id AND b.blocked_id = $${viewerIdx})
+            )
+        `;
+
         const fullQuery = `(${userQuery}) UNION ALL (${companyQuery}) ORDER BY created_at DESC`;
 
-        const result = await pool.query(fullQuery, params);
+        const result = await pool.query(fullQuery, queryParams);
 
         const formattedConnections = result.rows.map(row => {
             const timeAgoVal = formatDistanceToNow(new Date(row.created_at), {
@@ -1235,6 +1258,17 @@ exports.getMyConnections = async (req, res) => {
             params.push(`%${search}%`);
         }
 
+        // Apply block filtering to connections
+        const viewerIdx = 1; // Always $1 for getMyConnections as we don't have a separate viewer param, but wait
+        // In getMyConnections, userId is the current user.
+        userQuery += `
+            AND NOT EXISTS (
+                SELECT 1 FROM blocks b 
+                WHERE (b.blocker_id = $1 AND b.blocked_id = u.user_id)
+                   OR (b.blocker_id = u.user_id AND b.blocked_id = $1)
+            )
+        `;
+
         const fullQuery = `(${userQuery}) UNION ALL (${companyQuery}) ORDER BY created_at DESC`;
         const result = await pool.query(fullQuery, params);
 
@@ -1328,8 +1362,11 @@ SELECT
     END AS is_deleted_user,
 
     -- Get the most recent message dynamically
+    m.message_id AS last_message_id,
     COALESCE(m.text_content, c.last_message) AS last_message_text,
-    COALESCE(m.created_at, c.last_message_at, c.updated_at) AS last_message_at
+    COALESCE(m.created_at, c.last_message_at, c.updated_at) AS last_message_at,
+    m.replied_msg_id AS "replyMessageId",
+    m.reply_message
 FROM conversations c
 JOIN (
     -- Aggregate participation: Ensure one row per conversation for this user
@@ -1351,29 +1388,48 @@ JOIN (
       ($2::uuid IS NULL AND cp_main.user_id = $1)
     GROUP BY conversation_id, user_id, org_id -- added org_id
 ) cp ON c.conversation_id = cp.conversation_id
--- For 1-on-1, join the other participant.
-LEFT JOIN conversation_participants cp_other ON c.conversation_id = cp_other.conversation_id 
-    AND (
-        -- If I am User, other is NOT me (User) AND NOT my Company (if applicable, though usually 1-on-1 is User-User or User-Company)
-        -- Simplified: Other participant is the one that is NOT the current context ID
-        ($2::uuid IS NOT NULL AND (cp_other.org_id != $2 OR cp_other.org_id IS NULL))
-        OR
-        ($2::uuid IS NULL AND (cp_other.user_id != $1 OR cp_other.user_id IS NULL))
-    )
-    AND c.is_group = FALSE
+-- For 1-on-1, join the other participant (LATERAL + LIMIT 1 prevents fan-out duplicates).
+LEFT JOIN LATERAL (
+    SELECT cp_o.user_id, cp_o.org_id
+    FROM conversation_participants cp_o
+    WHERE cp_o.conversation_id = c.conversation_id
+      AND c.is_group = FALSE
+      AND (
+          ($2::uuid IS NOT NULL AND (cp_o.org_id != $2 OR cp_o.org_id IS NULL))
+          OR
+          ($2::uuid IS NULL AND (cp_o.user_id != $1 OR cp_o.user_id IS NULL))
+      )
+    LIMIT 1
+) cp_other ON c.is_group = FALSE
 LEFT JOIN users u ON cp_other.user_id = u.user_id
 LEFT JOIN organizations comp ON cp_other.org_id = comp.org_id -- JOIN organizations for Company participants
 
 -- LATERAL JOIN to find the latest VISIBLE message across ANY period
 LEFT JOIN LATERAL (
     SELECT 
+        msg.message_id,
         CASE 
             WHEN msg.is_deleted_for_everyone THEN 'This message was deleted'
             WHEN msg.shared_post_id IS NOT NULL THEN 'Shared a post'
             WHEN msg.text_content IS NULL OR msg.text_content = '' THEN 'Attachment'
             ELSE msg.text_content
         END as text_content,
-        msg.created_at
+        msg.created_at,
+        msg.replied_msg_id,
+        CASE
+            WHEN msg.replied_msg_id IS NOT NULL THEN
+                (SELECT json_build_object(
+                    'message_id', rm.message_id,
+                    'text_content', rm.text_content,
+                    'sender_name', COALESCE(rc.name, ru.full_name, 'Deleted User'),
+                    'message_type', rm.message_type
+                ) 
+                FROM messages rm 
+                LEFT JOIN users ru ON rm.sender_id = ru.user_id
+                LEFT JOIN organizations rc ON rm.author_org_id = rc.org_id
+                WHERE rm.message_id = msg.replied_msg_id)
+            ELSE NULL
+        END AS reply_message
     FROM messages msg
     JOIN conversation_participants cp_msg ON cp_msg.conversation_id = msg.conversation_id 
     WHERE msg.conversation_id = c.conversation_id
@@ -1403,6 +1459,7 @@ WHERE ($2::uuid IS NULL OR NOT EXISTS (
     AND cp_self_guard.left_at IS NULL
     AND c.is_group = FALSE
 ))
+AND c.is_active = TRUE
 
 ORDER BY COALESCE(m.created_at, c.last_message_at, c.updated_at) DESC NULLS LAST;
   `, [userId, companyId]
@@ -1436,12 +1493,15 @@ ORDER BY COALESCE(m.created_at, c.last_message_at, c.updated_at) DESC NULLS LAST
             unreadMap[row.conversation_id] = row.unread_count;
         }
 
+
         const conversationsWithUnread = result.rows.map(c => ({
             ...c,
+            is_requesting: c.is_requesting && (c.created_by === userId) ? false : c.is_requesting,
             timeAgo: timeAgo(c.updated_at),
             unread_count: unreadMap[c.conversation_id] || 0
 
         }));
+        // console.log("conversationsWithUnread", conversationsWithUnread);
 
         res.json(conversationsWithUnread);
 
@@ -1502,7 +1562,7 @@ exports.sendMessage = async (req, res) => {
 
     const senderId = actorScope.userId;
     const authorCompanyId = actorScope.orgId;
-    const { targetUserId, text_content, shared_post_id } = req.body;
+    const { targetUserId, text_content, shared_post_id, replyMessageId } = req.body;
     const images = req.files; // Array of files from multer
 
     const trimmedText = text_content?.trim() || '';
@@ -1521,10 +1581,10 @@ exports.sendMessage = async (req, res) => {
         try {
             await client.query('BEGIN ISOLATION LEVEL SERIALIZABLE');
 
-            let senderName, senderAvatar;
+            let senderName, senderAvatar, senderSlug = null, senderHeadline = null;
             if (authorCompanyId) {
                 const orgRes = await client.query(
-                    `SELECT name, logo_url FROM organizations WHERE org_id = $1`,
+                    `SELECT name, logo_url, slug FROM organizations WHERE org_id = $1`,
                     [authorCompanyId]
                 );
                 if (orgRes.rowCount === 0) {
@@ -1533,6 +1593,7 @@ exports.sendMessage = async (req, res) => {
                 }
                 senderName = orgRes.rows[0].name;
                 senderAvatar = orgRes.rows[0].logo_url;
+                senderSlug = orgRes.rows[0].slug;
 
                 // Session check: if feature enabled, require active session
                 const sessionFeatureEnabled = (() => {
@@ -1553,7 +1614,7 @@ exports.sendMessage = async (req, res) => {
                 }
             } else {
                 const senderRes = await client.query(
-                    `SELECT full_name, avatar_url FROM users WHERE user_id = $1`,
+                    `SELECT full_name, avatar_url, headline, account_name FROM users WHERE user_id = $1`,
                     [senderId]
                 );
                 if (senderRes.rowCount === 0) {
@@ -1562,19 +1623,34 @@ exports.sendMessage = async (req, res) => {
                 }
                 senderName = senderRes.rows[0].full_name;
                 senderAvatar = senderRes.rows[0].avatar_url;
+                senderHeadline = senderRes.rows[0].headline;
+                senderSlug = senderRes.rows[0].account_name;
             }
 
-            // Determine if target is a user or a company
+            // Determine if target is a user or a company (fetch full profile for socket payload)
             const targetUserExists = await client.query(
-                `SELECT 1 FROM users WHERE user_id = $1`,
+                `SELECT user_id, full_name, avatar_url, headline, account_name FROM users WHERE user_id = $1`,
                 [targetUserId]
             );
             const targetCompanyExists = targetUserExists.rowCount === 0
-                ? await client.query(`SELECT 1 FROM organizations WHERE org_id = $1`, [targetUserId])
+                ? await client.query(`SELECT org_id, name, logo_url, slug FROM organizations WHERE org_id = $1`, [targetUserId])
                 : null;
 
             const targetIsUser = targetUserExists.rowCount > 0;
             const targetIsCompany = !targetIsUser && targetCompanyExists?.rowCount > 0;
+
+            // Capture target display info for socket payload
+            const targetName = targetIsUser
+                ? targetUserExists.rows[0].full_name
+                : (targetIsCompany ? targetCompanyExists.rows[0].name : null);
+            const targetAvatar = targetIsUser
+                ? targetUserExists.rows[0].avatar_url
+                : (targetIsCompany ? targetCompanyExists.rows[0].logo_url : null);
+            const targetHeadline = targetIsUser ? (targetUserExists.rows[0].headline || null) : null;
+            const targetSlug = targetIsUser
+                ? targetUserExists.rows[0].account_name
+                : (targetIsCompany ? targetCompanyExists.rows[0].slug : null);
+            const targetType = targetIsCompany ? 'COMPANY' : 'USER';
 
             if (!targetIsUser && !targetIsCompany) {
                 await client.query('ROLLBACK');
@@ -1603,10 +1679,10 @@ exports.sendMessage = async (req, res) => {
                 // Company-to-User: look for a conversation where company is a participant AND target user is a participant
                 const existingConv = await client.query(
                     `SELECT c.conversation_id
-                 FROM conversations c
-                 JOIN conversation_participants cp1 ON c.conversation_id = cp1.conversation_id AND cp1.org_id = $1
-                 JOIN conversation_participants cp2 ON c.conversation_id = cp2.conversation_id AND cp2.user_id = $2
-                 WHERE c.is_group = FALSE`,
+                     FROM conversations c
+                     JOIN conversation_participants cp1 ON c.conversation_id = cp1.conversation_id AND cp1.org_id = $1
+                     JOIN conversation_participants cp2 ON c.conversation_id = cp2.conversation_id AND cp2.user_id = $2
+                     WHERE c.is_group = FALSE AND c.is_active = TRUE`,
                     [authorCompanyId, targetUserId]
                 );
 
@@ -1615,7 +1691,8 @@ exports.sendMessage = async (req, res) => {
                 } else {
                     // Create new conversation with company as one participant
                     const convRes = await client.query(
-                        `INSERT INTO conversations (is_group) VALUES (FALSE) RETURNING conversation_id`
+                        `INSERT INTO conversations (is_group, is_requesting, created_by) VALUES (FALSE, FALSE, $1) RETURNING conversation_id`,
+                        [senderId]
                     );
                     conversationId = convRes.rows[0].conversation_id;
                     isNewConversation = true;
@@ -1635,10 +1712,10 @@ exports.sendMessage = async (req, res) => {
                 // User-to-Company: look for a conversation where user is a participant AND target company is a participant
                 const existingConv = await client.query(
                     `SELECT c.conversation_id
-                 FROM conversations c
-                 JOIN conversation_participants cp1 ON c.conversation_id = cp1.conversation_id AND cp1.user_id = $1
-                 JOIN conversation_participants cp2 ON c.conversation_id = cp2.conversation_id AND cp2.org_id = $2
-                 WHERE c.is_group = FALSE`,
+                     FROM conversations c
+                     JOIN conversation_participants cp1 ON c.conversation_id = cp1.conversation_id AND cp1.user_id = $1
+                     JOIN conversation_participants cp2 ON c.conversation_id = cp2.conversation_id AND cp2.org_id = $2
+                     WHERE c.is_group = FALSE AND c.is_active = TRUE`,
                     [senderId, targetUserId]
                 );
 
@@ -1646,7 +1723,8 @@ exports.sendMessage = async (req, res) => {
                     conversationId = existingConv.rows[0].conversation_id;
                 } else {
                     const convRes = await client.query(
-                        `INSERT INTO conversations (is_group) VALUES (FALSE) RETURNING conversation_id`
+                        `INSERT INTO conversations (is_group, is_requesting, created_by) VALUES (FALSE, FALSE, $1) RETURNING conversation_id`,
+                        [senderId]
                     );
                     conversationId = convRes.rows[0].conversation_id;
 
@@ -1665,20 +1743,33 @@ exports.sendMessage = async (req, res) => {
                 // User-to-User: original logic
                 const existingConv = await client.query(
                     `SELECT c.conversation_id
-                 FROM conversations c
-                 JOIN conversation_participants cp1 ON c.conversation_id = cp1.conversation_id AND cp1.user_id = $1
-                 JOIN conversation_participants cp2 ON c.conversation_id = cp2.conversation_id AND cp2.user_id = $2
-                 WHERE c.is_group = FALSE`,
+                     FROM conversations c
+                     JOIN conversation_participants cp1 ON c.conversation_id = cp1.conversation_id AND cp1.user_id = $1
+                     JOIN conversation_participants cp2 ON c.conversation_id = cp2.conversation_id AND cp2.user_id = $2
+                     WHERE c.is_group = FALSE AND c.is_active = TRUE`,
                     [senderId, targetUserId]
                 );
 
                 if (existingConv.rowCount > 0) {
                     conversationId = existingConv.rows[0].conversation_id;
                 } else {
+                    // Check if target is following sender
+                    const followCheck = await client.query(
+                        `SELECT 1 FROM followers  
+                         WHERE follower_id = $1 AND following_id = $2`,
+                        [targetUserId, senderId]
+                    );
+
+                    const isRequesting = followCheck.rowCount === 0; // not following = requesting
+
                     const convRes = await client.query(
-                        `INSERT INTO conversations (is_group) VALUES (FALSE) RETURNING conversation_id`
+                        `INSERT INTO conversations (is_group, is_requesting, created_by) 
+                         VALUES (FALSE, $1, $2) 
+                         RETURNING conversation_id`,
+                        [isRequesting, senderId]
                     );
                     conversationId = convRes.rows[0].conversation_id;
+                    isNewConversation = true;
 
                     await client.query(
                         `INSERT INTO conversation_participants (conversation_id, user_id) VALUES ($1, $2), ($1, $3)`,
@@ -1686,6 +1777,14 @@ exports.sendMessage = async (req, res) => {
                     );
                 }
             }
+
+            // Fetch conversation metadata needed for socket payload
+            const convMeta = await client.query(
+                `SELECT is_requesting, created_at FROM conversations WHERE conversation_id = $1`,
+                [conversationId]
+            );
+            const convIsRequesting = convMeta.rows[0]?.is_requesting ?? false;
+            const convCreatedAt = convMeta.rows[0]?.created_at ?? null;
 
             // Insert the message
             // Determine message text for notifications/preview
@@ -1758,9 +1857,9 @@ exports.sendMessage = async (req, res) => {
             }
 
             const msgRes = await client.query(
-                `INSERT INTO messages (conversation_id, sender_id, text_content, shared_post_id, author_org_id, sender_type, session_id)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
-                [conversationId, senderId, trimmedText || '', shared_post_id || null, authorCompanyId || null, authorCompanyId ? 'COMPANY' : 'USER', sessionId]
+                `INSERT INTO messages (conversation_id, sender_id, text_content, shared_post_id, author_org_id, sender_type, session_id, replied_msg_id)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
+                [conversationId, senderId, trimmedText || '', shared_post_id || null, authorCompanyId || null, authorCompanyId ? 'COMPANY' : 'USER', sessionId, replyMessageId || null]
             );
             const newMessage = msgRes.rows[0];
 
@@ -1781,8 +1880,8 @@ exports.sendMessage = async (req, res) => {
 
                 const mediaRes = await client.query(
                     `INSERT INTO message_media (message_id, url, media_type) 
-                   VALUES ${placeholders} 
-                   RETURNING url, media_type`,
+                     VALUES ${placeholders} 
+                     RETURNING url, media_type`,
                     flatValues
                 );
                 mediaRecords = mediaRes.rows;
@@ -1792,24 +1891,24 @@ exports.sendMessage = async (req, res) => {
             let sharedPostData = null;
             if (shared_post_id) {
                 const spRes = await client.query(`
-                SELECT 
-                    p.post_id, p.content, p.created_at, 
-                    json_build_object('full_name', u.full_name, 'avatar_url', u.avatar_url) as author,
-                    (SELECT json_agg(json_build_object('url', url, 'media_type', media_type)) FROM post_media WHERE post_id = p.post_id) as media
-                FROM posts p
-                JOIN users u ON p.author_id = u.user_id
-                WHERE p.post_id = $1
-            `, [shared_post_id]);
+                    SELECT 
+                        p.post_id, p.content, p.created_at, 
+                        json_build_object('full_name', u.full_name, 'avatar_url', u.avatar_url) as author,
+                        (SELECT json_agg(json_build_object('url', url, 'media_type', media_type)) FROM post_media WHERE post_id = p.post_id) as media
+                    FROM posts p
+                    JOIN users u ON p.author_id = u.user_id
+                    WHERE p.post_id = $1
+                `, [shared_post_id]);
                 if (spRes.rowCount > 0) sharedPostData = spRes.rows[0];
             }
 
             // Update conversation timestamp and last message
             await client.query(
                 `UPDATE conversations 
-             SET updated_at = now(),
-                 last_message = $2,
-                 last_message_at = now()
-             WHERE conversation_id = $1`,
+                 SET updated_at = now(),
+                     last_message = $2,
+                     last_message_at = now()
+                 WHERE conversation_id = $1`,
                 [conversationId, previewText]
             );
             // Update session activity (within transaction)
@@ -1863,12 +1962,84 @@ exports.sendMessage = async (req, res) => {
                 }
             }
 
+            let replyMessageData = null;
+            if (replyMessageId) {
+                const rmRes = await client.query(`
+                    SELECT 
+                        rm.message_id, 
+                        rm.text_content, 
+                        rm.message_type,
+                        COALESCE(rc.name, ru.full_name, 'Deleted User') as sender_name
+                    FROM messages rm
+                    LEFT JOIN users ru ON rm.sender_id = ru.user_id
+                    LEFT JOIN organizations rc ON rm.author_org_id = rc.org_id
+                    WHERE rm.message_id = $1
+                `, [replyMessageId]);
+                if (rmRes.rowCount > 0) replyMessageData = rmRes.rows[0];
+            }
+
             const messageData = {
                 ...newMessage,
+                replyMessageId: replyMessageId || null,
+                reply_message: replyMessageData,
                 media: mediaRecords,
                 shared_post: sharedPostData,
                 sender_name: senderName,
                 sender_avatar: senderAvatar
+            };
+            // ─── Base conversation shape (mirrors the REST API getConversations response) ───
+            // Fields that are the same regardless of who receives the event
+            const baseConvPayload = {
+                conversation_id: conversationId,
+                is_group: false,
+                is_active: true,
+                is_requesting: convIsRequesting,
+                created_at: convCreatedAt,
+                updated_at: newMessage.created_at,
+                is_new_conversation: isNewConversation,
+                description: null,
+                created_by: null,
+                group_headline: null,
+                conversation_name: null,
+                admin_id: null,
+                group_avatar: null,
+                // Last message
+                last_message: previewText,
+                last_message_text: previewText,
+                last_message_at: newMessage.created_at,
+                last_message_id: newMessage.message_id,
+                // Block status (message sent successfully → no blocks active)
+                is_blocked_by_me: false,
+                is_blocked_by_other: false,
+                // Author context (who sent this particular message)
+                sender_id: senderId,
+                author_company_id: authorCompanyId || null,
+            };
+
+            // ─── Receiver payload: other_user_* = SENDER info ───
+            const receiverConvPayload = {
+                ...baseConvPayload,
+                other_user_id: authorCompanyId ? authorCompanyId : senderId,
+                other_user_name: senderName,
+                other_user_avatar: senderAvatar,
+                other_user_headline: senderHeadline,
+                other_user_slug: senderSlug,
+                other_user_type: authorCompanyId ? 'COMPANY' : 'USER',
+                is_deleted_user: false,
+                unread_count: 1, // receiver always has at least 1 unread
+            };
+
+            // ─── Sender payload: other_user_* = TARGET info ───
+            const senderConvPayload = {
+                ...baseConvPayload,
+                other_user_id: targetUserId,
+                other_user_name: targetName,
+                other_user_avatar: targetAvatar,
+                other_user_headline: targetHeadline,
+                other_user_slug: targetSlug,
+                other_user_type: targetType,
+                is_deleted_user: false,
+                unread_count: 0, // sender has read their own message
             };
 
             // Notify via socket
@@ -1880,6 +2051,11 @@ exports.sendMessage = async (req, res) => {
                 );
                 for (const member of members.rows) {
                     socketService.notifyUser(member.user_id, "new_message", messageData);
+                    socketService.notifyUser(member.user_id, "conversation_updated", {
+                        ...receiverConvPayload,
+                        target_profile_type: 'COMPANY',
+                        target_company_id: targetUserId
+                    });
                     socketService.notifyUser(member.user_id, "notification", {
                         type: "message",
                         from: senderId,
@@ -1894,6 +2070,10 @@ exports.sendMessage = async (req, res) => {
             } else {
                 // User→User or Company→User: notify target user directly
                 socketService.notifyUser(targetUserId, "new_message", messageData);
+                socketService.notifyUser(targetUserId, "conversation_updated", {
+                    ...receiverConvPayload,
+                    target_profile_type: 'USER'
+                });
                 socketService.notifyUser(targetUserId, "notification", {
                     type: "message",
                     from: senderId,
@@ -1906,6 +2086,11 @@ exports.sendMessage = async (req, res) => {
             }
             // Notify sender as well
             socketService.notifyUser(senderId, "new_message", messageData);
+            socketService.notifyUser(senderId, "conversation_updated", {
+                ...senderConvPayload,
+                target_profile_type: targetIsCompany ? 'COMPANY' : 'USER',
+                target_company_id: targetIsCompany ? targetUserId : null
+            });
 
             res.status(201).json({
                 conversationId,
@@ -1942,100 +2127,20 @@ exports.markConversationRead = async (req, res) => {
 
     const { userId, orgId: companyId } = actorScope;
 
-    const client = await pool.connect();
-
     try {
-        await client.query("BEGIN");
-
-        // 1. Update the participant's last_read_at timestamp
-        const result = await client.query(
-            `
-            UPDATE conversation_participants
-            SET last_read_at = NOW()
-            WHERE conversation_id = $1 
-            AND (
-                ($3::uuid IS NOT NULL AND org_id = $3)
-                OR
-                ($3::uuid IS NULL AND user_id = $2)
-            )
-            AND left_at IS NULL
-            RETURNING last_read_at
-            `,
-            [conversationId, userId, companyId]
-        );
-
-        // 2. Identify unread messages to mark as read
-        const unreadMessagesMsgIds = await client.query(
-            `
-            SELECT message_id FROM messages
-            WHERE conversation_id = $1
-            AND sender_id != $2
-            AND NOT EXISTS (
-                SELECT 1 FROM message_reads 
-                WHERE message_reads.message_id = messages.message_id 
-                AND message_reads.user_id = $2
-            )
-            `,
-            [conversationId, userId]
-        );
-
-        const unreadMsgIds = unreadMessagesMsgIds.rows.map(r => r.message_id);
-
-        if (unreadMsgIds.length > 0) {
-            // 3. Insert into message_reads
-            // Construct bulk insert values
-            const values = unreadMsgIds.map((msgId, idx) => `($${idx * 2 + 1}, $${idx * 2 + 2})`).join(', ');
-            const params = [];
-            unreadMsgIds.forEach(msgId => {
-                params.push(msgId, userId);
-            });
-
-            await client.query(
-                `INSERT INTO message_reads (message_id, user_id) VALUES ${values} ON CONFLICT DO NOTHING`,
-                params
-            );
-
-            // 4. Update 'messages.read_at' for backward compatibility (optional but good for 1-on-1 default logic)
-            // Mark messages as read if they weren't already
-            await client.query(
-                `
-                UPDATE messages
-                SET read_at = NOW()
-                WHERE message_id = ANY($1)
-                AND read_at IS NULL
-                `,
-                [unreadMsgIds]
-            );
-        }
-
-        await client.query("COMMIT");
-
-        const readAt = result.rows[0]?.last_read_at || new Date();
-
-        // 5. Emit read receipt via Socket
-        if (unreadMsgIds.length > 0) {
-            socketService.notifyConversation(conversationId, "messages_seen", {
-                conversationId,
-                readerId: userId, // Who read the messages
-                messageIds: unreadMsgIds, // Which messages were read
-                readAt: readAt,
-            });
-        }
+        const readResult = await markConversationAsRead({ conversationId, userId, companyId });
 
         res.json({
             message: "Conversation marked as read",
-            readAt: readAt,
-            readCount: unreadMsgIds.length
+            readAt: readResult.readAt,
+            readCount: readResult.readCount
         });
 
     } catch (err) {
-        await client.query("ROLLBACK");
         console.error("Mark conversation read error:", err);
         res.status(err.statusCode || 500).json({
             message: err.message || "Internal server error"
         });
-    } finally {
-        client.release();
     }
 };
 
@@ -2140,6 +2245,7 @@ exports.getMessages = async (req, res) => {
              FROM conversations c
              JOIN conversation_participants cp ON c.conversation_id = cp.conversation_id
              WHERE c.conversation_id = $1 
+             AND c.is_active = TRUE
              AND (
                 ($3::uuid IS NOT NULL AND cp.org_id = $3)
                 OR
@@ -2224,7 +2330,22 @@ exports.getMessages = async (req, res) => {
                         ) FROM organizations pc WHERE pc.org_id = m.shared_profile_id AND pc.is_deleted = FALSE)
                     ELSE NULL
                 END AS shared_profile,
-                EXISTS(SELECT 1 FROM message_delete md WHERE md.message_id = m.message_id AND md.user_id = $4) as is_deleted_for_me
+                EXISTS(SELECT 1 FROM message_delete md WHERE md.message_id = m.message_id AND md.user_id = $4) as is_deleted_for_me,
+                m.replied_msg_id AS "replyMessageId",
+                CASE
+                    WHEN m.replied_msg_id IS NOT NULL THEN
+                        (SELECT json_build_object(
+                            'message_id', rm.message_id,
+                            'text_content', rm.text_content,
+                            'sender_name', COALESCE(rc.name, ru.full_name, 'Deleted User'),
+                            'message_type', rm.message_type
+                        ) 
+                        FROM messages rm 
+                        LEFT JOIN users ru ON rm.sender_id = ru.user_id
+                        LEFT JOIN organizations rc ON rm.author_org_id = rc.org_id
+                        WHERE rm.message_id = m.replied_msg_id)
+                    ELSE NULL
+                END AS reply_message
              FROM messages m
              LEFT JOIN users u ON m.sender_id = u.user_id
              LEFT JOIN organizations c ON m.author_org_id = c.org_id
@@ -2249,7 +2370,7 @@ exports.getMessages = async (req, res) => {
              ORDER BY m.created_at DESC
              LIMIT $5`,
             [conversation_id, is_group, before, userId, limit, companyId]
-            
+
         );
 
         // Process messages: Filter "delete for me" and mask "delete for everyone"
@@ -2544,6 +2665,66 @@ exports.markAllNotificationsRead = async (req, res) => {
         res.status(500).json({ message: "Internal server error" });
     }
 };
+
+// Delete a single notification
+exports.deleteNotification = async (req, res) => {
+    const { id } = req.params;
+    let actorScope;
+
+    try {
+        actorScope = getSocialActorScope(req, req.query.companyId || req.body?.companyId || null);
+    } catch (err) {
+        return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
+    }
+
+    const { userId, orgId: companyId } = actorScope;
+
+    try {
+        const query = companyId
+            ? `DELETE FROM notifications WHERE notification_id = $1 AND recipient_org_id = $2 RETURNING *`
+            : `DELETE FROM notifications WHERE notification_id = $1 AND user_id = $2 AND recipient_org_id IS NULL RETURNING *`;
+        const result = await pool.query(query, [id, companyId || userId]);
+
+        if (result.rowCount === 0)
+            return res.status(404).json({ message: "Notification not found" });
+
+        res.json({ message: "Notification deleted" });
+    } catch (err) {
+        console.error("Delete notification error:", err);
+        res.status(500).json({ message: "Internal server error" });
+    }
+};
+
+// Delete multiple notifications (bulk)
+exports.deleteNotificationsBulk = async (req, res) => {
+    const { ids } = req.body;
+    let actorScope;
+
+    if (!ids || !Array.isArray(ids) || ids.length === 0) {
+        return res.status(400).json({ message: "An array of notification ids is required" });
+    }
+
+    try {
+        actorScope = getSocialActorScope(req, req.body?.companyId || req.query.companyId || null);
+    } catch (err) {
+        return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
+    }
+
+    const { userId, orgId: companyId } = actorScope;
+
+    try {
+        const query = companyId
+            ? `DELETE FROM notifications WHERE notification_id = ANY($1::uuid[]) AND recipient_org_id = $2`
+            : `DELETE FROM notifications WHERE notification_id = ANY($1::uuid[]) AND user_id = $2 AND recipient_org_id IS NULL`;
+        await pool.query(query, [ids, companyId || userId]);
+
+        res.json({ message: "Notifications deleted" });
+    } catch (err) {
+        console.error("Delete notifications bulk error:", err);
+        res.status(500).json({ message: "Internal server error" });
+    }
+};
+
 
 
 /* =====================================================

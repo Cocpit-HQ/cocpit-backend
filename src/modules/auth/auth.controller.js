@@ -213,43 +213,12 @@ exports.setActorContext = async (req, res) => {
     }
 };
 
-// ─── Google Login ──────────────────────────────────────────────────────────────
+// ─── Social Login ──────────────────────────────────────────────────────────────
 
 /**
- * POST /auth/google
- *
- * Accepts a Google ID token (from the frontend Google Identity Services SDK)
- * and either signs in or creates a new user.
- *
- * Request body:
- *   { idToken: string, accountType?: "Student" | "Fresher" | "Employer" | "Admin" }
- *   accountType is required only for new user sign-ups.
- *
- * Response (same shape as /auth/login):
- *   { accessToken: string, user: { id, email, full_name, avatar_url, roles, onboarding_complete, account_name } }
- *   Refresh token is set as an httpOnly cookie.
- *
- * Example request:
- *   POST /auth/google
- *   Content-Type: application/json
- *   { "idToken": "eyJhbGci...", "accountType": "Student" }
- *
- * Example response:
- *   201 (new user) or 200 (existing user)
- *   {
- *     "accessToken": "eyJhbGci...",
- *     "user": {
- *       "id": "uuid",
- *       "email": "user@gmail.com",
- *       "full_name": "John Doe",
- *       "avatar_url": "https://lh3.googleusercontent.com/...",
- *       "roles": ["Student"],
- *       "onboarding_complete": false,
- *       "account_name": null
- *     }
- *   }
+ * Common handler for social logins (Google & Apple)
  */
-exports.googleLogin = async (req, res) => {
+const handleSocialLogin = async (req, res, provider) => {
     const { idToken, accountType } = req.body;
     const userAgent = req.headers["user-agent"] || "unknown";
     const ipAddress = req.ip || "unknown";
@@ -259,7 +228,7 @@ exports.googleLogin = async (req, res) => {
     }
 
     try {
-        const result = await authService.googleLogin({ idToken, accountType, userAgent, ipAddress });
+        const result = await authService.socialLogin({ provider, idToken, accountType, userAgent, ipAddress });
 
         if (result.error) {
             return res.status(result.error.status).json({ message: result.error.message });
@@ -273,7 +242,7 @@ exports.googleLogin = async (req, res) => {
 
         const statusCode = result.isNewUser ? 201 : 200;
 
-        console.log(`✅ Google login successful: ${result.user.email} (${result.isNewUser ? "new" : "existing"})`);
+        console.log(`✅ ${provider} login successful: ${result.user.email} (${result.isNewUser ? "new" : "existing"})`);
 
         return res.status(statusCode).json({
             message: result.isNewUser ? "Registration successful" : "Login successful",
@@ -282,13 +251,27 @@ exports.googleLogin = async (req, res) => {
             user: result.user,
         });
     } catch (err) {
-        console.error("❌ Google login error:", err);
+        console.error(`❌ ${provider} login error:`, err);
 
-        // Handle duplicate google_id constraint violation
-        if (err.code === "23505" && err.constraint?.includes("google_id")) {
-            return res.status(409).json({ message: "This Google account is already linked to another user" });
+        // Handle duplicate provider_id constraint violation
+        if (err.code === "23505" && err.constraint?.includes("user_social_accounts_provider_id_key")) {
+            return res.status(409).json({ message: `This ${provider} account is already linked to another user` });
         }
 
         return res.status(500).json({ message: "Internal server error" });
     }
+};
+
+/**
+ * POST /auth/google
+ */
+exports.googleLogin = async (req, res) => {
+    return handleSocialLogin(req, res, "google");
+};
+
+/**
+ * POST /auth/apple
+ */
+exports.appleLogin = async (req, res) => {
+    return handleSocialLogin(req, res, "apple");
 };

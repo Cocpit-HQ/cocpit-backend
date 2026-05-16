@@ -46,6 +46,16 @@ CREATE TABLE user_roles (
   PRIMARY KEY (user_id, role_id)
 );
 
+CREATE TABLE user_social_accounts (
+  user_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
+  provider VARCHAR(20) NOT NULL, -- e.g., 'google', 'apple'
+  provider_id VARCHAR(255) NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT now(),
+  PRIMARY KEY (provider, provider_id)
+);
+
+CREATE INDEX idx_user_social_accounts_user_id ON user_social_accounts(user_id);
+
 CREATE TABLE refresh_tokens (
   token_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
@@ -185,6 +195,7 @@ CREATE TABLE posts (
   category_id UUID REFERENCES post_categories(category_id),
   title TEXT,
   content TEXT,
+  location TEXT,
   visibility visibility_type DEFAULT 'public',
   shared_post_id UUID REFERENCES posts(post_id) ON DELETE SET NULL,
   shared_job_id UUID REFERENCES jobs(job_id) ON DELETE SET NULL,
@@ -522,15 +533,19 @@ CREATE TABLE connections (
 
 
 
-CREATE TABLE conversations (
+CREATE TABLE IF NOT EXISTS conversations (
   conversation_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   is_group BOOLEAN DEFAULT FALSE,
   conversation_name TEXT,
+  group_headline TEXT CHECK (char_length(group_headline) <= 100),
   group_avatar TEXT,
   description TEXT,
+  created_by UUID REFERENCES users(user_id) ON DELETE CASCADE,
   admin_id UUID REFERENCES users(user_id) ON DELETE SET NULL,
   last_message TEXT,
-  last_message_at TIMESTAMPTZ,
+  last_message_at TIMESTAMPTZ DEFAULT now(),
+  is_requesting BOOLEAN DEFAULT FALSE,
+  is_active BOOLEAN DEFAULT TRUE,
   created_at TIMESTAMPTZ DEFAULT now(),
   updated_at TIMESTAMPTZ DEFAULT now()
 );
@@ -551,20 +566,19 @@ CREATE TABLE messages (
   message_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   conversation_id UUID REFERENCES conversations(conversation_id) ON DELETE CASCADE,
   sender_id UUID REFERENCES users(user_id) ON DELETE SET NULL,
-  --  receiver_id UUID REFERENCES users(user_id),
   text_content TEXT,
-  shared_post_id UUID, -- Reference to shared post (snapshot preserved even if post deleted)
-  shared_profile_id UUID, -- ID of the shared user or company profile
-  shared_profile_type VARCHAR(20), -- 'user' or 'company'
-  message_type TEXT DEFAULT 'text', -- 'text', 'system', 'profile_share', etc.
-  --story_id UUID REFERENCES stories(story_id),
-  action_type TEXT, -- 'add', 'leave', 'remove', 'create'
-  target_id UUID REFERENCES users(user_id) ON DELETE SET NULL, -- Subject of the action
+  shared_post_id UUID,
+  shared_profile_id UUID,
+  shared_profile_type VARCHAR(20),
+  message_type TEXT DEFAULT 'text',
+  action_type TEXT,
+  target_id UUID REFERENCES users(user_id) ON DELETE SET NULL,
   entity_type TEXT,
   entity_id TEXT,
-  author_org_id UUID REFERENCES organizations(org_id) ON DELETE SET NULL, -- acting as company
+  author_org_id UUID REFERENCES organizations(org_id) ON DELETE SET NULL,
+  replied_msg_id UUID NULL REFERENCES messages(message_id) ON DELETE SET NULL,
   created_at TIMESTAMPTZ DEFAULT now(),
-  read_at TIMESTAMPTZ, -- NULL if unread
+  read_at TIMESTAMPTZ,
   CONSTRAINT messages_shared_post_id_fkey FOREIGN KEY (shared_post_id) REFERENCES posts(post_id) ON DELETE SET NULL
 );
 
@@ -1591,3 +1605,18 @@ CREATE TABLE IF NOT EXISTS post_tags (
 
 CREATE INDEX IF NOT EXISTS idx_post_tags_post_id ON post_tags(post_id);
 CREATE INDEX IF NOT EXISTS idx_post_tags_user_id ON post_tags(tagged_user_id);
+
+-- ---------------------------------------------------------
+-- COMMENT HIDING SYSTEM (LinkedIn Style)
+-- ---------------------------------------------------------
+CREATE TABLE IF NOT EXISTS hidden_comments (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    org_id UUID REFERENCES organizations(org_id) ON DELETE CASCADE,
+    comment_id UUID NOT NULL REFERENCES post_comments(comment_id) ON DELETE CASCADE,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Unique indexes to prevent duplicate hides per identity
+CREATE UNIQUE INDEX IF NOT EXISTS hidden_comments_user_idx ON hidden_comments (user_id, comment_id) WHERE org_id IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS hidden_comments_org_idx ON hidden_comments (org_id, comment_id) WHERE org_id IS NOT NULL;

@@ -109,10 +109,10 @@ class GroupChatModel {
         const result = await pool.query(
             `SELECT gi.invitation_id, gi.conversation_id, gi.status, gi.created_at,
               COALESCE(c.conversation_name, 'Unnamed Group') as group_name, 
-              COALESCE(c.group_avatar, c.avatar_url) as group_avatar,
+              COALESCE(c.group_avatar) as group_avatar,
               u.full_name as inviter_name
        FROM group_invitations gi
-       LEFT JOIN conversations c ON gi.conversation_id = c.conversation_id
+       LEFT JOIN conversations c ON gi.conversation_id = c.conversation_id AND c.is_active = TRUE
        LEFT JOIN users u ON gi.inviter_id = u.user_id
        WHERE gi.invitee_id = $1 AND gi.status = 'pending'`,
             [userId]
@@ -123,7 +123,7 @@ class GroupChatModel {
 
     static async getGroupDetails(groupId) {
         const groupRes = await pool.query(
-            `SELECT * FROM conversations WHERE conversation_id = $1 AND is_group = true`,
+            `SELECT * FROM conversations WHERE conversation_id = $1 AND is_group = true AND is_active = TRUE`,
             [groupId]
         );
         return groupRes.rows[0];
@@ -131,26 +131,57 @@ class GroupChatModel {
 
     static async getGroupMembers(groupId, maxJoinedAt = null) {
         const query = maxJoinedAt ?
-            `SELECT DISTINCT ON (COALESCE(u.user_id, c.org_id)) 
-                COALESCE(u.user_id, c.org_id) as user_id, 
-                u.account_name, u.account_name as username, u.full_name, u.avatar_url, 
-                c.name as org_name, c.logo_url as org_logo, cp.joined_at, cp.role
-             FROM conversation_participants cp
-             LEFT JOIN users u ON cp.user_id = u.user_id
-             LEFT JOIN organizations c ON cp.org_id = c.org_id
-             WHERE cp.conversation_id = $1 
-             AND cp.joined_at <= $2
-             AND (cp.left_at IS NULL OR cp.left_at > $2)
-             ORDER BY COALESCE(u.user_id, c.org_id), cp.joined_at DESC` :
-            `SELECT DISTINCT ON (COALESCE(u.user_id, c.org_id)) 
-                COALESCE(u.user_id, c.org_id) as user_id, 
-                u.account_name, u.account_name as username, u.full_name, u.avatar_url, 
-                c.name as org_name, c.logo_url as org_logo, cp.joined_at, cp.role
-             FROM conversation_participants cp
-             LEFT JOIN users u ON cp.user_id = u.user_id
-             LEFT JOIN organizations c ON cp.org_id = c.org_id
-             WHERE cp.conversation_id = $1 AND cp.left_at IS NULL
-             ORDER BY COALESCE(u.user_id, c.org_id), cp.joined_at DESC`;
+            `SELECT * FROM (
+                SELECT DISTINCT ON (COALESCE(u.user_id, c.org_id)) 
+                    COALESCE(u.user_id, c.org_id) as user_id, 
+                    u.account_name, u.account_name as username, u.full_name, u.avatar_url, 
+                    u.headline, -- added for consistency
+                    c.name as org_name, c.logo_url as org_logo, cp.joined_at, cp.role,
+                    'accepted' as status,
+                    false as "isPending"
+                 FROM conversation_participants cp
+                 LEFT JOIN users u ON cp.user_id = u.user_id
+                 LEFT JOIN organizations c ON cp.org_id = c.org_id
+                 WHERE cp.conversation_id = $1 
+                 AND cp.joined_at <= $2
+                 AND (cp.left_at IS NULL OR cp.left_at > $2)
+                 ORDER BY COALESCE(u.user_id, c.org_id), cp.joined_at DESC
+             ) active_members
+             UNION ALL
+             SELECT 
+                gi.invitee_id as user_id,
+                u.account_name, u.account_name as username, u.full_name, u.avatar_url, u.headline,
+                NULL as org_name, NULL as org_logo, gi.created_at as joined_at, 'member' as role,
+                'pending' as status,
+                true as "isPending"
+             FROM group_invitations gi
+             JOIN users u ON gi.invitee_id = u.user_id
+             WHERE gi.conversation_id = $1 AND gi.status = 'pending'
+             ORDER BY "isPending" ASC, joined_at DESC` :
+            `SELECT * FROM (
+                SELECT DISTINCT ON (COALESCE(u.user_id, c.org_id)) 
+                    COALESCE(u.user_id, c.org_id) as user_id, 
+                    u.account_name, u.account_name as username, u.full_name, u.avatar_url, u.headline, 
+                    c.name as org_name, c.logo_url as org_logo, cp.joined_at, cp.role,
+                    'accepted' as status,
+                    false as "isPending"
+                 FROM conversation_participants cp
+                 LEFT JOIN users u ON cp.user_id = u.user_id
+                 LEFT JOIN organizations c ON cp.org_id = c.org_id
+                 WHERE cp.conversation_id = $1 AND cp.left_at IS NULL
+                 ORDER BY COALESCE(u.user_id, c.org_id), cp.joined_at DESC
+             ) active_members
+             UNION ALL
+             SELECT 
+                gi.invitee_id as user_id,
+                u.account_name, u.account_name as username, u.full_name, u.avatar_url, u.headline,
+                NULL as org_name, NULL as org_logo, gi.created_at as joined_at, 'member' as role,
+                'pending' as status,
+                true as "isPending"
+             FROM group_invitations gi
+             JOIN users u ON gi.invitee_id = u.user_id
+             WHERE gi.conversation_id = $1 AND gi.status = 'pending'
+             ORDER BY "isPending" ASC, joined_at DESC`;
 
         const params = maxJoinedAt ? [groupId, maxJoinedAt] : [groupId];
         const result = await pool.query(query, params);
@@ -188,12 +219,12 @@ class GroupChatModel {
         const result = await pool.query(query, [groupId, userId, role]);
         return result.rows[0];
     }
-    static async createMessage({ groupId, senderId, content, type = 'text', actionType = null, targetId = null, previewText = null }) {
+    static async createMessage({ groupId, senderId, content, type = 'text', actionType = null, targetId = null, previewText = null, replyMessageId = null }) {
         const result = await pool.query(
-            `INSERT INTO messages (conversation_id, sender_id, text_content, message_type, action_type, target_id) 
-       VALUES ($1, $2, $3, $4, $5, $6) 
+            `INSERT INTO messages (conversation_id, sender_id, text_content, message_type, action_type, target_id, replied_msg_id) 
+       VALUES ($1, $2, $3, $4, $5, $6, $7) 
        RETURNING *`,
-            [groupId, senderId, content, type, actionType, targetId]
+            [groupId, senderId, content, type, actionType, targetId, replyMessageId]
         );
 
         // Update conversation timestamp and last message for sorting
@@ -247,6 +278,44 @@ class GroupChatModel {
              RETURNING *`,
             [avatarUrl, groupId]
         );
+        return result.rows[0];
+    }
+
+    static async updateGroupDetails(groupId, { name, headline, description, avatar }) {
+        const fields = [];
+        const values = [];
+        let idx = 1;
+
+        if (name !== undefined) {
+            fields.push(`conversation_name = $${idx++}`);
+            values.push(name);
+        }
+        if (headline !== undefined) {
+            fields.push(`group_headline = $${idx++}`);
+            values.push(headline);
+        }
+        if (description !== undefined) {
+            fields.push(`description = $${idx++}`);
+            values.push(description);
+        }
+        if (avatar !== undefined) {
+            fields.push(`group_avatar = $${idx++}`);
+            values.push(avatar);
+        }
+
+        if (fields.length === 0) return null;
+
+        fields.push(`updated_at = now()`);
+        values.push(groupId);
+
+        const query = `
+            UPDATE conversations 
+            SET ${fields.join(", ")} 
+            WHERE conversation_id = $${idx} 
+            RETURNING *
+        `;
+
+        const result = await pool.query(query, values);
         return result.rows[0];
     }
     static async updateGroupOwner(groupId, newAdminId) {

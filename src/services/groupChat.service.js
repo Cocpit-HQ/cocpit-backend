@@ -160,7 +160,7 @@ class GroupChatService {
             console.log(`[GroupChatService] User ${userId} leaving group ${groupId}`);
 
             // 0. Lock Conversation to prevent race conditions
-            await client.query(`SELECT 1 FROM conversations WHERE conversation_id = $1 FOR UPDATE`, [groupId]);
+            await client.query(`SELECT 1 FROM conversations WHERE conversation_id = $1 AND is_active = TRUE FOR UPDATE`, [groupId]);
 
             // 1. Get user name and role before leaving
             const memberRes = await client.query(
@@ -183,7 +183,7 @@ class GroupChatService {
             // 2. Dynamic Admin Promotion (Perform BEFORE updating the row)
             // Fetch current group owner info
             const groupRes = await client.query(
-                `SELECT admin_id FROM conversations WHERE conversation_id = $1`,
+                `SELECT admin_id FROM conversations WHERE conversation_id = $1 AND is_active = TRUE`,
                 [groupId]
             );
             const currentOwnerId = groupRes.rows[0]?.admin_id;
@@ -460,7 +460,7 @@ class GroupChatService {
             left_at: participant ? participant.left_at : null
         };
     }
-    static async sendMessage(senderId, groupId, content, type, media = [], previewText = null) {
+    static async sendMessage(senderId, groupId, content, type, media = [], previewText = null, replyMessageId = null) {
         // 1. Verify user is member of group
         const members = await GroupChatModel.getGroupMembers(groupId);
         // console.log("Group Members:", members);
@@ -478,7 +478,7 @@ class GroupChatService {
         }
 
         // 2. Create message
-        const message = await GroupChatModel.createMessage({ groupId, senderId, content, type, previewText });
+        const message = await GroupChatModel.createMessage({ groupId, senderId, content, type, previewText, replyMessageId });
 
         // 3. Insert Media
         let mediaRecords = [];
@@ -486,11 +486,29 @@ class GroupChatService {
             mediaRecords = await GroupChatModel.addMessageMedia(message.message_id, media);
         }
 
+        let replyMessageData = null;
+        if (replyMessageId) {
+            const rmRes = await pool.query(`
+                SELECT 
+                    rm.message_id, 
+                    rm.text_content, 
+                    rm.message_type,
+                    COALESCE(rc.name, ru.full_name, 'Deleted User') as sender_name
+                FROM messages rm
+                LEFT JOIN users ru ON rm.sender_id = ru.user_id
+                LEFT JOIN organizations rc ON rm.author_org_id = rc.org_id
+                WHERE rm.message_id = $1
+            `, [replyMessageId]);
+            if (rmRes.rowCount > 0) replyMessageData = rmRes.rows[0];
+        }
+
         // 4. Emit socket event
         // Enriched message for frontend (needs sender details)
         const sender = members.find(m => m.user_id == senderId);
         const enrichedMessage = {
             ...message,
+            replyMessageId: replyMessageId || null,
+            reply_message: replyMessageData,
             media: mediaRecords, // Include media in socket event
             sender_name: sender.full_name,
             sender_avatar: sender.avatar_url,
@@ -699,6 +717,51 @@ class GroupChatService {
         // 4. Notify members
         members.forEach(member => {
             // Notify about group update (avatar)
+            socketService.notifyUser(member.user_id, 'group_updated', updatedGroup);
+
+            // Notify about system message
+            socketService.notifyUser(member.user_id, 'new_message', {
+                ...systemMsg,
+                sender_name: 'System',
+                is_system: true,
+                conversation_id: groupId,
+                isGroup: true
+            });
+        });
+
+        return updatedGroup;
+    }
+
+    static async updateGroupDetails(userId, groupId, updateData) {
+        // 1. Group existence check
+        const group = await GroupChatModel.getGroupDetails(groupId);
+        if (!group) throw new Error("Group not found");
+
+        // 2. RBAC Check: Must be active admin
+        const members = await GroupChatModel.getGroupMembers(groupId);
+        const updater = members.find(m => m.user_id == userId);
+        if (!updater || updater.role !== 'admin') {
+            throw new Error("Only an active group admin can update group details");
+        }
+
+        // 3. Update details
+        const updatedGroup = await GroupChatModel.updateGroupDetails(groupId, updateData);
+
+        // 4. System message
+        const userRes = await pool.query(`SELECT full_name FROM users WHERE user_id = $1`, [userId]);
+        const userName = userRes.rows[0]?.full_name || "Admin";
+
+        const systemMsg = await GroupChatModel.createMessage({
+            groupId,
+            senderId: userId,
+            content: `${userName} updated group details`,
+            type: 'system',
+            actionType: 'update_group_details'
+        });
+
+        // 5. Notify members
+        members.forEach(member => {
+            // Notify about group update
             socketService.notifyUser(member.user_id, 'group_updated', updatedGroup);
 
             // Notify about system message

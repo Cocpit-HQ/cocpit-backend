@@ -198,7 +198,7 @@ exports.shareProfileInDM = async (req, res) => {
 
         // 4. Check block status (only for DM conversations, not group)
         const convCheck = await client.query(
-            `SELECT is_group FROM conversations WHERE conversation_id = $1`,
+            `SELECT is_group FROM conversations WHERE conversation_id = $1 AND is_active = TRUE`,
             [conversation_id]
         );
         if (convCheck.rowCount > 0 && !convCheck.rows[0].is_group) {
@@ -412,7 +412,7 @@ exports.shareProfile = async (req, res) => {
                  FROM conversations c
                  JOIN conversation_participants cp1 ON c.conversation_id = cp1.conversation_id AND cp1.org_id = $1
                  JOIN conversation_participants cp2 ON c.conversation_id = cp2.conversation_id AND cp2.org_id = $2
-                 WHERE c.is_group = FALSE`,
+                 WHERE c.is_group = FALSE AND c.is_active = TRUE`,
                 [senderOrgId, receiverId]
             );
 
@@ -440,7 +440,7 @@ exports.shareProfile = async (req, res) => {
                  FROM conversations c
                  JOIN conversation_participants cp1 ON c.conversation_id = cp1.conversation_id AND cp1.org_id = $1
                  JOIN conversation_participants cp2 ON c.conversation_id = cp2.conversation_id AND cp2.user_id = $2
-                 WHERE c.is_group = FALSE`,
+                 WHERE c.is_group = FALSE AND c.is_active = TRUE`,
                 [senderOrgId, receiverId]
             );
 
@@ -468,7 +468,7 @@ exports.shareProfile = async (req, res) => {
                  FROM conversations c
                  JOIN conversation_participants cp1 ON c.conversation_id = cp1.conversation_id AND cp1.user_id = $1
                  JOIN conversation_participants cp2 ON c.conversation_id = cp2.conversation_id AND cp2.org_id = $2
-                 WHERE c.is_group = FALSE`,
+                 WHERE c.is_group = FALSE AND c.is_active = TRUE`,
                 [senderId, receiverId]
             );
 
@@ -496,7 +496,7 @@ exports.shareProfile = async (req, res) => {
                  FROM conversations c
                  JOIN conversation_participants cp1 ON c.conversation_id = cp1.conversation_id AND cp1.user_id = $1
                  JOIN conversation_participants cp2 ON c.conversation_id = cp2.conversation_id AND cp2.user_id = $2
-                 WHERE c.is_group = FALSE`,
+                 WHERE c.is_group = FALSE AND c.is_active = TRUE`,
                 [senderId, receiverId]
             );
 
@@ -677,7 +677,7 @@ exports.sharePostToConversations = async (req, res) => {
                 `SELECT c.conversation_id FROM conversations c
                  JOIN conversation_participants cp1 ON c.conversation_id = cp1.conversation_id AND cp1.user_id = $1
                  JOIN conversation_participants cp2 ON c.conversation_id = cp2.conversation_id AND cp2.user_id = $2
-                 WHERE c.is_group = FALSE`,
+                 WHERE c.is_group = FALSE AND c.is_active = TRUE`,
                 [senderId, targetUserId]
             );
 

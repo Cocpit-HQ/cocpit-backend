@@ -25,7 +25,9 @@ const getSavedPostActorScope = (req, fallbackOrgId = null) => {
 
 // 1️⃣ Create Folder
 exports.createFolder = async (req, res) => {
-    const { name, companyId } = req.body;
+    console.log("Create Folder Body:", req.body);
+    const { name, companyId, coverImage: bodyCoverImage, cover_image: bodyCoverImageAlt } = req.body;
+    const coverImage = bodyCoverImage || bodyCoverImageAlt;
 
     if (!name || name.trim() === "") {
         return res.status(400).json({ success: false, message: "Folder name is required" });
@@ -34,8 +36,8 @@ exports.createFolder = async (req, res) => {
     try {
         const { userId, orgId } = getSavedPostActorScope(req, companyId || null);
         const result = await pool.query(
-            `INSERT INTO saved_folders (user_id, org_id, name) VALUES ($1, $2, $3) RETURNING *`,
-            [userId, orgId, name.trim()]
+            `INSERT INTO saved_folders (user_id, org_id, name, cover_image) VALUES ($1, $2, $3, $4) RETURNING *`,
+            [userId, orgId, name.trim(), coverImage]
         );
         return res.status(201).json({ success: true, folder: result.rows[0] });
     } catch (error) {
@@ -74,7 +76,7 @@ exports.getFolders = async (req, res) => {
 // 3️⃣ Rename Folder
 exports.renameFolder = async (req, res) => {
     const { folderId } = req.params;
-    const { name, companyId } = req.body;
+    const { name, companyId, coverImage } = req.body;
 
     if (!name || name.trim() === "") {
         return res.status(400).json({ success: false, message: "New name is required" });
@@ -84,11 +86,11 @@ exports.renameFolder = async (req, res) => {
         const { userId, orgId, isOrgActor } = getSavedPostActorScope(req, companyId || null);
 
         const result = await pool.query(
-            `UPDATE saved_folders SET name = $1, updated_at = NOW() 
-             WHERE folder_id = $2 AND user_id = $3 AND (
-                 ${isOrgActor ? 'org_id = $4::uuid' : 'org_id IS NULL'}
+            `UPDATE saved_folders SET name = $1, cover_image = COALESCE($2, cover_image), updated_at = NOW() 
+             WHERE folder_id = $3 AND user_id = $4 AND (
+                 ${isOrgActor ? 'org_id = $5::uuid' : 'org_id IS NULL'}
              ) RETURNING *`,
-            isOrgActor ? [name.trim(), folderId, userId, orgId] : [name.trim(), folderId, userId]
+            isOrgActor ? [name.trim(), coverImage, folderId, userId, orgId] : [name.trim(), coverImage, folderId, userId]
         );
 
         if (result.rowCount === 0) {

@@ -6,10 +6,13 @@ const { requireAuth, optionalAuth } = require("../../core/middlewares/auth.middl
 const { validate } = require("../../core/middlewares/validation.middleware");
 const postTagsController = require("./postTags.controller");
 const { syncTagsSchema } = require("./postTags.schema");
+const { commentOperationSchema, hideCommentSchema } = require("./content.schema");
 
 // Feed & Discovery
 router.get("/All/feeds", optionalAuth, contentController.getPublicFeed);
 router.get("/users/me/posts", requireAuth, contentController.getMyPosts);
+router.get("/users/me/posts/commented", requireAuth, contentController.getMyCommentedPosts);
+router.get("/users/me/posts/private", requireAuth, contentController.getMyPrivatePosts);
 
 // Posts (Image, Video, Article, Poll)
 router.post("/post", requireAuth, contentController.createPost);
@@ -49,9 +52,12 @@ router.post("/post/:id/like", requireAuth, contentController.toggleLike);
 router.post("/post/:id/comments", requireAuth, contentController.addComment);
 router.post("/comments/:commentId/like", requireAuth, contentController.toggleCommentLike);
 router.post("/comments/:commentId/pin", requireAuth, contentController.toggleCommentPin);
-router.put("/comments/:commentId", requireAuth, contentController.updateComment);
-router.delete("/comments/:commentId", requireAuth, contentController.deleteComment);
+router.put("/comments/:commentId", requireAuth, validate(commentOperationSchema), contentController.updateComment);
+router.delete("/comments/:commentId", requireAuth, validate(commentOperationSchema), contentController.deleteComment);
 router.get("/post/:id/comments", requireAuth, contentController.getComments);
+router.post("/comments/:commentId/hide", requireAuth, validate(hideCommentSchema), contentController.hideComment);
+router.delete("/comments/:commentId/hide", requireAuth, validate(commentOperationSchema), contentController.unhideComment);
+router.get("/users/me/comments/hidden", requireAuth, contentController.getHiddenComments);
 
 // Stories
 router.get("/stories/grouped", requireAuth, contentController.getGroupedStories);
