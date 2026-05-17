@@ -255,7 +255,13 @@ exports.updateGroupDetails = async (req, res) => {
         // Part D — Extract and validate
         const userId = req.user.sub || req.user.user_id;
         const { groupId } = req.params;
-        const { name, headline, description, avatar } = req.body;
+        const { name, headline, description } = req.body;
+        let { avatar } = req.body;
+
+        // Extract avatar from file if uploaded
+        if (req.file) {
+            avatar = req.file.path.replace(/\\/g, "/");
+        }
 
         if (!groupId) {
             return res.status(400).json({

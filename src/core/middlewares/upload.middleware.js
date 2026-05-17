@@ -132,8 +132,6 @@ const uploadAvatar = multer({
   },
 });
 
-
-
 // Event Banner Upload
 const eventBannerStorage = new CloudinaryStorage({
   cloudinary,
