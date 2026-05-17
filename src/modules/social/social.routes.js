@@ -70,6 +70,10 @@ router.delete("/messages/:messageId", requireAuth, messageController.deleteMessa
 router.delete("/messages/:id", requireAuth, socialController.deleteMessage);
 router.patch("/messages/:messageId/edit", requireAuth, socialController.editMessage);
 
+// Reactions
+router.post("/messages/:messageId/reactions", requireAuth, socialController.upsertReaction);
+
+
 router.patch("/conversations/:conversationId/read", requireAuth, socialController.markConversationRead);
 router.get("/messages/:messageId/seen-by", requireAuth, socialController.getMessageSeenBy);
 

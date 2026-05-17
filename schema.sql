@@ -1620,3 +1620,13 @@ CREATE TABLE IF NOT EXISTS hidden_comments (
 -- Unique indexes to prevent duplicate hides per identity
 CREATE UNIQUE INDEX IF NOT EXISTS hidden_comments_user_idx ON hidden_comments (user_id, comment_id) WHERE org_id IS NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS hidden_comments_org_idx ON hidden_comments (org_id, comment_id) WHERE org_id IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS message_reactions (
+  reaction_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  message_id UUID NOT NULL REFERENCES messages(message_id) ON DELETE CASCADE,
+  user_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+  emoji TEXT NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ DEFAULT now(),
+  CONSTRAINT message_reactions_unique UNIQUE (message_id, user_id)
+);
