@@ -1429,7 +1429,23 @@ LEFT JOIN LATERAL (
                 LEFT JOIN organizations rc ON rm.author_org_id = rc.org_id
                 WHERE rm.message_id = msg.replied_msg_id)
             ELSE NULL
-        END AS reply_message
+        END AS reply_message,
+        COALESCE(
+            (SELECT JSON_AGG(
+                JSON_BUILD_OBJECT(
+                    'user_id', mr.user_id,
+                    'full_name', ru.full_name,
+                    'avatar', ru.avatar_url,
+                    'emoji', mr.emoji,
+                    'created_at', mr.created_at,
+                    'updated_at', mr.updated_at
+                ) ORDER BY mr.updated_at DESC
+            ) FILTER (WHERE mr.reaction_id IS NOT NULL AND mr.emoji IS NOT NULL AND mr.emoji != '')
+            FROM message_reactions mr
+            JOIN users ru ON ru.user_id = mr.user_id
+            WHERE mr.message_id = msg.message_id),
+            '[]'::json
+        ) AS reactions
     FROM messages msg
     JOIN conversation_participants cp_msg ON cp_msg.conversation_id = msg.conversation_id 
     WHERE msg.conversation_id = c.conversation_id
@@ -1450,6 +1466,7 @@ LEFT JOIN LATERAL (
     ORDER BY msg.created_at DESC 
     LIMIT 1
 ) m ON true
+
 
 -- Self-message guard: in company mode, exclude conversations where current user is also a direct participant
 WHERE ($2::uuid IS NULL OR NOT EXISTS (
@@ -2345,7 +2362,23 @@ exports.getMessages = async (req, res) => {
                         LEFT JOIN organizations rc ON rm.author_org_id = rc.org_id
                         WHERE rm.message_id = m.replied_msg_id)
                     ELSE NULL
-                END AS reply_message
+                END AS reply_message,
+                COALESCE(
+                    (SELECT JSON_AGG(
+                        JSON_BUILD_OBJECT(
+                            'user_id', mr.user_id,
+                            'full_name', rru.full_name,
+                            'avatar', rru.avatar_url,
+                            'emoji', mr.emoji,
+                            'created_at', mr.created_at,
+                            'updated_at', mr.updated_at
+                        ) ORDER BY mr.updated_at DESC
+                    ) FILTER (WHERE mr.reaction_id IS NOT NULL AND mr.emoji IS NOT NULL AND mr.emoji != '')
+                    FROM message_reactions mr
+                    JOIN users rru ON rru.user_id = mr.user_id
+                    WHERE mr.message_id = m.message_id),
+                    '[]'::json
+                ) AS reactions
              FROM messages m
              LEFT JOIN users u ON m.sender_id = u.user_id
              LEFT JOIN organizations c ON m.author_org_id = c.org_id
@@ -3449,4 +3482,95 @@ exports.getCompanyConnectionStatus = async (req, res) => {
  * Body: { profileId, profileType, receiverId, receiverType, message, senderCompanyId? }
  */
 
+// ─── Message Reactions ───────────────────────────────────────────────────────
 
+/**
+ * Upsert (add or update) a reaction on a message.
+ * POST /messages/:messageId/reactions
+ * Body: { emoji } — emoji is optional; empty/absent clears the reaction (sets emoji = '')
+ */
+exports.upsertReaction = async (req, res) => {
+    const userId = req.user.sub || req.user.user_id;
+    const { messageId } = req.params;
+    const { emoji } = req.body;
+
+    if (!messageId) {
+        return res.status(400).json({ message: "messageId is required" });
+    }
+
+    try {
+        // Verify the message exists and get its conversation_id for socket notification
+        const msgRes = await pool.query(
+            `SELECT conversation_id FROM messages WHERE message_id = $1`,
+            [messageId]
+        );
+
+        if (msgRes.rowCount === 0) {
+            return res.status(404).json({ message: "Message not found" });
+        }
+
+        const { conversation_id } = msgRes.rows[0];
+
+        // Determine if this is a clear (empty emoji) or a real reaction
+        const emojiValue = (typeof emoji === "string" && emoji.trim() !== "") ? emoji.trim() : "";
+
+        if (emojiValue !== "") {
+            // Upsert: insert new reaction or update emoji if user already reacted
+            await pool.query(
+                `INSERT INTO message_reactions (message_id, user_id, emoji)
+                 VALUES ($1, $2, $3)
+                 ON CONFLICT (message_id, user_id)
+                 DO UPDATE SET emoji = $3, updated_at = now()`,
+                [messageId, userId, emojiValue]
+            );
+
+            // Fetch the upserted reaction with user info
+            const reactionRes = await pool.query(
+                `SELECT
+                    mr.reaction_id,
+                    mr.message_id,
+                    mr.user_id,
+                    mr.emoji,
+                    mr.created_at,
+                    mr.updated_at,
+                    u.full_name AS user_full_name,
+                    u.avatar_url AS user_avatar
+                 FROM message_reactions mr
+                 JOIN users u ON u.user_id = mr.user_id
+                 WHERE mr.message_id = $1 AND mr.user_id = $2`,
+                [messageId, userId]
+            );
+
+            const reaction = reactionRes.rows[0];
+
+            // Notify all conversation participants via socket
+            socketService.notifyConversation(conversation_id, "message_reaction_updated", {
+                messageId,
+                conversationId: conversation_id,
+                reaction
+            });
+
+            return res.json({ success: true, reaction });
+        } else {
+            // Empty emoji — clear the reaction (set emoji = '')
+            await pool.query(
+                `UPDATE message_reactions
+                 SET emoji = '', updated_at = now()
+                 WHERE message_id = $1 AND user_id = $2`,
+                [messageId, userId]
+            );
+
+            // Notify all conversation participants via socket
+            socketService.notifyConversation(conversation_id, "message_reaction_updated", {
+                messageId,
+                conversationId: conversation_id,
+                reaction: null
+            });
+
+            return res.json({ success: true, reaction: null });
+        }
+    } catch (err) {
+        console.error("Upsert reaction error:", err);
+        res.status(500).json({ message: "Internal server error" });
+    }
+};
