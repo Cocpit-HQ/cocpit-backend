@@ -146,7 +146,8 @@ class GroupChatModel {
                     u.headline, -- added for consistency
                     c.name as org_name, c.logo_url as org_logo, cp.joined_at, cp.role,
                     'accepted' as status,
-                    false as "isPending"
+                    false as "isPending",
+                    CAST(NULL AS UUID) as invitation_id
                  FROM conversation_participants cp
                  LEFT JOIN users u ON cp.user_id = u.user_id
                  LEFT JOIN organizations c ON cp.org_id = c.org_id
@@ -161,7 +162,8 @@ class GroupChatModel {
                 u.account_name, u.account_name as username, u.full_name, u.avatar_url, u.headline,
                 NULL as org_name, NULL as org_logo, gi.created_at as joined_at, 'member' as role,
                 'pending' as status,
-                true as "isPending"
+                true as "isPending",
+                gi.invitation_id as invitation_id
              FROM group_invitations gi
              JOIN users u ON gi.invitee_id = u.user_id
              WHERE gi.conversation_id = $1 AND gi.status = 'pending'
@@ -172,7 +174,8 @@ class GroupChatModel {
                     u.account_name, u.account_name as username, u.full_name, u.avatar_url, u.headline, 
                     c.name as org_name, c.logo_url as org_logo, cp.joined_at, cp.role,
                     'accepted' as status,
-                    false as "isPending"
+                    false as "isPending",
+                    CAST(NULL AS UUID) as invitation_id
                  FROM conversation_participants cp
                  LEFT JOIN users u ON cp.user_id = u.user_id
                  LEFT JOIN organizations c ON cp.org_id = c.org_id
@@ -185,7 +188,8 @@ class GroupChatModel {
                 u.account_name, u.account_name as username, u.full_name, u.avatar_url, u.headline,
                 NULL as org_name, NULL as org_logo, gi.created_at as joined_at, 'member' as role,
                 'pending' as status,
-                true as "isPending"
+                true as "isPending",
+                gi.invitation_id as invitation_id
              FROM group_invitations gi
              JOIN users u ON gi.invitee_id = u.user_id
              WHERE gi.conversation_id = $1 AND gi.status = 'pending'
