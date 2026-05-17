@@ -7,7 +7,7 @@ const crypto = require("crypto");
 const bcrypt = require("bcrypt");
 const { hashPassword, comparePassword } = require("../../core/utils/password");
 const { signAccessToken, signRefreshToken, verifyRefreshToken, verifyAccessToken } = require("../../core/utils/jwt");
-const { verifyGoogleToken } = require("./googleAuth.service");
+const { verifySocialToken } = require("./socialAuth.service");
 const authRepo = require("./auth.repository");
 const redisClient = require("../../core/db/redis");
 const pool = require("../../core/db/pool");
@@ -347,46 +347,45 @@ const getCurrentUser = async (userId, tokenRoles) => {
     return { user, profile };
 };
 
-// ─── Google Login ──────────────────────────────────────────────────────────────
+// ─── Social Login ──────────────────────────────────────────────────────────────
 
 /**
- * Handles Google Sign-In / Sign-Up.
+ * Handles Social Sign-In / Sign-Up for multiple providers (Google, Apple).
  *
  * Three possible scenarios:
- *   1. User already has a google_id linked → standard login.
- *   2. User exists by email but has no google_id → link Google account, then login.
+ *   1. User already has a provider linked → standard login.
+ *   2. User exists by email but hasn't linked provider → link provider, then login.
  *   3. User doesn't exist → create new account (requires accountType).
  *
  * In ALL scenarios, we issue platform JWT tokens (access + refresh) using
  * the exact same session pipeline as email/password login.
  */
-const googleLogin = async ({ idToken, accountType, userAgent, ipAddress }) => {
-    // ── Step 1: Verify Google ID token (audience + signature + email_verified) ──
-    let googleUser;
+const socialLogin = async ({ provider, idToken, accountType, userAgent, ipAddress }) => {
+    // ── Step 1: Verify Social ID token ──
+    let socialUser;
     try {
-        googleUser = await verifyGoogleToken(idToken);
+        socialUser = await verifySocialToken(provider, idToken);
     } catch (err) {
-        return { error: { status: 401, message: "Invalid or expired Google token" } };
+        return { error: { status: 401, message: `Invalid or expired ${provider} token` } };
     }
 
-    const { googleId, email, fullName, avatarUrl } = googleUser;
+    const { providerId, email, fullName, avatarUrl } = socialUser;
     const normalizedEmail = email.toLowerCase();
 
     // ── Step 2: Find or create the user ──
     let user;
     let isNewUser = false;
 
-    // Case 1: Check if Google ID is already linked to an account
-    user = await authRepo.findUserByGoogleId(googleId);
+    // Case 1: Check if provider ID is already linked to an account
+    user = await authRepo.findUserBySocialId(provider, providerId);
 
     if (!user) {
-        // Case 2: Check if email exists (local account that hasn't linked Google yet)
+        // Case 2: Check if email exists (local account that hasn't linked this provider yet)
         user = await authRepo.findUserByEmail(normalizedEmail);
 
         if (user) {
-            // Prevent linking if this Google ID is somehow already used by another email
-            // (the UNIQUE constraint on google_id handles this at DB level too)
-            await authRepo.linkGoogleId(user.user_id, googleId);
+            // Link this provider account to the existing user
+            await authRepo.linkSocialAccount(user.user_id, provider, providerId);
         } else {
             // Case 3: Brand new user — accountType defaults to Student if not provided
             const finalAccountType = accountType || "Student";
@@ -401,8 +400,8 @@ const googleLogin = async ({ idToken, accountType, userAgent, ipAddress }) => {
                 };
             }
 
-            // Create user with Google identity (password_hash is NULL)
-            user = await authRepo.createGoogleUser(normalizedEmail, fullName, googleId, avatarUrl);
+            // Create user with Social identity (password_hash is NULL)
+            user = await authRepo.createSocialUser(normalizedEmail, fullName, provider, providerId, avatarUrl);
 
             // Assign role — same logic as standard registration
             let roleName;
@@ -482,7 +481,7 @@ module.exports = {
     registerUser,
     loginUser,
     initializeUserSession,
-    googleLogin,
+    socialLogin,
     refreshTokens,
     logoutUser,
     getCurrentUser,

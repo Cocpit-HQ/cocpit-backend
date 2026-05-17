@@ -25,6 +25,9 @@ const verifyGoogleToken = async (idToken) => {
     if (process.env.ANDROID_CLIENT_ID) {
         audience.push(process.env.ANDROID_CLIENT_ID);
     }
+    if (process.env.IOS_CLIENT_ID) {
+        audience.push(process.env.IOS_CLIENT_ID);
+    }
 
     const ticket = await client.verifyIdToken({
         idToken,

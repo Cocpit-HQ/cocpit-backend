@@ -4,6 +4,7 @@ const chatSessionCtrl = require("./chatSession.controller");
 const groupChatCtrl = require("./groupChat.controller");
 const messageCtrl = require("./message.controller");
 const { requireAuth } = require("../../core/middlewares/auth.middleware");
+const { uploadAvatar } = require("../../core/middlewares/upload.middleware");
 const { sessionRateLimiter } = require("../../core/utils/sessionRateLimiter");
 const groupAdminMiddleware = require("../../core/middlewares/groupAdmin.middleware");
 
@@ -24,7 +25,7 @@ router.get("/company-chat-sessions/history", requireAuth, chatSessionCtrl.getSes
 router.get("/company-chat-sessions/:sessionId/messages", requireAuth, chatSessionCtrl.getSessionMessages);
 
 // ═══════ Group Chat ═══════
-router.post("/groups", requireAuth, groupChatCtrl.createGroup);
+router.post("/groups", requireAuth, uploadAvatar.single("avatar"), groupChatCtrl.createGroup);
 router.get("/groups/invitations", requireAuth, groupChatCtrl.getPendingInvitations);
 router.post("/groups/invitation/respond", requireAuth, groupChatCtrl.respondInvitation);
 
@@ -35,7 +36,7 @@ router.delete("/groups/:groupId/members/:userId", requireAuth, groupAdminMiddlew
 router.post("/groups/:groupId/members/:userId/promote", requireAuth, groupAdminMiddleware.requireGroupAdmin, groupChatCtrl.promoteToAdmin);
 router.post("/groups/:groupId/members/:userId/demote", requireAuth, groupAdminMiddleware.requireGroupAdmin, groupChatCtrl.demoteAdmin);
 router.put("/groups/:groupId/avatar", requireAuth, groupAdminMiddleware.requireGroupAdmin, groupChatCtrl.updateGroupAvatar);
-router.put("/groups/:groupId/details", requireAuth, groupAdminMiddleware.requireGroupAdmin, groupChatCtrl.updateGroupDetails);
+router.put("/groups/:groupId/details", requireAuth, groupAdminMiddleware.requireGroupAdmin, uploadAvatar.single("avatar"), groupChatCtrl.updateGroupDetails);
 router.patch("/groups/:groupId/role", requireAuth, groupAdminMiddleware.requireGroupAdmin, groupChatCtrl.updateMemberRole);
 
 router.get("/groups/:groupId", requireAuth, groupChatCtrl.getGroupDetails);
@@ -50,5 +51,12 @@ router.post("/groups/:groupId/messages", requireAuth, require("../../core/middle
 // Read Receipts
 router.post("/groups/:groupId/read", requireAuth, groupChatCtrl.markGroupMessagesAsRead);
 router.get("/groups/:groupId/messages/:messageId/read", requireAuth, groupChatCtrl.getMessageReadReceipts);
+
+// ═══════ Chat Request Actions ═══════
+router.put("/conversations/:conversationId/accept", requireAuth, groupChatCtrl.acceptChatRequest);
+router.put("/conversations/:conversationId/decline", requireAuth, groupChatCtrl.declineChatRequest);
+
+// ═══════ Messaging User Search ═══════
+router.get("/messaging/search/users", requireAuth, groupChatCtrl.searchUsersForMessaging);
 
 module.exports = router;
