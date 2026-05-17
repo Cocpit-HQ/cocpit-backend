@@ -50,6 +50,32 @@ exports.inviteMember = async (req, res) => {
     }
 };
 
+exports.cancelInvitation = async (req, res) => {
+    try {
+        const adminId = req.user.sub || req.user.user_id;
+        const { groupId, invitationId } = req.params;
+
+        if (!groupId || !invitationId) {
+            return res.status(400).json({ message: "groupId and invitationId are required" });
+        }
+
+        const result = await GroupChatService.cancelInvitation(adminId, groupId, invitationId);
+        res.status(200).json(result);
+    } catch (err) {
+        console.error("Cancel Invitation Error:", err);
+        if (err.message === "Group not found" || err.message === "Invitation not found") {
+            return res.status(404).json({ message: err.message });
+        }
+        if (err.message === "Only an active group admin can cancel invitations" || err.message === "Invitation does not belong to this group") {
+            return res.status(403).json({ message: err.message });
+        }
+        if (err.message.startsWith("Cannot cancel invitation with status:")) {
+            return res.status(400).json({ message: err.message });
+        }
+        res.status(500).json({ message: err.message });
+    }
+};
+
 exports.getPendingInvitations = async (req, res) => {
     try {
         const userId = req.user.sub || req.user.user_id;

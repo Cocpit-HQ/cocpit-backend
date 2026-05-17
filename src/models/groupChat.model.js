@@ -93,6 +93,14 @@ class GroupChatModel {
         return result.rows[0];
     }
 
+    static async deleteInvitation(invitationId) {
+        const result = await pool.query(
+            `DELETE FROM group_invitations WHERE invitation_id = $1 RETURNING *`,
+            [invitationId]
+        );
+        return result.rows[0];
+    }
+
     static async updateInvitationStatus(invitationId, status) {
         const result = await pool.query(
             `UPDATE group_invitations SET status = $1, updated_at = now() 

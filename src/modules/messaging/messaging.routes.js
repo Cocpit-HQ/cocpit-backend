@@ -32,6 +32,7 @@ router.post("/groups/invitation/respond", requireAuth, groupChatCtrl.respondInvi
 // Admin-only
 router.post("/groups/:groupId/invite", requireAuth, groupAdminMiddleware.requireGroupAdmin, groupChatCtrl.inviteMember);
 router.get("/groups/:groupId/invitations", requireAuth, groupAdminMiddleware.requireGroupAdmin, groupChatCtrl.getGroupInvitations);
+router.delete("/groups/:groupId/invitations/:invitationId", requireAuth, groupAdminMiddleware.requireGroupAdmin, groupChatCtrl.cancelInvitation);
 router.delete("/groups/:groupId/members/:userId", requireAuth, groupAdminMiddleware.requireGroupAdmin, groupChatCtrl.removeMember);
 router.post("/groups/:groupId/members/:userId/promote", requireAuth, groupAdminMiddleware.requireGroupAdmin, groupChatCtrl.promoteToAdmin);
 router.post("/groups/:groupId/members/:userId/demote", requireAuth, groupAdminMiddleware.requireGroupAdmin, groupChatCtrl.demoteAdmin);
