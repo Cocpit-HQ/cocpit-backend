@@ -11,6 +11,7 @@ const { verifySocialToken } = require("./socialAuth.service");
 const authRepo = require("./auth.repository");
 const redisClient = require("../../core/db/redis");
 const pool = require("../../core/db/pool");
+const socketService = require("../../core/infrastructure/socket.service");
 
 const MAX_DEVICES = 10;
 const REFRESH_REPLAY_WINDOW_SECONDS = Math.max(1, Number(process.env.REFRESH_REPLAY_WINDOW_SECONDS || 15));
@@ -331,7 +332,8 @@ const refreshTokens = async (refreshTokenValue) => {
 const logoutUser = async (accessTokenValue) => {
     const { sub: userId, sid: sessionId } = verifyAccessToken(accessTokenValue, { ignoreExpiration: true });
     await authRepo.deleteSessionForUser(userId, sessionId);
-    return { userId };
+    const disconnectedSockets = await socketService.disconnectUserSession(userId, sessionId);
+    return { userId, sessionId, disconnectedSockets };
 };
 
 // ─── GetMe ─────────────────────────────────────────────────────────────────────

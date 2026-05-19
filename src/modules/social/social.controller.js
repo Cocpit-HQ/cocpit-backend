@@ -1634,27 +1634,63 @@ exports.deleteConversation = async (req, res) => {
     const { userId, orgId: companyId } = actorScope;
 
     try {
-        // Delete conversation only if the requester is a participant
-        const result = await pool.query(
-            `DELETE FROM conversations 
-             WHERE conversation_id = $1 
-             AND EXISTS (
-                 SELECT 1 FROM conversation_participants 
-                 WHERE conversation_id = $1 
-                 AND (
-                     ($3::uuid IS NOT NULL AND org_id = $3)
-                     OR ($3::uuid IS NULL AND user_id = $2)
-                 )
-             )
-             RETURNING *`,
-            [conversationId, userId, companyId]
-        );
+        const client = await pool.connect();
 
-        if (result.rowCount === 0) {
-            return res.status(404).json({ message: "Conversation not found or access denied" });
+        try {
+            await client.query("BEGIN");
+
+            const validationResult = await client.query(
+                `SELECT c.conversation_id, c.is_group
+                 FROM conversations c
+                 JOIN conversation_participants cp
+                   ON cp.conversation_id = c.conversation_id
+                 WHERE c.conversation_id = $1
+                   AND c.is_active = TRUE
+                   AND cp.left_at IS NULL
+                   AND (
+                       ($3::uuid IS NOT NULL AND cp.org_id = $3)
+                       OR
+                       ($3::uuid IS NULL AND cp.user_id = $2)
+                   )
+                 LIMIT 1`,
+                [conversationId, userId, companyId]
+            );
+
+            if (validationResult.rowCount === 0) {
+                await client.query("ROLLBACK");
+                return res.status(404).json({ message: "Conversation not found or access denied" });
+            }
+
+            if (validationResult.rows[0].is_group) {
+                await client.query("ROLLBACK");
+                return res.status(400).json({ message: "Cannot delete a group conversation. Use leave group instead." });
+            }
+
+            const deleteResult = await client.query(
+                `DELETE FROM conversation_participants
+                 WHERE conversation_id = $1
+                   AND (
+                       ($3::uuid IS NOT NULL AND org_id = $3)
+                       OR
+                       ($3::uuid IS NULL AND user_id = $2)
+                   )
+                 RETURNING participant_id`,
+                [conversationId, userId, companyId]
+            );
+
+            if (deleteResult.rowCount === 0) {
+                await client.query("ROLLBACK");
+                return res.status(404).json({ message: "Conversation not found or access denied" });
+            }
+
+            await client.query("COMMIT");
+            res.status(200).json({ message: "Conversation deleted successfully", conversationId });
+        } catch (err) {
+            await client.query("ROLLBACK");
+            throw err;
+        } finally {
+            client.release();
         }
-
-        res.status(200).json({ message: "Conversation deleted successfully", conversationId: conversationId });
     } catch (err) {
         console.error("Delete conversation error:", err);
         res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });

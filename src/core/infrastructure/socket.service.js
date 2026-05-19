@@ -32,6 +32,32 @@ class SocketService {
   }
 
   /**
+   * Disconnect sockets belonging to a specific user session.
+   * @param {string} userId
+   * @param {string} sessionId
+   * @returns {Promise<number>} Number of disconnected sockets
+   */
+  async disconnectUserSession(userId, sessionId) {
+    if (!this.io) {
+      this._warnUninitialized();
+      return 0;
+    }
+
+    const userRoom = getUserRoom(userId);
+    const sockets = await this.io.in(userRoom).fetchSockets();
+    let disconnectedCount = 0;
+
+    sockets.forEach((socket) => {
+      if (socket.sessionId === sessionId) {
+        socket.disconnect(true);
+        disconnectedCount += 1;
+      }
+    });
+
+    return disconnectedCount;
+  }
+
+  /**
    * Force a user's sockets to leave a conversation room
    * @param {string} userId
    * @param {string} conversationId

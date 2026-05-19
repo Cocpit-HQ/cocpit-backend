@@ -57,6 +57,10 @@ module.exports.handleConnection = async (socket) => {
  */
 module.exports.handleDisconnect = async (socket) => {
   try {
+    if (SocketService.isUserOnline(socket.userId)) {
+      return;
+    }
+
     const recipientIds = await getRelatedUserIds(socket.userId);
 
 
