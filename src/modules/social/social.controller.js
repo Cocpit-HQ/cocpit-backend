@@ -1520,6 +1520,57 @@ ORDER BY COALESCE(m.created_at, c.last_message_at, c.updated_at) DESC NULLS LAST
   `, [userId, companyId]
         );
 
+        let pendingGroupInvitationRows = [];
+
+        if (!companyId) {
+            const pendingGroupInvitations = await pool.query(
+                `
+SELECT
+    c.*,
+    FALSE AS is_blocked_by_me,
+    FALSE AS is_blocked_by_other,
+    COALESCE(c.conversation_name, 'Group Chat') AS other_user_name,
+    c.group_avatar AS other_user_avatar,
+    c.conversation_id AS other_user_id,
+    inviter.full_name AS other_user_headline,
+    'USER' AS other_user_type,
+    NULL::text AS other_user_slug,
+    FALSE AS is_active,
+    FALSE AS is_muted,
+    NULL::timestamptz AS muted_until,
+    FALSE AS is_deleted_user,
+    NULL::uuid AS last_message_id,
+    COALESCE(inviter.full_name, 'A member') || ' invited you to join the group' AS last_message_text,
+    COALESCE(gi.updated_at, gi.created_at, c.updated_at) AS last_message_at,
+    NULL::uuid AS "replyMessageId",
+    NULL::json AS reply_message,
+    gi.invitation_id,
+    'group_invitation'::text AS request_source
+FROM group_invitations gi
+JOIN conversations c
+    ON c.conversation_id = gi.conversation_id
+   AND c.is_group = TRUE
+   AND c.is_active = TRUE
+LEFT JOIN users inviter ON inviter.user_id = gi.inviter_id
+WHERE gi.invitee_id = $1
+  AND gi.status = 'pending'
+  AND NOT EXISTS (
+      SELECT 1
+      FROM conversation_participants cp_active
+      WHERE cp_active.conversation_id = gi.conversation_id
+        AND cp_active.user_id = $1
+        AND cp_active.left_at IS NULL
+  )
+                `,
+                [userId]
+            );
+
+            pendingGroupInvitationRows = pendingGroupInvitations.rows.map((row) => ({
+                ...row,
+                is_requesting: true,
+            }));
+        }
+
         const unreadCountsResult = await pool.query(
             `  SELECT 
     m.conversation_id,
@@ -1549,13 +1600,17 @@ ORDER BY COALESCE(m.created_at, c.last_message_at, c.updated_at) DESC NULLS LAST
         }
 
 
-        const conversationsWithUnread = result.rows.map(c => ({
+        const conversationsWithUnread = [...result.rows, ...pendingGroupInvitationRows].map(c => ({
             ...c,
             is_requesting: c.is_requesting && (c.created_by === userId) ? false : c.is_requesting,
             timeAgo: timeAgo(c.updated_at),
             unread_count: unreadMap[c.conversation_id] || 0
 
-        }));
+        })).sort((a, b) => {
+            const left = new Date(a.last_message_at || a.updated_at || 0).getTime();
+            const right = new Date(b.last_message_at || b.updated_at || 0).getTime();
+            return right - left;
+        });
         // console.log("conversationsWithUnread", conversationsWithUnread);
 
         res.json(conversationsWithUnread);
