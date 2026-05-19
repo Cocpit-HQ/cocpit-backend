@@ -1617,13 +1617,13 @@ exports.sendMessage = async (req, res) => {
 
     const senderId = actorScope.userId;
     const authorCompanyId = actorScope.orgId;
-    const { targetUserId, text_content, shared_post_id, replyMessageId } = req.body;
+    const { targetUserId, text_content, shared_post_id, replyMessageId, shared_profile_id, shared_profile_type } = req.body;
     const images = req.files; // Array of files from multer
 
     const trimmedText = text_content?.trim() || '';
-    // Basic validation: user needs target + (text OR post OR images)
-    if (!targetUserId || (!trimmedText && !shared_post_id && (!images || images.length === 0))) {
-        return res.status(400).json({ message: "targetUserId and content (text, post, or images) are required" });
+    // Basic validation: user needs target + (text OR post OR images OR shared_profile_id)
+    if (!targetUserId || (!trimmedText && !shared_post_id && !shared_profile_id && (!images || images.length === 0))) {
+        return res.status(400).json({ message: "targetUserId and content (text, post, images, or profile) are required" });
     }
 
     if (senderId === targetUserId) {
@@ -1841,13 +1841,18 @@ exports.sendMessage = async (req, res) => {
             const convIsRequesting = convMeta.rows[0]?.is_requesting ?? false;
             const convCreatedAt = convMeta.rows[0]?.created_at ?? null;
 
-            // Insert the message
+            let finalSharedProfileType = shared_profile_type || null;
+            if (shared_profile_id && !finalSharedProfileType) {
+                const orgCheck = await client.query("SELECT 1 FROM organizations WHERE org_id = $1", [shared_profile_id]);
+                finalSharedProfileType = orgCheck.rowCount > 0 ? 'company' : 'user';
+            }
+
             // Determine message text for notifications/preview
             const previewText = trimmedText
                 ? trimmedText
                 : (images && images.length > 0
                     ? (images.length > 1 ? `${images.length} attachments` : (images[0].mimetype.startsWith('video/') ? 'Sent a video' : (images[0].mimetype === 'application/pdf' ? 'Sent a document' : 'Sent a photo')))
-                    : (shared_post_id ? 'Shared a post' : 'Attachment'));
+                    : (shared_post_id ? 'Shared a post' : (shared_profile_id ? 'Shared a profile' : 'Attachment')));
 
             // Session enforcement for company messages (within transaction for atomicity)
             let sessionId = null;
@@ -1912,9 +1917,20 @@ exports.sendMessage = async (req, res) => {
             }
 
             const msgRes = await client.query(
-                `INSERT INTO messages (conversation_id, sender_id, text_content, shared_post_id, author_org_id, sender_type, session_id, replied_msg_id)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
-                [conversationId, senderId, trimmedText || '', shared_post_id || null, authorCompanyId || null, authorCompanyId ? 'COMPANY' : 'USER', sessionId, replyMessageId || null]
+                `INSERT INTO messages (conversation_id, sender_id, text_content, shared_post_id, author_org_id, sender_type, session_id, replied_msg_id, shared_profile_id, shared_profile_type)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,
+                [
+                    conversationId,
+                    senderId,
+                    trimmedText || '',
+                    shared_post_id || null,
+                    authorCompanyId || null,
+                    authorCompanyId ? 'COMPANY' : 'USER',
+                    sessionId,
+                    replyMessageId || null,
+                    shared_profile_id || null,
+                    finalSharedProfileType
+                ]
             );
             const newMessage = msgRes.rows[0];
 
@@ -2050,12 +2066,36 @@ exports.sendMessage = async (req, res) => {
                 if (rmRes.rowCount > 0) replyMessageData = rmRes.rows[0];
             }
 
+            let sharedProfileData = null;
+            if (shared_profile_id) {
+                if (finalSharedProfileType === 'user') {
+                    const uRes = await client.query(
+                        `SELECT full_name as name, avatar_url as avatar, headline, location, account_name as username 
+                         FROM users WHERE user_id = $1`, 
+                        [shared_profile_id]
+                    );
+                    if (uRes.rowCount > 0) {
+                        sharedProfileData = uRes.rows[0];
+                    }
+                } else if (finalSharedProfileType === 'company') {
+                    const cRes = await client.query(
+                        `SELECT name, logo_url as avatar, industry as headline, industry, slug 
+                         FROM organizations WHERE org_id = $1 AND is_deleted = FALSE`,
+                        [shared_profile_id]
+                    );
+                    if (cRes.rowCount > 0) {
+                        sharedProfileData = cRes.rows[0];
+                    }
+                }
+            }
+
             const messageData = {
                 ...newMessage,
                 replyMessageId: replyMessageId || null,
                 reply_message: replyMessageData,
                 media: mediaRecords,
                 shared_post: sharedPostData,
+                shared_profile: sharedProfileData,
                 sender_name: senderName,
                 sender_avatar: senderAvatar
             };
