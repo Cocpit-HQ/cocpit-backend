@@ -826,61 +826,82 @@ exports.getSkills = async (req, res) => {
 
 exports.getEducationList = async (req, res) => {
     try {
-        const { school_search = "", degree_search = "" } = req.query;
+        const { school_search = "", degree_search = "", specialization_search = "" } = req.query;
 
-        let schoolQuery = "SELECT school_name FROM educations";
-        let degreeQuery = "SELECT degree FROM educations";
-
-        const schoolParams = [];
-        const degreeParams = [];
-
-        // 🎯 School filter
+        // 🎯 School query — case-insensitive DISTINCT via DISTINCT ON
+        let schoolQuery, schoolParams;
         if (school_search) {
-            schoolParams.push(`%${school_search}%`);
-            schoolQuery += ` WHERE LOWER(school_name) LIKE LOWER($1)`;
+            schoolParams = [`%${school_search}%`];
+            schoolQuery = `
+                SELECT DISTINCT ON (LOWER(TRIM(school_name))) school_name
+                FROM educations
+                WHERE school_name IS NOT NULL AND school_name != ''
+                  AND LOWER(school_name) LIKE LOWER($1)
+                ORDER BY LOWER(TRIM(school_name))
+                LIMIT 50`;
         } else {
-            schoolQuery += " LIMIT 50";
+            schoolParams = [];
+            schoolQuery = `
+                SELECT DISTINCT ON (LOWER(TRIM(school_name))) school_name
+                FROM educations
+                WHERE school_name IS NOT NULL AND school_name != ''
+                ORDER BY LOWER(TRIM(school_name))
+                LIMIT 50`;
         }
 
-        // 🎯 Degree filter
+        // 🎯 Degree query — case-insensitive DISTINCT via DISTINCT ON
+        let degreeQuery, degreeParams;
         if (degree_search) {
-            degreeParams.push(`%${degree_search}%`);
-            degreeQuery += ` WHERE LOWER(degree) LIKE LOWER($1)`;
+            degreeParams = [`%${degree_search}%`];
+            degreeQuery = `
+                SELECT DISTINCT ON (LOWER(TRIM(degree))) degree
+                FROM educations
+                WHERE degree IS NOT NULL AND degree != ''
+                  AND LOWER(degree) LIKE LOWER($1)
+                ORDER BY LOWER(TRIM(degree))
+                LIMIT 50`;
         } else {
-            degreeQuery += " LIMIT 50";
+            degreeParams = [];
+            degreeQuery = `
+                SELECT DISTINCT ON (LOWER(TRIM(degree))) degree
+                FROM educations
+                WHERE degree IS NOT NULL AND degree != ''
+                ORDER BY LOWER(TRIM(degree))
+                LIMIT 50`;
         }
 
-        // 🔥 Run both queries separately
-        const [schoolResult, degreeResult] = await Promise.all([
+        // 🎯 Specialization query — always runs, filter if param provided
+        let specializationQuery, specializationParams;
+        if (specialization_search) {
+            specializationParams = [`%${specialization_search}%`];
+            specializationQuery = `
+                SELECT DISTINCT ON (LOWER(TRIM(field_of_study))) field_of_study
+                FROM educations
+                WHERE field_of_study IS NOT NULL AND field_of_study != ''
+                  AND LOWER(field_of_study) LIKE LOWER($1)
+                ORDER BY LOWER(TRIM(field_of_study))
+                LIMIT 50`;
+        } else {
+            specializationParams = [];
+            specializationQuery = `
+                SELECT DISTINCT ON (LOWER(TRIM(field_of_study))) field_of_study
+                FROM educations
+                WHERE field_of_study IS NOT NULL AND field_of_study != ''
+                ORDER BY LOWER(TRIM(field_of_study))
+                LIMIT 50`;
+        }
+
+        // 🔥 Run all three queries in parallel
+        const [schoolResult, degreeResult, specializationResult] = await Promise.all([
             pool.query(schoolQuery, schoolParams),
             pool.query(degreeQuery, degreeParams),
+            pool.query(specializationQuery, specializationParams),
         ]);
 
-        // 🔥 Deduplication
-        const uniqueSchools = new Map();
-        const uniqueDegrees = new Map();
-
-        schoolResult.rows.forEach(row => {
-            if (row.school_name) {
-                const key = row.school_name.toLowerCase().trim();
-                if (!uniqueSchools.has(key)) {
-                    uniqueSchools.set(key, row.school_name);
-                }
-            }
-        });
-
-        degreeResult.rows.forEach(row => {
-            if (row.degree) {
-                const key = row.degree.toLowerCase().trim();
-                if (!uniqueDegrees.has(key)) {
-                    uniqueDegrees.set(key, row.degree);
-                }
-            }
-        });
-
         return res.json({
-            degrees: Array.from(uniqueDegrees.values()),
-            school_names: Array.from(uniqueSchools.values()),
+            degrees: degreeResult.rows.map(r => r.degree),
+            school_names: schoolResult.rows.map(r => r.school_name),
+            specializations: specializationResult.rows.map(r => r.field_of_study),
         });
 
     } catch (err) {
@@ -892,26 +913,46 @@ exports.getCompanyList = async (req, res) => {
     try {
         const { company_search = "", title_search = "" } = req.query;
 
-        let companyQuery = "SELECT company_name FROM experiences";
-        let titleQuery = "SELECT title FROM experiences";
-
-        const companyParams = [];
-        const titleParams = [];
-
-        // 🎯 Company filter
+        // 🎯 Company query — case-insensitive DISTINCT via DISTINCT ON
+        let companyQuery, companyParams;
         if (company_search) {
-            companyParams.push(`%${company_search}%`);
-            companyQuery += ` WHERE LOWER(company_name) LIKE LOWER($1)`;
+            companyParams = [`%${company_search}%`];
+            companyQuery = `
+                SELECT DISTINCT ON (LOWER(TRIM(company_name))) company_name
+                FROM experiences
+                WHERE company_name IS NOT NULL AND company_name != ''
+                  AND LOWER(company_name) LIKE LOWER($1)
+                ORDER BY LOWER(TRIM(company_name))
+                LIMIT 50`;
         } else {
-            companyQuery += " LIMIT 50";
+            companyParams = [];
+            companyQuery = `
+                SELECT DISTINCT ON (LOWER(TRIM(company_name))) company_name
+                FROM experiences
+                WHERE company_name IS NOT NULL AND company_name != ''
+                ORDER BY LOWER(TRIM(company_name))
+                LIMIT 50`;
         }
 
-        // 🎯 Title filter
+        // 🎯 Title query — case-insensitive DISTINCT via DISTINCT ON
+        let titleQuery, titleParams;
         if (title_search) {
-            titleParams.push(`%${title_search}%`);
-            titleQuery += ` WHERE LOWER(title) LIKE LOWER($1)`;
+            titleParams = [`%${title_search}%`];
+            titleQuery = `
+                SELECT DISTINCT ON (LOWER(TRIM(title))) title
+                FROM experiences
+                WHERE title IS NOT NULL AND title != ''
+                  AND LOWER(title) LIKE LOWER($1)
+                ORDER BY LOWER(TRIM(title))
+                LIMIT 50`;
         } else {
-            titleQuery += " LIMIT 50";
+            titleParams = [];
+            titleQuery = `
+                SELECT DISTINCT ON (LOWER(TRIM(title))) title
+                FROM experiences
+                WHERE title IS NOT NULL AND title != ''
+                ORDER BY LOWER(TRIM(title))
+                LIMIT 50`;
         }
 
         // 🔥 Run both queries separately
@@ -920,31 +961,9 @@ exports.getCompanyList = async (req, res) => {
             pool.query(titleQuery, titleParams),
         ]);
 
-        // 🔥 Deduplication
-        const uniqueCompanies = new Map();
-        const uniqueTitles = new Map();
-
-        companyResult.rows.forEach(row => {
-            if (row.company_name) {
-                const key = row.company_name.toLowerCase().trim();
-                if (!uniqueCompanies.has(key)) {
-                    uniqueCompanies.set(key, row.company_name);
-                }
-            }
-        });
-
-        titleResult.rows.forEach(row => {
-            if (row.title) {
-                const key = row.title.toLowerCase().trim();
-                if (!uniqueTitles.has(key)) {
-                    uniqueTitles.set(key, row.title);
-                }
-            }
-        });
-
         return res.json({
-            titles: Array.from(uniqueTitles.values()),
-            company_names: Array.from(uniqueCompanies.values())
+            titles: titleResult.rows.map(r => r.title),
+            company_names: companyResult.rows.map(r => r.company_name),
         });
 
     } catch (err) {
