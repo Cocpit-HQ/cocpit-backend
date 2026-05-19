@@ -430,6 +430,8 @@ exports.getPublicProfilePosts = async (req, res) => {
         u.user_id AS author_id,
         u.full_name AS author_name,
         u.avatar_url AS author_avatar,
+        u.account_name AS author_slug,
+        u.headline AS author_headline,
 
         pc.name AS category_name,
 
@@ -489,7 +491,9 @@ exports.getPublicProfilePosts = async (req, res) => {
               'author', json_build_object(
                 'user_id', sp_u.user_id,
                 'full_name', sp_u.full_name,
-                'avatar_url', sp_u.avatar_url
+                'avatar_url', sp_u.avatar_url,
+                'author_slug', sp_u.account_name,
+                'author_headline', sp_u.headline
               ),
               'media', COALESCE((SELECT json_agg(json_build_object('url', pm.url, 'media_type', pm.media_type)) FROM post_media pm WHERE pm.post_id = sp.post_id), '[]'::json),
               'like_count', (SELECT COUNT(*) FROM post_likes pl WHERE pl.post_id = sp.post_id)::int,

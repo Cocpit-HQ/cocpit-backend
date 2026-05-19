@@ -108,6 +108,7 @@ exports.getOrganizationPosts = async (req, res) => {
             comp.name AS author_name,
             comp.logo_url AS author_avatar,
             comp.slug AS author_slug,
+            comp.slogan AS author_headline,
             (comp.entity_type = 'ORGANIZATION') AS is_organization_post,
             (comp.entity_type = 'INSTITUTION') AS is_institution_post,
 
@@ -136,6 +137,7 @@ exports.getOrganizationPosts = async (req, res) => {
                              'full_name', COALESCE(sp_comp.name, sp_u.full_name),
                              'avatar_url', COALESCE(sp_comp.logo_url, sp_u.avatar_url),
                              'author_slug', COALESCE(sp_comp.slug, sp_u.account_name),
+                             'author_headline', COALESCE(sp_comp.slogan, sp_u.headline),
                              'is_organization_post', (sp.author_org_id IS NOT NULL)
                         ),
                         'media', COALESCE(sp_media.media, '[]'::json),
