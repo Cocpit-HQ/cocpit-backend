@@ -76,6 +76,46 @@ class GroupChatService {
         return invitation;
     }
 
+    static async cancelInvitation(adminId, groupId, invitationId) {
+        // 1. Group existence check
+        const group = await GroupChatModel.getGroupDetails(groupId);
+        if (!group) throw new Error("Group not found");
+
+        // 2. RBAC Check: Must be active admin
+        const members = await GroupChatModel.getGroupMembers(groupId);
+        const updater = members.find(m => m.user_id == adminId);
+        if (!updater || updater.role !== 'admin') {
+            throw new Error("Only an active group admin can cancel invitations");
+        }
+
+        // 3. Fetch invitation
+        const invitation = await GroupChatModel.getInvitationById(invitationId);
+        if (!invitation) throw new Error("Invitation not found");
+
+        // 4. Verify group match
+        if (invitation.conversation_id != groupId) {
+            throw new Error("Invitation does not belong to this group");
+        }
+
+        // 5. Verify status is pending
+        if (invitation.status !== 'pending') {
+            throw new Error(`Cannot cancel invitation with status: ${invitation.status}`);
+        }
+
+        // 6. Delete invitation (hard delete)
+        const deletedInvitation = await GroupChatModel.deleteInvitation(invitationId);
+
+        // 7. Notify invitee via socket to remove/update their list
+        socketService.notifyUser(invitation.invitee_id, 'invitation_update', {
+            groupId: invitation.conversation_id,
+            invitationId,
+            status: 'cancelled'
+        });
+
+        return { success: true, message: "Invitation cancelled successfully", invitation: deletedInvitation };
+    }
+
+
     static async getPendingInvitations(userId) {
         return await GroupChatModel.getPendingInvitations(userId);
     }
