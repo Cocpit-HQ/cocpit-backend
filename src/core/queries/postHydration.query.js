@@ -59,6 +59,7 @@ const getPostHydrationSelect = (companyParamIdx, userParamIdx) => `
 
     (SELECT COUNT(*) FROM post_likes pl WHERE pl.post_id = p.post_id)::int AS like_count,
     (SELECT COUNT(*) FROM post_comments pc WHERE pc.post_id = p.post_id)::int AS comment_count,
+    (SELECT COUNT(*) FROM saved_post sp_cnt WHERE sp_cnt.post_id = p.post_id)::int AS save_count,
 
     (
         EXISTS(

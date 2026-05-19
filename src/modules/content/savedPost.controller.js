@@ -211,6 +211,8 @@ exports.getSavedPosts = async (req, res) => {
             sp.saved_at,
             COALESCE(comp_auth.name, u_auth.full_name) AS author_name, 
             COALESCE(comp_auth.logo_url, u_auth.avatar_url) AS author_avatar,
+            COALESCE(comp_auth.slug, u_auth.account_name) AS author_slug,
+            COALESCE(comp_auth.slogan, u_auth.headline) AS author_headline,
             COALESCE(
                 (SELECT json_agg(json_build_object('url', pm.url, 'media_type', pm.media_type)) 
                  FROM post_media pm WHERE pm.post_id = p.post_id),
@@ -218,6 +220,7 @@ exports.getSavedPosts = async (req, res) => {
             ) AS media,
             (SELECT COUNT(*) FROM post_likes pl WHERE pl.post_id = p.post_id)::int AS like_count,
             (SELECT COUNT(*) FROM post_comments pc WHERE pc.post_id = p.post_id)::int AS comment_count,
+            (SELECT COUNT(*) FROM saved_post sp_cnt WHERE sp_cnt.post_id = p.post_id)::int AS save_count,
 
             -- Identity Aware states
             EXISTS(
