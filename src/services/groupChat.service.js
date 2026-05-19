@@ -1,6 +1,7 @@
 const GroupChatModel = require("../models/groupChat.model");
 const socketService = require("../core/infrastructure/socket.service"); // Assuming existing socket service
 const pool = require("../core/db/pool"); // For specific queries if model isn't enough or for transactions
+const { listConversationMuteStates } = require("./conversationMute.service");
 
 class GroupChatService {
     static async createGroup(adminId, { name, description, avatarUrl, members }) {
@@ -557,6 +558,11 @@ class GroupChatService {
 
         // Notify all members via room broadcast for the message itself
         socketService.notifyConversation(groupId, 'new_message', enrichedMessage);
+
+        const muteStates = await listConversationMuteStates(pool, groupId);
+        const mutedMemberIds = new Set(
+            muteStates.filter((state) => state.userId && state.isMuted).map((state) => state.userId)
+        );
         
         // Handle Mentions
         const mentionedGroupMembers = [];
@@ -573,6 +579,10 @@ class GroupChatService {
             }
 
             for (const mentionedMember of mentionedGroupMembers) {
+                if (mutedMemberIds.has(mentionedMember.user_id)) {
+                    continue;
+                }
+
                 // Here we avoid checking block status for group chats, but we can if we want to. For now skip.
                 const notifText = `${sender.full_name} mentioned you in a group chat`;
                 const meta = {
@@ -593,6 +603,10 @@ class GroupChatService {
         members.forEach(member => {
             // Suppress notification toast for the sender themselves
             if (member.user_id !== senderId) {
+                if (mutedMemberIds.has(member.user_id)) {
+                    return;
+                }
+
                 // If the user was mentioned, override default message notification with a mention one
                 const isMentioned = mentionedGroupMembers.some(m => m.user_id === member.user_id);
                 

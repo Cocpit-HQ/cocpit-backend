@@ -7,6 +7,10 @@ const socketService = require("../../core/infrastructure/socket.service");
 const { checkRateLimit } = require("../../core/utils/sessionRateLimiter");
 const { hasActorPermission } = require("../../core/middlewares/actor-context.middleware");
 const { markConversationAsRead } = require("../../services/conversationRead.service");
+const {
+    getConversationMuteState,
+    updateConversationMuteState: persistConversationMuteState,
+} = require("../../services/conversationMute.service");
 
 // Helper function for timeAgo
 const timeAgo = (date) => {
@@ -69,6 +73,32 @@ const getOrganizationConnectionActorScope = (req) => {
         ...actorScope,
         companyId: actorScope.orgId || orgId,
     };
+};
+
+const notifyConversationPreferenceUpdate = async ({ conversationId, userId, companyId, muteState }) => {
+    const payload = {
+        conversationId,
+        companyId: companyId || null,
+        preference: {
+            is_muted: muteState.isMuted,
+            muted_until: muteState.mutedUntil,
+            mute_updated_at: muteState.muteUpdatedAt,
+        },
+    };
+
+    if (companyId) {
+        const members = await pool.query(
+            `SELECT user_id FROM organization_members WHERE org_id = $1 AND status = 'ACTIVE'`,
+            [companyId]
+        );
+
+        for (const member of members.rows) {
+            socketService.notifyUser(member.user_id, "conversation_preference_updated", payload);
+        }
+        return;
+    }
+
+    socketService.notifyUser(userId, "conversation_preference_updated", payload);
 };
 
 // Follow another user
@@ -1354,6 +1384,8 @@ SELECT
     
     -- Identify the sender profile for the current view
     cp.is_active,
+    cp.is_muted,
+    cp.muted_until,
     
     -- Flag for deleted users
     CASE 
@@ -1379,7 +1411,13 @@ JOIN (
                       OR
                       (cp_main.org_id IS NOT NULL AND cp_a.org_id = cp_main.org_id)
                   )
-                  AND cp_a.left_at IS NULL) as is_active
+                  AND cp_a.left_at IS NULL) as is_active,
+           BOOL_OR(
+               cp_main.left_at IS NULL
+               AND cp_main.is_muted = TRUE
+               AND (cp_main.muted_until IS NULL OR cp_main.muted_until > NOW())
+           ) as is_muted,
+           MAX(CASE WHEN cp_main.left_at IS NULL THEN cp_main.muted_until ELSE NULL END) as muted_until
     FROM conversation_participants cp_main
     WHERE 
       -- Filter by User OR Company based on context
@@ -1938,6 +1976,23 @@ exports.sendMessage = async (req, res) => {
                 );
             }
 
+            let targetNotificationMuted = false;
+            if (targetIsCompany) {
+                const muteState = await getConversationMuteState(client, {
+                    conversationId,
+                    userId: senderId,
+                    companyId: targetUserId,
+                });
+                targetNotificationMuted = !!muteState?.isMuted;
+            } else {
+                const muteState = await getConversationMuteState(client, {
+                    conversationId,
+                    userId: targetUserId,
+                    companyId: null,
+                });
+                targetNotificationMuted = !!muteState?.isMuted;
+            }
+
             await client.query('COMMIT');
 
             // Emit session activity event (outside transaction)
@@ -2073,16 +2128,18 @@ exports.sendMessage = async (req, res) => {
                         target_profile_type: 'COMPANY',
                         target_company_id: targetUserId
                     });
-                    socketService.notifyUser(member.user_id, "notification", {
-                        type: "message",
-                        from: senderId,
-                        senderName,
-                        senderAvatar,
-                        conversationId,
-                        text: previewText,
-                        targetProfileType: 'COMPANY',
-                        targetCompanyId: targetUserId
-                    });
+                    if (!targetNotificationMuted) {
+                        socketService.notifyUser(member.user_id, "notification", {
+                            type: "message",
+                            from: senderId,
+                            senderName,
+                            senderAvatar,
+                            conversationId,
+                            text: previewText,
+                            targetProfileType: 'COMPANY',
+                            targetCompanyId: targetUserId
+                        });
+                    }
                 }
             } else {
                 // User→User or Company→User: notify target user directly
@@ -2091,15 +2148,17 @@ exports.sendMessage = async (req, res) => {
                     ...receiverConvPayload,
                     target_profile_type: 'USER'
                 });
-                socketService.notifyUser(targetUserId, "notification", {
-                    type: "message",
-                    from: senderId,
-                    senderName,
-                    senderAvatar,
-                    conversationId,
-                    text: previewText,
-                    targetProfileType: 'USER'
-                });
+                if (!targetNotificationMuted) {
+                    socketService.notifyUser(targetUserId, "notification", {
+                        type: "message",
+                        from: senderId,
+                        senderName,
+                        senderAvatar,
+                        conversationId,
+                        text: previewText,
+                        targetProfileType: 'USER'
+                    });
+                }
             }
             // Notify sender as well
             socketService.notifyUser(senderId, "new_message", messageData);
@@ -2157,6 +2216,109 @@ exports.markConversationRead = async (req, res) => {
         console.error("Mark conversation read error:", err);
         res.status(err.statusCode || 500).json({
             message: err.message || "Internal server error"
+        });
+    }
+};
+
+exports.getConversationMuteState = async (req, res) => {
+    const { conversationId } = req.params;
+    let actorScope;
+
+    try {
+        actorScope = getSocialActorScope(req, req.query.companyId || null);
+    } catch (err) {
+        return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
+    }
+
+    const { userId, orgId: companyId } = actorScope;
+
+    try {
+        const muteState = await getConversationMuteState(pool, {
+            conversationId,
+            userId,
+            companyId,
+        });
+
+        if (!muteState) {
+            return res.status(404).json({ message: "Conversation not found or access denied" });
+        }
+
+        res.json({
+            conversationId,
+            is_muted: muteState.isMuted,
+            muted_until: muteState.mutedUntil,
+            mute_updated_at: muteState.muteUpdatedAt,
+        });
+    } catch (err) {
+        console.error("Get conversation mute state error:", err);
+        res.status(err.statusCode || 500).json({
+            message: err.message || "Internal server error",
+        });
+    }
+};
+
+exports.updateConversationMuteState = async (req, res) => {
+    const { conversationId } = req.params;
+    const { muted, mutedUntil } = req.body || {};
+    let actorScope;
+
+    if (typeof muted !== "boolean") {
+        return res.status(400).json({ message: "muted must be a boolean" });
+    }
+
+    let parsedMutedUntil = null;
+    if (muted) {
+        if (mutedUntil !== undefined && mutedUntil !== null && mutedUntil !== "") {
+            parsedMutedUntil = new Date(mutedUntil);
+            if (Number.isNaN(parsedMutedUntil.getTime())) {
+                return res.status(400).json({ message: "mutedUntil must be a valid ISO date" });
+            }
+            if (parsedMutedUntil.getTime() <= Date.now()) {
+                return res.status(400).json({ message: "mutedUntil must be in the future" });
+            }
+            parsedMutedUntil = parsedMutedUntil.toISOString();
+        }
+    }
+
+    try {
+        actorScope = getSocialActorScope(req, req.body?.companyId || req.query.companyId || null);
+    } catch (err) {
+        return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
+    }
+
+    const { userId, orgId: companyId } = actorScope;
+
+    try {
+        const muteState = await persistConversationMuteState(pool, {
+            conversationId,
+            userId,
+            companyId,
+            muted,
+            mutedUntil: parsedMutedUntil,
+        });
+
+        if (!muteState) {
+            return res.status(404).json({ message: "Conversation not found or access denied" });
+        }
+
+        await notifyConversationPreferenceUpdate({
+            conversationId,
+            userId,
+            companyId,
+            muteState,
+        });
+
+        res.json({
+            message: muted ? "Conversation muted" : "Conversation unmuted",
+            conversationId,
+            is_muted: muteState.isMuted,
+            muted_until: muteState.mutedUntil,
+            mute_updated_at: muteState.muteUpdatedAt,
+        });
+    } catch (err) {
+        console.error("Update conversation mute state error:", err);
+        res.status(err.statusCode || 500).json({
+            message: err.message || "Internal server error",
         });
     }
 };
