@@ -493,6 +493,7 @@ exports.getMyPrivatePosts = async (req, res) => {
             COALESCE(comp.name, u.full_name) AS author_name,
             COALESCE(comp.logo_url, u.avatar_url) AS author_avatar,
             COALESCE(comp.slug, u.account_name) AS author_slug,
+            COALESCE(comp.slogan, u.headline) AS author_headline,
             (p.author_org_id IS NOT NULL) AS is_organization_post,
             pc.name AS category_name,
             p.location,
@@ -1044,6 +1045,7 @@ exports.getPostById = async (req, res) => {
     COALESCE(comp.name, u.full_name) AS author_name,
     COALESCE(comp.logo_url, u.avatar_url) AS author_avatar,
     COALESCE(comp.slug, u.account_name) AS author_slug,
+    COALESCE(comp.slogan, u.headline) AS author_headline,
     (p.author_org_id IS NOT NULL) AS is_organization_post,
     c.name AS category_name,
     p.location,
@@ -1189,7 +1191,8 @@ exports.getPostById = async (req, res) => {
                 'author', json_build_object(
                     'user_id', COALESCE(sp.author_org_id, sp_u.user_id),
                     'full_name', COALESCE(sp_comp.name, sp_u.full_name),
-                    'avatar_url', COALESCE(sp_comp.logo_url, sp_u.avatar_url)
+                    'avatar_url', COALESCE(sp_comp.logo_url, sp_u.avatar_url),
+                    'author_headline', COALESCE(sp_comp.slogan, sp_u.headline)
                 ),
                 'media', COALESCE(sp_media.media, '[]'::json),
                 'like_count', (SELECT COUNT(*) FROM post_likes pl WHERE pl.post_id = sp.post_id)::int,
