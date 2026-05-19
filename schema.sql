@@ -1105,6 +1105,15 @@ CHECK (
     (user_id IS NULL AND org_id IS NOT NULL)
 );
 
+ALTER TABLE conversation_participants
+ADD COLUMN IF NOT EXISTS is_muted BOOLEAN DEFAULT FALSE;
+
+ALTER TABLE conversation_participants
+ADD COLUMN IF NOT EXISTS muted_until TIMESTAMPTZ;
+
+ALTER TABLE conversation_participants
+ADD COLUMN IF NOT EXISTS mute_updated_at TIMESTAMPTZ;
+
 -- 4. Create message_delete table (per-user soft delete)
 CREATE TABLE IF NOT EXISTS message_delete (
   message_id UUID REFERENCES messages(message_id) ON DELETE CASCADE,
