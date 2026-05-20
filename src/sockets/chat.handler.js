@@ -51,6 +51,41 @@ module.exports.registerChatHandlers = (io, socket) => {
   });
 
 
+  // Helper to notify other conversation/group participants via their personal rooms
+  const notifyParticipants = async (conversationId, event, payload, senderId) => {
+    try {
+      const participants = await pool.query(
+        `SELECT user_id, org_id 
+         FROM conversation_participants 
+         WHERE conversation_id = $1 AND left_at IS NULL`,
+        [conversationId]
+      );
+
+      for (const row of participants.rows) {
+        if (row.user_id) {
+          if (row.user_id !== senderId) {
+            socketService.notifyUser(row.user_id, event, payload);
+          }
+        } else if (row.org_id) {
+          // Find company active members
+          const members = await pool.query(
+            `SELECT user_id 
+             FROM organization_members 
+             WHERE org_id = $1 AND status = 'ACTIVE'`,
+            [row.org_id]
+          );
+          for (const member of members.rows) {
+            if (member.user_id !== senderId) {
+              socketService.notifyUser(member.user_id, event, payload);
+            }
+          }
+        }
+      }
+    } catch (err) {
+      console.error("Error notifying typing participants:", err);
+    }
+  };
+
   // Typing Indicator
   socket.on("typing", async ({ conversationId }) => {
     if (!conversationId) return;
@@ -74,26 +109,37 @@ module.exports.registerChatHandlers = (io, socket) => {
       console.error("Error fetching user for typing:", err);
     }
 
-    // Broadcast to others in the room
-    socket.to(room).emit("isTyping", {
+    const payload = {
       senderId: userId,
       conversationId,
       username: username
-    });
+    };
+
+    // Broadcast to others in the room
+    socket.to(room).emit("isTyping", payload);
+
+    // Notify other participants directly in their personal rooms
+    await notifyParticipants(conversationId, "isTyping", payload, userId);
   });
 
   // Stop Typing Indicator
-  socket.on("stopTyping", ({ conversationId }) => {
+  socket.on("stopTyping", async ({ conversationId }) => {
     if (!conversationId) return;
 
     // Track typing status in-memory
     socketService.setTyping(userId, conversationId, false);
 
     const room = getConversationRoom(conversationId);
-    socket.to(room).emit("stoppedTyping", {
+    
+    const payload = {
       conversationId,
       senderId: userId,
-    });
+    };
+    
+    socket.to(room).emit("stoppedTyping", payload);
+
+    // Notify other participants directly in their personal rooms
+    await notifyParticipants(conversationId, "stoppedTyping", payload, userId);
   });
 
   // Mark Conversation as Read (socket path)
@@ -215,26 +261,37 @@ module.exports.registerChatHandlers = (io, socket) => {
       console.error("Error fetching user for typing:", err);
     }
 
-    socket.to(room).emit("isTyping", {
+    const payload = {
       senderId: userId,
       conversationId: groupId,
       isGroup: true,
       username: username
-    });
+    };
+
+    socket.to(room).emit("isTyping", payload);
+
+    // Notify other group participants directly in their personal rooms
+    await notifyParticipants(groupId, "isTyping", payload, userId);
   });
 
   // Stop Group Typing
-  socket.on("stopGroupTyping", ({ groupId }) => {
+  socket.on("stopGroupTyping", async ({ groupId }) => {
     if (!groupId) return;
 
     // Track group typing status in-memory
     socketService.setTyping(userId, groupId, false);
 
     const room = getConversationRoom(groupId);
-    socket.to(room).emit("stoppedTyping", {
+    
+    const payload = {
       conversationId: groupId,
       isGroup: true,
       senderId: userId
-    });
+    };
+    
+    socket.to(room).emit("stoppedTyping", payload);
+
+    // Notify other group participants directly in their personal rooms
+    await notifyParticipants(groupId, "stoppedTyping", payload, userId);
   });
 };

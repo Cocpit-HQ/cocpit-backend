@@ -116,6 +116,27 @@ class GroupChatService {
         // Create invitation
         const invitation = await GroupChatModel.createInvitation({ groupId, senderId, receiverId });
 
+        const requestConversationPayload = {
+            conversation_id: groupId,
+            is_group: true,
+            is_active: false,
+            is_requesting: true,
+            created_at: group.created_at,
+            updated_at: invitation.updated_at || invitation.created_at || new Date().toISOString(),
+            other_user_name: group.conversation_name || 'Group Chat',
+            other_user_avatar: group.group_avatar || null,
+            other_user_id: groupId,
+            other_user_headline: inviter.full_name || null,
+            other_user_slug: null,
+            other_user_type: 'USER',
+            is_deleted_user: false,
+            unread_count: 0,
+            last_message_text: `${inviter.full_name || 'A member'} invited you to join the group`,
+            last_message_at: invitation.updated_at || invitation.created_at || new Date().toISOString(),
+            invitation_id: invitation.invitation_id,
+            request_source: 'group_invitation',
+        };
+
         // Notify user via socket
         const sql = getPendingGroupInvitationsSql();
         if (sql) {

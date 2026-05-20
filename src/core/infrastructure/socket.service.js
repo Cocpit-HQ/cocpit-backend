@@ -1,3 +1,4 @@
+const pool = require("../db/pool");
 const { getUserRoom, getConversationRoom, getStoryRoom, getOrgRoom } = require("../utils/socketRooms");
 
 class SocketService {
@@ -41,10 +42,12 @@ class SocketService {
       const timeoutId = setTimeout(() => {
         this.setTyping(userId, conversationId, false);
         // Graceful fallback to notify clients when auto-timeout fires
-        this.notifyConversation(conversationId, "stoppedTyping", {
+        const payload = {
           conversationId,
           senderId: userId
-        });
+        };
+        this.notifyConversation(conversationId, "stoppedTyping", payload);
+        this.notifyParticipants(conversationId, "stoppedTyping", payload, userId);
       }, 10000); // 10 seconds auto-timeout
 
       userTypingMap.set(conversationId, { timeoutId, timestamp: Date.now() });
@@ -75,12 +78,54 @@ class SocketService {
           clearTimeout(entry.timeoutId);
         }
         // Notify conversation participants immediately
-        this.notifyConversation(conversationId, "stoppedTyping", {
+        const payload = {
           conversationId,
           senderId: userId
-        });
+        };
+        this.notifyConversation(conversationId, "stoppedTyping", payload);
+        this.notifyParticipants(conversationId, "stoppedTyping", payload, userId);
       }
       this.typingStore.delete(userId);
+    }
+  }
+
+  /**
+   * Notify all participants in their personal user rooms
+   * @param {string} conversationId
+   * @param {string} event
+   * @param {object} payload
+   * @param {string} senderId
+   */
+  async notifyParticipants(conversationId, event, payload, senderId) {
+    try {
+      const participants = await pool.query(
+        `SELECT user_id, org_id 
+         FROM conversation_participants 
+         WHERE conversation_id = $1 AND left_at IS NULL`,
+        [conversationId]
+      );
+
+      for (const row of participants.rows) {
+        if (row.user_id) {
+          if (row.user_id !== senderId) {
+            this.notifyUser(row.user_id, event, payload);
+          }
+        } else if (row.org_id) {
+          const members = await pool.query(
+            `SELECT user_id 
+             FROM organization_members 
+             WHERE org_id = $1 AND status = 'ACTIVE'`,
+            [row.org_id]
+          );
+          for (const member of members.rows) {
+            if (member.user_id !== senderId) {
+              this.notifyUser(member.user_id, event, payload);
+            }
+          }
+        }
+      }
+    } catch (err) {
+      console.error("Error notifying participants:", err);
     }
   }
 
