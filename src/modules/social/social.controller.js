@@ -1602,6 +1602,16 @@ WHERE gi.invitee_id = $1
 
         const conversationsWithUnread = [...result.rows, ...pendingGroupInvitationRows].map(c => ({
             ...c,
+            // Determine online status for direct (non-group) conversations
+            onlineStatus: (function(){
+              if (c.is_group) return 'offline'; // groups don't have a single status
+              const otherId = c.other_user_id;
+              // Prioritize typing status
+              if (socketService.isUserTyping(otherId, c.conversation_id)) return 'typing';
+              // Then online
+              if (socketService.isUserOnline(otherId)) return 'online';
+              return 'offline';
+            })(),
             is_requesting: c.is_requesting && (c.created_by === userId) ? false : c.is_requesting,
             timeAgo: timeAgo(c.updated_at),
             unread_count: unreadMap[c.conversation_id] || 0

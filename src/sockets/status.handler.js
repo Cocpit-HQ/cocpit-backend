@@ -66,6 +66,9 @@ module.exports.handleDisconnect = async (socket) => {
       return;
     }
 
+    // Clear all active typing states and timeouts for this user
+    SocketService.clearUserTyping(socket.userId);
+
     const recipientIds = await getRelatedUserIds(socket.userId);
 
 

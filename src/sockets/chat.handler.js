@@ -1,6 +1,7 @@
 const pool = require("../core/db/pool");
 const { getConversationRoom } = require("../core/utils/socketRooms");
 const { markConversationAsRead } = require("../services/conversationRead.service");
+const socketService = require("../core/infrastructure/socket.service");
 
 module.exports.registerChatHandlers = (io, socket) => {
   const userId = socket.userId;
@@ -52,8 +53,11 @@ module.exports.registerChatHandlers = (io, socket) => {
 
   // Typing Indicator
   socket.on("typing", async ({ conversationId }) => {
-    // We assume client already joined successfully, but we could double check room membership
-    // io.to() handles it fine.
+    if (!conversationId) return;
+    
+    // Track typing status in-memory
+    socketService.setTyping(userId, conversationId, true);
+
     const room = getConversationRoom(conversationId);
 
     // Fetch sender name (Optimisation: Cache this in socket.user or via Redis)
@@ -80,9 +84,15 @@ module.exports.registerChatHandlers = (io, socket) => {
 
   // Stop Typing Indicator
   socket.on("stopTyping", ({ conversationId }) => {
+    if (!conversationId) return;
+
+    // Track typing status in-memory
+    socketService.setTyping(userId, conversationId, false);
+
     const room = getConversationRoom(conversationId);
     socket.to(room).emit("stoppedTyping", {
       conversationId,
+      senderId: userId,
     });
   });
 
@@ -184,6 +194,11 @@ module.exports.registerChatHandlers = (io, socket) => {
 
   // Group Typing Indicator
   socket.on("groupTyping", async ({ groupId }) => {
+    if (!groupId) return;
+
+    // Track group typing status in-memory
+    socketService.setTyping(userId, groupId, true);
+
     const room = getConversationRoom(groupId);
 
     // Fetch sender name (Optimisation: Cache this in socket.user or via Redis)
@@ -210,6 +225,11 @@ module.exports.registerChatHandlers = (io, socket) => {
 
   // Stop Group Typing
   socket.on("stopGroupTyping", ({ groupId }) => {
+    if (!groupId) return;
+
+    // Track group typing status in-memory
+    socketService.setTyping(userId, groupId, false);
+
     const room = getConversationRoom(groupId);
     socket.to(room).emit("stoppedTyping", {
       conversationId: groupId,

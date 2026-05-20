@@ -3,10 +3,85 @@ const { getUserRoom, getConversationRoom, getStoryRoom, getOrgRoom } = require("
 class SocketService {
   constructor() {
     this.io = null;
+    this.typingStore = new Map(); // userId -> Map(conversationId -> { timeoutId, timestamp })
   }
 
   init(io) {
     this.io = io;
+  }
+
+  /**
+   * Check if a user is currently typing in a conversation
+   * @param {string} userId
+   * @param {string} conversationId
+   * @returns {boolean}
+   */
+  isUserTyping(userId, conversationId) {
+    const userTypingMap = this.typingStore.get(userId);
+    return userTypingMap ? userTypingMap.has(conversationId) : false;
+  }
+
+  /**
+   * Set a user's typing status in a conversation
+   * @param {string} userId
+   * @param {string} conversationId
+   * @param {boolean} isTyping
+   */
+  setTyping(userId, conversationId, isTyping) {
+    if (isTyping) {
+      if (!this.typingStore.has(userId)) {
+        this.typingStore.set(userId, new Map());
+      }
+      const userTypingMap = this.typingStore.get(userId);
+      const existing = userTypingMap.get(conversationId);
+      if (existing && existing.timeoutId) {
+        clearTimeout(existing.timeoutId);
+      }
+
+      const timeoutId = setTimeout(() => {
+        this.setTyping(userId, conversationId, false);
+        // Graceful fallback to notify clients when auto-timeout fires
+        this.notifyConversation(conversationId, "stoppedTyping", {
+          conversationId,
+          senderId: userId
+        });
+      }, 10000); // 10 seconds auto-timeout
+
+      userTypingMap.set(conversationId, { timeoutId, timestamp: Date.now() });
+    } else {
+      const userTypingMap = this.typingStore.get(userId);
+      if (userTypingMap) {
+        const existing = userTypingMap.get(conversationId);
+        if (existing && existing.timeoutId) {
+          clearTimeout(existing.timeoutId);
+        }
+        userTypingMap.delete(conversationId);
+        if (userTypingMap.size === 0) {
+          this.typingStore.delete(userId);
+        }
+      }
+    }
+  }
+
+  /**
+   * Clear all active typing states and timeouts for a user (e.g. on disconnect)
+   * @param {string} userId
+   */
+  clearUserTyping(userId) {
+    const userTypingMap = this.typingStore.get(userId);
+    if (userTypingMap) {
+      for (const [conversationId, entry] of userTypingMap.entries()) {
+        if (entry.timeoutId) {
+          clearTimeout(entry.timeoutId);
+        }
+        // Notify conversation participants immediately
+        this.notifyConversation(conversationId, "stoppedTyping", {
+          conversationId,
+          senderId: userId
+        });
+      }
+      this.typingStore.delete(userId);
+    }
   }
 
   _warnUninitialized() {
