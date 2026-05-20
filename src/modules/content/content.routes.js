@@ -49,6 +49,7 @@ router.get("/post/:id/poll/analytics", requireAuth, contentController.getPollAna
 
 // Social Engagement
 router.post("/post/:id/like", requireAuth, contentController.toggleLike);
+router.get("/post/:id/likes", requireAuth, contentController.getPostLikes);
 router.post("/post/:id/comments", requireAuth, contentController.addComment);
 router.post("/comments/:commentId/like", requireAuth, contentController.toggleCommentLike);
 router.post("/comments/:commentId/pin", requireAuth, contentController.toggleCommentPin);

@@ -1880,7 +1880,7 @@ exports.toggleLike = async (req, res) => {
         }
 
 
-        // 4️⃣ Get UPDATED count
+        // 4️⃣ Get UPDATED count and actor's username
         const countResult = await pool.query(
             "SELECT COUNT(*) FROM post_likes WHERE post_id = $1",
             [postId]
@@ -1888,10 +1888,48 @@ exports.toggleLike = async (req, res) => {
 
         const likeCount = Number(countResult.rows[0].count);
 
+        let actorInfo = {
+            userId: null,
+            username: null,
+            fullName: null,
+            avatar: null
+        };
+        if (companyId) {
+            const orgResult = await pool.query(
+                "SELECT org_id, slug, name, logo_url FROM organizations WHERE org_id = $1",
+                [companyId]
+            );
+            if (orgResult.rowCount > 0) {
+                const org = orgResult.rows[0];
+                actorInfo = {
+                    userId: org.org_id,
+                    username: org.slug,
+                    fullName: org.name,
+                    avatar: org.logo_url
+                };
+            }
+        } else {
+            const userResult = await pool.query(
+                "SELECT user_id, account_name, full_name, avatar_url FROM users WHERE user_id = $1",
+                [userId]
+            );
+            if (userResult.rowCount > 0) {
+                const user = userResult.rows[0];
+                actorInfo = {
+                    userId: user.user_id,
+                    username: user.account_name,
+                    fullName: user.full_name,
+                    avatar: user.avatar_url
+                };
+            }
+        }
+
         return res.status(200).json({
             postId,
             liked,
-            likeCount
+            likeCount,
+            username: actorInfo.username,
+            liker: actorInfo
         });
 
     } catch (err) {
@@ -4041,6 +4079,47 @@ exports.moderatePost = async (req, res) => {
     } catch (err) {
         console.error("Moderate post error:", err);
         res.status(500).json({ message: "Internal server error" });
+    }
+};
+
+exports.getPostLikes = async (req, res) => {
+    const postId = req.params.id;
+
+    try {
+        const likesRes = await pool.query(
+            `SELECT 
+                pl.created_at AS liked_at,
+                pl.org_id IS NOT NULL AS is_organization,
+                pl.user_id AS individual_user_id,
+                pl.org_id AS organization_id,
+                COALESCE(pl.org_id::text, pl.user_id::text) AS user_id,
+                COALESCE(comp.slug, u.account_name) AS username,
+                COALESCE(comp.name, u.full_name) AS full_name,
+                COALESCE(comp.logo_url, u.avatar_url) AS avatar
+            FROM post_likes pl
+            LEFT JOIN users u ON u.user_id = pl.user_id
+            LEFT JOIN organizations comp ON comp.org_id = pl.org_id
+            WHERE pl.post_id = $1
+            ORDER BY pl.created_at DESC`,
+            [postId]
+        );
+
+        return res.status(200).json({
+            postId,
+            likes: likesRes.rows.map(row => ({
+                likedAt: row.liked_at,
+                isOrganization: row.is_organization,
+                individualUserId: row.individual_user_id,
+                organizationId: row.organization_id,
+                userId: row.user_id,
+                username: row.username,
+                fullName: row.full_name,
+                avatar: row.avatar
+            }))
+        });
+    } catch (err) {
+        console.error("Get post likes error:", err);
+        return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
     }
 };
 
