@@ -2,6 +2,54 @@ const GroupChatModel = require("../models/groupChat.model");
 const socketService = require("../core/infrastructure/socket.service"); // Assuming existing socket service
 const pool = require("../core/db/pool"); // For specific queries if model isn't enough or for transactions
 const { listConversationMuteStates } = require("./conversationMute.service");
+const fs = require("fs");
+const path = require("path");
+
+// Helper function for relative time format
+const timeAgo = (date) => {
+    const seconds = Math.floor((new Date() - new Date(date)) / 1000);
+    let interval = seconds / 31536000;
+    if (interval > 1) return Math.floor(interval) + "y";
+    interval = seconds / 2592000;
+    if (interval > 1) return Math.floor(interval) + "mo";
+    interval = seconds / 86400;
+    if (interval > 1) return Math.floor(interval) + "d";
+    interval = seconds / 3600;
+    if (interval > 1) return Math.floor(interval) + "h";
+    interval = seconds / 60;
+    if (interval > 1) return Math.floor(interval) + "m";
+    return Math.floor(seconds) + "s";
+};
+
+let pendingGroupInvitationsSql = null;
+
+function getPendingGroupInvitationsSql() {
+    if (pendingGroupInvitationsSql) return pendingGroupInvitationsSql;
+
+    try {
+        const controllerPath = path.join(__dirname, "../modules/social/social.controller.js");
+        const controllerContent = fs.readFileSync(controllerPath, "utf8");
+
+        const queryRegex = /const pendingGroupInvitations\s*=\s*await\s+pool\.query\(\s*`([\s\S]+?)`\s*,\s*\[userId\]\s*\);/;
+        const match = controllerContent.match(queryRegex);
+
+        if (match) {
+            const rawSql = match[1];
+            // Narrow query to the specific invitation and conversation
+            pendingGroupInvitationsSql = rawSql.replace(
+                /WHERE\s+gi\.invitee_id\s*=\s*\$1/,
+                "WHERE gi.invitee_id = $1 AND gi.conversation_id = $2"
+            );
+        } else {
+            console.error("[GroupChatService] Failed to extract SQL query: Regex match not found.");
+        }
+    } catch (err) {
+        console.error("[GroupChatService] Error reading social.controller.js for query extraction:", err);
+    }
+
+    return pendingGroupInvitationsSql;
+}
+
 
 class GroupChatService {
     static async createGroup(adminId, { name, description, avatarUrl, members }) {
@@ -69,10 +117,41 @@ class GroupChatService {
         const invitation = await GroupChatModel.createInvitation({ groupId, senderId, receiverId });
 
         // Notify user via socket
-        socketService.notifyUser(receiverId, 'group_invite', {
-            invitation_id: invitation.invitation_id, // Ensure these exist on the created object
-            group_id: groupId
-        });
+        const sql = getPendingGroupInvitationsSql();
+        if (sql) {
+            try {
+                const result = await pool.query(sql, [receiverId, groupId]);
+                if (result.rows.length > 0) {
+                    const row = result.rows[0];
+                    const isRequestingRaw = true;
+                    const conversationPayload = {
+                        ...row,
+                        onlineStatus: 'offline',
+                        is_requesting: isRequestingRaw && (row.created_by === receiverId) ? false : isRequestingRaw,
+                        timeAgo: timeAgo(row.updated_at),
+                        unread_count: 0
+                    };
+                    socketService.notifyUser(receiverId, 'group_invite', conversationPayload);
+                } else {
+                    console.warn(`[GroupChatService] No invitation record found in DB for receiverId: ${receiverId}, groupId: ${groupId}`);
+                    socketService.notifyUser(receiverId, 'group_invite', {
+                        invitation_id: invitation.invitation_id,
+                        group_id: groupId
+                    });
+                }
+            } catch (err) {
+                console.error("[GroupChatService] Failed to fetch group invite conversation payload:", err);
+                socketService.notifyUser(receiverId, 'group_invite', {
+                    invitation_id: invitation.invitation_id,
+                    group_id: groupId
+                });
+            }
+        } else {
+            socketService.notifyUser(receiverId, 'group_invite', {
+                invitation_id: invitation.invitation_id,
+                group_id: groupId
+            });
+        }
 
         return invitation;
     }
