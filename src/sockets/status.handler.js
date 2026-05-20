@@ -3,25 +3,30 @@ const pool = require("../core/db/pool");
 const SocketService = require("../core/infrastructure/socket.service");
 
 /**
- * Fetch followers + following users for presence updates
+ * Fetch followers, following, and active conversation participants for presence updates
  */
 async function getRelatedUserIds(userId) {
-  const followersRes = await pool.query(
-    `SELECT follower_id FROM followers WHERE following_id = $1`,
-    [userId]
-  );
+  const query = `
+    SELECT follower_id AS user_id FROM followers WHERE following_id = $1
+    UNION
+    SELECT following_id AS user_id FROM followers WHERE follower_id = $1
+    UNION
+    SELECT DISTINCT cp2.user_id AS user_id
+    FROM conversation_participants cp1
+    JOIN conversation_participants cp2 ON cp1.conversation_id = cp2.conversation_id
+    WHERE cp1.user_id = $1
+      AND cp1.left_at IS NULL
+      AND cp2.left_at IS NULL
+      AND cp2.user_id <> $1
+  `;
 
-  const followingRes = await pool.query(
-    `SELECT following_id FROM followers WHERE follower_id = $1`,
-    [userId]
-  );
-
-  const ids = new Set();
-
-  followersRes.rows.forEach(r => ids.add(r.follower_id));
-  followingRes.rows.forEach(r => ids.add(r.following_id));
-
-  return [...ids];
+  try {
+    const res = await pool.query(query, [userId]);
+    return res.rows.map(r => r.user_id);
+  } catch (err) {
+    console.error("Error in getRelatedUserIds query:", err);
+    return [];
+  }
 }
 
 /**
