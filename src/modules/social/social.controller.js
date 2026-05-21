@@ -3856,6 +3856,7 @@ exports.upsertReaction = async (req, res) => {
             return res.json({ success: true, reaction });
         } else {
             // Empty emoji — clear the reaction (set emoji = '')
+            // Update the reaction to have empty emoji
             await pool.query(
                 `UPDATE message_reactions
                  SET emoji = '', updated_at = now()
@@ -3863,14 +3864,32 @@ exports.upsertReaction = async (req, res) => {
                 [messageId, userId]
             );
 
+            // Fetch the cleared reaction details (including empty emoji)
+            const clearedReactionRes = await pool.query(
+                `SELECT
+                    mr.reaction_id,
+                    mr.message_id,
+                    mr.user_id,
+                    mr.emoji,
+                    mr.created_at,
+                    mr.updated_at,
+                    u.full_name AS user_full_name,
+                    u.avatar_url AS user_avatar
+                 FROM message_reactions mr
+                 JOIN users u ON u.user_id = mr.user_id
+                 WHERE mr.message_id = $1 AND mr.user_id = $2`,
+                [messageId, userId]
+            );
+            const clearedReaction = clearedReactionRes.rows[0];
+
             // Notify all conversation participants via socket
             socketService.notifyConversation(conversation_id, "message_reaction_updated", {
                 messageId,
                 conversationId: conversation_id,
-                reaction: null
+                reaction: clearedReaction
             });
 
-            return res.json({ success: true, reaction: null });
+            return res.json({ success: true, reaction: clearedReaction });
         }
     } catch (err) {
         console.error("Upsert reaction error:", err);
