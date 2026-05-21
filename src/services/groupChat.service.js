@@ -296,8 +296,10 @@ class GroupChatService {
 
     static async leaveGroup(userId, groupId) {
         const client = await pool.connect();
+        let inTransaction = false;
         try {
             await client.query('BEGIN');
+            inTransaction = true;
             console.log(`[GroupChatService] User ${userId} leaving group ${groupId}`);
 
             // 0. Lock Conversation to prevent race conditions
@@ -321,7 +323,42 @@ class GroupChatService {
             const { role, full_name: userName } = memberRes.rows[0];
             console.log(`[GroupChatService] User ${userId} is currently ${role}`);
 
-            // 2. Dynamic Admin Promotion (Perform BEFORE updating the row)
+            // 2. Create system message FIRST: "User left" 
+            const leaveMsgRes = await client.query(
+                `INSERT INTO messages (conversation_id, sender_id, text_content, message_type, action_type, target_id) 
+                 VALUES ($1, $2, $3, 'system', 'leave', $2) 
+                 RETURNING *`,
+                [groupId, userId, `${userName} left the group`]
+            );
+
+            await client.query(
+                `UPDATE conversations SET updated_at = now(), last_message = $2, last_message_at = now() WHERE conversation_id = $1`,
+                [groupId, `${userName} left the group`]
+            );
+
+            await client.query('COMMIT');
+            inTransaction = false;
+
+            // 3. Broadcast system message to all current members including the leaving user
+            const leaveMsg = leaveMsgRes.rows[0];
+            const enrichedLeaveMsg = {
+                ...leaveMsg,
+                sender_name: 'System',
+                is_system: true,
+                conversation_id: groupId,
+                isGroup: true
+            };
+            socketService.notifyConversation(groupId, 'new_message', enrichedLeaveMsg);
+            socketService.notifyUser(userId, 'new_message', enrichedLeaveMsg);
+
+            // 4. Begin second transaction for removal and promotion logic
+            await client.query('BEGIN');
+            inTransaction = true;
+
+            // Lock Conversation to prevent race conditions during deletion/promotion
+            await client.query(`SELECT 1 FROM conversations WHERE conversation_id = $1 AND is_active = TRUE FOR UPDATE`, [groupId]);
+
+            // Dynamic Admin Promotion (Perform BEFORE updating the row)
             // Fetch current group owner info
             const groupRes = await client.query(
                 `SELECT admin_id FROM conversations WHERE conversation_id = $1 AND is_active = TRUE`,
@@ -422,7 +459,7 @@ class GroupChatService {
                 }
             }
 
-            // 3. SOFT DELETE Member (Update left_at)
+            // SOFT DELETE Member (Update left_at)
             await client.query(
                 `UPDATE conversation_participants 
                  SET left_at = NOW(), role = 'member' 
@@ -431,39 +468,14 @@ class GroupChatService {
             );
             console.log(`[GroupChatService] User ${userId} marked as left (soft delete)`);
 
-            // 4. Create system message: "User left" 
-            const leaveMsgRes = await client.query(
-                `INSERT INTO messages (conversation_id, sender_id, text_content, message_type, action_type, target_id) 
-                 VALUES ($1, $2, $3, 'system', 'leave', $2) 
-                 RETURNING *`,
-                [groupId, userId, `${userName} left the group`]
-            );
-
-            await client.query(
-                `UPDATE conversations SET updated_at = now(), last_message = $2, last_message_at = now() WHERE conversation_id = $1`,
-                [groupId, `${userName} left the group`]
-            );
-
             await client.query('COMMIT');
+            inTransaction = false;
 
-            // 5. Notifications
-            // Broadcast 'memberLeft' event
-            socketService.notifyConversation(groupId, 'memberLeft', { groupId, userId });
-
-            // Also notify the user who left so they can close their panel!
+            // 5. Send leave confirmation to leaving user (so they can close their panel)
             socketService.notifyUser(userId, 'memberLeft', { groupId, userId });
 
-            // Broadcast leave message
-            const leaveMsg = leaveMsgRes.rows[0];
-            const enrichedLeaveMsg = {
-                ...leaveMsg,
-                sender_name: 'System',
-                is_system: true,
-                conversation_id: groupId,
-                isGroup: true
-            };
-            socketService.notifyConversation(groupId, 'new_message', enrichedLeaveMsg);
-
+            // 6. Notify remaining members about membership change
+            socketService.notifyConversation(groupId, 'memberLeft', { groupId, userId });
 
             // Handle promotions notifications
             promotedMembers.forEach(promo => {
@@ -489,7 +501,13 @@ class GroupChatService {
             return { success: true };
         } catch (err) {
             console.error(`[GroupChatService] Leave group error:`, err);
-            await client.query('ROLLBACK');
+            if (inTransaction) {
+                try {
+                    await client.query('ROLLBACK');
+                } catch (rollbackErr) {
+                    console.error("Failed to rollback transaction:", rollbackErr);
+                }
+            }
             throw err;
         } finally {
             client.release();
@@ -524,10 +542,7 @@ class GroupChatService {
         const userRes = await pool.query(`SELECT full_name FROM users WHERE user_id = $1`, [targetUserId]);
         const userName = userRes.rows[0]?.full_name || "A member";
 
-        // 3. Remove member (Soft Delete)
-        await GroupChatModel.removeMember(groupId, targetUserId);
-
-        // 4. System message: "X was removed by Admin"
+        // 3. System message: "X was removed by Admin"
         const systemMsg = await GroupChatModel.createMessage({
             groupId,
             senderId: adminId, // Admin is the actor
@@ -537,17 +552,8 @@ class GroupChatService {
             targetId: targetUserId
         });
 
-
-
-
-        // 5. Notify everyone including the removed user (so they see they were removed?)
-        // Actually, notify current members.
-        const remainingMembers = await GroupChatModel.getGroupMembers(groupId);
-
-        // Notify the person who was removed specifically if they have socket
-        socketService.notifyUser(targetUserId, 'removed_from_group', { groupId });
-
-        remainingMembers.forEach(member => {
+        // 4. Notify everyone including the removed user (since they are still in the members list)
+        members.forEach(member => {
             socketService.notifyUser(member.user_id, 'new_message', {
                 ...systemMsg,
                 sender_name: 'System',
@@ -557,7 +563,13 @@ class GroupChatService {
             });
         });
 
-        // Force socket to leave room
+        // 5. Remove member (Soft Delete)
+        await GroupChatModel.removeMember(groupId, targetUserId);
+
+        // 6. Notify the person who was removed specifically if they have socket
+        socketService.notifyUser(targetUserId, 'removed_from_group', { groupId });
+
+        // 7. Force socket to leave room
         socketService.leaveConversation(targetUserId, groupId);
 
         return { success: true };
