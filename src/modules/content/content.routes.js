@@ -6,7 +6,8 @@ const { requireAuth, optionalAuth } = require("../../core/middlewares/auth.middl
 const { validate } = require("../../core/middlewares/validation.middleware");
 const postTagsController = require("./postTags.controller");
 const { syncTagsSchema } = require("./postTags.schema");
-const { commentOperationSchema, hideCommentSchema } = require("./content.schema");
+const { commentOperationSchema, hideCommentSchema, createPostSchema } = require("./content.schema");
+const { uploadPostMedia } = require("../../core/middlewares/upload.middleware");
 
 // Feed & Discovery
 router.get("/All/feeds", optionalAuth, contentController.getPublicFeed);
@@ -15,7 +16,7 @@ router.get("/users/me/posts/commented", requireAuth, contentController.getMyComm
 router.get("/users/me/posts/private", requireAuth, contentController.getMyPrivatePosts);
 
 // Posts (Image, Video, Article, Poll)
-router.post("/post", requireAuth, contentController.createPost);
+router.post("/post", requireAuth, uploadPostMedia, validate(createPostSchema), contentController.createPost);
 router.get("/post/:id", requireAuth, contentController.getPostById);
 router.put("/post/:id", requireAuth, contentController.updatePostById);
 router.delete("/post/:id", requireAuth, contentController.deletePost);

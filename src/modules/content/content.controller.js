@@ -669,6 +669,42 @@ exports.createPost = async (req, res) => {
     const { userId, orgId: companyId } = actorScope;
     let { content, category, visibility, media_urls, post_type, title, poll_options, poll_duration, is_broadcast, location } = req.body; // category is name, media_urls is array
 
+    // Extract uploaded files
+    const uploadedFiles = req.files || [];
+    const imageFiles = uploadedFiles.filter(f => f.mimetype.startsWith('image/'));
+    const videoFiles = uploadedFiles.filter(f => f.mimetype.startsWith('video/'));
+
+    // Custom file validations
+    if (videoFiles.length > 1) {
+        return res.status(400).json({
+            message: "Only one video file is allowed"
+        });
+    }
+
+    if (videoFiles.length > 0 && imageFiles.length > 0) {
+        return res.status(400).json({
+            message: "Cannot upload video and images together"
+        });
+    }
+
+    if (imageFiles.length > 10) {
+        return res.status(400).json({
+            message: "Maximum 10 images allowed"
+        });
+    }
+
+    // Extract URLs using same pattern
+    const imageUrls = imageFiles.map(f => (f.path || f.secure_url || '').replace(/\\/g, "/"));
+    const videoUrl = videoFiles[0] ? (videoFiles[0].path || videoFiles[0].secure_url || '').replace(/\\/g, "/") : null;
+
+    if (uploadedFiles.length > 0) {
+        if (videoFiles.length > 0) {
+            media_urls = [videoUrl];
+        } else if (imageFiles.length > 0) {
+            media_urls = imageUrls;
+        }
+    }
+
     // Sanitize user-generated content
     content = sanitizeContent(content);
     title = sanitizeContent(title);
