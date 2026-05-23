@@ -1363,7 +1363,7 @@ SELECT
         WHEN c.is_group THEN COALESCE(c.conversation_name, 'Group Chat')
         -- WHEN EXISTS(SELECT 1 FROM blocks WHERE blocker_id = u.user_id AND blocked_id = $1) THEN 'User not found' -- Update for Company?
         WHEN comp.org_id IS NOT NULL THEN comp.name
-        WHEN u.full_name IS NULL AND comp.org_id IS NULL THEN 'Deleted User'
+        WHEN u.full_name IS NULL AND comp.org_id IS NULL THEN COALESCE(c.conversation_name, 'Deleted User')
         ELSE u.full_name 
     END AS other_user_name,
     
@@ -1404,6 +1404,7 @@ JOIN (
     -- Aggregate participation: Ensure one row per conversation for this user
     -- and check if they have any active record
     SELECT conversation_id, user_id, org_id,
+           MAX(cp_main.deleted_at) as deleted_at,
            EXISTS(SELECT 1 FROM conversation_participants cp_a 
                   WHERE cp_a.conversation_id = cp_main.conversation_id 
                   AND (
@@ -1421,9 +1422,11 @@ JOIN (
     FROM conversation_participants cp_main
     WHERE 
       -- Filter by User OR Company based on context
-      ($2::uuid IS NOT NULL AND cp_main.org_id = $2)
-      OR
-      ($2::uuid IS NULL AND cp_main.user_id = $1)
+      (
+        ($2::uuid IS NOT NULL AND cp_main.org_id = $2)
+        OR
+        ($2::uuid IS NULL AND cp_main.user_id = $1)
+      )
     GROUP BY conversation_id, user_id, org_id -- added org_id
 ) cp ON c.conversation_id = cp.conversation_id
 -- For 1-on-1, join the other participant (LATERAL + LIMIT 1 prevents fan-out duplicates).
@@ -1495,6 +1498,7 @@ LEFT JOIN LATERAL (
     )
     AND msg.created_at >= cp_msg.joined_at
     AND (cp_msg.left_at IS NULL OR msg.created_at <= cp_msg.left_at)
+    AND (cp_msg.deleted_at IS NULL OR msg.created_at > cp_msg.deleted_at)
     -- Exclude messages deleted for me (User only currently)
     AND NOT EXISTS (
         SELECT 1 FROM message_delete md 
@@ -1515,6 +1519,7 @@ WHERE ($2::uuid IS NULL OR NOT EXISTS (
     AND c.is_group = FALSE
 ))
 AND c.is_active = TRUE
+AND (cp.deleted_at IS NULL OR COALESCE(m.created_at, c.last_message_at, c.updated_at) > cp.deleted_at)
 
 ORDER BY COALESCE(m.created_at, c.last_message_at, c.updated_at) DESC NULLS LAST;
   `, [userId, companyId]
@@ -1677,7 +1682,8 @@ exports.deleteConversation = async (req, res) => {
             }
 
             const deleteResult = await client.query(
-                `DELETE FROM conversation_participants
+                `UPDATE conversation_participants
+                 SET deleted_at = NOW()
                  WHERE conversation_id = $1
                    AND (
                        ($3::uuid IS NOT NULL AND org_id = $3)
@@ -2606,18 +2612,9 @@ exports.getMessages = async (req, res) => {
                     WHEN EXISTS (SELECT 1 FROM blocks WHERE blocker_id = $4 AND blocked_id = m.sender_id) THEN true 
                     ELSE false 
                 END as is_blocked,
-                CASE 
-                    WHEN EXISTS (SELECT 1 FROM blocks WHERE blocker_id = $4 AND blocked_id = m.sender_id) THEN 'Message hidden'
-                    ELSE m.text_content 
-                END as text_content,
+                m.text_content,
                 CASE 
                     WHEN m.shared_post_id IS NOT NULL 
-                         AND NOT EXISTS (SELECT 1 FROM blocks WHERE blocker_id = $4 AND blocked_id = m.sender_id)
-                         AND NOT EXISTS (
-                            SELECT 1 FROM blocks b 
-                            WHERE (b.blocker_id = $4 AND b.blocked_id = sp.author_id)
-                                OR (b.blocker_id = sp.author_id AND b.blocked_id = $4)
-                         )
                     THEN
                         json_build_object(
                             'post_id', sp.post_id,
@@ -2701,6 +2698,18 @@ exports.getMessages = async (req, res) => {
                 AND m.created_at >= cp.joined_at
                 AND (cp.left_at IS NULL OR m.created_at <= cp.left_at)
              ))
+             -- Filter out messages created before this participant deleted/cleared the chat
+             AND NOT EXISTS (
+                SELECT 1 FROM conversation_participants cp_del
+                WHERE cp_del.conversation_id = m.conversation_id
+                AND (
+                    ($6::uuid IS NOT NULL AND cp_del.org_id = $6)
+                    OR
+                    ($6::uuid IS NULL AND cp_del.user_id = $4)
+                )
+                AND cp_del.deleted_at IS NOT NULL
+                AND m.created_at <= cp_del.deleted_at
+             )
              -- Pagination: Fetch messages older than 'before' cursor
              AND ($3::timestamp IS NULL OR m.created_at < $3::timestamp)
              ORDER BY m.created_at DESC
@@ -3116,6 +3125,34 @@ exports.blockUser = async (req, res) => {
             client.release();
         }
 
+        const blockerRes = await pool.query(
+            `SELECT full_name, avatar_url FROM users WHERE user_id = $1`,
+            [userId]
+        );
+        const blockerInfo = blockerRes.rows[0] || {};
+
+        const convRes = await pool.query(
+            `SELECT c.conversation_id
+             FROM conversations c
+             JOIN conversation_participants cp1 ON c.conversation_id = cp1.conversation_id AND cp1.user_id = $1
+             JOIN conversation_participants cp2 ON c.conversation_id = cp2.conversation_id AND cp2.user_id = $2
+             WHERE c.is_group = FALSE AND c.is_active = TRUE`,
+            [userId, targetId]
+        );
+        const conversation_id = convRes.rowCount > 0 ? convRes.rows[0].conversation_id : null;
+
+        const payload = {
+            blocked_by_user_id: userId,
+            blocked_by_name: blockerInfo.full_name,
+            blocked_by_avatar: blockerInfo.avatar_url
+        };
+        if (conversation_id) {
+            payload.conversation_id = conversation_id;
+        }
+
+        socketService.notifyUser(targetId, "user_blocked", payload);
+        socketService.notifyUser(userId, "block_confirmed", payload);
+
         res.json({ message: "User blocked successfully" });
     } catch (err) {
         console.error("Block user error:", err);
@@ -3264,6 +3301,35 @@ exports.unblockUser = async (req, res) => {
     try {
         const BlockModel = require("../../models/block.model");
         await BlockModel.unblockUser(userId, targetId);
+
+        const unblockerRes = await pool.query(
+            `SELECT full_name, avatar_url FROM users WHERE user_id = $1`,
+            [userId]
+        );
+        const unblockerInfo = unblockerRes.rows[0] || {};
+
+        const convRes = await pool.query(
+            `SELECT c.conversation_id
+             FROM conversations c
+             JOIN conversation_participants cp1 ON c.conversation_id = cp1.conversation_id AND cp1.user_id = $1
+             JOIN conversation_participants cp2 ON c.conversation_id = cp2.conversation_id AND cp2.user_id = $2
+             WHERE c.is_group = FALSE AND c.is_active = TRUE`,
+            [userId, targetId]
+        );
+        const conversation_id = convRes.rowCount > 0 ? convRes.rows[0].conversation_id : null;
+
+        const payload = {
+            unblocked_by_user_id: userId,
+            unblocked_by_name: unblockerInfo.full_name,
+            unblocked_by_avatar: unblockerInfo.avatar_url
+        };
+        if (conversation_id) {
+            payload.conversation_id = conversation_id;
+        }
+
+        socketService.notifyUser(targetId, "user_unblocked", payload);
+        socketService.notifyUser(userId, "unblock_confirmed", payload);
+
         res.json({ message: "User unblocked successfully" });
     } catch (err) {
         console.error("Unblock user error:", err);

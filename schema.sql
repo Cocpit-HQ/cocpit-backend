@@ -556,6 +556,7 @@ CREATE TABLE conversation_participants (
   user_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
   joined_at TIMESTAMPTZ DEFAULT now(),
   left_at TIMESTAMPTZ, -- NULL if active, timestamp if left
+  deleted_at TIMESTAMPTZ DEFAULT NULL,
   last_read_at TIMESTAMPTZ DEFAULT now(),
   role TEXT NOT NULL DEFAULT 'member' CHECK (role IN ('member', 'admin'))--8/2/2026
 );
