@@ -29,21 +29,34 @@ const poolConfig = (process.env.DATABASE_URL && process.env.DATABASE_URL.trim().
 const pool = new Pool(poolConfig);
 
 /**
- * Startup DB health check
+ * Startup DB health check — non-fatal with retry
+ * Server stays alive even if DB host is temporarily unreachable.
  */
-(async () => {
+let _dbConnected = false;
+
+async function checkDbConnection() {
   try {
-    const res = await pool.query(
-      "SELECT current_database(), current_user"
-    );
-    console.log("✅ PostgreSQL connected");
-    console.log("📦 Database:", res.rows[0].current_database);
-    console.log("👤 DB User:", res.rows[0].current_user);
+    const res = await pool.query("SELECT current_database(), current_user");
+    if (!_dbConnected) {
+      console.log("✅ PostgreSQL connected");
+      console.log("📦 Database:", res.rows[0].current_database);
+      console.log("👤 DB User:", res.rows[0].current_user);
+      _dbConnected = true;
+    }
+    return true;
   } catch (err) {
-    console.error("❌ PostgreSQL connection failed");
-    console.error(err.message);
-    process.exit(1);
+    console.warn("⚠️  PostgreSQL not yet reachable — will retry in 30s");
+    console.warn(`   Host: ${process.env.DB_HOST || "localhost"}:${process.env.DB_PORT || 5432}`);
+    console.warn(`   Reason: ${err.message}`);
+    _dbConnected = false;
+    return false;
   }
+}
+
+// Initial check + periodic retry every 30 seconds
+(async () => {
+  await checkDbConnection();
+  setInterval(checkDbConnection, 30_000);
 })();
 
 /**
