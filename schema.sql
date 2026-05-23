@@ -558,7 +558,11 @@ CREATE TABLE conversation_participants (
   left_at TIMESTAMPTZ, -- NULL if active, timestamp if left
   deleted_at TIMESTAMPTZ DEFAULT NULL,
   last_read_at TIMESTAMPTZ DEFAULT now(),
-  role TEXT NOT NULL DEFAULT 'member' CHECK (role IN ('member', 'admin'))--8/2/2026
+  role TEXT NOT NULL DEFAULT 'member' CHECK (role IN ('member', 'admin')), --8/2/2026
+  left_group_name TEXT DEFAULT NULL,
+  left_group_avatar TEXT DEFAULT NULL,
+  left_group_description TEXT DEFAULT NULL,
+  left_group_headline TEXT DEFAULT NULL
 );
 
 CREATE INDEX idx_cp_active_user ON conversation_participants (conversation_id, user_id) WHERE left_at IS NULL;

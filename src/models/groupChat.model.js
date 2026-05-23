@@ -38,7 +38,11 @@ class GroupChatModel {
         // Soft delete (leave) - Only update the ACTIVE membership
         await pool.query(
             `UPDATE conversation_participants 
-             SET left_at = now() 
+             SET left_at = now(),
+                 left_group_name = (SELECT conversation_name FROM conversations WHERE conversation_id = $1),
+                 left_group_avatar = (SELECT group_avatar FROM conversations WHERE conversation_id = $1),
+                 left_group_description = (SELECT description FROM conversations WHERE conversation_id = $1),
+                 left_group_headline = (SELECT group_headline FROM conversations WHERE conversation_id = $1)
              WHERE conversation_id = $1 AND user_id = $2 AND left_at IS NULL`,
             [groupId, userId]
         );
@@ -201,7 +205,9 @@ class GroupChatModel {
     }
     static async getParticipant(groupId, userId) {
         const query = `
-            SELECT role, joined_at, left_at 
+            SELECT role, joined_at, left_at,
+                   left_group_name, left_group_avatar,
+                   left_group_description, left_group_headline 
             FROM conversation_participants 
             WHERE conversation_id = $1 AND user_id = $2
             ORDER BY joined_at DESC
@@ -377,21 +383,20 @@ class GroupChatModel {
 
     static async getUnreadCount(userId, groupId) {
         // Count messages in this group sent by others that don't have a read entry
-        // and were sent after the user's latest join date
         const result = await pool.query(
             `SELECT COUNT(*)
-             FROM messages m
-             JOIN conversation_participants cp ON m.conversation_id = cp.conversation_id
-             WHERE m.conversation_id = $2
-               AND cp.user_id = $1
-               AND cp.left_at IS NULL
-               AND m.sender_id != $1
-               AND m.created_at >= cp.joined_at
-               AND NOT EXISTS (
-                   SELECT 1 FROM message_reads mr
-                   WHERE mr.message_id = m.message_id
-                     AND mr.user_id = $1
-               )`,
+              FROM messages m
+              JOIN conversation_participants cp ON m.conversation_id = cp.conversation_id
+              WHERE m.conversation_id = $2
+                AND cp.user_id = $1
+                AND cp.left_at IS NULL
+                AND m.sender_id != $1
+                AND m.created_at >= cp.joined_at
+                AND NOT EXISTS (
+                    SELECT 1 FROM message_reads mr
+                    WHERE mr.message_id = m.message_id
+                      AND mr.user_id = $1
+                )`,
             [userId, groupId]
         );
         return parseInt(result.rows[0].count, 10);

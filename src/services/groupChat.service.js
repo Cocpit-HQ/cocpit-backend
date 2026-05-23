@@ -117,24 +117,30 @@ class GroupChatService {
         const invitation = await GroupChatModel.createInvitation({ groupId, senderId, receiverId });
 
         const requestConversationPayload = {
-            conversation_id: groupId,
-            is_group: true,
-            is_active: false,
-            is_requesting: true,
-            created_at: group.created_at,
-            updated_at: invitation.updated_at || invitation.created_at || new Date().toISOString(),
+            ...group,
+            is_blocked_by_me: false,
+            is_blocked_by_other: false,
             other_user_name: group.conversation_name || 'Group Chat',
             other_user_avatar: group.group_avatar || null,
             other_user_id: groupId,
             other_user_headline: inviter.full_name || null,
             other_user_slug: null,
             other_user_type: 'USER',
+            is_active: false,
+            is_muted: false,
+            muted_until: null,
             is_deleted_user: false,
-            unread_count: 0,
+            last_message_id: null,
             last_message_text: `${inviter.full_name || 'A member'} invited you to join the group`,
             last_message_at: invitation.updated_at || invitation.created_at || new Date().toISOString(),
+            replyMessageId: null,
+            reply_message: null,
             invitation_id: invitation.invitation_id,
             request_source: 'group_invitation',
+            onlineStatus: 'offline',
+            is_requesting: true,
+            timeAgo: timeAgo(invitation.updated_at || invitation.created_at || new Date().toISOString()),
+            unread_count: 0
         };
 
         // Notify user via socket
@@ -155,23 +161,14 @@ class GroupChatService {
                     socketService.notifyUser(receiverId, 'group_invite', conversationPayload);
                 } else {
                     console.warn(`[GroupChatService] No invitation record found in DB for receiverId: ${receiverId}, groupId: ${groupId}`);
-                    socketService.notifyUser(receiverId, 'group_invite', {
-                        invitation_id: invitation.invitation_id,
-                        group_id: groupId
-                    });
+                    socketService.notifyUser(receiverId, 'group_invite', requestConversationPayload);
                 }
             } catch (err) {
                 console.error("[GroupChatService] Failed to fetch group invite conversation payload:", err);
-                socketService.notifyUser(receiverId, 'group_invite', {
-                    invitation_id: invitation.invitation_id,
-                    group_id: groupId
-                });
+                socketService.notifyUser(receiverId, 'group_invite', requestConversationPayload);
             }
         } else {
-            socketService.notifyUser(receiverId, 'group_invite', {
-                invitation_id: invitation.invitation_id,
-                group_id: groupId
-            });
+            socketService.notifyUser(receiverId, 'group_invite', requestConversationPayload);
         }
 
         return invitation;
@@ -462,8 +459,12 @@ class GroupChatService {
             // SOFT DELETE Member (Update left_at)
             await client.query(
                 `UPDATE conversation_participants 
-                 SET left_at = NOW(), role = 'member' 
-                 WHERE conversation_id = $1 AND user_id = $2`,
+                 SET left_at = NOW(), role = 'member',
+                     left_group_name = (SELECT conversation_name FROM conversations WHERE conversation_id = $1),
+                     left_group_avatar = (SELECT group_avatar FROM conversations WHERE conversation_id = $1),
+                     left_group_description = (SELECT description FROM conversations WHERE conversation_id = $1),
+                     left_group_headline = (SELECT group_headline FROM conversations WHERE conversation_id = $1)
+                 WHERE conversation_id = $1 AND user_id = $2 AND left_at IS NULL`,
                 [groupId, userId]
             );
             console.log(`[GroupChatService] User ${userId} marked as left (soft delete)`);
@@ -604,13 +605,24 @@ class GroupChatService {
         // Always fetch active members for the mention system to work correctly
         const members = await GroupChatModel.getGroupMembers(groupId) || [];
         
+        if (participant && participant.left_at !== null) {
+            return {
+                ...group,
+                conversation_name: participant.left_group_name || group.conversation_name,
+                group_avatar: participant.left_group_avatar || group.group_avatar,
+                description: participant.left_group_description || group.description,
+                group_headline: participant.left_group_headline || group.group_headline,
+                members,
+                is_inactive: true,
+                left_at: participant.left_at
+            };
+        }
 
-        
         return { 
             ...group, 
             members, 
-            is_inactive: participant ? !!participant.left_at : false,
-            left_at: participant ? participant.left_at : null
+            is_inactive: false,
+            left_at: null
         };
     }
     static async sendMessage(senderId, groupId, content, type, media = [], previewText = null, replyMessageId = null) {

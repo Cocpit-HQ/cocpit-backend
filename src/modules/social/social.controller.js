@@ -1360,7 +1360,7 @@ SELECT
 
     -- Name logic: Use group name if group, else other participant's name (User or Company)
     CASE 
-        WHEN c.is_group THEN COALESCE(c.conversation_name, 'Group Chat')
+        WHEN c.is_group THEN COALESCE(cp.left_group_name, c.conversation_name, 'Group Chat')
         -- WHEN EXISTS(SELECT 1 FROM blocks WHERE blocker_id = u.user_id AND blocked_id = $1) THEN 'User not found' -- Update for Company?
         WHEN comp.org_id IS NOT NULL THEN comp.name
         WHEN u.full_name IS NULL AND comp.org_id IS NULL THEN COALESCE(c.conversation_name, 'Deleted User')
@@ -1369,7 +1369,7 @@ SELECT
     
     -- Avatar logic
     CASE 
-        WHEN c.is_group THEN c.group_avatar 
+        WHEN c.is_group THEN COALESCE(cp.left_group_avatar, c.group_avatar)
         -- WHEN EXISTS(SELECT 1 FROM blocks WHERE blocker_id = u.user_id AND blocked_id = $1) THEN NULL
         WHEN comp.org_id IS NOT NULL THEN comp.logo_url
         WHEN u.avatar_url IS NULL AND comp.org_id IS NULL THEN NULL
@@ -1395,14 +1395,29 @@ SELECT
 
     -- Get the most recent message dynamically
     m.message_id AS last_message_id,
-    COALESCE(m.text_content, c.last_message) AS last_message_text,
-    COALESCE(m.created_at, c.last_message_at, c.updated_at) AS last_message_at,
+    COALESCE(
+        m.text_content, 
+        CASE 
+            WHEN cp.left_at IS NOT NULL THEN 'You left the group' 
+            ELSE c.last_message 
+        END
+    ) AS last_message_text,
+    COALESCE(
+        m.created_at, 
+        CASE 
+            WHEN cp.left_at IS NOT NULL THEN cp.left_at 
+            ELSE c.last_message_at 
+        END, 
+        c.updated_at
+    ) AS last_message_at,
     m.replied_msg_id AS "replyMessageId",
-    m.reply_message
+    m.reply_message,
+    COALESCE(cp.left_group_name, c.conversation_name) AS conversation_name,
+    COALESCE(cp.left_group_avatar, c.group_avatar) AS group_avatar,
+    COALESCE(cp.left_group_description, c.description) AS description,
+    COALESCE(cp.left_group_headline, c.group_headline) AS group_headline
 FROM conversations c
 JOIN (
-    -- Aggregate participation: Ensure one row per conversation for this user
-    -- and check if they have any active record
     SELECT conversation_id, user_id, org_id,
            MAX(cp_main.deleted_at) as deleted_at,
            EXISTS(SELECT 1 FROM conversation_participants cp_a 
@@ -1413,6 +1428,61 @@ JOIN (
                       (cp_main.org_id IS NOT NULL AND cp_a.org_id = cp_main.org_id)
                   )
                   AND cp_a.left_at IS NULL) as is_active,
+           CASE 
+               WHEN EXISTS(SELECT 1 FROM conversation_participants cp_a 
+                           WHERE cp_a.conversation_id = cp_main.conversation_id 
+                           AND (
+                               (cp_main.user_id IS NOT NULL AND cp_a.user_id = cp_main.user_id)
+                               OR
+                               (cp_main.org_id IS NOT NULL AND cp_a.org_id = cp_main.org_id)
+                           )
+                           AND cp_a.left_at IS NULL) THEN NULL
+               ELSE MAX(cp_main.left_at)
+           END as left_at,
+           CASE 
+               WHEN EXISTS(SELECT 1 FROM conversation_participants cp_a 
+                           WHERE cp_a.conversation_id = cp_main.conversation_id 
+                           AND (
+                               (cp_main.user_id IS NOT NULL AND cp_a.user_id = cp_main.user_id)
+                               OR
+                               (cp_main.org_id IS NOT NULL AND cp_a.org_id = cp_main.org_id)
+                           )
+                           AND cp_a.left_at IS NULL) THEN NULL
+               ELSE MAX(cp_main.left_group_name)
+           END as left_group_name,
+           CASE 
+               WHEN EXISTS(SELECT 1 FROM conversation_participants cp_a 
+                           WHERE cp_a.conversation_id = cp_main.conversation_id 
+                           AND (
+                               (cp_main.user_id IS NOT NULL AND cp_a.user_id = cp_main.user_id)
+                               OR
+                               (cp_main.org_id IS NOT NULL AND cp_a.org_id = cp_main.org_id)
+                           )
+                           AND cp_a.left_at IS NULL) THEN NULL
+               ELSE MAX(cp_main.left_group_avatar)
+           END as left_group_avatar,
+           CASE 
+               WHEN EXISTS(SELECT 1 FROM conversation_participants cp_a 
+                           WHERE cp_a.conversation_id = cp_main.conversation_id 
+                           AND (
+                               (cp_main.user_id IS NOT NULL AND cp_a.user_id = cp_main.user_id)
+                               OR
+                               (cp_main.org_id IS NOT NULL AND cp_a.org_id = cp_main.org_id)
+                           )
+                           AND cp_a.left_at IS NULL) THEN NULL
+               ELSE MAX(cp_main.left_group_description)
+           END as left_group_description,
+           CASE 
+               WHEN EXISTS(SELECT 1 FROM conversation_participants cp_a 
+                           WHERE cp_a.conversation_id = cp_main.conversation_id 
+                           AND (
+                               (cp_main.user_id IS NOT NULL AND cp_a.user_id = cp_main.user_id)
+                               OR
+                               (cp_main.org_id IS NOT NULL AND cp_a.org_id = cp_main.org_id)
+                           )
+                           AND cp_a.left_at IS NULL) THEN NULL
+               ELSE MAX(cp_main.left_group_headline)
+           END as left_group_headline,
            BOOL_OR(
                cp_main.left_at IS NULL
                AND cp_main.is_muted = TRUE
@@ -1519,9 +1589,23 @@ WHERE ($2::uuid IS NULL OR NOT EXISTS (
     AND c.is_group = FALSE
 ))
 AND c.is_active = TRUE
-AND (cp.deleted_at IS NULL OR COALESCE(m.created_at, c.last_message_at, c.updated_at) > cp.deleted_at)
+AND (cp.deleted_at IS NULL OR COALESCE(
+    m.created_at, 
+    CASE 
+        WHEN cp.left_at IS NOT NULL THEN cp.left_at 
+        ELSE c.last_message_at 
+    END, 
+    c.updated_at
+) > cp.deleted_at)
 
-ORDER BY COALESCE(m.created_at, c.last_message_at, c.updated_at) DESC NULLS LAST;
+ORDER BY COALESCE(
+    m.created_at, 
+    CASE 
+        WHEN cp.left_at IS NOT NULL THEN cp.left_at 
+        ELSE c.last_message_at 
+    END, 
+    c.updated_at
+) DESC NULLS LAST;
   `, [userId, companyId]
         );
 
