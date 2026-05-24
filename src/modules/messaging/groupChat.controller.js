@@ -530,6 +530,8 @@ exports.searchUsersForMessaging = async (req, res) => {
                         END AS priority
                     FROM users u
                     WHERE u.user_id != $1
+                      AND u.full_name IS NOT NULL AND TRIM(u.full_name) <> ''
+                      AND u.account_name IS NOT NULL AND TRIM(u.account_name) <> ''
                     ${nameFilter}
                     AND NOT EXISTS (
                         SELECT 1 FROM blocks b

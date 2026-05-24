@@ -48,6 +48,8 @@ exports.searchUsers = async (req, res) => {
           FROM users u
           LEFT JOIN profiles p ON u.user_id = p.user_id
           WHERE (u.full_name ILIKE $2 OR u.account_name ILIKE $2)
+            AND u.full_name IS NOT NULL AND TRIM(u.full_name) <> ''
+            AND u.account_name IS NOT NULL AND TRIM(u.account_name) <> ''
           ${userAccountFilter}
           AND NOT EXISTS (
             SELECT 1 FROM blocks b 
@@ -748,7 +750,9 @@ exports.getSuggestedUsers = async (req, res) => {
         (SELECT COUNT(*) FROM followers WHERE following_id = u.user_id) as followers_count
       FROM users u
       LEFT JOIN profiles p ON u.user_id = p.user_id
-      WHERE NOT EXISTS (
+      WHERE u.full_name IS NOT NULL AND TRIM(u.full_name) <> ''
+      AND u.account_name IS NOT NULL AND TRIM(u.account_name) <> ''
+      AND NOT EXISTS (
         SELECT 1 FROM followers WHERE follower_id = $1 AND following_id = u.user_id
       )
       AND NOT EXISTS (
