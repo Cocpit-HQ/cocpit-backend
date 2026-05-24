@@ -6,6 +6,17 @@ const commentOperationSchema = z.object({
   }),
 });
 
+const updateCommentSchema = z.object({
+  params: z.object({
+    commentId: z.string().uuid({ message: "Valid Comment ID is required" }),
+  }),
+  body: z.object({
+    content: z.string({ required_error: "Content is required" }),
+    companyId: z.string().uuid().optional().nullable(),
+  }).passthrough(),
+});
+
+
 const hideCommentSchema = z.object({
   params: z.object({
     commentId: z.string().uuid({ message: "Valid Comment ID is required" }),
@@ -63,6 +74,7 @@ const createPostSchema = z.object({
 
 module.exports = {
   commentOperationSchema,
+  updateCommentSchema,
   hideCommentSchema,
   createPostSchema,
 };

@@ -6,7 +6,7 @@ const { requireAuth, optionalAuth } = require("../../core/middlewares/auth.middl
 const { validate } = require("../../core/middlewares/validation.middleware");
 const postTagsController = require("./postTags.controller");
 const { syncTagsSchema } = require("./postTags.schema");
-const { commentOperationSchema, hideCommentSchema, createPostSchema } = require("./content.schema");
+const { commentOperationSchema, updateCommentSchema, hideCommentSchema, createPostSchema } = require("./content.schema");
 const { uploadPostMedia } = require("../../core/middlewares/upload.middleware");
 
 // Feed & Discovery
@@ -54,7 +54,7 @@ router.get("/post/:id/likes", requireAuth, contentController.getPostLikes);
 router.post("/post/:id/comments", requireAuth, contentController.addComment);
 router.post("/comments/:commentId/like", requireAuth, contentController.toggleCommentLike);
 router.post("/comments/:commentId/pin", requireAuth, contentController.toggleCommentPin);
-router.put("/comments/:commentId", requireAuth, validate(commentOperationSchema), contentController.updateComment);
+router.put("/comments/:commentId", requireAuth, validate(updateCommentSchema), contentController.updateComment);
 router.delete("/comments/:commentId", requireAuth, validate(commentOperationSchema), contentController.deleteComment);
 router.get("/post/:id/comments", requireAuth, contentController.getComments);
 router.post("/comments/:commentId/hide", requireAuth, validate(hideCommentSchema), contentController.hideComment);
