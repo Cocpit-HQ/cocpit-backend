@@ -261,7 +261,7 @@ exports.saveInterests = async (req, res) => {
                 uniqueMap.set(slug, name);
             }
         }
-        
+
         const deduplicatedNames = Array.from(uniqueMap.values());
         const deduplicatedSlugs = Array.from(uniqueMap.keys());
 
@@ -290,7 +290,7 @@ exports.saveInterests = async (req, res) => {
             for (const [slug, name] of missingEntries) {
                 insertParams.push(name, slug);
             }
-            
+
             await client.query(
                 `INSERT INTO interests (name, slug) VALUES ${valuesParams} ON CONFLICT DO NOTHING`,
                 insertParams
@@ -340,7 +340,7 @@ exports.saveInterests = async (req, res) => {
         return res.status(200).json({
             success: true,
             message: "Interests saved successfully",
-            data: { 
+            data: {
                 selected_count: finalInterestIds.length,
                 next_step: ONBOARDING_STEPS.SKILLS
             }
@@ -436,8 +436,16 @@ exports.completeOnboarding = async (req, res) => {
     const userId = req.user?.sub;
 
     try {
-        // Validate user exists before completing
-        const userRes = await pool.query(`SELECT user_id, is_onboarding_complete FROM users WHERE user_id = $1`, [userId]);
+        // Validate user existence and fetch role from user_roles
+        const userRes = await pool.query(
+            `SELECT u.user_id, r.role_name as role 
+             FROM users u 
+             LEFT JOIN user_roles ur ON u.user_id = ur.user_id 
+             LEFT JOIN roles r ON ur.role_id = r.role_id 
+             WHERE u.user_id = $1`,
+            [userId]
+        );
+
         if (userRes.rowCount === 0) {
             return res.status(404).json({ success: false, message: "User not found" });
         }
@@ -486,8 +494,8 @@ exports.updateProfile = async (req, res) => {
     const userId = req.user?.sub;
     let { account_name, full_name, avatar_url } = req.body;
 
-    if (req.files && req.files.length > 0) {
-        avatar_url = req.files[0].path.replace(/\\/g, "/");
+    if (req.file) {
+        avatar_url = req.file.path.replace(/\\/g, "/");
     }
 
     // Validate account_name if present

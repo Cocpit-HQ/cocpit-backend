@@ -1,7 +1,10 @@
 const express = require("express");
 const { upload, uploadStory } = require("../../core/middlewares/upload.middleware");
 const cloudinary = require("../../core/infrastructure/cloudinary.client"); // Needed for thumbnail URL generation
+const { requireAuth } = require("../../core/middlewares/auth.middleware");
 const router = express.Router();
+
+
 
 router.post(
   "/upload",

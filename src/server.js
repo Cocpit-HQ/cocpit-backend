@@ -13,6 +13,11 @@ const { processStoryExpirations } = require("./workers/storyExpiryWorker");
 const { sweepActivityLogs, runDailyDecay } = require("./workers/intentEngine");
 const server = http.createServer(app);
 
+// Configure high timeouts (10 minutes) for streaming large video uploads to Cloudinary
+server.timeout = 600000;
+server.headersTimeout = 601000;
+server.requestTimeout = 600000;
+
 const PORT = process.env.PORT || 5000;
 
 if (process.env.NEW_RELIC_LICENSE_KEY) {

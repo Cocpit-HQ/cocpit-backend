@@ -674,39 +674,55 @@ exports.createPost = async (req, res) => {
     const imageFiles = uploadedFiles.filter(f => f.mimetype.startsWith('image/'));
     const videoFiles = uploadedFiles.filter(f => f.mimetype.startsWith('video/'));
 
+    const fs = require('fs');
+    const cleanupFiles = (files) => {
+        files.forEach(f => {
+            try {
+                if (fs.existsSync(f.path)) {
+                    fs.unlinkSync(f.path);
+                }
+            } catch (err) {
+                console.error("[CreatePost] Local file cleanup error:", err);
+            }
+        });
+    };
+
     // Custom file validations
     if (videoFiles.length > 1) {
+        cleanupFiles(uploadedFiles);
         return res.status(400).json({
             message: "Only one video file is allowed"
         });
     }
 
     if (videoFiles.length > 0 && imageFiles.length > 0) {
+        cleanupFiles(uploadedFiles);
         return res.status(400).json({
             message: "Cannot upload video and images together"
         });
     }
 
     if (imageFiles.length > 10) {
+        cleanupFiles(uploadedFiles);
         return res.status(400).json({
             message: "Maximum 10 images allowed"
         });
     }
 
-    // Extract URLs using same pattern
-    const imageUrls = imageFiles.map(f => (f.path || f.secure_url || '').replace(/\\/g, "/"));
-    const videoUrl = videoFiles[0] ? (videoFiles[0].path || videoFiles[0].secure_url || '').replace(/\\/g, "/") : null;
-
+    // Map uploaded files to media URLs directly (already streamed by Multer middleware)
     if (uploadedFiles.length > 0) {
+        const urls = uploadedFiles.map(file => (file.path || file.secure_url || '').replace(/\\/g, "/"));
         if (videoFiles.length > 0) {
-            media_urls = [videoUrl];
+            media_urls = [urls[0]];
         } else if (imageFiles.length > 0) {
-            media_urls = imageUrls;
+            media_urls = urls;
         }
     }
 
     // Sanitize user-generated content
-    content = sanitizeContent(content);
+    if (post_type !== 'article') {
+        content = sanitizeContent(content);
+    }
     title = sanitizeContent(title);
     if (poll_options && Array.isArray(poll_options)) {
         poll_options = poll_options.map(opt => sanitizeContent(opt));
@@ -919,7 +935,7 @@ exports.createPost = async (req, res) => {
         let type;
         // 3. Insert Media (Parallel Optimized)
         if (media_urls && Array.isArray(media_urls) && media_urls.length > 0) {
-            const mediaPromises = media_urls.map(url => {
+            const mediaPromises = media_urls.filter(url => typeof url === 'string').map(url => {
                 let currentType = url.toLowerCase().match(/\.(mp4|webm|mov)(\?|#|$)/) ? 'video' : 'image';
                 type = currentType; // Keep a reference to one type for response (legacy behavior)
                 return client.query(
@@ -1061,12 +1077,20 @@ exports.createPost = async (req, res) => {
             logIntentActivity({ userId, action: "share_post", metadata: { postId, sharedPostId: req.body.shared_post_id, sharedJobId: req.body.shared_job_id } });
         }
     } catch (err) {
-
-        await client.query('ROLLBACK');
+        if (client) {
+            try {
+                await client.query('ROLLBACK');
+            } catch (rollbackErr) {
+                console.error("Rollback error:", rollbackErr);
+            }
+        }
+        cleanupFiles(uploadedFiles);
         console.error("Create post error:", err);
         res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
     } finally {
-        client.release();
+        if (client) {
+            client.release();
+        }
     }
 };
 
