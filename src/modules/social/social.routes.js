@@ -63,6 +63,7 @@ router.get("/conversations", requireAuth, socialController.getConversations);
 router.delete("/conversations/:id", requireAuth, socialController.deleteConversation);
 router.get("/conversations/:conversationId/mute", requireAuth, socialController.getConversationMuteState);
 router.patch("/conversations/:conversationId/mute", requireAuth, socialController.updateConversationMuteState);
+router.patch("/conversations/:conversationId/unmute", requireAuth, socialController.unmuteConversation);
 
 // Messages
 router.post("/messages", requireAuth, require("../../core/middlewares/upload.middleware").uploadChatMedia.array("images", 10), socialController.sendMessage);

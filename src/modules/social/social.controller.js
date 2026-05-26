@@ -2558,6 +2558,53 @@ exports.updateConversationMuteState = async (req, res) => {
     }
 };
 
+exports.unmuteConversation = async (req, res) => {
+    const { conversationId } = req.params;
+    let actorScope;
+
+    try {
+        actorScope = getSocialActorScope(req, req.body?.companyId || req.query.companyId || null);
+    } catch (err) {
+        return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
+    }
+
+    const { userId, orgId: companyId } = actorScope;
+
+    try {
+        const muteState = await persistConversationMuteState(pool, {
+            conversationId,
+            userId,
+            companyId,
+            muted: false,
+            mutedUntil: null,
+        });
+
+        if (!muteState) {
+            return res.status(404).json({ message: "Conversation not found or access denied" });
+        }
+
+        await notifyConversationPreferenceUpdate({
+            conversationId,
+            userId,
+            companyId,
+            muteState,
+        });
+
+        res.json({
+            message: "Conversation unmuted",
+            conversationId,
+            is_muted: muteState.isMuted,
+            muted_until: muteState.mutedUntil,
+            mute_updated_at: muteState.muteUpdatedAt,
+        });
+    } catch (err) {
+        console.error("Unmute conversation error:", err);
+        res.status(err.statusCode || 500).json({
+            message: err.message || "Internal server error",
+        });
+    }
+};
+
 exports.getMessageSeenBy = async (req, res) => {
     const {
         messageId
