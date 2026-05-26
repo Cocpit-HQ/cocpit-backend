@@ -100,7 +100,7 @@ app.use("/api", enforceOnboarding);
 app.use("/api/dashboard", dashboardRoutes);
 app.use("/api/report", reportRoutes);
 app.use("/api/profile", profileRoutes);
-app.use("/api/jobs", jobRoutes);
+app.use("/api/jobs", jobRoutes); 
 app.use("/api", contentRoutes);
 app.use("/api", hashtagRoutes);
 app.use("/api/events", eventRoutes);
