@@ -24,6 +24,34 @@ async function markConversationAsRead({ conversationId, userId, companyId = null
     );
 
     if (participation.rowCount === 0) {
+      // Check if there is a pending group invitation for this user/conversation
+      const groupInvitationCheck = await client.query(
+        `
+        UPDATE group_invitations
+        SET updated_at = NOW()
+        WHERE conversation_id = $1 AND invitee_id = $2 AND status = 'pending'
+        RETURNING updated_at
+        `,
+        [conversationId, userId]
+      );
+
+      if (groupInvitationCheck.rowCount > 0) {
+        await client.query("COMMIT");
+        const readAt = groupInvitationCheck.rows[0].updated_at || new Date().toISOString();
+        
+        socketService.notifyUser(userId, "invitation_update", {
+          conversationId,
+          isRead: true,
+          readAt,
+        });
+
+        return {
+          readAt,
+          readCount: 1,
+          messageIds: [],
+        };
+      }
+
       const err = new Error("Conversation not found or access denied");
       err.statusCode = 404;
       throw err;

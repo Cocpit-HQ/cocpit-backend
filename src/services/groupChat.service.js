@@ -670,6 +670,9 @@ class GroupChatService {
         // 4. Emit socket event
         // Enriched message for frontend (needs sender details)
         const sender = members.find(m => m.user_id == senderId);
+        const activeAcceptedMembers = members.filter(m => m.status === 'accepted' && m.user_id != senderId);
+        const active_member_count = activeAcceptedMembers.length;
+
         const enrichedMessage = {
             ...message,
             replyMessageId: replyMessageId || null,
@@ -677,7 +680,10 @@ class GroupChatService {
             media: mediaRecords, // Include media in socket event
             sender_name: sender.full_name,
             sender_avatar: sender.avatar_url,
-            is_own: false // Will be determined by client
+            is_own: false, // Will be determined by client
+            active_member_count,
+            delivered_count: active_member_count,
+            seen_count: 0
         };
 
         // Notify all members via room broadcast for the message itself

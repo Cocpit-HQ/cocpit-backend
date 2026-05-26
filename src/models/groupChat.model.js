@@ -74,7 +74,7 @@ class GroupChatModel {
             `INSERT INTO group_invitations (conversation_id, inviter_id, invitee_id, status) 
       VALUES ($1, $2, $3, 'pending') 
       ON CONFLICT (conversation_id, invitee_id) 
-      DO UPDATE SET status = 'pending', inviter_id = $2, updated_at = now()
+      DO UPDATE SET status = 'pending', inviter_id = $2, updated_at = now(), created_at = now()
       RETURNING *`,
             [groupId, senderId, receiverId]
         );

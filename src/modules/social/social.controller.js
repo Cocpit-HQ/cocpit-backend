@@ -1634,6 +1634,7 @@ SELECT
     NULL::uuid AS "replyMessageId",
     NULL::json AS reply_message,
     gi.invitation_id,
+    (gi.updated_at > gi.created_at) AS is_read,
     'group_invitation'::text AS request_source
 FROM group_invitations gi
 JOIN conversations c
@@ -1677,7 +1678,7 @@ WHERE gi.invitee_id = $1
         -- If I am User, sender is NOT me (User)
         ($2::uuid IS NULL AND (m.sender_id != $1 OR m.sender_id IS NULL))
     )
-    AND m.created_at > cp.last_read_at
+    AND (cp.last_read_at IS NULL OR m.created_at > cp.last_read_at)
     AND m.created_at >= cp.joined_at
   GROUP BY m.conversation_id
   `, [userId, companyId]
@@ -2026,11 +2027,12 @@ exports.sendMessage = async (req, res) => {
 
             // Fetch conversation metadata needed for socket payload
             const convMeta = await client.query(
-                `SELECT is_requesting, created_at FROM conversations WHERE conversation_id = $1`,
+                `SELECT is_requesting, created_at, created_by FROM conversations WHERE conversation_id = $1`,
                 [conversationId]
             );
             const convIsRequesting = convMeta.rows[0]?.is_requesting ?? false;
             const convCreatedAt = convMeta.rows[0]?.created_at ?? null;
+            const convCreatedBy = convMeta.rows[0]?.created_by || null;
 
             let finalSharedProfileType = shared_profile_type || null;
             if (shared_profile_id && !finalSharedProfileType) {
@@ -2301,7 +2303,7 @@ exports.sendMessage = async (req, res) => {
                 updated_at: newMessage.created_at,
                 is_new_conversation: isNewConversation,
                 description: null,
-                created_by: null,
+                created_by: convCreatedBy,
                 group_headline: null,
                 conversation_name: null,
                 admin_id: null,
@@ -2322,6 +2324,7 @@ exports.sendMessage = async (req, res) => {
             // ─── Receiver payload: other_user_* = SENDER info ───
             const receiverConvPayload = {
                 ...baseConvPayload,
+                is_requesting: convIsRequesting && (convCreatedBy === targetUserId) ? false : convIsRequesting,
                 other_user_id: authorCompanyId ? authorCompanyId : senderId,
                 other_user_name: senderName,
                 other_user_avatar: senderAvatar,
@@ -2335,6 +2338,7 @@ exports.sendMessage = async (req, res) => {
             // ─── Sender payload: other_user_* = TARGET info ───
             const senderConvPayload = {
                 ...baseConvPayload,
+                is_requesting: convIsRequesting && (convCreatedBy === senderId) ? false : convIsRequesting,
                 other_user_id: targetUserId,
                 other_user_name: targetName,
                 other_user_avatar: targetAvatar,
@@ -2686,6 +2690,25 @@ exports.getMessages = async (req, res) => {
                 m.author_org_id,
                 m.is_deleted_for_everyone,
                 m.deleted_at,
+                (SELECT COUNT(*)::int FROM conversation_participants cp 
+                 WHERE cp.conversation_id = m.conversation_id 
+                   AND cp.left_at IS NULL 
+                   AND (m.sender_id IS NULL OR cp.user_id != m.sender_id)
+                ) AS active_member_count,
+                (SELECT COUNT(*)::int FROM conversation_participants cp 
+                 WHERE cp.conversation_id = m.conversation_id 
+                   AND cp.left_at IS NULL 
+                   AND (m.sender_id IS NULL OR cp.user_id != m.sender_id)
+                ) AS delivered_count,
+                COALESCE(
+                    (SELECT COUNT(*)::int FROM message_reads mr 
+                     JOIN conversation_participants cp ON mr.user_id = cp.user_id
+                     WHERE mr.message_id = m.message_id 
+                       AND cp.conversation_id = m.conversation_id
+                       AND cp.left_at IS NULL
+                       AND (m.sender_id IS NULL OR cp.user_id != m.sender_id)
+                    ), 0
+                ) AS seen_count,
                 COALESCE(c.name, u.full_name, 'Deleted User') as sender_name,
                 COALESCE(c.logo_url, u.avatar_url, NULL) as sender_avatar,
                 (SELECT json_agg(json_build_object('url', mm.url, 'media_type', mm.media_type)) 
