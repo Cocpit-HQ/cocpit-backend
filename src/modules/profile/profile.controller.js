@@ -284,6 +284,7 @@ exports.getIdentity = async (req, res) => {
     }
 };
 
+
 exports.updateIdentity = async (req, res) => {
     const { open_to, availability, work_preference, account_type } = req.body;
     const allowedOpenTo = ["Full-time", "Part-time", "Internship", "Freelance", "Connections"];
