@@ -156,7 +156,7 @@ exports.getProfile = async (req, res) => {
                 version: u.version || 0,
             },
             experiences, educations, skills,
-            company_roles: companyRoles,
+            organization_roles: companyRoles,
             resume,
         });
     } catch (err) {

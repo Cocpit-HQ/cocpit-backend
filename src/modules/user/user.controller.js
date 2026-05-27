@@ -167,8 +167,10 @@ exports.getUserProfile = async (req, res) => {
         u.full_name AS name,
         u.headline,
         u.avatar_url AS avatar,
+        u.cover_image_url AS cover_image,
         u.location,
         u.about_text AS about,
+        u.website,
         u.created_at,
         p.account_type,
         p.open_to,
@@ -209,7 +211,7 @@ exports.getUserProfile = async (req, res) => {
 
     // 4. Fetch Skills
     const skillsQuery = `
-      SELECT s.name
+      SELECT s.skill_id, s.name
       FROM user_skills us
       JOIN skills s ON us.skill_id = s.skill_id
       WHERE us.profile_id = (SELECT profile_id FROM profiles WHERE user_id = $1)
@@ -320,8 +322,7 @@ exports.getUserProfile = async (req, res) => {
       user: user,
       experiences: experiencesResult.rows,
       educations: educationsResult.rows,
-      skills: skillsResult.rows.map((row) => row.name),
-      is_following: isFollowing,
+      skills: skillsResult.rows,
       organization_roles: companyRoles.rows,
     };
 
