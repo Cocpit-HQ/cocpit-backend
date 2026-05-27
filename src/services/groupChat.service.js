@@ -473,7 +473,7 @@ class GroupChatService {
             inTransaction = false;
 
             // 5. Send leave confirmation to leaving user (so they can close their panel)
-            socketService.notifyUser(userId, 'memberLeft', { groupId, userId });
+            socketService.notifyUser(userId, 'memberLeft', { groupId, userId, action_type: 'left' });
 
             // 6. Notify remaining members about membership change
             socketService.notifyConversation(groupId, 'memberLeft', { groupId, userId });
@@ -568,7 +568,7 @@ class GroupChatService {
         await GroupChatModel.removeMember(groupId, targetUserId);
 
         // 6. Notify the person who was removed specifically if they have socket
-        socketService.notifyUser(targetUserId, 'removed_from_group', { groupId });
+        socketService.notifyUser(targetUserId, 'removed_from_group', { groupId, action_type: 'removed' });
 
         // 7. Force socket to leave room
         socketService.leaveConversation(targetUserId, groupId);
