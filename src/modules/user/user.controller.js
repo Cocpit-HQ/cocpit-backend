@@ -1,6 +1,7 @@
 const pool = require("../../core/db/pool");
 const AppError = require("../../core/errors/AppError");
 const current_user = require("../profile/profile.controller");
+const profileRepo = require("../profile/profile.repository");
 const dashboardService = require("../dashboard/dashboard.service");
 
 /**
@@ -163,6 +164,7 @@ exports.getUserProfile = async (req, res) => {
     const userQuery = `
       SELECT
         u.user_id AS id,
+        p.profile_id,
         u.account_name,
         u.full_name AS name,
         u.headline,
@@ -188,26 +190,14 @@ exports.getUserProfile = async (req, res) => {
     }
 
     const user = userResult.rows[0];
+    const profileId = user.profile_id;
+    delete user.profile_id; // Remove from response payload
 
-    // 2. Fetch Experiences
-    const experiencesQuery = `
-      SELECT
-        experience_id, title, company_name, location, work_type, work_mode, start_date, end_date, is_current, description
-      FROM experiences
-      WHERE profile_id = (SELECT profile_id FROM profiles WHERE user_id = $1)
-      ORDER BY start_date DESC
-    `;
-    const experiencesResult = await pool.query(experiencesQuery, [targetUserId]);
-
-    // 3. Fetch Educations
-    const educationsQuery = `
-      SELECT
-        education_id, school_name, degree, field_of_study, location, start_date, end_date, description
-      FROM educations
-      WHERE profile_id = (SELECT profile_id FROM profiles WHERE user_id = $1)
-      ORDER BY start_date DESC
-    `;
-    const educationsResult = await pool.query(educationsQuery, [targetUserId]);
+    // 2. Fetch Experiences & Educations using profileRepo
+    const [experiences, educations] = await Promise.all([
+      profileId ? profileRepo.getExperiences(profileId) : [],
+      profileId ? profileRepo.getEducations(profileId) : []
+    ]);
 
     // 4. Fetch Skills
     const skillsQuery = `
@@ -320,8 +310,8 @@ exports.getUserProfile = async (req, res) => {
     // Assemble response
     const responseData = {
       user: user,
-      experiences: experiencesResult.rows,
-      educations: educationsResult.rows,
+      experiences: experiences,
+      educations: educations,
       skills: skillsResult.rows,
       organization_roles: companyRoles.rows,
     };
