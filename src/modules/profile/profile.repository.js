@@ -8,11 +8,16 @@ const pool = require("../../core/db/pool");
 
 const getFullProfile = async (userId) => {
     const result = await pool.query(
-        `SELECT u.user_id, u.full_name, u.headline, u.avatar_url, u.cover_image_url, u.location, u.about_text, u.email, u.mobile_number, u.account_name, u.website, u.created_at,
-            p.profile_id, p.account_type, p.open_to, p.availability, p.work_preference, p.profile_views_count, p.search_appearances_count, p.version
-     FROM users u
-     LEFT JOIN profiles p ON u.user_id = p.user_id
-     WHERE u.user_id = $1`,
+        `SELECT u.user_id, u.full_name, u.headline, u.avatar_url, u.cover_image_url,
+                u.location, u.about_text, u.email, u.mobile_number, u.account_name, u.website, u.created_at,
+                u.onboarding_step,
+                u.location_formatted, u.location_country, u.location_state, u.location_city,
+                u.location_lat, u.location_lng, u.location_place_id,
+                p.profile_id, p.account_type, p.open_to, p.availability, p.work_preference,
+                p.profile_views_count, p.search_appearances_count, p.version
+         FROM users u
+         LEFT JOIN profiles p ON u.user_id = p.user_id
+         WHERE u.user_id = $1`,
         [userId]
     );
     return result.rows[0] || null;
@@ -468,6 +473,27 @@ const getRelationshipInfo = async (viewerId, targetId) => {
 
 const getClient = async () => pool.connect();
 
+const getUserRole = async (userId) => {
+    const result = await pool.query(
+        `SELECT r.role_name FROM user_roles ur
+         JOIN roles r ON ur.role_id = r.role_id
+         WHERE ur.user_id = $1
+         LIMIT 1`,
+        [userId]
+    );
+    return result.rows[0]?.role_name || null;
+};
+
+const getUserInterests = async (userId) => {
+    const result = await pool.query(
+        `SELECT i.name FROM user_interests ui
+         JOIN interests i ON ui.interest_id = i.interest_id
+         WHERE ui.user_id = $1`,
+        [userId]
+    );
+    return result.rows;
+};
+
 module.exports = {
     getFullProfile, updateUserFields, updateAvatarUrl, getAvatarUrl, updateCoverUrl,
     getIdentity, updateIdentity,
@@ -479,5 +505,7 @@ module.exports = {
     getEducations, addEducation, updateEducation, deleteEducation,
     getSkills, deleteSkillMapping,
     getCompanyRoles, getSocialCounts, getRelationshipInfo,
+    getUserRole,
+    getUserInterests,
     getClient,
 };

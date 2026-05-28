@@ -1,12 +1,9 @@
 /**
- * seedLocations.js — ONE-TIME UTILITY SCRIPT
+ * seedLocations.js — DEPRECATED (PHASE 7 LOCATION MIGRATION)
  * 
- * Parses the GeoNames IN.txt dataset and populates the `locations` table.
- * Run this once per environment (local, staging, production) to seed location data.
- * The data file (IN.txt) must be placed at: <project-root>/cities1000/IN.txt
- * 
- * Usage: node src/scripts/seedLocations.js
- * DO NOT DELETE — required for new environment setup and DB recovery.
+ * NOTE: This script is fully deprecated. We no longer use the static `locations`
+ * table or the GeoNames dataset. The system now uses Google Places API dynamically.
+ * DO NOT RUN THIS SCRIPT. It remains here only for historical reference.
  */
 require("dotenv").config();
 const fs = require("fs");

@@ -118,13 +118,15 @@ exports.getProfile = async (req, res) => {
         const profileId = u.profile_id;
         userId = u.user_id;
 
-        const [experiences, educations, skills, companyRoles, counts, resumeRow] = await Promise.all([
+        const [experiences, educations, skills, companyRoles, counts, resumeRow, userRole, interests] = await Promise.all([
             profileId ? profileRepo.getExperiences(profileId) : [],
             profileId ? profileRepo.getEducations(profileId) : [],
             profileId ? profileRepo.getSkills(profileId) : [],
             profileRepo.getCompanyRoles(userId),
             profileRepo.getSocialCounts(userId),
             profileRepo.getLatestResume(userId),
+            profileRepo.getUserRole(userId),
+            profileRepo.getUserInterests(userId),
         ]);
 
         const resume = resumeRow ? { originalName: resumeRow.file_name, url: resumeRow.file_url } : null;
@@ -142,7 +144,7 @@ exports.getProfile = async (req, res) => {
         res.json({
             user: {
                 id: u.user_id, account_name: u.account_name, name: u.full_name, headline: u.headline, avatar: u.avatar_url,
-                cover_image: u.cover_image_url, location: u.location, about: u.about_text,website:u.website,
+                cover_image: u.cover_image_url, location: u.location, about: u.about_text, website: u.website,
                 email: u.email, mobile_number: u.mobile_number, account_type: u.account_type,
                 followers_count: parseInt(counts.followers_count), following_count: parseInt(counts.following_count),
                 connections_count: parseInt(counts.connections_count),
@@ -154,6 +156,19 @@ exports.getProfile = async (req, res) => {
                 connection_request_sender: relationship.connectionRequestSender,
                 created_at: u.created_at,
                 version: u.version || 0,
+                onboarding_step: u.onboarding_step || null,
+                // Structured location fields (for onboarding state rehydration on refresh)
+                location_formatted: u.location_formatted || null,
+                location_country: u.location_country || null,
+                location_state: u.location_state || null,
+                location_city: u.location_city || null,
+                location_lat: u.location_lat || null,
+                location_lng: u.location_lng || null,
+                location_place_id: u.location_place_id || null,
+                // Role, skills, interests (for onboarding state rehydration on refresh)
+                user_role: userRole || null,
+                skill_names: skills.map(s => s.name),
+                interest_names: interests.map(i => i.name),
             },
             experiences, educations, skills,
             organization_roles: companyRoles,

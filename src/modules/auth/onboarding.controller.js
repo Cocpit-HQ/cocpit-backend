@@ -28,7 +28,7 @@ exports.completeOnboarding = async (req, res) => {
   try {
     // 1. Fetch current user data
     const userResult = await pool.query(
-      "SELECT is_onboarding_complete, avatar_url, full_name as existing_full_name, account_name as existing_account_name, location_id as existing_location_id FROM users WHERE user_id = $1",
+      "SELECT is_onboarding_complete, avatar_url, full_name as existing_full_name, account_name as existing_account_name FROM users WHERE user_id = $1",
       [userId]
     );
 
@@ -64,34 +64,60 @@ exports.completeOnboarding = async (req, res) => {
       }
     }
 
-    // 4. Validate location_id against DB and fetch canonical name
+    // 4. Validate location against DB and fetch canonical name
     let locationName = null;
-    let finalLocationId = location_id || currentUser.existing_location_id;
+    let newLocationFields = null;
+    const newLocationPayload = req.body.location; 
 
-    if (finalLocationId) {
-      const locationResult = await pool.query(
-        "SELECT id, name FROM locations WHERE id = $1",
-        [finalLocationId]
-      );
-
-      if (locationResult.rowCount > 0) {
-        locationName = locationResult.rows[0].name;
-      }
+    if (newLocationPayload && newLocationPayload.placeId) {
+        locationName = newLocationPayload.formattedAddress;
+        newLocationFields = {
+            location_formatted: newLocationPayload.formattedAddress,
+            location_country: newLocationPayload.country,
+            location_state: newLocationPayload.state || null,
+            location_city: newLocationPayload.city,
+            location_lat: newLocationPayload.latitude || null,
+            location_lng: newLocationPayload.longitude || null,
+            location_place_id: newLocationPayload.placeId,
+        };
     }
 
     // 5. Update user
-    await pool.query(
-      `UPDATE users
+    let updateQuery = `UPDATE users
        SET account_name = COALESCE($1, account_name),
            avatar_url = COALESCE($2, avatar_url),
            location = COALESCE($3, location),
-           location_id = COALESCE($4, location_id),
-           full_name = COALESCE($5, full_name),
-           is_onboarding_complete = CASE WHEN $6 = TRUE THEN TRUE ELSE is_onboarding_complete END,
+           full_name = COALESCE($4, full_name),
+           is_onboarding_complete = CASE WHEN $5 = TRUE THEN TRUE ELSE is_onboarding_complete END,
            updated_at = NOW()
-       WHERE user_id = $7`,
-      [account_name || null, finalAvatarUrl || null, locationName || null, finalLocationId || null, full_name || null, shouldFinish, userId]
-    );
+       WHERE user_id = $6`;
+    let updateParams = [account_name || null, finalAvatarUrl || null, locationName || null, full_name || null, shouldFinish, userId];
+
+    if (newLocationFields) {
+        updateQuery = `UPDATE users
+           SET account_name = COALESCE($1, account_name),
+               avatar_url = COALESCE($2, avatar_url),
+               location = COALESCE($3, location),
+               full_name = COALESCE($4, full_name),
+               is_onboarding_complete = CASE WHEN $5 = TRUE THEN TRUE ELSE is_onboarding_complete END,
+               location_formatted = $6,
+               location_country = $7,
+               location_state = $8,
+               location_city = $9,
+               location_lat = $10,
+               location_lng = $11,
+               location_place_id = $12,
+               updated_at = NOW()
+           WHERE user_id = $13`;
+        updateParams = [
+            account_name || null, finalAvatarUrl || null, locationName || null, full_name || null, shouldFinish,
+            newLocationFields.location_formatted, newLocationFields.location_country, newLocationFields.location_state,
+            newLocationFields.location_city, newLocationFields.location_lat, newLocationFields.location_lng, newLocationFields.location_place_id,
+            userId
+        ];
+    }
+
+    await pool.query(updateQuery, updateParams);
 
     // 6. If finishing, generate a new accessToken with onboarding_complete: true
     let newToken = null;
@@ -112,7 +138,6 @@ exports.completeOnboarding = async (req, res) => {
         account_name: account_name || currentUser.existing_account_name,
         avatar_url: finalAvatarUrl,
         location: locationName,
-        location_id: finalLocationId,
         full_name: full_name || currentUser.existing_full_name,
         is_onboarding_complete: shouldFinish || currentUser.is_onboarding_complete
       }

@@ -26,8 +26,14 @@ CREATE TABLE users (
   school TEXT,
   degree TEXT,
   location TEXT,
-  location_id INT,                    -- FK to locations table (set after seeding)
-  about_text TEXT,
+  location_country TEXT,
+  location_state TEXT,
+  location_city TEXT,
+  location_formatted TEXT,
+  location_lat DOUBLE PRECISION,
+  location_lng DOUBLE PRECISION,
+  location_place_id TEXT,
+    about_text TEXT,
   created_at TIMESTAMPTZ DEFAULT now(),
   updated_at TIMESTAMPTZ DEFAULT now(),
   CONSTRAINT mobile_format CHECK (mobile_number ~ '^[0-9]{10}$')
@@ -1516,28 +1522,6 @@ CREATE TABLE user_intent_scores (
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- ---------------------------------------------------------
--- LOCATIONS AUTOCOMPLETE
--- Last modified: 2026-04-15
--- ---------------------------------------------------------
-CREATE EXTENSION IF NOT EXISTS pg_trgm;
-
-CREATE TABLE locations (
-    id SERIAL PRIMARY KEY,
-    name TEXT NOT NULL,          -- Formatted display string: "City, State, Country"
-    city TEXT,
-    state TEXT,
-    country TEXT,
-    latitude FLOAT,
-    longitude FLOAT
-);
-
--- GIN index for fast trigram-based ILIKE search on location names
-CREATE INDEX idx_location_name 
-ON locations USING gin (name gin_trgm_ops);
-
--- Index on users.location_id for fast geo-based JOIN/filter queries
-CREATE INDEX idx_users_location_id ON users(location_id);
 -- 2026-04-19: Device management for push notifications
 CREATE TABLE IF NOT EXISTS device_sessions (
     device_session_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -1644,3 +1628,7 @@ CREATE TABLE IF NOT EXISTS message_reactions (
   updated_at TIMESTAMPTZ DEFAULT now(),
   CONSTRAINT message_reactions_unique UNIQUE (message_id, user_id)
 );
+
+CREATE INDEX IF NOT EXISTS idx_users_location_country ON users(location_country) WHERE location_country IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_users_location_city ON users(LOWER(location_city)) WHERE location_city IS NOT NULL;

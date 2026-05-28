@@ -546,44 +546,48 @@ exports.updateProfile = async (req, res) => {
 
 exports.updateLocation = async (req, res) => {
     const userId = req.user?.sub;
-    const { location_id, location } = req.body;
+    const { location, country, state, city, formattedAddress, latitude, longitude, placeId } = req.body;
 
-    // Validate location_id and location if present
-    if (location_id !== undefined && (!location_id || String(location_id).trim() === "")) {
-        return res.status(400).json({ success: false, message: "Valid location_id is required" });
-    }
-    if (location !== undefined && (!location || String(location).trim() === "")) {
-        return res.status(400).json({ success: false, message: "Valid location is required" });
+    // New Google Places mode
+    const ALLOWED_COUNTRIES = ["India", "United Arab Emirates", "Singapore"];
+    if (!ALLOWED_COUNTRIES.includes(country)) {
+        return res.status(400).json({
+            success: false, message: "Location must be in India, UAE, or Singapore",
+            code: "INVALID_LOCATION_COUNTRY"
+        });
     }
 
     try {
-        const result = await pool.query(
-            `UPDATE users
-             SET location_id = COALESCE($1, location_id),
-                 location = COALESCE($2, location),
-                 updated_at = NOW()
-             WHERE user_id = $3
-             RETURNING *`,
-            [
-                location_id !== undefined ? location_id : null,
-                location !== undefined ? location : null,
-                userId
-            ]
-        );
-
-        if (result.rowCount === 0) {
-            return res.status(404).json({ success: false, message: "User not found" });
-        }
-
         await pool.query(
-            `UPDATE users SET onboarding_step = $1 WHERE user_id = $2`,
-            [ONBOARDING_STEPS.ROLE, userId]
+            `UPDATE users
+             SET location           = $1,
+                 location_formatted = $1,
+                 location_country   = $2,
+                 location_state     = $3,
+                 location_city      = $4,
+                 location_lat       = $5,
+                 location_lng       = $6,
+                 location_place_id  = $7,
+                 updated_at         = NOW()
+             WHERE user_id = $8`,
+            [formattedAddress, country, state || null, city,
+             latitude || null, longitude || null, placeId, userId]
         );
 
-        return res.status(200).json({
+        await pool.query(`UPDATE users SET onboarding_step = $1 WHERE user_id = $2`, [ONBOARDING_STEPS.ROLE, userId]);
+
+        const crypto = require("crypto");
+        console.log(JSON.stringify({
+            event: "location_saved",
+            country: country,
+            has_coordinates: !!(latitude && longitude),
+            user_id_hash: crypto.createHash("sha256").update(userId).digest("hex").slice(0, 8),
+        }));
+
+        return res.json({
             success: true,
-            message: "Location updated successfully",
-            data: { ...result.rows[0], next_step: ONBOARDING_STEPS.COMPLETE }
+            message: "Location updated",
+            data: { location_formatted: formattedAddress, location_country: country, location_city: city, next_step: ONBOARDING_STEPS.COMPLETE }
         });
     } catch (err) {
         console.error("Update location error:", err);

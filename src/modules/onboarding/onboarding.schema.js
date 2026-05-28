@@ -123,14 +123,18 @@ const updateProfileSchema = z.object({
 
 const updateLocationSchema = z.object({
   body: z.object({
-    location_id: z.string({
-      required_error: "Location ID is required",
-    }),
-
-    location: z.string({
-      required_error: "Location is required",
-    }),
-  }),
+    country: z.string().min(1).refine(
+      v => ["India", "United Arab Emirates", "Singapore"].includes(v),
+      { message: "Location must be in India, UAE, or Singapore" }
+    ).optional(),
+    state: z.string().nullable().optional(),
+    city: z.string().min(1).optional(),
+    formattedAddress: z.string().min(1).optional(),
+    latitude: z.number().nullable().optional(),
+    longitude: z.number().nullable().optional(),
+    placeId: z.string().min(1, "Place ID is required"),
+    location: z.string().optional()
+  })
 });
 
 module.exports = {

@@ -22,10 +22,15 @@ const completeOnboardingSchema = z.object({
       .max(30, "Account name must be at most 30 characters")
       .regex(accountNameRegex, "Account name can only contain lowercase letters, numbers, and underscores")
       .optional(),
-    location_id: z.coerce.number({
-      required_error: "Location is required"
-    }).int().positive("Please select a valid location")
-      .optional(),
+    location: z.object({
+      country: z.string().min(1),
+      state: z.string().nullable().optional(),
+      city: z.string().min(1),
+      formattedAddress: z.string().min(1),
+      latitude: z.number().nullable().optional(),
+      longitude: z.number().nullable().optional(),
+      placeId: z.string().min(1),
+    }).optional(),
   }),
 });
 
