@@ -21,6 +21,7 @@ const reportRoutes = require("./modules/report/report.routes");
 const activityRoutes = require("./modules/activity/activity.routes");
 const configRoutes = require("./modules/config/config.routes");
 const deviceRoutes = require("./modules/device/device.routes");
+const feedRoutes = require("./modules/feed/feed.routes");
 const placesRoutes = require("./modules/places/places.routes");
 const { optionalAuth } = require("./core/middlewares/auth.middleware");
 const { enforceOnboarding } = require("./core/middlewares/onboarding.middleware");
@@ -113,6 +114,7 @@ app.use("/api/activity", activityRoutes);
 app.use("/api", shareRoutes);
 app.use("/api/places", placesRoutes);
 app.use("/api/device", deviceRoutes);
+app.use("/api/feed", feedRoutes);
 const errorHandler = require("./core/middlewares/error.middleware");
 app.use(errorHandler);
 

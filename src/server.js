@@ -11,6 +11,7 @@ const { processJobExpirations } = require("./workers/jobExpiryWorker");
 const { processEventOutbox } = require("./workers/eventOutboxWorker");
 const { processStoryExpirations } = require("./workers/storyExpiryWorker");
 const { sweepActivityLogs, runDailyDecay } = require("./workers/intentEngine");
+const { startFeedWorker }              = require("./workers/feedWorker");
 const server = http.createServer(app);
 
 // Configure high timeouts (10 minutes) for streaming large video uploads to Cloudinary
@@ -51,6 +52,10 @@ setInterval(() => {
 setInterval(() => {
   runDailyDecay();
 }, 24 * 60 * 60 * 1000);
+
+// B9.5 — Feed background worker (exploration pool refresh + analytics queue drain)
+// Interval configurable via FEED_WORKER_INTERVAL_MS (default: 5 minutes)
+startFeedWorker();
 
 // Event Outbox Processor disabled
 
