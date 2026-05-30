@@ -591,11 +591,23 @@ exports.removeCompanyFollower = async (req, res) => {
 };
 
 exports.getFollowers = async (req, res) => {
-    const userId = req.params.id;
+    let userId = req.params.id;
     const requesterId = req.user.sub;
     const { search } = req.query;
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
     try {
+        if (!uuidRegex.test(userId)) {
+            const resolveResult = await pool.query(
+                "SELECT user_id FROM users WHERE LOWER(account_name) = LOWER($1)",
+                [userId]
+            );
+            if (resolveResult.rowCount === 0) {
+                return res.status(404).json({ message: "User not found" });
+            }
+            userId = resolveResult.rows[0].user_id;
+        }
+
         let query = `
             SELECT u.user_id, u.full_name, u.avatar_url, u.headline, f.created_at, 'user' as type,
                    (EXISTS (SELECT 1 FROM followers WHERE follower_id = $2 AND following_id = u.user_id)) as is_following_back
@@ -642,10 +654,22 @@ exports.getFollowers = async (req, res) => {
 }
 
 exports.getFollowing = async (req, res) => {
-    const userId = req.params.id;
+    let userId = req.params.id;
     const { search } = req.query;
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
     try {
+        if (!uuidRegex.test(userId)) {
+            const resolveResult = await pool.query(
+                "SELECT user_id FROM users WHERE LOWER(account_name) = LOWER($1)",
+                [userId]
+            );
+            if (resolveResult.rowCount === 0) {
+                return res.status(404).json({ message: "User not found" });
+            }
+            userId = resolveResult.rows[0].user_id;
+        }
+
         // Build UNION query: users the person follows + companies the person follows
         let userQuery = `
             SELECT u.user_id, u.full_name, u.avatar_url, u.headline, f.created_at, 'user' as type, NULL as slug

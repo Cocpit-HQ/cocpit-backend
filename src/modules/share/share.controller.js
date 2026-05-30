@@ -813,3 +813,171 @@ exports.shareJobToStory = async (req, res) => {
         res.status(500).json({ message: "Internal server error" });
     }
 };
+
+/**
+ * GET /share/users
+ * Priority ordered:
+ * 1. Recent conversation users
+ * 2. Connections
+ * 3. Following
+ * 4. Followers
+ * 5. Others
+ */
+exports.getShareUsers = async (req, res) => {
+    try {
+        const userId = req.user.sub || req.user.user_id;
+        const { q, cursor, limit: limitParam } = req.query;
+        const pool = require("../../core/db/pool");
+
+        // Input sanitization
+        const searchTerm = (typeof q === "string" && q.trim().length > 0)
+            ? q.trim().replace(/^['"]|['"]$/g, "")
+            : null;
+        const limitNum = Math.min(parseInt(limitParam) || 20, 100);
+
+        // Decode cursor
+        let cursorUserId = null;
+        let cursorPriority = null;
+        let cursorSortTs = null;
+        if (cursor) {
+            try {
+                const decoded = Buffer.from(cursor, "base64").toString("ascii");
+                const parts = decoded.split("_");
+                if (parts.length === 3) {
+                    cursorPriority = parseInt(parts[0]);
+                    cursorSortTs = new Date(parseInt(parts[1]));
+                    cursorUserId = parts[2];
+                } else if (parts.length === 2) {
+                    cursorPriority = parseInt(parts[0]);
+                    cursorUserId = parts[1];
+                }
+            } catch (_) { /* invalid cursor — ignore */ }
+        }
+
+        // Build query parameters
+        const values = [userId];
+        let nameFilter = "";
+        if (searchTerm) {
+            values.push(`%${searchTerm}%`);
+            const likeTermIdx = values.length;
+            nameFilter = `AND (u.full_name ILIKE $${likeTermIdx} OR u.account_name ILIKE $${likeTermIdx})`;
+        }
+
+        let cursorClause = "";
+        if (cursorPriority !== null && cursorUserId) {
+            if (cursorSortTs !== null) {
+                values.push(cursorPriority);
+                const cPriorityIdx = values.length;
+                values.push(cursorSortTs);
+                const cSortTsIdx = values.length;
+                values.push(cursorUserId);
+                const cUserIdIdx = values.length;
+                
+                cursorClause = `AND (
+                    deduped_results.priority > $${cPriorityIdx}
+                    OR (
+                        deduped_results.priority = $${cPriorityIdx} 
+                        AND (
+                            deduped_results.sort_ts < $${cSortTsIdx}::timestamptz
+                            OR (deduped_results.sort_ts = $${cSortTsIdx}::timestamptz AND deduped_results.user_id > $${cUserIdIdx}::uuid)
+                        )
+                    )
+                )`;
+            } else {
+                values.push(cursorPriority);
+                const cPriorityIdx = values.length;
+                values.push(cursorUserId);
+                const cUserIdIdx = values.length;
+                cursorClause = `AND (
+                    deduped_results.priority > $${cPriorityIdx}
+                    OR (deduped_results.priority = $${cPriorityIdx} AND deduped_results.user_id > $${cUserIdIdx}::uuid)
+                )`;
+            }
+        }
+
+        values.push(limitNum + 1);
+        const limitIdx = values.length;
+
+        const queryText = `
+            SELECT * FROM (
+                SELECT DISTINCT ON (user_id)
+                    user_id, full_name, account_name, headline, avatar_url, conversation_id,
+                    priority, sort_ts
+                FROM (
+                    SELECT
+                        u.user_id,
+                        u.full_name,
+                        u.account_name,
+                        u.headline,
+                        u.avatar_url,
+                        chat.conversation_id,
+                        CASE
+                            -- 1. Recent Chat Users
+                            WHEN chat.conversation_id IS NOT NULL THEN 1
+                            -- 2. Connections
+                            WHEN EXISTS (SELECT 1 FROM connections c WHERE (c.user_id = $1 AND c.connected_user_id = u.user_id) OR (c.connected_user_id = $1 AND c.user_id = u.user_id)) THEN 2
+                            -- 3. Following (I follow them)
+                            WHEN EXISTS (SELECT 1 FROM followers f WHERE f.follower_id = $1 AND f.following_id = u.user_id) THEN 3
+                            -- 4. Followers (They follow me)
+                            WHEN EXISTS (SELECT 1 FROM followers f WHERE f.following_id = $1 AND f.follower_id = u.user_id) THEN 4
+                            ELSE 5
+                        END AS priority,
+                        COALESCE(chat.last_message_at, u.created_at) AS sort_ts
+                    FROM users u
+                    LEFT JOIN LATERAL (
+                        SELECT conv.conversation_id, conv.last_message_at
+                        FROM conversation_participants cp1
+                        JOIN conversation_participants cp2 ON cp1.conversation_id = cp2.conversation_id
+                        JOIN conversations conv ON conv.conversation_id = cp1.conversation_id
+                        WHERE cp1.user_id = $1
+                          AND cp2.user_id = u.user_id
+                          AND conv.is_group = FALSE
+                          AND conv.is_active = TRUE
+                          AND cp1.left_at IS NULL
+                          AND cp2.left_at IS NULL
+                        ORDER BY conv.last_message_at DESC NULLS LAST
+                        LIMIT 1
+                    ) chat ON TRUE
+                    WHERE u.user_id != $1
+                      AND u.full_name IS NOT NULL AND TRIM(u.full_name) <> ''
+                      AND u.account_name IS NOT NULL AND TRIM(u.account_name) <> ''
+                      ${nameFilter}
+                      AND NOT EXISTS (
+                          SELECT 1 FROM blocks b
+                          WHERE (b.blocker_id = $1 AND b.blocked_id = u.user_id)
+                             OR (b.blocker_id = u.user_id AND b.blocked_id = $1)
+                      )
+                ) AS unsorted_results
+                ORDER BY user_id, priority ASC
+            ) AS deduped_results
+            WHERE 1=1
+            ${cursorClause}
+            ORDER BY priority ASC, sort_ts DESC, user_id ASC
+            LIMIT $${limitIdx}
+        `;
+
+        const result = await pool.query(queryText, values);
+        const items = result.rows;
+
+        let nextCursor = null;
+        let hasMore = false;
+
+        if (items.length > limitNum) {
+            hasMore = true;
+            items.pop();
+            const lastItem = items[items.length - 1];
+            const lastTs = lastItem.sort_ts ? new Date(lastItem.sort_ts).getTime() : 0;
+            nextCursor = Buffer.from(`${lastItem.priority}_${lastTs}_${lastItem.user_id}`).toString("base64");
+        }
+
+        return res.status(200).json({
+            success: true,
+            data: items,
+            nextCursor,
+            hasMore,
+        });
+    } catch (err) {
+        console.error("Get Share Users Error:", err);
+        return res.status(500).json({ message: "Internal server error" });
+    }
+};
