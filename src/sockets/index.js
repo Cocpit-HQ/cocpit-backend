@@ -7,6 +7,7 @@ const socketService = require("../core/infrastructure/socket.service");
 const statusHandler = require("./status.handler");
 const chatHandler = require("./chat.handler");
 const storyHandler = require("./story.handler");
+const postHandler = require("./post.handler");
 const notificationHandler = require("./notification.handler");
 
 module.exports.initSocket = async (httpServer) => {
@@ -112,6 +113,9 @@ module.exports.initSocket = async (httpServer) => {
 
     // Register Story Events
     storyHandler.registerStoryHandlers(io, socket);
+
+    // Register Post Events
+    postHandler.registerPostHandlers(io, socket);
 
     // Register Notification Events (Company rooms)
     notificationHandler.registerNotificationHandlers(io, socket);

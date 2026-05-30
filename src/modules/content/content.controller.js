@@ -1922,9 +1922,12 @@ exports.toggleLike = async (req, res) => {
                     // Emit real-time
                     socketService.notifyUser(authorId, "notification", {
                         type: "like",
+                        text: `${senderName} liked your post`,
+                        from: userId,
                         senderName: senderName,
                         senderAvatar: senderAvatar,
-                        postId,
+                        referenceId: postId,
+                        time: "Just now",
                         metadata: { org_id: companyId }
                     });
 
@@ -1984,6 +1987,16 @@ exports.toggleLike = async (req, res) => {
                     avatar: user.avatar_url
                 };
             }
+        }
+
+        const ioService = require("../../core/infrastructure/socket.service");
+        if (ioService && ioService.notifyPost) {
+            ioService.notifyPost(postId, "post_like_updated", {
+                postId,
+                liked,
+                likeCount,
+                liker: actorInfo
+            });
         }
 
         return res.status(200).json({
@@ -2297,6 +2310,14 @@ exports.addComment = async (req, res) => {
             [newComment.comment_id]
         );
 
+        const ioService = require("../../core/infrastructure/socket.service");
+        if (ioService && ioService.notifyPost) {
+            ioService.notifyPost(postId, "post_comment_added", {
+                postId,
+                comment: fullCommentRes.rows[0]
+            });
+        }
+
         return res.status(200).json({
             message: "comment added",
             comment: fullCommentRes.rows[0]
@@ -2595,6 +2616,16 @@ exports.toggleCommentLike = async (req, res) => {
         );
 
         const likeCount = likeCountResult.rows[0].like_count;
+
+        const ioService = require("../../core/infrastructure/socket.service");
+        if (ioService && ioService.notifyPost) {
+            ioService.notifyPost(comment.post_id, "post_comment_like_updated", {
+                postId: comment.post_id,
+                commentId,
+                liked,
+                likeCount
+            });
+        }
 
         res.status(200).json({
             liked,
@@ -3944,19 +3975,20 @@ exports.addStoryComment = async (req, res) => {
 
         const newComment = result.rows[0];
 
+        let commenterName, commenterAvatar;
+        if (authorCompanyId) {
+            const compRes = await pool.query(`SELECT name, logo_url FROM organizations WHERE org_id = $1`, [authorCompanyId]);
+            commenterName = compRes.rows[0].name;
+            commenterAvatar = compRes.rows[0].logo_url;
+        } else {
+            const userRes = await pool.query(`SELECT full_name, avatar_url FROM users WHERE user_id = $1`, [userId]);
+            commenterName = userRes.rows[0].full_name;
+            commenterAvatar = userRes.rows[0].avatar_url;
+        }
+
         // Notify Author (if not self)
         const authorId = story.rows[0].author_id;
         if (authorId !== userId) {
-            let commenterName, commenterAvatar;
-            if (authorCompanyId) {
-                const compRes = await pool.query(`SELECT name, logo_url FROM organizations WHERE org_id = $1`, [authorCompanyId]);
-                commenterName = compRes.rows[0].name;
-                commenterAvatar = compRes.rows[0].logo_url;
-            } else {
-                const userRes = await pool.query(`SELECT full_name, avatar_url FROM users WHERE user_id = $1`, [userId]);
-                commenterName = userRes.rows[0].full_name;
-                commenterAvatar = userRes.rows[0].avatar_url;
-            }
 
             socketService.notifyUser(authorId, "notification", {
                 type: "story_comment",
@@ -3975,6 +4007,21 @@ exports.addStoryComment = async (req, res) => {
                   VALUES ($1, $2, $3, $4, $5, $6)`,
                 [authorId, userId, "story_comment", `${commenterName} commented on your story`, storyId, { org_id: authorCompanyId }]
             );
+        }
+
+        const ioService = require("../../core/infrastructure/socket.service");
+        if (ioService && ioService.notifyStory) {
+            ioService.notifyStory(storyId, "story_comment_added", {
+                storyId: storyId.toString(),
+                comment: {
+                    comment_id: newComment.comment_id,
+                    content: newComment.content,
+                    created_at: newComment.created_at,
+                    author_id: newComment.author_id,
+                    full_name: commenterName,
+                    avatar_url: commenterAvatar
+                }
+            });
         }
 
         return res.status(200).json({

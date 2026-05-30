@@ -1,5 +1,5 @@
 const pool = require("../db/pool");
-const { getUserRoom, getConversationRoom, getStoryRoom, getOrgRoom } = require("../utils/socketRooms");
+const { getUserRoom, getConversationRoom, getStoryRoom, getOrgRoom, getPostRoom } = require("../utils/socketRooms");
 
 class SocketService {
   constructor() {
@@ -220,6 +220,21 @@ class SocketService {
       return;
     }
     const room = getStoryRoom(storyId);
+    this.io.to(room).emit(event, payload);
+  }
+
+  /**
+   * Notify all viewers of a specific post
+   * @param {string} postId
+   * @param {string} event
+   * @param {object} payload
+   */
+  notifyPost(postId, event, payload) {
+    if (!this.io) {
+      this._warnUninitialized();
+      return;
+    }
+    const room = getPostRoom(postId);
     this.io.to(room).emit(event, payload);
   }
 

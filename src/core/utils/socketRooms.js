@@ -4,3 +4,4 @@ module.exports.getConversationRoom = (conversationId) => `conversation_${convers
 module.exports.getStoryRoom = (storyId) => `story_${storyId}`;
 module.exports.getOrgRoom = (orgId) => `org_${orgId}`;
 module.exports.getCompanyRoom = module.exports.getOrgRoom; // Legacy alias
+module.exports.getPostRoom = (postId) => `post_${postId}`;
