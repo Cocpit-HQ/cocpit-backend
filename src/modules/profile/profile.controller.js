@@ -814,29 +814,55 @@ exports.getInterests = async (req, res) => {
 };
 
 exports.getSkills = async (req, res) => {
-    try {
-        const { page = 1, search = "" } = req.query;
-        const pageNumber = parseInt(page, 10) || 1;
-        const limit = 10;
-        const offset = (pageNumber - 1) * limit;
+    const { q = "", cursor: rawCursor = "", limit: rawLimit = "20" } = req.query;
 
-        let query = "SELECT skill_id AS id, name FROM skills";
-        const params = [];
+    const limit = Math.min(50, Math.max(1, parseInt(rawLimit, 10) || 20));
+    const searchPattern = q.trim() ? `%${q.trim()}%` : null;
 
-        if (search) {
-            params.push(`%${search}%`);
-            query += ` WHERE name ILIKE $${params.length}`;
+    // Decode cursor — base64(name of last seen item)
+    let cursorName = null;
+    if (rawCursor) {
+        try {
+            cursorName = Buffer.from(rawCursor, "base64").toString("utf8");
+        } catch (_) {
+            return res.status(400).json({ success: false, message: "Invalid cursor" });
         }
+    }
 
-        query += ` ORDER BY name ASC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`;
-        params.push(limit, offset);
+    try {
+        // Fetch limit+1 rows so we can detect if there's a next page
+        const dataRes = await pool.query(
+            `SELECT skill_id, name
+             FROM skills
+             WHERE is_active = TRUE
+               AND ($1::text IS NULL OR name ILIKE $1)
+               AND ($2::text IS NULL OR LOWER(name) > LOWER($2))
+               AND name !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+             ORDER BY LOWER(name) ASC
+             LIMIT $3`,
+            [searchPattern, cursorName, limit + 1]
+        );
 
-        const result = await pool.query(query, params);
+        const rows = dataRes.rows;
+        const has_more = rows.length > limit;
+        const items = has_more ? rows.slice(0, limit) : rows;
 
-        res.json(result.rows);
+        // Encode cursor from last returned item's name
+        const next_cursor = has_more
+            ? Buffer.from(items[items.length - 1].name, "utf8").toString("base64")
+            : null;
+
+        return res.status(200).json({
+            success: true,
+            data: {
+                items,
+                next_cursor,
+                has_more
+            }
+        });
     } catch (err) {
         console.error("Get skills error:", err);
-        res.status(500).json({ message: "Internal server error" });
+        return res.status(500).json({ success: false, message: "Internal server error" });
     }
 };
 
