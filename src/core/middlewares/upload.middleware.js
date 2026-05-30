@@ -396,11 +396,11 @@ const uploadPostMedia = multer({
   limits: { fileSize: 100 * 1024 * 1024 }, // 100MB limit for video/large files
   fileFilter: (req, file, cb) => {
     const allowed = [
-      "image/jpeg", "image/jpg", "image/png", "image/webp", "image/gif",
+      "image/jpeg", "image/jpg", "image/png", "image/webp", "image/gif", "image/svg+xml",
       "video/mp4", "video/mov", "video/avi", "video/mkv", "video/webm", "video/quicktime"
     ];
     if (!allowed.includes(file.mimetype)) {
-      return cb(new Error("Invalid file format. Allowed: JPEG, JPG, PNG, WEBP, GIF, MP4, MOV, AVI, MKV, WEBM, Quicktime."));
+      return cb(new Error("Invalid file format. Allowed: JPEG, JPG, PNG, WEBP, GIF, SVG, MP4, MOV, AVI, MKV, WEBM, Quicktime."));
     }
     cb(null, true);
   }

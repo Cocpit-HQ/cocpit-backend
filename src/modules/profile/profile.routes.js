@@ -1,5 +1,5 @@
 const express = require("express");
-const router = express.Router();
+const   router = express.Router();
 const profileController = require("./profile.controller");
 const { requireAuth, requireActiveSession } = require("../../core/middlewares/auth.middleware");
 const { uploadResume, uploadAvatar, uploadCover } = require("../../core/middlewares/upload.middleware");
