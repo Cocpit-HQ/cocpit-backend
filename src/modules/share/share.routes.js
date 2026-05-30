@@ -37,5 +37,8 @@ router.post("/share/story", requireAuth, shareController.shareToStory);
 // Share Job to Story
 router.post("/share/job-to-story", requireAuth, shareController.shareJobToStory);
 
+// Share users list for share component (priority ordered)
+router.get("/share/users", requireAuth, shareController.getShareUsers);
+
 module.exports = router;
 
