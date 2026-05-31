@@ -42,9 +42,14 @@ jobs:
           Set-Location -Path "$destPath"
           
           # Remove node_modules to ensure a clean install (prevents corrupted/partial installs)
+          # Use cmd rmdir instead of Remove-Item — handles native .node binaries and locked files on Windows
           if (Test-Path "node_modules") {
             Write-Host "Removing existing node_modules..."
-            Remove-Item -Recurse -Force "node_modules"
+            cmd /c "rmdir /s /q node_modules"
+            if ($LASTEXITCODE -ne 0) {
+              Write-Error "Failed to remove node_modules"
+              exit 1
+            }
           }
           
           Write-Host "Running npm install in: $(Get-Location)"
