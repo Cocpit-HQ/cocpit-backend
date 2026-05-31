@@ -3871,34 +3871,21 @@ exports.reactToStory = async (req, res) => {
 
         try {
             const ioService = require('../../core/infrastructure/socket.service');
-            if (ioService) {
-                if (ioService.notifyStory) {
-                    ioService.notifyStory(storyId, "story_reaction_updated", { 
-                        storyId, 
-                        likeCount, 
-                        userId, 
-                        reactorCompanyId, 
-                        liked,
-                        liker: actorInfo,
-                        actorInfo: actorInfo
-                    });
-                }
-                if (ioService.notifyUser) {
-                    ioService.notifyUser(author_id, "story_seen", {
-                        story_id: storyId,
-                        user_id: actorInfo.userId || userId,
-                        full_name: actorInfo.fullName,
-                        avatar_url: actorInfo.avatar,
-                        reaction_type: liked ? 'true' : null,
-                        viewed_at: new Date().toISOString(),
-                        org_id: reactorCompanyId,
-                        is_company: !!reactorCompanyId,
-                    });
-                }
+            if (ioService && ioService.notifyStory) {
+                ioService.notifyStory(storyId, "story_reaction_updated", { 
+                    storyId, 
+                    likeCount, 
+                    userId, 
+                    reactorCompanyId, 
+                    liked,
+                    liker: actorInfo,
+                    actorInfo: actorInfo
+                });
             }
         } catch (e) {
             console.error("Socket emit failed", e)
         }
+
 
         await client.query("COMMIT");
         return res.status(200).json({ success: true, liked, likeCount });
