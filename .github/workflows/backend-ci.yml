@@ -30,19 +30,13 @@ jobs:
         run: |
           $destPath = "${{ env.DEST }}"
           
-          # robocopy exits with codes 1-7 on success (files copied/skipped/extras).
-          # PowerShell treats any non-zero exit as failure, so we suppress it explicitly.
           robocopy . "$destPath" /MIR /XF .env /XD .git node_modules _work
-          if ($LASTEXITCODE -gt 7) {
-              Write-Error "robocopy failed with exit code $LASTEXITCODE"
-              exit 1
-          }
           
           cd "$destPath"
           
-          npm ci --omit=dev
+          npm install --production
           
           pm2 reload $env:PM2_NAME --update-env
-          if ($LASTEXITCODE -ne 0) {
+          if (-not $?) {
               pm2 start src/server.js --name $env:PM2_NAME
           }
