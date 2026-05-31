@@ -39,8 +39,23 @@ jobs:
         shell: powershell
         run: |
           $destPath = "${{ env.DEST }}"
-          cd "$destPath"
+          Set-Location -Path "$destPath"
+          
+          # Remove node_modules to ensure a clean install (prevents corrupted/partial installs)
+          if (Test-Path "node_modules") {
+            Write-Host "Removing existing node_modules..."
+            Remove-Item -Recurse -Force "node_modules"
+          }
+          
+          Write-Host "Running npm install in: $(Get-Location)"
           npm install --omit=dev
+          
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "npm install failed with exit code $LASTEXITCODE"
+            exit 1
+          }
+          
+          Write-Host "npm install completed successfully."
 
       - name: Restart PM2
         shell: powershell
