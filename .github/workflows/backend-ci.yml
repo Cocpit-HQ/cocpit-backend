@@ -25,18 +25,25 @@ jobs:
             echo "PM2_NAME=cocpit-backend-staging" >> $env:GITHUB_ENV
           }
 
-      - name: Sync and Restart PM2
+      - name: Sync files
         shell: powershell
         run: |
           $destPath = "${{ env.DEST }}"
-          
           robocopy . "$destPath" /MIR /XF .env /XD .git node_modules _work
-          
+          # robocopy exit codes 0-7 are success/warning states, not errors
+          if ($LASTEXITCODE -le 7) { $LASTEXITCODE = 0 }
+
+      - name: Install dependencies
+        shell: powershell
+        run: |
+          $destPath = "${{ env.DEST }}"
           cd "$destPath"
-          
           npm install --production
-          
+
+      - name: Restart PM2
+        shell: powershell
+        run: |
           pm2 reload $env:PM2_NAME --update-env
-          if (-not $?) {
-              pm2 start src/server.js --name $env:PM2_NAME
+          if ($LASTEXITCODE -ne 0) {
+              pm2 start "${{ env.DEST }}\src\server.js" --name $env:PM2_NAME
           }
