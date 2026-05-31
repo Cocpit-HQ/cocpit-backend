@@ -3533,22 +3533,36 @@ exports.viewStory = async (req, res) => {
 
         // If viewing as Company
         if (companyId) {
-            // 2. Record View (Company Logic)
-            // We record the view if the Company hasn't viewed it yet.
-            // We ignore author_id check strictly for now, or we can say companies owned by author also don't count?
-            // Usually, "Pages" viewing "personal profiles" counts.
-            // But if I own the company, maybe it shouldn't count?
-            // Let's count it for now to be simple, unless it's literally the same author_id (which is a User ID, not Company ID).
-            // A Company cannot be the "author" of a story yet (stories are user-centric in DB, author_id is FK to users).
-            // So a Company viewing a User story is always a "cross-entity" view.
-
-            await pool.query(
+            const result = await pool.query(
                 `INSERT INTO story_views (story_id, viewer_id, viewer_org_id) 
                  VALUES ($1, $2, $3)
                  ON CONFLICT (story_id, viewer_org_id) WHERE viewer_org_id IS NOT NULL 
-                 DO NOTHING`,
+                 DO NOTHING
+                 RETURNING *`,
                 [story_id, viewer_id, companyId]
             );
+
+            // Emit live seen event to author if it's a fresh view (not a duplicate)
+            if (result.rowCount > 0) {
+                const viewerRes = await pool.query(
+                    `SELECT o.org_id as user_id, o.name as full_name, o.logo_url as avatar_url
+                     FROM organizations o WHERE o.org_id = $1`,
+                    [companyId]
+                );
+                if (viewerRes.rowCount > 0) {
+                    const viewer = viewerRes.rows[0];
+                    socketService.notifyUser(author_id, "story_seen", {
+                        story_id,
+                        user_id: viewer.user_id,
+                        full_name: viewer.full_name,
+                        avatar_url: viewer.avatar_url,
+                        reaction_type: null,
+                        viewed_at: new Date().toISOString(),
+                        org_id: companyId,
+                        is_company: true,
+                    });
+                }
+            }
 
             return res.status(200).json({
                 message: "Company view recorded",
@@ -3556,16 +3570,38 @@ exports.viewStory = async (req, res) => {
             });
         }
 
-        // If viewing as User
-        // Only insert if the viewer is NOT the author
+        // If viewing as User — only insert if the viewer is NOT the author
         if (viewer_id !== author_id) {
-            await pool.query(
+            const result = await pool.query(
                 `INSERT INTO story_views (story_id, viewer_id, viewer_org_id) 
                  VALUES ($1, $2, NULL)
                  ON CONFLICT (story_id, viewer_id) WHERE viewer_org_id IS NULL
-                 DO NOTHING`,
+                 DO NOTHING
+                 RETURNING *`,
                 [story_id, viewer_id]
             );
+
+            // Emit live seen event to author if it's a fresh view (not a duplicate)
+            if (result.rowCount > 0) {
+                const viewerRes = await pool.query(
+                    `SELECT u.user_id, u.full_name, u.avatar_url
+                     FROM users u WHERE u.user_id = $1`,
+                    [viewer_id]
+                );
+                if (viewerRes.rowCount > 0) {
+                    const viewer = viewerRes.rows[0];
+                    socketService.notifyUser(author_id, "story_seen", {
+                        story_id,
+                        user_id: viewer.user_id,
+                        full_name: viewer.full_name,
+                        avatar_url: viewer.avatar_url,
+                        reaction_type: null,
+                        viewed_at: new Date().toISOString(),
+                        org_id: null,
+                        is_company: false,
+                    });
+                }
+            }
         }
 
         res.status(200).json({
@@ -3575,10 +3611,11 @@ exports.viewStory = async (req, res) => {
 
     } catch (err) {
         console.error("View story error:", err);
-        // We still send a 500 if the DB is actually down
         res.status(500).json({ message: "Internal server error" });
     }
 };
+
+
 
 
 
