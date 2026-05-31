@@ -3747,7 +3747,13 @@ exports.reactToStory = async (req, res) => {
         try {
             const ioService = require('../../core/infrastructure/socket.service');
             if (ioService && ioService.notifyStory) {
-                ioService.notifyStory(storyId, "story_reaction_updated", { storyId, likeCount });
+                ioService.notifyStory(storyId, "story_reaction_updated", { 
+                    storyId, 
+                    likeCount, 
+                    userId, 
+                    reactorCompanyId, 
+                    liked 
+                });
             }
         } catch (e) {
             console.error("Socket emit failed", e)
