@@ -3626,6 +3626,10 @@ exports.reactToStory = async (req, res) => {
 
         // 3. Toggle Like
         let liked = false;
+        
+        // Parse explicit reaction if provided
+        const isExplicit = reaction !== undefined && reaction !== null;
+        const reactionVal = isExplicit ? (reaction === true || reaction === 'true') : true;
 
         // Check existing reaction
         let query = "";
@@ -3640,58 +3644,102 @@ exports.reactToStory = async (req, res) => {
         }
 
         const existingReaction = await client.query(query, params);
+        const hasExisting = existingReaction.rowCount > 0;
 
-        if (existingReaction.rowCount > 0) {
-            // UNLIKE
-            if (reactorCompanyId) {
-                await client.query("DELETE FROM story_reactions WHERE story_id = $1 AND reactor_org_id = $2", [storyId, reactorCompanyId]);
+        if (isExplicit) {
+            if (reactionVal) {
+                // Explicit LIKE
+                if (!hasExisting) {
+                    if (reactorCompanyId) {
+                        await client.query(
+                            `INSERT INTO story_reactions (story_id, user_id, reactor_org_id, reaction_type)
+                             VALUES ($1, $2, $3, true)
+                             ON CONFLICT (story_id, reactor_org_id) WHERE reactor_org_id IS NOT NULL
+                             DO UPDATE SET reaction_type = true`,
+                            [storyId, userId, reactorCompanyId]
+                        );
+                        await client.query(
+                            `INSERT INTO story_views (story_id, viewer_id, viewer_org_id)
+                             VALUES ($1, $2, $3)
+                             ON CONFLICT (story_id, viewer_org_id) WHERE viewer_org_id IS NOT NULL
+                             DO NOTHING`,
+                            [storyId, userId, reactorCompanyId]
+                        );
+                    } else {
+                        await client.query(
+                            `INSERT INTO story_reactions (story_id, user_id, reaction_type)
+                             VALUES ($1, $2, true)
+                             ON CONFLICT (story_id, user_id) WHERE reactor_org_id IS NULL
+                             DO UPDATE SET reaction_type = true`,
+                            [storyId, userId]
+                        );
+                        await client.query(
+                            `INSERT INTO story_views (story_id, viewer_id)
+                             VALUES ($1, $2)
+                             ON CONFLICT (story_id, viewer_id) WHERE viewer_org_id IS NULL
+                             DO NOTHING`,
+                            [storyId, userId]
+                        );
+                    }
+                }
+                liked = true;
             } else {
-                await client.query("DELETE FROM story_reactions WHERE story_id = $1 AND user_id = $2 AND reactor_org_id IS NULL", [storyId, reactorUserId]);
+                // Explicit UNLIKE
+                if (hasExisting) {
+                    if (reactorCompanyId) {
+                        await client.query("DELETE FROM story_reactions WHERE story_id = $1 AND reactor_org_id = $2", [storyId, reactorCompanyId]);
+                    } else {
+                        await client.query("DELETE FROM story_reactions WHERE story_id = $1 AND user_id = $2 AND reactor_org_id IS NULL", [storyId, reactorUserId]);
+                    }
+                }
+                liked = false;
             }
-            liked = false;
         } else {
-            // LIKE
-            // We need to handle the INSERT carefully with ON CONFLICT
-            // Since we have partial indexes, ON CONFLICT (story_id, user_id) only works if we satisfy the WHERE clause of the partial index IN THE INSERT?
-            // Actually, ON CONFLICT target must match the index definition.
-
-            if (reactorCompanyId) {
-                await client.query(
-                    `INSERT INTO story_reactions (story_id, user_id, reactor_org_id, reaction_type)
-                     VALUES ($1, $2, $3, $4)
-                     ON CONFLICT (story_id, reactor_org_id) WHERE reactor_org_id IS NOT NULL
-                     DO UPDATE SET reaction_type = $4`,
-                    [storyId, userId, reactorCompanyId, reaction.toString()]
-                );
-
-                // Also record view for company
-                await client.query(
-                    `INSERT INTO story_views (story_id, viewer_id, viewer_org_id)
-                     VALUES ($1, $2, $3)
-                     ON CONFLICT (story_id, viewer_org_id) WHERE viewer_org_id IS NOT NULL
-                     DO NOTHING`,
-                    [storyId, userId, reactorCompanyId]
-                );
-
+            // Toggle behavior
+            if (hasExisting) {
+                // UNLIKE
+                if (reactorCompanyId) {
+                    await client.query("DELETE FROM story_reactions WHERE story_id = $1 AND reactor_org_id = $2", [storyId, reactorCompanyId]);
+                } else {
+                    await client.query("DELETE FROM story_reactions WHERE story_id = $1 AND user_id = $2 AND reactor_org_id IS NULL", [storyId, reactorUserId]);
+                }
+                liked = false;
             } else {
-                await client.query(
-                    `INSERT INTO story_reactions (story_id, user_id, reaction_type)
-                     VALUES ($1, $2, $3)
-                     ON CONFLICT (story_id, user_id) WHERE reactor_org_id IS NULL
-                     DO UPDATE SET reaction_type = $3`,
-                    [storyId, userId, reaction.toString()]
-                );
-
-                // Also record view for user
-                await client.query(
-                    `INSERT INTO story_views (story_id, viewer_id)
-                     VALUES ($1, $2)
-                     ON CONFLICT (story_id, viewer_id) WHERE viewer_org_id IS NULL
-                     DO NOTHING`,
-                    [storyId, userId]
-                );
+                // LIKE
+                if (reactorCompanyId) {
+                    await client.query(
+                        `INSERT INTO story_reactions (story_id, user_id, reactor_org_id, reaction_type)
+                         VALUES ($1, $2, $3, true)
+                         ON CONFLICT (story_id, reactor_org_id) WHERE reactor_org_id IS NOT NULL
+                         DO UPDATE SET reaction_type = true`,
+                        [storyId, userId, reactorCompanyId]
+                    );
+                    await client.query(
+                        `INSERT INTO story_views (story_id, viewer_id, viewer_org_id)
+                         VALUES ($1, $2, $3)
+                         ON CONFLICT (story_id, viewer_org_id) WHERE viewer_org_id IS NOT NULL
+                         DO NOTHING`,
+                        [storyId, userId, reactorCompanyId]
+                    );
+                } else {
+                    await client.query(
+                        `INSERT INTO story_reactions (story_id, user_id, reaction_type)
+                         VALUES ($1, $2, true)
+                         ON CONFLICT (story_id, user_id) WHERE reactor_org_id IS NULL
+                         DO UPDATE SET reaction_type = true`,
+                        [storyId, userId]
+                    );
+                    await client.query(
+                        `INSERT INTO story_views (story_id, viewer_id)
+                         VALUES ($1, $2)
+                         ON CONFLICT (story_id, viewer_id) WHERE viewer_org_id IS NULL
+                         DO NOTHING`,
+                        [storyId, userId]
+                    );
+                }
+                liked = true;
             }
-            liked = true;
+        }
 
             // Notification (Only if not self-reaction)
             // If Company reacts to User Story -> Notify User.
@@ -3736,13 +3784,53 @@ exports.reactToStory = async (req, res) => {
                     [author_id, userId, "story_like", notificationData.text, storyId, notificationData.metadata]
                 );
             }
-        }
 
         const likeCountRes = await client.query(
             `SELECT COUNT(*) as count FROM story_reactions WHERE story_id = $1 AND reaction_type = 'true'`,
             [storyId]
         );
         const likeCount = parseInt(likeCountRes.rows[0].count, 10);
+
+        // Fetch Liker details for Socket payload
+        let actorInfo = {
+            userId: null,
+            username: null,
+            fullName: null,
+            avatar: null
+        };
+        try {
+            if (reactorCompanyId) {
+                const orgResult = await client.query(
+                    "SELECT org_id, slug, name, logo_url FROM organizations WHERE org_id = $1",
+                    [reactorCompanyId]
+                );
+                if (orgResult.rowCount > 0) {
+                    const org = orgResult.rows[0];
+                    actorInfo = {
+                        userId: org.org_id,
+                        username: org.slug,
+                        fullName: org.name,
+                        avatar: org.logo_url
+                    };
+                }
+            } else {
+                const userResult = await client.query(
+                    "SELECT user_id, account_name, full_name, avatar_url FROM users WHERE user_id = $1",
+                    [userId]
+                );
+                if (userResult.rowCount > 0) {
+                    const user = userResult.rows[0];
+                    actorInfo = {
+                        userId: user.user_id,
+                        username: user.account_name,
+                        fullName: user.full_name,
+                        avatar: user.avatar_url
+                    };
+                }
+            }
+        } catch (fetchErr) {
+            console.error("Error fetching liker details for socket:", fetchErr);
+        }
 
         try {
             const ioService = require('../../core/infrastructure/socket.service');
@@ -3752,7 +3840,9 @@ exports.reactToStory = async (req, res) => {
                     likeCount, 
                     userId, 
                     reactorCompanyId, 
-                    liked 
+                    liked,
+                    liker: actorInfo,
+                    actorInfo: actorInfo
                 });
             }
         } catch (e) {
