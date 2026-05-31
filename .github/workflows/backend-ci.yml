@@ -13,6 +13,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        env:
+          FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
       - name: Set environment variables
         shell: powershell
@@ -38,7 +40,7 @@ jobs:
         run: |
           $destPath = "${{ env.DEST }}"
           cd "$destPath"
-          npm install --production
+          npm install --omit=dev
 
       - name: Restart PM2
         shell: powershell
