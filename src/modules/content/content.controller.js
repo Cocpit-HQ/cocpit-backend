@@ -1538,7 +1538,9 @@ exports.updatePostById = async (req, res) => {
         if (Array.isArray(media_urls)) {
             await client.query(`DELETE FROM post_media WHERE post_id = $1`, [postId]);
 
-            for (const url of media_urls) {
+            for (const item of media_urls) {
+                const url = typeof item === 'object' && item !== null ? item.url : item;
+                if (!url) continue;
                 const type = url.match(/\.(mp4|webm|mov)(\?|#|$)/i) ? "video" : "image";
                 await client.query(
                     `INSERT INTO post_media (post_id, url, media_type)
@@ -1547,6 +1549,7 @@ exports.updatePostById = async (req, res) => {
                 );
             }
         }
+
 
 
         if (author_org_id) {
