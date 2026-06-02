@@ -3294,8 +3294,21 @@ exports.getGroupedStories = async (req, res) => {
                 view_count: story.view_count || 0,
                 like_count: story.like_count || 0,
                 shared_post: story.shared_post,
-                shared_post: story.shared_post,
-                story_metadata: story.story_metadata
+                story_metadata: story.story_metadata,
+                // Derive thumbnail_url: for Cloudinary videos swap extension to .jpg
+                // for images use the media_url directly
+                thumbnail_url: (() => {
+                    const url = story.media_url || '';
+                    if (!url) return null;
+                    if (story.media_type === 'video') {
+                        if (url.includes('cloudinary')) {
+                            // Swap any extension (e.g. .mp4) to .jpg for thumbnail
+                            return url.replace(/\.[^/.?]+(\?.*)?$/, '.jpg$1');
+                        }
+                        return null; // Non-cloudinary video: no thumbnail available
+                    }
+                    return url; // Image: use media_url directly as thumbnail
+                })()
             });
         }
 
@@ -3881,16 +3894,30 @@ exports.reactToStory = async (req, res) => {
 
         try {
             const ioService = require('../../core/infrastructure/socket.service');
-            if (ioService && ioService.notifyStory) {
-                ioService.notifyStory(storyId, "story_reaction_updated", { 
-                    storyId, 
-                    likeCount, 
-                    userId, 
-                    reactorCompanyId, 
-                    liked,
-                    liker: actorInfo,
-                    actorInfo: actorInfo
-                });
+            if (ioService) {
+                if (ioService.notifyStory) {
+                    ioService.notifyStory(storyId, "story_reaction_updated", { 
+                        storyId, 
+                        likeCount, 
+                        userId, 
+                        reactorCompanyId, 
+                        liked,
+                        liker: actorInfo,
+                        actorInfo: actorInfo
+                    });
+                }
+                if (ioService.notifyUser) {
+                    ioService.notifyUser(author_id, "story_seen", {
+                        story_id: storyId,
+                        user_id: actorInfo.userId || userId,
+                        full_name: actorInfo.fullName,
+                        avatar_url: actorInfo.avatar,
+                        reaction_type: liked ? 'true' : null,
+                        viewed_at: new Date().toISOString(),
+                        org_id: reactorCompanyId,
+                        is_company: !!reactorCompanyId,
+                    });
+                }
             }
         } catch (e) {
             console.error("Socket emit failed", e)
