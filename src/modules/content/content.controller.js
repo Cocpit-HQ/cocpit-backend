@@ -157,7 +157,12 @@ exports.getPublicFeed = async (req, res) => {
         const last = rows[rows.length - 1];
 
         res.json({
-            posts: rows,
+            posts: finalRows.map(post => {
+                // If it's not an article, completely remove the title key
+                if (post.post_type !== 'article') delete post.title;
+                if (post.shared_post && post.shared_post.post_type !== 'article') delete post.shared_post.title;
+                return post;
+            }),
             nextCursor: last
                 ? {
                     cursorCreatedAt: last.created_at,
@@ -310,7 +315,12 @@ exports.getMyPosts = async (req, res) => {
         const last = rows[rows.length - 1];
 
         res.json({
-            posts: rows,
+            posts: finalRows.map(post => {
+                // If it's not an article, completely remove the title key
+                if (post.post_type !== 'article') delete post.title;
+                if (post.shared_post && post.shared_post.post_type !== 'article') delete post.shared_post.title;
+                return post;
+            }),
             nextCursor: last
                 ? {
                     cursorCreatedAt: last.created_at,
