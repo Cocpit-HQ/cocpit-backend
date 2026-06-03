@@ -193,11 +193,14 @@ exports.getUserProfile = async (req, res) => {
     const profileId = user.profile_id;
     delete user.profile_id; // Remove from response payload
 
-    // 2. Fetch Experiences & Educations using profileRepo
-    const [experiences, educations] = await Promise.all([
+    // 2. Fetch Experiences, Educations & Resume using profileRepo
+    const [experiences, educations, resumeRow] = await Promise.all([
       profileId ? profileRepo.getExperiences(profileId) : [],
-      profileId ? profileRepo.getEducations(profileId) : []
+      profileId ? profileRepo.getEducations(profileId) : [],
+      profileRepo.getLatestResume(targetUserId)
     ]);
+
+    const resume = resumeRow ? { originalName: resumeRow.file_name, url: resumeRow.file_url } : null;
 
     // 4. Fetch Skills
     const skillsQuery = `
@@ -314,6 +317,7 @@ exports.getUserProfile = async (req, res) => {
       educations: educations,
       skills: skillsResult.rows,
       organization_roles: companyRoles.rows,
+      resume: resume,
     };
 
     return res.status(200).json(responseData);
