@@ -423,6 +423,7 @@ exports.getPublicProfilePosts = async (req, res) => {
         p.content,
         p.created_at,
         p.visibility,
+        p.location,
 
         u.user_id AS author_id,
         u.full_name AS author_name,
