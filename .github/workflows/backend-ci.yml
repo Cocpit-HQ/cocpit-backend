@@ -46,7 +46,7 @@ jobs:
           # On first push to a new branch, github.event.before is all zeros
           # In that case we have no history to diff, so install unconditionally
           if ($before -eq "0000000000000000000000000000000000000000") {
-            Write-Host "First push to branch — no diff available. Running npm install..."
+            Write-Host "First push to branch - no diff available. Running npm install..."
             $depsChanged = $true
           } else {
             try {
