@@ -8,11 +8,13 @@ on:
 
 jobs:
   deploy:
-    runs-on: self-hosted 
+    runs-on: self-hosted
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
         env:
           FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
@@ -38,34 +40,47 @@ jobs:
       - name: Install dependencies
         shell: powershell
         run: |
-          $destPath = "${{ env.DEST }}"
-          Set-Location -Path "$destPath"
-          
-          # Remove node_modules to ensure a clean install (prevents corrupted/partial installs)
-          # Use cmd rmdir instead of Remove-Item — handles native .node binaries and locked files on Windows
-          if (Test-Path "node_modules") {
-            Write-Host "Removing existing node_modules..."
-            cmd /c "rmdir /s /q node_modules"
-            if ($LASTEXITCODE -ne 0) {
-              Write-Error "Failed to remove node_modules"
-              exit 1
+          $before = "${{ github.event.before }}"
+          $sha    = "${{ github.sha }}"
+
+          # On first push to a new branch, github.event.before is all zeros
+          # In that case we have no history to diff, so install unconditionally
+          if ($before -eq "0000000000000000000000000000000000000000") {
+            Write-Host "First push to branch — no diff available. Running npm install..."
+            $depsChanged = $true
+          } else {
+            try {
+              $changed = git diff --name-only $before $sha
+              if ($LASTEXITCODE -ne 0) { throw "git diff failed with exit code $LASTEXITCODE" }
+              $depsChanged = $changed | Select-String "^(package\.json|package-lock\.json)$"
+              if ($depsChanged) {
+                Write-Host "Dependency files changed:"
+                $changed | Select-String "^(package\.json|package-lock\.json)$" | Write-Host
+              } else {
+                Write-Host "No dependency changes detected. Skipping npm install."
+              }
+            } catch {
+              Write-Host "Unable to determine dependency changes ($_). Running npm install for safety."
+              $depsChanged = $true
             }
           }
-          
-          Write-Host "Running npm install in: $(Get-Location)"
-          npm install --omit=dev
-          
-          if ($LASTEXITCODE -ne 0) {
-            Write-Error "npm install failed with exit code $LASTEXITCODE"
-            exit 1
+
+          if ($depsChanged) {
+            Set-Location -Path "${{ env.DEST }}"
+            Write-Host "Running npm install in: $(Get-Location)"
+            npm install --omit=dev
+            if ($LASTEXITCODE -ne 0) {
+              Write-Error "npm install failed with exit code $LASTEXITCODE"
+              exit 1
+            }
+            Write-Host "npm install completed successfully."
           }
-          
-          Write-Host "npm install completed successfully."
 
       - name: Restart PM2
         shell: powershell
         run: |
           pm2 reload $env:PM2_NAME --update-env
           if ($LASTEXITCODE -ne 0) {
-              pm2 start "${{ env.DEST }}\src\server.js" --name $env:PM2_NAME
+            Write-Host "PM2 process not found. Starting fresh..."
+            pm2 start "${{ env.DEST }}\src\server.js" --name $env:PM2_NAME
           }
