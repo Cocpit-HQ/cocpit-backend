@@ -61,6 +61,9 @@ const getConfig = (req, res) => {
 
       // If true, Flutter should block app entry and show a maintenance screen.
       maintenance_mode: toBool(process.env.APP_MAINTENANCE_MODE ?? "false"),
+
+      // Flag to force an immediate update for all clients, regardless of version checks.
+      force_update: false,
     },
 
     // Current deployment environment for client-side diagnostics/logging.
