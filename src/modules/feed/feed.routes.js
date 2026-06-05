@@ -57,4 +57,7 @@ router.get("/session", requireAuth, feedSessionLimiter, feedController.getSessio
 // DELETE /api/feed/session — Reset feed session
 router.delete("/session", requireAuth, feedSessionLimiter, feedController.resetSession);
 
+// POST /api/feed/hide — Hide a post and negatively affect recommendations
+router.post("/hide", requireAuth, feedEventLimiter, feedController.hidePost);
+
 module.exports = router;

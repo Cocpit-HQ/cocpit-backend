@@ -181,3 +181,35 @@ exports.resetSession = async (req, res, next) => {
     next(err);
   }
 };
+
+// ─── POST /api/feed/hide ──────────────────────────────────────────────────────
+/**
+ * Hides a post for the authenticated user and applies negative intent scoring.
+ */
+exports.hidePost = async (req, res, next) => {
+  try {
+    const userId = req.user?.sub;
+    if (!userId) return res.status(401).json({ ok: false, message: "Unauthenticated" });
+
+    const { item_id, session_id, position } = req.body;
+
+    if (!item_id) {
+      return res.status(400).json({ ok: false, message: "Missing required field: item_id" });
+    }
+
+    await feedService.hidePost({
+      userId,
+      postId: item_id,
+      sessionId: session_id,
+      position: position,
+      pool
+    });
+
+    return res.status(200).json({
+      ok: true,
+      message: "Post hidden successfully"
+    });
+  } catch (err) {
+    next(err);
+  }
+};

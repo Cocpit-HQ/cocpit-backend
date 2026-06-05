@@ -40,6 +40,8 @@ const {
 } = require('./cache/feedCache');
 const { getSession, updateCursor, incrementSeenCount, createSession } = require('./session/feedSession.service');
 const { getPostHydrationSelect, getPostHydrationJoins, getPublicFeedWhere } = require('../../core/queries/postHydration.query');
+const feedAnalytics = require('./analytics/feedAnalytics.service');
+const { incrementUserHashtagScore } = require('../../services/recommendation.service');
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -279,8 +281,54 @@ async function getFeed({ userId, cursor = null, limit = DEFAULT_PAGE_SIZE, pool 
 // Exports
 // ---------------------------------------------------------------------------
 
+/**
+ * hidePost
+ * Processes a "Not Interested" action:
+ * 1. Permanently hides the post (addToSeenSet)
+ * 2. Logs the analytics event
+ * 3. Applies a negative penalty to user's hashtag score
+ */
+async function hidePost({ userId, postId, sessionId, position, pool }) {
+  if (!userId || !postId) throw new Error('hidePost: userId and postId are required');
+
+  // 1. Permanently hide from future feed generations (addToSeenSet)
+  try {
+    await addToSeenSet(userId, [postId]);
+  } catch (err) {
+    console.warn('[feedService] hidePost addToSeenSet failed:', err.message);
+  }
+
+  // 2. Track analytics event as 'hide'
+  try {
+    await feedAnalytics.trackEvent({
+      event_type: 'hide',
+      item_id: postId,
+      item_type: 'post',
+      user_id: userId,
+      session_id: sessionId || 'unknown_session',
+      position: position || 0,
+      context: 'home',
+      pool
+    });
+  } catch (err) {
+    console.warn('[feedService] hidePost trackEvent failed:', err.message);
+  }
+
+  // 3. Apply a negative penalty (-5) to the user's hashtag score based on post tags
+  try {
+    await incrementUserHashtagScore(userId, -5, null, postId).catch(err => {
+      console.warn('[feedService] hidePost score penalty failed:', err.message);
+    });
+  } catch (err) {
+    console.warn('[feedService] hidePost incrementUserHashtagScore failed:', err.message);
+  }
+
+  return { ok: true };
+}
+
 module.exports = {
   getFeed,
+  hidePost,
 
   // Exported for unit tests
   _buildResponse,
