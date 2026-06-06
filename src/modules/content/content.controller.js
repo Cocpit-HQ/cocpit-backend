@@ -1384,7 +1384,9 @@ exports.updatePostById = async (req, res) => {
     let { content, category, visibility, media_urls, post_type, title, poll_options, location } = req.body;
 
     // Sanitize user-generated content
-    content = sanitizeContent(content);
+    if (post_type !== 'article') {
+        content = sanitizeContent(content);
+    }
     title = sanitizeContent(title);
     if (poll_options && Array.isArray(poll_options)) {
         poll_options = poll_options.map(opt => sanitizeContent(opt));
