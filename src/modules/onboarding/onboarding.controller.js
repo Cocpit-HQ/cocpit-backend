@@ -45,10 +45,18 @@ exports.saveRole = async (req, res) => {
             roleId = insertRoleRes.rows[0].role_id;
         }
 
+        const allowedRoles = ['student', 'fresher', 'intern', 'self_employed', 'employed', 'unemployed'];
+
+        await client.query(
+            `DELETE FROM user_roles 
+             WHERE user_id = $1 
+             AND role_id IN (SELECT role_id FROM roles WHERE role_name = ANY($2::text[]))`,
+            [userId, allowedRoles]
+        );
+
         await client.query(
             `INSERT INTO user_roles (user_id, role_id)
-             VALUES ($1, $2)
-             ON CONFLICT DO NOTHING`,
+             VALUES ($1, $2)`,
             [userId, roleId]
         );
 
