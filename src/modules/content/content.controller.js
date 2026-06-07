@@ -136,13 +136,17 @@ exports.getPublicFeed = async (req, res) => {
                              `, [actorScope.userId, actorScope.orgId || null, suggestedPostIds]);
 
                             if (hydratedSuggestions && hydratedSuggestions.length > 0) {
-                                hydratedSuggestions[0].is_suggested = true;
-                                hydratedSuggestions[0].suggested_reason = `Because you follow #${randomTag}`;
-                                // Splice at index 3
-                                if (finalRows.length > 3) {
-                                    finalRows.splice(3, 0, hydratedSuggestions[0]);
-                                } else {
-                                    finalRows.push(hydratedSuggestions[0]);
+                                const suggestion = hydratedSuggestions[0];
+                                const isDuplicate = finalRows.some(p => p.post_id === suggestion.post_id);
+                                if (!isDuplicate) {
+                                    suggestion.is_suggested = true;
+                                    suggestion.suggested_reason = `Because you follow #${randomTag}`;
+                                    // Splice at index 3
+                                    if (finalRows.length > 3) {
+                                        finalRows.splice(3, 0, suggestion);
+                                    } else {
+                                        finalRows.push(suggestion);
+                                    }
                                 }
                             }
                         }
@@ -295,13 +299,17 @@ exports.getMyPosts = async (req, res) => {
                              `, [actorScope.userId, actorScope.orgId || null, suggestedPostIds]);
 
                             if (hydratedSuggestions && hydratedSuggestions.length > 0) {
-                                hydratedSuggestions[0].is_suggested = true;
-                                hydratedSuggestions[0].suggested_reason = `Because you follow #${randomTag}`;
-                                // Splice at index 3
-                                if (finalRows.length > 3) {
-                                    finalRows.splice(3, 0, hydratedSuggestions[0]);
-                                } else {
-                                    finalRows.push(hydratedSuggestions[0]);
+                                const suggestion = hydratedSuggestions[0];
+                                const isDuplicate = finalRows.some(p => p.post_id === suggestion.post_id);
+                                if (!isDuplicate) {
+                                    suggestion.is_suggested = true;
+                                    suggestion.suggested_reason = `Because you follow #${randomTag}`;
+                                    // Splice at index 3
+                                    if (finalRows.length > 3) {
+                                        finalRows.splice(3, 0, suggestion);
+                                    } else {
+                                        finalRows.push(suggestion);
+                                    }
                                 }
                             }
                         }
