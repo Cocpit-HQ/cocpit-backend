@@ -1344,6 +1344,81 @@ exports.getMyConnections = async (req, res) => {
     }
 }
 
+exports.getConnections = async (req, res) => {
+    let targetUserId = req.params.id;
+    const requesterId = req.user ? req.user.sub : null;
+    const { search } = req.query;
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+    try {
+        if (!uuidRegex.test(targetUserId)) {
+            const resolveResult = await pool.query(
+                "SELECT user_id FROM users WHERE LOWER(account_name) = LOWER($1)",
+                [targetUserId]
+            );
+            if (resolveResult.rowCount === 0) {
+                return res.status(404).json({ message: "User not found" });
+            }
+            targetUserId = resolveResult.rows[0].user_id;
+        }
+
+        let userQuery = `
+            SELECT u.user_id, u.full_name, u.avatar_url, u.headline, c.created_at, 'user' as type, NULL as slug
+            FROM connections c 
+            JOIN users u ON c.connected_user_id = u.user_id 
+            WHERE c.user_id = $1
+        `;
+
+        let companyQuery = `
+            SELECT c.org_id as user_id, c.name as full_name, c.logo_url as avatar_url, c.industry as headline, cc.created_at, 'company' as type, c.slug
+            FROM organization_connections cc
+            JOIN organizations c ON cc.org_id = c.org_id
+            WHERE cc.user_id = $1
+              AND c.is_deleted = FALSE
+        `;
+
+        const params = [targetUserId];
+        let paramIdx = 2;
+
+        if (search) {
+            userQuery += ` AND (u.full_name ILIKE $${paramIdx} OR u.headline ILIKE $${paramIdx})`;
+            companyQuery += ` AND (c.name ILIKE $${paramIdx} OR c.industry ILIKE $${paramIdx})`;
+            params.push(`%${search}%`);
+            paramIdx++;
+        }
+
+        if (requesterId) {
+            params.push(requesterId);
+            userQuery += `
+                AND NOT EXISTS (
+                    SELECT 1 FROM blocks b 
+                    WHERE (b.blocker_id = $${paramIdx} AND b.blocked_id = u.user_id)
+                       OR (b.blocker_id = u.user_id AND b.blocked_id = $${paramIdx})
+                )
+            `;
+        }
+
+        const fullQuery = `(${userQuery}) UNION ALL (${companyQuery}) ORDER BY created_at DESC`;
+        const result = await pool.query(fullQuery, params);
+
+        const formattedConnections = result.rows.map(row => {
+            const timeAgoVal = formatDistanceToNow(new Date(row.created_at), {
+                addSuffix: true
+            }).replace(/^about\s+/i, '');
+
+            return {
+                ...row,
+                timeAgo: timeAgoVal
+            };
+        });
+
+        res.json(formattedConnections);
+    } catch (err) {
+        console.error("Get connections error:", err);
+        res.status(500).json({ message: "Internal server error" });
+    }
+};
+
 exports.getConnectionCount = async (req, res) => {
     const userId = req.params.id;
 

@@ -48,6 +48,7 @@ router.get("/connections/requests", requireAuth, socialController.getPendingRequ
 router.patch("/connections/:requestId", requireAuth, socialController.handleConnectionRequest);
 router.get("/connections/history", requireAuth, socialController.getConnectionRequestHistory);
 router.get("/my/connections", requireAuth, socialController.getMyConnections);
+router.get("/users/:id/connections", socialController.getConnections);
 router.delete("/connections/:requestId", requireAuth, socialController.cancelConnectionRequest);
 router.delete("/connections/user/:id", requireAuth, socialController.removeConnection);
 router.get("/users/:id/connections/count", socialController.getConnectionCount);
