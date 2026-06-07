@@ -375,8 +375,8 @@ exports.saveSkills = async (req, res) => {
             .filter(Boolean)
     )];
 
-    if (skillList.length < 3 || skillList.length > 7) {
-        return res.status(400).json({ success: false, message: "Please select between 3 and 7 valid unique skills" });
+    if (skillList.length < 3 || skillList.length > 15) {
+        return res.status(400).json({ success: false, message: "Please select between 3 and 15 valid unique skills" });
     }
 
     const client = await getClient();
