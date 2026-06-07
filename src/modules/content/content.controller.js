@@ -1420,7 +1420,7 @@ exports.updatePostById = async (req, res) => {
         // 1. Safety check for polls
         if (post_type === 'poll') {
             await client.query('ROLLBACK');
-            return res.status(401).json({ message: "You cannot edit a poll once created" });
+            return res.status(400).json({ message: "You cannot edit a poll once created" });
         }
 
         // 2. Fetch Post & Check Permissions (CRITICAL FIX)
