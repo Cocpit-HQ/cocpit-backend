@@ -794,7 +794,7 @@ exports.createPost = async (req, res) => {
                 const firstUrl = media_urls[0];
                 post_type = firstUrl.toLowerCase().match(/\.(mp4|webm|mov)(\?|#|$)/) ? 'video' : 'image';
             } else {
-                post_type = 'article';
+                post_type = 'text';
             }
         }
 
@@ -1148,6 +1148,9 @@ exports.getPostById = async (req, res) => {
     -- Comment Count
     (SELECT COUNT(*) FROM post_comments pc WHERE pc.post_id = p.post_id)::int AS comment_count,
 
+    -- Share Count
+    (SELECT COUNT(*) FROM posts sp_share WHERE sp_share.shared_post_id = p.post_id)::int AS share_count,
+
     -- Is Liked (Identity Aware)
     EXISTS(
         SELECT 1 FROM post_likes pl 
@@ -1277,6 +1280,7 @@ exports.getPostById = async (req, res) => {
                 'media', COALESCE(sp_media.media, '[]'::json),
                 'like_count', (SELECT COUNT(*) FROM post_likes pl WHERE pl.post_id = sp.post_id)::int,
                 'comment_count', (SELECT COUNT(*) FROM post_comments pc WHERE pc.post_id = sp.post_id)::int,
+                'share_count', (SELECT COUNT(*) FROM posts sp_share2 WHERE sp_share2.shared_post_id = sp.post_id)::int,
                 'is_liked', EXISTS(
                     SELECT 1 FROM post_likes pl 
                     WHERE pl.post_id = sp.post_id 
@@ -3699,7 +3703,7 @@ exports.reactToStory = async (req, res) => {
 
         // 3. Toggle Like
         let liked = false;
-        
+
         // Parse explicit reaction if provided
         const isExplicit = reaction !== undefined && reaction !== null;
         const reactionVal = isExplicit ? (reaction === true || reaction === 'true') : true;
@@ -3814,49 +3818,49 @@ exports.reactToStory = async (req, res) => {
             }
         }
 
-            // Notification (Only if not self-reaction)
-            // If Company reacts to User Story -> Notify User.
-            // If User reacts to User Story -> Notify User.
-            // If Author is same as Actor (User Context) -> Skip.
-            // If Author is same as Actor (Company Context) -> Skip ? (Company reacting to own story?)
+        // Notification (Only if not self-reaction)
+        // If Company reacts to User Story -> Notify User.
+        // If User reacts to User Story -> Notify User.
+        // If Author is same as Actor (User Context) -> Skip.
+        // If Author is same as Actor (Company Context) -> Skip ? (Company reacting to own story?)
 
-            let shouldNotify = true;
-            if (!reactorCompanyId && author_id === userId) shouldNotify = false;
-            // TODO: If Company owns the story, check against Company ID? (Stories don't have owner_org_id yet, presumed User is author)
+        let shouldNotify = true;
+        if (!reactorCompanyId && author_id === userId) shouldNotify = false;
+        // TODO: If Company owns the story, check against Company ID? (Stories don't have owner_org_id yet, presumed User is author)
 
-            if (shouldNotify && liked) {
-                const actorName = reactorCompanyId ? (await client.query("SELECT name FROM organizations WHERE org_id = $1", [reactorCompanyId])).rows[0].name : (await client.query("SELECT full_name FROM users WHERE user_id = $1", [userId])).rows[0].full_name;
-                const actorAvatar = reactorCompanyId ? (await client.query("SELECT logo_url FROM organizations WHERE org_id = $1", [reactorCompanyId])).rows[0].logo_url : (await client.query("SELECT avatar_url FROM users WHERE user_id = $1", [userId])).rows[0].avatar_url;
+        if (shouldNotify && liked) {
+            const actorName = reactorCompanyId ? (await client.query("SELECT name FROM organizations WHERE org_id = $1", [reactorCompanyId])).rows[0].name : (await client.query("SELECT full_name FROM users WHERE user_id = $1", [userId])).rows[0].full_name;
+            const actorAvatar = reactorCompanyId ? (await client.query("SELECT logo_url FROM organizations WHERE org_id = $1", [reactorCompanyId])).rows[0].logo_url : (await client.query("SELECT avatar_url FROM users WHERE user_id = $1", [userId])).rows[0].avatar_url;
 
-                const notificationData = {
-                    type: "story_like",
-                    text: `${actorName} liked your story`,
-                    from: userId,
-                    senderName: actorName,
-                    senderAvatar: actorAvatar,
-                    referenceId: storyId,
-                    mediaUrl: media_url,
-                    metadata: { org_id: reactorCompanyId }
-                };
+            const notificationData = {
+                type: "story_like",
+                text: `${actorName} liked your story`,
+                from: userId,
+                senderName: actorName,
+                senderAvatar: actorAvatar,
+                referenceId: storyId,
+                mediaUrl: media_url,
+                metadata: { org_id: reactorCompanyId }
+            };
 
-                // Notify via socket - ensuring socketService is available
-                try {
-                    // Check global or imported socketService
-                    const ioService = require('../../core/infrastructure/socket.service');
-                    if (ioService && ioService.notifyUser) {
-                        ioService.notifyUser(author_id, "notification", notificationData);
-                    }
-                } catch (e) {
-                    // console.warn("Socket notification failed:", e);
+            // Notify via socket - ensuring socketService is available
+            try {
+                // Check global or imported socketService
+                const ioService = require('../../core/infrastructure/socket.service');
+                if (ioService && ioService.notifyUser) {
+                    ioService.notifyUser(author_id, "notification", notificationData);
                 }
-
-                // Persist to DB
-                await client.query(
-                    `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata) 
-                     VALUES ($1, $2, $3, $4, $5, $6)`,
-                    [author_id, userId, "story_like", notificationData.text, storyId, notificationData.metadata]
-                );
+            } catch (e) {
+                // console.warn("Socket notification failed:", e);
             }
+
+            // Persist to DB
+            await client.query(
+                `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata) 
+                     VALUES ($1, $2, $3, $4, $5, $6)`,
+                [author_id, userId, "story_like", notificationData.text, storyId, notificationData.metadata]
+            );
+        }
 
         const likeCountRes = await client.query(
             `SELECT COUNT(*) as count FROM story_reactions WHERE story_id = $1 AND reaction_type = 'true'`,
@@ -3909,11 +3913,11 @@ exports.reactToStory = async (req, res) => {
             const ioService = require('../../core/infrastructure/socket.service');
             if (ioService) {
                 if (ioService.notifyStory) {
-                    ioService.notifyStory(storyId, "story_reaction_updated", { 
-                        storyId, 
-                        likeCount, 
-                        userId, 
-                        reactorCompanyId, 
+                    ioService.notifyStory(storyId, "story_reaction_updated", {
+                        storyId,
+                        likeCount,
+                        userId,
+                        reactorCompanyId,
                         liked,
                         liker: actorInfo,
                         actorInfo: actorInfo
