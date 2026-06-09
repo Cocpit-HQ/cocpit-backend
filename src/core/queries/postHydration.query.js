@@ -66,11 +66,27 @@ const getPostHydrationSelect = (companyParamIdx, userParamIdx) => `
         LEFT JOIN users u_like ON u_like.user_id = pl_sample.user_id
         LEFT JOIN organizations comp_like ON comp_like.org_id = pl_sample.org_id
         WHERE pl_sample.post_id = p.post_id
-        ORDER BY pl_sample.created_at DESC
+        ORDER BY 
+            (
+                $${userParamIdx}::uuid IS NOT NULL AND 
+                (
+                    (pl_sample.user_id IS NOT NULL AND EXISTS (
+                        SELECT 1 FROM followers f 
+                        WHERE f.follower_id = $${userParamIdx} AND f.following_id = pl_sample.user_id
+                    ))
+                    OR 
+                    (pl_sample.org_id IS NOT NULL AND EXISTS (
+                        SELECT 1 FROM organization_followers ofol 
+                        WHERE ofol.user_id = $${userParamIdx} AND ofol.org_id = pl_sample.org_id
+                    ))
+                )
+            ) DESC,
+            pl_sample.created_at DESC
         LIMIT 1
     ) AS sample_liker_username,
     (SELECT COUNT(*) FROM post_comments pc WHERE pc.post_id = p.post_id)::int AS comment_count,
     (SELECT COUNT(*) FROM saved_post sp_cnt WHERE sp_cnt.post_id = p.post_id)::int AS save_count,
+    (SELECT COUNT(*) FROM posts sp_share WHERE sp_share.shared_post_id = p.post_id)::int AS share_count,
 
     (
         EXISTS(
@@ -193,6 +209,7 @@ const getPostHydrationSelect = (companyParamIdx, userParamIdx) => `
                  'media', COALESCE((SELECT json_agg(json_build_object('url', pm.url, 'media_type', pm.media_type)) FROM post_media pm WHERE pm.post_id = sp.post_id), '[]'::json),
                  'like_count', (SELECT COUNT(*) FROM post_likes pl WHERE pl.post_id = sp.post_id)::int,
                  'comment_count', (SELECT COUNT(*) FROM post_comments pc WHERE pc.post_id = sp.post_id)::int,
+                 'share_count', (SELECT COUNT(*) FROM posts sp_share2 WHERE sp_share2.shared_post_id = sp.post_id)::int,
                  'is_liked', EXISTS(
                      SELECT 1 FROM post_likes pl 
                      WHERE pl.post_id = sp.post_id 

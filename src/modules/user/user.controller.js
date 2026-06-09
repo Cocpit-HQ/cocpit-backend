@@ -154,9 +154,9 @@ exports.getUserProfile = async (req, res) => {
   try {
     // --- Centralized View Counting Logic (Redis + Atomic DB) ---
     if (targetUserId !== currentUserId) {
-        // Fire and forget view recording to keep profile load fast
-        dashboardService.addProfileView(currentUserId, targetUserId, 'user')
-            .catch(err => console.error("Error recording user profile view:", err));
+      // Fire and forget view recording to keep profile load fast
+      dashboardService.addProfileView(currentUserId, targetUserId, 'user')
+        .catch(err => console.error("Error recording user profile view:", err));
     }
     // -----------------------------------------------------------
 
