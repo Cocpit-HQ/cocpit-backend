@@ -687,7 +687,7 @@ exports.createPost = async (req, res) => {
     }
 
     const { userId, orgId: companyId } = actorScope;
-    let { content, category, visibility, media_urls, post_type, title, poll_options, poll_duration, is_broadcast, location } = req.body; // category is name, media_urls is array
+    let { content, category, visibility, media_urls, post_type, title, poll_options, poll_duration, is_broadcast, location, achievement_image_id } = req.body; // category is name, media_urls is array
 
     // Extract uploaded files
     const uploadedFiles = req.files || [];
@@ -880,6 +880,14 @@ exports.createPost = async (req, res) => {
             }
         }
 
+        if (achievement_image_id) {
+            const aiCheck = await client.query(`SELECT id FROM achievement_images WHERE id = $1 AND is_active = TRUE`, [achievement_image_id]);
+            if (aiCheck.rowCount === 0) {
+                await client.query('ROLLBACK');
+                return res.status(400).json({ message: "Invalid or inactive achievement image selected." });
+            }
+        }
+
 
         // 1b. Broadcast guards
         if (is_broadcast) {
@@ -922,10 +930,10 @@ exports.createPost = async (req, res) => {
 
         // 2. Insert Post
         const postResult = await client.query(
-            ` INSERT INTO posts (author_id, category_id, content, visibility, post_type, title, shared_post_id, shared_job_id, author_org_id, is_broadcast, broadcast_scope, location)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+            ` INSERT INTO posts (author_id, category_id, content, visibility, post_type, title, shared_post_id, shared_job_id, author_org_id, is_broadcast, broadcast_scope, location, achievement_image_id)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
       RETURNING post_id, created_at
-      `, [userId, categoryId, content, visibility || 'public', post_type, title, req.body.shared_post_id || null, req.body.shared_job_id || null, companyId || null, is_broadcast ? true : false, is_broadcast ? 'CHILDREN' : null, location || null]
+      `, [userId, categoryId, content, visibility || 'public', post_type, title, req.body.shared_post_id || null, req.body.shared_job_id || null, companyId || null, is_broadcast ? true : false, is_broadcast ? 'CHILDREN' : null, location || null, achievement_image_id || null]
         );
 
         const postId = postResult.rows[0].post_id;

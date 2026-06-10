@@ -195,6 +195,21 @@ CREATE TABLE IF NOT EXISTS user_hashtag_scores (
 
 CREATE INDEX IF NOT EXISTS idx_user_hashtag_scores_score ON user_hashtag_scores(score DESC);
 
+-- Predefined Achievement Images
+CREATE TABLE IF NOT EXISTS achievement_images (
+    id              SERIAL PRIMARY KEY,
+    key             VARCHAR(100) UNIQUE NOT NULL,
+    title           VARCHAR(255) NOT NULL,
+    cloudinary_url  TEXT NOT NULL,
+    display_order   INTEGER NOT NULL DEFAULT 0,
+    is_active       BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_achievement_images_key ON achievement_images(key);
+CREATE INDEX IF NOT EXISTS idx_achievement_images_active_order ON achievement_images(is_active, display_order) WHERE is_active = TRUE;
+
 CREATE TABLE posts (
   post_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   author_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
@@ -210,11 +225,14 @@ CREATE TABLE posts (
   post_type  AS ENUM ('image', 'video', 'article', 'poll') NOT NULL,
   -- Cross-org Broadcast (28/03/2026)
   is_broadcast BOOLEAN NOT NULL DEFAULT FALSE,
-  broadcast_scope VARCHAR(20) DEFAULT 'CHILDREN'
+  broadcast_scope VARCHAR(20) DEFAULT 'CHILDREN',
+  -- Predefined achievement image (Optional)
+  achievement_image_id INTEGER REFERENCES achievement_images(id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_posts_author_created ON posts(author_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_posts_visibility_broadcast ON posts(visibility, is_broadcast) INCLUDE (post_id);
+CREATE INDEX IF NOT EXISTS idx_posts_achievement_image_id ON posts(achievement_image_id) WHERE achievement_image_id IS NOT NULL;
 
 CREATE TABLE post_polls (
   poll_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

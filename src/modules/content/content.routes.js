@@ -8,6 +8,7 @@ const postTagsController = require("./postTags.controller");
 const { syncTagsSchema } = require("./postTags.schema");
 const { commentOperationSchema, updateCommentSchema, hideCommentSchema, createPostSchema } = require("./content.schema");
 const { uploadPostMedia } = require("../../core/middlewares/upload.middleware");
+const achievementImageController = require("./achievementImage.controller");
 
 // Feed & Discovery
 router.get("/All/feeds", optionalAuth, contentController.getPublicFeed);
@@ -20,6 +21,9 @@ router.post("/post", requireAuth, uploadPostMedia, validate(createPostSchema), c
 router.get("/post/:id", requireAuth, contentController.getPostById);
 router.put("/post/:id", requireAuth, contentController.updatePostById);
 router.delete("/post/:id", requireAuth, contentController.deletePost);
+
+// Achievement Images
+router.get("/achievement-images", requireAuth, achievementImageController.getAll);
 
 // Post Tags
 router.post("/posts/tags/sync", requireAuth, validate(syncTagsSchema), postTagsController.syncPostTags);

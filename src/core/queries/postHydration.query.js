@@ -39,6 +39,10 @@ const getPostHydrationSelect = (companyParamIdx, userParamIdx) => `
 
     pc.name AS category_name,
     p.location,
+    p.achievement_image_id,
+    ai.key AS achievement_image_key,
+    ai.cloudinary_url AS achievement_image_url,
+    ai.title AS achievement_image_title,
 
     COALESCE(
         (SELECT json_agg(json_build_object(
@@ -281,6 +285,7 @@ const getPostHydrationJoins = () => `
     JOIN users u ON u.user_id = p.author_id
     LEFT JOIN organizations comp ON comp.org_id = p.author_org_id
     LEFT JOIN post_categories pc ON pc.category_id = p.category_id
+    LEFT JOIN achievement_images ai ON ai.id = p.achievement_image_id
 
     -- Shared Post Joins
     LEFT JOIN posts sp ON p.shared_post_id = sp.post_id
