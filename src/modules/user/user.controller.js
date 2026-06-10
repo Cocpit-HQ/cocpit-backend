@@ -440,6 +440,7 @@ exports.getPublicProfilePosts = async (req, res) => {
         ) AS media,
 
         (SELECT COUNT(*) FROM post_likes pl WHERE pl.post_id = p.post_id)::int AS like_count,
+        (SELECT COUNT(*) FROM posts sp_share WHERE sp_share.shared_post_id = p.post_id)::int AS share_count,
         (
             SELECT COALESCE(comp_like.slug, u_like.account_name)
             FROM post_likes pl_sample
@@ -505,6 +506,7 @@ exports.getPublicProfilePosts = async (req, res) => {
               'media', COALESCE((SELECT json_agg(json_build_object('url', pm.url, 'media_type', pm.media_type)) FROM post_media pm WHERE pm.post_id = sp.post_id), '[]'::json),
               'like_count', (SELECT COUNT(*) FROM post_likes pl WHERE pl.post_id = sp.post_id)::int,
               'comment_count', (SELECT COUNT(*) FROM post_comments pc WHERE pc.post_id = sp.post_id)::int,
+              'share_count', (SELECT COUNT(*) FROM posts sp_share2 WHERE sp_share2.shared_post_id = sp.post_id)::int,
               'is_liked', EXISTS(SELECT 1 FROM post_likes pl WHERE pl.post_id = sp.post_id AND pl.user_id = $${userParamIdx}),
               'poll', (
                 SELECT json_build_object(
