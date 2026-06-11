@@ -749,7 +749,7 @@ exports.getFollowersCount = async (req, res) => {
 exports.sendConnectionRequest = async (req, res) => {
     const senderId = req.user.sub;
     const receiverId = req.params.id;
-    const { message } = req.body;
+    const { message } = req.body || {};
 
     if (!receiverId) {
         return res.status(400).json({ message: "Invalid request" });
@@ -880,15 +880,70 @@ exports.sendConnectionRequest = async (req, res) => {
             [senderId, receiverId]
         );
 
+        // 5.5 Determine reason_tag dynamically
+        const reasonTagResult = await client.query(
+            `
+            SELECT
+                (SELECT ed.school_name
+                 FROM educations ed
+                 JOIN profiles p ON p.profile_id = ed.profile_id
+                 WHERE p.user_id = $1
+                   AND LOWER(TRIM(ed.school_name)) IN (
+                       SELECT LOWER(TRIM(ed2.school_name)) FROM educations ed2
+                       JOIN profiles p2 ON p2.profile_id = ed2.profile_id
+                       WHERE p2.user_id = $2
+                   )
+                 LIMIT 1
+                ) AS shared_school,
+                (SELECT e.company_name
+                 FROM experiences e
+                 JOIN profiles p ON p.profile_id = e.profile_id
+                 WHERE p.user_id = $1
+                   AND LOWER(TRIM(e.company_name)) IN (
+                       SELECT LOWER(TRIM(e2.company_name)) FROM experiences e2
+                       JOIN profiles p2 ON p2.profile_id = e2.profile_id
+                       WHERE p2.user_id = $2
+                   )
+                 ORDER BY e.is_current DESC NULLS LAST
+                 LIMIT 1
+                ) AS shared_company,
+                (SELECT s.name
+                 FROM user_skills us
+                 JOIN profiles p ON p.profile_id = us.profile_id
+                 JOIN skills s ON s.skill_id = us.skill_id
+                 WHERE p.user_id = $1
+                   AND us.skill_id IN (
+                       SELECT us2.skill_id FROM user_skills us2
+                       JOIN profiles p2 ON p2.profile_id = us2.profile_id
+                       WHERE p2.user_id = $2
+                   )
+                 LIMIT 1
+                ) AS shared_skill
+            `,
+            [senderId, receiverId]
+        );
+
+        let reasonTag = null;
+        if (reasonTagResult.rowCount > 0) {
+            const row = reasonTagResult.rows[0];
+            if (row.shared_school) {
+                reasonTag = `Both attended ${row.shared_school}`;
+            } else if (row.shared_company) {
+                reasonTag = `Both work at ${row.shared_company}`;
+            } else if (row.shared_skill) {
+                reasonTag = `Shared interest in ${row.shared_skill}`;
+            }
+        }
+
         // 6. Create New Request
         // We use ON CONFLICT DO NOTHING to be super safe against race conditions on the unique index
         const insertRes = await client.query(
-            `INSERT INTO connection_requests (sender_id, receiver_id, message, status) 
-             VALUES ($1, $2, $3, 'pending')
+            `INSERT INTO connection_requests (sender_id, receiver_id, message, reason_tag, status) 
+             VALUES ($1, $2, $3, $4, 'pending')
              ON CONFLICT (sender_id, receiver_id) 
              DO NOTHING
              RETURNING request_id`,
-            [senderId, receiverId, message || null]
+            [senderId, receiverId, message || null, reasonTag]
         );
 
         if (insertRes.rowCount === 0) {
@@ -970,70 +1025,361 @@ exports.sendConnectionRequest = async (req, res) => {
 };
 
 exports.getPendingRequests = async (req, res) => {
-    const receiver_id = req.user.sub;
+    const userId = req.user.sub;
+    const { type = 'received' } = req.query;  // 'received' | 'sent'
+    const page   = Math.max(1, parseInt(req.query.page  || '1'));
+    const limit  = Math.min(50, Math.max(1, parseInt(req.query.limit || '10')));
+    const offset = (page - 1) * limit;
 
     try {
-        const result = await pool.query(
-            `
-      (SELECT 
-        cr.request_id as id,
-        cr.sender_id,
-        cr.receiver_id,
-        cr.created_at,
-        u.full_name as name,
-        u.avatar_url as avatar,
-        u.headline,
-        false as is_company_request,
-        NULL as slug
-      FROM connection_requests cr
-      JOIN users u ON cr.sender_id = u.user_id
-      WHERE cr.receiver_id = $1
-        AND cr.status = 'pending')
-      UNION ALL
-      (SELECT
-        ccr.request_id as id,
-        ccr.org_id as sender_id,
-        ccr.user_id as receiver_id,
-        ccr.created_at,
-        c.name as name,
-        c.logo_url as avatar,
-        c.industry as headline,
-        true as is_company_request,
-        c.slug
-      FROM organization_connection_requests ccr
-      JOIN organizations c ON ccr.org_id = c.org_id
-      WHERE ccr.user_id = $1
-        AND ccr.status = 'pending')
-      ORDER BY created_at DESC
-      `,
-            [receiver_id]
-        );
+        let query, params;
 
-        // Map to expected frontend structure
+        if (type === 'sent') {
+            // ── SENT: outgoing pending requests (I am the sender) ──────────────
+            query = `
+                SELECT
+                    cr.request_id   AS id,
+                    cr.sender_id,
+                    cr.receiver_id,
+                    cr.reason_tag,
+                    cr.created_at,
+                    u.full_name     AS name,
+                    u.avatar_url    AS avatar,
+                    u.headline,
+                    false           AS is_company_request,
+                    NULL            AS slug,
+                    0               AS mutual_count,
+                    ARRAY[]::TEXT[] AS mutual_avatars
+                FROM connection_requests cr
+                JOIN users u ON cr.receiver_id = u.user_id
+                WHERE cr.sender_id = $1
+                  AND cr.status = 'pending'
+                ORDER BY cr.created_at DESC
+                LIMIT $2 OFFSET $3
+            `;
+            params = [userId, limit, offset];
+
+        } else {
+            // ── RECEIVED: incoming pending requests (I am the receiver) ─────────
+            query = `
+                (SELECT
+                    cr.request_id   AS id,
+                    cr.sender_id,
+                    cr.receiver_id,
+                    cr.reason_tag,
+                    cr.created_at,
+                    u.full_name     AS name,
+                    u.avatar_url    AS avatar,
+                    u.headline,
+                    false           AS is_company_request,
+                    NULL            AS slug,
+                    -- Mutual connection count
+                    (
+                        SELECT COUNT(*)
+                        FROM connections c1
+                        JOIN connections c2 ON c1.connected_user_id = c2.connected_user_id
+                        WHERE c1.user_id = cr.sender_id
+                          AND c2.user_id = $1
+                    ) AS mutual_count,
+                    -- Up to 3 mutual avatar URLs
+                    ARRAY(
+                        SELECT u2.avatar_url
+                        FROM connections c1
+                        JOIN connections c2 ON c1.connected_user_id = c2.connected_user_id
+                        JOIN users u2        ON u2.user_id = c1.connected_user_id
+                        WHERE c1.user_id = cr.sender_id
+                          AND c2.user_id = $1
+                          AND u2.avatar_url IS NOT NULL
+                        LIMIT 3
+                    ) AS mutual_avatars
+                FROM connection_requests cr
+                JOIN users u ON cr.sender_id = u.user_id
+                WHERE cr.receiver_id = $1
+                  AND cr.status = 'pending')
+                UNION ALL
+                (SELECT
+                    ccr.request_id    AS id,
+                    ccr.org_id        AS sender_id,
+                    ccr.user_id       AS receiver_id,
+                    NULL              AS reason_tag,
+                    ccr.created_at,
+                    c.name            AS name,
+                    c.logo_url        AS avatar,
+                    c.industry        AS headline,
+                    true              AS is_company_request,
+                    c.slug,
+                    0                 AS mutual_count,
+                    ARRAY[]::TEXT[]   AS mutual_avatars
+                FROM organization_connection_requests ccr
+                JOIN organizations c ON ccr.org_id = c.org_id
+                WHERE ccr.user_id = $1
+                  AND ccr.status = 'pending')
+                ORDER BY created_at DESC
+                LIMIT $2 OFFSET $3
+            `;
+            params = [userId, limit, offset];
+        }
+
+        // Total count (for pagination metadata)
+        let countQuery, countParams;
+        if (type === 'sent') {
+            countQuery  = `SELECT COUNT(*) FROM connection_requests WHERE sender_id = $1 AND status = 'pending'`;
+            countParams = [userId];
+        } else {
+            countQuery  = `
+                SELECT
+                    (SELECT COUNT(*) FROM connection_requests WHERE receiver_id = $1 AND status = 'pending')
+                  + (SELECT COUNT(*) FROM organization_connection_requests WHERE user_id = $1 AND status = 'pending')
+                AS count
+            `;
+            countParams = [userId];
+        }
+
+        const [result, countResult] = await Promise.all([
+            pool.query(query, params),
+            pool.query(countQuery, countParams),
+        ]);
+
+        const totalCount = parseInt(countResult.rows[0]?.count || 0);
+
         const requests = result.rows.map(row => ({
-            id: row.id,
-            sender_id: row.sender_id,
-            receiver_id: row.receiver_id,
-            created_at: row.created_at,
-            status: 'pending',
+            id:               row.id,
+            sender_id:        row.sender_id,
+            receiver_id:      row.receiver_id,
+            created_at:       row.created_at,
+            status:           'pending',
+            reason_tag:       row.reason_tag || null,
             isCompanyRequest: row.is_company_request,
-            sender: {
-                name: row.name,
-                avatar: row.avatar,
+            mutuals: {
+                count:   parseInt(row.mutual_count || 0),
+                avatars: row.mutual_avatars || [],
+            },
+            // 'user' is always the OTHER person (sender if received, recipient if sent)
+            user: {
+                name:     row.name,
+                avatar:   row.avatar,
                 headline: row.headline,
-                slug: row.slug || null
-            }
+                slug:     row.slug || null,
+            },
         }));
 
-        return res.status(200).json(requests);
+        return res.status(200).json({
+            data:       requests,
+            totalCount,
+            page,
+            limit,
+        });
 
     } catch (err) {
-        console.error("Get pending requests error:", err);
-        return res.status(500).json({ message: "Internal server error" });
+        console.error('Get pending requests error:', err);
+        return res.status(500).json({ message: 'Internal server error' });
+    }
+};
+
+
+
+
+// ─── getConnectionCounts ────────────────────────────────────────────────────
+exports.getConnectionCounts = async (req, res) => {
+    const userId = req.user.sub;
+    try {
+        const result = await pool.query(`
+            SELECT
+                (SELECT COUNT(*) FROM connection_requests
+                 WHERE receiver_id = $1 AND status = 'pending') AS received,
+                (SELECT COUNT(*) FROM connection_requests
+                 WHERE sender_id  = $1 AND status = 'pending') AS sent
+        `, [userId]);
+
+        const row = result.rows[0];
+        return res.status(200).json({
+            received: parseInt(row.received || 0),
+            sent:     parseInt(row.sent     || 0),
+        });
+    } catch (err) {
+        console.error('Get connection counts error:', err);
+        return res.status(500).json({ message: 'Internal server error' });
+    }
+};
+
+// ─── getConnectionSuggestions ───────────────────────────────────────────────
+exports.getConnectionSuggestions = async (req, res) => {
+    const userId = req.user.sub;
+    const limit  = Math.min(20, Math.max(1, parseInt(req.query.limit || '8')));
+
+    try {
+        const result = await pool.query(`
+            WITH
+                -- Users I already know (connected, sent/received request, blocked, or self)
+                excluded AS (
+                    SELECT connected_user_id AS uid FROM connections WHERE user_id = $1
+                    UNION
+                    SELECT receiver_id AS uid FROM connection_requests
+                           WHERE sender_id = $1 AND status IN ('pending','blocked')
+                    UNION
+                    SELECT sender_id AS uid FROM connection_requests
+                           WHERE receiver_id = $1 AND status = 'blocked'
+                    UNION
+                    SELECT $1::UUID AS uid
+                ),
+
+                -- Signal 1: 2nd-degree connections (friend-of-a-friend), score = shared count
+                second_degree AS (
+                    SELECT
+                        c2.connected_user_id AS suggest_id,
+                        COUNT(*)             AS score,
+                        'mutual'::TEXT       AS reason
+                    FROM connections c1
+                    JOIN connections c2 ON c1.connected_user_id = c2.user_id
+                    WHERE c1.user_id = $1
+                      AND c2.connected_user_id NOT IN (SELECT uid FROM excluded)
+                    GROUP BY c2.connected_user_id
+                ),
+
+                -- Signal 2: Same current company (from experiences table)
+                same_company AS (
+                    SELECT
+                        p2.user_id     AS suggest_id,
+                        3              AS score,
+                        'company'::TEXT AS reason
+                    FROM experiences e1
+                    JOIN profiles p1 ON p1.profile_id = e1.profile_id AND p1.user_id = $1
+                    JOIN experiences e2 ON LOWER(TRIM(e2.company_name)) = LOWER(TRIM(e1.company_name))
+                                       AND e2.is_current = TRUE
+                                       AND e2.profile_id <> e1.profile_id
+                    JOIN profiles p2 ON p2.profile_id = e2.profile_id
+                    WHERE e1.is_current = TRUE
+                      AND p2.user_id NOT IN (SELECT uid FROM excluded)
+                ),
+
+                -- Signal 3: Shared skills (via user_skills junction table)
+                shared_skills AS (
+                    SELECT
+                        p2.user_id     AS suggest_id,
+                        COUNT(*)       AS score,
+                        'skill'::TEXT  AS reason
+                    FROM user_skills us1
+                    JOIN profiles pr1 ON pr1.profile_id = us1.profile_id AND pr1.user_id = $1
+                    JOIN user_skills us2 ON us2.skill_id = us1.skill_id
+                                        AND us2.profile_id <> us1.profile_id
+                    JOIN profiles p2 ON p2.profile_id = us2.profile_id
+                    WHERE p2.user_id NOT IN (SELECT uid FROM excluded)
+                    GROUP BY p2.user_id
+                ),
+
+                -- Signal 4: Same city/location (from users.location_city)
+                same_city AS (
+                    SELECT
+                        u2.user_id     AS suggest_id,
+                        1              AS score,
+                        'city'::TEXT   AS reason
+                    FROM users u1
+                    JOIN users u2 ON LOWER(TRIM(u2.location_city)) = LOWER(TRIM(u1.location_city))
+                                 AND u2.user_id <> u1.user_id
+                    WHERE u1.user_id = $1
+                      AND u1.location_city IS NOT NULL
+                      AND u2.user_id NOT IN (SELECT uid FROM excluded)
+                ),
+
+                -- Union all signals, pick the highest score + best reason per user
+                ranked AS (
+                    SELECT
+                        suggest_id,
+                        SUM(score) AS total_score,
+                        (ARRAY_AGG(reason ORDER BY score DESC))[1] AS top_reason
+                    FROM (
+                        SELECT suggest_id, score, reason FROM second_degree
+                        UNION ALL
+                        SELECT suggest_id, score, reason FROM same_company
+                        UNION ALL
+                        SELECT suggest_id, score, reason FROM shared_skills
+                        UNION ALL
+                        SELECT suggest_id, score, reason FROM same_city
+                    ) all_signals
+                    GROUP BY suggest_id
+                )
+
+            SELECT
+                u.user_id,
+                u.full_name,
+                u.avatar_url,
+                u.headline,
+                r.top_reason                AS reason_signal,
+                -- Mutual count for display
+                (
+                    SELECT COUNT(*)
+                    FROM connections c1
+                    JOIN connections c2 ON c1.connected_user_id = c2.connected_user_id
+                    WHERE c1.user_id = r.suggest_id AND c2.user_id = $1
+                ) AS mutual_count,
+                -- Up to 3 mutual avatar URLs
+                ARRAY(
+                    SELECT u2.avatar_url
+                    FROM connections c1
+                    JOIN connections c2 ON c1.connected_user_id = c2.connected_user_id
+                    JOIN users u2 ON u2.user_id = c1.connected_user_id
+                    WHERE c1.user_id = r.suggest_id AND c2.user_id = $1
+                      AND u2.avatar_url IS NOT NULL
+                    LIMIT 3
+                ) AS mutual_avatars,
+                -- Current company name
+                (
+                    SELECT e.company_name FROM experiences e
+                    JOIN profiles p ON p.profile_id = e.profile_id AND p.user_id = u.user_id
+                    WHERE e.is_current = TRUE LIMIT 1
+                ) AS works_at,
+                -- Latest school name
+                (
+                    SELECT ed.school_name FROM educations ed
+                    JOIN profiles p ON p.profile_id = ed.profile_id AND p.user_id = u.user_id
+                    ORDER BY ed.created_at DESC LIMIT 1
+                ) AS studied_at,
+                -- Shared skill names (up to 3) when reason = skill
+                ARRAY(
+                    SELECT s.name
+                    FROM user_skills us1
+                    JOIN profiles pr1 ON pr1.profile_id = us1.profile_id AND pr1.user_id = $1
+                    JOIN user_skills us2 ON us2.skill_id = us1.skill_id
+                    JOIN profiles pr2 ON pr2.profile_id = us2.profile_id AND pr2.user_id = u.user_id
+                    JOIN skills s ON s.skill_id = us1.skill_id
+                    LIMIT 3
+                ) AS shared_skills
+            FROM ranked r
+            JOIN users u ON u.user_id = r.suggest_id
+            WHERE NOT EXISTS (
+                SELECT 1 FROM blocks
+                WHERE (blocker_id = $1 AND blocked_id = u.user_id)
+                   OR (blocker_id = u.user_id AND blocked_id = $1)
+            )
+            ORDER BY r.total_score DESC
+            LIMIT $2
+        `, [userId, limit]);
+
+        const suggestions = result.rows.map(row => ({
+            id:           row.user_id,
+            name:         row.full_name,
+            avatarUrl:    row.avatar_url,
+            headline:     row.headline,
+            reasonSignal: row.reason_signal || null,
+            mutuals: {
+                count:   parseInt(row.mutual_count || 0),
+                avatars: row.mutual_avatars || [],
+            },
+            worksAt:      row.works_at    || null,
+            studiedAt:    row.studied_at  || null,
+            sharedSkills: row.shared_skills || [],
+        }));
+
+        return res.status(200).json({ data: suggestions });
+
+    } catch (err) {
+        console.error('Get connection suggestions error:', err);
+        return res.status(500).json({ message: 'Internal server error' });
     }
 };
 
 exports.getConnectionRequestHistory = async (req, res) => {
+
     const userId = req.user.sub;
 
     try {

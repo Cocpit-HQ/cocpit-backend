@@ -44,9 +44,13 @@ router.get("/organizations/:orgId/connection-status/:userId", requireAuth, socia
 // Connections (Two-way)
 router.post("/users/:id/connect", requireAuth, socialController.sendConnectionRequest);
 router.get("/users/:id/relationship", requireAuth, socialController.getRelationshipStatus);
+// NOTE: counts and suggestions MUST be declared before /requests to avoid route shadowing
+router.get("/connections/counts", requireAuth, socialController.getConnectionCounts);
+router.get("/connections/suggestions", requireAuth, socialController.getConnectionSuggestions);
 router.get("/connections/requests", requireAuth, socialController.getPendingRequests);
 router.patch("/connections/:requestId", requireAuth, socialController.handleConnectionRequest);
 router.get("/connections/history", requireAuth, socialController.getConnectionRequestHistory);
+
 router.get("/my/connections", requireAuth, socialController.getMyConnections);
 router.get("/users/:id/connections", socialController.getConnections);
 router.delete("/connections/:requestId", requireAuth, socialController.cancelConnectionRequest);
