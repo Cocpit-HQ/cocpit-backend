@@ -448,6 +448,7 @@ exports.getPublicProfilePosts = async (req, res) => {
             LEFT JOIN users u_like ON u_like.user_id = pl_sample.user_id
             LEFT JOIN organizations comp_like ON comp_like.org_id = pl_sample.org_id
             WHERE pl_sample.post_id = p.post_id
+            AND pl_sample.user_id IS DISTINCT FROM $${userParamIdx}
             ORDER BY pl_sample.created_at DESC
             LIMIT 1
         ) AS sample_liker_username,

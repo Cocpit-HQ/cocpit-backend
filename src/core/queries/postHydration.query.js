@@ -70,6 +70,11 @@ const getPostHydrationSelect = (companyParamIdx, userParamIdx) => `
         LEFT JOIN users u_like ON u_like.user_id = pl_sample.user_id
         LEFT JOIN organizations comp_like ON comp_like.org_id = pl_sample.org_id
         WHERE pl_sample.post_id = p.post_id
+        AND NOT (
+            ($${companyParamIdx}::uuid IS NOT NULL AND pl_sample.org_id = $${companyParamIdx}::uuid)
+            OR
+            ($${companyParamIdx}::uuid IS NULL AND pl_sample.user_id = $${userParamIdx} AND pl_sample.org_id IS NULL)
+        )
         ORDER BY 
             (
                 $${userParamIdx}::uuid IS NOT NULL AND 
@@ -211,6 +216,7 @@ const getPostHydrationSelect = (companyParamIdx, userParamIdx) => `
                     'author_headline', COALESCE(sp_comp.slogan, sp_u.headline)
                 ),
                  'media', COALESCE((SELECT json_agg(json_build_object('url', pm.url, 'media_type', pm.media_type)) FROM post_media pm WHERE pm.post_id = sp.post_id), '[]'::json),
+                 'achievement_image_url', sp_ai.cloudinary_url,
                  'like_count', (SELECT COUNT(*) FROM post_likes pl WHERE pl.post_id = sp.post_id)::int,
                  'comment_count', (SELECT COUNT(*) FROM post_comments pc WHERE pc.post_id = sp.post_id)::int,
                  'share_count', (SELECT COUNT(*) FROM posts sp_share2 WHERE sp_share2.shared_post_id = sp.post_id)::int,
@@ -292,6 +298,7 @@ const getPostHydrationJoins = () => `
     LEFT JOIN users sp_u ON sp.author_id = sp_u.user_id
     LEFT JOIN organizations sp_comp ON sp_comp.org_id = sp.author_org_id
     LEFT JOIN post_categories sp_cat ON sp.category_id = sp_cat.category_id
+    LEFT JOIN achievement_images sp_ai ON sp_ai.id = sp.achievement_image_id
     LEFT JOIN jobs sj ON p.shared_job_id = sj.job_id
     LEFT JOIN organizations sj_comp ON sj.org_id = sj_comp.org_id
 `;
