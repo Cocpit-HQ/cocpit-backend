@@ -712,6 +712,12 @@ exports.deleteAccount = async (req, res) => {
 
     await client.query("COMMIT");
 
+    // Add user to Redis blacklist for 15 minutes to instantly invalidate active JWTs
+    const redisClient = require("../../core/db/redis");
+    if (redisClient.isOpen) {
+      await redisClient.setEx(`deleted_user:${userId}`, 900, "1");
+    }
+
     // 4. Clear cookies
     res.clearCookie("refreshToken", {
       httpOnly: true,
