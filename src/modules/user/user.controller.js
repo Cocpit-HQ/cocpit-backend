@@ -421,6 +421,7 @@ exports.getPublicProfilePosts = async (req, res) => {
       SELECT
         p.post_id,
         p.content,
+        p.title,
         p.created_at,
         p.visibility,
         p.location,
@@ -447,6 +448,7 @@ exports.getPublicProfilePosts = async (req, res) => {
             LEFT JOIN users u_like ON u_like.user_id = pl_sample.user_id
             LEFT JOIN organizations comp_like ON comp_like.org_id = pl_sample.org_id
             WHERE pl_sample.post_id = p.post_id
+            AND pl_sample.user_id IS DISTINCT FROM $${userParamIdx}
             ORDER BY pl_sample.created_at DESC
             LIMIT 1
         ) AS sample_liker_username,
@@ -710,6 +712,12 @@ exports.deleteAccount = async (req, res) => {
     await client.query("DELETE FROM users WHERE user_id = $1", [userId]);
 
     await client.query("COMMIT");
+
+    // Add user to Redis blacklist for 15 minutes to instantly invalidate active JWTs
+    const redisClient = require("../../core/db/redis");
+    if (redisClient.isOpen) {
+      await redisClient.setEx(`deleted_user:${userId}`, 900, "1");
+    }
 
     // 4. Clear cookies
     res.clearCookie("refreshToken", {

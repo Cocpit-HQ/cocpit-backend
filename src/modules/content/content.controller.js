@@ -162,9 +162,9 @@ exports.getPublicFeed = async (req, res) => {
 
         res.json({
             posts: finalRows.map(post => {
-                // If it's not an article, completely remove the title key
-                if (post.post_type !== 'article') delete post.title;
-                if (post.shared_post && post.shared_post.post_type !== 'article') delete post.shared_post.title;
+                // If it's not an article or poll, completely remove the title key
+                if (post.post_type !== 'article' && post.post_type !== 'poll') delete post.title;
+                if (post.shared_post && post.shared_post.post_type !== 'article' && post.shared_post.post_type !== 'poll') delete post.shared_post.title;
                 return post;
             }),
             nextCursor: last
@@ -324,9 +324,9 @@ exports.getMyPosts = async (req, res) => {
 
         res.json({
             posts: finalRows.map(post => {
-                // If it's not an article, completely remove the title key
-                if (post.post_type !== 'article') delete post.title;
-                if (post.shared_post && post.shared_post.post_type !== 'article') delete post.shared_post.title;
+                // If it's not an article or poll, completely remove the title key
+                if (post.post_type !== 'article' && post.post_type !== 'poll') delete post.title;
+                if (post.shared_post && post.shared_post.post_type !== 'article' && post.shared_post.post_type !== 'poll') delete post.shared_post.title;
                 return post;
             }),
             nextCursor: last

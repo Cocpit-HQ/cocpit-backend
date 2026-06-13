@@ -3335,7 +3335,7 @@ exports.getMessages = async (req, res) => {
                 if (msg.is_deleted_for_me) {
                     return {
                         ...msg,
-                        text_content: "This message deleted for you",
+                        text_content: "This message was deleted for you.",
                         shared_post: null,
                         is_deleted: true,
                         // Keep message_type text so it renders as a bubble, but with specific styling in frontend
