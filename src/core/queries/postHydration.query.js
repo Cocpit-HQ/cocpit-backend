@@ -5,7 +5,7 @@
 
 const getPostHydrationSelect = (companyParamIdx, userParamIdx) => `
     p.post_id,
-    CASE WHEN p.post_type = 'article' THEN p.title ELSE NULL END AS title,
+    CASE WHEN p.post_type IN ('article', 'poll') THEN p.title ELSE NULL END AS title,
     p.content,
     p.created_at,
     p.visibility,
@@ -200,7 +200,7 @@ const getPostHydrationSelect = (companyParamIdx, userParamIdx) => `
             json_build_object(
                 'is_accessible', true,
                 'post_id', sp.post_id,
-                'title', CASE WHEN sp.post_type = 'article' THEN sp.title ELSE NULL END,
+                'title', CASE WHEN sp.post_type IN ('article', 'poll') THEN sp.title ELSE NULL END,
                 'content', sp.content,
                 'created_at', sp.created_at,
                 'post_type', sp.post_type,
