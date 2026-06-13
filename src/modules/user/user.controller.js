@@ -421,6 +421,7 @@ exports.getPublicProfilePosts = async (req, res) => {
       SELECT
         p.post_id,
         p.content,
+        p.title,
         p.created_at,
         p.visibility,
         p.location,
