@@ -606,6 +606,15 @@ class GroupChatService {
         const members = await GroupChatModel.getGroupMembers(groupId) || [];
         
         if (participant && participant.left_at !== null) {
+            // Check if the user was removed by admin vs left manually
+            const reasonRes = await pool.query(
+                `SELECT action_type FROM messages 
+                 WHERE conversation_id = $1 AND target_id = $2 AND action_type IN ('leave', 'remove')
+                 ORDER BY created_at DESC LIMIT 1`,
+                 [groupId, userId]
+            );
+            const wasRemoved = reasonRes.rowCount > 0 && reasonRes.rows[0].action_type === 'remove';
+
             return {
                 ...group,
                 conversation_name: participant.left_group_name || group.conversation_name,
@@ -614,6 +623,7 @@ class GroupChatService {
                 group_headline: participant.left_group_headline || group.group_headline,
                 members,
                 is_inactive: true,
+                was_removed: wasRemoved,
                 left_at: participant.left_at
             };
         }

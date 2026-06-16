@@ -159,19 +159,7 @@ class GroupChatModel {
                  AND cp.joined_at <= $2
                  AND (cp.left_at IS NULL OR cp.left_at > $2)
                  ORDER BY COALESCE(u.user_id, c.org_id), cp.joined_at DESC
-             ) active_members
-             UNION ALL
-             SELECT 
-                gi.invitee_id as user_id,
-                u.account_name, u.account_name as username, u.full_name, u.avatar_url, u.headline,
-                NULL as org_name, NULL as org_logo, gi.created_at as joined_at, 'member' as role,
-                'pending' as status,
-                true as "isPending",
-                gi.invitation_id as invitation_id
-             FROM group_invitations gi
-             JOIN users u ON gi.invitee_id = u.user_id
-             WHERE gi.conversation_id = $1 AND gi.status = 'pending'
-             ORDER BY "isPending" ASC, joined_at DESC` :
+             ) active_members` :
             `SELECT * FROM (
                 SELECT DISTINCT ON (COALESCE(u.user_id, c.org_id)) 
                     COALESCE(u.user_id, c.org_id) as user_id, 
@@ -185,19 +173,7 @@ class GroupChatModel {
                  LEFT JOIN organizations c ON cp.org_id = c.org_id
                  WHERE cp.conversation_id = $1 AND cp.left_at IS NULL
                  ORDER BY COALESCE(u.user_id, c.org_id), cp.joined_at DESC
-             ) active_members
-             UNION ALL
-             SELECT 
-                gi.invitee_id as user_id,
-                u.account_name, u.account_name as username, u.full_name, u.avatar_url, u.headline,
-                NULL as org_name, NULL as org_logo, gi.created_at as joined_at, 'member' as role,
-                'pending' as status,
-                true as "isPending",
-                gi.invitation_id as invitation_id
-             FROM group_invitations gi
-             JOIN users u ON gi.invitee_id = u.user_id
-             WHERE gi.conversation_id = $1 AND gi.status = 'pending'
-             ORDER BY "isPending" ASC, joined_at DESC`;
+             ) active_members`;
 
         const params = maxJoinedAt ? [groupId, maxJoinedAt] : [groupId];
         const result = await pool.query(query, params);
