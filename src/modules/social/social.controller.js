@@ -858,16 +858,16 @@ exports.sendConnectionRequest = async (req, res) => {
             }
         }
 
-        // 4. Rate Limiting (Max 20 requests per 24h)
+        // 4. Rate Limiting (Max 50 requests per 10h)
         const rateLimitCheck = await client.query(
             `SELECT COUNT(*) FROM connection_requests 
-             WHERE sender_id = $1 AND created_at > NOW() - INTERVAL '24 hours'`,
+             WHERE sender_id = $1 AND created_at > NOW() - INTERVAL '10 hours'`,
             [senderId]
         );
 
-        if (parseInt(rateLimitCheck.rows[0].count) >= 20) {
+        if (parseInt(rateLimitCheck.rows[0].count) >= 50) {
             await client.query("ROLLBACK");
-            return res.status(429).json({ message: "Daily connection request limit reached. Please try again tomorrow." });
+            return res.status(429).json({ message: "Connection request limit reached. Please try again after 10 hours." });
         }
 
 
@@ -1027,8 +1027,8 @@ exports.sendConnectionRequest = async (req, res) => {
 exports.getPendingRequests = async (req, res) => {
     const userId = req.user.sub;
     const { type = 'received' } = req.query;  // 'received' | 'sent'
-    const page   = Math.max(1, parseInt(req.query.page  || '1'));
-    const limit  = Math.min(50, Math.max(1, parseInt(req.query.limit || '10')));
+    const page = Math.max(1, parseInt(req.query.page || '1'));
+    const limit = Math.min(50, Math.max(1, parseInt(req.query.limit || '10')));
     const offset = (page - 1) * limit;
 
     try {
@@ -1123,10 +1123,10 @@ exports.getPendingRequests = async (req, res) => {
         // Total count (for pagination metadata)
         let countQuery, countParams;
         if (type === 'sent') {
-            countQuery  = `SELECT COUNT(*) FROM connection_requests WHERE sender_id = $1 AND status = 'pending'`;
+            countQuery = `SELECT COUNT(*) FROM connection_requests WHERE sender_id = $1 AND status = 'pending'`;
             countParams = [userId];
         } else {
-            countQuery  = `
+            countQuery = `
                 SELECT
                     (SELECT COUNT(*) FROM connection_requests WHERE receiver_id = $1 AND status = 'pending')
                   + (SELECT COUNT(*) FROM organization_connection_requests WHERE user_id = $1 AND status = 'pending')
@@ -1143,28 +1143,28 @@ exports.getPendingRequests = async (req, res) => {
         const totalCount = parseInt(countResult.rows[0]?.count || 0);
 
         const requests = result.rows.map(row => ({
-            id:               row.id,
-            sender_id:        row.sender_id,
-            receiver_id:      row.receiver_id,
-            created_at:       row.created_at,
-            status:           'pending',
-            reason_tag:       row.reason_tag || null,
+            id: row.id,
+            sender_id: row.sender_id,
+            receiver_id: row.receiver_id,
+            created_at: row.created_at,
+            status: 'pending',
+            reason_tag: row.reason_tag || null,
             isCompanyRequest: row.is_company_request,
             mutuals: {
-                count:   parseInt(row.mutual_count || 0),
+                count: parseInt(row.mutual_count || 0),
                 avatars: row.mutual_avatars || [],
             },
             // 'user' is always the OTHER person (sender if received, recipient if sent)
             user: {
-                name:     row.name,
-                avatar:   row.avatar,
+                name: row.name,
+                avatar: row.avatar,
                 headline: row.headline,
-                slug:     row.slug || null,
+                slug: row.slug || null,
             },
         }));
 
         return res.status(200).json({
-            data:       requests,
+            data: requests,
             totalCount,
             page,
             limit,
@@ -1194,7 +1194,7 @@ exports.getConnectionCounts = async (req, res) => {
         const row = result.rows[0];
         return res.status(200).json({
             received: parseInt(row.received || 0),
-            sent:     parseInt(row.sent     || 0),
+            sent: parseInt(row.sent || 0),
         });
     } catch (err) {
         console.error('Get connection counts error:', err);
@@ -1205,7 +1205,7 @@ exports.getConnectionCounts = async (req, res) => {
 // ─── getConnectionSuggestions ───────────────────────────────────────────────
 exports.getConnectionSuggestions = async (req, res) => {
     const userId = req.user.sub;
-    const limit  = Math.min(20, Math.max(1, parseInt(req.query.limit || '8')));
+    const limit = Math.min(20, Math.max(1, parseInt(req.query.limit || '8')));
 
     try {
         const result = await pool.query(`
@@ -1356,17 +1356,17 @@ exports.getConnectionSuggestions = async (req, res) => {
         `, [userId, limit]);
 
         const suggestions = result.rows.map(row => ({
-            id:           row.user_id,
-            name:         row.full_name,
-            avatarUrl:    row.avatar_url,
-            headline:     row.headline,
+            id: row.user_id,
+            name: row.full_name,
+            avatarUrl: row.avatar_url,
+            headline: row.headline,
             reasonSignal: row.reason_signal || null,
             mutuals: {
-                count:   parseInt(row.mutual_count || 0),
+                count: parseInt(row.mutual_count || 0),
                 avatars: row.mutual_avatars || [],
             },
-            worksAt:      row.works_at    || null,
-            studiedAt:    row.studied_at  || null,
+            worksAt: row.works_at || null,
+            studiedAt: row.studied_at || null,
             sharedSkills: row.shared_skills || [],
         }));
 
@@ -2138,14 +2138,14 @@ WHERE gi.invitee_id = $1
         const conversationsWithUnread = [...result.rows, ...pendingGroupInvitationRows].map(c => ({
             ...c,
             // Determine online status for direct (non-group) conversations
-            onlineStatus: (function(){
-              if (c.is_group) return 'offline'; // groups don't have a single status
-              const otherId = c.other_user_id;
-              // Prioritize typing status
-              if (socketService.isUserTyping(otherId, c.conversation_id)) return 'typing';
-              // Then online
-              if (socketService.isUserOnline(otherId)) return 'online';
-              return 'offline';
+            onlineStatus: (function () {
+                if (c.is_group) return 'offline'; // groups don't have a single status
+                const otherId = c.other_user_id;
+                // Prioritize typing status
+                if (socketService.isUserTyping(otherId, c.conversation_id)) return 'typing';
+                // Then online
+                if (socketService.isUserOnline(otherId)) return 'online';
+                return 'offline';
             })(),
             is_requesting: c.is_requesting && (c.created_by === userId) ? false : c.is_requesting,
             timeAgo: timeAgo(c.updated_at),
@@ -2709,7 +2709,7 @@ exports.sendMessage = async (req, res) => {
                 if (finalSharedProfileType === 'user') {
                     const uRes = await client.query(
                         `SELECT full_name as name, avatar_url as avatar, headline, location, account_name as username 
-                         FROM users WHERE user_id = $1`, 
+                         FROM users WHERE user_id = $1`,
                         [shared_profile_id]
                     );
                     if (uRes.rowCount > 0) {
