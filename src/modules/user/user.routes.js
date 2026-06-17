@@ -15,7 +15,10 @@ router.get("/suggested", userController.getSuggestedUsers);
 // Get public profile
 router.get("/:id", userController.getUserProfile);
 
-// Get public profile post
+// Get public profile posts (commented) - must be BEFORE /:id to avoid shadowing
+router.get("/:id/posts/commented", userController.getPublicProfileCommentedPosts);
+
+// Get public profile posts
 router.get("/:id/posts", userController.getPublicProfilePosts);
 
 // Delete account

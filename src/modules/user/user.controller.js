@@ -615,6 +615,142 @@ exports.getPublicProfilePosts = async (req, res) => {
 };
 
 /**
+ * GET /api/users/:id/posts/commented
+ * Purpose: Public view of posts a user has commented on (only public posts)
+ */
+exports.getPublicProfileCommentedPosts = async (req, res) => {
+  const { id: userId } = req.params;
+  const {
+    cursorCreatedAt,
+    cursorPostId,
+    limit = 10,
+  } = req.query;
+
+  // Validate / resolve UUID or account_name
+  const uuidRegex =
+    /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+
+  let targetUserId = userId;
+
+  if (!uuidRegex.test(userId)) {
+    try {
+      const resolveResult = await pool.query(
+        "SELECT user_id FROM users WHERE LOWER(account_name) = LOWER($1)",
+        [userId]
+      );
+      if (resolveResult.rowCount === 0) {
+        return res.status(404).json({ message: "User handle not found" });
+      }
+      targetUserId = resolveResult.rows[0].user_id;
+    } catch (err) {
+      console.error("Handle resolution error in commented posts:", err);
+      return res.status(500).json({ message: "Internal server error during handle resolution" });
+    }
+  }
+
+  // Block check
+  const currentUserId = req.user.sub;
+  if (targetUserId !== currentUserId) {
+    const { checkBlockStatus } = require("../../core/utils/blockCheck");
+    const isBlocked = await checkBlockStatus(currentUserId, targetUserId);
+    if (isBlocked) {
+      return res.status(404).json({ message: "User not found" });
+    }
+  }
+
+  try {
+    const params = [targetUserId];
+    let idx = 2;
+
+    // Only public posts the target user has commented on (excluding their own posts)
+    let whereClause = `WHERE EXISTS (
+      SELECT 1 FROM post_comments pc_filter
+      WHERE pc_filter.post_id = p.post_id
+        AND pc_filter.author_id = $1
+        AND pc_filter.author_org_id IS NULL
+    )
+    AND p.visibility = 'public'
+    AND p.author_id != $1`;
+
+    if (cursorCreatedAt && cursorPostId) {
+      whereClause += ` AND (p.created_at, p.post_id) < ($${idx}, $${idx + 1})`;
+      params.push(cursorCreatedAt, cursorPostId);
+      idx += 2;
+    }
+
+    params.push(limit);
+    const limitIdx = idx;
+
+    const userParamIdx = params.length + 1;
+    params.push(currentUserId);
+
+    const query = `
+      SELECT
+        p.post_id,
+        p.content,
+        p.created_at,
+        p.visibility,
+        p.post_type,
+
+        u.user_id AS author_id,
+        u.full_name AS author_name,
+        u.avatar_url AS author_avatar,
+        u.account_name AS author_slug,
+        u.headline AS author_headline,
+
+        pc.name AS category_name,
+        p.location,
+
+        COALESCE(
+          (SELECT json_agg(json_build_object('url', pm.url, 'media_type', pm.media_type))
+           FROM post_media pm WHERE pm.post_id = p.post_id),
+          '[]'::json
+        ) AS media,
+
+        (SELECT COUNT(*) FROM post_likes pl WHERE pl.post_id = p.post_id)::int AS like_count,
+        (SELECT COUNT(*) FROM post_comments pc_c WHERE pc_c.post_id = p.post_id)::int AS comment_count,
+
+        EXISTS(SELECT 1 FROM post_likes pl WHERE pl.post_id = p.post_id AND pl.user_id = $${userParamIdx}) AS is_liked,
+
+        -- The most recent comment by target user on this post
+        (
+          SELECT json_build_object(
+            'comment_id', mc.comment_id,
+            'content', mc.content,
+            'created_at', mc.created_at
+          )
+          FROM post_comments mc
+          WHERE mc.post_id = p.post_id
+            AND mc.author_id = $1
+            AND mc.author_org_id IS NULL
+          ORDER BY mc.created_at DESC
+          LIMIT 1
+        ) AS their_comment
+
+      FROM posts p
+      JOIN users u ON u.user_id = p.author_id
+      LEFT JOIN post_categories pc ON pc.category_id = p.category_id
+      ${whereClause}
+      ORDER BY p.created_at DESC, p.post_id DESC
+      LIMIT $${limitIdx}
+    `;
+
+    const { rows } = await pool.query(query, params);
+    const last = rows[rows.length - 1];
+
+    res.json({
+      posts: rows,
+      nextCursor: last
+        ? { cursorCreatedAt: last.created_at, cursorPostId: last.post_id }
+        : null,
+    });
+  } catch (err) {
+    console.error("Get public profile commented posts error:", err);
+    res.status(500).json({ message: "Internal server error" });
+  }
+};
+
+/**
  * DELETE /api/users/account
  * Purpose: Permanent account deletion
  */
