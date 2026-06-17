@@ -61,7 +61,7 @@ const sendAccountDeletionEmail = async (email, fullName, restoreToken, deletionD
         throw new Error("Email service is not configured (RESEND_API_KEY missing).");
     }
 
-    const frontendUrl = process.env.FRONTEND_URL || (process.env.NODE_ENV === "staging" ? "https://staging.cocpit.com" : "http://localhost:3000");
+    const frontendUrl = process.env.FRONTEND_URL || (process.env.NODE_ENV === "staging" ? "https://staging.cocpit.in" : "http://localhost:3000");
     const restoreLink = `${frontendUrl}/restore-account?token=${restoreToken}`;
     const deletionDateStr = new Date(deletionDate).toLocaleDateString("en-US", {
         year: "numeric", month: "long", day: "numeric",
