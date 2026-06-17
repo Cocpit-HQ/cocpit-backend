@@ -5,6 +5,11 @@
 const UAParser = require("ua-parser-js");
 const authService = require("./auth.service");
 const authRepo = require("./auth.repository");
+const redisClient = require("../../core/db/redis");
+const socketService = require("../../core/infrastructure/socket.service");
+
+// Must match the expiresIn value in core/utils/jwt.js → signAccessToken
+const ACCESS_TOKEN_TTL_SECONDS = 15 * 60; // 15 minutes
 
 // ─── Get Sessions ──────────────────────────────────────────────────────────────
 
@@ -85,11 +90,27 @@ exports.logoutAllOtherSessions = async (req, res) => {
             return res.status(401).json({ message: "Invalid password" });
         }
 
-        const deletedCount = await authRepo.deleteAllOtherSessions(userId, currentSessionId);
+        const deletedSessions = await authRepo.deleteAllOtherSessions(userId, currentSessionId);
+
+        // Immediately invalidate access tokens and disconnect sockets for all removed sessions
+        if (deletedSessions.length > 0) {
+            await Promise.allSettled(
+                deletedSessions.map(async (sessionId) => {
+                    if (redisClient.isOpen) {
+                        await redisClient.setEx(
+                            `revoked_session:${sessionId}`,
+                            ACCESS_TOKEN_TTL_SECONDS,
+                            "1"
+                        );
+                    }
+                    await socketService.disconnectUserSession(userId, sessionId);
+                })
+            );
+        }
 
         res.json({
             message: "All other sessions terminated",
-            deleted_count: deletedCount,
+            deleted_count: deletedSessions.length,
         });
     } catch (error) {
         console.error("Logout all other sessions error:", error);
@@ -123,6 +144,23 @@ exports.removeSession = async (req, res) => {
         if (result.rowCount === 0) {
             return res.status(404).json({ message: "Session not found" });
         }
+
+        // Immediately blacklist the session's access token so the device
+        // cannot continue making API calls until the token naturally expires.
+        // TTL matches ACCESS_TOKEN_TTL_SECONDS so the key self-cleans.
+        if (redisClient.isOpen) {
+            await redisClient.setEx(
+                `revoked_session:${sessionId}`,
+                ACCESS_TOKEN_TTL_SECONDS,
+                "1"
+            );
+        }
+
+        // Disconnect the device's active socket connection immediately.
+        // Non-blocking — failure here does not affect the HTTP response.
+        socketService.disconnectUserSession(userId, sessionId).catch((err) =>
+            console.error("[Session] Socket disconnect failed for session:", sessionId, err)
+        );
 
         return res.json({
             message: "Session removed successfully",

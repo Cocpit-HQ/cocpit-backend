@@ -222,7 +222,8 @@ const deleteAllOtherSessions = async (userId, currentSessionId) => {
      RETURNING session_id`,
         [userId, currentSessionId]
     );
-    return result.rowCount;
+    // Return the deleted session IDs so callers can blacklist each one immediately
+    return result.rows.map((r) => r.session_id);
 };
 
 const insertSession = async (sessionId, userId, tokenHash, userAgent, ipAddress) => {
