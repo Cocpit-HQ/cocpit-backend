@@ -164,9 +164,17 @@ const registerUser = async ({ email, password, userAgent, ipAddress }) => {
     try {
         await client.query("BEGIN");
 
-        const exists = await authRepo.checkEmailExists(normalizedEmail, client);
-        if (exists) {
+        const emailCheck = await authRepo.checkEmailExists(normalizedEmail, client);
+        if (emailCheck.exists) {
             await client.query("ROLLBACK");
+            if (emailCheck.pendingDeletion) {
+                return {
+                    error: {
+                        status: 409,
+                        message: "An account with this email is scheduled for deletion. Check your email to restore it, or wait until the deletion completes.",
+                    },
+                };
+            }
             return { error: { status: 409, message: "Email already registered" } };
         }
 
@@ -235,7 +243,20 @@ const loginUser = async ({ email, password, userAgent, ipAddress }) => {
         return { error: { status: 401, message: "Invalid credentials" } };
     }
 
-    // 3. Initialize session (Shared logic)
+    // 3. Block login if account is pending deletion
+    if (user.deletion_execute_at) {
+        return {
+            error: {
+                status: 403,
+                code: "ACCOUNT_PENDING_DELETION",
+                message: "Your account is scheduled for deletion. Check your email to restore it.",
+                deletionDate: user.deletion_execute_at,
+                email: user.email,
+            },
+        };
+    }
+
+    // 4. Initialize session (Shared logic)
     return initializeUserSession(user, userAgent, ipAddress);
 };
 
@@ -386,8 +407,21 @@ const socialLogin = async ({ provider, idToken, accountType, userAgent, ipAddres
         user = await authRepo.findUserByEmail(normalizedEmail);
 
         if (user) {
+            // Guard: do not link or log in if account is pending deletion
+            if (user.deletion_execute_at) {
+                return {
+                    error: {
+                        status: 403,
+                        code: "ACCOUNT_PENDING_DELETION",
+                        message: "Your account is scheduled for deletion. Check your email to restore it.",
+                        deletionDate: user.deletion_execute_at,
+                        email: user.email,
+                    },
+                };
+            }
             // Link this provider account to the existing user
             await authRepo.linkSocialAccount(user.user_id, provider, providerId);
+
         } else {
             // Case 3: Brand new user — accountType defaults to Student if not provided
             const finalAccountType = accountType || "Student";
@@ -418,7 +452,20 @@ const socialLogin = async ({ provider, idToken, accountType, userAgent, ipAddres
         }
     }
 
-    // ── Step 3: Generate platform tokens (reuses existing JWT pipeline) ──
+    // ── Step 3: Block login if account is pending deletion ──
+    if (user.deletion_execute_at) {
+        return {
+            error: {
+                status: 403,
+                code: "ACCOUNT_PENDING_DELETION",
+                message: "Your account is scheduled for deletion. Check your email to restore it.",
+                deletionDate: user.deletion_execute_at,
+                email: user.email,
+            },
+        };
+    }
+
+    // ── Step 4: Generate platform tokens (reuses existing JWT pipeline) ──
     const sessionId = crypto.randomUUID();
     const roles = await authRepo.getUserRoles(user.user_id);
     const onboardingComplete = isNewUser ? false : (user.is_onboarding_complete || false);

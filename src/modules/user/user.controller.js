@@ -771,19 +771,22 @@ exports.getPublicProfileCommentedPosts = async (req, res) => {
  */
 exports.deleteAccount = async (req, res) => {
   const userId = req.user.sub;
-  const { password } = req.body;
+  const { password, idToken } = req.body;
 
-  if (!password) {
-    return res.status(400).json({ message: "Password is required for account deletion" });
-  }
+  const crypto = require("crypto");
+  const redisClient = require("../../core/db/redis");
+  const socketService = require("../../core/infrastructure/socket.service");
+  const { sendAccountDeletionEmail } = require("../../core/services/email.service");
+  const { verifyGoogleToken } = require("../auth/googleAuth.service");
+  const { comparePassword } = require("../../core/utils/password");
 
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
 
-    // 1. Verify password
+    // 1. Fetch user record
     const userRes = await client.query(
-      "SELECT password_hash FROM users WHERE user_id = $1",
+      "SELECT user_id, email, full_name, password_hash, google_id FROM users WHERE user_id = $1",
       [userId]
     );
 
@@ -792,85 +795,118 @@ exports.deleteAccount = async (req, res) => {
       return res.status(404).json({ message: "User not found" });
     }
 
-    const { comparePassword } = require("../../core/utils/password");
-    const isValid = await comparePassword(password, userRes.rows[0].password_hash);
+    const user = userRes.rows[0];
 
-    if (!isValid) {
-      await client.query("ROLLBACK");
-      return res.status(401).json({ message: "Invalid password" });
-    }
-
-    // 2. Handle Group Memberships (Leave all groups)
-    // Find all groups where this user is a participant and has NOT left
-    const userGroups = await client.query(
-      `SELECT conversation_id FROM conversation_participants WHERE user_id = $1 AND left_at IS NULL`,
-      [userId]
-    );
-
-    const GroupChatService = require("../../services/groupChat.service");
-
-    for (const group of userGroups.rows) {
+    // 2. Identity verification — password user OR Google user
+    if (user.password_hash) {
+      // Password-based account
+      if (!password) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({ message: "Password is required to delete your account" });
+      }
+      const isValid = await comparePassword(password, user.password_hash);
+      if (!isValid) {
+        await client.query("ROLLBACK");
+        return res.status(401).json({ message: "Invalid password" });
+      }
+    } else {
+      // Social login account — require Google re-authentication
+      if (!idToken) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({ message: "Google re-authentication is required to delete your account" });
+      }
+      let googlePayload;
       try {
-        // Use the existing service to handle admin promotion, system messages, and socket events
-        // Note: leaveGroup handles its own transaction, but we are already in one. 
-        // ideally leaveGroup should accept a client, but for now we rely on it creating its own short transaction.
-        // Since we are deleting the user at the end, the eventual consistency is acceptable.
-        // HOWEVER: Nesting transactions can be tricky. 
-        // Optimized approach: We call leaveGroup which does its own commit. 
-        // If our outer transaction fails later, the user will have left groups but account not deleted. This is a safe partial failure state.
-        await GroupChatService.leaveGroup(userId, group.conversation_id);
-      } catch (err) {
-        console.error(`Failed to leave group ${group.conversation_id} during account deletion:`, err);
-        // Continue deleting account even if leaving a group fails, or should we block?
-        // Blocking is safer to prevent inconsistencies.
+        googlePayload = await verifyGoogleToken(idToken);
+      } catch {
+        await client.query("ROLLBACK");
+        return res.status(401).json({ message: "Invalid Google token. Please re-authenticate and try again." });
+      }
+      // Ensure the Google account matches this user's record
+      if (googlePayload.googleId !== user.google_id) {
+        await client.query("ROLLBACK");
+        return res.status(401).json({ message: "Google account does not match this account." });
       }
     }
 
-    // 3. Check for Orphaned Companies (Sole Owner)
-    // Find all companies where this user is OWNER (Active companies only)
+    // 3. Block deletion if sole owner of a company
     const ownedCompanies = await client.query(
-      `SELECT cm.org_id, c.name 
+      `SELECT cm.org_id, c.name
        FROM organization_members cm
        JOIN organizations c ON cm.org_id = c.org_id
        LEFT JOIN organization_roles cr ON cm.role_id = cr.role_id
-       WHERE cm.user_id = $1 
+       WHERE cm.user_id = $1
          AND (cr.name ILIKE 'Owner' OR cm.role = 'OWNER')
          AND c.is_deleted = FALSE`,
       [userId]
     );
 
     for (const company of ownedCompanies.rows) {
-      // Check if there are ANY other owners for this company
       const otherOwners = await client.query(
-        `SELECT 1 
+        `SELECT 1
          FROM organization_members cm
          LEFT JOIN organization_roles cr ON cm.role_id = cr.role_id
-         WHERE cm.org_id = $1 
+         WHERE cm.org_id = $1
            AND (cr.name ILIKE 'Owner' OR cm.role = 'OWNER')
            AND cm.user_id != $2`,
         [company.org_id, userId]
       );
-
       if (otherOwners.rowCount === 0) {
-        throw new AppError(`You are the sole owner of "${company.name}". Please transfer ownership or delete the company before deleting your account.`, 400);
+        throw new AppError(
+          `You are the sole owner of "${company.name}". Please transfer ownership or delete the company before deleting your account.`,
+          400
+        );
       }
     }
 
-    // 4. Clean up conversation participants (Explicitly to prevent ghosts if CASCADE fails)
-    await client.query("DELETE FROM conversation_participants WHERE user_id = $1", [userId]);
+    // 4. Schedule soft deletion (14 days from now)
+    const deletionExecuteAt = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000);
+    await client.query(
+      `UPDATE users
+       SET deletion_scheduled_at = NOW(), deletion_execute_at = $1
+       WHERE user_id = $2`,
+      [deletionExecuteAt, userId]
+    );
 
-    // 5. Delete user record
-    await client.query("DELETE FROM users WHERE user_id = $1", [userId]);
+    // 5. Revoke all active sessions from DB and collect session IDs for blacklisting
+    const sessionsRes = await client.query(
+      "DELETE FROM refresh_tokens WHERE user_id = $1 RETURNING session_id",
+      [userId]
+    );
+    const sessionIds = sessionsRes.rows.map((r) => r.session_id);
+
+    // 6. Generate a cryptographically secure restore token (raw + hashed)
+    const rawToken = crypto.randomBytes(32).toString("hex");
+    const tokenHash = crypto.createHash("sha256").update(rawToken).digest("hex");
+
+    await client.query(
+      `INSERT INTO account_restoration_tokens (user_id, token_hash, expires_at)
+       VALUES ($1, $2, $3)`,
+      [userId, tokenHash, deletionExecuteAt]
+    );
 
     await client.query("COMMIT");
 
-    // Add user to Redis blacklist for 15 minutes to instantly invalidate active JWTs
-    const redisClient = require("../../core/db/redis");
-    if (redisClient.isOpen) {
-      await redisClient.setEx(`deleted_user:${userId}`, 900, "1");
+    // 7. Blacklist all session JWTs in Redis (non-blocking, outside transaction)
+    if (redisClient.isOpen && sessionIds.length > 0) {
+      await Promise.allSettled(
+        sessionIds.map((sid) => redisClient.setEx(`revoked_session:${sid}`, 900, "1"))
+      );
     }
 
-    // 4. Clear cookies
+    // 8. Disconnect all active sockets for this user (one per session)
+    if (sessionIds.length > 0) {
+      Promise.allSettled(
+        sessionIds.map((sid) => socketService.disconnectUserSession(userId, sid))
+      ).catch((err) => console.error("[deleteAccount] Socket disconnect failed:", err));
+    }
+
+    // 9. Send recovery email (non-blocking — do not fail the request if email fails)
+    sendAccountDeletionEmail(user.email, user.full_name, rawToken, deletionExecuteAt).catch((err) =>
+      console.error("[deleteAccount] Failed to send recovery email:", err)
+    );
+
+    // 10. Clear cookies
     res.clearCookie("refreshToken", {
       httpOnly: true,
       secure: true,
@@ -878,15 +914,148 @@ exports.deleteAccount = async (req, res) => {
       path: "/",
     });
 
-    return res.status(200).json({ message: "Account deleted successfully" });
+    return res.status(200).json({
+      message: "Account scheduled for deletion. Check your email for a restoration link.",
+      deletionDate: deletionExecuteAt,
+    });
   } catch (err) {
     if (client) await client.query("ROLLBACK");
     console.error("Account deletion error:", err);
+    if (err.statusCode) {
+      return res.status(err.statusCode).json({ message: err.message });
+    }
     return res.status(500).json({ message: "Internal server error during account deletion" });
   } finally {
     if (client) client.release();
   }
 };
+// ─── Restore Account ────────────────────────────────────────────────────────────
+
+/**
+ * POST /users/account/restore
+ * Public route — validates a restoration token and cancels scheduled deletion.
+ */
+exports.restoreAccount = async (req, res) => {
+  const { token } = req.body;
+
+  if (!token) {
+    return res.status(400).json({ message: "Restoration token is required" });
+  }
+
+  const crypto = require("crypto");
+  const tokenHash = crypto.createHash("sha256").update(token).digest("hex");
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+
+    const tokenRes = await client.query(
+      `SELECT art.id, art.user_id, art.expires_at, art.used_at
+       FROM account_restoration_tokens art
+       WHERE art.token_hash = $1`,
+      [tokenHash]
+    );
+
+    if (tokenRes.rowCount === 0) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ message: "Invalid restoration link. Please request a new one." });
+    }
+
+    const tokenRow = tokenRes.rows[0];
+
+    if (tokenRow.used_at) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ message: "This restoration link has already been used. Your account is already restored." });
+    }
+
+    if (new Date(tokenRow.expires_at) < new Date()) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ message: "This restoration link has expired. Please request a new one from the login page." });
+    }
+
+    // Clear deletion schedule on the user
+    await client.query(
+      `UPDATE users SET deletion_scheduled_at = NULL, deletion_execute_at = NULL WHERE user_id = $1`,
+      [tokenRow.user_id]
+    );
+
+    // Mark token as used
+    await client.query(
+      `UPDATE account_restoration_tokens SET used_at = NOW() WHERE id = $1`,
+      [tokenRow.id]
+    );
+
+    await client.query("COMMIT");
+
+    return res.status(200).json({ message: "Your account has been restored. You can now log in." });
+  } catch (err) {
+    if (client) await client.query("ROLLBACK");
+    console.error("Restore account error:", err);
+    return res.status(500).json({ message: "Failed to restore account. Please try again." });
+  } finally {
+    if (client) client.release();
+  }
+};
+
+// ─── Resend Recovery Email ───────────────────────────────────────────────────────
+
+/**
+ * POST /users/account/resend-recovery
+ * Public route — rate-limited. Sends a fresh recovery email.
+ * Always returns 200 to avoid leaking whether an email exists.
+ */
+exports.resendRecoveryEmail = async (req, res) => {
+  const { email } = req.body;
+
+  if (!email) {
+    return res.status(400).json({ message: "Email is required" });
+  }
+
+  // Always respond 200 — never reveal whether the email exists
+  res.status(200).json({ message: "If an account with this email is pending deletion, a new recovery email has been sent." });
+
+  // Process async — response already sent
+  (async () => {
+    try {
+      const crypto = require("crypto");
+      const { sendAccountDeletionEmail } = require("../../core/services/email.service");
+
+      const userRes = await pool.query(
+        `SELECT user_id, email, full_name, deletion_execute_at
+         FROM users WHERE email = $1 AND deletion_execute_at IS NOT NULL`,
+        [email.toLowerCase()]
+      );
+
+      if (userRes.rowCount === 0) return; // Email not found or not pending deletion — silently exit
+
+      const user = userRes.rows[0];
+
+      // Invalidate all existing unused tokens for this user
+      await pool.query(
+        `UPDATE account_restoration_tokens SET used_at = NOW()
+         WHERE user_id = $1 AND used_at IS NULL`,
+        [user.user_id]
+      );
+
+      // Generate a new token
+      const rawToken = crypto.randomBytes(32).toString("hex");
+      const tokenHash = crypto.createHash("sha256").update(rawToken).digest("hex");
+
+      await pool.query(
+        `INSERT INTO account_restoration_tokens (user_id, token_hash, expires_at)
+         VALUES ($1, $2, $3)`,
+        [user.user_id, tokenHash, user.deletion_execute_at]
+      );
+
+      await sendAccountDeletionEmail(user.email, user.full_name, rawToken, user.deletion_execute_at);
+    } catch (err) {
+      console.error("[resendRecoveryEmail] Background processing error:", err);
+    }
+  })();
+};
+
+
+
 
 /**
  * GET /api/users/suggested
