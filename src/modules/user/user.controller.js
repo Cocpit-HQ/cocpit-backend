@@ -692,34 +692,42 @@ exports.getPublicProfileCommentedPosts = async (req, res) => {
         p.visibility,
         p.post_type,
 
-        u.user_id AS author_id,
-        u.full_name AS author_name,
-        u.avatar_url AS author_avatar,
-        u.account_name AS author_slug,
+        COALESCE(p.author_org_id, u.user_id) AS author_id,
+        COALESCE(comp.name, u.full_name) AS author_name,
+        COALESCE(comp.logo_url, u.avatar_url) AS author_avatar,
+        COALESCE(comp.slug, u.account_name) AS author_slug,
+        (p.author_org_id IS NOT NULL) AS is_organization_post,
         u.headline AS author_headline,
 
         pc.name AS category_name,
         p.location,
 
-        COALESCE(
-          (SELECT json_agg(json_build_object('url', pm.url, 'media_type', pm.media_type))
-           FROM post_media pm WHERE pm.post_id = p.post_id),
-          '[]'::json
-        ) AS media,
+        COALESCE(pm.media, '[]'::json) AS media,
+        COALESCE(lc.like_count, 0) AS like_count,
 
-        (SELECT COUNT(*) FROM post_likes pl WHERE pl.post_id = p.post_id)::int AS like_count,
-        (SELECT COUNT(*) FROM post_comments pc_c WHERE pc_c.post_id = p.post_id)::int AS comment_count,
+        EXISTS(SELECT 1 FROM post_likes pl_me WHERE pl_me.post_id = p.post_id AND pl_me.user_id = $${userParamIdx} AND pl_me.org_id IS NULL) AS is_liked,
+        EXISTS(SELECT 1 FROM post_comments pc_me WHERE pc_me.post_id = p.post_id AND pc_me.author_id = $${userParamIdx} AND pc_me.author_org_id IS NULL) AS is_commented,
 
-        EXISTS(SELECT 1 FROM post_likes pl WHERE pl.post_id = p.post_id AND pl.user_id = $${userParamIdx}) AS is_liked,
+        EXISTS(SELECT 1 FROM saved_post sp_me WHERE sp_me.post_id = p.post_id AND sp_me.user_id = $${userParamIdx} AND sp_me.org_id IS NULL) AS is_saved,
+        
+        COALESCE(cc.comment_count, 0) AS comment_count,
 
         -- The most recent comment by target user on this post
         (
           SELECT json_build_object(
             'comment_id', mc.comment_id,
             'content', mc.content,
-            'created_at', mc.created_at
+            'created_at', mc.created_at,
+            'author_id', mc.author_id,
+            'author_name', mc_u.full_name,
+            'author_avatar', mc_u.avatar_url,
+            'author_title', mc_u.headline,
+            'like_count', (SELECT COUNT(*) FROM comment_likes cl WHERE cl.comment_id = mc.comment_id)::int,
+            'is_liked', EXISTS(SELECT 1 FROM comment_likes cl WHERE cl.comment_id = mc.comment_id AND cl.user_id = $${userParamIdx} AND cl.org_id IS NULL),
+            'reply_count', (SELECT COUNT(*) FROM post_comments rc WHERE rc.parent_id = mc.comment_id)::int
           )
           FROM post_comments mc
+          JOIN users mc_u ON mc_u.user_id = mc.author_id
           WHERE mc.post_id = p.post_id
             AND mc.author_id = $1
             AND mc.author_org_id IS NULL
@@ -729,7 +737,14 @@ exports.getPublicProfileCommentedPosts = async (req, res) => {
 
       FROM posts p
       JOIN users u ON u.user_id = p.author_id
+      LEFT JOIN organizations comp ON comp.org_id = p.author_org_id
       LEFT JOIN post_categories pc ON pc.category_id = p.category_id
+      LEFT JOIN (
+          SELECT pm.post_id, json_agg(json_build_object('media_id', pm.media_id, 'url', pm.url, 'media_type', pm.media_type)) AS media
+          FROM post_media pm GROUP BY pm.post_id
+      ) pm ON pm.post_id = p.post_id
+      LEFT JOIN (SELECT post_id, COUNT(*) AS like_count FROM post_likes GROUP BY post_id) lc ON lc.post_id = p.post_id
+      LEFT JOIN (SELECT post_id, COUNT(*) AS comment_count FROM post_comments GROUP BY post_id) cc ON cc.post_id = p.post_id
       ${whereClause}
       ORDER BY p.created_at DESC, p.post_id DESC
       LIMIT $${limitIdx}
