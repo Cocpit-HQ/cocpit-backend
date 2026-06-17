@@ -16,9 +16,16 @@ exports.requireAuth = async (req, res, next) => {
     req.user = verifyAccessToken(token);
 
     if (redisClient.isOpen) {
+      // Check 1: Whole account deleted
       const isDeleted = await redisClient.get(`deleted_user:${req.user.sub}`);
       if (isDeleted) {
         return res.status(401).json({ message: "User account no longer exists. Please log in again." });
+      }
+
+      // Check 2: Specific session revoked (e.g. removed from another device)
+      const isRevoked = await redisClient.get(`revoked_session:${req.user.sid}`);
+      if (isRevoked) {
+        return res.status(401).json({ message: "Session has been terminated. Please log in again." });
       }
     } else {
       // Fallback to database check if Redis is unavailable
@@ -62,8 +69,16 @@ exports.optionalAuth = async (req, res, next) => {
     req.user = verifyAccessToken(token);
 
     if (redisClient.isOpen) {
+      // Check 1: Whole account deleted
       const isDeleted = await redisClient.get(`deleted_user:${req.user.sub}`);
       if (isDeleted) {
+        req.user = null;
+        return next();
+      }
+
+      // Check 2: Specific session revoked (e.g. removed from another device)
+      const isRevoked = await redisClient.get(`revoked_session:${req.user.sid}`);
+      if (isRevoked) {
         req.user = null;
         return next();
       }
