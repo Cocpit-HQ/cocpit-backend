@@ -57,7 +57,12 @@ exports.login = async (req, res) => {
         const result = await authService.loginUser({ email, password, userAgent, ipAddress });
 
         if (result.error) {
-            return res.status(result.error.status).json({ message: result.error.message });
+            return res.status(result.error.status).json({
+                message: result.error.message,
+                code: result.error.code,
+                deletionDate: result.error.deletionDate,
+                email: result.error.email,
+            });
         }
 
         // Set refresh token cookie
@@ -231,7 +236,12 @@ const handleSocialLogin = async (req, res, provider) => {
         const result = await authService.socialLogin({ provider, idToken, accountType, userAgent, ipAddress });
 
         if (result.error) {
-            return res.status(result.error.status).json({ message: result.error.message });
+            return res.status(result.error.status).json({
+                message: result.error.message,
+                code: result.error.code,
+                deletionDate: result.error.deletionDate,
+                email: result.error.email,
+            });
         }
 
         // Set refresh token cookie — identical to email/password login

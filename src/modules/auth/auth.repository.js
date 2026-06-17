@@ -9,19 +9,25 @@ const pool = require("../../core/db/pool");
 
 const findUserByEmail = async (email) => {
     const result = await pool.query(
-        `SELECT user_id, email, password_hash, is_onboarding_complete, account_name, full_name, avatar_url
-     FROM users WHERE email = $1`,
+        `SELECT user_id, email, password_hash, is_onboarding_complete, account_name, full_name, avatar_url,
+                deletion_execute_at
+         FROM users WHERE email = $1`,
         [email]
     );
     return result.rows[0] || null;
 };
 
-const checkEmailExists = async (email) => {
-    const result = await pool.query(
-        "SELECT 1 FROM users WHERE email = $1",
+const checkEmailExists = async (email, client = pool) => {
+    const result = await client.query(
+        "SELECT 1, deletion_execute_at FROM users WHERE email = $1",
         [email]
     );
-    return result.rowCount > 0;
+    if (result.rowCount === 0) return { exists: false };
+    return {
+        exists: true,
+        pendingDeletion: result.rows[0].deletion_execute_at !== null,
+        deletionDate: result.rows[0].deletion_execute_at,
+    };
 };
 
 const createUser = async (email, passwordHash, fullName = "", is_onboarding_complete = false, client) => {
@@ -100,7 +106,8 @@ const getUserPasswordHash = async (userId) => {
 
 const findUserBySocialId = async (provider, providerId) => {
     const result = await pool.query(
-        `SELECT u.user_id, u.email, u.full_name, u.avatar_url, u.is_onboarding_complete, u.account_name, sa.provider, sa.provider_id
+        `SELECT u.user_id, u.email, u.full_name, u.avatar_url, u.is_onboarding_complete,
+                u.account_name, u.deletion_execute_at, sa.provider, sa.provider_id
          FROM users u
          JOIN user_social_accounts sa ON u.user_id = sa.user_id
          WHERE sa.provider = $1 AND sa.provider_id = $2`,
