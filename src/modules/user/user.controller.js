@@ -798,35 +798,35 @@ exports.deleteAccount = async (req, res) => {
     const user = userRes.rows[0];
 
     // 2. Identity verification — password user OR Google user
-    if (user.password_hash) {
-      // Password-based account
-      if (!password) {
-        await client.query("ROLLBACK");
-        return res.status(400).json({ message: "Password is required to delete your account" });
-      }
+    let isAuthenticated = false;
+
+    if (password && user.password_hash) {
       const isValid = await comparePassword(password, user.password_hash);
-      if (!isValid) {
+      if (isValid) {
+        isAuthenticated = true;
+      } else {
         await client.query("ROLLBACK");
         return res.status(401).json({ message: "Invalid password" });
       }
-    } else {
-      // Social login account — require Google re-authentication
-      if (!idToken) {
-        await client.query("ROLLBACK");
-        return res.status(400).json({ message: "Google re-authentication is required to delete your account" });
-      }
+    } else if (idToken && user.google_id) {
       let googlePayload;
       try {
         googlePayload = await verifyGoogleToken(idToken);
+        if (googlePayload.googleId === user.google_id) {
+          isAuthenticated = true;
+        } else {
+          await client.query("ROLLBACK");
+          return res.status(401).json({ message: "Google account does not match this account." });
+        }
       } catch {
         await client.query("ROLLBACK");
         return res.status(401).json({ message: "Invalid Google token. Please re-authenticate and try again." });
       }
-      // Ensure the Google account matches this user's record
-      if (googlePayload.googleId !== user.google_id) {
-        await client.query("ROLLBACK");
-        return res.status(401).json({ message: "Google account does not match this account." });
-      }
+    }
+
+    if (!isAuthenticated) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ message: "Authentication is required to delete your account" });
     }
 
     // 3. Block deletion if sole owner of a company
