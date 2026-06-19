@@ -46,7 +46,7 @@ exports.searchUsers = async (req, res) => {
             'USER'::text as type,
             NULL::text as slug,
             NULL::text as industry
-          FROM users u
+          FROM active_users u
           LEFT JOIN profiles p ON u.user_id = p.user_id
           WHERE (u.full_name ILIKE $2 OR u.account_name ILIKE $2)
             AND u.full_name IS NOT NULL AND TRIM(u.full_name) <> ''
@@ -128,7 +128,7 @@ exports.getUserProfile = async (req, res) => {
     // If not a UUID, try to resolve as account_name (case-insensitive)
     try {
       const resolveResult = await pool.query(
-        "SELECT user_id FROM users WHERE LOWER(account_name) = LOWER($1)",
+        "SELECT user_id FROM active_users WHERE LOWER(account_name) = LOWER($1)",
         [id]
       );
       if (resolveResult.rowCount === 0) {
@@ -179,7 +179,7 @@ exports.getUserProfile = async (req, res) => {
         p.availability,
         p.work_preference
        
-      FROM users u
+      FROM active_users u
       LEFT JOIN profiles p ON u.user_id = p.user_id
       WHERE u.user_id = $1
     `;
@@ -346,7 +346,7 @@ exports.getPublicProfilePosts = async (req, res) => {
     // If not a UUID, try to resolve as account_name (case-insensitive)
     try {
       const resolveResult = await pool.query(
-        "SELECT user_id FROM users WHERE LOWER(account_name) = LOWER($1)",
+        "SELECT user_id FROM active_users WHERE LOWER(account_name) = LOWER($1)",
         [userId]
       );
       if (resolveResult.rowCount === 0) {
@@ -445,7 +445,7 @@ exports.getPublicProfilePosts = async (req, res) => {
         (
             SELECT COALESCE(comp_like.slug, u_like.account_name)
             FROM post_likes pl_sample
-            LEFT JOIN users u_like ON u_like.user_id = pl_sample.user_id
+            LEFT JOIN active_users u_like ON u_like.user_id = pl_sample.user_id
             LEFT JOIN organizations comp_like ON comp_like.org_id = pl_sample.org_id
             WHERE pl_sample.post_id = p.post_id
             AND pl_sample.user_id IS DISTINCT FROM $${userParamIdx}
@@ -549,10 +549,10 @@ exports.getPublicProfilePosts = async (req, res) => {
         END AS shared_post
 
       FROM posts p
-      JOIN users u ON u.user_id = p.author_id
+      JOIN active_users u ON u.user_id = p.author_id
       LEFT JOIN post_categories pc ON pc.category_id = p.category_id
       LEFT JOIN posts sp ON p.shared_post_id = sp.post_id
-      LEFT JOIN users sp_u ON sp.author_id = sp_u.user_id
+      LEFT JOIN active_users sp_u ON sp.author_id = sp_u.user_id
       LEFT JOIN post_categories sp_cat ON sp.category_id = sp_cat.category_id
 
       ${whereClause}
@@ -635,7 +635,7 @@ exports.getPublicProfileCommentedPosts = async (req, res) => {
   if (!uuidRegex.test(userId)) {
     try {
       const resolveResult = await pool.query(
-        "SELECT user_id FROM users WHERE LOWER(account_name) = LOWER($1)",
+        "SELECT user_id FROM active_users WHERE LOWER(account_name) = LOWER($1)",
         [userId]
       );
       if (resolveResult.rowCount === 0) {
@@ -727,7 +727,7 @@ exports.getPublicProfileCommentedPosts = async (req, res) => {
             'reply_count', (SELECT COUNT(*) FROM post_comments rc WHERE rc.parent_id = mc.comment_id)::int
           )
           FROM post_comments mc
-          JOIN users mc_u ON mc_u.user_id = mc.author_id
+          JOIN active_users mc_u ON mc_u.user_id = mc.author_id
           WHERE mc.post_id = p.post_id
             AND mc.author_id = $1
             AND mc.author_org_id IS NULL
@@ -736,7 +736,7 @@ exports.getPublicProfileCommentedPosts = async (req, res) => {
         ) AS their_comment
 
       FROM posts p
-      JOIN users u ON u.user_id = p.author_id
+      JOIN active_users u ON u.user_id = p.author_id
       LEFT JOIN organizations comp ON comp.org_id = p.author_org_id
       LEFT JOIN post_categories pc ON pc.category_id = p.category_id
       LEFT JOIN (
@@ -859,8 +859,8 @@ exports.deleteAccount = async (req, res) => {
       }
     }
 
-    // 4. Schedule soft deletion (14 days from now)
-    const deletionExecuteAt = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000);
+    // 4. Schedule soft deletion (40 days from now)
+    const deletionExecuteAt = new Date(Date.now() + 40 * 24 * 60 * 60 * 1000);
     await client.query(
       `UPDATE users
        SET deletion_scheduled_at = NOW(), deletion_execute_at = $1
@@ -1074,7 +1074,7 @@ exports.getSuggestedUsers = async (req, res) => {
         u.headline,
         p.account_type,
         (SELECT COUNT(*) FROM followers WHERE following_id = u.user_id) as followers_count
-      FROM users u
+      FROM active_users u
       LEFT JOIN profiles p ON u.user_id = p.user_id
       WHERE u.full_name IS NOT NULL AND TRIM(u.full_name) <> ''
       AND u.account_name IS NOT NULL AND TRIM(u.account_name) <> ''

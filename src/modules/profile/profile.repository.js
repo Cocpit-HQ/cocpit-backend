@@ -15,7 +15,7 @@ const getFullProfile = async (userId) => {
                 u.location_lat, u.location_lng, u.location_place_id,
                 p.profile_id, p.account_type, p.open_to, p.availability, p.work_preference,
                 p.profile_views_count, p.search_appearances_count, p.version
-         FROM users u
+         FROM active_users u
          LEFT JOIN profiles p ON u.user_id = p.user_id
          WHERE u.user_id = $1`,
         [userId]

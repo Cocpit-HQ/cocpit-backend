@@ -513,7 +513,7 @@ exports.getCompanyFollowers = async (req, res) => {
         let query = `
             SELECT u.user_id, u.full_name, u.headline, u.avatar_url, cf.created_at as followed_at
             FROM organization_followers cf
-            JOIN users u ON cf.user_id = u.user_id
+            JOIN active_users u ON cf.user_id = u.user_id
             WHERE cf.org_id = $1
         `;
         const params = [companyId];
@@ -612,7 +612,7 @@ exports.getFollowers = async (req, res) => {
             SELECT u.user_id, u.full_name, u.avatar_url, u.headline, f.created_at, 'user' as type,
                    (EXISTS (SELECT 1 FROM followers WHERE follower_id = $2 AND following_id = u.user_id)) as is_following_back
             FROM followers f 
-            JOIN users u ON f.follower_id = u.user_id 
+            JOIN active_users u ON f.follower_id = u.user_id 
             WHERE f.following_id = $1
         `;
         const params = [userId, requesterId];
@@ -674,7 +674,7 @@ exports.getFollowing = async (req, res) => {
         let userQuery = `
             SELECT u.user_id, u.full_name, u.avatar_url, u.headline, f.created_at, 'user' as type, NULL as slug
             FROM followers f
-            JOIN users u ON f.following_id = u.user_id
+            JOIN active_users u ON f.following_id = u.user_id
             WHERE f.follower_id = $1
         `;
 
@@ -1051,7 +1051,7 @@ exports.getPendingRequests = async (req, res) => {
                     0               AS mutual_count,
                     ARRAY[]::TEXT[] AS mutual_avatars
                 FROM connection_requests cr
-                JOIN users u ON cr.receiver_id = u.user_id
+                JOIN active_users u ON cr.receiver_id = u.user_id
                 WHERE cr.sender_id = $1
                   AND cr.status = 'pending'
                 ORDER BY cr.created_at DESC
@@ -1086,14 +1086,14 @@ exports.getPendingRequests = async (req, res) => {
                         SELECT u2.avatar_url
                         FROM connections c1
                         JOIN connections c2 ON c1.connected_user_id = c2.connected_user_id
-                        JOIN users u2        ON u2.user_id = c1.connected_user_id
+                        JOIN active_users u2        ON u2.user_id = c1.connected_user_id
                         WHERE c1.user_id = cr.sender_id
                           AND c2.user_id = $1
                           AND u2.avatar_url IS NOT NULL
                         LIMIT 3
                     ) AS mutual_avatars
                 FROM connection_requests cr
-                JOIN users u ON cr.sender_id = u.user_id
+                JOIN active_users u ON cr.sender_id = u.user_id
                 WHERE cr.receiver_id = $1
                   AND cr.status = 'pending')
                 UNION ALL
@@ -1274,7 +1274,7 @@ exports.getConnectionSuggestions = async (req, res) => {
                         1              AS score,
                         'city'::TEXT   AS reason
                     FROM users u1
-                    JOIN users u2 ON LOWER(TRIM(u2.location_city)) = LOWER(TRIM(u1.location_city))
+                    JOIN active_users u2 ON LOWER(TRIM(u2.location_city)) = LOWER(TRIM(u1.location_city))
                                  AND u2.user_id <> u1.user_id
                     WHERE u1.user_id = $1
                       AND u1.location_city IS NOT NULL
@@ -1317,7 +1317,7 @@ exports.getConnectionSuggestions = async (req, res) => {
                     SELECT u2.avatar_url
                     FROM connections c1
                     JOIN connections c2 ON c1.connected_user_id = c2.connected_user_id
-                    JOIN users u2 ON u2.user_id = c1.connected_user_id
+                    JOIN active_users u2 ON u2.user_id = c1.connected_user_id
                     WHERE c1.user_id = r.suggest_id AND c2.user_id = $1
                       AND u2.avatar_url IS NOT NULL
                     LIMIT 3
@@ -1345,7 +1345,7 @@ exports.getConnectionSuggestions = async (req, res) => {
                     LIMIT 3
                 ) AS shared_skills
             FROM ranked r
-            JOIN users u ON u.user_id = r.suggest_id
+            JOIN active_users u ON u.user_id = r.suggest_id
             WHERE NOT EXISTS (
                 SELECT 1 FROM blocks
                 WHERE (blocker_id = $1 AND blocked_id = u.user_id)
@@ -1399,8 +1399,8 @@ exports.getConnectionRequestHistory = async (req, res) => {
                 'user' as type,
                 NULL as company_slug
             FROM connection_requests cr
-            LEFT JOIN users u_send ON cr.sender_id = u_send.user_id
-            LEFT JOIN users u_recv ON cr.receiver_id = u_recv.user_id
+            LEFT JOIN active_users u_send ON cr.sender_id = u_send.user_id
+            LEFT JOIN active_users u_recv ON cr.receiver_id = u_recv.user_id
             WHERE (cr.receiver_id = $1 OR cr.sender_id = $1)
             AND cr.status IN ('connected', 'rejected')
 
@@ -1639,7 +1639,7 @@ exports.getMyConnections = async (req, res) => {
         let userQuery = `
             SELECT u.user_id, u.full_name, u.avatar_url, u.headline, c.created_at, 'user' as type, NULL as slug
             FROM connections c 
-            JOIN users u ON c.connected_user_id = u.user_id 
+            JOIN active_users u ON c.connected_user_id = u.user_id 
             WHERE c.user_id = $1
         `;
 
@@ -1711,7 +1711,7 @@ exports.getConnections = async (req, res) => {
         let userQuery = `
             SELECT u.user_id, u.full_name, u.avatar_url, u.headline, c.created_at, 'user' as type, NULL as slug
             FROM connections c 
-            JOIN users u ON c.connected_user_id = u.user_id 
+            JOIN active_users u ON c.connected_user_id = u.user_id 
             WHERE c.user_id = $1
         `;
 
@@ -1808,8 +1808,8 @@ SELECT
         WHEN c.is_group THEN COALESCE(cp.left_group_name, c.conversation_name, 'Group Chat')
         -- WHEN EXISTS(SELECT 1 FROM blocks WHERE blocker_id = u.user_id AND blocked_id = $1) THEN 'User not found' -- Update for Company?
         WHEN comp.org_id IS NOT NULL THEN comp.name
-        WHEN u.full_name IS NULL AND comp.org_id IS NULL THEN COALESCE(c.conversation_name, 'Deleted User')
-        ELSE u.full_name 
+        WHEN u.display_name IS NULL AND comp.org_id IS NULL THEN COALESCE(c.conversation_name, 'Deleted User')
+        ELSE u.display_name 
     END AS other_user_name,
     
     -- Avatar logic
@@ -1817,15 +1817,15 @@ SELECT
         WHEN c.is_group THEN COALESCE(cp.left_group_avatar, c.group_avatar)
         -- WHEN EXISTS(SELECT 1 FROM blocks WHERE blocker_id = u.user_id AND blocked_id = $1) THEN NULL
         WHEN comp.org_id IS NOT NULL THEN comp.logo_url
-        WHEN u.avatar_url IS NULL AND comp.org_id IS NULL THEN NULL
-        ELSE u.avatar_url 
+        WHEN u.display_avatar IS NULL AND comp.org_id IS NULL THEN NULL
+        ELSE u.display_avatar 
     END AS other_user_avatar,
     
     -- Other ID (User or Company)
     COALESCE(u.user_id, comp.org_id) AS other_user_id,
-    u.headline AS other_user_headline,
+    u.display_headline AS other_user_headline,
     CASE WHEN comp.org_id IS NOT NULL THEN 'COMPANY' ELSE 'USER' END as other_user_type,
-    COALESCE(comp.slug, u.account_name) AS other_user_slug,
+    COALESCE(comp.slug, u.display_username) AS other_user_slug,
     
     -- Identify the sender profile for the current view
     cp.is_active,
@@ -1957,7 +1957,7 @@ LEFT JOIN LATERAL (
       )
     LIMIT 1
 ) cp_other ON c.is_group = FALSE
-LEFT JOIN users u ON cp_other.user_id = u.user_id
+LEFT JOIN user_display_profiles u ON cp_other.user_id = u.user_id
 LEFT JOIN organizations comp ON cp_other.org_id = comp.org_id -- JOIN organizations for Company participants
 
 -- LATERAL JOIN to find the latest VISIBLE message across ANY period
@@ -1977,11 +1977,11 @@ LEFT JOIN LATERAL (
                 (SELECT json_build_object(
                     'message_id', rm.message_id,
                     'text_content', rm.text_content,
-                    'sender_name', COALESCE(rc.name, ru.full_name, 'Deleted User'),
+                    'sender_name', COALESCE(rc.name, ru.display_name, 'Deleted User'),
                     'message_type', rm.message_type
                 ) 
                 FROM messages rm 
-                LEFT JOIN users ru ON rm.sender_id = ru.user_id
+                LEFT JOIN user_display_profiles ru ON rm.sender_id = ru.user_id
                 LEFT JOIN organizations rc ON rm.author_org_id = rc.org_id
                 WHERE rm.message_id = msg.replied_msg_id)
             ELSE NULL
@@ -1990,15 +1990,15 @@ LEFT JOIN LATERAL (
             (SELECT JSON_AGG(
                 JSON_BUILD_OBJECT(
                     'user_id', mr.user_id,
-                    'full_name', ru.full_name,
-                    'avatar', ru.avatar_url,
+                    'full_name', ru.display_name,
+                    'avatar', ru.display_avatar,
                     'emoji', mr.emoji,
                     'created_at', mr.created_at,
                     'updated_at', mr.updated_at
                 ) ORDER BY mr.updated_at DESC
             ) FILTER (WHERE mr.reaction_id IS NOT NULL AND mr.emoji IS NOT NULL AND mr.emoji != '')
             FROM message_reactions mr
-            JOIN users ru ON ru.user_id = mr.user_id
+            JOIN user_display_profiles ru ON ru.user_id = mr.user_id
             WHERE mr.message_id = msg.message_id),
             '[]'::json
         ) AS reactions
@@ -2086,7 +2086,7 @@ JOIN conversations c
     ON c.conversation_id = gi.conversation_id
    AND c.is_group = TRUE
    AND c.is_active = TRUE
-LEFT JOIN users inviter ON inviter.user_id = gi.inviter_id
+LEFT JOIN active_users inviter ON inviter.user_id = gi.inviter_id
 WHERE gi.invitee_id = $1
   AND gi.status = 'pending'
   AND NOT EXISTS (
@@ -2517,7 +2517,7 @@ exports.sendMessage = async (req, res) => {
                             const memberRes = await client.query(
                                 `SELECT cm.role_id, cr.name as role_name, u.full_name
                                  FROM organization_members cm
-                                 JOIN users u ON cm.user_id = u.user_id
+                                 JOIN active_users u ON cm.user_id = u.user_id
                                  LEFT JOIN organization_roles cr ON cm.role_id = cr.role_id
                                  WHERE cm.org_id = $1 AND cm.user_id = $2`,
                                 [authorCompanyId, senderId]
@@ -2605,7 +2605,7 @@ exports.sendMessage = async (req, res) => {
                         json_build_object('full_name', u.full_name, 'avatar_url', u.avatar_url) as author,
                         (SELECT json_agg(json_build_object('url', url, 'media_type', media_type)) FROM post_media WHERE post_id = p.post_id) as media
                     FROM posts p
-                    JOIN users u ON p.author_id = u.user_id
+                    JOIN active_users u ON p.author_id = u.user_id
                     WHERE p.post_id = $1
                 `, [shared_post_id]);
                 if (spRes.rowCount > 0) sharedPostData = spRes.rows[0];
@@ -2695,9 +2695,9 @@ exports.sendMessage = async (req, res) => {
                         rm.message_id, 
                         rm.text_content, 
                         rm.message_type,
-                        COALESCE(rc.name, ru.full_name, 'Deleted User') as sender_name
+                        COALESCE(rc.name, ru.display_name, 'Deleted User') as sender_name
                     FROM messages rm
-                    LEFT JOIN users ru ON rm.sender_id = ru.user_id
+                    LEFT JOIN user_display_profiles ru ON rm.sender_id = ru.user_id
                     LEFT JOIN organizations rc ON rm.author_org_id = rc.org_id
                     WHERE rm.message_id = $1
                 `, [replyMessageId]);
@@ -3093,11 +3093,11 @@ exports.getMessageSeenBy = async (req, res) => {
             `
             SELECT 
                 u.user_id,
-                u.full_name,
-                u.avatar_url,
+                u.display_name as full_name,
+                u.display_avatar as avatar_url,
                 mr.read_at
             FROM message_reads mr
-            JOIN users u ON mr.user_id = u.user_id
+            JOIN user_display_profiles u ON mr.user_id = u.user_id
             WHERE mr.message_id = $1
             ORDER BY mr.read_at ASC
             `,
@@ -3201,8 +3201,8 @@ exports.getMessages = async (req, res) => {
                        AND (m.sender_id IS NULL OR cp.user_id != m.sender_id)
                     ), 0
                 ) AS seen_count,
-                COALESCE(c.name, u.full_name, 'Deleted User') as sender_name,
-                COALESCE(c.logo_url, u.avatar_url, NULL) as sender_avatar,
+                COALESCE(c.name, u.display_name, 'Deleted User') as sender_name,
+                COALESCE(c.logo_url, u.display_avatar, NULL) as sender_avatar,
                 (SELECT json_agg(json_build_object('url', mm.url, 'media_type', mm.media_type)) 
                  FROM message_media mm 
                  WHERE mm.message_id = m.message_id
@@ -3218,7 +3218,7 @@ exports.getMessages = async (req, res) => {
                         json_build_object(
                             'post_id', sp.post_id,
                             'content', sp.content,
-                            'author', json_build_object('full_name', au.full_name, 'avatar_url', au.avatar_url),
+                            'author', json_build_object('full_name', au.display_name, 'avatar_url', au.display_avatar),
                             'media', (SELECT json_agg(json_build_object('url', url, 'media_type', media_type)) FROM post_media WHERE post_id = sp.post_id)
                         )
                     ELSE NULL 
@@ -3230,12 +3230,12 @@ exports.getMessages = async (req, res) => {
                 CASE
                     WHEN m.shared_profile_id IS NOT NULL AND m.shared_profile_type = 'user' THEN
                         (SELECT json_build_object(
-                            'name', pu.full_name,
-                            'avatar', pu.avatar_url,
-                            'headline', pu.headline,
+                            'name', pu.display_name,
+                            'avatar', pu.display_avatar,
+                            'headline', pu.display_headline,
                             'location', pu.location,
-                            'username', pu.account_name
-                        ) FROM users pu WHERE pu.user_id = m.shared_profile_id)
+                            'username', pu.display_username
+                        ) FROM user_display_profiles pu WHERE pu.user_id = m.shared_profile_id)
                     WHEN m.shared_profile_id IS NOT NULL AND m.shared_profile_type = 'company' THEN
                         (SELECT json_build_object(
                             'name', pc.name,
@@ -3253,11 +3253,11 @@ exports.getMessages = async (req, res) => {
                         (SELECT json_build_object(
                             'message_id', rm.message_id,
                             'text_content', rm.text_content,
-                            'sender_name', COALESCE(rc.name, ru.full_name, 'Deleted User'),
+                            'sender_name', COALESCE(rc.name, ru.display_name, 'Deleted User'),
                             'message_type', rm.message_type
                         ) 
                         FROM messages rm 
-                        LEFT JOIN users ru ON rm.sender_id = ru.user_id
+                        LEFT JOIN user_display_profiles ru ON rm.sender_id = ru.user_id
                         LEFT JOIN organizations rc ON rm.author_org_id = rc.org_id
                         WHERE rm.message_id = m.replied_msg_id)
                     ELSE NULL
@@ -3266,23 +3266,23 @@ exports.getMessages = async (req, res) => {
                     (SELECT JSON_AGG(
                         JSON_BUILD_OBJECT(
                             'user_id', mr.user_id,
-                            'full_name', rru.full_name,
-                            'avatar', rru.avatar_url,
+                            'full_name', rru.display_name,
+                            'avatar', rru.display_avatar,
                             'emoji', mr.emoji,
                             'created_at', mr.created_at,
                             'updated_at', mr.updated_at
                         ) ORDER BY mr.updated_at DESC
                     ) FILTER (WHERE mr.reaction_id IS NOT NULL AND mr.emoji IS NOT NULL AND mr.emoji != '')
                     FROM message_reactions mr
-                    JOIN users rru ON rru.user_id = mr.user_id
+                    JOIN user_display_profiles rru ON rru.user_id = mr.user_id
                     WHERE mr.message_id = m.message_id),
                     '[]'::json
                 ) AS reactions
              FROM messages m
-             LEFT JOIN users u ON m.sender_id = u.user_id
+             LEFT JOIN user_display_profiles u ON m.sender_id = u.user_id
              LEFT JOIN organizations c ON m.author_org_id = c.org_id
              LEFT JOIN posts sp ON m.shared_post_id = sp.post_id
-             LEFT JOIN users au ON sp.author_id = au.user_id
+             LEFT JOIN user_display_profiles au ON sp.author_id = au.user_id
              WHERE m.conversation_id = $1 
              -- Visibility: If not group, show all. If group, check ANY participation record.
              AND ($2::boolean = false OR EXISTS (
@@ -3486,18 +3486,18 @@ exports.getNotifications = async (req, res) => {
                 n.recipient_org_id as recipient_company_id,
                 CASE 
                     WHEN (n.metadata->>'org_id') IS NOT NULL THEN c.name 
-                    ELSE u.full_name 
+                    ELSE u.display_name 
                 END as actor_name, 
                 CASE 
                     WHEN (n.metadata->>'org_id') IS NOT NULL THEN c.logo_url 
-                    ELSE u.avatar_url 
+                    ELSE u.display_avatar 
                 END as actor_avatar,
-                COALESCE(c.slug, u.account_name) as actor_slug,
+                COALESCE(c.slug, u.display_username) as actor_slug,
                 ((n.metadata->>'org_id') IS NOT NULL) as is_company_actor,
                 cr.request_id as request_id, 
                 cr.status as request_status
             FROM notifications n 
-            LEFT JOIN users u ON n.sender_id = u.user_id 
+            LEFT JOIN user_display_profiles u ON n.sender_id = u.user_id 
             LEFT JOIN organizations c ON NULLIF(n.metadata->>'org_id', '')::uuid = c.org_id
             LEFT JOIN connection_requests cr ON n.sender_id = cr.sender_id AND n.user_id = cr.receiver_id AND cr.status = 'pending'
             WHERE 
@@ -4504,7 +4504,7 @@ exports.upsertReaction = async (req, res) => {
                     u.full_name AS user_full_name,
                     u.avatar_url AS user_avatar
                  FROM message_reactions mr
-                 JOIN users u ON u.user_id = mr.user_id
+                 JOIN active_users u ON u.user_id = mr.user_id
                  WHERE mr.message_id = $1 AND mr.user_id = $2`,
                 [messageId, userId]
             );
@@ -4541,7 +4541,7 @@ exports.upsertReaction = async (req, res) => {
                     u.full_name AS user_full_name,
                     u.avatar_url AS user_avatar
                  FROM message_reactions mr
-                 JOIN users u ON u.user_id = mr.user_id
+                 JOIN active_users u ON u.user_id = mr.user_id
                  WHERE mr.message_id = $1 AND mr.user_id = $2`,
                 [messageId, userId]
             );

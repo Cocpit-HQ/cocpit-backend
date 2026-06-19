@@ -90,7 +90,7 @@ exports.getAllJobs = async (req, res) => {
         ${userId ? 'ja.current_status AS "applicationStatus",' : 'NULL AS "applicationStatus",'}
         (SELECT COUNT(*)::int FROM job_applications ja_count WHERE ja_count.job_id = j.job_id) as applicants
       FROM jobs j
-      LEFT JOIN users u ON j.recruiter_id = u.user_id
+      LEFT JOIN active_users u ON j.recruiter_id = u.user_id
       LEFT JOIN organizations c ON j.org_id = c.org_id
       ${userId ? "LEFT JOIN job_saves js ON js.job_id = j.job_id AND js.user_id = $1" : ""}
       ${userId ? "LEFT JOIN job_applications ja ON ja.job_id = j.job_id AND ja.applicant_id = $1" : ""}
@@ -148,7 +148,7 @@ exports.getJobById = async (req, res) => {
         ${userId ? 'ja.screening_submitted_at AS "screeningSubmittedAt",' : 'NULL AS "screeningSubmittedAt",'}
         (SELECT COUNT(*)::int FROM job_applications ja_count WHERE ja_count.job_id = j.job_id) as applicants
       FROM jobs j
-      LEFT JOIN users u ON j.recruiter_id = u.user_id
+      LEFT JOIN active_users u ON j.recruiter_id = u.user_id
       LEFT JOIN organizations c ON j.org_id = c.org_id
       ${userId ? 'LEFT JOIN job_saves js ON js.job_id = j.job_id AND js.user_id = $2' : ''}
       ${userId ? 'LEFT JOIN job_applications ja ON ja.job_id = j.job_id AND ja.applicant_id = $2' : ''}
@@ -479,7 +479,7 @@ exports.getJobOffers = async (req, res) => {
         ${userId ? 'ja.current_status AS "applicationStatus",' : 'NULL AS "applicationStatus",'}
         (SELECT COUNT(*)::int FROM job_applications ja_count WHERE ja_count.job_id = j.job_id) as applicants
       FROM jobs j
-      LEFT JOIN users u ON j.recruiter_id = u.user_id
+      LEFT JOIN active_users u ON j.recruiter_id = u.user_id
       ${userId ? "LEFT JOIN job_saves js ON js.job_id = j.job_id AND js.user_id = $1" : ""}
       ${userId ? "LEFT JOIN job_applications ja ON ja.job_id = j.job_id AND ja.applicant_id = $1" : ""}
       ${whereClause}
@@ -575,7 +575,7 @@ exports.getMySavedJobs = async (req, res) => {
         js.saved_at
       FROM job_saves js
       JOIN jobs j ON js.job_id = j.job_id
-      LEFT JOIN users u ON j.recruiter_id = u.user_id
+      LEFT JOIN active_users u ON j.recruiter_id = u.user_id
       LEFT JOIN job_applications ja ON ja.job_id = j.job_id AND ja.applicant_id = $1
       WHERE js.user_id = $1 AND j.is_active = TRUE
       `;
@@ -638,7 +638,7 @@ exports.getMyApplications = async (req, res) => {
     let baseQuery = `
         FROM job_applications ja
         JOIN jobs j ON ja.job_id = j.job_id
-        LEFT JOIN users u ON j.recruiter_id = u.user_id
+        LEFT JOIN active_users u ON j.recruiter_id = u.user_id
         LEFT JOIN job_saves js ON j.job_id = js.job_id AND js.user_id = $1
         WHERE ja.applicant_id = $1
     `;
@@ -729,7 +729,7 @@ exports.getMyJobs = async (req, res) => {
         u.full_name AS recruiter_name,
         (SELECT COUNT(*)::int FROM job_applications ja_count WHERE ja_count.job_id = j.job_id) as applicants_count
       FROM jobs j
-      LEFT JOIN users u ON j.recruiter_id = u.user_id
+      LEFT JOIN active_users u ON j.recruiter_id = u.user_id
       WHERE ${actorOrgId ? "j.org_id = $1 AND j.posted_as_company IS TRUE" : "j.recruiter_id = $1 AND (j.posted_as_company IS FALSE OR j.posted_as_company IS NULL)"}
         AND j.is_active = TRUE 
     `;
@@ -958,7 +958,7 @@ exports.getJobApplicants = async (req, res) => {
         ) as education
 
       FROM job_applications ja
-      LEFT JOIN users u ON ja.applicant_id = u.user_id
+      LEFT JOIN active_users u ON ja.applicant_id = u.user_id
       WHERE ja.job_id = $1
       ORDER BY ja.applied_at DESC
     `, [id]);
@@ -1209,7 +1209,7 @@ exports.getRecruiterStats = async (req, res) => {
         COUNT(*) FILTER (WHERE ja.current_status != 'Applied') as responded_count
       FROM job_applications ja
       JOIN jobs j ON ja.job_id = j.job_id
-      LEFT JOIN users u ON j.recruiter_id = u.user_id
+      LEFT JOIN active_users u ON j.recruiter_id = u.user_id
       WHERE j.recruiter_id = $1
       GROUP BY u.user_id
       `,

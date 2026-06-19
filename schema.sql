@@ -36,6 +36,8 @@ CREATE TABLE users (
     about_text TEXT,
   created_at TIMESTAMPTZ DEFAULT now(),
   updated_at TIMESTAMPTZ DEFAULT now(),
+  deletion_scheduled_at TIMESTAMPTZ,
+  deletion_execute_at TIMESTAMPTZ,
   CONSTRAINT mobile_format CHECK (mobile_number ~ '^[0-9]{10}$')
 );
 
@@ -1650,3 +1652,51 @@ CREATE TABLE IF NOT EXISTS message_reactions (
 CREATE INDEX IF NOT EXISTS idx_users_location_country ON users(location_country) WHERE location_country IS NOT NULL;
 
 CREATE INDEX IF NOT EXISTS idx_users_location_city ON users(LOWER(location_city)) WHERE location_city IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS account_restoration_tokens (
+    id          UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id     UUID        NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    token_hash  TEXT        NOT NULL UNIQUE,
+    expires_at  TIMESTAMPTZ NOT NULL,
+    used_at     TIMESTAMPTZ,
+    created_at  TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- ==========================================
+-- Views for Soft Deletion & Anonymization
+-- ==========================================
+
+CREATE OR REPLACE VIEW active_users AS 
+SELECT * FROM users 
+WHERE deletion_execute_at IS NULL;
+
+CREATE OR REPLACE VIEW user_display_profiles AS
+SELECT
+    user_id,
+    account_name AS original_username,
+
+    CASE
+        WHEN deletion_execute_at IS NULL THEN full_name
+        ELSE 'Deactivated User'
+    END AS display_name,
+
+    CASE
+        WHEN deletion_execute_at IS NULL THEN account_name
+        ELSE 'deactivated_user'
+    END AS display_username,
+
+    CASE
+        WHEN deletion_execute_at IS NULL THEN avatar_url
+        ELSE NULL
+    END AS display_avatar,
+
+    CASE
+        WHEN deletion_execute_at IS NULL THEN headline
+        ELSE 'This account has been deactivated'
+    END AS display_headline,
+
+    CASE
+        WHEN deletion_execute_at IS NULL THEN location
+        ELSE NULL
+    END AS location
+FROM users;

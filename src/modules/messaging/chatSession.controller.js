@@ -720,7 +720,7 @@ exports.getSessionMessages = async (req, res) => {
                          WHEN m.sender_type = 'COMPANY' THEN NULL
                          ELSE u.avatar_url END as sender_avatar
              FROM messages m
-             LEFT JOIN users u ON m.sender_id = u.user_id
+             LEFT JOIN active_users u ON m.sender_id = u.user_id
              WHERE m.session_id = $1
              ORDER BY m.created_at ASC`,
             [sessionId, session.handler_name_snapshot] // Use snapshot name for organization messages in this session

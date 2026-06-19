@@ -228,7 +228,7 @@ exports.getAuditLogs = async (req, res) => {
         let query = `
             SELECT al.*, u.full_name as actor_name, u.email as actor_email, u.avatar_url as actor_avatar
             FROM audit_logs al
-            LEFT JOIN users u ON al.actor_id = u.user_id
+            LEFT JOIN active_users u ON al.actor_id = u.user_id
             WHERE al.entity_id = $1 AND al.entity_type = 'ORGANIZATION'
         `;
         const params = [companyId];

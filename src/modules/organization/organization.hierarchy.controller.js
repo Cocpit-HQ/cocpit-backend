@@ -167,7 +167,7 @@ exports.getPendingParentRequests = async (req, res) => {
                 ) AS requested_by_user
              FROM org_parent_requests opr
              JOIN organizations co ON co.org_id = opr.child_org_id AND co.is_deleted = FALSE
-             JOIN users u ON u.user_id = opr.requested_by
+             JOIN active_users u ON u.user_id = opr.requested_by
              WHERE opr.parent_org_id = $1 AND opr.status = 'PENDING'
              ORDER BY opr.created_at DESC`,
             [orgId]

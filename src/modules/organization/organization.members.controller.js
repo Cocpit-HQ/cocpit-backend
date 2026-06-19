@@ -300,7 +300,7 @@ exports.getMembers = async (req, res) => {
                 cm.joined_at, cm.status, cm.expires_at,
                 cm.is_primary_display
              FROM organization_members cm
-             JOIN users u ON cm.user_id = u.user_id
+             JOIN active_users u ON cm.user_id = u.user_id
              JOIN organization_roles cr ON cm.role_id = cr.role_id
              ${whereClause}
              ORDER BY cr.priority DESC, cm.joined_at ASC

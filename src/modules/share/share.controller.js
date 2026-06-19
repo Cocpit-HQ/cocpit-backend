@@ -658,7 +658,7 @@ exports.sharePostToConversations = async (req, res) => {
             json_build_object('full_name', u.full_name, 'avatar_url', u.avatar_url) as author,
             (SELECT json_agg(json_build_object('url', url, 'media_type', media_type)) FROM post_media WHERE post_id = p.post_id) as media
             FROM posts p
-            JOIN users u ON p.author_id = u.user_id
+            JOIN active_users u ON p.author_id = u.user_id
             WHERE p.post_id = $1
         `, [postId]);
 

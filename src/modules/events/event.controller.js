@@ -94,7 +94,7 @@ exports.getEvents = async (req, res) => {
       (SELECT COUNT(*)::int FROM event_registrations er WHERE er.event_id = e.event_id) AS registered_count,
       (SELECT COUNT(*)::int FROM attendance a WHERE a.event_id = e.event_id) AS checked_in_count,
       CASE WHEN es.event_id IS NOT NULL THEN true ELSE false END AS "isSaved"
-      FROM events e LEFT JOIN users u ON e.organizer_id = u.user_id
+      FROM events e LEFT JOIN active_users u ON e.organizer_id = u.user_id
       LEFT JOIN organizations c ON e.org_id = c.org_id
       LEFT JOIN event_saves es ON es.event_id = e.event_id AND es.user_id = $1
       WHERE 1=1`;

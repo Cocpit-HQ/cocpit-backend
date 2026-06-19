@@ -425,7 +425,7 @@ exports.getMyCommentedPosts = async (req, res) => {
                     'reply_count', (SELECT COUNT(*) FROM post_comments rc WHERE rc.parent_id = mc.comment_id)::int
                 )
                 FROM post_comments mc
-                JOIN users mc_u ON mc_u.user_id = mc.author_id
+                JOIN active_users mc_u ON mc_u.user_id = mc.author_id
                 LEFT JOIN organizations mc_comp ON mc_comp.org_id = mc.author_org_id
                 WHERE mc.post_id = p.post_id
                 AND (${isOrgActor ? `mc.author_org_id = $${orgParamIdx}::uuid` : `mc.author_id = $${userParamIdx} AND mc.author_org_id IS NULL`})
@@ -433,7 +433,7 @@ exports.getMyCommentedPosts = async (req, res) => {
                 LIMIT 1
             ) AS my_comment
         FROM posts p
-        JOIN users u ON u.user_id = p.author_id
+        JOIN active_users u ON u.user_id = p.author_id
         LEFT JOIN organizations comp ON comp.org_id = p.author_org_id
         LEFT JOIN post_categories pc ON pc.category_id = p.category_id
         LEFT JOIN (
@@ -530,7 +530,7 @@ exports.getMyPrivatePosts = async (req, res) => {
             )) AS is_saved,
             COALESCE(cc.comment_count, 0) AS comment_count
         FROM posts p
-        JOIN users u ON u.user_id = p.author_id
+        JOIN active_users u ON u.user_id = p.author_id
         LEFT JOIN organizations comp ON comp.org_id = p.author_org_id
         LEFT JOIN post_categories pc ON pc.category_id = p.category_id
         LEFT JOIN (
@@ -586,7 +586,7 @@ exports.getMyPrivatePosts = async (req, res) => {
 
 //         pp.poll
 //       FROM posts p
-//       JOIN users u ON u.user_id = p.author_id
+//       JOIN active_users u ON u.user_id = p.author_id
 //       LEFT JOIN post_categories pc ON pc.category_id = p.category_id
 
 //       LEFT JOIN (
@@ -1145,7 +1145,7 @@ exports.getPostById = async (req, res) => {
             'avatar_url', u_tag.avatar_url
         ))
         FROM post_tags pt 
-        JOIN users u_tag ON pt.tagged_user_id = u_tag.user_id
+        JOIN active_users u_tag ON pt.tagged_user_id = u_tag.user_id
         WHERE pt.post_id = p.post_id AND pt.is_active_tag = true),
         '[]'::json
     ) AS tags,
@@ -1357,13 +1357,13 @@ exports.getPostById = async (req, res) => {
     END AS shared_post
 
 FROM posts p
-JOIN users u ON u.user_id = p.author_id
+JOIN active_users u ON u.user_id = p.author_id
 LEFT JOIN organizations comp ON comp.org_id = p.author_org_id
 LEFT JOIN post_categories c ON p.category_id = c.category_id
 
 -- Shared Post Joins
 LEFT JOIN posts sp ON p.shared_post_id = sp.post_id
-LEFT JOIN users sp_u ON sp.author_id = sp_u.user_id
+LEFT JOIN active_users sp_u ON sp.author_id = sp_u.user_id
 LEFT JOIN organizations sp_comp ON sp_comp.org_id = sp.author_org_id
 LEFT JOIN post_categories sp_cat ON sp.category_id = sp_cat.category_id
         LEFT JOIN jobs sj ON p.shared_job_id = sj.job_id
@@ -2315,30 +2315,30 @@ exports.addComment = async (req, res) => {
         
         CASE 
             WHEN c.author_org_id IS NOT NULL THEN comp.name 
-            ELSE u.full_name 
+            ELSE u.display_name 
         END AS full_name,
 
         CASE 
             WHEN c.author_org_id IS NOT NULL THEN comp.slug 
-            ELSE u.account_name 
+            ELSE u.display_username 
         END AS account_name,
 
         CASE 
             WHEN c.author_org_id IS NOT NULL THEN comp.logo_url 
-            ELSE u.avatar_url 
+            ELSE u.display_avatar 
         END AS avatar_url,
-        COALESCE(comp.slug, u.account_name) AS author_slug,
+        COALESCE(comp.slug, u.display_username) AS author_slug,
         (c.author_org_id IS NOT NULL) AS is_organization_comment,
         CASE 
             WHEN c.author_org_id IS NOT NULL THEN comp.slogan 
-            ELSE u.headline 
+            ELSE u.display_headline 
         END AS headline,
 
         c.author_org_id,
         0 AS like_count,
         false AS is_liked
       FROM post_comments c
-      JOIN users u ON c.author_id = u.user_id
+      JOIN user_display_profiles u ON c.author_id = u.user_id
       LEFT JOIN organizations comp ON c.author_org_id = comp.org_id
       WHERE c.comment_id = $1
       `,
@@ -2776,23 +2776,23 @@ exports.getComments = async (req, res) => {
         
         CASE 
             WHEN c.author_org_id IS NOT NULL THEN comp.name 
-            ELSE u.full_name 
+            ELSE u.display_name 
         END AS full_name,
 
         CASE 
             WHEN c.author_org_id IS NOT NULL THEN comp.slug 
-            ELSE u.account_name 
+            ELSE u.display_username 
         END AS account_name,
 
         CASE 
             WHEN c.author_org_id IS NOT NULL THEN comp.logo_url 
-            ELSE u.avatar_url 
+            ELSE u.display_avatar 
         END AS avatar_url,
-        COALESCE(comp.slug, u.account_name) AS author_slug,
+        COALESCE(comp.slug, u.display_username) AS author_slug,
         (c.author_org_id IS NOT NULL) AS is_organization_post,
         CASE 
             WHEN c.author_org_id IS NOT NULL THEN comp.slogan 
-            ELSE u.headline 
+            ELSE u.display_headline 
         END AS headline,
 
         c.author_org_id,
@@ -2817,7 +2817,7 @@ exports.getComments = async (req, res) => {
           false
         ) AS is_liked
       FROM post_comments c
-      JOIN users u ON c.author_id = u.user_id
+      JOIN user_display_profiles u ON c.author_id = u.user_id
       LEFT JOIN organizations comp ON c.author_org_id = comp.org_id
       WHERE c.post_id = $1
       -- 1. Exclude blocked users
@@ -2937,11 +2937,11 @@ exports.getHiddenComments = async (req, res) => {
                 c.comment_id,
                 c.content,
                 c.created_at,
-                u.full_name as author_name,
-                u.avatar_url as author_avatar
+                u.display_name as author_name,
+                u.display_avatar as author_avatar
             FROM post_comments c
             JOIN hidden_comments hc ON c.comment_id = hc.comment_id
-            JOIN users u ON c.author_id = u.user_id
+            JOIN user_display_profiles u ON c.author_id = u.user_id
             WHERE 
                 (
                     ($2::uuid IS NOT NULL AND hc.org_id = $2::uuid)
@@ -3071,10 +3071,10 @@ exports.getStories = async (req, res) => {
                         json_build_object('is_accessible', false, 'reason', 'unknown')
                 END AS "sharedPost"
             FROM stories s
-            JOIN users u ON s.author_id = u.user_id
+            JOIN active_users u ON s.author_id = u.user_id
             LEFT JOIN organizations comp ON s.author_org_id = comp.org_id
             LEFT JOIN posts sp ON s.shared_post_id = sp.post_id
-            LEFT JOIN users sp_u ON sp.author_id = sp_u.user_id
+            LEFT JOIN active_users sp_u ON sp.author_id = sp_u.user_id
             LEFT JOIN post_categories sp_cat ON sp.category_id = sp_cat.category_id
         LEFT JOIN jobs sj ON sp.shared_job_id = sj.job_id
         LEFT JOIN organizations sj_comp ON sj.org_id = sj_comp.org_id
@@ -3240,10 +3240,10 @@ exports.getGroupedStories = async (req, res) => {
                 (SELECT COUNT(*) FROM story_views sv WHERE sv.story_id = s.story_id)::int AS view_count,
                 (SELECT COUNT(*) FROM story_reactions sr WHERE sr.story_id = s.story_id AND sr.reaction_type = 'true')::int AS like_count
             FROM stories s
-            JOIN users u ON s.author_id = u.user_id
+            JOIN active_users u ON s.author_id = u.user_id
             LEFT JOIN organizations comp ON s.author_org_id = comp.org_id
             LEFT JOIN posts sp ON s.shared_post_id = sp.post_id
-            LEFT JOIN users sp_u ON sp.author_id = sp_u.user_id
+            LEFT JOIN active_users sp_u ON sp.author_id = sp_u.user_id
             LEFT JOIN post_categories sp_cat ON sp.category_id = sp_cat.category_id
         LEFT JOIN jobs sj ON sp.shared_job_id = sj.job_id
         LEFT JOIN organizations sj_comp ON sj.org_id = sj_comp.org_id
@@ -3481,10 +3481,10 @@ exports.createStory = async (req, res) => {
                     )
                 END AS shared_post
             FROM stories s
-            JOIN users u ON s.author_id = u.user_id
+            JOIN active_users u ON s.author_id = u.user_id
             LEFT JOIN organizations comp ON s.author_org_id = comp.org_id
             LEFT JOIN posts sp ON s.shared_post_id = sp.post_id
-            LEFT JOIN users sp_u ON sp.author_id = sp_u.user_id
+            LEFT JOIN active_users sp_u ON sp.author_id = sp_u.user_id
             WHERE s.story_id = $1
             `,
             [story_id]
@@ -4003,7 +4003,7 @@ exports.getStoryDetailsById = async (req, res) => {
                 c.org_id,
                 CASE WHEN c.org_id IS NOT NULL THEN true ELSE false END as is_company
             FROM story_views sv 
-            JOIN users u ON sv.viewer_id = u.user_id
+            JOIN active_users u ON sv.viewer_id = u.user_id
             LEFT JOIN organizations c ON sv.viewer_org_id = c.org_id
             -- Left Join ensures we still get the viewer even if there is no reaction
             -- Join specifically on context (Company vs User)
@@ -4103,7 +4103,7 @@ exports.getPollAnalytics = async (req, res) => {
                         )
                     ), '[]'::json)
                     FROM poll_votes pv
-                    JOIN users u ON u.user_id = pv.voter_id
+                    JOIN active_users u ON u.user_id = pv.voter_id
                     WHERE pv.poll_id = pp.poll_id
                 ) as voters
 
@@ -4255,15 +4255,15 @@ exports.getStoryComments = async (req, res) => {
                 c.content,
                 c.created_at,
                 COALESCE(comp.org_id, u.user_id) AS author_id,
-                COALESCE(comp.name, u.full_name) AS full_name,
+                COALESCE(comp.name, u.display_name) AS full_name,
                 CASE 
                     WHEN c.author_org_id IS NOT NULL THEN comp.logo_url 
-                    ELSE u.avatar_url 
+                    ELSE u.display_avatar 
                 END AS avatar_url,
-                u.headline,
+                u.display_headline as headline,
                 (c.author_org_id IS NOT NULL) AS is_company
             FROM story_comments c
-            JOIN users u ON c.author_id = u.user_id
+            JOIN user_display_profiles u ON c.author_id = u.user_id
             LEFT JOIN organizations comp ON c.author_org_id = comp.org_id
             WHERE c.story_id = $1
             AND NOT EXISTS (
@@ -4402,7 +4402,7 @@ exports.getPostLikes = async (req, res) => {
                 COALESCE(comp.name, u.full_name) AS full_name,
                 COALESCE(comp.logo_url, u.avatar_url) AS avatar
             FROM post_likes pl
-            LEFT JOIN users u ON u.user_id = pl.user_id
+            LEFT JOIN active_users u ON u.user_id = pl.user_id
             LEFT JOIN organizations comp ON comp.org_id = pl.org_id
             WHERE pl.post_id = $1
             ORDER BY pl.created_at DESC`,

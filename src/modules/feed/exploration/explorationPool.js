@@ -117,7 +117,7 @@ async function _fetchNewCreatorContent(pool) {
       (SELECT COUNT(*) FROM post_comments pc WHERE pc.post_id = p.post_id)::float AS comment_count,
       (SELECT COUNT(*) FROM posts         rp WHERE rp.shared_post_id = p.post_id)::float AS share_count
     FROM posts p
-    JOIN users u ON u.user_id = p.author_id
+    JOIN active_users u ON u.user_id = p.author_id
     WHERE u.created_at   > NOW() - INTERVAL '${NEW_CREATOR_DAYS} days'
       AND p.created_at   > NOW() - INTERVAL '7 days'
       AND p.visibility   = 'public'

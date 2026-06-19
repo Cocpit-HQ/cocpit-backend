@@ -15,7 +15,7 @@ async function resolve(postId) {
              FROM post_media pm WHERE pm.post_id = p.post_id
             ) AS media
          FROM posts p
-         JOIN users u ON p.author_id = u.user_id
+         JOIN active_users u ON p.author_id = u.user_id
          WHERE p.post_id = $1`,
         [postId]
     );

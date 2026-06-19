@@ -150,7 +150,7 @@ exports.getActivePostTags = async (req, res) => {
                 pt.tag_id, 
                 pt.updated_at AS tagged_at
             FROM post_tags pt
-            JOIN users u ON pt.tagged_user_id = u.user_id
+            JOIN active_users u ON pt.tagged_user_id = u.user_id
             LEFT JOIN profiles p ON u.user_id = p.user_id
             WHERE pt.post_id = $1 AND pt.is_active_tag = true
             ORDER BY pt.updated_at DESC

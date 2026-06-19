@@ -78,7 +78,7 @@ class BlockModel {
         const result = await pool.query(
             `SELECT u.user_id, u.full_name, u.avatar_url, u.headline, u.account_name 
              FROM blocks b
-             JOIN users u ON b.blocked_id = u.user_id
+             JOIN active_users u ON b.blocked_id = u.user_id
              WHERE b.blocker_id = $1`,
             [userId]
         );

@@ -1,7 +1,7 @@
 /**
  * processPendingDeletions.js
  * ─────────────────────────
- * Standalone worker script: permanently deletes accounts whose 14-day recovery
+ * Standalone worker script: permanently deletes accounts whose 40-day recovery
  * window has expired. Should be run daily by Windows Task Scheduler (or OS cron).
  *
  * Usage:

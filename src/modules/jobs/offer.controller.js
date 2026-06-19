@@ -115,7 +115,7 @@ exports.getMyOffers = async (req, res) => {
             FROM job_offers jo
             JOIN jobs j ON jo.job_id = j.job_id
             JOIN organizations c ON jo.org_id = c.org_id
-            LEFT JOIN users u ON jo.sent_by = u.user_id
+            LEFT JOIN active_users u ON jo.sent_by = u.user_id
             WHERE jo.user_id = $1
         `;
         const params = [userId];
@@ -221,8 +221,8 @@ exports.getCompanyOfferRecipients = async (req, res) => {
                 u.headline,
                 sender.full_name AS sent_by_name
             FROM job_offers jo
-            JOIN users u ON jo.user_id = u.user_id
-            LEFT JOIN users sender ON jo.sent_by = sender.user_id
+            JOIN active_users u ON jo.user_id = u.user_id
+            LEFT JOIN active_users sender ON jo.sent_by = sender.user_id
             WHERE jo.org_id = $1 AND jo.job_id = $2
             ORDER BY jo.created_at DESC
         `, [companyId, jobId]);
@@ -437,7 +437,7 @@ exports.getOfferDetail = async (req, res) => {
             FROM job_offers jo
             JOIN jobs j ON jo.job_id = j.job_id
             JOIN organizations c ON jo.org_id = c.org_id
-            LEFT JOIN users u ON jo.sent_by = u.user_id
+            LEFT JOIN active_users u ON jo.sent_by = u.user_id
             WHERE jo.offer_id = $1 AND (jo.user_id = $2 OR jo.org_id IN (
                 SELECT org_id FROM organization_members WHERE user_id = $2
             ))`,

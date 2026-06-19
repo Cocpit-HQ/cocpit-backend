@@ -240,7 +240,7 @@ exports.getSavedPosts = async (req, res) => {
             true AS is_saved
          FROM saved_post sp
          JOIN posts p ON p.post_id = sp.post_id
-         JOIN users u_auth ON u_auth.user_id = p.author_id
+         JOIN active_users u_auth ON u_auth.user_id = p.author_id
          LEFT JOIN organizations comp_auth ON comp_auth.org_id = p.author_org_id
          WHERE sp.user_id = $1 AND (
              ${isOrgActor ? 'sp.org_id = $2::uuid' : 'sp.org_id IS NULL'}

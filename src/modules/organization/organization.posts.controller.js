@@ -192,7 +192,7 @@ exports.getOrganizationPosts = async (req, res) => {
 
         -- Shared Post Joins
         LEFT JOIN posts sp ON p.shared_post_id = sp.post_id
-        LEFT JOIN users sp_u ON sp.author_id = sp_u.user_id
+        LEFT JOIN active_users sp_u ON sp.author_id = sp_u.user_id
         LEFT JOIN organizations sp_comp ON sp_comp.org_id = sp.author_org_id
         LEFT JOIN (
              SELECT post_id, json_agg(json_build_object('url', url, 'media_type', media_type)) as media

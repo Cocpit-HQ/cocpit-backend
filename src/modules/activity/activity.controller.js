@@ -45,7 +45,7 @@ exports.getActivity = async (req, res) => {
                 e.banner_url as event_banner
             FROM user_activity_log log
             LEFT JOIN posts p ON log.entity_type = 'post' AND log.entity_id = p.post_id
-            LEFT JOIN users u ON p.author_id = u.user_id
+            LEFT JOIN active_users u ON p.author_id = u.user_id
             LEFT JOIN jobs j ON log.entity_type = 'job' AND log.entity_id = j.job_id
             LEFT JOIN events e ON log.entity_type = 'event' AND log.entity_id = e.event_id
             WHERE log.user_id = $1

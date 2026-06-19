@@ -52,7 +52,7 @@ const getPostHydrationSelect = (companyParamIdx, userParamIdx) => `
             'avatar_url', u.avatar_url
          ))
          FROM post_tags pt 
-         JOIN users u ON pt.tagged_user_id = u.user_id
+          JOIN active_users u ON pt.tagged_user_id = u.user_id
          WHERE pt.post_id = p.post_id AND pt.is_active_tag = true),
         '[]'::json
     ) AS tags,
@@ -67,7 +67,7 @@ const getPostHydrationSelect = (companyParamIdx, userParamIdx) => `
     (
         SELECT COALESCE(comp_like.slug, u_like.account_name)
         FROM post_likes pl_sample
-        LEFT JOIN users u_like ON u_like.user_id = pl_sample.user_id
+         LEFT JOIN active_users u_like ON u_like.user_id = pl_sample.user_id
         LEFT JOIN organizations comp_like ON comp_like.org_id = pl_sample.org_id
         WHERE pl_sample.post_id = p.post_id
         AND NOT (
@@ -156,7 +156,7 @@ const getPostHydrationSelect = (companyParamIdx, userParamIdx) => `
             'author_title', u_first.headline
         )
         FROM post_comments pc_first
-        JOIN users u_first ON u_first.user_id = pc_first.author_id
+         JOIN active_users u_first ON u_first.user_id = pc_first.author_id
         LEFT JOIN organizations comp_first ON comp_first.org_id = pc_first.author_org_id
         WHERE pc_first.post_id = p.post_id AND pc_first.parent_id IS NULL
         ORDER BY pc_first.created_at ASC
@@ -288,14 +288,14 @@ const getPostHydrationSelect = (companyParamIdx, userParamIdx) => `
 
 const getPostHydrationJoins = () => `
     FROM posts p
-    JOIN users u ON u.user_id = p.author_id
+     JOIN active_users u ON u.user_id = p.author_id
     LEFT JOIN organizations comp ON comp.org_id = p.author_org_id
     LEFT JOIN post_categories pc ON pc.category_id = p.category_id
     LEFT JOIN achievement_images ai ON ai.id = p.achievement_image_id
 
     -- Shared Post Joins
     LEFT JOIN posts sp ON p.shared_post_id = sp.post_id
-    LEFT JOIN users sp_u ON sp.author_id = sp_u.user_id
+     LEFT JOIN active_users sp_u ON sp.author_id = sp_u.user_id
     LEFT JOIN organizations sp_comp ON sp_comp.org_id = sp.author_org_id
     LEFT JOIN post_categories sp_cat ON sp.category_id = sp_cat.category_id
     LEFT JOIN achievement_images sp_ai ON sp_ai.id = sp.achievement_image_id

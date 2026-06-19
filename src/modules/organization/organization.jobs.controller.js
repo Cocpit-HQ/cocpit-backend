@@ -197,7 +197,7 @@ exports.getOrganizationJobs = async (req, res) => {
                 u.full_name AS recruiter_name,
                 (SELECT COUNT(*)::int FROM job_applications ja_count WHERE ja_count.job_id = j.job_id) as applicants
             FROM jobs j
-            LEFT JOIN users u ON j.recruiter_id = u.user_id
+            LEFT JOIN active_users u ON j.recruiter_id = u.user_id
             ${whereClause}
             ORDER BY j.created_at DESC
             ${limitClause}

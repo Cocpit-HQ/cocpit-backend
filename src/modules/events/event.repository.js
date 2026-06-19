@@ -20,7 +20,7 @@ const getEventById = async (eventId) => {
             COUNT(DISTINCT er.user_id) AS registered_count,
             (SELECT COUNT(*)::int FROM attendance a WHERE a.event_id = $1) AS checked_in_count
      FROM events e
-     LEFT JOIN users u ON e.organizer_id = u.user_id
+     LEFT JOIN active_users u ON e.organizer_id = u.user_id
      LEFT JOIN organizations c ON e.org_id = c.org_id
      LEFT JOIN event_registrations er ON e.event_id = er.event_id
      WHERE e.event_id = $1
@@ -117,7 +117,7 @@ const getMyRegisteredEvents = async (userId) => {
             CASE WHEN es.event_id IS NOT NULL THEN true ELSE false END AS "isSaved"
      FROM event_registrations er
      JOIN events e ON er.event_id = e.event_id
-     LEFT JOIN users u ON e.organizer_id = u.user_id
+     LEFT JOIN active_users u ON e.organizer_id = u.user_id
      LEFT JOIN organizations c ON e.org_id = c.org_id
      LEFT JOIN event_saves es ON es.event_id = e.event_id AND es.user_id = $1
      WHERE er.user_id = $1 AND (e.end_time IS NULL OR e.end_time > NOW()) ORDER BY e.start_time ASC`,
@@ -133,7 +133,7 @@ const getMyCreatedEvents = async (userId, companyId = null) => {
     (SELECT COUNT(*)::int FROM event_registrations er WHERE er.event_id = e.event_id) AS registered_count,
     (SELECT COUNT(*)::int FROM attendance a WHERE a.event_id = e.event_id) AS checked_in_count,
     CASE WHEN es.event_id IS NOT NULL THEN true ELSE false END AS "isSaved"
-    FROM events e LEFT JOIN users u ON e.organizer_id = u.user_id
+    FROM events e LEFT JOIN active_users u ON e.organizer_id = u.user_id
     LEFT JOIN organizations c ON e.org_id = c.org_id
     LEFT JOIN event_saves es ON es.event_id = e.event_id AND es.user_id = $1`;
     const params = [userId];
@@ -177,7 +177,7 @@ const getMySavedEvents = async (userId) => {
             (SELECT COUNT(*)::int FROM event_registrations er WHERE er.event_id = e.event_id) AS registered_count,
             (SELECT COUNT(*)::int FROM attendance a WHERE a.event_id = e.event_id) AS checked_in_count
      FROM event_saves es JOIN events e ON es.event_id = e.event_id
-     LEFT JOIN users u ON e.organizer_id = u.user_id
+     LEFT JOIN active_users u ON e.organizer_id = u.user_id
      LEFT JOIN organizations c ON e.org_id = c.org_id
      WHERE es.user_id = $1 ORDER BY es.saved_at DESC`,
         [userId]
@@ -206,7 +206,7 @@ const getTicketByEventAndUser = async (eventId, userId) => {
             COALESCE(e.organizer_email, u.email) AS organizer_email
         FROM event_registrations er
         JOIN events e ON er.event_id = e.event_id
-        LEFT JOIN users u ON e.organizer_id = u.user_id
+        LEFT JOIN active_users u ON e.organizer_id = u.user_id
         LEFT JOIN organizations c ON e.org_id = c.org_id
         WHERE er.event_id = $1 AND er.user_id = $2`,
         [eventId, userId]
@@ -221,7 +221,7 @@ const getEventParticipants = async (eventId) => {
         pool.query(
             `SELECT u.user_id, u.full_name, u.email, u.avatar_url, er.registered_at
              FROM event_registrations er
-             JOIN users u ON u.user_id = er.user_id
+             JOIN active_users u ON u.user_id = er.user_id
              WHERE er.event_id = $1
              ORDER BY er.registered_at DESC`,
             [eventId]
@@ -229,7 +229,7 @@ const getEventParticipants = async (eventId) => {
         pool.query(
             `SELECT u.user_id, u.full_name, u.email, u.avatar_url, a.checked_in_at
              FROM attendance a
-             JOIN users u ON u.user_id = a.user_id
+             JOIN active_users u ON u.user_id = a.user_id
              WHERE a.event_id = $1
              ORDER BY a.checked_in_at DESC`,
             [eventId]

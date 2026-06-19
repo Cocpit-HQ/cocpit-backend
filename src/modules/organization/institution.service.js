@@ -122,7 +122,7 @@ class InstitutionService {
             const res = await client.query(
                 `SELECT e.*, u.full_name, u.avatar_url, u.email 
                  FROM institution_enrollments e
-                 JOIN users u ON e.user_id = u.user_id
+                 JOIN active_users u ON e.user_id = u.user_id
                  WHERE e.org_id = $1 AND e.status = 'PENDING'
                  ORDER BY e.created_at DESC`,
                 [orgId]
