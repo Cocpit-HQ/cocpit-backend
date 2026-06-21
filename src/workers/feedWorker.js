@@ -43,7 +43,9 @@ let intervalId = null;
  * @returns {Promise<void>}
  */
 async function runFeedWorkerCycle() {
-  console.log('[feedWorker] Cycle starting...');
+  if (process.env.DEBUG_FEED === 'true') {
+    console.log('[feedWorker] Cycle starting...');
+  }
 
   // ── B9.2: Refresh exploration pool ──────────────────────────────────────────
   // Repopulates feed:explore:pool Redis sorted set from:
@@ -52,7 +54,9 @@ async function runFeedWorkerCycle() {
   // TTL: 300s — per redis-key-registry.md (FROZEN)
   try {
     await refreshExplorationPool(pool);
-    console.log('[feedWorker] B9.2 ✓ Exploration pool refreshed');
+    if (process.env.DEBUG_FEED === 'true') {
+      console.log('[feedWorker] B9.2 ✓ Exploration pool refreshed');
+    }
   } catch (err) {
     console.error('[feedWorker] B9.2 ✗ refreshExplorationPool failed:', err.message);
     // Non-fatal — feed continues serving from existing pool or returns [] on Redis miss
@@ -65,7 +69,7 @@ async function runFeedWorkerCycle() {
     const processed = await processEventQueue(pool);
     if (processed > 0) {
       console.log(`[feedWorker] B9.3 ✓ processEventQueue: ${processed} event(s) written to DB`);
-    } else {
+    } else if (process.env.DEBUG_FEED === 'true') {
       console.log('[feedWorker] B9.3 ✓ processEventQueue: queue empty');
     }
   } catch (err) {
@@ -78,9 +82,10 @@ async function runFeedWorkerCycle() {
   // 1800s. feedSession.service.getSession() also validates expires_at on every
   // read and cleans up stale sessions at that point. No DB-backed session table
   // exists, so no additional sweep is required here.
-  console.log('[feedWorker] B9.4 ✓ Session expiry: handled by Redis TTL (1800s) + on-read validation');
-
-  console.log('[feedWorker] Cycle complete');
+  if (process.env.DEBUG_FEED === 'true') {
+    console.log('[feedWorker] B9.4 ✓ Session expiry: handled by Redis TTL (1800s) + on-read validation');
+    console.log('[feedWorker] Cycle complete');
+  }
 }
 
 // ─── Start / Stop ──────────────────────────────────────────────────────────────

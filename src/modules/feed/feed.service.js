@@ -245,15 +245,30 @@ async function getFeed({ userId, cursor = null, limit = DEFAULT_PAGE_SIZE, pool 
     totalCandidates = pipelineResult.totalCandidates;
   } catch (pipelineErr) {
     console.error('[feedService] Pipeline failed:', pipelineErr.message);
-    // Non-fatal: return empty page rather than 500
-    feedItems = [];
+    // Non-fatal: Fallback to trending candidates before giving up
+    try {
+      const { getTrendingCandidates } = require('./candidates/sources/trendingSource');
+      const trending = await getTrendingCandidates({ userId, limit: pageSize, pool });
+      feedItems = trending.map((c, index) => ({ 
+        id: c.contentId, 
+        type: c.itemType, 
+        content: c.metadata || {}, 
+        author: { id: c.authorId }, 
+        score: c.score, 
+        slot_type: 'organic',
+        position: index 
+      }));
+    } catch (fallbackErr) {
+      feedItems = [];
+    }
   }
 
   // ── B7.4: Cache the assembled slice (TTL 5 min) ───────────────────────────
   const nextCursor = uuidv4();
   const slicedItems = feedItems.slice(0, pageSize);
   try {
-    await setFeedSlice(userId, effectiveCursor, slicedItems, FEED_SLICE_TTL);
+    const ttl = slicedItems.length > 0 ? FEED_SLICE_TTL : 15;
+    await setFeedSlice(userId, effectiveCursor, slicedItems, ttl);
   } catch (writeErr) {
     console.warn('[feedService] Cache write failed (non-fatal):', writeErr.message);
   }

@@ -248,6 +248,10 @@ async function generateCandidates({
   // ── 6. Apply total limit ──────────────────────────────────────────────────
   const limited = deduped.slice(0, limit);
 
+  if (limited.length === 0) {
+    console.error(`[candidateGenerator] CRITICAL: Zero candidates generated for userId=${userId}. All sources may have failed.`);
+  }
+
   // A9.2 — Log final pool size in debug mode
   if (process.env.DEBUG_FEED === 'true') {
     console.log(`[candidateGenerator:DEBUG] final pool size=${limited.length} (limit=${limit})`);
@@ -255,7 +259,8 @@ async function generateCandidates({
 
   // ── 7. Write to Redis cache (non-fatal on failure) ────────────────────────
   try {
-    await setCandidatePool(userId, limited);
+    const ttl = limited.length > 0 ? undefined : 15;
+    await setCandidatePool(userId, limited, ttl);
   } catch (err) {
     // Cache write failure must never break the response
     console.warn('[candidateGenerator] Cache write failed:', err.message);
