@@ -178,29 +178,9 @@ exports.getJobById = async (req, res) => {
 
 exports.createJob = async (req, res) => {
   const userId = req.user.sub;
+  let { title, org_id } = req.body;
 
-  let {
-    title,
-    location,
-    description,
-    minSalary,
-    maxSalary,
-    job_type,
-    work_mode,
-    // company_type removed
-    experience_level,
-    industry,
-    easy_apply = false,
-    actively_hiring = false,
-    org_id,
-
-    skills = []
-  } = req.body;
-
-  // Sanitize user-generated content
   title = sanitizeContent(title);
-  description = sanitizeContent(description);
-  industry = sanitizeContent(industry);
 
   let requestedOrgId = null;
   let resolvedCompanyName = "";
@@ -226,109 +206,324 @@ exports.createJob = async (req, res) => {
   try {
     await client.query("BEGIN");
 
-    // 1. Insert job
     const jobRes = await client.query(
       `
       INSERT INTO jobs
-      (
-        recruiter_id, title, company_name, org_id, location,
-        description, salary_min, salary_max, job_type,
-        work_mode, company_type, experience_level,
-        about_company, industry, easy_apply, actively_hiring,
-        posted_as_company
-      )
-      VALUES
-      ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+      (recruiter_id, title, company_name, org_id, posted_as_company, status)
+      VALUES ($1, $2, $3, $4, $5, 'ACTIVE')
       RETURNING *
       `,
-      [
-        userId, title, resolvedCompanyName, requestedOrgId || null, location,
-        description, minSalary, maxSalary, job_type,
-        work_mode, null, experience_level,
-        null, industry, easy_apply, actively_hiring,
-        postedAsCompany
-      ]
+      [userId, title, resolvedCompanyName, requestedOrgId || null, postedAsCompany]
     );
 
     const job = jobRes.rows[0];
 
-    // 2. Handle skills
-    for (let skill of skills) {
-
-      const skillRes = await client.query(
-        `
-        WITH s AS (
-            SELECT skill_id FROM skills WHERE lower(name) = lower($1)
-        ),
-        i AS (
-            INSERT INTO skills (name)
-            SELECT $1
-            WHERE NOT EXISTS (SELECT 1 FROM s)
-            RETURNING skill_id
-        )
-        SELECT skill_id FROM s
-        UNION ALL
-        SELECT skill_id FROM i
-        `,
-        [skill]
-      );
-
-      const skillId = skillRes.rows[0].skill_id;
-
-      await client.query(
-        `
-        INSERT INTO job_skills(job_id, skill_id)
-        VALUES ($1,$2)
-        ON CONFLICT DO NOTHING
-        `,
-        [job.job_id, skillId]
-      );
-    }
+    await client.query(
+      `INSERT INTO job_activity (job_id, actor_id, action) VALUES ($1, $2, 'DRAFT_CREATED')`,
+      [job.job_id, userId]
+    );
 
     await client.query("COMMIT");
 
-    // Async Audit Log & Notification (after commit is fine)
-    if (job.org_id) {
-      const auditClient = await pool.connect();
-      try {
-        await logAudit(auditClient, {
-          entityId: job.org_id,
-          actorId: userId,
-          action: 'POST_JOB',
-          metadata: {
-            type: 'job',
-            id: job.job_id,
-            title: job.title
-          }
-        });
-      } finally {
-        auditClient.release();
-      }
-
-      // 2. Notify followers (fire-and-forget)
-      notifyOrgFollowers(job.org_id, "jobs", {
-        type: "organization_job",
-        text: `${job.company_name} posted a new job: ${job.title}`,
-        referenceId: job.job_id,
-        metadata: { job_title: job.title, location: job.location || null },
-      }).catch(err => console.error("Job notification error:", err));
-    }
-
     res.status(201).json({
-      message: "Job posted successfully",
+      message: "Draft created successfully",
       job
     });
 
   } catch (err) {
     await client.query("ROLLBACK");
-    if (err.code === '23514' && err.constraint === 'salary_valid') {
-      return res.status(400).json({
-        field: "salary",
-        message: "Minimum salary cannot be greater than maximum salary"
-      });
-    }
     console.error(err);
     res.status(500).json({ message: "Internal server error" });
+  } finally {
+    client.release();
+  }
+};
+
+exports.updateDraft = async (req, res) => {
+  const { id } = req.params;
+  const userId = req.user.sub;
+  const updates = req.body;
+
+  if (updates.title) updates.title = sanitizeContent(updates.title);
+  if (updates.description) updates.description = sanitizeContent(updates.description);
+  if (updates.industry) updates.industry = sanitizeContent(updates.industry);
+
+  try {
+    const jobRes = await pool.query(`SELECT org_id, recruiter_id, status FROM jobs WHERE job_id = $1`, [id]);
+    if (jobRes.rowCount === 0) return res.status(404).json({ message: "Job not found" });
+    const job = jobRes.rows[0];
+
+    let requestedOrgId = null;
+    if (job.org_id) {
+       requestedOrgId = getRequestedOrganizationActorId(req, job.org_id);
+       await assertOrgPermission(req, requestedOrgId, ["POST_JOBS", "MANAGE_COMPANY"]);
+    } else {
+       if (job.recruiter_id !== userId) return res.status(403).json({ message: "Unauthorized" });
+    }
+
+    if (job.status !== 'DRAFT' && job.status !== 'ACTIVE') {
+      return res.status(400).json({ message: "Can only update jobs in DRAFT or ACTIVE state" });
+    }
+
+    const setClauses = [];
+    const values = [];
+    let paramCount = 1;
+
+    for (const [key, value] of Object.entries(updates)) {
+      setClauses.push(`${key} = $${paramCount}`);
+      values.push(value);
+      paramCount++;
+    }
+
+    if (setClauses.length === 0) return res.status(200).json({ message: "No updates provided", job });
+
+    values.push(id);
+    const query = `UPDATE jobs SET ${setClauses.join(", ")} WHERE job_id = $${paramCount} RETURNING *`;
+    const updatedJobRes = await pool.query(query, values);
+
+    res.status(200).json({ message: "Job updated", job: updatedJobRes.rows[0] });
+  } catch (err) {
+    console.error(err);
+    res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
+  }
+};
+
+exports.submitJob = async (req, res) => {
+  const { id } = req.params;
+  const userId = req.user.sub;
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    
+    const jobRes = await client.query(`SELECT * FROM jobs WHERE job_id = $1`, [id]);
+    if (jobRes.rowCount === 0) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ message: "Job not found" });
+    }
+    const job = jobRes.rows[0];
+
+    if (job.org_id) {
+       await assertOrgPermission(req, getRequestedOrganizationActorId(req, job.org_id), ["POST_JOBS", "MANAGE_COMPANY"]);
+    } else {
+       if (job.recruiter_id !== userId) {
+          await client.query("ROLLBACK");
+          return res.status(403).json({ message: "Unauthorized" });
+       }
+    }
+
+    if (job.status !== 'DRAFT') {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ message: "Only DRAFT jobs can be submitted" });
+    }
+
+    const updated = await client.query(
+      `UPDATE jobs SET status = 'ACTIVE' WHERE job_id = $1 RETURNING *`,
+      [id]
+    );
+
+    await client.query(
+      `INSERT INTO job_versions (job_id, changed_by, trigger_event, previous_data) VALUES ($1, $2, 'SUBMIT', $3)`,
+      [id, userId, job]
+    );
+
+    await client.query(
+      `INSERT INTO job_activity (job_id, actor_id, action) VALUES ($1, $2, 'SUBMITTED')`,
+      [id, userId]
+    );
+
+    await client.query("COMMIT");
+    res.status(200).json({ message: "Job submitted for review", job: updated.rows[0] });
+  } catch(err) {
+    await client.query("ROLLBACK");
+    console.error(err);
+    res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
+  } finally {
+    client.release();
+  }
+};
+
+exports.cloneJob = async (req, res) => {
+  const { id } = req.params;
+  const userId = req.user.sub;
+  
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    
+    const jobRes = await client.query(`SELECT * FROM jobs WHERE job_id = $1`, [id]);
+    if (jobRes.rowCount === 0) throw new Error("Job not found");
+    const job = jobRes.rows[0];
+    
+    if (job.org_id) {
+       await assertOrgPermission(req, getRequestedOrganizationActorId(req, job.org_id), ["POST_JOBS", "MANAGE_COMPANY"]);
+    } else {
+       if (job.recruiter_id !== userId) throw new Error("Unauthorized");
+    }
+    
+    const insertRes = await client.query(
+      `INSERT INTO jobs 
+       (recruiter_id, title, company_name, org_id, location, description, salary_min, salary_max, 
+        job_type, work_mode, company_type, experience_min, experience_max, experience_label, experience_level,
+        about_company, industry, easy_apply, actively_hiring, posted_as_company, status)
+       VALUES
+       ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, 'DRAFT')
+       RETURNING *`,
+      [userId, `Copy of ${job.title}`, job.company_name, job.org_id, job.location, job.description, job.salary_min, job.salary_max,
+       job.job_type, job.work_mode, job.company_type, job.experience_min, job.experience_max, job.experience_label, job.experience_level,
+       job.about_company, job.industry, job.easy_apply, job.actively_hiring, job.posted_as_company]
+    );
+    
+    const newJob = insertRes.rows[0];
+    
+    await client.query(
+      `INSERT INTO job_activity (job_id, actor_id, action) VALUES ($1, $2, 'DRAFT_CREATED')`,
+      [newJob.job_id, userId]
+    );
+
+    await client.query("COMMIT");
+    res.status(201).json({ message: "Job cloned successfully", job: newJob });
+  } catch(err) {
+    await client.query("ROLLBACK");
+    res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
+  } finally {
+    client.release();
+  }
+};
+
+const performLifecycleAction = async (req, res, actionName, targetStatus, allowedFromStatuses) => {
+  const { id } = req.params;
+  const userId = req.user.sub;
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    
+    const jobRes = await client.query(`SELECT * FROM jobs WHERE job_id = $1`, [id]);
+    if (jobRes.rowCount === 0) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ message: "Job not found" });
+    }
+    const job = jobRes.rows[0];
+
+    // Ownership check (Skip for admin actions approve/reject, handled by open access or separate check if needed. 
+    // Here we just allow if they own it, but anyone can post jobs, so we check if they are the recruiter or manage the company)
+    if (actionName !== 'APPROVE' && actionName !== 'REJECT') {
+      if (job.org_id) {
+         await assertOrgPermission(req, getRequestedOrganizationActorId(req, job.org_id), ["POST_JOBS", "MANAGE_COMPANY"]);
+      } else {
+         if (job.recruiter_id !== userId) {
+            await client.query("ROLLBACK");
+            return res.status(403).json({ message: "Unauthorized" });
+         }
+      }
+    }
+
+    if (allowedFromStatuses && !allowedFromStatuses.includes(job.status)) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ message: `Cannot ${actionName} job from status: ${job.status}` });
+    }
+
+    const updated = await client.query(
+      `UPDATE jobs SET status = $1 WHERE job_id = $2 RETURNING *`,
+      [targetStatus, id]
+    );
+
+    await client.query(
+      `INSERT INTO job_activity (job_id, actor_id, action) VALUES ($1, $2, $3)`,
+      [id, userId, actionName]
+    );
+
+    await client.query("COMMIT");
+    res.status(200).json({ message: `Job ${actionName.toLowerCase()} successfully`, job: updated.rows[0] });
+  } catch(err) {
+    await client.query("ROLLBACK");
+    console.error(err);
+    res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
+  } finally {
+    client.release();
+  }
+};
+
+exports.pauseJob = (req, res) => performLifecycleAction(req, res, 'PAUSE', 'PAUSED', ['ACTIVE']);
+exports.closeJob = (req, res) => performLifecycleAction(req, res, 'CLOSE', 'CLOSED', ['ACTIVE', 'PAUSED']);
+exports.archiveJob = (req, res) => performLifecycleAction(req, res, 'ARCHIVE', 'ARCHIVED', null);
+exports.approveJob = (req, res) => performLifecycleAction(req, res, 'APPROVE', 'ACTIVE', ['UNDER_REVIEW']);
+exports.rejectJob = (req, res) => performLifecycleAction(req, res, 'REJECT', 'REJECTED', ['UNDER_REVIEW']);
+
+exports.aiAction = async (req, res) => {
+  const { id } = req.params;
+  const userId = req.user.sub;
+  const { action, updates } = req.body;
+
+  if (!action || !updates) {
+    return res.status(400).json({ message: "action and updates are required" });
+  }
+
+  if (updates.title) updates.title = sanitizeContent(updates.title);
+  if (updates.description) updates.description = sanitizeContent(updates.description);
+  if (updates.industry) updates.industry = sanitizeContent(updates.industry);
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+
+    const jobRes = await client.query(`SELECT * FROM jobs WHERE job_id = $1`, [id]);
+    if (jobRes.rowCount === 0) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ message: "Job not found" });
+    }
+    const job = jobRes.rows[0];
+
+    if (job.org_id) {
+       await assertOrgPermission(req, getRequestedOrganizationActorId(req, job.org_id), ["POST_JOBS", "MANAGE_COMPANY"]);
+    } else {
+       if (job.recruiter_id !== userId) {
+          await client.query("ROLLBACK");
+          return res.status(403).json({ message: "Unauthorized" });
+       }
+    }
+
+    if (job.status !== 'DRAFT' && job.status !== 'ACTIVE') {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ message: "AI actions can only be performed on DRAFT or ACTIVE jobs" });
+    }
+
+    const setClauses = [];
+    const values = [];
+    let paramCount = 1;
+
+    for (const [key, value] of Object.entries(updates)) {
+      setClauses.push(`${key} = $${paramCount}`);
+      values.push(value);
+      paramCount++;
+    }
+
+    if (setClauses.length === 0) {
+      await client.query("ROLLBACK");
+      return res.status(200).json({ message: "No updates provided" });
+    }
+
+    values.push(id);
+    const query = `UPDATE jobs SET ${setClauses.join(", ")} WHERE job_id = $${paramCount} RETURNING *`;
+    const updatedJobRes = await client.query(query, values);
+
+    await client.query(
+      `INSERT INTO job_versions (job_id, changed_by, trigger_event, provenance, previous_data) VALUES ($1, $2, $3, 'AI', $4)`,
+      [id, userId, action, job]
+    );
+
+    await client.query(
+      `INSERT INTO job_activity (job_id, actor_id, action) VALUES ($1, $2, $3)`,
+      [id, userId, 'AI_ACTION_' + action.toUpperCase()]
+    );
+
+    await client.query("COMMIT");
+    res.status(200).json({ message: "AI action applied successfully", job: updatedJobRes.rows[0] });
+  } catch (err) {
+    await client.query("ROLLBACK");
+    console.error(err);
+    res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
   } finally {
     client.release();
   }

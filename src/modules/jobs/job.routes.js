@@ -6,6 +6,8 @@ const { requireAuth, optionalAuth } = require("../../core/middlewares/auth.middl
 const { requireRoles } = require("../../core/middlewares/role.middleware");
 const { requireOrgPermission, requireCompanyPermission } = require("../../core/middlewares/organization.auth.middleware");
 const { uploadApplicationFiles, uploadTaskSubmission } = require("../../core/middlewares/upload.middleware");
+const { validate } = require("../../core/middlewares/validation.middleware");
+const { createDraftSchema, updateDraftSchema, submitJobSchema } = require("../../schemas/job.schema");
 
 // Public routes
 router.get("/", optionalAuth, jobController.getAllJobs);
@@ -24,12 +26,26 @@ router.get("/recruiter/:id/stats", optionalAuth, jobController.getRecruiterStats
 router.get("/:id", optionalAuth, jobController.getJobById);
 
 // Protected routes
-router.post("/", requireAuth, requireRoles(["Recruiter", "Admin", "Employer"]), jobController.createJob);
+router.post("/", requireAuth, validate(createDraftSchema), jobController.createJob);
+router.patch("/:id", requireAuth, validate(updateDraftSchema), jobController.updateDraft);
+router.post("/:id/submit", requireAuth, validate(submitJobSchema), jobController.submitJob);
+router.post("/:id/clone", requireAuth, jobController.cloneJob);
+
+// Lifecycle actions
+router.post("/:id/pause", requireAuth, jobController.pauseJob);
+router.post("/:id/close", requireAuth, jobController.closeJob);
+router.post("/:id/archive", requireAuth, jobController.archiveJob);
+router.post("/:id/approve", requireAuth, jobController.approveJob);
+router.post("/:id/reject", requireAuth, jobController.rejectJob);
+
+// AI actions
+router.post("/:id/ai/actions", requireAuth, jobController.aiAction);
+
 router.post("/:id/apply", requireAuth, uploadApplicationFiles, jobController.applyJob);
 router.post("/:id/save", requireAuth, jobController.saveJob);
 router.delete("/:id/save", requireAuth, jobController.unsaveJob);
-router.put("/:id", requireAuth, requireRoles(["Recruiter", "Admin", "Employer"]), jobController.updateJob);
-router.delete("/:id", requireAuth, requireRoles(["Recruiter", "Admin", "Employer"]), jobController.deleteJob);
+router.put("/:id", requireAuth, jobController.updateJob);
+router.delete("/:id", requireAuth, jobController.deleteJob);
 
 // Direct Job Offers
 router.post("/companies/:companyId/offers", requireAuth, requireCompanyPermission("MANAGE_JOBS"), offerController.sendJobOffer);
@@ -41,8 +57,8 @@ router.delete("/companies/:companyId/offers/:offerId", requireAuth, requireCompa
 router.get("/offers/:offerId", requireAuth, offerController.getOfferDetail);
 
 // Application Management
-router.put("/applications/:id/status", requireAuth, requireRoles(["Recruiter", "Admin", "Employer"]), jobController.updateApplicationStatus);
+router.put("/applications/:id/status", requireAuth, jobController.updateApplicationStatus);
 router.post("/applications/:id/submit-task", requireAuth, uploadTaskSubmission, jobController.submitTask);
-router.post("/applications/:id/review", requireAuth, requireRoles(["Recruiter", "Admin", "Employer"]), jobController.reviewApplication);
+router.post("/applications/:id/review", requireAuth, jobController.reviewApplication);
 
 module.exports = router;

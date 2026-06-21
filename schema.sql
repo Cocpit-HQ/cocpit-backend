@@ -653,11 +653,14 @@ CREATE TABLE jobs (
   company_name TEXT NOT NULL,
   location TEXT,
   description TEXT,
-  salary_min INTEGER NOT NULL,
-  salary_max INTEGER NOT NULL,
+  salary_min INTEGER,
+  salary_max INTEGER,
   job_type TEXT, -- Full-time, Part-time, Contract etc.
   work_mode job_work_mode, -- Remote | Hybrid | Onsite
   company_type job_company_type, -- Startup | MNC etc.
+  experience_min INTEGER,
+  experience_max INTEGER,
+  experience_label TEXT,
   experience_level TEXT,
   about_company TEXT,
   industry TEXT NOT NULL , --new field
@@ -666,12 +669,13 @@ CREATE TABLE jobs (
   match_score INTEGER, -- optional / mock
   is_active BOOLEAN DEFAULT TRUE,
   posted_as_company BOOLEAN DEFAULT FALSE,
-  status VARCHAR(20) DEFAULT 'ACTIVE' CHECK (status IN ('DRAFT', 'ACTIVE', 'CLOSED', 'EXPIRED', 'REJECTED', 'UNDER_REVIEW')),
+  status VARCHAR(20) DEFAULT 'DRAFT' CHECK (status IN ('DRAFT', 'ACTIVE', 'CLOSED', 'EXPIRED', 'REJECTED', 'UNDER_REVIEW', 'PAUSED', 'ARCHIVED')),
   expires_at TIMESTAMPTZ,
   salary_currency VARCHAR(10) DEFAULT 'USD',
   salary_period VARCHAR(20) DEFAULT 'YEARLY' CHECK (salary_period IN ('YEARLY', 'MONTHLY', 'HOURLY')),
   salary_visibility VARCHAR(20) DEFAULT 'PUBLIC' CHECK (salary_visibility IN ('PUBLIC', 'PRIVATE')),
-  created_at TIMESTAMPTZ DEFAULT now()
+  created_at TIMESTAMPTZ DEFAULT now(),
+  CHECK (salary_min IS NULL OR salary_max IS NULL OR salary_min <= salary_max)
 );
 
 -- Prevent race condition duplicates
@@ -712,7 +716,17 @@ CREATE TABLE job_versions (
   version_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   job_id UUID NOT NULL REFERENCES jobs(job_id) ON DELETE CASCADE,
   changed_by UUID REFERENCES users(user_id) ON DELETE SET NULL,
+  trigger_event VARCHAR(50),
+  provenance VARCHAR(50) DEFAULT 'USER',
   previous_data JSONB NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE TABLE job_activity (
+  activity_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  job_id UUID NOT NULL REFERENCES jobs(job_id) ON DELETE CASCADE,
+  actor_id UUID REFERENCES users(user_id) ON DELETE SET NULL,
+  action VARCHAR(50) NOT NULL,
   created_at TIMESTAMPTZ DEFAULT now()
 );
 
@@ -1700,3 +1714,9 @@ SELECT
         ELSE NULL
     END AS location
 FROM users;
+
+-- 1. Add preferred_industry
+ALTER TABLE profiles ADD COLUMN IF NOT EXISTS preferred_industry TEXT;
+ 
+-- 2. Add work_mode as a new column
+ALTER TABLE profiles ADD COLUMN IF NOT EXISTS work_mode job_work_mode;
