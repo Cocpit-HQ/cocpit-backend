@@ -285,27 +285,30 @@ describe('Reranking Engine - Unit Tests', () => {
     // Day 3 Tests
     // -------------------------------------------------------------------------
 
-    test('drops 3rd author appearance (anti-spam)', async () => {
+    test('drops 4th author appearance (anti-spam)', async () => {
       getSeenSet.mockResolvedValue([]);
       const candidates = [
         makeScoredCandidate({ contentId: 'c1', authorId: 'a1', final_score: 1.0 }),
         makeScoredCandidate({ contentId: 'c2', authorId: 'a1', final_score: 0.9 }),
-        makeScoredCandidate({ contentId: 'c3', authorId: 'a1', final_score: 0.8 }), // 3rd -> drop
+        makeScoredCandidate({ contentId: 'c3', authorId: 'a1', final_score: 0.8 }),
+        makeScoredCandidate({ contentId: 'c4', authorId: 'a1', final_score: 0.7 }), // 4th -> drop
       ];
       const result = await rerankCandidates(candidates, 'u1');
-      expect(result.length).toBe(2);
+      expect(result.length).toBe(3);
     });
 
-    test('drops 4th type appearance (anti-spam)', async () => {
+    test('drops 6th type appearance (anti-spam)', async () => {
       getSeenSet.mockResolvedValue([]);
       const candidates = [
         makeScoredCandidate({ contentId: 'c1', authorId: 'a1', itemType: 'job', final_score: 1.0 }),
         makeScoredCandidate({ contentId: 'c2', authorId: 'a2', itemType: 'job', final_score: 0.9 }),
         makeScoredCandidate({ contentId: 'c3', authorId: 'a3', itemType: 'job', final_score: 0.8 }),
-        makeScoredCandidate({ contentId: 'c4', authorId: 'a4', itemType: 'job', final_score: 0.7 }), // 4th -> drop
+        makeScoredCandidate({ contentId: 'c4', authorId: 'a4', itemType: 'job', final_score: 0.7 }),
+        makeScoredCandidate({ contentId: 'c5', authorId: 'a5', itemType: 'job', final_score: 0.6 }),
+        makeScoredCandidate({ contentId: 'c6', authorId: 'a6', itemType: 'job', final_score: 0.5 }), // 6th -> drop
       ];
       const result = await rerankCandidates(candidates, 'u1');
-      expect(result.length).toBe(3);
+      expect(result.length).toBe(5);
     });
 
     test('drops engagement bait', async () => {

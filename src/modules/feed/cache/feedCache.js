@@ -188,7 +188,7 @@ function getRegisteredKeyPatterns() {
  * @param {Array}  candidates - Merged, deduplicated CandidateItem[]
  * @returns {Promise<void>}
  */
-async function setCandidatePool(userId, candidates) {
+async function setCandidatePool(userId, candidates, ttl = TTL.CANDIDATE_POOL) {
   if (!userId) throw new Error("setCandidatePool: userId is required");
   if (!Array.isArray(candidates)) throw new Error("setCandidatePool: candidates must be an array");
 
@@ -201,7 +201,7 @@ async function setCandidatePool(userId, candidates) {
     );
   }
 
-  await redis.set(key, payload, "EX", TTL.CANDIDATE_POOL);
+  await redis.set(key, payload, "EX", ttl);
 }
 
 /**

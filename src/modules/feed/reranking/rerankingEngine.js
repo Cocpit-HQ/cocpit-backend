@@ -45,8 +45,8 @@ const CONTENT_TYPE_PENALTY_THRESHOLDS = [
 ];
 
 // Anti-spam hard limits (from ARCHITECTURE_FROZEN.md)
-const ANTI_SPAM_MAX_AUTHOR_PER_PAGE = 2;   // B6.1 — hard drop after 2nd
-const ANTI_SPAM_MAX_TYPE_PER_PAGE   = 3;   // B6.1 — hard drop after 3rd
+const ANTI_SPAM_MAX_AUTHOR_PER_PAGE = 3;   // relaxed
+const ANTI_SPAM_MAX_TYPE_PER_PAGE   = 5;   // relaxed
 
 // Slot positions (from ranking-features.md — FROZEN, 0-indexed)
 const EXPLORATION_SLOT_POSITIONS  = [3, 10, 17];  // B6.3
@@ -339,8 +339,20 @@ async function rerankCandidates(
   }
 
   const unseen = seenIds.size > 0
-    ? rankedCandidates.filter(item => !seenIds.has(item.item_id))
+    ? rankedCandidates.filter(item => !seenIds.has(item._candidate?.contentId ?? item.item_id))
     : rankedCandidates;
+
+  let filteredOpportunity = opportunityCandidates;
+  let filteredExploration = explorationCandidates;
+
+  if (seenIds.size > 0) {
+    if (Array.isArray(opportunityCandidates)) {
+      filteredOpportunity = opportunityCandidates.filter(c => !seenIds.has(c.contentId));
+    }
+    if (Array.isArray(explorationCandidates)) {
+      filteredExploration = explorationCandidates.filter(c => !seenIds.has(c.contentId));
+    }
+  }
 
   // ── 2. Diversity penalties (soft score reduction — Day 2) ─────────────────
   const penalised = applyDiversityPenalties(unseen);
@@ -358,8 +370,8 @@ async function rerankCandidates(
   // ── 6. Build slotted 20-item page (B6.2 + B6.3) ──────────────────────────
   const feedItems = _buildSlottedPage(
     antiSpammed,
-    Array.isArray(opportunityCandidates) ? opportunityCandidates : [],
-    Array.isArray(explorationCandidates) ? explorationCandidates : [],
+    Array.isArray(filteredOpportunity) ? filteredOpportunity : [],
+    Array.isArray(filteredExploration) ? filteredExploration : [],
     explorationEnabled,
   );
 

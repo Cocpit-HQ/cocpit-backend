@@ -202,10 +202,12 @@ async function refreshExplorationPool(pool) {
 
     await pipeline.exec();
 
-    console.info(
-      `[explorationPool] Pool refreshed: ${merged.length} items written ` +
-      `(trending: ${trendingRows.length}, new-creator: ${newCreatorRows.length})`
-    );
+    if (process.env.DEBUG_FEED === 'true') {
+      console.info(
+        `[explorationPool] Pool refreshed: ${merged.length} items written ` +
+        `(trending: ${trendingRows.length}, new-creator: ${newCreatorRows.length})`
+      );
+    }
   } catch (err) {
     // Non-fatal — pool refresh failure never blocks the feed
     console.error('[explorationPool] Redis write failed during pool refresh:', err.message);
