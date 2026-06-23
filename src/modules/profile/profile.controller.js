@@ -305,18 +305,28 @@ exports.updateIdentity = async (req, res) => {
     const allowedOpenTo = ["Full-time", "Part-time", "Internship", "Freelance", "Connections"];
     const allowedAvailability = ["Immediately", "Weekdays", "Weekends", "15 to 30 days", "Flexible", "On-demand", "Immediate", "30 Days"];
     const allowedWorkPreference = ["Remote", "Hybrid", "On-site"];
-    const allowedAccountTypes = ["student", "fresher", "intern", "self_employed", "employed", "unemployed"];
+    const allowedAccountTypes = ["student", "fresher", "intern", "self_employed", "employed", "unemployed", "Student", "Fresher", "Intern", "Self Employed", "Employee", "Employer", "Admin"];
 
-    if (!allowedOpenTo.includes(open_to) || !allowedAvailability.includes(availability) || !allowedWorkPreference.includes(work_preference)) {
-        return res.status(400).json({ message: "Invalid identity values" });
+    if (open_to && !allowedOpenTo.includes(open_to)) {
+        return res.status(400).json({ message: "Invalid open_to value" });
     }
-
+    if (availability && !allowedAvailability.includes(availability)) {
+        return res.status(400).json({ message: "Invalid availability value" });
+    }
+    if (work_preference && !allowedWorkPreference.includes(work_preference)) {
+        return res.status(400).json({ message: "Invalid work_preference value" });
+    }
     if (account_type && !allowedAccountTypes.includes(account_type)) {
         return res.status(400).json({ message: "Invalid account type" });
     }
 
     try {
-        const identity = await profileRepo.updateIdentity(req.user.sub, { open_to, availability, work_preference, account_type });
+        const identity = await profileRepo.updateIdentity(req.user.sub, { 
+            open_to: open_to || null, 
+            availability: availability || null, 
+            work_preference: work_preference || null, 
+            account_type 
+        });
         if (!identity) return res.status(404).json({ message: "Profile not found" });
         res.json({ message: "Professional identity updated successfully", identity });
     } catch (err) {
