@@ -218,6 +218,17 @@ exports.createJob = async (req, res) => {
 
     const job = jobRes.rows[0];
 
+    // Automatically add this new role to the master table for future autocomplete
+    // We use ON CONFLICT DO NOTHING to silently ignore it if it already exists
+    if (title) {
+      await client.query(
+        `INSERT INTO job_roles_master (role_name, category) 
+         VALUES ($1, 'Custom') 
+         ON CONFLICT (role_name) DO NOTHING`,
+        [title]
+      );
+    }
+
     await client.query(
       `INSERT INTO job_activity (job_id, actor_id, action) VALUES ($1, $2, 'DRAFT_CREATED')`,
       [job.job_id, userId]
@@ -280,6 +291,15 @@ exports.updateDraft = async (req, res) => {
     values.push(id);
     const query = `UPDATE jobs SET ${setClauses.join(", ")} WHERE job_id = $${paramCount} RETURNING *`;
     const updatedJobRes = await pool.query(query, values);
+
+    if (updates.title) {
+      await pool.query(
+        `INSERT INTO job_roles_master (role_name, category) 
+         VALUES ($1, 'Custom') 
+         ON CONFLICT (role_name) DO NOTHING`,
+        [updates.title]
+      );
+    }
 
     res.status(200).json({ message: "Job updated", job: updatedJobRes.rows[0] });
   } catch (err) {
@@ -1372,6 +1392,16 @@ exports.updateJob = async (req, res) => {
     }
 
     await client.query("COMMIT");
+
+    if (title) {
+      // Automatically add this new role to the master table if they update the title
+      await client.query(
+        `INSERT INTO job_roles_master (role_name, category) 
+         VALUES ($1, 'Custom') 
+         ON CONFLICT (role_name) DO NOTHING`,
+        [title]
+      );
+    }
 
     res.json({
       message: "Job updated successfully",

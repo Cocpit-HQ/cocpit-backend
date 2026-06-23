@@ -25,6 +25,7 @@ const updateDraftSchema = z.object({
     job_type: z.string().optional(),
     industry: z.string().optional(),
     about_company: z.string().optional(),
+    salary_currency: z.string().optional(),
   }),
 });
 
@@ -41,6 +42,7 @@ const submitJobSchema = z.object({
     experience_max: z.number({ required_error: "Maximum experience is required" }).int().nonnegative(),
     work_mode: z.enum(workModes, { required_error: "Work mode is required" }),
     job_type: z.string({ required_error: "Job type is required" }).min(1, "Job type cannot be empty"),
+    salary_currency: z.string().optional(),
   })
   // Refine for cross-field business validation
   .refine((data) => data.salary_max >= data.salary_min, {
