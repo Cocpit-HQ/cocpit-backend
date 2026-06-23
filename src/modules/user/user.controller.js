@@ -422,6 +422,7 @@ exports.getPublicProfilePosts = async (req, res) => {
         p.post_id,
         p.content,
         p.title,
+        p.post_type,
         p.created_at,
         p.visibility,
         p.location,
