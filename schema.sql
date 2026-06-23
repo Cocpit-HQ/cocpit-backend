@@ -1720,3 +1720,18 @@ ALTER TABLE profiles ADD COLUMN IF NOT EXISTS preferred_industry TEXT;
  
 -- 2. Add work_mode as a new column
 ALTER TABLE profiles ADD COLUMN IF NOT EXISTS work_mode job_work_mode;
+
+-- =========================================================================
+-- REFERENCE TABLES
+-- =========================================================================
+CREATE TABLE IF NOT EXISTS job_roles_master (
+    role_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    role_name VARCHAR(255) UNIQUE NOT NULL,
+    category VARCHAR(100),
+    created_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_job_roles_name ON job_roles_master (role_name);
+
+-- Fix: Allow drafts to be created without industry
+ALTER TABLE jobs ALTER COLUMN industry DROP NOT NULL;

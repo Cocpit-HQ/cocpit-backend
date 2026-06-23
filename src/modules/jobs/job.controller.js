@@ -210,7 +210,7 @@ exports.createJob = async (req, res) => {
       `
       INSERT INTO jobs
       (recruiter_id, title, company_name, org_id, posted_as_company, status)
-      VALUES ($1, $2, $3, $4, $5, 'ACTIVE')
+      VALUES ($1, $2, $3, $4, $5, 'DRAFT')
       RETURNING *
       `,
       [userId, title, resolvedCompanyName, requestedOrgId || null, postedAsCompany]
@@ -233,7 +233,7 @@ exports.createJob = async (req, res) => {
   } catch (err) {
     await client.query("ROLLBACK");
     console.error(err);
-    res.status(500).json({ message: "Internal server error" });
+    res.status(500).json({ message: "Internal server error", error: err.message });
   } finally {
     client.release();
   }
@@ -1530,5 +1530,27 @@ exports.reviewApplication = async (req, res) => {
   // currently updateApplicationStatus handles it well enough if generic.
   // We can alias or reuse it.
   return exports.updateApplicationStatus(req, res);
+};
+
+exports.getJobRoles = async (req, res) => {
+    try {
+        const { q } = req.query;
+        let query = `SELECT role_name, category FROM job_roles_master`;
+        let values = [];
+
+        if (q) {
+            query += ` WHERE role_name ILIKE $1`;
+            values.push(`%${q}%`);
+        }
+
+        query += ` ORDER BY role_name ASC LIMIT 10`;
+
+        const result = await pool.query(query, values);
+        
+        res.json(result.rows);
+    } catch (err) {
+        console.error("Error fetching job roles:", err);
+        res.status(500).json({ error: "Internal server error" });
+    }
 };
 
