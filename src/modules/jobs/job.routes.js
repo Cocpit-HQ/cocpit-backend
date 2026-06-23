@@ -11,6 +11,7 @@ const { createDraftSchema, updateDraftSchema, submitJobSchema } = require("../..
 
 // Public routes
 router.get("/", optionalAuth, jobController.getAllJobs);
+router.get("/roles", jobController.getJobRoles);
 
 // Specific routes MUST come before /:id catch-all
 router.get("/offers", optionalAuth, jobController.getJobOffers);

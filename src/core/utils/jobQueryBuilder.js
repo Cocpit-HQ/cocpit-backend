@@ -1,6 +1,8 @@
 const buildJobFilters = (params, paramCountStart = 1) => {
     const {
         title,
+        q,
+        search,
         location,
         easyApply,
         activelyHiring,
@@ -20,9 +22,10 @@ const buildJobFilters = (params, paramCountStart = 1) => {
     let values = [];
     let currentIndex = paramCountStart;
 
-    if (title) {
-        conditions.push(`j.title ILIKE $${currentIndex}`);
-        values.push(`%${title}%`);
+    const searchQuery = q || search || title;
+    if (searchQuery) {
+        conditions.push(`(j.title ILIKE $${currentIndex} OR j.company_name ILIKE $${currentIndex})`);
+        values.push(`%${searchQuery}%`);
         currentIndex++;
     }
     if (location) {
@@ -62,11 +65,12 @@ const buildJobFilters = (params, paramCountStart = 1) => {
     if (datePosted) {
         let fromDate;
         const now = new Date();
-        if (datePosted === "Past 24 hours") {
+        const datePostedStr = datePosted.toLowerCase();
+        if (datePostedStr === "past 24 hours" || datePostedStr === "today") {
             fromDate = new Date(now.setDate(now.getDate() - 1));
-        } else if (datePosted === "Past week") {
+        } else if (datePostedStr === "past week" || datePostedStr === "last 7 days") {
             fromDate = new Date(now.setDate(now.getDate() - 7));
-        } else if (datePosted === "Past month") {
+        } else if (datePostedStr === "past month" || datePostedStr === "last 30 days") {
             fromDate = new Date(now.setMonth(now.getMonth() - 1));
         }
         if (fromDate) {
