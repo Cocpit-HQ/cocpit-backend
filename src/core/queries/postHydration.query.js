@@ -42,7 +42,7 @@ const getPostHydrationSelect = (companyParamIdx, userParamIdx) => `
     p.achievement_image_id,
     ai.key AS achievement_image_key,
     ai.cloudinary_url AS achievement_image_url,
-    ai.title AS achievement_image_title,
+    COALESCE(ai.title, CASE WHEN pc.name = 'Achievement' AND p.post_type = 'image' THEN p.title ELSE NULL END) AS achievement_image_title,
 
     COALESCE(
         (SELECT json_agg(json_build_object(
