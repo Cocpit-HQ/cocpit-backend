@@ -249,11 +249,8 @@ ${jdJson.benefits ? jdJson.benefits.map(b => "- " + b).join("\n") : ""}
       INSERT INTO jobs
       (recruiter_id, title, company_name, org_id, posted_as_company, status, industry, description)
       VALUES ($1, $2, $3, $4, $5, 'DRAFT', '', $6)
-      (recruiter_id, title, company_name, org_id, posted_as_company, status, industry, description)
-      VALUES ($1, $2, $3, $4, $5, 'DRAFT', '', $6)
       RETURNING *
       `,
-      [userId, title, resolvedCompanyName, requestedOrgId || null, postedAsCompany, aiDescription]
       [userId, title, resolvedCompanyName, requestedOrgId || null, postedAsCompany, aiDescription]
     );
 
@@ -286,7 +283,7 @@ ${jdJson.benefits ? jdJson.benefits.map(b => "- " + b).join("\n") : ""}
     await client.query("ROLLBACK");
     console.error(err);
     res.status(500).json({ message: "Internal server error", error: err.message });
-    res.status(500).json({ message: "Internal server error", error: err.message });
+
   } finally {
     client.release();
   }
@@ -987,10 +984,11 @@ exports.getMyJobs = async (req, res) => {
         (SELECT COUNT(*)::int FROM job_applications ja_count WHERE ja_count.job_id = j.job_id) as applicants_count
       FROM jobs j
       LEFT JOIN active_users u ON j.recruiter_id = u.user_id
-      WHERE ${actorOrgId ? "j.org_id = $1 AND j.posted_as_company IS TRUE" : "j.recruiter_id = $1 AND (j.posted_as_company IS FALSE OR j.posted_as_company IS NULL)"}
+      WHERE j.recruiter_id = $1 
+        AND (j.posted_as_company IS FALSE OR j.posted_as_company IS NULL OR j.org_id IS NULL)
         AND j.is_active = TRUE 
     `;
-    const params = [actorOrgId || recruiterId];
+    const params = [recruiterId];
     let paramCount = 2;
 
     // Optional filters

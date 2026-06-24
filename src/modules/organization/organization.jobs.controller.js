@@ -176,6 +176,16 @@ exports.getOrganizationJobs = async (req, res) => {
             conditions.push("(j.expires_at IS NULL OR j.expires_at > NOW())");
         } else if (scope === 'internal') {
             // Allow all statuses, internal members only
+            if (!req.user || !req.user.sub) {
+                return res.status(401).json({ message: "Unauthorized" });
+            }
+            const memberCheck = await pool.query(
+                "SELECT 1 FROM organization_members WHERE org_id = $1 AND user_id = $2 AND status = 'ACTIVE'",
+                [companyId, req.user.sub]
+            );
+            if (memberCheck.rowCount === 0) {
+                return res.status(403).json({ message: "Forbidden: You are not a member of this organization" });
+            }
         } else {
             return res.status(400).json({ message: "Invalid scope parameter. Use 'public' or 'internal'." });
         }
