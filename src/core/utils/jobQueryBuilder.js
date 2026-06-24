@@ -25,11 +25,17 @@ const buildJobFilters = (params, paramCountStart = 1) => {
         easyApply,
         activelyHiring,
         experienceLevel,
+        experience_min,
+        experience_max,
         minSalary,
         maxSalary,
+        salary_min,
+        salary_max,
         datePosted,
         jobType,
+        employment_type,
         workMode,
+        work_model,
         companyType,
         industry,
         org_id,
@@ -95,17 +101,31 @@ const buildJobFilters = (params, paramCountStart = 1) => {
         conditions.push(`j.actively_hiring = FALSE`);
     }
 
-    // ─── Experience level (multi-value; "All Levels" is a no-op) ─────────────
+    // ─── Experience level ─────────────
     if (experienceLevel && experienceLevel !== "All Levels") {
         applyMultiValue(experienceLevel, "j.experience_level");
+    }
+
+    if (experience_min !== undefined) {
+        conditions.push(`j.experience_min >= $${currentIndex}`);
+        values.push(Number(experience_min));
+        currentIndex++;
+    }
+
+    if (experience_max !== undefined) {
+        conditions.push(`j.experience_max <= $${currentIndex}`);
+        values.push(Number(experience_max));
+        currentIndex++;
     }
 
     // ─── Salary range (overlapping range logic) ───────────────────────────────
     // A job overlaps [minSalary, maxSalary] when:
     //   job.salary_max >= minSalary  AND  job.salary_min <= maxSalary
     // Treat empty string as absent to avoid 0-value false positives.
-    const min = minSalary ? Number(minSalary) : NaN;
-    const max = maxSalary ? Number(maxSalary) : NaN;
+    const effMinSalary = salary_min !== undefined ? salary_min : minSalary;
+    const effMaxSalary = salary_max !== undefined ? salary_max : maxSalary;
+    const min = effMinSalary ? Number(effMinSalary) : NaN;
+    const max = effMaxSalary ? Number(effMaxSalary) : NaN;
 
     if (!isNaN(min) && !isNaN(max)) {
         conditions.push(`j.salary_max >= $${currentIndex} AND j.salary_min <= $${currentIndex + 1}`);
@@ -144,8 +164,8 @@ const buildJobFilters = (params, paramCountStart = 1) => {
     }
 
     // ─── Enum filters (all multi-value) ───────────────────────────────────────
-    applyMultiValue(jobType, "j.job_type");
-    applyMultiValue(workMode, "j.work_mode");
+    applyMultiValue(employment_type || jobType, "j.job_type");
+    applyMultiValue(work_model || workMode, "j.work_mode");
     applyMultiValue(companyType, "j.company_type");
     applyMultiValue(industry, "j.industry");
 

@@ -219,19 +219,19 @@ exports.createJob = async (req, res) => {
     aiDescription = `
 ${jdJson.summary}
 
-### Description
+Description
 ${jdJson.description}
 
-### Responsibilities
+Responsibilities
 ${jdJson.responsibilities ? jdJson.responsibilities.map(r => "- " + r).join("\n") : ""}
 
-### Requirements
+Requirements
 ${jdJson.requirements ? jdJson.requirements.map(r => "- " + r).join("\n") : ""}
 
-### Preferred Skills
+Preferred Skills
 ${jdJson.preferred_skills ? jdJson.preferred_skills.map(s => "- " + s).join("\n") : ""}
 
-### Benefits
+Benefits
 ${jdJson.benefits ? jdJson.benefits.map(b => "- " + b).join("\n") : ""}
 `.trim();
   } catch (e) {
