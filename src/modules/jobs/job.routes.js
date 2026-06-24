@@ -2,6 +2,7 @@ const express = require("express");
 const router = express.Router();
 const jobController = require("./job.controller");
 const offerController = require("./offer.controller");
+const applicationRoutes = require("./applications/application.routes");
 const { requireAuth, optionalAuth } = require("../../core/middlewares/auth.middleware");
 const { requireRoles } = require("../../core/middlewares/role.middleware");
 const { requireOrgPermission, requireCompanyPermission } = require("../../core/middlewares/organization.auth.middleware");
@@ -12,6 +13,10 @@ const { createAIRateLimiter } = require("../../core/middlewares/rateLimiter.midd
 
 // Initialise the AI rate limiter once (3 generations per user per minute)
 const aiRateLimiter = createAIRateLimiter();
+
+// ── Applications sub-module (handles /applicants list, /applications/:id detail,
+//    status updates, notes, and AI analysis read/trigger)
+router.use('/', applicationRoutes);
 
 // Public routes
 router.get("/", optionalAuth, jobController.getAllJobs);
@@ -24,7 +29,7 @@ router.get("/stats", requireAuth, jobController.getDashboardStats);
 router.get("/applications/me", requireAuth, jobController.getMyApplications);
 router.get("/saved/me", requireAuth, jobController.getMySavedJobs);
 router.get("/my", requireAuth, jobController.getMyJobs);
-router.get("/:id/applicants", requireAuth, jobController.getJobApplicants);
+// GET /:id/applicants is now handled by applicationRoutes above
 router.get("/recruiter/:id/stats", optionalAuth, jobController.getRecruiterStats);
 
 // Catch-all GET - MUST be last among GETs
@@ -66,8 +71,8 @@ router.delete("/companies/:companyId/offers/:offerId", requireAuth, requireCompa
 router.get("/offers/:offerId", requireAuth, offerController.getOfferDetail);
 
 // Application Management
-router.put("/applications/:id/status", requireAuth, jobController.updateApplicationStatus);
+// PUT  /applications/:id/status  — moved to applications/application.routes.js
+// POST /applications/:id/review  — removed (alias for status update, now redundant)
 router.post("/applications/:id/submit-task", requireAuth, uploadTaskSubmission, jobController.submitTask);
-router.post("/applications/:id/review", requireAuth, jobController.reviewApplication);
 
 module.exports = router;

@@ -751,6 +751,35 @@ CREATE TABLE job_applications (
   UNIQUE(job_id, applicant_id)
 );
 
+CREATE TABLE IF NOT EXISTS application_notes (
+  note_id        UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  application_id UUID NOT NULL REFERENCES job_applications(application_id) ON DELETE CASCADE,
+  author_id      UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+  body           TEXT NOT NULL,
+  created_at     TIMESTAMPTZ DEFAULT now(),
+  updated_at     TIMESTAMPTZ DEFAULT now(),
+  UNIQUE(application_id, author_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_application_notes_app_id
+  ON application_notes(application_id);
+
+CREATE TABLE IF NOT EXISTS application_ai_analyses (
+  analysis_id    UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  application_id UUID NOT NULL REFERENCES job_applications(application_id) ON DELETE CASCADE,
+  match_score    INTEGER CHECK (match_score >= 0 AND match_score <= 100),
+  summary        JSONB,
+  skills         JSONB,
+  experience     JSONB,
+  qualification  JSONB,
+  provider       TEXT DEFAULT 'gemini',
+  model          TEXT,
+  created_at     TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_ai_analyses_app_id
+  ON application_ai_analyses(application_id);
+
 CREATE TABLE job_saves (
   user_id UUID NOT NULL
     REFERENCES users(user_id) ON DELETE CASCADE,
