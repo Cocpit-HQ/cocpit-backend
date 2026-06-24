@@ -209,9 +209,10 @@ exports.createJob = async (req, res) => {
   let aiDescription = "";
   try {
     const aiService = require("../../services/ai.service");
+    const companyReplacement = postedAsCompany ? resolvedCompanyName : "our team";
     const jdJson = await aiService.generateJobDescription({ 
       role: title, 
-      companyName: resolvedCompanyName 
+      companyName: companyReplacement 
     });
     
     // Format JSON into markdown for the description field
@@ -248,8 +249,11 @@ ${jdJson.benefits ? jdJson.benefits.map(b => "- " + b).join("\n") : ""}
       INSERT INTO jobs
       (recruiter_id, title, company_name, org_id, posted_as_company, status, industry, description)
       VALUES ($1, $2, $3, $4, $5, 'DRAFT', '', $6)
+      (recruiter_id, title, company_name, org_id, posted_as_company, status, industry, description)
+      VALUES ($1, $2, $3, $4, $5, 'DRAFT', '', $6)
       RETURNING *
       `,
+      [userId, title, resolvedCompanyName, requestedOrgId || null, postedAsCompany, aiDescription]
       [userId, title, resolvedCompanyName, requestedOrgId || null, postedAsCompany, aiDescription]
     );
 
@@ -281,6 +285,7 @@ ${jdJson.benefits ? jdJson.benefits.map(b => "- " + b).join("\n") : ""}
   } catch (err) {
     await client.query("ROLLBACK");
     console.error(err);
+    res.status(500).json({ message: "Internal server error", error: err.message });
     res.status(500).json({ message: "Internal server error", error: err.message });
   } finally {
     client.release();
@@ -1597,6 +1602,50 @@ exports.reviewApplication = async (req, res) => {
   // currently updateApplicationStatus handles it well enough if generic.
   // We can alias or reuse it.
   return exports.updateApplicationStatus(req, res);
+};
+
+exports.getJobRoles = async (req, res) => {
+    try {
+        const { q } = req.query;
+        let query = `SELECT role_name, category FROM job_roles_master`;
+        let values = [];
+
+        if (q) {
+            query += ` WHERE role_name ILIKE $1`;
+            values.push(`%${q}%`);
+        }
+
+        query += ` ORDER BY role_name ASC LIMIT 10`;
+
+        const result = await pool.query(query, values);
+        
+        res.json(result.rows);
+    } catch (err) {
+        console.error("Error fetching job roles:", err);
+        res.status(500).json({ error: "Internal server error" });
+    }
+};
+
+exports.getJobRoles = async (req, res) => {
+    try {
+        const { q } = req.query;
+        let query = `SELECT role_name, category FROM job_roles_master`;
+        let values = [];
+
+        if (q) {
+            query += ` WHERE role_name ILIKE $1`;
+            values.push(`%${q}%`);
+        }
+
+        query += ` ORDER BY role_name ASC LIMIT 10`;
+
+        const result = await pool.query(query, values);
+        
+        res.json(result.rows);
+    } catch (err) {
+        console.error("Error fetching job roles:", err);
+        res.status(500).json({ error: "Internal server error" });
+    }
 };
 
 exports.getJobRoles = async (req, res) => {
