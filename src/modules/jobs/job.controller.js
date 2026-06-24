@@ -205,6 +205,39 @@ exports.createJob = async (req, res) => {
 
   const postedAsCompany = !!requestedOrgId;
 
+  // AI Generation Phase
+  let aiDescription = "";
+  try {
+    const aiService = require("../../services/ai.service");
+    const jdJson = await aiService.generateJobDescription({ 
+      role: title, 
+      companyName: resolvedCompanyName 
+    });
+    
+    // Format JSON into markdown for the description field
+    aiDescription = `
+${jdJson.summary}
+
+### Description
+${jdJson.description}
+
+### Responsibilities
+${jdJson.responsibilities ? jdJson.responsibilities.map(r => "- " + r).join("\n") : ""}
+
+### Requirements
+${jdJson.requirements ? jdJson.requirements.map(r => "- " + r).join("\n") : ""}
+
+### Preferred Skills
+${jdJson.preferred_skills ? jdJson.preferred_skills.map(s => "- " + s).join("\n") : ""}
+
+### Benefits
+${jdJson.benefits ? jdJson.benefits.map(b => "- " + b).join("\n") : ""}
+`.trim();
+  } catch (e) {
+    console.error("Auto AI Generation failed during createJob:", e.message);
+    // If it fails, we just leave aiDescription blank and let the draft be created normally.
+  }
+
   const client = await pool.connect();
 
   try {
@@ -213,11 +246,11 @@ exports.createJob = async (req, res) => {
     const jobRes = await client.query(
       `
       INSERT INTO jobs
-      (recruiter_id, title, company_name, org_id, posted_as_company, status, industry)
-      VALUES ($1, $2, $3, $4, $5, 'DRAFT', '')
+      (recruiter_id, title, company_name, org_id, posted_as_company, status, industry, description)
+      VALUES ($1, $2, $3, $4, $5, 'DRAFT', '', $6)
       RETURNING *
       `,
-      [userId, title, resolvedCompanyName, requestedOrgId || null, postedAsCompany]
+      [userId, title, resolvedCompanyName, requestedOrgId || null, postedAsCompany, aiDescription]
     );
 
     const job = jobRes.rows[0];
