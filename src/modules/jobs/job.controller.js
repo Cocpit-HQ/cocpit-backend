@@ -7,6 +7,10 @@ const { notifyOrgFollowers } = require("../../services/notification.service");
 const { hasActorPermission } = require("../../core/middlewares/actor-context.middleware");
 const { logActivity } = require("../../core/services/activityLogger");
 const { logActivity: logIntentActivity } = require("../../utils/activityLogger");
+const crypto = require("crypto");
+const redis = require("../../core/cache/redis");
+const aiService = require("../../services/ai.service");
+const { validateSchema, validateBusiness, validateContentSafety } = require("../../core/utils/aiValidation");
 
 
 const getRequestedOrganizationActorId = (req, fallbackOrgId = null) => {
@@ -209,8 +213,8 @@ exports.createJob = async (req, res) => {
     const jobRes = await client.query(
       `
       INSERT INTO jobs
-      (recruiter_id, title, company_name, org_id, posted_as_company, status)
-      VALUES ($1, $2, $3, $4, $5, 'DRAFT')
+      (recruiter_id, title, company_name, org_id, posted_as_company, status, industry)
+      VALUES ($1, $2, $3, $4, $5, 'DRAFT', '')
       RETURNING *
       `,
       [userId, title, resolvedCompanyName, requestedOrgId || null, postedAsCompany]
@@ -1584,3 +1588,234 @@ exports.getJobRoles = async (req, res) => {
     }
 };
 
+exports.getJobRoles = async (req, res) => {
+    try {
+        const { q } = req.query;
+        let query = `SELECT role_name, category FROM job_roles_master`;
+        let values = [];
+
+        if (q) {
+            query += ` WHERE role_name ILIKE $1`;
+            values.push(`%${q}%`);
+        }
+
+        query += ` ORDER BY role_name ASC LIMIT 10`;
+
+        const result = await pool.query(query, values);
+        
+        res.json(result.rows);
+    } catch (err) {
+        console.error("Error fetching job roles:", err);
+        res.status(500).json({ error: "Internal server error" });
+    }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// AI Job Description Generator
+// POST /api/v1/jobs/:id/generate
+// Body: { "role": "Software Engineer" }
+// ─────────────────────────────────────────────────────────────────────────────
+
+exports.generateJD = async (req, res) => {
+  const { id } = req.params;
+  const userId = req.user.sub;
+  const startTime = Date.now();
+
+  // ── Step 1: Input validation ────────────────────────────────────────────────
+  let role = req.body?.role;
+
+  if (!role || typeof role !== "string") {
+    return res.status(400).json({ message: "\"role\" is required and must be a string." });
+  }
+
+  role = role.trim();
+
+  if (role.length < 2 || role.length > 100) {
+    return res.status(400).json({
+      message: "Role must be between 2 and 100 characters.",
+      field: "role",
+    });
+  }
+
+  // Basic sanity check — reject obvious HTML/injection in role name
+  if (/<[^>]+>/.test(role)) {
+    return res.status(400).json({
+      message: "Role name must not contain HTML.",
+      field: "role",
+    });
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+
+    // ── Step 2: Load job from DB ──────────────────────────────────────────────
+    const jobRes = await client.query(
+      `SELECT job_id, org_id, recruiter_id, company_name, status FROM jobs WHERE job_id = $1`,
+      [id]
+    );
+    if (jobRes.rowCount === 0) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ message: "Job not found." });
+    }
+    const job = jobRes.rows[0];
+
+    // Only allow generation on DRAFT or ACTIVE jobs
+    if (job.status !== "DRAFT" && job.status !== "ACTIVE") {
+      await client.query("ROLLBACK");
+      return res.status(400).json({
+        message: `AI generation is only available for DRAFT or ACTIVE jobs. Current status: ${job.status}`,
+      });
+    }
+
+    // ── Step 3: Ownership check ───────────────────────────────────────────────
+    if (job.org_id) {
+      await assertOrgPermission(
+        req,
+        getRequestedOrganizationActorId(req, job.org_id),
+        ["POST_JOBS", "MANAGE_COMPANY"],
+        client
+      );
+    } else {
+      if (job.recruiter_id !== userId) {
+        await client.query("ROLLBACK");
+        return res.status(403).json({ message: "Unauthorized." });
+      }
+    }
+
+    // ── Step 4: Redis cache check ─────────────────────────────────────────────
+    // Cache key: SHA256(role (normalised) + company_id)
+    const cacheInput = `${role.toLowerCase()}:${job.org_id || userId}`;
+    const cacheKey = `jd_gen:${crypto.createHash("sha256").update(cacheInput).digest("hex")}`;
+
+    let cachedResult;
+    try {
+      cachedResult = await redis.get(cacheKey);
+    } catch {
+      // Redis unavailable — proceed without cache
+      cachedResult = null;
+    }
+
+    if (cachedResult) {
+      await client.query("ROLLBACK"); // No DB changes needed for cache hit
+      return res.status(200).json({
+        message: "Job description generated successfully (cached).",
+        job: JSON.parse(cachedResult),
+        ai_metadata: { cached: true, model: process.env.AI_MODEL || "gemini-2.5-flash" },
+      });
+    }
+
+    // ── Step 5: Call AI service ───────────────────────────────────────────────
+    let generated;
+    try {
+      generated = await aiService.generateJobDescription({
+        role,
+        companyName: job.company_name || null,
+        jobId: id,
+        companyId: job.org_id || null,
+      });
+    } catch (aiErr) {
+      await client.query("ROLLBACK");
+      return res.status(aiErr.statusCode || 503).json({
+        message: aiErr.message || "AI service is temporarily unavailable.",
+      });
+    }
+
+    // ── Step 6: 3-stage validation pipeline ──────────────────────────────────
+    try {
+      validateSchema(generated);
+      validateBusiness(generated);
+      validateContentSafety(generated);
+    } catch (validationErr) {
+      await client.query("ROLLBACK");
+      return res.status(validationErr.statusCode || 422).json({
+        message: validationErr.message,
+        field: validationErr.field || null,
+      });
+    }
+
+    // ── Step 7: Cache the validated result ────────────────────────────────────
+    const cacheTTL = parseInt(process.env.AI_CACHE_TTL_SECONDS || "3600", 10);
+    try {
+      await redis.setEx(cacheKey, cacheTTL, JSON.stringify(generated));
+    } catch {
+      // Non-fatal — proceed even if caching fails
+    }
+
+    // ── Step 8: Persist to DB ─────────────────────────────────────────────────
+    // Build SET clause dynamically from validated AI output
+    const AI_FIELD_MAP = {
+      title: generated.title,
+      description: generated.description,
+      experience_min: generated.experience_min,
+      experience_max: generated.experience_max,
+    };
+
+    // Store rich fields (arrays / strings) as JSONB-compatible values in columns
+    // that exist on the jobs table. Fields like responsibilities, skills etc.
+    // are stored as JSON strings in the summary / description or as separate columns
+    // if your schema has them. Adjust the mapping below to match your actual schema.
+    const setClauses = [];
+    const values = [];
+    let paramCount = 1;
+
+    for (const [col, val] of Object.entries(AI_FIELD_MAP)) {
+      setClauses.push(`${col} = $${paramCount}`);
+      values.push(val);
+      paramCount++;
+    }
+
+    values.push(id);
+    const updateQuery = `UPDATE jobs SET ${setClauses.join(", ")} WHERE job_id = $${paramCount} RETURNING *`;
+    const updatedJobRes = await client.query(updateQuery, values);
+    const updatedJob = updatedJobRes.rows[0];
+
+    // ── Step 9: AI provenance record ──────────────────────────────────────────
+    await client.query(
+      `INSERT INTO job_versions (job_id, changed_by, trigger_event, provenance, previous_data)
+       VALUES ($1, $2, 'AI_GENERATE', 'AI', $3)`,
+      [id, userId, job]
+    );
+
+    await client.query(
+      `INSERT INTO job_activity (job_id, actor_id, action) VALUES ($1, $2, 'AI_GENERATED')`,
+      [id, userId]
+    );
+
+    await client.query("COMMIT");
+
+    // ── Step 10: Return response ──────────────────────────────────────────────
+    return res.status(200).json({
+      message: "Job description generated successfully.",
+      job: {
+        ...updatedJob,
+        // Attach the rich AI fields so the frontend has the full JD
+        // even if some are not yet persisted as separate DB columns
+        ai_content: {
+          summary: generated.summary,
+          responsibilities: generated.responsibilities,
+          requirements: generated.requirements,
+          preferred_skills: generated.preferred_skills,
+          employment_type: generated.employment_type,
+          education: generated.education,
+          skills: generated.skills,
+          benefits: generated.benefits,
+        },
+      },
+      ai_metadata: {
+        model: process.env.AI_MODEL || "gemini-2.5-flash",
+        latency_ms: Date.now() - startTime,
+        cached: false,
+      },
+    });
+
+  } catch (err) {
+    await client.query("ROLLBACK");
+    console.error("Generate JD error:", err);
+    return res.status(err.statusCode || 500).json({
+      message: err.message || "Internal server error.",
+    });
+  } finally {
+    client.release();
+  }
+};

@@ -8,6 +8,10 @@ const { requireOrgPermission, requireCompanyPermission } = require("../../core/m
 const { uploadApplicationFiles, uploadTaskSubmission } = require("../../core/middlewares/upload.middleware");
 const { validate } = require("../../core/middlewares/validation.middleware");
 const { createDraftSchema, updateDraftSchema, submitJobSchema } = require("../../schemas/job.schema");
+const { createAIRateLimiter } = require("../../core/middlewares/rateLimiter.middleware");
+
+// Initialise the AI rate limiter once (3 generations per user per minute)
+const aiRateLimiter = createAIRateLimiter();
 
 // Public routes
 router.get("/", optionalAuth, jobController.getAllJobs);
@@ -41,6 +45,10 @@ router.post("/:id/reject", requireAuth, jobController.rejectJob);
 
 // AI actions
 router.post("/:id/ai/actions", requireAuth, jobController.aiAction);
+
+// AI Job Description Generator
+// Rate limited: 3 generations per user per minute
+router.post("/:id/generate", requireAuth, aiRateLimiter, jobController.generateJD);
 
 router.post("/:id/apply", requireAuth, uploadApplicationFiles, jobController.applyJob);
 router.post("/:id/save", requireAuth, jobController.saveJob);
