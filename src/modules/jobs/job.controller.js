@@ -81,7 +81,7 @@ exports.getAllJobs = async (req, res) => {
     const limitClause = `LIMIT $${paramCount}`;
     params.push(Number(limit));
 
-    const whereClause = conditions.length > 0 ? `WHERE j.is_active = TRUE AND ${conditions.join(" AND ")}` : `WHERE j.is_active = TRUE`;
+    const whereClause = conditions.length > 0 ? `WHERE j.is_active = TRUE AND j.status = 'ACTIVE' AND ${conditions.join(" AND ")}` : `WHERE j.is_active = TRUE AND j.status = 'ACTIVE'`;
 
     const query = `
       SELECT 
@@ -722,7 +722,7 @@ exports.getJobOffers = async (req, res) => {
     const limitClause = `LIMIT $${paramCount}`;
     params.push(Number(limit));
 
-    const whereClause = conditions.length > 0 ? `WHERE j.is_active = TRUE AND ${conditions.join(" AND ")}` : `WHERE j.is_active = TRUE`;
+    const whereClause = conditions.length > 0 ? `WHERE j.is_active = TRUE AND j.status = 'ACTIVE' AND ${conditions.join(" AND ")}` : `WHERE j.is_active = TRUE AND j.status = 'ACTIVE'`;
 
     const query = `
       SELECT 
