@@ -36,7 +36,7 @@ router.get("/recruiter/:id/stats", optionalAuth, jobController.getRecruiterStats
 router.get("/:id", optionalAuth, jobController.getJobById);
 
 // Protected routes
-router.post("/", requireAuth, validate(createDraftSchema), jobController.createJob);
+router.post("/", requireAuth, aiRateLimiter, validate(createDraftSchema), jobController.createJob);
 router.patch("/:id", requireAuth, validate(updateDraftSchema), jobController.updateDraft);
 router.post("/:id/submit", requireAuth, validate(submitJobSchema), jobController.submitJob);
 router.post("/:id/clone", requireAuth, jobController.cloneJob);

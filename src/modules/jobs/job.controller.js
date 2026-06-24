@@ -216,24 +216,16 @@ exports.createJob = async (req, res) => {
     });
     
     // Format JSON into markdown for the description field
-    aiDescription = `
-${jdJson.summary}
+    const sections = [
+      jdJson.summary,
+      jdJson.description ? `\n### Description\n${jdJson.description}` : "",
+      jdJson.responsibilities?.length ? `\n### Responsibilities\n${jdJson.responsibilities.map(r => "- " + r).join("\n")}` : "",
+      jdJson.requirements?.length ? `\n### Requirements\n${jdJson.requirements.map(r => "- " + r).join("\n")}` : "",
+      jdJson.preferred_skills?.length ? `\n### Preferred Skills\n${jdJson.preferred_skills.map(s => "- " + s).join("\n")}` : "",
+      jdJson.benefits?.length ? `\n### Benefits\n${jdJson.benefits.map(b => "- " + b).join("\n")}` : ""
+    ];
 
-Description
-${jdJson.description}
-
-Responsibilities
-${jdJson.responsibilities ? jdJson.responsibilities.map(r => "- " + r).join("\n") : ""}
-
-Requirements
-${jdJson.requirements ? jdJson.requirements.map(r => "- " + r).join("\n") : ""}
-
-Preferred Skills
-${jdJson.preferred_skills ? jdJson.preferred_skills.map(s => "- " + s).join("\n") : ""}
-
-Benefits
-${jdJson.benefits ? jdJson.benefits.map(b => "- " + b).join("\n") : ""}
-`.trim();
+    aiDescription = sections.filter(Boolean).join("\n").trim();
   } catch (e) {
     console.error("Auto AI Generation failed during createJob:", e.message);
     // If it fails, we just leave aiDescription blank and let the draft be created normally.

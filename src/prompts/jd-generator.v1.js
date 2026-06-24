@@ -39,39 +39,39 @@ const JD_JSON_SCHEMA = {
     },
     summary: {
       type: "string",
-      description: "A 2-4 sentence overview of the role and its impact.",
+      description: "A concise 1-2 sentence overview of the role and its impact.",
     },
     description: {
       type: "string",
-      description: "A detailed paragraph (100-300 words) describing the role.",
+      description: "A brief, punchy paragraph (40-80 words) describing the role.",
     },
     responsibilities: {
       type: "array",
       items: { type: "string" },
-      description: "5-8 key responsibilities, each as a concise action-oriented bullet.",
+      description: "3-4 key responsibilities, each as a concise action-oriented bullet.",
     },
     requirements: {
       type: "array",
       items: { type: "string" },
-      description: "4-7 mandatory qualifications or skills.",
+      description: "3-4 mandatory qualifications or skills.",
     },
     preferred_skills: {
       type: "array",
       items: { type: "string" },
-      description: "3-5 nice-to-have skills or experience points.",
+      description: "2-3 nice-to-have skills or experience points.",
     },
-    employment_type: {
-      type: "string",
-      description: "One of: Full-time, Part-time, Contract, Internship, Freelance.",
-    },
-    experience_min: {
-      type: "number",
-      description: "Minimum years of experience required (integer >= 0).",
-    },
-    experience_max: {
-      type: "number",
-      description: "Maximum years of experience expected (integer >= experience_min).",
-    },
+    // employment_type: {
+    //   type: "string",
+    //   description: "One of: Full-time, Part-time, Contract, Internship, Freelance.",
+    // },
+    // experience_min: {
+    //   type: "number",
+    //   description: "Minimum years of experience required (integer >= 0).",
+    // },
+    // experience_max: {
+    //   type: "number",
+    //   description: "Maximum years of experience expected (integer >= experience_min).",
+    // },
     education: {
       type: "string",
       description: "Minimum educational qualification required.",
@@ -79,13 +79,13 @@ const JD_JSON_SCHEMA = {
     skills: {
       type: "array",
       items: { type: "string" },
-      description: "5-10 complete professional competency statements (10-25 words each), not single-word keywords.",
+      description: "3-4 professional competency statements (10-15 words each), not single-word keywords.",
     },
-    benefits: {
-      type: "array",
-      items: { type: "string" },
-      description: "4-6 standard company benefits (e.g. 'Health insurance', 'Flexible hours').",
-    },
+    // benefits: {
+    //   type: "array",
+    //   items: { type: "string" },
+    //   description: "3-4 standard company benefits.",
+    // },
   },
   required: [
     "title",
@@ -94,12 +94,12 @@ const JD_JSON_SCHEMA = {
     "responsibilities",
     "requirements",
     "preferred_skills",
-    "employment_type",
-    "experience_min",
-    "experience_max",
+    // "employment_type",
+    // "experience_min",
+    // "experience_max",
     "education",
     "skills",
-    "benefits",
+    // "benefits",
   ],
 };
 
