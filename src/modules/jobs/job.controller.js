@@ -884,7 +884,7 @@ exports.getMyApplications = async (req, res) => {
     let baseQuery = `
         FROM job_applications ja
         JOIN jobs j ON ja.job_id = j.job_id
-        LEFT JOIN active_users u ON j.recruiter_id = u.user_id
+        LEFT JOIN users u ON j.recruiter_id = u.user_id
         LEFT JOIN job_saves js ON j.job_id = js.job_id AND js.user_id = $1
         WHERE ja.applicant_id = $1
     `;
