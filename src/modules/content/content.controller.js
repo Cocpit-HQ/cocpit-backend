@@ -1137,6 +1137,9 @@ exports.getPostById = async (req, res) => {
     (p.author_org_id IS NOT NULL) AS is_organization_post,
     c.name AS category_name,
     p.location,
+    ai.cloudinary_url AS achievement_image_url,
+    ai.key AS achievement_image_key,
+    COALESCE(ai.title, CASE WHEN c.name = 'Achievement' AND p.post_type = 'image' THEN p.title ELSE NULL END) AS achievement_image_title,
     COALESCE(
         (SELECT json_agg(json_build_object(
             'id', u_tag.user_id,
@@ -1360,6 +1363,7 @@ FROM posts p
 JOIN active_users u ON u.user_id = p.author_id
 LEFT JOIN organizations comp ON comp.org_id = p.author_org_id
 LEFT JOIN post_categories c ON p.category_id = c.category_id
+LEFT JOIN achievement_images ai ON p.achievement_image_id = ai.id
 
 -- Shared Post Joins
 LEFT JOIN posts sp ON p.shared_post_id = sp.post_id
