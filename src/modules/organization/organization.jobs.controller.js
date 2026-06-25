@@ -151,7 +151,7 @@ exports.createOrganizationJob = async (req, res) => {
 
 exports.getOrganizationJobs = async (req, res) => {
     const { orgId: companyId } = req.params;
-    const { scope = 'public', limit = 10, cursor } = req.query;
+    const { scope = 'public', limit = 10, cursor, status } = req.query;
 
     // For 'internal' scope, the route middleware should already guarantee they are a member.
     // We enforce the query filter.
@@ -186,6 +186,14 @@ exports.getOrganizationJobs = async (req, res) => {
             if (memberCheck.rowCount === 0) {
                 return res.status(403).json({ message: "Forbidden: You are not a member of this organization" });
             }
+
+            // Status filter for internal scope
+            if (status && status.toUpperCase() !== 'ALL') {
+                const dbStatus = status.replace(/_/g, ' ').toUpperCase();
+                conditions.push(`j.status = $${paramCount}`);
+                params.push(dbStatus);
+                paramCount++;
+            }
         } else {
             return res.status(400).json({ message: "Invalid scope parameter. Use 'public' or 'internal'." });
         }
@@ -196,8 +204,10 @@ exports.getOrganizationJobs = async (req, res) => {
             paramCount++;
         }
 
+        // Fetch limit + 1 to determine hasMore
+        const fetchLimit = Number(limit) + 1;
         const limitClause = `LIMIT $${paramCount}`;
-        params.push(Number(limit));
+        params.push(fetchLimit);
 
         const whereClause = `WHERE ${conditions.join(" AND ")}`;
 
@@ -213,8 +223,44 @@ exports.getOrganizationJobs = async (req, res) => {
             ${limitClause}
         `;
 
+        if (scope === 'internal') {
+            // Counts query for internal scope — runs in parallel
+            const countsQuery = `
+                SELECT 
+                    COUNT(*)::int AS "all",
+                    COUNT(*) FILTER (WHERE j.status = 'ACTIVE')::int AS "active",
+                    COUNT(*) FILTER (WHERE j.status = 'CLOSED')::int AS "closed",
+                    COUNT(*) FILTER (WHERE j.status = 'DRAFT')::int AS "draft",
+                    COUNT(*) FILTER (WHERE j.status = 'IN REVIEW')::int AS "inReview"
+                FROM jobs j
+                WHERE j.org_id = $1
+                    AND j.is_active = TRUE
+            `;
+
+            const [result, countsResult] = await Promise.all([
+                pool.query(query, params),
+                pool.query(countsQuery, [companyId])
+            ]);
+
+            const rows = result.rows;
+            const hasMore = rows.length > Number(limit);
+            const jobs = hasMore ? rows.slice(0, Number(limit)) : rows;
+            const nextCursor = jobs.length > 0 ? jobs[jobs.length - 1].created_at : null;
+            const counts = countsResult.rows[0] || { all: 0, active: 0, closed: 0, draft: 0, inReview: 0 };
+
+            return res.status(200).json({
+                jobs,
+                nextCursor,
+                hasMore,
+                counts
+            });
+        }
+
+        // Public scope — keep flat array response to avoid breaking changes
         const result = await pool.query(query, params);
-        res.status(200).json(result.rows);
+        const rows = result.rows;
+        const publicJobs = rows.length > Number(limit) ? rows.slice(0, Number(limit)) : rows;
+        res.status(200).json(publicJobs);
 
     } catch (err) {
         console.error("Get organization jobs error:", err);

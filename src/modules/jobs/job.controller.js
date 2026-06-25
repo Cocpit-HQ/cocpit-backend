@@ -954,6 +954,9 @@ exports.getMyJobs = async (req, res) => {
   const recruiterId = req.user.sub; // logged-in recruiter
   const actorOrgId = req.actor?.type === "ORGANIZATION" ? req.actor.orgId : null;
   const {
+    limit = 10,
+    cursor,
+    status,
     title,
     location,
     work_mode,
@@ -982,6 +985,15 @@ exports.getMyJobs = async (req, res) => {
     `;
     const params = [recruiterId];
     let paramCount = 2;
+
+    // Status filter (must come before pagination so we paginate filtered results)
+    if (status && status.toUpperCase() !== 'ALL') {
+      // Map frontend "IN_REVIEW" to DB "IN REVIEW" (underscore -> space)
+      const dbStatus = status.replace(/_/g, ' ').toUpperCase();
+      query += ` AND j.status = $${paramCount}`;
+      params.push(dbStatus);
+      paramCount++;
+    }
 
     // Optional filters
     if (title) {
@@ -1071,10 +1083,51 @@ exports.getMyJobs = async (req, res) => {
       paramCount++;
     }
 
+    // Cursor-based pagination
+    if (cursor) {
+      query += ` AND j.created_at < $${paramCount}`;
+      params.push(new Date(cursor));
+      paramCount++;
+    }
+
     query += ` ORDER BY j.created_at DESC`;
 
-    const result = await pool.query(query, params);
-    res.json(result.rows);
+    // Fetch limit + 1 to determine hasMore
+    const fetchLimit = Number(limit) + 1;
+    query += ` LIMIT $${paramCount}`;
+    params.push(fetchLimit);
+
+    // Counts query — runs in parallel for performance
+    const countsQuery = `
+      SELECT 
+        COUNT(*)::int AS "all",
+        COUNT(*) FILTER (WHERE j.status = 'ACTIVE')::int AS "active",
+        COUNT(*) FILTER (WHERE j.status = 'CLOSED')::int AS "closed",
+        COUNT(*) FILTER (WHERE j.status = 'DRAFT')::int AS "draft",
+        COUNT(*) FILTER (WHERE j.status = 'IN REVIEW')::int AS "inReview"
+      FROM jobs j
+      WHERE j.recruiter_id = $1
+        AND (j.posted_as_company IS FALSE OR j.posted_as_company IS NULL OR j.org_id IS NULL)
+        AND j.is_active = TRUE
+    `;
+
+    const [result, countsResult] = await Promise.all([
+      pool.query(query, params),
+      pool.query(countsQuery, [recruiterId])
+    ]);
+
+    const rows = result.rows;
+    const hasMore = rows.length > Number(limit);
+    const jobs = hasMore ? rows.slice(0, Number(limit)) : rows;
+    const nextCursor = jobs.length > 0 ? jobs[jobs.length - 1].created_at : null;
+    const counts = countsResult.rows[0] || { all: 0, active: 0, closed: 0, draft: 0, inReview: 0 };
+
+    res.json({
+      jobs,
+      nextCursor,
+      hasMore,
+      counts
+    });
   } catch (err) {
     if (err.code === '23514' && err.constraint === 'salary_valid') {
       return res.status(400).json({
