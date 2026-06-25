@@ -16,7 +16,7 @@ const aiRateLimiter = createAIRateLimiter();
 
 // ── Applications sub-module (handles /applicants list, /applications/:id detail,
 //    status updates, notes, and AI analysis read/trigger)
-router.use('/', applicationRoutes);
+// (Moved down to prevent route conflicts with specific paths like /applications/me)
 
 // Public routes
 router.get("/", optionalAuth, jobController.getAllJobs);
@@ -31,6 +31,9 @@ router.get("/saved/me", requireAuth, jobController.getMySavedJobs);
 router.get("/my", requireAuth, jobController.getMyJobs);
 // GET /:id/applicants is now handled by applicationRoutes above
 router.get("/recruiter/:id/stats", optionalAuth, jobController.getRecruiterStats);
+
+// ── Applications sub-module ──
+router.use('/', applicationRoutes);
 
 // Catch-all GET - MUST be last among GETs
 router.get("/:id", optionalAuth, jobController.getJobById);
