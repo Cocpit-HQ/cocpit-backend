@@ -665,8 +665,9 @@ exports.applyJob = async (req, res) => {
     return res.status(403).json({ message: "You cannot apply as an organization" });
   }
 
-  // Take other fields from request body
-  let { full_name, email, phone, mobile_number, cover_note } = req.body;
+  // Take other fields from request body (guard against undefined body e.g. missing Content-Type)
+  const body = req.body || {};
+  let { full_name, email, phone, mobile_number, cover_note } = body;
   
   // Sanitize user-generated content
   cover_note = sanitizeContent(cover_note);
@@ -709,45 +710,72 @@ exports.applyJob = async (req, res) => {
       }
     }
 
-    // Check if already applied
+    // Check if already applied (active application — not withdrawn)
     const existing = await pool.query(
-      `SELECT 1 FROM job_applications WHERE job_id = $1 AND applicant_id = $2`,
+      `SELECT application_id, current_status FROM job_applications WHERE job_id = $1 AND applicant_id = $2`,
       [id, userId]
     );
-    if (existing.rowCount > 0) {
+    if (existing.rowCount > 0 && existing.rows[0].current_status !== 'Withdrawn') {
       return res.status(409).json({ message: "Already applied to this job" });
     }
+    const existingWithdrawn = existing.rowCount > 0 && existing.rows[0].current_status === 'Withdrawn';
+
     // Resume file URL from Cloudinary or existing profile resume
     let resume_url = null;
 
-    // Handle Multer .fields() output
-    if (req.files) {
-      if (req.files['resume'] && req.files['resume'][0]) {
-        resume_url = req.files['resume'][0].path;
-      }
-    }
-    // Fallback for single file upload if still supported (legacy)
-    else if (req.file) {
+    // Single file upload via multer .single('resume')
+    if (req.file) {
       resume_url = req.file.path;
     }
+    // Also handle .fields() output in case middleware is changed in future
+    else if (req.files && req.files['resume'] && req.files['resume'][0]) {
+      resume_url = req.files['resume'][0].path;
+    }
 
-    // Fallback to body URL if not uploaded
-    if (!resume_url && req.body.resume_url) {
-      resume_url = req.body.resume_url;
+    // Fallback: resume URL sent as a form field or JSON body field
+    if (!resume_url && body.resume_url) {
+      resume_url = body.resume_url;
+    }
+
+    // Final fallback: fetch user's most recent resume from past applications
+    if (!resume_url) {
+      const recentResumeResult = await pool.query(
+        `SELECT resume_url FROM job_applications
+         WHERE applicant_id = $1 AND resume_url IS NOT NULL
+         ORDER BY application_id DESC LIMIT 1`,
+        [userId]
+      );
+      if (recentResumeResult.rowCount > 0) {
+        resume_url = recentResumeResult.rows[0].resume_url;
+      }
     }
 
     if (!resume_url) {
       return res.status(400).json({ message: "Resume is required" });
     }
 
-    // Create application
-    const appResult = await pool.query(
-      `INSERT INTO job_applications 
-       (job_id, applicant_id, full_name, email, phone, resume_url, cover_note)
-       VALUES ($1,$2,$3,$4,$5,$6,$7)
-       RETURNING application_id`,
-      [id, userId, full_name, email, contactPhone, resume_url, cover_note]
-    );
+
+    let appResult;
+    if (existingWithdrawn) {
+      // Re-apply: update the existing withdrawn application row
+      appResult = await pool.query(
+        `UPDATE job_applications
+         SET full_name = $3, email = $4, phone = $5, resume_url = $6, cover_note = $7,
+             current_status = 'Applied'
+         WHERE job_id = $1 AND applicant_id = $2
+         RETURNING application_id`,
+        [id, userId, full_name, email, contactPhone, resume_url, cover_note]
+      );
+    } else {
+      // Fresh application
+      appResult = await pool.query(
+        `INSERT INTO job_applications 
+         (job_id, applicant_id, full_name, email, phone, resume_url, cover_note)
+         VALUES ($1,$2,$3,$4,$5,$6,$7)
+         RETURNING application_id`,
+        [id, userId, full_name, email, contactPhone, resume_url, cover_note]
+      );
+    }
 
     const appId = appResult.rows[0].application_id;
 
