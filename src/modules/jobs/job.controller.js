@@ -128,6 +128,31 @@ exports.getAllJobs = async (req, res) => {
   }
 };
 
+const formatReplyTime = (interval) => {
+  if (!interval) return null;
+
+  const days = interval.days || 0;
+  const hours = interval.hours || 0;
+  const minutes = interval.minutes || 0;
+  const seconds = interval.seconds || 0;
+
+  const totalHours = (days * 24) + hours + (minutes / 60) + (seconds / 3600);
+
+  if (totalHours < 1) {
+    const mins = Math.max(1, Math.round(minutes || (seconds / 60)));
+    return mins === 1 ? '1 minute' : `${mins} minutes`;
+  }
+
+  if (totalHours < 24) {
+    const hrs = Math.round(totalHours);
+    return hrs === 1 ? '1 hour' : `${hrs} hours`;
+  }
+
+  const totalDays = totalHours / 24;
+  const roundedDays = Math.round(totalDays);
+  return roundedDays === 1 ? '1 day' : `${roundedDays} days`;
+};
+
 exports.getJobById = async (req, res) => {
   const { id } = req.params;
   const userId = req.user?.sub; // optional
@@ -166,7 +191,60 @@ exports.getJobById = async (req, res) => {
       return res.status(404).json({ message: "Job not found" });
     }
 
-    res.json(result.rows[0]);
+    const job = result.rows[0];
+
+    // Calculate recruiter/company analytics
+    let responseRate = null;
+    let avgReply = null;
+
+    let targetCondition = '';
+    let targetParams = [];
+    if (job.org_id) {
+      targetCondition = 'j.org_id = $1';
+      targetParams = [job.org_id];
+    } else {
+      targetCondition = 'j.recruiter_id = $1 AND j.org_id IS NULL';
+      targetParams = [job.recruiter_id];
+    }
+
+    const statsRes = await pool.query(
+      `
+      WITH first_replies AS (
+        SELECT 
+          ja.application_id,
+          ja.applied_at,
+          ja.current_status,
+          (
+            SELECT MIN(ash.changed_at) 
+            FROM application_status_history ash 
+            WHERE ash.application_id = ja.application_id 
+              AND ash.status != 'Applied'
+          ) AS first_response_at
+        FROM job_applications ja
+        JOIN jobs j ON ja.job_id = j.job_id
+        WHERE ${targetCondition}
+      )
+      SELECT 
+        COUNT(*)::int AS total_applications,
+        COUNT(CASE WHEN current_status != 'Applied' THEN 1 END)::int AS responded_count,
+        AVG(first_response_at - applied_at) AS avg_reply_interval
+      FROM first_replies
+      `,
+      targetParams
+    );
+
+    if (statsRes.rowCount > 0 && statsRes.rows[0].total_applications > 0) {
+      const stats = statsRes.rows[0];
+      const total = stats.total_applications;
+      const responded = stats.responded_count;
+      responseRate = `${Math.round((responded / total) * 100)}%`;
+      avgReply = formatReplyTime(stats.avg_reply_interval);
+    }
+
+    job.response_rate = responseRate;
+    job.avg_reply = avgReply;
+
+    res.json(job);
 
     // 📝 Log Activity: View Job
     if (userId) {
@@ -1391,31 +1469,45 @@ exports.getRecruiterStats = async (req, res) => {
   try {
     const stats = await pool.query(
       `
+      WITH first_replies AS (
+        SELECT 
+          ja.application_id,
+          ja.applied_at,
+          ja.current_status,
+          (
+            SELECT MIN(ash.changed_at) 
+            FROM application_status_history ash 
+            WHERE ash.application_id = ja.application_id 
+              AND ash.status != 'Applied'
+          ) AS first_response_at
+        FROM job_applications ja
+        JOIN jobs j ON ja.job_id = j.job_id
+        WHERE j.recruiter_id = $1
+      )
       SELECT 
-        COUNT(*) as total_applications,
-        COUNT(*) FILTER (WHERE ja.current_status != 'Applied') as responded_count
-      FROM job_applications ja
-      JOIN jobs j ON ja.job_id = j.job_id
-      LEFT JOIN active_users u ON j.recruiter_id = u.user_id
-      WHERE j.recruiter_id = $1
-      GROUP BY u.user_id
+        COUNT(*)::int AS total_applications,
+        COUNT(CASE WHEN current_status != 'Applied' THEN 1 END)::int AS responded_count,
+        AVG(first_response_at - applied_at) AS avg_reply_interval
+      FROM first_replies
       `,
       [id]
     );
 
-    const data = stats.rows[0] || { total_applications: 0, responded_count: 0 };
-    const total = parseInt(data.total_applications);
-    const responded = parseInt(data.responded_count);
+    const data = stats.rows[0] || { total_applications: 0, responded_count: 0, avg_reply_interval: null };
+    const total = parseInt(data.total_applications || 0);
+    const responded = parseInt(data.responded_count || 0);
     const rate = total > 0 ? Math.round((responded / total) * 100) : 0;
+    const typicallyRespondsIn = total > 0 ? (formatReplyTime(data.avg_reply_interval) || "No data") : "No data";
 
     res.json({
       responseRate: rate,
       totalApplicants: total,
-      typicallyRespondsIn: "2 days",
+      typicallyRespondsIn: typicallyRespondsIn,
       isActive: true
     });
 
   } catch (err) {
+    console.error("getRecruiterStats error:", err);
     res.status(500).json({ message: "Internal server error" });
   }
 };
