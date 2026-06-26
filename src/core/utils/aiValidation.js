@@ -26,7 +26,6 @@ const REQUIRED_STRING_FIELDS = [
   "title",
   "summary",
   "description",
-  "employment_type",
   "education",
 ];
 
@@ -35,10 +34,9 @@ const REQUIRED_ARRAY_FIELDS = [
   "requirements",
   "preferred_skills",
   "skills",
-  "benefits",
 ];
 
-const REQUIRED_NUMBER_FIELDS = ["experience_min", "experience_max"];
+const REQUIRED_NUMBER_FIELDS = [];
 
 /**
  * Validates that the AI response contains all required fields with correct types.
@@ -87,18 +85,22 @@ const validateSchema = (data) => {
  * @param {object} data - AI response (already schema-validated)
  */
 const validateBusiness = (data) => {
-  // Experience range
-  if (data.experience_min < 0) {
-    fail("experience_min", "experience_min cannot be negative.");
+  // Experience range (if provided)
+  if (data.experience_min !== undefined) {
+    if (data.experience_min < 0) {
+      fail("experience_min", "experience_min cannot be negative.");
+    }
   }
-  if (data.experience_max < data.experience_min) {
-    fail(
-      "experience_max",
-      "experience_max must be greater than or equal to experience_min."
-    );
-  }
-  if (data.experience_max > 50) {
-    fail("experience_max", "experience_max cannot exceed 50 years.");
+  if (data.experience_max !== undefined) {
+    if (data.experience_min !== undefined && data.experience_max < data.experience_min) {
+      fail(
+        "experience_max",
+        "experience_max must be greater than or equal to experience_min."
+      );
+    }
+    if (data.experience_max > 50) {
+      fail("experience_max", "experience_max cannot exceed 50 years.");
+    }
   }
 
   // Title
@@ -126,19 +128,21 @@ const validateBusiness = (data) => {
     fail("requirements", "At least 1 requirement is required.");
   }
 
-  // Employment type must be one of the known values
-  const VALID_EMPLOYMENT_TYPES = [
-    "full-time",
-    "part-time",
-    "contract",
-    "internship",
-    "freelance",
-  ];
-  if (!VALID_EMPLOYMENT_TYPES.includes(data.employment_type.toLowerCase())) {
-    fail(
-      "employment_type",
-      `employment_type must be one of: ${VALID_EMPLOYMENT_TYPES.join(", ")}.`
-    );
+  // Employment type must be one of the known values (if provided)
+  if (data.employment_type) {
+    const VALID_EMPLOYMENT_TYPES = [
+      "full-time",
+      "part-time",
+      "contract",
+      "internship",
+      "freelance",
+    ];
+    if (!VALID_EMPLOYMENT_TYPES.includes(data.employment_type.toLowerCase())) {
+      fail(
+        "employment_type",
+        `employment_type must be one of: ${VALID_EMPLOYMENT_TYPES.join(", ")}.`
+      );
+    }
   }
 };
 

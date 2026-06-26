@@ -53,7 +53,7 @@ const JD_JSON_SCHEMA = {
     requirements: {
       type: "array",
       items: { type: "string" },
-      description: "3-4 mandatory qualifications or skills.",
+      description: "2-3 mandatory educational qualifications.",
     },
     preferred_skills: {
       type: "array",
