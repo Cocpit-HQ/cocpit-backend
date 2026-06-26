@@ -35,6 +35,8 @@ async function getApplicantList(jobId, statusFilter) {
   if (statusFilter && statusFilter !== 'All') {
     params.push(statusFilter);
     statusClause = `AND ja.current_status = $2`;
+  } else {
+    statusClause = `AND ja.current_status != 'Withdrawn'`;
   }
 
   const result = await pool.query(`

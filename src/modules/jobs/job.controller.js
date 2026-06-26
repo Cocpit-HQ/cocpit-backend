@@ -90,7 +90,7 @@ exports.getAllJobs = async (req, res) => {
         c.logo_url AS company_logo,
         c.slug AS company_slug,
         ${userId ? '(js.user_id IS NOT NULL) AS "isSaved",' : 'FALSE AS "isSaved",'}
-        ${userId ? '(ja.application_id IS NOT NULL) AS "hasApplied",' : 'FALSE AS "hasApplied",'}
+        ${userId ? '(ja.application_id IS NOT NULL AND ja.current_status != \'Withdrawn\') AS "hasApplied",' : 'FALSE AS "hasApplied",'}
         ${userId ? 'ja.current_status AS "applicationStatus",' : 'NULL AS "applicationStatus",'}
         (SELECT COUNT(*)::int FROM job_applications ja_count WHERE ja_count.job_id = j.job_id) as applicants
       FROM jobs j
@@ -166,7 +166,7 @@ exports.getJobById = async (req, res) => {
         c.logo_url AS company_logo,
         c.slug AS company_slug,
         ${userId ? '(js.user_id IS NOT NULL) AS "isSaved",' : 'FALSE AS "isSaved",'}
-        ${userId ? '(ja.application_id IS NOT NULL) AS "hasApplied",' : 'FALSE AS "hasApplied",'}
+        ${userId ? '(ja.application_id IS NOT NULL AND ja.current_status != \'Withdrawn\') AS "hasApplied",' : 'FALSE AS "hasApplied",'}
         ${userId ? '(jo.offer_id IS NOT NULL AND jo.status = \'pending\') AS "is_offer",' : 'FALSE AS "is_offer",'}
         ${userId ? 'jo.status AS "offerStatus",' : 'NULL AS "offerStatus",'}
         ${userId ? 'jo.offer_id AS "offer_id",' : 'NULL AS "offer_id",'}
@@ -799,7 +799,7 @@ exports.getJobOffers = async (req, res) => {
         j.*,
         u.full_name AS recruiter_name,
         ${userId ? '(js.user_id IS NOT NULL) AS "isSaved",' : 'FALSE AS "isSaved",'}
-        ${userId ? '(ja.application_id IS NOT NULL) AS "hasApplied",' : 'FALSE AS "hasApplied",'}
+        ${userId ? '(ja.application_id IS NOT NULL AND ja.current_status != \'Withdrawn\') AS "hasApplied",' : 'FALSE AS "hasApplied",'}
         ${userId ? 'ja.current_status AS "applicationStatus",' : 'NULL AS "applicationStatus",'}
         (SELECT COUNT(*)::int FROM job_applications ja_count WHERE ja_count.job_id = j.job_id) as applicants
       FROM jobs j
@@ -880,6 +880,41 @@ exports.unsaveJob = async (req, res) => {
     res.status(500).json({ message: "Internal server error" });
   }
 };
+exports.withdrawApplication = async (req, res) => {
+  const jobId = req.params.id;
+  const applicantId = req.user.sub;
+
+  try {
+    const updateResult = await pool.query(
+      `UPDATE job_applications
+       SET current_status = 'Withdrawn'
+       WHERE job_id = $1 AND applicant_id = $2
+       RETURNING application_id, current_status`,
+      [jobId, applicantId]
+    );
+
+    if (updateResult.rowCount === 0) {
+      return res.status(404).json({ message: "Application not found" });
+    }
+
+    if (updateResult.rows[0].current_status === 'Withdrawn') {
+      // Actually it's updating it to Withdrawn, so we just continue.
+    }
+
+    // 🎯 Intent Layer: Log Withdraw Job
+    if (logIntentActivity) {
+      logIntentActivity({ userId: applicantId, action: "withdraw_application", metadata: { jobId, applicationId: updateResult.rows[0].application_id } });
+    }
+
+    res.json({
+      success: true,
+      message: "Application withdrawn successfully."
+    });
+  } catch (err) {
+    console.error("Withdraw application error:", err);
+    res.status(500).json({ message: "Internal server error" });
+  }
+};
 
 exports.getMySavedJobs = async (req, res) => {
   const userId = req.user.sub;
@@ -893,7 +928,7 @@ exports.getMySavedJobs = async (req, res) => {
         j.*, 
         u.full_name AS recruiter_name, 
         TRUE AS "isSaved",
-        (ja.application_id IS NOT NULL) AS "hasApplied",
+        (ja.application_id IS NOT NULL AND ja.current_status != 'Withdrawn') AS "hasApplied",
         ja.current_status AS "applicationStatus",
         (SELECT COUNT(*)::int FROM job_applications ja_count WHERE ja_count.job_id = j.job_id) as applicants,
         js.saved_at
@@ -1019,7 +1054,7 @@ exports.getMyApplications = async (req, res) => {
         JOIN jobs j ON ja.job_id = j.job_id
         LEFT JOIN users u ON j.recruiter_id = u.user_id
         LEFT JOIN job_saves js ON j.job_id = js.job_id AND js.user_id = $1
-        WHERE ja.applicant_id = $1
+        WHERE ja.applicant_id = $1 AND ja.current_status != 'Withdrawn'
     `;
 
     // Add built filters
@@ -1053,7 +1088,7 @@ exports.getMyApplications = async (req, res) => {
           j.*, 
           u.full_name AS recruiter_name,
           (js.user_id IS NOT NULL) AS "isSaved",
-          TRUE AS "hasApplied",
+          (ja.current_status != 'Withdrawn') AS "hasApplied",
           ja.current_status AS "applicationStatus",
           ja.application_id AS "applicationId",
           ja.screening_required AS "screeningRequired",
