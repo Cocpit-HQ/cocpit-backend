@@ -103,17 +103,36 @@ const buildJobFilters = (params, paramCountStart = 1) => {
 
     // ─── Experience level ─────────────
     if (experienceLevel && experienceLevel !== "All Levels") {
-        applyMultiValue(experienceLevel, "j.experience_level");
+        const mappedLevels = [];
+        experienceLevel.split(",").map(v => v.trim()).filter(Boolean).forEach(val => {
+            const lowerVal = val.toLowerCase();
+            if (lowerVal === "fresher") {
+                mappedLevels.push("Fresher", "Entry Level");
+            } else if (lowerVal === "junior") {
+                mappedLevels.push("Junior", "Entry Level");
+            } else if (lowerVal === "senior") {
+                mappedLevels.push("Senior", "Senior Level");
+            } else {
+                mappedLevels.push(val);
+            }
+        });
+        
+        const uniqueLevels = [...new Set(mappedLevels)];
+        if (uniqueLevels.length > 0) {
+            applyMultiValue(uniqueLevels.join(","), "j.experience_level");
+        }
     }
 
-    if (experience_min !== undefined) {
-        conditions.push(`j.experience_min >= $${currentIndex}`);
+    if (experience_min !== undefined && experience_max !== undefined) {
+        conditions.push(`(j.experience_max IS NULL OR j.experience_max >= $${currentIndex}) AND (j.experience_min IS NULL OR j.experience_min <= $${currentIndex + 1})`);
+        values.push(Number(experience_min), Number(experience_max));
+        currentIndex += 2;
+    } else if (experience_min !== undefined) {
+        conditions.push(`(j.experience_max IS NULL OR j.experience_max >= $${currentIndex})`);
         values.push(Number(experience_min));
         currentIndex++;
-    }
-
-    if (experience_max !== undefined) {
-        conditions.push(`j.experience_max <= $${currentIndex}`);
+    } else if (experience_max !== undefined) {
+        conditions.push(`(j.experience_min IS NULL OR j.experience_min <= $${currentIndex})`);
         values.push(Number(experience_max));
         currentIndex++;
     }
@@ -164,10 +183,38 @@ const buildJobFilters = (params, paramCountStart = 1) => {
     }
 
     // ─── Enum filters (all multi-value) ───────────────────────────────────────
-    applyMultiValue(employment_type || jobType, "j.job_type");
+    const rawJobType = employment_type || jobType;
+    if (rawJobType) {
+        const normalizedJobTypes = rawJobType.split(",").map(v => {
+            const trimmed = v.trim();
+            const lower = trimmed.toLowerCase();
+            if (lower === "full time" || lower === "full-time" || lower === "fulltime") return "Full-time";
+            if (lower === "part time" || lower === "part-time" || lower === "parttime") return "Part-time";
+            return trimmed;
+        }).filter(Boolean);
+        
+        if (normalizedJobTypes.length > 0) {
+            applyMultiValue(normalizedJobTypes.join(","), "j.job_type");
+        }
+    }
     applyMultiValue(work_model || workMode, "j.work_mode");
     applyMultiValue(companyType, "j.company_type");
-    applyMultiValue(industry, "j.industry");
+    const rawIndustry = industry;
+    if (rawIndustry) {
+        const mappedIndustries = [];
+        rawIndustry.split(",").map(v => v.trim()).filter(Boolean).forEach(val => {
+            const lowerVal = val.toLowerCase();
+            if (lowerVal === "tech" || lowerVal === "technology") {
+                mappedIndustries.push("Tech", "Technology");
+            } else {
+                mappedIndustries.push(val);
+            }
+        });
+        const uniqueIndustries = [...new Set(mappedIndustries)];
+        if (uniqueIndustries.length > 0) {
+            applyMultiValue(uniqueIndustries.join(","), "j.industry");
+        }
+    }
 
     // ─── Org filter (exact match) ─────────────────────────────────────────────
     if (org_id) {
