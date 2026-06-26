@@ -296,11 +296,11 @@ exports.createJob = async (req, res) => {
     // Format JSON into markdown for the description field
     const sections = [
       jdJson.summary,
-      jdJson.description ? `\n### Description\n${jdJson.description}` : "",
-      jdJson.responsibilities?.length ? `\n### Responsibilities\n${jdJson.responsibilities.map(r => "- " + r).join("\n")}` : "",
-      jdJson.requirements?.length ? `\n### Requirements\n${jdJson.requirements.map(r => "- " + r).join("\n")}` : "",
-      jdJson.preferred_skills?.length ? `\n### Preferred Skills\n${jdJson.preferred_skills.map(s => "- " + s).join("\n")}` : "",
-      jdJson.benefits?.length ? `\n### Benefits\n${jdJson.benefits.map(b => "- " + b).join("\n")}` : ""
+      jdJson.description ? `\nDescription\n${jdJson.description}` : "",
+      jdJson.responsibilities?.length ? `\nResponsibilities\n${jdJson.responsibilities.map(r => "- " + r).join("\n")}` : "",
+      jdJson.requirements?.length ? `\nRequirements\n${jdJson.requirements.map(r => "- " + r).join("\n")}` : "",
+      jdJson.preferred_skills?.length ? `\nPreferred Skills\n${jdJson.preferred_skills.map(s => "- " + s).join("\n")}` : "",
+      jdJson.benefits?.length ? `\nBenefits\n${jdJson.benefits.map(b => "- " + b).join("\n")}` : ""
     ];
 
     aiDescription = sections.filter(Boolean).join("\n").trim();
@@ -933,6 +933,61 @@ exports.getMySavedJobs = async (req, res) => {
       });
     }
     console.error("Get saved jobs error:", err);
+    res.status(500).json({ message: "Internal server error" });
+  }
+};
+
+exports.getMyRecentResumes = async (req, res) => {
+  try {
+    const applicantId = req.user.sub;
+    const result = await pool.query(`
+      SELECT resume_url, MAX(applied_at) as last_applied
+      FROM job_applications
+      WHERE applicant_id = $1 AND resume_url IS NOT NULL
+      GROUP BY resume_url
+      ORDER BY last_applied DESC
+      LIMIT 2
+    `, [applicantId]);
+
+    const resumes = result.rows.map(row => {
+      const url = row.resume_url;
+      let name = url.split('/').pop() || 'Resume.pdf';
+      // Clean up Cloudinary name (remove user id prefix if present)
+      // Format: resume-userid-timestamp.pdf -> Resume-timestamp.pdf or just keep it simple
+      if (name.startsWith('resume-')) {
+        const parts = name.split('-');
+        if (parts.length > 2) {
+          // just pop the timestamp+ext and maybe user id, let's just make it look cleaner
+          name = `Resume-${parts[parts.length - 1]}`;
+        }
+      }
+      return { id: url, name, url, last_applied: row.last_applied };
+    });
+
+    res.json(resumes);
+  } catch (err) {
+    console.error("Get my recent resumes error:", err);
+    res.status(500).json({ message: "Internal server error" });
+  }
+};
+
+exports.getMyApplicationStats = async (req, res) => {
+  try {
+    const applicantId = req.user.sub;
+    const result = await pool.query(`
+      SELECT 
+        COUNT(*) as total_applied,
+        COUNT(*) FILTER (WHERE current_status ILIKE 'Shortlisted%') as shortlisted
+      FROM job_applications
+      WHERE applicant_id = $1
+    `, [applicantId]);
+
+    res.json({
+      totalApplied: parseInt(result.rows[0].total_applied || 0),
+      shortlisted: parseInt(result.rows[0].shortlisted || 0)
+    });
+  } catch (err) {
+    console.error("Get my application stats error:", err);
     res.status(500).json({ message: "Internal server error" });
   }
 };

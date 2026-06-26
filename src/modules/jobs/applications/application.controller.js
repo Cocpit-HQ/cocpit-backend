@@ -13,6 +13,7 @@ const {
 const { checkOrgPermission } = require('../../../core/utils/rbac');
 const { hasActorPermission } = require('../../../core/middlewares/actor-context.middleware');
 const pool = require('../../../core/db/pool');
+const { compareExperience, getLatestEducation } = require('./application.utils');
 
 // ─── Shared auth helper ───────────────────────────────────────────────────────
 // Asserts that the requesting user is either the direct recruiter or an org
@@ -282,7 +283,50 @@ exports.getAnalysis = async (req, res) => {
       'VIEW_APPLICANTS', 'MANAGE_APPLICANTS', 'MANAGE_COMPANY',
     ]);
 
-    const analysis = await getLatestAnalysis(applicationId);
+    let analysis = await getLatestAnalysis(applicationId);
+
+    if (!analysis) {
+      analysis = {
+        matchScore: null,
+        summary: null,
+        skills: null,
+        provider: null,
+        model: null,
+      };
+    }
+
+    // ── Determine Experience and Qualification deterministically ──
+    // Fetch application detail for candidate's actual experience and education
+    const applicationDetail = await getApplicationDetail(applicationId, req.user?.sub);
+    
+    // Fetch job requirement limits
+    const jobRes = await pool.query(`
+      SELECT j.experience_min, j.experience_max, j.experience_label 
+      FROM jobs j
+      JOIN job_applications ja ON j.job_id = ja.job_id
+      WHERE ja.application_id = $1
+    `, [applicationId]);
+    
+    const job = jobRes.rows[0];
+
+    if (applicationDetail && job) {
+      // Query exact total experience matching the User Profile (which doesn't have LIMIT 3)
+      const expRes = await pool.query(`
+        SELECT COALESCE(SUM(
+          EXTRACT(YEAR FROM COALESCE(e.end_date, CURRENT_DATE)) - EXTRACT(YEAR FROM e.start_date)
+        ), 0) as total_years
+        FROM experiences e
+        JOIN profiles p ON e.profile_id = p.profile_id
+        JOIN job_applications ja ON ja.applicant_id = p.user_id
+        WHERE ja.application_id = $1
+      `, [applicationId]);
+      
+      let totalYears = parseInt(expRes.rows[0]?.total_years || 0, 10);
+      if (totalYears === 0) totalYears = 1; // Fallback to match LivingResume logic
+
+      analysis.experience = compareExperience(totalYears, job.experience_min, job.experience_max, job.experience_label);
+      analysis.qualification = getLatestEducation(applicationDetail.education);
+    }
 
     res.json(analysis); // null is intentional — means "Pending analysis"
 

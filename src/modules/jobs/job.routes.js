@@ -27,6 +27,8 @@ router.get("/offers", optionalAuth, jobController.getJobOffers);
 router.get("/offers/me", requireAuth, offerController.getMyOffers);
 router.get("/stats", requireAuth, jobController.getDashboardStats);
 router.get("/applications/me", requireAuth, jobController.getMyApplications);
+router.get("/applications/me/stats", requireAuth, jobController.getMyApplicationStats);
+router.get("/applications/me/resumes", requireAuth, jobController.getMyRecentResumes);
 router.get("/saved/me", requireAuth, jobController.getMySavedJobs);
 router.get("/my", requireAuth, jobController.getMyJobs);
 // GET /:id/applicants is now handled by applicationRoutes above
