@@ -288,22 +288,14 @@ exports.createJob = async (req, res) => {
   try {
     const aiService = require("../../services/ai.service");
     const companyReplacement = postedAsCompany ? resolvedCompanyName : "our team";
-    const jdJson = await aiService.generateJobDescription({ 
-      role: title, 
-      companyName: companyReplacement 
+    const jdJson = await aiService.generateJobDescription({
+      role: title,
+      companyName: companyReplacement
     });
-    
-    // Format JSON into markdown for the description field
-    const sections = [
-      jdJson.summary,
-      jdJson.description ? `\nDescription\n${jdJson.description}` : "",
-      jdJson.responsibilities?.length ? `\nResponsibilities\n${jdJson.responsibilities.map(r => "- " + r).join("\n")}` : "",
-      jdJson.requirements?.length ? `\nRequirements\n${jdJson.requirements.map(r => "- " + r).join("\n")}` : "",
-      jdJson.preferred_skills?.length ? `\nPreferred Skills\n${jdJson.preferred_skills.map(s => "- " + s).join("\n")}` : "",
-      jdJson.benefits?.length ? `\nBenefits\n${jdJson.benefits.map(b => "- " + b).join("\n")}` : ""
-    ];
 
-    aiDescription = sections.filter(Boolean).join("\n").trim();
+    // Use the shared helper so createJob and generateJD always produce
+    // identical description formatting.
+    aiDescription = buildAIDescription(jdJson);
   } catch (e) {
     console.error("Auto AI Generation failed during createJob:", e.message);
     // If it fails, we just leave aiDescription blank and let the draft be created normally.
@@ -344,10 +336,8 @@ exports.createJob = async (req, res) => {
 
     await client.query("COMMIT");
 
-    res.status(201).json({
-      message: "Draft created successfully",
-      job
-    });
+    // description already contains the full AI-generated markdown
+    res.status(201).json({ message: "Draft created successfully", job });
 
   } catch (err) {
     await client.query("ROLLBACK");
@@ -1690,6 +1680,32 @@ exports.getJobRoles = async (req, res) => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Shared helper: formats a structured AI JD object into a flat markdown string.
+// Used by both createJob and generateJD so the output is always identical.
+// Double-newline between sections guarantees consistent rendering on all clients.
+// ─────────────────────────────────────────────────────────────────────────────
+const buildAIDescription = (jdJson) => {
+  const addSection = (heading, content) => {
+    if (!content) return null;
+    const body = Array.isArray(content)
+      ? content.map(item => `- ${item}`).join("\n")
+      : content;
+    return `${heading}\n${body}`;
+  };
+
+  const sections = [
+    jdJson.summary       ? jdJson.summary                                   : null,
+    addSection("Description",      jdJson.description),
+    addSection("Responsibilities", jdJson.responsibilities),
+    addSection("Requirements",     jdJson.requirements),
+    addSection("Preferred Skills", jdJson.preferred_skills),
+    addSection("Benefits",         jdJson.benefits),
+  ].filter(Boolean);
+
+  return sections.join("\n\n").trim();
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
 // AI Job Description Generator
 // POST /api/v1/jobs/:id/generate
 // Body: { "role": "Software Engineer" }
@@ -1776,10 +1792,20 @@ exports.generateJD = async (req, res) => {
     }
 
     if (cachedResult) {
-      await client.query("ROLLBACK"); // No DB changes needed for cache hit
+      // Cache hit: assemble the full markdown from cached AI fields and update
+      // the DB description so the job row is always in sync with what is shown.
+      const cachedAI = JSON.parse(cachedResult);
+      const fullDescription = buildAIDescription(cachedAI);
+
+      const updatedCacheJobRes = await client.query(
+        `UPDATE jobs SET title = $1, description = $2 WHERE job_id = $3 RETURNING *`,
+        [role, fullDescription, id]
+      );
+      await client.query("COMMIT");
+
       return res.status(200).json({
-        message: "Job description generated successfully (cached).",
-        job: JSON.parse(cachedResult),
+        message: "Job description generated successfully.",
+        job: updatedCacheJobRes.rows[0],
         ai_metadata: { cached: true, model: process.env.AI_MODEL || "gemini-2.5-flash" },
       });
     }
@@ -1822,18 +1848,17 @@ exports.generateJD = async (req, res) => {
     }
 
     // ── Step 8: Persist to DB ─────────────────────────────────────────────────
-    // Build SET clause dynamically from validated AI output
+    // Build the same full markdown that createJob produces so the description
+    // field is always consistent regardless of which endpoint was called.
+    const fullDescription = buildAIDescription(generated);
+
     const AI_FIELD_MAP = {
-      title: generated.title,
-      description: generated.description,
+      title: generated.title || role,
+      description: fullDescription,
       experience_min: generated.experience_min,
       experience_max: generated.experience_max,
     };
 
-    // Store rich fields (arrays / strings) as JSONB-compatible values in columns
-    // that exist on the jobs table. Fields like responsibilities, skills etc.
-    // are stored as JSON strings in the summary / description or as separate columns
-    // if your schema has them. Adjust the mapping below to match your actual schema.
     const setClauses = [];
     const values = [];
     let paramCount = 1;
@@ -1864,23 +1889,11 @@ exports.generateJD = async (req, res) => {
     await client.query("COMMIT");
 
     // ── Step 10: Return response ──────────────────────────────────────────────
+    // Same shape as createJob: { message, job } — no separate ai_content.
+    // The full markdown is already in job.description.
     return res.status(200).json({
       message: "Job description generated successfully.",
-      job: {
-        ...updatedJob,
-        // Attach the rich AI fields so the frontend has the full JD
-        // even if some are not yet persisted as separate DB columns
-        ai_content: {
-          summary: generated.summary,
-          responsibilities: generated.responsibilities,
-          requirements: generated.requirements,
-          preferred_skills: generated.preferred_skills,
-          employment_type: generated.employment_type,
-          education: generated.education,
-          skills: generated.skills,
-          benefits: generated.benefits,
-        },
-      },
+      job: updatedJob,
       ai_metadata: {
         model: process.env.AI_MODEL || "gemini-2.5-flash",
         latency_ms: Date.now() - startTime,
