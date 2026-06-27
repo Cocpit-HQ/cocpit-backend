@@ -167,6 +167,7 @@ exports.getJobById = async (req, res) => {
         c.slug AS company_slug,
         ${userId ? '(js.user_id IS NOT NULL) AS "isSaved",' : 'FALSE AS "isSaved",'}
         ${userId ? '(ja.application_id IS NOT NULL AND ja.current_status != \'Withdrawn\') AS "hasApplied",' : 'FALSE AS "hasApplied",'}
+        ${userId ? 'ja.current_status AS "applicationStatus",' : 'NULL AS "applicationStatus",'}
         ${userId ? '(jo.offer_id IS NOT NULL AND jo.status = \'pending\') AS "is_offer",' : 'FALSE AS "is_offer",'}
         ${userId ? 'jo.status AS "offerStatus",' : 'NULL AS "offerStatus",'}
         ${userId ? 'jo.offer_id AS "offer_id",' : 'NULL AS "offer_id",'}
@@ -175,12 +176,15 @@ exports.getJobById = async (req, res) => {
         ${userId ? 'ja.screening_type AS "screeningType",' : 'NULL AS "screeningType",'}
         ${userId ? 'ja.screening_question AS "screeningQuestion",' : 'NULL AS "screeningQuestion",'}
         ${userId ? 'ja.screening_submitted_at AS "screeningSubmittedAt",' : 'NULL AS "screeningSubmittedAt",'}
+        ${userId ? '(of.user_id IS NOT NULL OR uf.follower_id IS NOT NULL) AS "is_followed",' : 'FALSE AS "is_followed",'}
         (SELECT COUNT(*)::int FROM job_applications ja_count WHERE ja_count.job_id = j.job_id) as applicants
       FROM jobs j
       LEFT JOIN active_users u ON j.recruiter_id = u.user_id
       LEFT JOIN organizations c ON j.org_id = c.org_id
       ${userId ? 'LEFT JOIN job_saves js ON js.job_id = j.job_id AND js.user_id = $2' : ''}
       ${userId ? 'LEFT JOIN job_applications ja ON ja.job_id = j.job_id AND ja.applicant_id = $2' : ''}
+      ${userId ? 'LEFT JOIN organization_followers of ON of.org_id = j.org_id AND of.user_id = $2' : ''}
+      ${userId ? 'LEFT JOIN followers uf ON uf.following_id = j.recruiter_id AND uf.follower_id = $2' : ''}
       ${userId ? 'LEFT JOIN job_offers jo ON jo.job_id = j.job_id AND jo.user_id = $2 AND jo.status = \'pending\'' : ''}
       WHERE j.job_id = $1
       `,
