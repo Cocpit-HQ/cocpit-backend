@@ -129,6 +129,61 @@ exports.getAllJobs = async (req, res) => {
       });
     }
     console.error("Get jobs error:", err);
+  }
+};
+
+exports.getRecommendations = async (req, res) => {
+  const userId = req.user?.sub;
+
+  try {
+    const query = `
+      SELECT 
+        j.*,
+        u.full_name AS recruiter_name,
+        c.logo_url AS company_logo,
+        c.slug AS company_slug,
+        ${userId ? '(js.user_id IS NOT NULL) AS "isSaved",' : 'FALSE AS "isSaved",'}
+        ${userId ? '(ja.application_id IS NOT NULL AND ja.current_status != \'Withdrawn\') AS "hasApplied",' : 'FALSE AS "hasApplied",'}
+        ${userId ? 'ja.current_status AS "applicationStatus",' : 'NULL AS "applicationStatus",'}
+        (SELECT COUNT(*)::int FROM job_applications ja_count WHERE ja_count.job_id = j.job_id) as applicants
+      FROM jobs j
+      LEFT JOIN active_users u ON j.recruiter_id = u.user_id
+      LEFT JOIN organizations c ON j.org_id = c.org_id
+      ${userId ? "LEFT JOIN job_saves js ON js.job_id = j.job_id AND js.user_id = $1" : ""}
+      ${userId ? "LEFT JOIN job_applications ja ON ja.job_id = j.job_id AND ja.applicant_id = $1" : ""}
+      WHERE j.is_active = TRUE AND j.status = 'ACTIVE'
+      ORDER BY j.created_at DESC
+      LIMIT 3
+    `;
+
+    const params = userId ? [userId] : [];
+    const result = await pool.query(query, params);
+
+    const recommendations = result.rows.map((job, index) => {
+      const mockBadges = ["Top 5%", "Top 10%", "Top 15%"];
+      const mockResponseRates = ["98%", "95%", "92%"];
+      const mockAvgReplies = ["1 day", "2 days", "3 days"];
+      const mockReasons = [
+        "Matches your skills in React and Node.js",
+        "Strong match for your Figma portfolio",
+        "Matches your experience with AWS"
+      ];
+      const mockScores = [95, 90, 85];
+
+      return {
+        ...job,
+        is_recommended: true,
+        recommended_badge: mockBadges[index % mockBadges.length],
+        response_rate: mockResponseRates[index % mockResponseRates.length],
+        avg_reply: mockAvgReplies[index % mockAvgReplies.length],
+        match_reason: mockReasons[index % mockReasons.length],
+        match_score: job.match_score || mockScores[index % mockScores.length]
+      };
+    });
+
+    res.json(recommendations);
+  } catch (err) {
+    console.error("Get recommendations error:", err);
     res.status(500).json({ message: "Internal server error" });
   }
 };
