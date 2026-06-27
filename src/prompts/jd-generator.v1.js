@@ -81,6 +81,11 @@ const JD_JSON_SCHEMA = {
       items: { type: "string" },
       description: "3-4 professional competency statements (10-15 words each), not single-word keywords.",
     },
+    required_skills_keywords: {
+      type: "array",
+      items: { type: "string" },
+      description: "4-8 required skill keywords. Short terms only: ['React', 'Node.js']. No sentences.",
+    },
     // benefits: {
     //   type: "array",
     //   items: { type: "string" },
@@ -99,6 +104,7 @@ const JD_JSON_SCHEMA = {
     // "experience_max",
     "education",
     "skills",
+    "required_skills_keywords",
     // "benefits",
   ],
 };

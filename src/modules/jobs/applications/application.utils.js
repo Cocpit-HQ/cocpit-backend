@@ -99,7 +99,46 @@ const getLatestEducation = (educationArray) => {
   };
 };
 
+const calculateTotalExperienceYears = (experiences) => {
+  if (!experiences || !Array.isArray(experiences) || experiences.length === 0) return 0;
+  
+  let totalMonths = 0;
+  experiences.forEach(exp => {
+    if (!exp.start_date) return;
+    const start = new Date(exp.start_date);
+    const end = exp.end_date ? new Date(exp.end_date) : new Date();
+    
+    if (isNaN(start.getTime()) || isNaN(end.getTime())) return;
+    
+    const months = (end.getFullYear() - start.getFullYear()) * 12 + (end.getMonth() - start.getMonth());
+    if (months > 0) totalMonths += months;
+  });
+  
+  return Number((totalMonths / 12).toFixed(1));
+};
+
+const calculateBackendScore = ({ candidateSkills, totalYears, jobRequirements, experienceMin, experienceMax, experienceLabel }) => {
+  // 1. Skills match (60% weight)
+  const jobSkills = (jobRequirements?.skills || []).map(s => s.toLowerCase());
+  const normCandidateSkills = (candidateSkills || []).map(s => s.toLowerCase());
+  const matchedCount = normCandidateSkills.filter(s => jobSkills.includes(s)).length;
+  const skillScore = jobSkills.length > 0
+    ? Math.round((matchedCount / jobSkills.length) * 100)
+    : 50; // No requirements defined — neutral score
+
+  // 2. Experience match (40% weight) — reuse existing compareExperience
+  const expResult = compareExperience(totalYears, experienceMin, experienceMax, experienceLabel);
+  const expScore = expResult.status === 'MATCHES' ? 100
+                 : expResult.status === 'EXCEEDS' ? 90
+                 : expResult.status === 'BELOW'   ? 30
+                 : 50;
+
+  return Math.min(100, Math.round((skillScore * 0.6) + (expScore * 0.4)));
+};
+
 module.exports = {
   compareExperience,
-  getLatestEducation
+  getLatestEducation,
+  calculateTotalExperienceYears,
+  calculateBackendScore
 };

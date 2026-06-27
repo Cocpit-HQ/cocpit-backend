@@ -13,7 +13,8 @@ const {
 const { checkOrgPermission } = require('../../../core/utils/rbac');
 const { hasActorPermission } = require('../../../core/middlewares/actor-context.middleware');
 const pool = require('../../../core/db/pool');
-const { compareExperience, getLatestEducation } = require('./application.utils');
+const { compareExperience, getLatestEducation, calculateTotalExperienceYears } = require('./application.utils');
+const { generateLocalSystemFallback, analyzeCandidate } = require('../../../services/candidateAnalysis.service');
 
 // ─── Shared auth helper ───────────────────────────────────────────────────────
 // Asserts that the requesting user is either the direct recruiter or an org
@@ -48,7 +49,20 @@ async function assertRecruiterAccess(req, { org_id, recruiter_id }, permissions)
 // Lightweight list — only what the candidate list card needs.
 exports.getApplicantList = async (req, res) => {
   const jobId = req.params.id;
-  const { status } = req.query;
+  const { status, minExperience, location, skills } = req.query;
+
+  // Ensure skills is an array if passed
+  let skillsArray = [];
+  if (skills) {
+    skillsArray = Array.isArray(skills) ? skills : [skills];
+  }
+
+  const filters = {
+    status,
+    minExperience,
+    location,
+    skills: skillsArray
+  };
 
   try {
     const ownership = await getJobOwnership(jobId);
@@ -60,7 +74,7 @@ exports.getApplicantList = async (req, res) => {
       'VIEW_APPLICANTS', 'MANAGE_APPLICANTS', 'MANAGE_COMPANY',
     ]);
 
-    const rows = await getApplicantList(jobId, status);
+    const rows = await getApplicantList(jobId, filters);
 
     const response = rows.map(row => ({
       applicationId: row.applicationId,
@@ -73,6 +87,7 @@ exports.getApplicantList = async (req, res) => {
       status:        row.status,
       appliedAt:     row.appliedAt,
       matchScore:    row.matchScore ?? null,   // null = AI analysis pending
+      analysisType:  row.analysisType || 'BACKEND', // BACKEND or GEMINI
       screening: row.screeningRequired ? {
         required:    true,
         type:        row.screeningType,
@@ -124,6 +139,74 @@ exports.getApplicationDetail = async (req, res) => {
       responseUrl: detail.screeningResponseUrl || null,
     } : null;
 
+    let analysis = await getLatestAnalysis(applicationId);
+    if (!analysis || analysis.analysisType === 'BACKEND') {
+      const snapRes = await pool.query(
+        `SELECT candidate_snapshot, job_snapshot FROM application_snapshots WHERE application_id = $1`,
+        [applicationId]
+      );
+      if (snapRes.rowCount > 0) {
+        const { candidate_snapshot, job_snapshot } = snapRes.rows[0];
+
+        // Resolve experience fields (with live job fallback if needed)
+        let expMin   = job_snapshot.experienceMin   ?? null;
+        let expMax   = job_snapshot.experienceMax   ?? null;
+        let expLabel = job_snapshot.experienceLabel ?? null;
+
+        if (expMin === null && expMax === null && !expLabel) {
+          const jobIdRes = await pool.query(
+            `SELECT j.experience_min, j.experience_max, j.experience_label
+             FROM job_applications ja
+             JOIN jobs j ON j.job_id = ja.job_id
+             WHERE ja.application_id = $1`,
+            [applicationId]
+          );
+          if (jobIdRes.rowCount > 0) {
+            expMin   = jobIdRes.rows[0].experience_min   ?? null;
+            expMax   = jobIdRes.rows[0].experience_max   ?? null;
+            expLabel = jobIdRes.rows[0].experience_label ?? null;
+          }
+        }
+
+        const totalYears = calculateTotalExperienceYears(candidate_snapshot.experience || []);
+        const experienceJson = compareExperience(totalYears, expMin, expMax, expLabel);
+        if (experienceJson.status === 'MATCHES') experienceJson.status = 'ALIGNED';
+
+        const latestEdu = getLatestEducation(candidate_snapshot.education || []);
+        const jobEduReq = job_snapshot.education || null;
+        const qualStatus = latestEdu.degree && latestEdu.degree !== 'Not specified' ? 'ALIGNED' : 'BELOW';
+        const qualificationJson = {
+          status: jobEduReq ? qualStatus : 'ALIGNED',
+          degree: latestEdu.degree || 'Not specified',
+          class: latestEdu.class || '',
+          summary: latestEdu.summary || 'Candidate education details provided.',
+        };
+
+        const fallback = generateLocalSystemFallback(candidate_snapshot, job_snapshot, experienceJson, qualificationJson);
+
+        analysis = {
+          analysisId: analysis?.analysisId || null,
+          applicationId,
+          matchScore: analysis?.matchScore || fallback.match_score,
+          analysisType: 'BACKEND',
+          summary: fallback.summary,
+          skills: fallback.skills,
+          experience: experienceJson,
+          qualification: qualificationJson,
+        };
+      } else {
+        // Safe fallback if snapshots table is somehow missing for this candidate
+        analysis = {
+          matchScore: analysis?.matchScore || null,
+          summary: null,
+          analysisType: 'BACKEND',
+          skills: null,
+          experience: null,
+          qualification: null,
+        };
+      }
+    }
+
     res.json({
       applicationId: detail.applicationId,
       applicantId:   detail.applicantId,
@@ -146,6 +229,7 @@ exports.getApplicationDetail = async (req, res) => {
       education:     detail.education  || [],
       screening,
       selfNote:      detail.selfNote || null,
+      aiAnalysis:    analysis,
     });
 
   } catch (err) {
@@ -233,7 +317,7 @@ exports.updateApplicationStatus = async (req, res) => {
 exports.upsertNote = async (req, res) => {
   const applicationId = req.params.id;
   const userId = req.user.sub;
-  const { body } = req.body;
+  const body = req.body.body || req.body.note;
 
   if (!body || typeof body !== 'string' || body.trim().length === 0) {
     return res.status(400).json({ message: 'Note body is required' });
@@ -284,51 +368,75 @@ exports.getAnalysis = async (req, res) => {
     ]);
 
     let analysis = await getLatestAnalysis(applicationId);
+    if (!analysis || analysis.analysisType === 'BACKEND') {
+      const snapRes = await pool.query(
+        `SELECT candidate_snapshot, job_snapshot FROM application_snapshots WHERE application_id = $1`,
+        [applicationId]
+      );
+      if (snapRes.rowCount > 0) {
+        const { candidate_snapshot, job_snapshot } = snapRes.rows[0];
 
-    if (!analysis) {
-      analysis = {
-        matchScore: null,
-        summary: null,
-        skills: null,
-        provider: null,
-        model: null,
-      };
+        // Resolve experience fields (with live job fallback if needed)
+        let expMin   = job_snapshot.experienceMin   ?? null;
+        let expMax   = job_snapshot.experienceMax   ?? null;
+        let expLabel = job_snapshot.experienceLabel ?? null;
+
+        if (expMin === null && expMax === null && !expLabel) {
+          const jobIdRes = await pool.query(
+            `SELECT j.experience_min, j.experience_max, j.experience_label
+             FROM job_applications ja
+             JOIN jobs j ON j.job_id = ja.job_id
+             WHERE ja.application_id = $1`,
+            [applicationId]
+          );
+          if (jobIdRes.rowCount > 0) {
+            expMin   = jobIdRes.rows[0].experience_min   ?? null;
+            expMax   = jobIdRes.rows[0].experience_max   ?? null;
+            expLabel = jobIdRes.rows[0].experience_label ?? null;
+          }
+        }
+
+        const totalYears = calculateTotalExperienceYears(candidate_snapshot.experience || []);
+        const experienceJson = compareExperience(totalYears, expMin, expMax, expLabel);
+        if (experienceJson.status === 'MATCHES') experienceJson.status = 'ALIGNED';
+
+        const latestEdu = getLatestEducation(candidate_snapshot.education || []);
+        const jobEduReq = job_snapshot.education || null;
+        const qualStatus = latestEdu.degree && latestEdu.degree !== 'Not specified' ? 'ALIGNED' : 'BELOW';
+        const qualificationJson = {
+          status: jobEduReq ? qualStatus : 'ALIGNED',
+          degree: latestEdu.degree || 'Not specified',
+          class: latestEdu.class || '',
+          summary: latestEdu.summary || 'Candidate education details provided.',
+        };
+
+        const fallback = generateLocalSystemFallback(candidate_snapshot, job_snapshot, experienceJson, qualificationJson);
+
+        analysis = {
+          analysisId: analysis?.analysisId || null,
+          applicationId,
+          matchScore: analysis?.matchScore || fallback.match_score,
+          analysisType: 'BACKEND',
+          summary: fallback.summary,
+          skills: fallback.skills,
+          experience: experienceJson,
+          qualification: qualificationJson,
+        };
+      } else {
+        analysis = {
+          analysisId: analysis?.analysisId || null,
+          applicationId,
+          matchScore: analysis?.matchScore || null,
+          summary: null,
+          analysisType: 'BACKEND',
+          skills: null,
+          experience: null,
+          qualification: null,
+        };
+      }
     }
 
-    // ── Determine Experience and Qualification deterministically ──
-    // Fetch application detail for candidate's actual experience and education
-    const applicationDetail = await getApplicationDetail(applicationId, req.user?.sub);
-    
-    // Fetch job requirement limits
-    const jobRes = await pool.query(`
-      SELECT j.experience_min, j.experience_max, j.experience_label 
-      FROM jobs j
-      JOIN job_applications ja ON j.job_id = ja.job_id
-      WHERE ja.application_id = $1
-    `, [applicationId]);
-    
-    const job = jobRes.rows[0];
-
-    if (applicationDetail && job) {
-      // Query exact total experience matching the User Profile (which doesn't have LIMIT 3)
-      const expRes = await pool.query(`
-        SELECT COALESCE(SUM(
-          EXTRACT(YEAR FROM COALESCE(e.end_date, CURRENT_DATE)) - EXTRACT(YEAR FROM e.start_date)
-        ), 0) as total_years
-        FROM experiences e
-        JOIN profiles p ON e.profile_id = p.profile_id
-        JOIN job_applications ja ON ja.applicant_id = p.user_id
-        WHERE ja.application_id = $1
-      `, [applicationId]);
-      
-      let totalYears = parseInt(expRes.rows[0]?.total_years || 0, 10);
-      if (totalYears === 0) totalYears = 1; // Fallback to match LivingResume logic
-
-      analysis.experience = compareExperience(totalYears, job.experience_min, job.experience_max, job.experience_label);
-      analysis.qualification = getLatestEducation(applicationDetail.education);
-    }
-
-    res.json(analysis); // null is intentional — means "Pending analysis"
+    res.json(analysis);
 
   } catch (err) {
     if (err.statusCode === 403) {
@@ -339,20 +447,40 @@ exports.getAnalysis = async (req, res) => {
   }
 };
 
-// ─── Handler 6 — AI ENGINEER STUB ────────────────────────────────────────────
-// POST /api/jobs/applications/:id/analyze
-// Route is registered so the frontend won't receive 404.
-// Implementation is owned by the AI engineer.
-//
-// Contract:
-//   - Load application + job data from DB.
-//   - Call AI provider (Gemini / GPT / etc.).
-//   - Parse response into the JSONB shapes defined in application_ai_analyses.
-//   - INSERT a row into application_ai_analyses.
-//   - Return the newly created analysis object (same shape as GET /analysis).
-exports.triggerAnalysis = async (_req, res) => {
-  res.status(501).json({
-    message: 'AI analysis trigger not yet implemented.',
-    note: 'This endpoint is reserved for the AI engineer. See application_ai_analyses table contract.',
-  });
+exports.triggerAnalysis = async (req, res) => {
+  const applicationId = req.params.id;
+
+  try {
+    const ownership = await getApplicationOwnership(applicationId);
+    if (!ownership) {
+      return res.status(404).json({ message: 'Application not found' });
+    }
+
+    await assertRecruiterAccess(req, ownership, [
+      'VIEW_APPLICANTS', 'MANAGE_APPLICANTS', 'MANAGE_COMPANY',
+    ]);
+
+    // 1. Run the analysis synchronously
+    await analyzeCandidate(applicationId);
+
+    // 2. Mark any pending/processing/failed items in the queue as COMPLETED
+    await pool.query(
+      `UPDATE ai_analysis_queue 
+       SET status = 'COMPLETED', error_message = NULL 
+       WHERE application_id = $1`,
+      [applicationId]
+    );
+
+    // 3. Get the latest analysis
+    const analysis = await getLatestAnalysis(applicationId);
+
+    res.json(analysis);
+
+  } catch (err) {
+    if (err.statusCode === 403) {
+      return res.status(403).json({ message: err.message });
+    }
+    console.error('[triggerAnalysis]', err);
+    res.status(500).json({ message: 'Internal server error' });
+  }
 };

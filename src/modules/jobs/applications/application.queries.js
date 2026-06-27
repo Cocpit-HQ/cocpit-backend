@@ -28,16 +28,35 @@ async function getApplicationOwnership(applicationId) {
 // ─── getApplicantList ─────────────────────────────────────────────────────────
 // Lightweight list query — no skills/experience/education subqueries.
 // matchScore joined from the latest AI analysis row (null = not yet analysed).
-async function getApplicantList(jobId, statusFilter) {
+async function getApplicantList(jobId, filters = {}) {
+  const { status, minExperience, location, skills } = filters;
+  
   const params = [jobId];
-  let statusClause = '';
+  let conditions = ['ja.job_id = $1'];
 
-  if (statusFilter && statusFilter !== 'All') {
-    params.push(statusFilter);
-    statusClause = `AND ja.current_status = $2`;
+  if (status && status !== 'All') {
+    params.push(status);
+    conditions.push(`ja.current_status = $${params.length}`);
   } else {
-    statusClause = `AND ja.current_status != 'Withdrawn'`;
+    conditions.push(`ja.current_status != 'Withdrawn'`);
   }
+
+  if (minExperience) {
+    params.push(parseInt(minExperience, 10));
+    conditions.push(`ja.frozen_experience_years >= $${params.length}`);
+  }
+
+  if (location) {
+    params.push(`%${location}%`);
+    conditions.push(`ja.frozen_location ILIKE $${params.length}`);
+  }
+
+  if (skills && Array.isArray(skills) && skills.length > 0) {
+    params.push(skills);
+    conditions.push(`ja.frozen_skills && $${params.length}::text[]`);
+  }
+
+  const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
 
   const result = await pool.query(`
     SELECT
@@ -53,19 +72,19 @@ async function getApplicantList(jobId, statusFilter) {
       ja.screening_required        AS "screeningRequired",
       ja.screening_type            AS "screeningType",
       ja.screening_submitted_at    AS "screeningSubmittedAt",
-      aaa.match_score              AS "matchScore"
+      aaa.match_score              AS "matchScore",
+      aaa.analysis_type            AS "analysisType"
     FROM job_applications ja
     LEFT JOIN active_users u ON ja.applicant_id = u.user_id
     LEFT JOIN LATERAL (
-      SELECT match_score
+      SELECT match_score, analysis_type
       FROM application_ai_analyses
       WHERE application_id = ja.application_id
       ORDER BY created_at DESC
       LIMIT 1
     ) aaa ON TRUE
-    WHERE ja.job_id = $1
-    ${statusClause}
-    ORDER BY ja.applied_at DESC
+    ${whereClause}
+    ORDER BY aaa.match_score DESC NULLS LAST, ja.applied_at DESC
   `, params);
 
   return result.rows;
@@ -152,6 +171,7 @@ async function getLatestAnalysis(applicationId) {
       analysis_id    AS "analysisId",
       application_id AS "applicationId",
       match_score    AS "matchScore",
+      analysis_type  AS "analysisType",
       summary,
       skills,
       experience,

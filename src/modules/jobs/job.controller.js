@@ -11,6 +11,8 @@ const crypto = require("crypto");
 const redis = require("../../core/cache/redis");
 const aiService = require("../../services/ai.service");
 const { validateSchema, validateBusiness, validateContentSafety } = require("../../core/utils/aiValidation");
+const { extractRequirementsFromJDText } = require("../../services/jdExtractor.service");
+const { calculateBackendScore, calculateTotalExperienceYears, getLatestEducation } = require("./applications/application.utils");
 
 
 const getRequestedOrganizationActorId = (req, fallbackOrgId = null) => {
@@ -356,17 +358,18 @@ exports.createJob = async (req, res) => {
 
   // AI Generation Phase
   let aiDescription = "";
+  let generated = null;
   try {
     const aiService = require("../../services/ai.service");
     const companyReplacement = postedAsCompany ? resolvedCompanyName : "our team";
-    const jdJson = await aiService.generateJobDescription({
+    generated = await aiService.generateJobDescription({
       role: title,
       companyName: companyReplacement
     });
 
     // Use the shared helper so createJob and generateJD always produce
     // identical description formatting.
-    aiDescription = buildAIDescription(jdJson);
+    aiDescription = buildAIDescription(generated);
   } catch (e) {
     console.error("Auto AI Generation failed during createJob:", e.message);
     // If it fails, we just leave aiDescription blank and let the draft be created normally.
@@ -377,14 +380,31 @@ exports.createJob = async (req, res) => {
   try {
     await client.query("BEGIN");
 
+    const aiRequirements = generated ? {
+      skills: generated.required_skills_keywords || [],
+      experience_min: generated.experience_min || null,
+      education: generated.education || null,
+    } : null;
+
     const jobRes = await client.query(
       `
       INSERT INTO jobs
-      (recruiter_id, title, company_name, org_id, posted_as_company, status, industry, description)
-      VALUES ($1, $2, $3, $4, $5, 'DRAFT', '', $6)
+      (recruiter_id, title, company_name, org_id, posted_as_company, status, industry, description,
+       experience_min, experience_max, ai_extracted_requirements)
+      VALUES ($1, $2, $3, $4, $5, 'DRAFT', '', $6, $7, $8, $9)
       RETURNING *
       `,
-      [userId, title, resolvedCompanyName, requestedOrgId || null, postedAsCompany, aiDescription]
+      [
+        userId,
+        title,
+        resolvedCompanyName,
+        requestedOrgId || null,
+        postedAsCompany,
+        aiDescription,
+        generated?.experience_min || null,
+        generated?.experience_max || null,
+        aiRequirements ? JSON.stringify(aiRequirements) : null
+      ]
     );
 
     const job = jobRes.rows[0];
@@ -430,6 +450,13 @@ exports.updateDraft = async (req, res) => {
   if (updates.industry) updates.industry = sanitizeContent(updates.industry);
 
   try {
+    if (updates.description) {
+      const extracted = await extractRequirementsFromJDText(updates.description);
+      updates.ai_extracted_requirements = JSON.stringify(extracted);
+      if (extracted.experience_min !== null) {
+        updates.experience_min = extracted.experience_min;
+      }
+    }
     const jobRes = await pool.query(`SELECT org_id, recruiter_id, status FROM jobs WHERE job_id = $1`, [id]);
     if (jobRes.rowCount === 0) return res.status(404).json({ message: "Job not found" });
     const job = jobRes.rows[0];
@@ -507,10 +534,25 @@ exports.submitJob = async (req, res) => {
       return res.status(400).json({ message: "Only DRAFT jobs can be submitted" });
     }
 
-    const updated = await client.query(
-      `UPDATE jobs SET status = 'ACTIVE' WHERE job_id = $1 RETURNING *`,
-      [id]
-    );
+    let updated;
+    if (!job.ai_extracted_requirements) {
+      const extracted = await extractRequirementsFromJDText(job.description);
+      const setClauses = ["status = 'ACTIVE'", "ai_extracted_requirements = $2"];
+      const params = [id, JSON.stringify(extracted)];
+      if (extracted.experience_min !== null) {
+        setClauses.push("experience_min = $3");
+        params.push(extracted.experience_min);
+      }
+      updated = await client.query(
+        `UPDATE jobs SET ${setClauses.join(", ")} WHERE job_id = $1 RETURNING *`,
+        params
+      );
+    } else {
+      updated = await client.query(
+        `UPDATE jobs SET status = 'ACTIVE' WHERE job_id = $1 RETURNING *`,
+        [id]
+      );
+    }
 
     await client.query(
       `INSERT INTO job_versions (job_id, changed_by, trigger_event, previous_data) VALUES ($1, $2, 'SUBMIT', $3)`,
@@ -734,10 +776,13 @@ exports.applyJob = async (req, res) => {
   cover_note = sanitizeContent(cover_note);
   const contactPhone = phone || mobile_number;
 
+  const client = await pool.connect();
   try {
+    await client.query("BEGIN");
+
     // If name or email missing, fetch from user profile for robustness
     if (!full_name || !email) {
-      const userResult = await pool.query(
+      const userResult = await client.query(
         `SELECT full_name, email FROM users WHERE user_id = $1`,
         [userId]
       );
@@ -748,18 +793,46 @@ exports.applyJob = async (req, res) => {
     }
 
     if (!full_name || !email) {
+      await client.query("ROLLBACK");
       return res.status(400).json({ message: "Name and Email are required for application" });
     }
-    // Check if job exists
-    const jobCheck = await pool.query(`SELECT org_id, recruiter_id FROM jobs WHERE job_id = $1`, [id]);
-    if (jobCheck.rowCount === 0) {
+
+    // 3. Fetch live profile data (INSIDE the transaction — data is frozen at this instant)
+    const [skillsRes, expRes, eduRes, jobRes] = await Promise.all([
+      client.query(`
+        SELECT s.name FROM user_skills us
+        JOIN skills s ON us.skill_id = s.skill_id
+        JOIN profiles p ON us.profile_id = p.profile_id
+        WHERE p.user_id = $1`, [userId]),
+      client.query(`
+        SELECT title, company_name, start_date, end_date, is_current
+        FROM experiences e JOIN profiles p ON e.profile_id = p.profile_id
+        WHERE p.user_id = $1 ORDER BY start_date DESC`, [userId]),
+      client.query(`
+        SELECT degree, school_name, end_date FROM educations ed
+        JOIN profiles p ON ed.profile_id = p.profile_id
+        WHERE p.user_id = $1 ORDER BY end_date DESC LIMIT 2`, [userId]),
+      client.query(`
+        SELECT title, description, experience_min, experience_max,
+               experience_label, location, ai_extracted_requirements, org_id, recruiter_id
+        FROM jobs WHERE job_id = $1`, [id]),
+    ]);
+
+    if (jobRes.rowCount === 0) {
+      await client.query("ROLLBACK");
       return res.status(404).json({ message: "Job not found" });
     }
 
-    const { org_id, recruiter_id } = jobCheck.rows[0];
+    const job = jobRes.rows[0];
+    const candidateSkills = skillsRes.rows.map(r => r.name);
+    const experienceRows = expRes.rows;
+    const educationRows = eduRes.rows;
+
+    const { org_id, recruiter_id } = job;
 
     // Check if user is the recruiter
     if (recruiter_id === userId) {
+      await client.query("ROLLBACK");
       return res.status(403).json({ message: "You cannot apply to your own job" });
     }
 
@@ -767,40 +840,34 @@ exports.applyJob = async (req, res) => {
     if (org_id) {
       const canPostJobs = await checkOrgPermission(pool, org_id, userId, ['POST_JOBS', 'MANAGE_COMPANY']);
       if (canPostJobs) {
+        await client.query("ROLLBACK");
         return res.status(403).json({ message: "You cannot apply to a job posted by your organization" });
       }
     }
 
     // Check if already applied (active application — not withdrawn)
-    const existing = await pool.query(
+    const existing = await client.query(
       `SELECT application_id, current_status FROM job_applications WHERE job_id = $1 AND applicant_id = $2`,
       [id, userId]
     );
     if (existing.rowCount > 0 && existing.rows[0].current_status !== 'Withdrawn') {
+      await client.query("ROLLBACK");
       return res.status(409).json({ message: "Already applied to this job" });
     }
     const existingWithdrawn = existing.rowCount > 0 && existing.rows[0].current_status === 'Withdrawn';
 
     // Resume file URL from Cloudinary or existing profile resume
     let resume_url = null;
-
-    // Single file upload via multer .single('resume')
     if (req.file) {
       resume_url = req.file.path;
-    }
-    // Also handle .fields() output in case middleware is changed in future
-    else if (req.files && req.files['resume'] && req.files['resume'][0]) {
+    } else if (req.files && req.files['resume'] && req.files['resume'][0]) {
       resume_url = req.files['resume'][0].path;
     }
-
-    // Fallback: resume URL sent as a form field or JSON body field
     if (!resume_url && body.resume_url) {
       resume_url = body.resume_url;
     }
-
-    // Final fallback: fetch user's most recent resume from past applications
     if (!resume_url) {
-      const recentResumeResult = await pool.query(
+      const recentResumeResult = await client.query(
         `SELECT resume_url FROM job_applications
          WHERE applicant_id = $1 AND resume_url IS NOT NULL
          ORDER BY application_id DESC LIMIT 1`,
@@ -812,47 +879,161 @@ exports.applyJob = async (req, res) => {
     }
 
     if (!resume_url) {
+      await client.query("ROLLBACK");
       return res.status(400).json({ message: "Resume is required" });
     }
 
+    // 4. Calculate scalars
+    const totalYears = calculateTotalExperienceYears(experienceRows);
+    const highestDegree = getLatestEducation(educationRows)?.degree || null;
+    const candidateLocation = req.body.location || null; 
 
+    // 5. Calculate backend score
+    const backendScore = calculateBackendScore({
+      candidateSkills,
+      totalYears,
+      jobRequirements: job.ai_extracted_requirements,
+      experienceMin: job.experience_min,
+      experienceMax: job.experience_max,
+      experienceLabel: job.experience_label,
+    });
+
+    // 6. INSERT job_applications
     let appResult;
     if (existingWithdrawn) {
-      // Re-apply: update the existing withdrawn application row
-      appResult = await pool.query(
+      appResult = await client.query(
         `UPDATE job_applications
          SET full_name = $3, email = $4, phone = $5, resume_url = $6, cover_note = $7,
+             frozen_experience_years = $8, frozen_location = $9, frozen_skills = $10, frozen_highest_degree = $11, backend_score = $12,
              current_status = 'Applied'
          WHERE job_id = $1 AND applicant_id = $2
          RETURNING application_id`,
-        [id, userId, full_name, email, contactPhone, resume_url, cover_note]
+        [id, userId, full_name, email, contactPhone, resume_url, cover_note, Math.round(totalYears), candidateLocation, candidateSkills, highestDegree, backendScore]
       );
+      
+      // Cleanup old snapshot/analyses for re-application
+      await client.query(`DELETE FROM application_snapshots WHERE application_id = $1`, [appResult.rows[0].application_id]);
+      await client.query(`DELETE FROM application_ai_analyses WHERE application_id = $1`, [appResult.rows[0].application_id]);
+      await client.query(`DELETE FROM ai_analysis_queue WHERE application_id = $1`, [appResult.rows[0].application_id]);
     } else {
-      // Fresh application
-      appResult = await pool.query(
+      appResult = await client.query(
         `INSERT INTO job_applications 
-         (job_id, applicant_id, full_name, email, phone, resume_url, cover_note)
-         VALUES ($1,$2,$3,$4,$5,$6,$7)
+         (job_id, applicant_id, full_name, email, phone, resume_url, cover_note, frozen_experience_years, frozen_location, frozen_skills, frozen_highest_degree, backend_score)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
          RETURNING application_id`,
-        [id, userId, full_name, email, contactPhone, resume_url, cover_note]
+        [id, userId, full_name, email, contactPhone, resume_url, cover_note, Math.round(totalYears), candidateLocation, candidateSkills, highestDegree, backendScore]
       );
     }
 
     const appId = appResult.rows[0].application_id;
 
-    // Log status history
-    await pool.query(
+    // 7. Build and store frozen snapshots
+    const candidateSnapshot = {
+      skills: candidateSkills,
+      experience: experienceRows,
+      education: educationRows,
+      totalExperienceYears: totalYears,
+      location: candidateLocation,
+      highestDegree,
+      resumeUrl: resume_url,
+    };
+    const jobSnapshot = {
+      title: job.title,
+      experienceMin: job.experience_min,
+      experienceMax: job.experience_max,
+      experienceLabel: job.experience_label,
+      skills: job.ai_extracted_requirements?.skills || [],
+      education: job.ai_extracted_requirements?.education,
+    };
+    await client.query(`
+      INSERT INTO application_snapshots (application_id, candidate_snapshot, job_snapshot)
+      VALUES ($1, $2, $3)`,
+      [appId, JSON.stringify(candidateSnapshot), JSON.stringify(jobSnapshot)]
+    );
+
+    // 8. INSERT backend score into application_ai_analyses
+    await client.query(`
+      INSERT INTO application_ai_analyses (application_id, match_score, analysis_type, provider)
+      VALUES ($1, $2, 'BACKEND', 'backend')`,
+      [appId, backendScore]
+    );
+
+    // 9. Minimum Pool Gate & Determine tier and queue accordingly
+    const MIN_POOL = parseInt(process.env.AI_MIN_APPLICATIONS_FOR_AUTO || '25', 10);
+    const totalAppsRes = await client.query(
+      `SELECT COUNT(*) AS total FROM job_applications WHERE job_id = $1`,
+      [id]
+    );
+    const totalApplications = parseInt(totalAppsRes.rows[0].total, 10);
+
+    if (totalApplications < MIN_POOL) {
+      console.log(`[applyJob] Job ${id} has ${totalApplications}/${MIN_POOL} apps — skipping auto-queue.`);
+    } else {
+      const rankRes = await client.query(`
+        SELECT COUNT(*) + 1 AS rank
+        FROM job_applications
+        WHERE job_id = $1 AND backend_score > $2`,
+        [id, backendScore]
+      );
+      const rank = parseInt(rankRes.rows[0].rank, 10);
+
+      const TIER1_THRESHOLD = parseInt(process.env.AI_TIER1_SCORE_THRESHOLD || '65', 10);
+      const TIER1_TOP_N     = parseInt(process.env.AI_TIER1_TOP_N || '15', 10);
+      const TIER2_THRESHOLD = parseInt(process.env.AI_TIER2_SCORE_THRESHOLD || '30', 10);
+
+      if (backendScore >= TIER1_THRESHOLD || rank <= TIER1_TOP_N) {
+        // 🟢 TIER 1
+        await client.query(`
+          INSERT INTO ai_analysis_queue (application_id, priority, reason)
+          VALUES ($1, 2, 'TIER1_AUTO')`,
+          [appId]
+        );
+
+        // Demotion
+        await client.query(`
+          UPDATE ai_analysis_queue aq
+          SET priority = 1, reason = 'TIER2_DEMOTED'
+          WHERE aq.priority = 2
+            AND aq.status = 'PENDING'
+            AND aq.application_id IN (
+              SELECT ja.application_id
+              FROM job_applications ja
+              WHERE ja.job_id = $1
+                AND ja.backend_score < $2
+                AND ja.application_id != $3
+              ORDER BY ja.backend_score DESC
+              OFFSET $4
+            )`,
+          [id, backendScore, appId, TIER1_TOP_N]
+        );
+      } else if (backendScore >= TIER2_THRESHOLD) {
+        // 🟡 TIER 2
+        await client.query(`
+          INSERT INTO ai_analysis_queue (application_id, priority, reason)
+          VALUES ($1, 1, 'TIER2_DEFERRED')`,
+          [appId]
+        );
+      }
+    }
+
+    // 10. Existing status history log
+    await client.query(
       `INSERT INTO application_status_history (application_id, status) VALUES ($1, 'Applied')`,
       [appId]
     );
 
+    // 11. COMMIT and return
+    await client.query('COMMIT');
     res.status(201).json({ message: "Application submitted successfully", applicationId: appId });
 
     // 🎯 Intent Layer: Log Apply Job
     logIntentActivity({ userId, action: "apply_job", metadata: { jobId: id, applicationId: appId } });
   } catch (err) {
+    await client.query("ROLLBACK");
     console.error("Apply job error:", err);
     res.status(500).json({ message: "Internal server error" });
+  } finally {
+    client.release();
   }
 };
 
@@ -1923,11 +2104,18 @@ exports.generateJD = async (req, res) => {
     // field is always consistent regardless of which endpoint was called.
     const fullDescription = buildAIDescription(generated);
 
+    const aiRequirements = {
+      skills: generated.required_skills_keywords || [],
+      experience_min: generated.experience_min || null,
+      education: generated.education || null,
+    };
+
     const AI_FIELD_MAP = {
       title: generated.title || role,
       description: fullDescription,
       experience_min: generated.experience_min,
       experience_max: generated.experience_max,
+      ai_extracted_requirements: JSON.stringify(aiRequirements),
     };
 
     const setClauses = [];

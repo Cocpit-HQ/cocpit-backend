@@ -674,6 +674,7 @@ CREATE TABLE jobs (
   salary_currency VARCHAR(10) DEFAULT 'USD',
   salary_period VARCHAR(20) DEFAULT 'YEARLY' CHECK (salary_period IN ('YEARLY', 'MONTHLY', 'HOURLY')),
   salary_visibility VARCHAR(20) DEFAULT 'PUBLIC' CHECK (salary_visibility IN ('PUBLIC', 'PRIVATE')),
+  ai_extracted_requirements JSONB,
   created_at TIMESTAMPTZ DEFAULT now(),
   CHECK (salary_min IS NULL OR salary_max IS NULL OR salary_min <= salary_max)
 );
@@ -748,8 +749,17 @@ CREATE TABLE job_applications (
   cover_note TEXT,
   current_status TEXT NOT NULL DEFAULT 'Applied',
   applied_at TIMESTAMPTZ DEFAULT now(),
+  frozen_experience_years SMALLINT DEFAULT 0,
+  frozen_location TEXT,
+  frozen_highest_degree TEXT,
+  frozen_skills TEXT[],
+  backend_score SMALLINT DEFAULT 0,
   UNIQUE(job_id, applicant_id)
 );
+
+CREATE INDEX IF NOT EXISTS idx_ja_job_backend_score ON job_applications(job_id, backend_score DESC);
+CREATE INDEX IF NOT EXISTS idx_ja_job_exp ON job_applications(job_id, frozen_experience_years DESC);
+CREATE INDEX IF NOT EXISTS idx_ja_skills_gin ON job_applications USING GIN (frozen_skills);
 
 CREATE TABLE IF NOT EXISTS application_notes (
   note_id        UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -774,11 +784,37 @@ CREATE TABLE IF NOT EXISTS application_ai_analyses (
   qualification  JSONB,
   provider       TEXT DEFAULT 'gemini',
   model          TEXT,
+  analysis_type  TEXT NOT NULL DEFAULT 'BACKEND' CHECK (analysis_type IN ('BACKEND','GEMINI')),
+  prompt_version TEXT,
+  latency_ms     INTEGER,
+  tokens_in      INTEGER,
+  tokens_out     INTEGER,
   created_at     TIMESTAMPTZ DEFAULT now()
 );
 
 CREATE INDEX IF NOT EXISTS idx_ai_analyses_app_id
   ON application_ai_analyses(application_id);
+
+CREATE TABLE IF NOT EXISTS application_snapshots (
+  application_id     UUID PRIMARY KEY REFERENCES job_applications(application_id) ON DELETE CASCADE,
+  candidate_snapshot JSONB NOT NULL,
+  job_snapshot       JSONB NOT NULL,
+  created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS ai_analysis_queue (
+  queue_id        UUID     PRIMARY KEY DEFAULT gen_random_uuid(),
+  application_id  UUID     NOT NULL REFERENCES job_applications(application_id) ON DELETE CASCADE,
+  status          TEXT     NOT NULL DEFAULT 'PENDING' CHECK (status IN ('PENDING','PROCESSING','COMPLETED','FAILED')),
+  priority        SMALLINT NOT NULL DEFAULT 1,
+  reason          TEXT     NOT NULL DEFAULT 'TIER1_AUTO',
+  retry_count     SMALLINT NOT NULL DEFAULT 0,
+  error_message   TEXT,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_ai_queue_pending ON ai_analysis_queue(priority DESC, created_at ASC) WHERE status = 'PENDING';
+CREATE INDEX IF NOT EXISTS idx_ai_queue_application ON ai_analysis_queue(application_id);
 
 CREATE TABLE job_saves (
   user_id UUID NOT NULL

@@ -57,6 +57,10 @@ setInterval(() => {
 // Interval configurable via FEED_WORKER_INTERVAL_MS (default: 5 minutes)
 startFeedWorker();
 
+// B9.6 — AI Analysis background worker
+const { startWorker: startAiAnalysisWorker } = require("./workers/applicationAnalysisWorker");
+startAiAnalysisWorker().catch(e => console.error("AI Worker crashed:", e));
+
 // Event Outbox Processor disabled
 
 server.listen(PORT, '0.0.0.0', () => {
