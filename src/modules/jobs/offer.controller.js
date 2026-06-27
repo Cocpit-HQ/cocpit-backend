@@ -357,7 +357,7 @@ exports.respondToOffer = async (req, res) => {
                 ]
             );
 
-            socketService.notifyUser(admin.user_id, "notification", {
+            socketService.notifyUser(notifyUserId, "notification", {
                 type: `job_offer_${actionText}`,
                 text: `${user.full_name} ${actionText} your offer for ${jobTitle}`,
                 from: userId,
