@@ -18,8 +18,23 @@ const {
  */
 const requireOrgPermission = (permission) => async (req, res, next) => {
     try {
-        const orgId = req.params.orgId || req.params.companyId;
+        let orgId = req.params.orgId || req.params.companyId;
         if (!orgId) return next(new AppError("Organization ID missing", 400));
+
+        // Fallback: If client mistakenly sends user ID instead of organization ID,
+        // resolve it to their active organization ID.
+        if (req.user && orgId === req.user.sub) {
+            const userOrgs = await pool.query(
+                "SELECT org_id FROM organization_members WHERE user_id = $1 AND status = 'ACTIVE' LIMIT 1",
+                [req.user.sub]
+            );
+            if (userOrgs.rowCount > 0) {
+                orgId = userOrgs.rows[0].org_id;
+                if (req.params.orgId) req.params.orgId = orgId;
+                if (req.params.companyId) req.params.companyId = orgId;
+            }
+        }
+
         if (req.actor?.type === "ORGANIZATION") {
             return requireOrgActorPermission(permission)(req, res, next);
         }

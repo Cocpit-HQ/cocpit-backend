@@ -75,7 +75,12 @@ router.get("/companies/:companyId/offers/job/:jobId/recipients", requireAuth, re
 router.get("/companies/:companyId/offers/check/:targetUserId", requireAuth, requireCompanyPermission("VIEW_JOBS"), offerController.checkOfferStatus);
 router.patch("/offers/:offerId/respond", requireAuth, offerController.respondToOffer);
 router.delete("/companies/:companyId/offers/:offerId", requireAuth, requireCompanyPermission("MANAGE_JOBS"), offerController.withdrawOffer);
+router.delete("/offers/:offerId", requireAuth, offerController.withdrawOffer);
+router.get("/offers/sent", requireAuth, offerController.getRecruiterSentOffers);
+router.get("/offers/check/:targetUserId", requireAuth, offerController.checkOfferStatus);
+router.get("/offers/job/:jobId/recipients", requireAuth, offerController.getCompanyOfferRecipients);
 router.get("/offers/:offerId", requireAuth, offerController.getOfferDetail);
+router.post("/offers", requireAuth, offerController.sendJobOffer);
 
 // Application Management
 // PUT  /applications/:id/status  — moved to applications/application.routes.js
