@@ -18,10 +18,11 @@ exports.sendJobOffer = async (req, res) => {
     try {
         await client.query('BEGIN');
 
-        // 1. Verify job belongs to this company
         const jobCheck = await client.query(
-            "SELECT job_id, title FROM jobs WHERE job_id = $1 AND org_id = $2 AND is_active = TRUE",
-            [jobId, companyId]
+            `SELECT job_id, title FROM jobs 
+             WHERE job_id = $1 AND is_active = TRUE 
+               AND (org_id = $2 OR (org_id IS NULL AND recruiter_id = $3))`,
+            [jobId, companyId, sentBy]
         );
         if (jobCheck.rowCount === 0) {
             await client.query('ROLLBACK');
@@ -109,7 +110,7 @@ exports.getMyOffers = async (req, res) => {
                 TRUE AS is_offer,
                 j.title, j.description, j.salary_min, j.salary_max, j.salary_currency,
                 j.salary_period, j.job_type, j.work_mode, j.location, j.experience_level,
-                j.company_name,
+                j.company_name, j.recruiter_id,
                 c.name as company_display_name, c.logo_url as company_logo, c.slug as company_slug,
                 u.full_name as sent_by_name
             FROM job_offers jo
@@ -251,10 +252,19 @@ exports.respondToOffer = async (req, res) => {
     try {
         await client.query('BEGIN');
 
+        let resolvedOfferId = offerId;
+        const jobCheck = await client.query(
+            "SELECT offer_id FROM job_offers WHERE job_id = $1 AND user_id = $2 AND status = 'pending'",
+            [offerId, userId]
+        );
+        if (jobCheck.rowCount > 0) {
+            resolvedOfferId = jobCheck.rows[0].offer_id;
+        }
+
         // 1. Fetch + lock the offer
         const offerRes = await client.query(
             "SELECT * FROM job_offers WHERE offer_id = $1 AND user_id = $2 AND status = 'pending' FOR UPDATE",
-            [offerId, userId]
+            [resolvedOfferId, userId]
         );
 
         if (offerRes.rowCount === 0) {
@@ -267,7 +277,7 @@ exports.respondToOffer = async (req, res) => {
         // 2. Update status
         await client.query(
             "UPDATE job_offers SET status = $1, responded_at = NOW(), updated_at = NOW() WHERE offer_id = $2",
-            [action, offerId]
+            [action, resolvedOfferId]
         );
 
         // 3. Get context for notifications
@@ -431,7 +441,7 @@ exports.getOfferDetail = async (req, res) => {
                 jo.*,
                 j.title, j.description, j.salary_min, j.salary_max, j.salary_currency,
                 j.salary_period, j.job_type, j.work_mode, j.location, j.experience_level,
-                j.about_company, j.company_name, j.industry,
+                j.about_company, j.company_name, j.industry, j.recruiter_id,
                 c.name as company_display_name, c.logo_url as company_logo, c.slug as company_slug,
                 u.full_name as sent_by_name, u.avatar_url as sent_by_avatar
             FROM job_offers jo

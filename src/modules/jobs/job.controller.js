@@ -163,6 +163,12 @@ exports.getJobById = async (req, res) => {
   const userId = req.user?.sub; // optional
 
   try {
+    let resolvedJobId = id;
+    const offerCheck = await pool.query("SELECT job_id FROM job_offers WHERE offer_id = $1", [id]);
+    if (offerCheck.rowCount > 0) {
+      resolvedJobId = offerCheck.rows[0].job_id;
+    }
+
     const result = await pool.query(
       `
       SELECT 
@@ -173,9 +179,10 @@ exports.getJobById = async (req, res) => {
         ${userId ? '(js.user_id IS NOT NULL) AS "isSaved",' : 'FALSE AS "isSaved",'}
         ${userId ? '(ja.application_id IS NOT NULL AND ja.current_status != \'Withdrawn\') AS "hasApplied",' : 'FALSE AS "hasApplied",'}
         ${userId ? 'ja.current_status AS "applicationStatus",' : 'NULL AS "applicationStatus",'}
-        ${userId ? '(jo.offer_id IS NOT NULL AND jo.status = \'pending\') AS "is_offer",' : 'FALSE AS "is_offer",'}
+        ${userId ? '(jo.offer_id IS NOT NULL) AS "is_offer",' : 'FALSE AS "is_offer",'}
         ${userId ? 'jo.status AS "offerStatus",' : 'NULL AS "offerStatus",'}
         ${userId ? 'jo.offer_id AS "offer_id",' : 'NULL AS "offer_id",'}
+        ${userId ? 'jo.message AS "recruiter_message",' : 'NULL AS "recruiter_message",'}
         ${userId ? 'ja.application_id AS "applicationId",' : 'NULL AS "applicationId",'}
         ${userId ? 'ja.screening_required AS "screeningRequired",' : 'NULL AS "screeningRequired",'}
         ${userId ? 'ja.screening_type AS "screeningType",' : 'NULL AS "screeningType",'}
@@ -190,10 +197,10 @@ exports.getJobById = async (req, res) => {
       ${userId ? 'LEFT JOIN job_applications ja ON ja.job_id = j.job_id AND ja.applicant_id = $2' : ''}
       ${userId ? 'LEFT JOIN organization_followers of ON of.org_id = j.org_id AND of.user_id = $2' : ''}
       ${userId ? 'LEFT JOIN followers uf ON uf.following_id = j.recruiter_id AND uf.follower_id = $2' : ''}
-      ${userId ? 'LEFT JOIN job_offers jo ON jo.job_id = j.job_id AND jo.user_id = $2 AND jo.status = \'pending\'' : ''}
+      ${userId ? 'LEFT JOIN job_offers jo ON jo.job_id = j.job_id AND jo.user_id = $2' : ''}
       WHERE j.job_id = $1
       `,
-      userId ? [id, userId] : [id]
+      userId ? [resolvedJobId, userId] : [resolvedJobId]
     );
 
     if (result.rowCount === 0) {
