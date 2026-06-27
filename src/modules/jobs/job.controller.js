@@ -63,6 +63,11 @@ exports.getAllJobs = async (req, res) => {
   try {
     const { conditions, values, nextIndex } = buildJobFilters(req.query, userId ? 2 : 1);
 
+    if (userId) {
+      conditions.push(`j.recruiter_id != $1`);
+      conditions.push(`(ja.application_id IS NULL OR ja.current_status = 'Withdrawn')`);
+    }
+
     // Base params
     const params = userId ? [userId] : [];
 
