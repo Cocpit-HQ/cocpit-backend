@@ -102,16 +102,19 @@ const buildJobFilters = (params, paramCountStart = 1) => {
     }
 
     // ─── Experience level ─────────────
+    let expCondition = null;
     if (experienceLevel && experienceLevel !== "All Levels") {
         const mappedLevels = [];
         experienceLevel.split(",").map(v => v.trim()).filter(Boolean).forEach(val => {
             const lowerVal = val.toLowerCase();
             if (lowerVal === "fresher") {
-                mappedLevels.push("Fresher", "Entry Level");
+                mappedLevels.push("Fresher");
             } else if (lowerVal === "junior") {
-                mappedLevels.push("Junior", "Entry Level");
+                mappedLevels.push("Junior (1-3 yrs)");
+            } else if (lowerVal === "mid-level") {
+                mappedLevels.push("Mid-level (3-5 yrs)");
             } else if (lowerVal === "senior") {
-                mappedLevels.push("Senior", "Senior Level");
+                mappedLevels.push("Senior (5+ yrs)");
             } else {
                 mappedLevels.push(val);
             }
@@ -119,22 +122,40 @@ const buildJobFilters = (params, paramCountStart = 1) => {
         
         const uniqueLevels = [...new Set(mappedLevels)];
         if (uniqueLevels.length > 0) {
-            applyMultiValue(uniqueLevels.join(","), "j.experience_level");
+            if (uniqueLevels.length === 1) {
+                expCondition = `j.experience_label = $${currentIndex}`;
+                values.push(uniqueLevels[0]);
+                currentIndex++;
+            } else {
+                const placeholders = uniqueLevels.map((_, i) => `$${currentIndex + i}`).join(", ");
+                expCondition = `j.experience_label::text = ANY(ARRAY[${placeholders}])`;
+                values.push(...uniqueLevels);
+                currentIndex += uniqueLevels.length;
+            }
         }
     }
 
+    let numCondition = null;
     if (experience_min !== undefined && experience_max !== undefined) {
-        conditions.push(`(j.experience_max IS NULL OR j.experience_max >= $${currentIndex}) AND (j.experience_min IS NULL OR j.experience_min <= $${currentIndex + 1})`);
+        numCondition = `(COALESCE(j.experience_max, j.experience_min) >= $${currentIndex} AND COALESCE(j.experience_min, j.experience_max) <= $${currentIndex + 1})`;
         values.push(Number(experience_min), Number(experience_max));
         currentIndex += 2;
     } else if (experience_min !== undefined) {
-        conditions.push(`(j.experience_max IS NULL OR j.experience_max >= $${currentIndex})`);
+        numCondition = `(COALESCE(j.experience_max, j.experience_min) >= $${currentIndex})`;
         values.push(Number(experience_min));
         currentIndex++;
     } else if (experience_max !== undefined) {
-        conditions.push(`(j.experience_min IS NULL OR j.experience_min <= $${currentIndex})`);
+        numCondition = `(COALESCE(j.experience_min, j.experience_max) <= $${currentIndex})`;
         values.push(Number(experience_max));
         currentIndex++;
+    }
+
+    if (expCondition && numCondition) {
+        conditions.push(`(${expCondition} OR ${numCondition})`);
+    } else if (expCondition) {
+        conditions.push(expCondition);
+    } else if (numCondition) {
+        conditions.push(numCondition);
     }
 
     // ─── Salary range (overlapping range logic) ───────────────────────────────
