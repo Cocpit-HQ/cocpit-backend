@@ -453,7 +453,9 @@ exports.updateDraft = async (req, res) => {
     if (updates.description) {
       const extracted = await extractRequirementsFromJDText(updates.description);
       updates.ai_extracted_requirements = JSON.stringify(extracted);
-      if (extracted.experience_min !== null) {
+      // Only use AI-extracted experience_min if the user did NOT explicitly send one.
+      // This prevents the extractor from silently overwriting a value the user chose.
+      if (extracted.experience_min !== null && updates.experience_min === undefined) {
         updates.experience_min = extracted.experience_min;
       }
     }
@@ -537,9 +539,10 @@ exports.submitJob = async (req, res) => {
     let updated;
     if (!job.ai_extracted_requirements) {
       const extracted = await extractRequirementsFromJDText(job.description);
-      const setClauses = ["status = 'ACTIVE'", "ai_extracted_requirements = $2"];
+      const setClauses = ["status = 'ACTIVE'", "ai_extracted_requirements = $2", "created_at = NOW()"];
       const params = [id, JSON.stringify(extracted)];
-      if (extracted.experience_min !== null) {
+      // Only set experience_min from extraction if the job doesn't already have one
+      if (extracted.experience_min !== null && (job.experience_min === null || job.experience_min === undefined)) {
         setClauses.push("experience_min = $3");
         params.push(extracted.experience_min);
       }
@@ -549,7 +552,7 @@ exports.submitJob = async (req, res) => {
       );
     } else {
       updated = await client.query(
-        `UPDATE jobs SET status = 'ACTIVE' WHERE job_id = $1 RETURNING *`,
+        `UPDATE jobs SET status = 'ACTIVE', created_at = NOW() WHERE job_id = $1 RETURNING *`,
         [id]
       );
     }
