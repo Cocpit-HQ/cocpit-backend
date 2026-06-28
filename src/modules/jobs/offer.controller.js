@@ -127,6 +127,7 @@ exports.getMyOffers = async (req, res) => {
                 j.title, j.description, j.salary_min, j.salary_max, j.salary_currency,
                 j.salary_period, j.job_type, j.work_mode, j.location, j.experience_level,
                 j.company_name, j.recruiter_id,
+                j.is_active, j.status as job_status,
                 COALESCE(c.name, j.company_name) as company_display_name, c.logo_url as company_logo, c.slug as company_slug,
                 u.full_name as sent_by_name
             FROM job_offers jo

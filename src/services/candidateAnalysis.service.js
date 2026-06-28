@@ -177,17 +177,6 @@ const analyzeCandidate = async (applicationId) => {
       tags,
       summary: `Has ${matchedCount} of ${jobSkills.length} required skills.`,
     };
-
-    // Post-process skills tags to append extra/irrelevant candidate skills as matched: false (Red chips)
-    candidateSkills.forEach(skill => {
-      const isRequired = jobSkills.some(js => js.toLowerCase() === skill.toLowerCase());
-      if (!isRequired) {
-        skillsJson.tags.push({
-          name: skill,
-          matched: false // Renders in red on the UI
-        });
-      }
-    });
   }
 
   await pool.query(
@@ -246,16 +235,6 @@ const generateLocalSystemFallback = (candidateSnapshot, jobSnapshot, experienceJ
       name: skill,
       matched: candidateSkillsLower.includes(skill.toLowerCase())
     });
-  });
-  // 2. Extra/irrelevant candidate skills (marked as false to show in red)
-  candidateSkills.forEach(skill => {
-    const isRequired = jobSkills.some(js => js.toLowerCase() === skill.toLowerCase());
-    if (!isRequired) {
-      tags.push({
-        name: skill,
-        matched: false
-      });
-    }
   });
 
   const matchedCount = tags.filter(t => t.matched).length;
