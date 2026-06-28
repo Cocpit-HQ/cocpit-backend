@@ -48,6 +48,7 @@ const getConfig = (req, res) => {
       ),
       ai_features: toBool(process.env.FEATURE_AI_FEATURES ?? "false"),
       organizations: toBool(process.env.FEATURE_ORGANIZATIONS ?? "true"),
+      showcase_enabled: toBool(process.env.FEATURE_SHOWCASE_ENABLED ?? "false"),
     },
 
     // App versioning and maintenance controls.
