@@ -173,7 +173,7 @@ exports.getOrganizationPosts = async (req, res) => {
                 'poll_id', pp.poll_id,
                 'duration', COALESCE(pp.duration, '1 day'),
                 'total_votes', COALESCE(pv.total_votes, 0),
-                'user_vote', (SELECT pv_u.option_id FROM poll_votes pv_u WHERE pv_u.poll_id = pp.poll_id AND pv_u.voter_id = $${userParamIdx}),
+                'user_vote', (SELECT pv_u.option_id FROM poll_votes pv_u WHERE pv_u.poll_id = pp.poll_id AND pv_u.voter_id = $${userParamIdx} LIMIT 1),
                 'options', COALESCE(po.options, '[]'::json),
                 'is_active', (pp.created_at + COALESCE(pp.duration, '1 day')::interval > NOW())
              ) AS poll

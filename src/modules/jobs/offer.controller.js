@@ -100,7 +100,8 @@ exports.sendJobOffer = async (req, res) => {
             isCompanyRequest: !!companyId,
             notification_id: notifRes.rows[0].notification_id,
             created_at: notifRes.rows[0].created_at.toISOString(),
-            time: "Just now"
+            time: "Just now",
+            metadata: { org_id: companyId || null, offer_id: offer.offer_id, job_id: jobId }
         });
 
         await client.query('COMMIT');
@@ -371,7 +372,8 @@ exports.respondToOffer = async (req, res) => {
                 referenceId: offer.offer_id,
                 notification_id: notifRes.rows[0].notification_id,
                 created_at: notifRes.rows[0].created_at.toISOString(),
-                time: "Just now"
+                time: "Just now",
+                metadata: { org_id: offer.org_id || null, offer_id: offerId, job_id: offer.job_id }
             });
         }
 
@@ -385,7 +387,7 @@ exports.respondToOffer = async (req, res) => {
                 `job_offer_${actionText}`,
                 `You ${actionText} the offer from ${senderName} for ${jobTitle}`,
                 offer.offer_id,
-                JSON.stringify({ org_id: offer.org_id || null, offer_id: offerId })
+                JSON.stringify({ org_id: offer.org_id || null, offer_id: offerId, job_id: offer.job_id })
             ]
         );
 
@@ -461,7 +463,7 @@ exports.withdrawOffer = async (req, res) => {
                 "job_offer_withdrawn",
                 `${senderName} withdrew the offer for ${jobTitle}`,
                 offerId,
-                JSON.stringify({ org_id: offer.org_id || null, offer_id: offerId })
+                JSON.stringify({ org_id: offer.org_id || null, offer_id: offerId, job_id: offer.job_id })
             ]
         );
 
@@ -474,7 +476,8 @@ exports.withdrawOffer = async (req, res) => {
             referenceId: offerId,
             notification_id: notifRes.rows[0].notification_id,
             created_at: notifRes.rows[0].created_at.toISOString(),
-            time: "Just now"
+            time: "Just now",
+            metadata: { org_id: offer.org_id || null, offer_id: offerId, job_id: offer.job_id }
         });
 
         await client.query('COMMIT');

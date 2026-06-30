@@ -1215,6 +1215,7 @@ exports.getPostById = async (req, res) => {
                     OR
                     ($3::uuid IS NULL AND pv_u.voter_id = $2 AND pv_u.org_id IS NULL)
                 )
+                LIMIT 1
             ),
             'is_active', (pp.created_at + COALESCE(pp.duration, '1 day')::interval > NOW()),
             'options',
@@ -1314,6 +1315,7 @@ exports.getPostById = async (req, res) => {
                                 OR
                                 ($3::uuid IS NULL AND pv_u.voter_id = $2 AND pv_u.org_id IS NULL)
                             )
+                            LIMIT 1
                         ),
                         'is_active', (pp.created_at + COALESCE(pp.duration, '1 day')::interval > NOW()),
                         'options',

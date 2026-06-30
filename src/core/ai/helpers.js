@@ -30,7 +30,7 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
  * Determines if an error should trigger a retry.
  */
 const isRetryable = (err) => {
-  if (err.isTimeout) return true;
+  if (err.isTimeout) return false;
   const status = err.status || err.statusCode || err.httpErrorCode;
   return RETRYABLE_STATUS_CODES.has(status);
 };

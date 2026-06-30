@@ -453,8 +453,10 @@ exports.triggerAnalysis = async (req, res) => {
   try {
     const ownership = await getApplicationOwnership(applicationId);
     if (!ownership) {
+      console.warn(`[triggerAnalysis] 404 — no ownership found for applicationId: ${applicationId}`);
       return res.status(404).json({ message: 'Application not found' });
     }
+
 
     await assertRecruiterAccess(req, ownership, [
       'VIEW_APPLICANTS', 'MANAGE_APPLICANTS', 'MANAGE_COMPANY',

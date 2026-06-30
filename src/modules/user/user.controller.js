@@ -462,14 +462,14 @@ exports.getPublicProfilePosts = async (req, res) => {
             'poll_id', pp.poll_id,
             'duration', COALESCE(pp.duration, '1 day'),
             'total_votes', (SELECT COUNT(*) FROM poll_votes pv WHERE pv.poll_id = pp.poll_id)::int,
-            'user_vote', (SELECT pv_u.option_id FROM poll_votes pv_u WHERE pv_u.poll_id = pp.poll_id AND pv_u.voter_id = $${userParamIdx}),
+            'user_vote', (SELECT pv_u.option_id FROM poll_votes pv_u WHERE pv_u.poll_id = pp.poll_id AND pv_u.voter_id = $${userParamIdx} LIMIT 1),
             'is_active', (pp.created_at + COALESCE(pp.duration, '1 day')::interval > NOW()),
             'options', COALESCE(
               (SELECT json_agg(json_build_object('option_id', po.option_id, 'option_text', po.option_text, 'vote_count', (SELECT COUNT(*) FROM poll_votes pv WHERE pv.option_id = po.option_id))) FROM poll_options po WHERE po.poll_id = pp.poll_id),
               '[]'::json
             )
           )
-          FROM post_polls pp WHERE pp.post_id = p.post_id
+          FROM post_polls pp WHERE pp.post_id = p.post_id LIMIT 1
         ) AS poll,
 
         --Shared Post Data
@@ -516,14 +516,14 @@ exports.getPublicProfilePosts = async (req, res) => {
                   'poll_id', pp.poll_id,
                   'duration', COALESCE(pp.duration, '1 day'),
                   'total_votes', (SELECT COUNT(*) FROM poll_votes pv WHERE pv.poll_id = pp.poll_id)::int,
-                  'user_vote', (SELECT pv_u.option_id FROM poll_votes pv_u WHERE pv_u.poll_id = pp.poll_id AND pv_u.voter_id = $${userParamIdx}),
+                  'user_vote', (SELECT pv_u.option_id FROM poll_votes pv_u WHERE pv_u.poll_id = pp.poll_id AND pv_u.voter_id = $${userParamIdx} LIMIT 1),
                   'is_active', (pp.created_at + COALESCE(pp.duration, '1 day')::interval > NOW()),
                   'options', COALESCE(
                     (SELECT json_agg(json_build_object('option_id', po.option_id, 'option_text', po.option_text, 'vote_count', (SELECT COUNT(*) FROM poll_votes pv WHERE pv.option_id = po.option_id))) FROM poll_options po WHERE po.poll_id = pp.poll_id),
                     '[]'::json
                   )
                 )
-                FROM post_polls pp WHERE pp.post_id = sp.post_id
+                FROM post_polls pp WHERE pp.post_id = sp.post_id LIMIT 1
               )
             )
           --Failure Analysis

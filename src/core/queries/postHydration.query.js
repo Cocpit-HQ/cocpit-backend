@@ -140,6 +140,7 @@ const getPostHydrationSelect = (companyParamIdx, userParamIdx) => `
                     OR
                     ($${companyParamIdx}::uuid IS NULL AND pv_u.voter_id = $${userParamIdx} AND pv_u.org_id IS NULL)
                 )
+                LIMIT 1
             ),
             'is_active', (pp.created_at + COALESCE(pp.duration, '1 day')::interval > NOW())
         )
@@ -252,6 +253,7 @@ const getPostHydrationSelect = (companyParamIdx, userParamIdx) => `
                                 OR
                                 ($${companyParamIdx}::uuid IS NULL AND pv_u.voter_id = $${userParamIdx} AND pv_u.org_id IS NULL)
                             )
+                            LIMIT 1
                         ),
                         'is_active', (pp.created_at + COALESCE(pp.duration, '1 day')::interval > NOW()),
                         'options', COALESCE(
