@@ -14,6 +14,10 @@ exports.sendJobOffer = async (req, res) => {
         return res.status(400).json({ message: "jobId and userId are required" });
     }
 
+    if (userId === sentBy) {
+        return res.status(400).json({ message: "You cannot send a job offer to yourself." });
+    }
+
     const client = await pool.connect();
     try {
         await client.query('BEGIN');
