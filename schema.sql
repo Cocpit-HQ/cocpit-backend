@@ -746,6 +746,7 @@ CREATE TABLE job_applications (
   email TEXT NOT NULL,
   phone TEXT,
   resume_url TEXT NOT NULL,
+  resume_file_name TEXT,
   cover_note TEXT,
   current_status TEXT NOT NULL DEFAULT 'Applied',
   applied_at TIMESTAMPTZ DEFAULT now(),

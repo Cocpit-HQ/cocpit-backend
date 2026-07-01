@@ -68,6 +68,7 @@ exports.getAllJobs = async (req, res) => {
     if (userId) {
       conditions.push(`j.recruiter_id != $1`);
       conditions.push(`(ja.application_id IS NULL OR ja.current_status = 'Withdrawn')`);
+      conditions.push(`jo.offer_id IS NULL`);
     }
 
     // Base params
@@ -105,6 +106,7 @@ exports.getAllJobs = async (req, res) => {
       LEFT JOIN organizations c ON j.org_id = c.org_id
       ${userId ? "LEFT JOIN job_saves js ON js.job_id = j.job_id AND js.user_id = $1" : ""}
       ${userId ? "LEFT JOIN job_applications ja ON ja.job_id = j.job_id AND ja.applicant_id = $1" : ""}
+      ${userId ? "LEFT JOIN job_offers jo ON jo.job_id = j.job_id AND jo.user_id = $1" : ""}
       ${whereClause}
       ORDER BY j.created_at DESC
       ${limitClause}
@@ -153,7 +155,11 @@ exports.getRecommendations = async (req, res) => {
       LEFT JOIN organizations c ON j.org_id = c.org_id
       ${userId ? "LEFT JOIN job_saves js ON js.job_id = j.job_id AND js.user_id = $1" : ""}
       ${userId ? "LEFT JOIN job_applications ja ON ja.job_id = j.job_id AND ja.applicant_id = $1" : ""}
+      ${userId ? "LEFT JOIN job_offers jo ON jo.job_id = j.job_id AND jo.user_id = $1" : ""}
       WHERE j.is_active = TRUE AND j.status = 'ACTIVE'
+      ${userId ? "AND j.recruiter_id != $1" : ""}
+      ${userId ? "AND (ja.application_id IS NULL OR ja.current_status = 'Withdrawn')" : ""}
+      ${userId ? "AND jo.offer_id IS NULL" : ""}
       ORDER BY j.created_at DESC
       LIMIT 3
     `;
@@ -861,23 +867,28 @@ exports.applyJob = async (req, res) => {
 
     // Resume file URL from Cloudinary or existing profile resume
     let resume_url = null;
+    let resume_file_name = null;
     if (req.file) {
       resume_url = req.file.path;
+      resume_file_name = req.file.originalname;
     } else if (req.files && req.files['resume'] && req.files['resume'][0]) {
       resume_url = req.files['resume'][0].path;
+      resume_file_name = req.files['resume'][0].originalname;
     }
     if (!resume_url && body.resume_url) {
       resume_url = body.resume_url;
+      resume_file_name = body.resume_file_name || null;
     }
     if (!resume_url) {
       const recentResumeResult = await client.query(
-        `SELECT resume_url FROM job_applications
+        `SELECT resume_url, resume_file_name FROM job_applications
          WHERE applicant_id = $1 AND resume_url IS NOT NULL
          ORDER BY application_id DESC LIMIT 1`,
         [userId]
       );
       if (recentResumeResult.rowCount > 0) {
         resume_url = recentResumeResult.rows[0].resume_url;
+        resume_file_name = recentResumeResult.rows[0].resume_file_name;
       }
     }
 
@@ -906,12 +917,12 @@ exports.applyJob = async (req, res) => {
     if (existingWithdrawn) {
       appResult = await client.query(
         `UPDATE job_applications
-         SET full_name = $3, email = $4, phone = $5, resume_url = $6, cover_note = $7,
+         SET full_name = $3, email = $4, phone = $5, resume_url = $6, resume_file_name = $13, cover_note = $7,
              frozen_experience_years = $8, frozen_location = $9, frozen_skills = $10, frozen_highest_degree = $11, backend_score = $12,
              current_status = 'Applied'
          WHERE job_id = $1 AND applicant_id = $2
          RETURNING application_id`,
-        [id, userId, full_name, email, contactPhone, resume_url, cover_note, Math.round(totalYears), candidateLocation, candidateSkills, highestDegree, backendScore]
+        [id, userId, full_name, email, contactPhone, resume_url, cover_note, Math.round(totalYears), candidateLocation, candidateSkills, highestDegree, backendScore, resume_file_name]
       );
       
       // Cleanup old snapshot/analyses for re-application
@@ -921,10 +932,10 @@ exports.applyJob = async (req, res) => {
     } else {
       appResult = await client.query(
         `INSERT INTO job_applications 
-         (job_id, applicant_id, full_name, email, phone, resume_url, cover_note, frozen_experience_years, frozen_location, frozen_skills, frozen_highest_degree, backend_score)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+         (job_id, applicant_id, full_name, email, phone, resume_url, resume_file_name, cover_note, frozen_experience_years, frozen_location, frozen_skills, frozen_highest_degree, backend_score)
+         VALUES ($1,$2,$3,$4,$5,$6,$13,$7,$8,$9,$10,$11,$12)
          RETURNING application_id`,
-        [id, userId, full_name, email, contactPhone, resume_url, cover_note, Math.round(totalYears), candidateLocation, candidateSkills, highestDegree, backendScore]
+        [id, userId, full_name, email, contactPhone, resume_url, cover_note, Math.round(totalYears), candidateLocation, candidateSkills, highestDegree, backendScore, resume_file_name]
       );
     }
 
@@ -1249,7 +1260,7 @@ exports.getMyRecentResumes = async (req, res) => {
   try {
     const applicantId = req.user.sub;
     const result = await pool.query(`
-      SELECT resume_url, MAX(applied_at) as last_applied
+      SELECT resume_url, MAX(applied_at) as last_applied, (array_agg(resume_file_name ORDER BY applied_at DESC))[1] as resume_file_name
       FROM job_applications
       WHERE applicant_id = $1 AND resume_url IS NOT NULL
       GROUP BY resume_url
@@ -1259,14 +1270,18 @@ exports.getMyRecentResumes = async (req, res) => {
 
     const resumes = result.rows.map(row => {
       const url = row.resume_url;
-      let name = url.split('/').pop() || 'Resume.pdf';
-      // Clean up Cloudinary name (remove user id prefix if present)
-      // Format: resume-userid-timestamp.pdf -> Resume-timestamp.pdf or just keep it simple
-      if (name.startsWith('resume-')) {
-        const parts = name.split('-');
-        if (parts.length > 2) {
-          // just pop the timestamp+ext and maybe user id, let's just make it look cleaner
-          name = `Resume-${parts[parts.length - 1]}`;
+      let name = row.resume_file_name;
+      
+      if (!name) {
+        name = url.split('/').pop() || 'Resume.pdf';
+        // Clean up Cloudinary name (remove user id prefix if present)
+        // Format: resume-userid-timestamp.pdf -> Resume-timestamp.pdf or just keep it simple
+        if (name.startsWith('resume-')) {
+          const parts = name.split('-');
+          if (parts.length > 2) {
+            // just pop the timestamp+ext and maybe user id, let's just make it look cleaner
+            name = `Resume-${parts[parts.length - 1]}`;
+          }
         }
       }
       return { id: url, name, url, last_applied: row.last_applied };
