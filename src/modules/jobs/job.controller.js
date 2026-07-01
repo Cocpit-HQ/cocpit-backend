@@ -100,6 +100,9 @@ exports.getAllJobs = async (req, res) => {
         ${userId ? '(js.user_id IS NOT NULL) AS "isSaved",' : 'FALSE AS "isSaved",'}
         ${userId ? '(ja.application_id IS NOT NULL AND ja.current_status != \'Withdrawn\') AS "hasApplied",' : 'FALSE AS "hasApplied",'}
         ${userId ? 'ja.current_status AS "applicationStatus",' : 'NULL AS "applicationStatus",'}
+        ${userId ? '(jo.offer_id IS NOT NULL) AS "is_offer",' : 'FALSE AS "is_offer",'}
+        ${userId ? 'jo.offer_id,' : 'NULL AS offer_id,'}
+        ${userId ? 'jo.status AS "offerStatus",' : 'NULL AS "offerStatus",'}
         (SELECT COUNT(*)::int FROM job_applications ja_count WHERE ja_count.job_id = j.job_id) as applicants
       FROM jobs j
       LEFT JOIN active_users u ON j.recruiter_id = u.user_id
@@ -1215,11 +1218,15 @@ exports.getMySavedJobs = async (req, res) => {
         (ja.application_id IS NOT NULL AND ja.current_status != 'Withdrawn') AS "hasApplied",
         ja.current_status AS "applicationStatus",
         (SELECT COUNT(*)::int FROM job_applications ja_count WHERE ja_count.job_id = j.job_id) as applicants,
-        js.saved_at
+        js.saved_at,
+        (jo.offer_id IS NOT NULL) AS "is_offer",
+        jo.offer_id,
+        jo.status AS "offerStatus"
       FROM job_saves js
       JOIN jobs j ON js.job_id = j.job_id
       LEFT JOIN active_users u ON j.recruiter_id = u.user_id
       LEFT JOIN job_applications ja ON ja.job_id = j.job_id AND ja.applicant_id = $1
+      LEFT JOIN job_offers jo ON jo.job_id = j.job_id AND jo.user_id = $1
       WHERE js.user_id = $1 AND j.is_active = TRUE
       `;
 
@@ -1342,7 +1349,8 @@ exports.getMyApplications = async (req, res) => {
         JOIN jobs j ON ja.job_id = j.job_id
         LEFT JOIN users u ON j.recruiter_id = u.user_id
         LEFT JOIN job_saves js ON j.job_id = js.job_id AND js.user_id = $1
-        WHERE ja.applicant_id = $1 AND ja.current_status != 'Withdrawn'
+        LEFT JOIN job_offers jo ON j.job_id = jo.job_id AND jo.user_id = $1
+        WHERE ja.applicant_id = $1 AND ja.current_status != 'Withdrawn' AND j.is_active = TRUE
     `;
 
     // Add built filters
@@ -1383,6 +1391,9 @@ exports.getMyApplications = async (req, res) => {
           ja.screening_type AS "screeningType",
           ja.screening_question AS "screeningQuestion",
           ja.screening_submitted_at AS "screeningSubmittedAt",
+          (jo.offer_id IS NOT NULL) AS "is_offer",
+          jo.offer_id,
+          jo.status AS "offerStatus",
           (SELECT COUNT(*)::int FROM job_applications ja_count WHERE ja_count.job_id = j.job_id) as applicants,
           ja.applied_at
         ${baseQuery}

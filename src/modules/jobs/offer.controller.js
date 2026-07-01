@@ -139,7 +139,7 @@ exports.getMyOffers = async (req, res) => {
             JOIN jobs j ON jo.job_id = j.job_id
             LEFT JOIN organizations c ON jo.org_id = c.org_id
             LEFT JOIN active_users u ON jo.sent_by = u.user_id
-            WHERE jo.user_id = $1
+            WHERE jo.user_id = $1 AND j.is_active = TRUE
         `;
         const params = [userId];
         let paramIdx = 2;
@@ -196,7 +196,7 @@ exports.getCompanySentOffers = async (req, res) => {
             FROM job_offers jo
             JOIN jobs j ON jo.job_id = j.job_id
             JOIN organizations c ON jo.org_id = c.org_id
-            WHERE jo.org_id = $1
+            WHERE jo.org_id = $1 AND j.is_active = TRUE
             GROUP BY j.job_id, j.title, j.job_type, j.work_mode, j.location,
                      j.experience_level, j.salary_min, j.salary_max, j.salary_currency,
                      j.salary_period, j.company_name, j.description,

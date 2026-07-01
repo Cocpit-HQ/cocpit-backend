@@ -131,6 +131,22 @@ exports.getApplicationDetail = async (req, res) => {
       return res.status(404).json({ message: 'Application not found' });
     }
 
+    if (detail.status === 'Applied') {
+      try {
+        await pool.query(
+          `UPDATE job_applications SET current_status = 'in-review' WHERE application_id = $1`,
+          [applicationId]
+        );
+        await pool.query(
+          `INSERT INTO application_status_history (application_id, status) VALUES ($1, 'in-review')`,
+          [applicationId]
+        );
+        detail.status = 'in-review';
+      } catch (err) {
+        console.error('[getApplicationDetail] failed to update status to in-review:', err);
+      }
+    }
+
     const screening = detail.screeningRequired ? {
       required:    true,
       type:        detail.screeningType,
@@ -249,7 +265,7 @@ exports.updateApplicationStatus = async (req, res) => {
   const { status, screening } = req.body;
 
   const VALID_STATUSES = [
-    'Applied', 'Shortlisted', 'Approved', 'Rejected', 'Interview', 'Offer',
+    'Applied', 'in-review', 'Shortlisted', 'Approved', 'Rejected', 'Interview', 'Offer',
   ];
 
   if (!status || !VALID_STATUSES.includes(status)) {
