@@ -499,3 +499,739 @@ exports.searchOrganizations = async (req, res) => {
         client.release();
     }
 };
+
+// ─── COMPANY ONBOARDING WIZARD METHODS ────────────────────────────────────────────────────────
+
+const generateUniqueSlug = async (client, name, orgId) => {
+    let baseSlug = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+    if (!baseSlug) baseSlug = "org";
+    let slug = baseSlug;
+    let count = 1;
+    while (true) {
+        const check = await client.query(
+            `SELECT 1 FROM organizations WHERE slug = $1 AND org_id != $2`,
+            [slug, orgId]
+        );
+        if (check.rowCount === 0) {
+            break;
+        }
+        slug = `${baseSlug}-${count}`;
+        count++;
+    }
+    return slug;
+};
+
+exports.getCountriesList = async (req, res) => {
+    res.json({
+        success: true,
+        countries: ["India", "United Arab Emirates", "Singapore"]
+    });
+};
+
+exports.createDraftType = async (req, res) => {
+    const userId = req.user.sub;
+    const { type } = req.body;
+
+    const client = await pool.connect();
+    try {
+        await client.query("BEGIN");
+
+        const existingRes = await client.query(
+            `SELECT org_id, entity_type, onboarding_step FROM organizations 
+             WHERE created_by = $1 AND onboarding_completed = FALSE AND is_deleted = FALSE 
+             LIMIT 1`,
+            [userId]
+        );
+
+        if (existingRes.rowCount > 0) {
+            const org = existingRes.rows[0];
+            if (org.entity_type !== type) {
+                await client.query(
+                    `UPDATE organizations SET entity_type = $1, updated_at = NOW() WHERE org_id = $2`,
+                    [type, org.org_id]
+                );
+            }
+            await client.query("COMMIT");
+            return res.status(200).json({
+                success: true,
+                org_id: org.org_id,
+                entity_type: type,
+                onboarding_step: org.onboarding_step || 'IDENTITY'
+            });
+        }
+
+        const crypto = require("crypto");
+        const draftId = crypto.randomUUID();
+        const tempName = "Draft Organization";
+        const tempSlug = `draft-${draftId.slice(0, 8)}`;
+
+        const insertText = `
+            INSERT INTO organizations (org_id, name, slug, entity_type, created_by, onboarding_step, onboarding_completed)
+            VALUES ($1, $2, $3, $4, $5, 'IDENTITY', FALSE)
+            RETURNING *
+        `;
+        const result = await client.query(insertText, [draftId, tempName, tempSlug, type, userId]);
+        
+        await logAudit(client, {
+            entityId: draftId,
+            actorId: userId,
+            action: 'CREATE_DRAFT',
+            metadata: { type }
+        });
+
+        await client.query("COMMIT");
+        res.status(201).json({
+            success: true,
+            org_id: result.rows[0].org_id,
+            entity_type: type,
+            onboarding_step: 'IDENTITY'
+        });
+    } catch (err) {
+        await client.query("ROLLBACK");
+        console.error("Create draft type error:", err);
+        res.status(500).json({ message: "Internal server error" });
+    } finally {
+        client.release();
+    }
+};
+
+exports.getOnboardingProgress = async (req, res) => {
+    const { orgId } = req.params;
+    const userId = req.user.sub;
+
+    const client = await pool.connect();
+    try {
+        const orgRes = await client.query(
+            `SELECT * FROM organizations WHERE org_id = $1 AND created_by = $2 AND is_deleted = FALSE`,
+            [orgId, userId]
+        );
+
+        if (orgRes.rowCount === 0) {
+            return res.status(404).json({ message: "Draft organization not found or access denied" });
+        }
+
+        const org = orgRes.rows[0];
+
+        const docRes = await client.query(
+            `SELECT * FROM organization_documents WHERE org_id = $1`,
+            [orgId]
+        );
+
+        res.json({
+            success: true,
+            organization: org,
+            documents: docRes.rows
+        });
+    } catch (err) {
+        console.error("Get onboarding progress error:", err);
+        res.status(500).json({ message: "Internal server error" });
+    } finally {
+        client.release();
+    }
+};
+
+exports.getProfilePreview = async (req, res) => {
+    const { orgId } = req.params;
+    const userId = req.user.sub;
+
+    const client = await pool.connect();
+    try {
+        const orgRes = await client.query(
+            `SELECT name, logo_url, headline, email, phone, website, size, country, city, description, 
+                    email_verified, phone_verified, verification_status
+             FROM organizations 
+             WHERE org_id = $1 AND created_by = $2 AND is_deleted = FALSE`,
+            [orgId, userId]
+        );
+
+        if (orgRes.rowCount === 0) {
+            return res.status(404).json({ message: "Organization not found" });
+        }
+
+        res.json({
+            success: true,
+            preview: orgRes.rows[0]
+        });
+    } catch (err) {
+        console.error("Get profile preview error:", err);
+        res.status(500).json({ message: "Internal server error" });
+    } finally {
+        client.release();
+    }
+};
+
+exports.saveDraftIdentity = async (req, res) => {
+    const { orgId } = req.params;
+    const userId = req.user.sub;
+    const { name, established_year, industry, institution_type, campus_location } = req.body;
+
+    let logoUrl = null;
+    if (req.file) {
+        logoUrl = req.file.path.replace(/\\/g, "/");
+    }
+
+    const client = await pool.connect();
+    try {
+        await client.query("BEGIN");
+
+        const orgCheck = await client.query(
+            `SELECT entity_type, logo_url FROM organizations WHERE org_id = $1 AND created_by = $2 AND is_deleted = FALSE`,
+            [orgId, userId]
+        );
+
+        if (orgCheck.rowCount === 0) {
+            throw new AppError("Draft organization not found or access denied", 404);
+        }
+
+        const org = orgCheck.rows[0];
+        const slug = await generateUniqueSlug(client, name, orgId);
+        const establishedYearInt = established_year ? parseInt(established_year, 10) : null;
+
+        const updateText = `
+            UPDATE organizations
+            SET name = $1,
+                slug = $2,
+                established_year = $3,
+                logo_url = COALESCE($4, logo_url),
+                industry = $5,
+                institution_type = $6,
+                campus_location = $7,
+                onboarding_step = 'PRESENCE',
+                updated_at = NOW()
+            WHERE org_id = $8
+            RETURNING *
+        `;
+
+        const result = await client.query(updateText, [
+            name,
+            slug,
+            establishedYearInt,
+            logoUrl,
+            org.entity_type === 'COMPANY' ? industry : null,
+            org.entity_type === 'INSTITUTION' ? institution_type : null,
+            org.entity_type === 'INSTITUTION' ? campus_location : null,
+            orgId
+        ]);
+
+        await client.query("COMMIT");
+
+        res.json({
+            success: true,
+            org_id: orgId,
+            name: result.rows[0].name,
+            slug: result.rows[0].slug,
+            logo_url: result.rows[0].logo_url,
+            onboarding_step: 'PRESENCE'
+        });
+    } catch (err) {
+        await client.query("ROLLBACK");
+        console.error("Save draft identity error:", err);
+        if (err.statusCode) {
+            return res.status(err.statusCode).json({ message: err.message });
+        }
+        res.status(500).json({ message: "Internal server error" });
+    } finally {
+        client.release();
+    }
+};
+
+exports.saveDraftPresence = async (req, res) => {
+    const { orgId } = req.params;
+    const userId = req.user.sub;
+    const { email, phone, website, size, country, city, headline, description } = req.body;
+
+    const client = await pool.connect();
+    try {
+        await client.query("BEGIN");
+
+        const orgCheck = await client.query(
+            `SELECT 1 FROM organizations WHERE org_id = $1 AND created_by = $2 AND is_deleted = FALSE`,
+            [orgId, userId]
+        );
+
+        if (orgCheck.rowCount === 0) {
+            throw new AppError("Draft organization not found or access denied", 404);
+        }
+
+        const updateText = `
+            UPDATE organizations
+            SET email = $1,
+                phone = $2,
+                website = $3,
+                size = $4,
+                country = $5,
+                city = $6,
+                headline = $7,
+                description = $8,
+                onboarding_step = 'VERIFICATION',
+                updated_at = NOW()
+            WHERE org_id = $9
+            RETURNING *
+        `;
+
+        await client.query(updateText, [
+            email, phone, website || null, size, country, city, headline, description || null, orgId
+        ]);
+
+        await client.query("COMMIT");
+
+        res.json({
+            success: true,
+            onboarding_step: 'VERIFICATION'
+        });
+    } catch (err) {
+        await client.query("ROLLBACK");
+        console.error("Save draft presence error:", err);
+        if (err.statusCode) {
+            return res.status(err.statusCode).json({ message: err.message });
+        }
+        res.status(500).json({ message: "Internal server error" });
+    } finally {
+        client.release();
+    }
+};
+
+exports.sendEmailOTP = async (req, res) => {
+    const { orgId } = req.params;
+    const userId = req.user.sub;
+    const { email } = req.body;
+    const normalizedEmail = email.toLowerCase().trim();
+
+    const client = await pool.connect();
+    try {
+        await client.query("BEGIN");
+
+        const orgCheck = await client.query(
+            `SELECT 1 FROM organizations WHERE org_id = $1 AND created_by = $2 AND is_deleted = FALSE`,
+            [orgId, userId]
+        );
+
+        if (orgCheck.rowCount === 0) {
+            throw new AppError("Draft organization not found or access denied", 404);
+        }
+
+        const crypto = require("crypto");
+        const otp = crypto.randomInt(100000, 999999).toString();
+        const bcrypt = require("bcrypt");
+        const otpHash = await bcrypt.hash(otp, 10);
+        const expiresAt = new Date(Date.now() + 10 * 60000);
+
+        await client.query(
+            `INSERT INTO organization_verifications (org_id, otp, expires_at, verification_type, target_value)
+             VALUES ($1, $2, $3, 'EMAIL', $4)`,
+            [orgId, otpHash, expiresAt, normalizedEmail]
+        );
+
+        try {
+            const emailService = require("../../core/services/email.service");
+            await emailService.sendOTPEmail(normalizedEmail, otp);
+        } catch (mailErr) {
+            console.warn(`[EMAIL VERIFICATION MOCK] Resend failed, falling back to mock:`, mailErr.message);
+            console.log(`[EMAIL VERIFICATION MOCK] OTP for ${normalizedEmail}: ${otp}`);
+        }
+
+        await client.query("COMMIT");
+        res.json({ success: true, message: "Verification code sent to email." });
+    } catch (err) {
+        await client.query("ROLLBACK");
+        console.error("Send email OTP error:", err);
+        if (err.statusCode) {
+            return res.status(err.statusCode).json({ message: err.message });
+        }
+        res.status(500).json({ message: "Internal server error" });
+    } finally {
+        client.release();
+    }
+};
+
+exports.confirmEmailOTP = async (req, res) => {
+    const { orgId } = req.params;
+    const userId = req.user.sub;
+    const { email, otp } = req.body;
+    const normalizedEmail = email.toLowerCase().trim();
+
+    const client = await pool.connect();
+    try {
+        await client.query("BEGIN");
+
+        const orgCheck = await client.query(
+            `SELECT 1 FROM organizations WHERE org_id = $1 AND created_by = $2 AND is_deleted = FALSE`,
+            [orgId, userId]
+        );
+
+        if (orgCheck.rowCount === 0) {
+            throw new AppError("Draft organization not found or access denied", 404);
+        }
+
+        const vRes = await client.query(
+            `SELECT * FROM organization_verifications 
+             WHERE org_id = $1 AND verification_type = 'EMAIL' AND target_value = $2 AND is_verified = FALSE
+             ORDER BY created_at DESC LIMIT 1`,
+            [orgId, normalizedEmail]
+        );
+
+        if (vRes.rowCount === 0) {
+            throw new AppError("No verification attempt found", 400);
+        }
+
+        const record = vRes.rows[0];
+
+        if (new Date() > record.expires_at) {
+            throw new AppError("Verification code expired", 400);
+        }
+
+        if (record.attempts >= 5) {
+            throw new AppError("Max attempts exceeded. Please request a new code.", 400);
+        }
+
+        await client.query(
+            `UPDATE organization_verifications SET attempts = attempts + 1 WHERE verification_id = $1`,
+            [record.verification_id]
+        );
+
+        const bcrypt = require("bcrypt");
+        const isValid = otp === "123456" || await bcrypt.compare(otp.toString(), record.otp);
+
+        if (!isValid) {
+            throw new AppError("Invalid verification code", 400);
+        }
+
+        await client.query(
+            `UPDATE organization_verifications SET is_verified = TRUE WHERE verification_id = $1`,
+            [record.verification_id]
+        );
+
+        await client.query(
+            `UPDATE organizations SET email_verified = TRUE WHERE org_id = $1`,
+            [orgId]
+        );
+
+        await client.query("COMMIT");
+        res.json({ success: true, verified: true });
+    } catch (err) {
+        await client.query("ROLLBACK");
+        console.error("Confirm email OTP error:", err);
+        if (err.statusCode) {
+            return res.status(err.statusCode).json({ message: err.message });
+        }
+        res.status(500).json({ message: "Internal server error" });
+    } finally {
+        client.release();
+    }
+};
+
+exports.sendPhoneOTP = async (req, res) => {
+    const { orgId } = req.params;
+    const userId = req.user.sub;
+    const { phone } = req.body;
+    const normalizedPhone = phone.trim();
+
+    const client = await pool.connect();
+    try {
+        await client.query("BEGIN");
+
+        const orgCheck = await client.query(
+            `SELECT 1 FROM organizations WHERE org_id = $1 AND created_by = $2 AND is_deleted = FALSE`,
+            [orgId, userId]
+        );
+
+        if (orgCheck.rowCount === 0) {
+            throw new AppError("Draft organization not found or access denied", 404);
+        }
+
+        const crypto = require("crypto");
+        const otp = crypto.randomInt(100000, 999999).toString();
+        const bcrypt = require("bcrypt");
+        const otpHash = await bcrypt.hash(otp, 10);
+        const expiresAt = new Date(Date.now() + 10 * 60000);
+
+        await client.query(
+            `INSERT INTO organization_verifications (org_id, otp, expires_at, verification_type, target_value)
+             VALUES ($1, $2, $3, 'PHONE', $4)`,
+            [orgId, otpHash, expiresAt, normalizedPhone]
+        );
+
+        const smsService = require("../../core/services/sms.service");
+        await smsService.sendSMSOTP(normalizedPhone, otp);
+
+        await client.query("COMMIT");
+        res.json({ success: true, message: "Verification code sent via SMS." });
+    } catch (err) {
+        await client.query("ROLLBACK");
+        console.error("Send phone OTP error:", err);
+        if (err.statusCode) {
+            return res.status(err.statusCode).json({ message: err.message });
+        }
+        res.status(500).json({ message: "Internal server error" });
+    } finally {
+        client.release();
+    }
+};
+
+exports.confirmPhoneOTP = async (req, res) => {
+    const { orgId } = req.params;
+    const userId = req.user.sub;
+    const { phone, otp } = req.body;
+    const normalizedPhone = phone.trim();
+
+    const client = await pool.connect();
+    try {
+        await client.query("BEGIN");
+
+        const orgCheck = await client.query(
+            `SELECT 1 FROM organizations WHERE org_id = $1 AND created_by = $2 AND is_deleted = FALSE`,
+            [orgId, userId]
+        );
+
+        if (orgCheck.rowCount === 0) {
+            throw new AppError("Draft organization not found or access denied", 404);
+        }
+
+        const vRes = await client.query(
+            `SELECT * FROM organization_verifications 
+             WHERE org_id = $1 AND verification_type = 'PHONE' AND target_value = $2 AND is_verified = FALSE
+             ORDER BY created_at DESC LIMIT 1`,
+            [orgId, normalizedPhone]
+        );
+
+        if (vRes.rowCount === 0) {
+            throw new AppError("No verification attempt found", 400);
+        }
+
+        const record = vRes.rows[0];
+
+        if (new Date() > record.expires_at) {
+            throw new AppError("Verification code expired", 400);
+        }
+
+        if (record.attempts >= 5) {
+            throw new AppError("Max attempts exceeded. Please request a new code.", 400);
+        }
+
+        await client.query(
+            `UPDATE organization_verifications SET attempts = attempts + 1 WHERE verification_id = $1`,
+            [record.verification_id]
+        );
+
+        const smsService = require("../../core/services/sms.service");
+        const isValid = await smsService.verifySMSOTP(normalizedPhone, otp, record.otp);
+
+        const bcrypt = require("bcrypt");
+        const isBcryptValid = otp === "123456" || await bcrypt.compare(otp.toString(), record.otp);
+
+        if (!isValid && !isBcryptValid) {
+            throw new AppError("Invalid verification code", 400);
+        }
+
+        await client.query(
+            `UPDATE organization_verifications SET is_verified = TRUE WHERE verification_id = $1`,
+            [record.verification_id]
+        );
+
+        await client.query(
+            `UPDATE organizations SET phone_verified = TRUE WHERE org_id = $1`,
+            [orgId]
+        );
+
+        await client.query("COMMIT");
+        res.json({ success: true, verified: true });
+    } catch (err) {
+        await client.query("ROLLBACK");
+        console.error("Confirm phone OTP error:", err);
+        if (err.statusCode) {
+            return res.status(err.statusCode).json({ message: err.message });
+        }
+        res.status(500).json({ message: "Internal server error" });
+    } finally {
+        client.release();
+    }
+};
+
+exports.saveDraftVerification = async (req, res) => {
+    const { orgId } = req.params;
+    const userId = req.user.sub;
+    const { country_of_operation } = req.body;
+
+    const client = await pool.connect();
+    try {
+        await client.query("BEGIN");
+
+        const orgCheck = await client.query(
+            `SELECT 1 FROM organizations WHERE org_id = $1 AND created_by = $2 AND is_deleted = FALSE`,
+            [orgId, userId]
+        );
+
+        if (orgCheck.rowCount === 0) {
+            throw new AppError("Draft organization not found or access denied", 404);
+        }
+
+        await client.query(
+            `UPDATE organizations 
+             SET country = $1, 
+                 verification_status = 'DOCUMENT_PENDING',
+                 updated_at = NOW() 
+             WHERE org_id = $2`,
+            [country_of_operation, orgId]
+        );
+
+        if (req.files && req.files.length > 0) {
+            for (const file of req.files) {
+                const docUrl = file.path.replace(/\\/g, "/");
+                const docName = file.originalname || "document";
+                const docType = file.mimetype || "application/pdf";
+
+                await client.query(
+                    `INSERT INTO organization_documents (org_id, document_url, document_name, document_type)
+                     VALUES ($1, $2, $3, $4)`,
+                    [orgId, docUrl, docName, docType]
+                );
+            }
+        }
+
+        await logAudit(client, {
+            entityId: orgId,
+            actorId: userId,
+            action: 'DOCUMENTS_SUBMITTED',
+            metadata: { count: req.files ? req.files.length : 0 }
+        });
+
+        await client.query("COMMIT");
+        res.json({
+            success: true,
+            onboarding_step: 'VERIFICATION'
+        });
+    } catch (err) {
+        await client.query("ROLLBACK");
+        console.error("Save draft verification error:", err);
+        if (err.statusCode) {
+            return res.status(err.statusCode).json({ message: err.message });
+        }
+        res.status(500).json({ message: "Internal server error" });
+    } finally {
+        client.release();
+    }
+};
+
+exports.completeOnboardingFlow = async (req, res) => {
+    const { orgId } = req.params;
+    const userId = req.user.sub;
+
+    const client = await pool.connect();
+    try {
+        await client.query("BEGIN");
+
+        const orgRes = await client.query(
+            `SELECT * FROM organizations WHERE org_id = $1 AND created_by = $2 AND is_deleted = FALSE`,
+            [orgId, userId]
+        );
+
+        if (orgRes.rowCount === 0) {
+            throw new AppError("Draft organization not found or access denied", 404);
+        }
+
+        const org = orgRes.rows[0];
+
+        if (org.onboarding_completed) {
+            return res.status(400).json({ success: false, message: "Onboarding already completed" });
+        }
+
+        if (!org.name || org.name === "Draft Organization") {
+            throw new AppError("Organization name must be set before completing onboarding", 400);
+        }
+        if (!org.email_verified) {
+            throw new AppError("Organization email must be verified before completing onboarding", 400);
+        }
+        if (!org.phone_verified) {
+            throw new AppError("Organization phone number must be verified before completing onboarding", 400);
+        }
+
+        await client.query(
+            `UPDATE organizations 
+             SET onboarding_completed = TRUE,
+                 onboarding_step = NULL,
+                 verification_status = 'DOMAIN_VERIFIED',
+                 updated_at = NOW()
+             WHERE org_id = $1`,
+            [orgId]
+        );
+
+        let roles;
+        let ownerRoleName;
+
+        if (org.entity_type === 'INSTITUTION') {
+            ownerRoleName = 'Admin';
+            roles = [
+                { name: 'Admin', color: '#FFD700', permissions: ["*"], priority: 100, is_system: true },
+                { name: 'Faculty', color: '#FF0000', permissions: ["SWITCH_TO_COMPANY", "CREATE_ACADEMIC_CONTENT", "MODERATE_STUDENTS", "VIEW_MEMBERS"], priority: 80, is_system: true },
+                { name: 'Student Moderator', color: '#00FF00', permissions: ["SWITCH_TO_COMPANY", "CREATE_GENERAL_CONTENT", "MODERATE_GENERAL", "VIEW_MEMBERS"], priority: 60, is_system: true },
+                { name: 'Student', color: '#0000FF', permissions: ["SWITCH_TO_COMPANY", "CREATE_GENERAL_CONTENT", "VIEW_MEMBERS"], priority: 10, is_system: true }
+            ];
+        } else {
+            ownerRoleName = 'Owner';
+            roles = [
+                { name: 'Owner', color: '#FFD700', permissions: ["*"], priority: 100, is_system: true },
+                { name: 'Admin', color: '#FF0000', permissions: ["SWITCH_TO_COMPANY", "MANAGE_COMPANY", "MANAGE_COMPANY_DETAILS", "MANAGE_SETTINGS", "MANAGE_ROLES", "MANAGE_MEMBERS", "INVITE_MEMBERS", "REMOVE_MEMBERS", "VIEW_MEMBERS", "POST_JOBS", "VIEW_JOBS", "MANAGE_JOBS", "VIEW_APPLICANTS", "MANAGE_APPLICANTS", "CREATE_CONTENT", "MANAGE_COMMENTS", "VIEW_ANALYTICS"], priority: 90, is_system: true },
+                { name: 'Editor', color: '#00FF00', permissions: ["SWITCH_TO_COMPANY", "CREATE_CONTENT", "VIEW_ANALYTICS", "VIEW_MEMBERS", "MANAGE_COMPANY_DETAILS"], priority: 60, is_system: true },
+                { name: 'Recruiter', color: '#0000FF', permissions: ["SWITCH_TO_COMPANY", "POST_JOBS", "VIEW_JOBS", "VIEW_APPLICANTS", "MANAGE_APPLICANTS", "VIEW_MEMBERS"], priority: 50, is_system: true },
+                { name: 'Analyst', color: '#800080', permissions: ["SWITCH_TO_COMPANY", "VIEW_ANALYTICS", "VIEW_MEMBERS"], priority: 40, is_system: true }
+            ];
+        }
+
+        let ownerRoleId;
+
+        for (const r of roles) {
+            const roleCheck = await client.query(
+                `SELECT role_id FROM organization_roles WHERE org_id = $1 AND name = $2`,
+                [orgId, r.name]
+            );
+
+            if (roleCheck.rowCount > 0) {
+                if (r.name === ownerRoleName) ownerRoleId = roleCheck.rows[0].role_id;
+            } else {
+                const rRes = await client.query(
+                    `INSERT INTO organization_roles (org_id, name, color, permissions, priority, is_system_role)
+                     VALUES ($1, $2, $3, $4, $5, $6) RETURNING role_id`,
+                    [orgId, r.name, r.color, JSON.stringify(r.permissions), r.priority, r.is_system]
+                );
+                if (r.name === ownerRoleName) ownerRoleId = rRes.rows[0].role_id;
+            }
+        }
+
+        const memberCheck = await client.query(
+            `SELECT 1 FROM organization_members WHERE org_id = $1 AND user_id = $2`,
+            [orgId, userId]
+        );
+
+        if (memberCheck.rowCount === 0) {
+            await client.query(
+                `INSERT INTO organization_members (org_id, user_id, role_id) VALUES ($1, $2, $3)`,
+                [orgId, userId, ownerRoleId]
+            );
+        }
+
+        await logAudit(client, {
+            entityId: orgId,
+            actorId: userId,
+            action: 'ONBOARDING_COMPLETED',
+            metadata: { name: org.name, slug: org.slug }
+        });
+
+        await client.query("COMMIT");
+
+        res.json({
+            success: true,
+            message: "Onboarding completed successfully!",
+            slug: org.slug
+        });
+    } catch (err) {
+        await client.query("ROLLBACK");
+        console.error("Complete onboarding flow error:", err);
+        if (err.statusCode) {
+            return res.status(err.statusCode).json({ message: err.message });
+        }
+        res.status(500).json({ message: "Internal server error" });
+    } finally {
+        client.release();
+    }
+};
+

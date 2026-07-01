@@ -269,6 +269,15 @@ CREATE TABLE organizations (
     verified_edu BOOLEAN DEFAULT FALSE,
     auto_verify_domains VARCHAR(255)[] DEFAULT '{}',
     verification_status VARCHAR(20) DEFAULT 'UNVERIFIED' CHECK (verification_status IN ('UNVERIFIED', 'DOMAIN_PENDING', 'DOMAIN_VERIFIED', 'REJECTED')),
+    email_verified BOOLEAN DEFAULT FALSE,
+    phone VARCHAR(20),
+    phone_verified BOOLEAN DEFAULT FALSE,
+    country VARCHAR(100),
+    city VARCHAR(100),
+    headline VARCHAR(200),
+    created_by UUID REFERENCES users(user_id) ON DELETE SET NULL,
+    onboarding_step VARCHAR(50) DEFAULT 'IDENTITY',
+    onboarding_completed BOOLEAN DEFAULT FALSE,
     is_deleted BOOLEAN DEFAULT FALSE,
     deleted_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ DEFAULT NOW(),
@@ -279,6 +288,8 @@ CREATE TABLE organizations (
 CREATE INDEX idx_companies_slug ON organizations(slug);
 CREATE INDEX idx_companies_website ON organizations(website);
 CREATE INDEX IF NOT EXISTS idx_companies_name_trgm ON organizations USING GIN (name gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_organizations_created_by ON organizations(created_by);
+CREATE INDEX IF NOT EXISTS idx_organizations_onboarding_completed ON organizations(onboarding_completed) WHERE onboarding_completed = FALSE;
 
 -- Dynamic Roles & Members
 CREATE TABLE organization_roles (
@@ -1037,12 +1048,29 @@ CREATE INDEX idx_company_invites_token ON organization_invites(token);
 CREATE TABLE IF NOT EXISTS organization_verifications (
     verification_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     org_id UUID REFERENCES organizations(org_id) ON DELETE CASCADE,
-    otp VARCHAR(10) NOT NULL,
+    otp VARCHAR(255) NOT NULL,
     attempts INTEGER DEFAULT 0,
     expires_at TIMESTAMPTZ NOT NULL,
     created_at TIMESTAMPTZ DEFAULT NOW(),
-    is_verified BOOLEAN DEFAULT FALSE -- To track if this specific OTP was used successfully
+    is_verified BOOLEAN DEFAULT FALSE, -- To track if this specific OTP was used successfully
+    verification_type VARCHAR(20) DEFAULT 'EMAIL' CHECK (verification_type IN ('EMAIL', 'PHONE', 'EDU_EMAIL', 'DOCUMENT')),
+    target_value VARCHAR(255),
+    request_count INTEGER DEFAULT 1
 );
+
+CREATE INDEX IF NOT EXISTS idx_org_verifications_lookup ON organization_verifications(org_id, verification_type, is_verified);
+
+-- 4b. COMPANY VERIFICATION DOCUMENTS Table
+CREATE TABLE IF NOT EXISTS organization_documents (
+    document_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    org_id UUID NOT NULL REFERENCES organizations(org_id) ON DELETE CASCADE,
+    document_url TEXT NOT NULL,
+    document_name VARCHAR(255) NOT NULL,
+    document_type VARCHAR(100) NOT NULL,
+    uploaded_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_org_documents_org_id ON organization_documents(org_id);
 
 
 -- 5. AUDIT LOGS Table

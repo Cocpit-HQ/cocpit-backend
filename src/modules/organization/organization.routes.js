@@ -11,10 +11,35 @@ const roleController = require("./organization.roles.controller");
 const { requireAuth, optionalAuth } = require("../../core/middlewares/auth.middleware");
 const { requireOrgPermission } = require("../../core/middlewares/organization.auth.middleware");
 const { organizationActionLimiter, otpGenerationLimiter } = require("../../core/middlewares/rateLimit.middleware");
-const { uploadAvatar, uploadCover } = require("../../core/middlewares/upload.middleware");
+const { uploadAvatar, uploadCover, uploadChatMedia } = require("../../core/middlewares/upload.middleware");
 const { requireRoles } = require("../../core/middlewares/role.middleware");
+const { validate } = require("../../core/middlewares/validation.middleware");
+const {
+    createTypeSchema,
+    saveIdentitySchema,
+    savePresenceSchema,
+    verifyEmailSendSchema,
+    verifyEmailConfirmSchema,
+    verifyPhoneSendSchema,
+    verifyPhoneConfirmSchema,
+    saveVerificationSchema
+} = require("./organization.validation");
 const institutionController = require("./institution.controller");
 const hierarchyController = require("./organization.hierarchy.controller");
+
+// --- COMPANY ONBOARDING WIZARD ---
+router.get("/organizations/countries", requireAuth, organizationController.getCountriesList);
+router.post("/organizations/type", requireAuth, validate(createTypeSchema), organizationController.createDraftType);
+router.get("/organizations/:orgId/progress", requireAuth, organizationController.getOnboardingProgress);
+router.get("/organizations/:orgId/preview", requireAuth, organizationController.getProfilePreview);
+router.put("/organizations/:orgId/identity", requireAuth, uploadAvatar.single("logo"), validate(saveIdentitySchema), organizationController.saveDraftIdentity);
+router.put("/organizations/:orgId/presence", requireAuth, validate(savePresenceSchema), organizationController.saveDraftPresence);
+router.post("/organizations/:orgId/verify-email/send", requireAuth, validate(verifyEmailSendSchema), organizationController.sendEmailOTP);
+router.post("/organizations/:orgId/verify-email/confirm", requireAuth, validate(verifyEmailConfirmSchema), organizationController.confirmEmailOTP);
+router.post("/organizations/:orgId/verify-phone/send", requireAuth, validate(verifyPhoneSendSchema), organizationController.sendPhoneOTP);
+router.post("/organizations/:orgId/verify-phone/confirm", requireAuth, validate(verifyPhoneConfirmSchema), organizationController.confirmPhoneOTP);
+router.put("/organizations/:orgId/verification", requireAuth, uploadChatMedia.array("documents", 10), validate(saveVerificationSchema), organizationController.saveDraftVerification);
+router.post("/organizations/:orgId/complete", requireAuth, organizationController.completeOnboardingFlow);
 
 // --- PUBLIC & SHARED ---
 router.get("/organizations/check-slug", optionalAuth, organizationController.checkSlug);
