@@ -102,7 +102,8 @@ exports.getAllJobs = async (req, res) => {
         ${userId ? 'ja.current_status AS "applicationStatus",' : 'NULL AS "applicationStatus",'}
         ${userId ? '(jo.offer_id IS NOT NULL) AS "is_offer",' : 'FALSE AS "is_offer",'}
         ${userId ? 'jo.offer_id,' : 'NULL AS offer_id,'}
-        ${userId ? 'jo.status AS "offerStatus",' : 'NULL AS "offerStatus",'}
+        ${userId ? 'CASE WHEN jo.status = \'pending\' AND jo.expires_at <= NOW() THEN \'expired\' ELSE jo.status END AS "offerStatus",' : 'NULL AS "offerStatus",'}
+        ${userId ? 'jo.expires_at AS "offer_expires_at",' : 'NULL AS "offer_expires_at",'}
         (SELECT COUNT(*)::int FROM job_applications ja_count WHERE ja_count.job_id = j.job_id) as applicants
       FROM jobs j
       LEFT JOIN active_users u ON j.recruiter_id = u.user_id
@@ -246,7 +247,8 @@ exports.getJobById = async (req, res) => {
         ${userId ? '(ja.application_id IS NOT NULL AND ja.current_status != \'Withdrawn\') AS "hasApplied",' : 'FALSE AS "hasApplied",'}
         ${userId ? 'ja.current_status AS "applicationStatus",' : 'NULL AS "applicationStatus",'}
         ${userId ? '(jo.offer_id IS NOT NULL) AS "is_offer",' : 'FALSE AS "is_offer",'}
-        ${userId ? 'jo.status AS "offerStatus",' : 'NULL AS "offerStatus",'}
+        ${userId ? 'CASE WHEN jo.status = \'pending\' AND jo.expires_at <= NOW() THEN \'expired\' ELSE jo.status END AS "offerStatus",' : 'NULL AS "offerStatus",'}
+        ${userId ? 'jo.expires_at AS "offer_expires_at",' : 'NULL AS "offer_expires_at",'}
         ${userId ? 'jo.offer_id AS "offer_id",' : 'NULL AS "offer_id",'}
         ${userId ? 'jo.message AS "recruiter_message",' : 'NULL AS "recruiter_message",'}
         ${userId ? 'ja.application_id AS "applicationId",' : 'NULL AS "applicationId",'}
@@ -1221,7 +1223,8 @@ exports.getMySavedJobs = async (req, res) => {
         js.saved_at,
         (jo.offer_id IS NOT NULL) AS "is_offer",
         jo.offer_id,
-        jo.status AS "offerStatus"
+        CASE WHEN jo.status = 'pending' AND jo.expires_at <= NOW() THEN 'expired' ELSE jo.status END AS "offerStatus",
+        jo.expires_at AS "offer_expires_at"
       FROM job_saves js
       JOIN jobs j ON js.job_id = j.job_id
       LEFT JOIN active_users u ON j.recruiter_id = u.user_id
@@ -1393,7 +1396,8 @@ exports.getMyApplications = async (req, res) => {
           ja.screening_submitted_at AS "screeningSubmittedAt",
           (jo.offer_id IS NOT NULL) AS "is_offer",
           jo.offer_id,
-          jo.status AS "offerStatus",
+          CASE WHEN jo.status = 'pending' AND jo.expires_at <= NOW() THEN 'expired' ELSE jo.status END AS "offerStatus",
+          jo.expires_at AS "offer_expires_at",
           (SELECT COUNT(*)::int FROM job_applications ja_count WHERE ja_count.job_id = j.job_id) as applicants,
           ja.applied_at
         ${baseQuery}

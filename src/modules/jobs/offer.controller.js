@@ -127,7 +127,11 @@ exports.getMyOffers = async (req, res) => {
     try {
         let query = `
             SELECT 
-                jo.*,
+                jo.offer_id, jo.job_id, jo.org_id, jo.user_id, jo.sent_by, jo.message, jo.responded_at, jo.expires_at, jo.created_at, jo.updated_at,
+                CASE
+                    WHEN jo.status = 'pending' AND jo.expires_at <= NOW() THEN 'expired'
+                    ELSE jo.status
+                END AS status,
                 TRUE AS is_offer,
                 j.title, j.description, j.salary_min, j.salary_max, j.salary_currency,
                 j.salary_period, j.job_type, j.work_mode, j.location, j.experience_level,
@@ -145,9 +149,15 @@ exports.getMyOffers = async (req, res) => {
         let paramIdx = 2;
 
         if (status && ['pending', 'accepted', 'declined', 'withdrawn', 'expired'].includes(status)) {
-            query += ` AND jo.status = $${paramIdx}`;
-            params.push(status);
-            paramIdx++;
+            if (status === 'expired') {
+                query += ` AND (jo.status = 'expired' OR (jo.status = 'pending' AND jo.expires_at <= NOW()))`;
+            } else if (status === 'pending') {
+                query += ` AND jo.status = 'pending' AND (jo.expires_at IS NULL OR jo.expires_at > NOW())`;
+            } else {
+                query += ` AND jo.status = $${paramIdx}`;
+                params.push(status);
+                paramIdx++;
+            }
         }
 
         query += ` ORDER BY jo.created_at DESC`;
@@ -295,7 +305,7 @@ exports.respondToOffer = async (req, res) => {
 
         // 1. Fetch + lock the offer
         const offerRes = await client.query(
-            "SELECT * FROM job_offers WHERE offer_id = $1 AND user_id = $2 AND status = 'pending' FOR UPDATE",
+            "SELECT * FROM job_offers WHERE offer_id = $1 AND user_id = $2 FOR UPDATE",
             [resolvedOfferId, userId]
         );
 
@@ -305,6 +315,20 @@ exports.respondToOffer = async (req, res) => {
         }
 
         const offer = offerRes.rows[0];
+
+        if (offer.status !== 'pending') {
+            await client.query('ROLLBACK');
+            return res.status(400).json({ message: `Offer is already ${offer.status}` });
+        }
+
+        if (offer.expires_at && new Date(offer.expires_at) <= new Date()) {
+            await client.query(
+                "UPDATE job_offers SET status = 'expired', updated_at = NOW() WHERE offer_id = $1",
+                [resolvedOfferId]
+            );
+            await client.query('COMMIT');
+            return res.status(400).json({ message: "Offer has expired" });
+        }
 
         // 2. Update status
         await client.query(
@@ -503,7 +527,11 @@ exports.getOfferDetail = async (req, res) => {
     try {
         const result = await pool.query(
             `SELECT 
-                jo.*,
+                jo.offer_id, jo.job_id, jo.org_id, jo.user_id, jo.sent_by, jo.message, jo.responded_at, jo.expires_at, jo.created_at, jo.updated_at,
+                CASE
+                    WHEN jo.status = 'pending' AND jo.expires_at <= NOW() THEN 'expired'
+                    ELSE jo.status
+                END AS status,
                 j.title, j.description, j.salary_min, j.salary_max, j.salary_currency,
                 j.salary_period, j.job_type, j.work_mode, j.location, j.experience_level,
                 j.about_company, j.company_name, j.industry, j.recruiter_id,
