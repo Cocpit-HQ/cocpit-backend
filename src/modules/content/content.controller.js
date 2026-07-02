@@ -798,6 +798,14 @@ exports.createPost = async (req, res) => {
             }
         }
 
+        // Post content validation for normal text posts
+        if (post_type === 'text' && !req.body.shared_post_id && !req.body.shared_job_id) {
+            if (!content || content.trim().length === 0) {
+                await client.query('ROLLBACK');
+                return res.status(400).json({ message: "Post content cannot be empty" });
+            }
+        }
+
         // 1. Get Category ID
         let categoryId = null;
         if (!category) {
@@ -1442,12 +1450,12 @@ exports.updatePostById = async (req, res) => {
         }
 
         // 2. Fetch Post & Check Permissions (CRITICAL FIX)
-        const postCheck = await client.query(`SELECT author_id, author_org_id FROM posts WHERE post_id = $1`, [postId]);
+        const postCheck = await client.query(`SELECT author_id, author_org_id, post_type, shared_post_id, shared_job_id FROM posts WHERE post_id = $1`, [postId]);
         if (postCheck.rowCount === 0) {
             await client.query("ROLLBACK");
             return res.status(404).json({ message: "Post not found" });
         }
-        const { author_id, author_org_id } = postCheck.rows[0];
+        const { author_id, author_org_id, post_type: currentPostType, shared_post_id, shared_job_id } = postCheck.rows[0];
         let canEdit = false;
 
         if (author_id === userId && !author_org_id) {
@@ -1481,6 +1489,13 @@ exports.updatePostById = async (req, res) => {
 
         // content
         if (content !== undefined) {
+            const effectivePostType = post_type || currentPostType;
+            if (effectivePostType === 'text' && !shared_post_id && !shared_job_id) {
+                if (!content || content.trim().length === 0) {
+                    await client.query('ROLLBACK');
+                    return res.status(400).json({ message: "Post content cannot be empty" });
+                }
+            }
             updates.push(`content = $${index++}`);
             values.push(content);
         }
