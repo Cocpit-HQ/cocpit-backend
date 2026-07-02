@@ -902,8 +902,8 @@ exports.confirmEmailOTP = async (req, res) => {
         );
 
         await client.query(
-            `UPDATE organizations SET email_verified = TRUE WHERE org_id = $1`,
-            [orgId]
+            `UPDATE organizations SET email_verified = TRUE, email = $1 WHERE org_id = $2`,
+            [normalizedEmail, orgId]
         );
 
         await client.query("COMMIT");
@@ -1029,8 +1029,8 @@ exports.confirmPhoneOTP = async (req, res) => {
         );
 
         await client.query(
-            `UPDATE organizations SET phone_verified = TRUE WHERE org_id = $1`,
-            [orgId]
+            `UPDATE organizations SET phone_verified = TRUE, phone = $1 WHERE org_id = $2`,
+            [normalizedPhone, orgId]
         );
 
         await client.query("COMMIT");
