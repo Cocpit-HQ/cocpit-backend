@@ -931,13 +931,17 @@ exports.sendPhoneOTP = async (req, res) => {
         await client.query("BEGIN");
 
         const orgCheck = await client.query(
-            `SELECT 1 FROM organizations WHERE org_id = $1 AND created_by = $2 AND is_deleted = FALSE`,
+            `SELECT country FROM organizations WHERE org_id = $1 AND created_by = $2 AND is_deleted = FALSE`,
             [orgId, userId]
         );
 
         if (orgCheck.rowCount === 0) {
             throw new AppError("Draft organization not found or access denied", 404);
         }
+
+        const country = orgCheck.rows[0].country;
+        const smsService = require("../../core/services/sms.service");
+        const formattedPhone = smsService.normalizePhone(normalizedPhone, country);
 
         const crypto = require("crypto");
         const otp = crypto.randomInt(100000, 999999).toString();
@@ -948,11 +952,10 @@ exports.sendPhoneOTP = async (req, res) => {
         await client.query(
             `INSERT INTO organization_verifications (org_id, otp, expires_at, verification_type, target_value)
              VALUES ($1, $2, $3, 'PHONE', $4)`,
-            [orgId, otpHash, expiresAt, normalizedPhone]
+            [orgId, otpHash, expiresAt, formattedPhone]
         );
 
-        const smsService = require("../../core/services/sms.service");
-        await smsService.sendSMSOTP(normalizedPhone, otp);
+        await smsService.sendSMSOTP(formattedPhone, otp, country);
 
         await client.query("COMMIT");
         res.json({ success: true, message: "Verification code sent via SMS." });
@@ -979,7 +982,7 @@ exports.confirmPhoneOTP = async (req, res) => {
         await client.query("BEGIN");
 
         const orgCheck = await client.query(
-            `SELECT 1 FROM organizations WHERE org_id = $1 AND created_by = $2 AND is_deleted = FALSE`,
+            `SELECT country FROM organizations WHERE org_id = $1 AND created_by = $2 AND is_deleted = FALSE`,
             [orgId, userId]
         );
 
@@ -987,11 +990,15 @@ exports.confirmPhoneOTP = async (req, res) => {
             throw new AppError("Draft organization not found or access denied", 404);
         }
 
+        const country = orgCheck.rows[0].country;
+        const smsService = require("../../core/services/sms.service");
+        const formattedPhone = smsService.normalizePhone(normalizedPhone, country);
+
         const vRes = await client.query(
             `SELECT * FROM organization_verifications 
              WHERE org_id = $1 AND verification_type = 'PHONE' AND target_value = $2 AND is_verified = FALSE
              ORDER BY created_at DESC LIMIT 1`,
-            [orgId, normalizedPhone]
+            [orgId, formattedPhone]
         );
 
         if (vRes.rowCount === 0) {
@@ -1013,8 +1020,7 @@ exports.confirmPhoneOTP = async (req, res) => {
             [record.verification_id]
         );
 
-        const smsService = require("../../core/services/sms.service");
-        const isValid = await smsService.verifySMSOTP(normalizedPhone, otp, record.otp);
+        const isValid = await smsService.verifySMSOTP(formattedPhone, otp, record.otp, country);
 
         const bcrypt = require("bcrypt");
         const isBcryptValid = otp === "123456" || await bcrypt.compare(otp.toString(), record.otp);
@@ -1030,7 +1036,7 @@ exports.confirmPhoneOTP = async (req, res) => {
 
         await client.query(
             `UPDATE organizations SET phone_verified = TRUE, phone = $1 WHERE org_id = $2`,
-            [normalizedPhone, orgId]
+            [formattedPhone, orgId]
         );
 
         await client.query("COMMIT");
