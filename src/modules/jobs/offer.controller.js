@@ -127,7 +127,7 @@ exports.getMyOffers = async (req, res) => {
     try {
         let query = `
             SELECT 
-                jo.offer_id, jo.job_id, jo.org_id, jo.user_id, jo.sent_by, jo.message, jo.responded_at, jo.expires_at, jo.created_at, jo.updated_at,
+                jo.offer_id, jo.job_id, jo.org_id, jo.user_id, jo.sent_by, jo.message, jo.responded_at, jo.expires_at, jo.created_at, jo.updated_at, jo.context_sent,
                 CASE
                     WHEN jo.status = 'pending' AND jo.expires_at <= NOW() THEN 'expired'
                     ELSE jo.status
@@ -653,4 +653,147 @@ exports.getRecruiterSentOffers = async (req, res) => {
         res.status(500).json({ message: "Internal server error" });
     }
 };
+
+/**
+ * sendChatContext
+ * Automatically sends a one-time rich job card context message when a candidate accepts an offer and starts chatting
+ */
+exports.sendChatContext = async (req, res) => {
+    const { offerId } = req.params;
+    const userId = req.user.sub || req.user.user_id;
+
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+
+        // 1. Fetch job offer
+        const offerRes = await client.query(
+            "SELECT * FROM job_offers WHERE offer_id = $1 AND user_id = $2 AND status = 'accepted' FOR UPDATE",
+            [offerId, userId]
+        );
+        if (offerRes.rowCount === 0) {
+            await client.query('ROLLBACK');
+            return res.status(404).json({ message: "Accepted offer not found" });
+        }
+        const offer = offerRes.rows[0];
+
+        // 2. Check if context has already been sent
+        if (offer.context_sent) {
+            await client.query('COMMIT');
+            return res.json({ sent: false, already_sent: true });
+        }
+
+        const targetUserId = offer.sent_by;
+
+        // 3. Find if there is an existing conversation between candidate (userId) and recruiter (targetUserId)
+        const existingConv = await client.query(
+            `SELECT c.conversation_id
+             FROM conversations c
+             JOIN conversation_participants cp1 ON c.conversation_id = cp1.conversation_id AND cp1.user_id = $1
+             JOIN conversation_participants cp2 ON c.conversation_id = cp2.conversation_id AND cp2.user_id = $2
+             WHERE c.is_group = FALSE AND c.is_active = TRUE`,
+            [userId, targetUserId]
+        );
+
+        if (existingConv.rowCount === 0) {
+            // No conversation yet. Let the frontend know so it can retry later.
+            await client.query('COMMIT');
+            return res.json({ sent: false, no_conversation: true });
+        }
+
+        const conversationId = existingConv.rows[0].conversation_id;
+
+        // 4. Fetch details for context message text
+        // - Candidate full name
+        const userRes = await client.query("SELECT full_name, avatar_url FROM users WHERE user_id = $1", [userId]);
+        const candidateName = userRes.rows[0]?.full_name || 'Candidate';
+        const candidateAvatar = userRes.rows[0]?.avatar_url || null;
+
+        // - Job role
+        const jobRes = await client.query("SELECT title, company_name, org_id FROM jobs WHERE job_id = $1", [offer.job_id]);
+        const jobTitle = jobRes.rows[0]?.title || 'Job';
+        const jobCompany = jobRes.rows[0]?.company_name || 'Company';
+        const jobOrgId = jobRes.rows[0]?.org_id;
+
+        let companyName = jobCompany;
+        if (jobOrgId) {
+            const orgRes = await client.query("SELECT name FROM organizations WHERE org_id = $1", [jobOrgId]);
+            if (orgRes.rowCount > 0) {
+                companyName = orgRes.rows[0].name;
+            }
+        }
+
+        const contextText = `Hi! I'm ${candidateName}. I accepted your offer for '${jobTitle}' at ${companyName} and wanted to connect! 🎉`;
+
+        // 5. Insert context message:
+        // Use message_type = 'offer_context', entity_type = 'job', entity_id = offer.job_id
+        const msgRes = await client.query(
+            `INSERT INTO messages (
+                conversation_id, sender_id, text_content,
+                message_type, entity_type, entity_id, sender_type
+             ) VALUES ($1, $2, $3, 'offer_context', 'job', $4, 'USER')
+             RETURNING *`,
+            [conversationId, userId, '', offer.job_id]
+        );
+        const newMessage = msgRes.rows[0];
+
+        // 6. Update conversation
+        await client.query(
+            `UPDATE conversations
+             SET last_message = $1, last_message_at = NOW(), updated_at = NOW()
+             WHERE conversation_id = $2`,
+            [contextText, conversationId]
+        );
+
+        // 7. Set context_sent = TRUE
+        await client.query(
+            `UPDATE job_offers SET context_sent = TRUE, updated_at = NOW() WHERE offer_id = $1`,
+            [offerId]
+        );
+
+        await client.query('COMMIT');
+
+        // 8. Emit socket notification to the recruiter (targetUserId)
+        const socketPayload = {
+            ...newMessage,
+            sender_name: candidateName,
+            sender_avatar: candidateAvatar,
+            entity_type: 'job',
+            entity_id: offer.job_id,
+            // To make sure frontend renders it correctly (legacy formats)
+            entity_preview: {
+                entityType: 'job',
+                entityId: offer.job_id,
+                title: jobTitle,
+                subtitle: companyName,
+                image: null,
+                url: `/jobs/${offer.job_id}`
+            }
+        };
+
+        // Notify recruiter via socket
+        socketService.notifyUser(targetUserId, "newMessage", socketPayload);
+        socketService.notifyUser(targetUserId, "notification", {
+            type: "message",
+            from: userId,
+            senderName: candidateName,
+            senderAvatar: candidateAvatar,
+            conversationId,
+            text: `Shared a job`,
+        });
+
+        // Also notify the sender user (candidate) on other active tabs/devices so it synchronizes
+        socketService.notifyUser(userId, "newMessage", socketPayload);
+
+        return res.json({ sent: true, conversation_id: conversationId, message_id: newMessage.message_id });
+
+    } catch (err) {
+        await client.query('ROLLBACK').catch(() => {});
+        console.error("Send chat context error:", err);
+        return res.status(500).json({ message: "Internal server error" });
+    } finally {
+        client.release();
+    }
+};
+
 

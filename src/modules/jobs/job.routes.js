@@ -74,6 +74,7 @@ router.get("/companies/:companyId/offers/sent", requireAuth, requireCompanyPermi
 router.get("/companies/:companyId/offers/job/:jobId/recipients", requireAuth, requireCompanyPermission("VIEW_JOBS"), offerController.getCompanyOfferRecipients);
 router.get("/companies/:companyId/offers/check/:targetUserId", requireAuth, requireCompanyPermission("VIEW_JOBS"), offerController.checkOfferStatus);
 router.patch("/offers/:offerId/respond", requireAuth, offerController.respondToOffer);
+router.post("/offers/:offerId/chat-context", requireAuth, offerController.sendChatContext);
 router.delete("/companies/:companyId/offers/:offerId", requireAuth, requireCompanyPermission("MANAGE_JOBS"), offerController.withdrawOffer);
 router.delete("/offers/:offerId", requireAuth, offerController.withdrawOffer);
 router.get("/offers/sent", requireAuth, offerController.getRecruiterSentOffers);

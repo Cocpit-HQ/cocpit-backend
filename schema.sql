@@ -1829,25 +1829,3 @@ CREATE INDEX IF NOT EXISTS idx_job_roles_name ON job_roles_master (role_name);
 
 -- Fix: Allow drafts to be created without industry
 ALTER TABLE jobs ALTER COLUMN industry DROP NOT NULL;
-
--- -------------------------------------------------------------------------
--- TRIGGER: Update offer expiry on job close
--- -------------------------------------------------------------------------
-CREATE OR REPLACE FUNCTION update_offer_expiry_on_job_close()
-RETURNS TRIGGER AS $$
-BEGIN
-    IF NEW.status = 'CLOSED' AND (OLD.status IS DISTINCT FROM 'CLOSED') THEN
-        UPDATE job_offers
-        SET expires_at = LEAST(expires_at, NOW() + INTERVAL '10 days')
-        WHERE job_id = NEW.job_id AND status = 'pending';
-    END IF;
-    RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
-
-DROP TRIGGER IF EXISTS trg_update_offer_expiry_on_job_close ON jobs;
-CREATE TRIGGER trg_update_offer_expiry_on_job_close
-AFTER UPDATE ON jobs
-FOR EACH ROW
-EXECUTE FUNCTION update_offer_expiry_on_job_close();
-
