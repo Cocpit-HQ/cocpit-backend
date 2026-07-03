@@ -2779,12 +2779,19 @@ exports.getComments = async (req, res) => {
     }
     try {
         const { userId, orgId: companyId } = getContentActorScope(req, requestedCompanyId || null);
+        const targetCommentId = req.query.target_comment_id || null;
+
         const post = await pool.query(`select post_id from posts where post_id = $1`, [postId])
         if (post.rowCount === 0) {
             return res.status(404).json({ message: "Post not found" })
         }
         const comments = await pool.query(
             `
+      WITH target_root AS (
+        SELECT COALESCE(parent_id, comment_id) as root_id 
+        FROM post_comments 
+        WHERE comment_id = $4
+      )
       SELECT 
         c.comment_id,
         c.content,
@@ -2858,11 +2865,15 @@ exports.getComments = async (req, res) => {
         )
       )
       ORDER BY 
+        CASE 
+          WHEN $4::uuid IS NOT NULL AND (c.comment_id = (SELECT root_id FROM target_root) OR c.parent_id = (SELECT root_id FROM target_root)) THEN 0 
+          ELSE 1 
+        END,
         c.is_pinned DESC NULLS LAST,
         c.pinned_at DESC NULLS LAST,
         c.created_at DESC
       `,
-            [postId, userId, companyId || null]
+            [postId, userId, companyId || null, targetCommentId || null]
         );
         return res.status(200).json(comments.rows);
     } catch (err) {
