@@ -1829,3 +1829,87 @@ CREATE INDEX IF NOT EXISTS idx_job_roles_name ON job_roles_master (role_name);
 
 -- Fix: Allow drafts to be created without industry
 ALTER TABLE jobs ALTER COLUMN industry DROP NOT NULL;
+
+-- -------------------------------------------------------------------------
+-- TRIGGER: Update offer expiry on job close
+-- -------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION update_offer_expiry_on_job_close()
+RETURNS TRIGGER AS $$
+BEGIN
+    IF NEW.status = 'CLOSED' AND (OLD.status IS DISTINCT FROM 'CLOSED') THEN
+        UPDATE job_offers
+        SET expires_at = LEAST(expires_at, NOW() + INTERVAL '10 days')
+        WHERE job_id = NEW.job_id AND status = 'pending';
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_update_offer_expiry_on_job_close ON jobs;
+CREATE TRIGGER trg_update_offer_expiry_on_job_close
+AFTER UPDATE ON jobs
+FOR EACH ROW
+EXECUTE FUNCTION update_offer_expiry_on_job_close();
+
+-- ==========================================================================
+-- ORGANISATION PROFILE FEATURE (2026-07-03)
+-- New tables and columns for the public org profile tabs:
+--   About tab  → offices, links, specialties
+--   People tab → member title, description, core team flag
+--   Alumni tab → graduation year, field of study
+-- ==========================================================================
+
+-- 1. Multiple office locations (About tab — Offices section)
+CREATE TABLE IF NOT EXISTS organization_offices (
+    office_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    org_id UUID NOT NULL REFERENCES organizations(org_id) ON DELETE CASCADE,
+    city VARCHAR(100) NOT NULL,
+    country VARCHAR(100) NOT NULL,
+    is_headquarters BOOLEAN DEFAULT FALSE,
+    is_deleted BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_org_offices_org_id ON organization_offices(org_id);
+CREATE INDEX IF NOT EXISTS idx_org_offices_active ON organization_offices(org_id) WHERE is_deleted = FALSE;
+
+-- 2. Typed social/external links (About tab — Links section)
+CREATE TABLE IF NOT EXISTS organization_links (
+    link_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    org_id UUID NOT NULL REFERENCES organizations(org_id) ON DELETE CASCADE,
+    platform VARCHAR(50) NOT NULL,   -- 'linkedin', 'twitter', 'instagram', 'facebook', 'youtube', 'other'
+    url TEXT NOT NULL,
+    display_label VARCHAR(100),
+    is_deleted BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_org_links_org_id ON organization_links(org_id);
+CREATE INDEX IF NOT EXISTS idx_org_links_active ON organization_links(org_id) WHERE is_deleted = FALSE;
+
+-- 3. Specialties tags (About tab — Specialties section)
+CREATE TABLE IF NOT EXISTS organization_specialties (
+    specialty_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    org_id UUID NOT NULL REFERENCES organizations(org_id) ON DELETE CASCADE,
+    name VARCHAR(100) NOT NULL,
+    is_deleted BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_org_specialties_org_id ON organization_specialties(org_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_org_specialties_unique_active ON organization_specialties(org_id, name) WHERE is_deleted = FALSE;
+
+-- 4. Core team flag + public title/description per member (People tab, Core Team section)
+ALTER TABLE organization_members
+    ADD COLUMN IF NOT EXISTS title VARCHAR(100),
+    ADD COLUMN IF NOT EXISTS description TEXT,
+    ADD COLUMN IF NOT EXISTS is_core_team BOOLEAN DEFAULT FALSE;
+
+CREATE INDEX IF NOT EXISTS idx_org_members_core_team
+    ON organization_members(org_id, is_core_team)
+    WHERE is_core_team = TRUE;
+
+-- 5. Alumni graduation year + field of study (Alumni tab)
+ALTER TABLE institution_enrollments
+    ADD COLUMN IF NOT EXISTS graduation_year INTEGER,
+    ADD COLUMN IF NOT EXISTS field_of_study VARCHAR(200);
+
+
+

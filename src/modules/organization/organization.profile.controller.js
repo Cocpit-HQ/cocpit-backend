@@ -1,0 +1,924 @@
+/**
+ * Organisation Profile Controller
+ *
+ * Implements the public-facing organisation profile tabs:
+ *   GET  /organizations/:orgId/profile     — Home tab (overview + own/other view)
+ *   GET  /organizations/:orgId/about       — About tab (description, offices, links, specialties)
+ *   GET  /organizations/:orgId/team        — Core Team section
+ *   GET  /organizations/:orgId/people      — People tab (public member list)
+ *   GET  /organizations/:orgId/alumni      — Alumni tab (institutions only)
+ *   PUT  /organizations/:orgId/profile     — Update profile details (Step 1)
+ *   PUT  /organizations/:orgId/about       — Update about (Step 2)
+ *   PUT  /organizations/:orgId/verification  — Update verification details (Step 3)
+ *   PATCH /organizations/:orgId/members/:userId/core-team — Manage core team member
+ *
+ * Reference pattern: profile.controller.js + profile.repository.js
+ */
+
+'use strict';
+
+const pool = require('../../core/db/pool');
+const { checkOrgPermission } = require('../../core/utils/rbac');
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve orgId param — accepts UUID or slug.
+ * Returns { org_id, entity_type, ... } or null if not found.
+ */
+async function resolveOrg(orgIdOrSlug) {
+    const uuidRegex = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+    const isUuid = uuidRegex.test(orgIdOrSlug);
+
+    const result = await pool.query(
+        `SELECT org_id, name, slug, logo_url, cover_url, headline, slogan,
+                industry, size, website, location, phone, email,
+                description, entity_type, institution_type,
+                established_year, campus_location,
+                verification_status, email_verified, phone_verified,
+                country, city, created_at, updated_at
+         FROM organizations
+         WHERE ${isUuid ? 'org_id = $1::uuid' : 'slug = $1'}
+           AND is_deleted = FALSE`,
+        [orgIdOrSlug]
+    );
+    return result.rows[0] || null;
+}
+
+/**
+ * Check if a user is an ACTIVE member of the org.
+ * Returns { role_name, permissions, priority } or null.
+ */
+async function getViewerMembership(orgId, userId) {
+    if (!userId) return null;
+    const result = await pool.query(
+        `SELECT cr.name AS role_name, cr.permissions, cr.priority
+         FROM organization_members cm
+         JOIN organization_roles cr ON cm.role_id = cr.role_id
+         WHERE cm.org_id = $1
+           AND cm.user_id = $2
+           AND cm.status = 'ACTIVE'
+           AND (cm.expires_at IS NULL OR cm.expires_at > NOW())`,
+        [orgId, userId]
+    );
+    return result.rows[0] || null;
+}
+
+// ---------------------------------------------------------------------------
+// API 1 — GET /organizations/:orgId/profile
+// ---------------------------------------------------------------------------
+
+exports.getOrgProfile = async (req, res) => {
+    const { orgId } = req.params;
+    const viewerId = req.user?.sub || null;
+
+    try {
+        // 1. Resolve org
+        const org = await resolveOrg(orgId);
+        if (!org) return res.status(404).json({ message: 'Organization not found' });
+
+        // 2. Run all queries in parallel
+        const [
+            countsResult,
+            membershipResult,
+            latestPostsResult,
+        ] = await Promise.all([
+            // Counts (followers, members, posts, active jobs)
+            pool.query(
+                `SELECT
+                    (SELECT COUNT(*) FROM organization_followers WHERE org_id = $1)::int AS followers_count,
+                    (SELECT COUNT(*) FROM organization_members WHERE org_id = $1 AND status = 'ACTIVE')::int AS members_count,
+                    (SELECT COUNT(*) FROM posts WHERE author_org_id = $1)::int AS posts_count,
+                    (SELECT COUNT(*) FROM jobs WHERE org_id = $1 AND status = 'ACTIVE' AND is_active = TRUE)::int AS active_jobs_count`,
+                [org.org_id]
+            ),
+            // Viewer membership check
+            getViewerMembership(org.org_id, viewerId),
+            // Latest 3 posts preview
+            pool.query(
+                `SELECT p.post_id, p.content, p.created_at,
+                        COALESCE(lc.like_count, 0)::int AS like_count,
+                        COALESCE(cc.comment_count, 0)::int AS comment_count,
+                        COALESCE(pm.media, '[]'::json) AS media
+                 FROM posts p
+                 LEFT JOIN (
+                     SELECT post_id, COUNT(*)::int AS like_count FROM post_likes GROUP BY post_id
+                 ) lc ON lc.post_id = p.post_id
+                 LEFT JOIN (
+                     SELECT post_id, COUNT(*)::int AS comment_count FROM post_comments GROUP BY post_id
+                 ) cc ON cc.post_id = p.post_id
+                 LEFT JOIN (
+                     SELECT post_id, json_agg(json_build_object('url', url, 'media_type', media_type)) AS media
+                     FROM post_media GROUP BY post_id
+                 ) pm ON pm.post_id = p.post_id
+                 WHERE p.author_org_id = $1
+                   AND (p.is_removed IS FALSE OR p.is_removed IS NULL)
+                 ORDER BY p.created_at DESC
+                 LIMIT 3`,
+                [org.org_id]
+            ),
+        ]);
+
+        const counts = countsResult.rows[0];
+        const membership = membershipResult; // null if not a member
+        const isOwnProfile = !!membership;
+
+        // 3. Core team — always public (visible to all viewers)
+        const teamResult = await pool.query(
+            `SELECT u.user_id, u.full_name, u.avatar_url, u.headline, u.account_name,
+                    cm.title, cm.description AS member_description,
+                    COALESCE(cr.name, cm.role) AS role_display,
+                    cr.color AS role_color
+             FROM organization_members cm
+             JOIN active_users u ON cm.user_id = u.user_id
+             LEFT JOIN organization_roles cr ON cm.role_id = cr.role_id
+             WHERE cm.org_id = $1
+               AND cm.is_core_team = TRUE
+               AND cm.status = 'ACTIVE'
+             ORDER BY cr.priority DESC NULLS LAST, cm.joined_at ASC
+             LIMIT 6`,
+            [org.org_id]
+        );
+
+        // 4. Relationship, Relevance, and Community (only for other/public views)
+        let relationship = null;
+        let relevance = null;
+        let community = null;
+
+        if (!isOwnProfile) {
+            // A. Relationship
+            if (viewerId) {
+                const relResult = await pool.query(
+                    `SELECT
+                        EXISTS(SELECT 1 FROM organization_followers WHERE user_id = $1 AND org_id = $2) AS is_following,
+                        EXISTS(SELECT 1 FROM organization_connections WHERE user_id = $1 AND org_id = $2) AS is_connected`,
+                    [viewerId, org.org_id]
+                );
+                relationship = {
+                    is_following: !!relResult.rows[0]?.is_following,
+                    is_connected: !!relResult.rows[0]?.is_connected,
+                };
+            } else {
+                relationship = {
+                    is_following: false,
+                    is_connected: false,
+                };
+            }
+
+            // B. Relevance (connections of the viewer who follow this organization)
+            if (viewerId) {
+                const relevanceResult = await pool.query(
+                    `SELECT u.user_id, u.full_name, u.avatar_url, u.headline, u.account_name
+                     FROM connections c
+                     JOIN active_users u ON c.connected_user_id = u.user_id
+                     JOIN organization_followers ofol ON ofol.user_id = u.user_id
+                     WHERE c.user_id = $1 AND ofol.org_id = $2
+                     LIMIT 5`,
+                    [viewerId, org.org_id]
+                );
+
+                const mutualCountResult = await pool.query(
+                    `SELECT COUNT(*)::int AS count
+                     FROM connections c
+                     JOIN organization_followers ofol ON ofol.user_id = c.connected_user_id
+                     WHERE c.user_id = $1 AND ofol.org_id = $2`,
+                    [viewerId, org.org_id]
+                );
+
+                relevance = {
+                    connections_who_follow: relevanceResult.rows,
+                    mutual_connections_count: mutualCountResult.rows[0]?.count || 0
+                };
+            } else {
+                relevance = {
+                    connections_who_follow: [],
+                    mutual_connections_count: 0
+                };
+            }
+
+            // C. Community (recent followers of this organization)
+            const recentFollowersResult = await pool.query(
+                `SELECT u.user_id, u.full_name, u.avatar_url, u.headline, u.account_name
+                 FROM organization_followers ofol
+                 JOIN active_users u ON ofol.user_id = u.user_id
+                 WHERE ofol.org_id = $1
+                 ORDER BY ofol.created_at DESC
+                 LIMIT 5`,
+                [org.org_id]
+            );
+
+            community = {
+                recent_followers: recentFollowersResult.rows,
+                total_followers: counts.followers_count
+            };
+        }
+
+        return res.json({
+            org: {
+                ...org,
+                is_verified: ['DOMAIN_VERIFIED'].includes(org.verification_status),
+                followers_count: counts.followers_count,
+                members_count: counts.members_count,
+                posts_count: counts.posts_count,
+                active_jobs_count: counts.active_jobs_count,
+            },
+            is_own_profile: isOwnProfile,
+            viewer_role: membership?.role_name || null,
+            viewer_permissions: membership?.permissions || null,
+            about_snippet: org.description ? org.description.slice(0, 250) : null,
+            core_team: teamResult.rows,
+            latest_posts: latestPostsResult.rows,
+            relationship,
+            relevance,
+            community,
+        });
+
+    } catch (err) {
+        console.error('getOrgProfile error:', err);
+        res.status(500).json({ message: 'Internal server error' });
+    }
+};
+
+// ---------------------------------------------------------------------------
+// API 2 — GET /organizations/:orgId/about
+// ---------------------------------------------------------------------------
+
+exports.getOrgAbout = async (req, res) => {
+    const { orgId } = req.params;
+    const viewerId = req.user?.sub || null;
+
+    try {
+        const org = await resolveOrg(orgId);
+        if (!org) return res.status(404).json({ message: 'Organization not found' });
+
+        // Viewer membership (to decide if sensitive fields exposed)
+        const membership = await getViewerMembership(org.org_id, viewerId);
+        const isOwnProfile = !!membership;
+
+        const [officesResult, linksResult, specialtiesResult] = await Promise.all([
+            pool.query(
+                `SELECT office_id, city, country, is_headquarters
+                 FROM organization_offices 
+                 WHERE org_id = $1 AND is_deleted = FALSE
+                 ORDER BY is_headquarters DESC, city ASC`,
+                [org.org_id]
+            ),
+            pool.query(
+                `SELECT link_id, platform, url, display_label
+                 FROM organization_links 
+                 WHERE org_id = $1 AND is_deleted = FALSE
+                 ORDER BY platform ASC`,
+                [org.org_id]
+            ),
+            pool.query(
+                `SELECT specialty_id, name
+                 FROM organization_specialties 
+                 WHERE org_id = $1 AND is_deleted = FALSE
+                 ORDER BY name ASC`,
+                [org.org_id]
+            ),
+        ]);
+
+        const about = {
+            description: org.description,
+            slogan: org.slogan,
+            website: org.website,
+            industry: org.industry,
+            size: org.size,
+            location: org.location,
+            country: org.country,
+            city: org.city,
+            founded: org.established_year,
+            entity_type: org.entity_type,
+            institution_type: org.institution_type,
+            campus_location: org.campus_location,
+            headline: org.headline,
+        };
+
+        // Sensitive fields exposed only to members
+        if (isOwnProfile) {
+            about.phone = org.phone;
+            about.email = org.email;
+            about.phone_verified = org.phone_verified;
+            about.email_verified = org.email_verified;
+            about.verification_status = org.verification_status;
+        }
+
+        return res.json({
+            about,
+            offices: officesResult.rows,
+            links: linksResult.rows,
+            specialties: specialtiesResult.rows,
+        });
+
+    } catch (err) {
+        console.error('getOrgAbout error:', err);
+        res.status(500).json({ message: 'Internal server error' });
+    }
+};
+
+// ---------------------------------------------------------------------------
+// API 3 — GET /organizations/:orgId/team
+// ---------------------------------------------------------------------------
+
+exports.getOrgTeam = async (req, res) => {
+    const { orgId } = req.params;
+
+    try {
+        const org = await resolveOrg(orgId);
+        if (!org) return res.status(404).json({ message: 'Organization not found' });
+
+        const result = await pool.query(
+            `SELECT u.user_id, u.full_name, u.avatar_url, u.headline, u.account_name,
+                    cm.title, cm.description AS member_description,
+                    COALESCE(cr.name, cm.role) AS role_display,
+                    cr.color AS role_color,
+                    cm.joined_at
+             FROM organization_members cm
+             JOIN active_users u ON cm.user_id = u.user_id
+             LEFT JOIN organization_roles cr ON cm.role_id = cr.role_id
+             WHERE cm.org_id = $1
+               AND cm.is_core_team = TRUE
+               AND cm.status = 'ACTIVE'
+             ORDER BY cr.priority DESC NULLS LAST, cm.joined_at ASC`,
+            [org.org_id]
+        );
+
+        return res.json({ team: result.rows });
+
+    } catch (err) {
+        console.error('getOrgTeam error:', err);
+        res.status(500).json({ message: 'Internal server error' });
+    }
+};
+
+// ---------------------------------------------------------------------------
+// API 6 — GET /organizations/:orgId/people
+// ---------------------------------------------------------------------------
+
+exports.getOrgPeople = async (req, res) => {
+    const { orgId } = req.params;
+    const { page = 1, limit = 20, search } = req.query;
+    const offset = (parseInt(page) - 1) * parseInt(limit);
+
+    try {
+        const org = await resolveOrg(orgId);
+        if (!org) return res.status(404).json({ message: 'Organization not found' });
+
+        const params = [org.org_id, parseInt(limit), offset];
+        let searchClause = '';
+        if (search && search.trim()) {
+            params.push(`%${search.trim()}%`);
+            searchClause = `AND (u.full_name ILIKE $${params.length} OR cm.title ILIKE $${params.length})`;
+        }
+
+        const [peopleResult, countResult] = await Promise.all([
+            pool.query(
+                `SELECT u.user_id, u.full_name, u.avatar_url, u.headline, u.account_name,
+                        u.location,
+                        cm.title,
+                        cm.is_core_team,
+                        COALESCE(cr.name, cm.role) AS role_display,
+                        cr.color AS role_color,
+                        cm.joined_at
+                 FROM organization_members cm
+                 JOIN active_users u ON cm.user_id = u.user_id
+                 LEFT JOIN organization_roles cr ON cm.role_id = cr.role_id
+                 WHERE cm.org_id = $1
+                   AND cm.status = 'ACTIVE'
+                   AND cm.is_role_visible = TRUE
+                   ${searchClause}
+                 ORDER BY cr.priority DESC NULLS LAST, cm.joined_at ASC
+                 LIMIT $2 OFFSET $3`,
+                params
+            ),
+            pool.query(
+                `SELECT COUNT(*)::int AS total
+                 FROM organization_members cm
+                 JOIN active_users u ON cm.user_id = u.user_id
+                 WHERE cm.org_id = $1
+                   AND cm.status = 'ACTIVE'
+                   AND cm.is_role_visible = TRUE`,
+                [org.org_id]
+            ),
+        ]);
+
+        const total = countResult.rows[0].total;
+
+        return res.json({
+            people: peopleResult.rows,
+            meta: {
+                total,
+                page: parseInt(page),
+                limit: parseInt(limit),
+                total_pages: Math.ceil(total / parseInt(limit)),
+            },
+        });
+
+    } catch (err) {
+        console.error('getOrgPeople error:', err);
+        res.status(500).json({ message: 'Internal server error' });
+    }
+};
+
+// ---------------------------------------------------------------------------
+// API 7 — GET /organizations/:orgId/alumni  (institutions only)
+// ---------------------------------------------------------------------------
+
+exports.getOrgAlumni = async (req, res) => {
+    const { orgId } = req.params;
+    const { page = 1, limit = 20, search, graduation_year } = req.query;
+    const offset = (parseInt(page) - 1) * parseInt(limit);
+
+    try {
+        const org = await resolveOrg(orgId);
+        if (!org) return res.status(404).json({ message: 'Organization not found' });
+
+        if (org.entity_type !== 'INSTITUTION') {
+            return res.status(404).json({ message: 'Alumni tab is only available for institutions' });
+        }
+
+        const params = [org.org_id, parseInt(limit), offset];
+        const filters = [];
+
+        if (search && search.trim()) {
+            params.push(`%${search.trim()}%`);
+            filters.push(`u.full_name ILIKE $${params.length}`);
+        }
+        if (graduation_year) {
+            params.push(parseInt(graduation_year));
+            filters.push(`ie.graduation_year = $${params.length}`);
+        }
+
+        const whereExtra = filters.length ? `AND ${filters.join(' AND ')}` : '';
+
+        const [alumniResult, countResult] = await Promise.all([
+            pool.query(
+                `SELECT u.user_id, u.full_name, u.avatar_url, u.headline, u.account_name,
+                        u.location,
+                        ie.graduation_year, ie.field_of_study, ie.verified_at,
+                        -- Latest current experience
+                        (SELECT e.title
+                         FROM experiences e
+                         JOIN profiles p ON e.profile_id = p.profile_id
+                         WHERE p.user_id = u.user_id AND e.is_current = TRUE
+                         ORDER BY e.start_date DESC LIMIT 1) AS current_title,
+                        (SELECT e.company_name
+                         FROM experiences e
+                         JOIN profiles p ON e.profile_id = p.profile_id
+                         WHERE p.user_id = u.user_id AND e.is_current = TRUE
+                         ORDER BY e.start_date DESC LIMIT 1) AS current_company
+                 FROM institution_enrollments ie
+                 JOIN active_users u ON ie.user_id = u.user_id
+                 WHERE ie.org_id = $1
+                   AND ie.role = 'ALUMNI'
+                   AND ie.status = 'VERIFIED'
+                   ${whereExtra}
+                 ORDER BY ie.graduation_year DESC NULLS LAST, u.full_name ASC
+                 LIMIT $2 OFFSET $3`,
+                params
+            ),
+            pool.query(
+                `SELECT COUNT(*)::int AS total
+                 FROM institution_enrollments ie
+                 JOIN active_users u ON ie.user_id = u.user_id
+                 WHERE ie.org_id = $1
+                   AND ie.role = 'ALUMNI'
+                   AND ie.status = 'VERIFIED'`,
+                [org.org_id]
+            ),
+        ]);
+
+        const total = countResult.rows[0].total;
+
+        return res.json({
+            alumni: alumniResult.rows,
+            meta: {
+                total,
+                page: parseInt(page),
+                limit: parseInt(limit),
+                total_pages: Math.ceil(total / parseInt(limit)),
+            },
+        });
+
+    } catch (err) {
+        console.error('getOrgAlumni error:', err);
+        res.status(500).json({ message: 'Internal server error' });
+    }
+};
+
+// ---------------------------------------------------------------------------
+// API 8 — PUT /organizations/:orgId/profile  (Update Step 1 — profile details)
+// ---------------------------------------------------------------------------
+
+exports.updateOrgProfile = async (req, res) => {
+    const { orgId } = req.params;
+    const userId = req.user.sub;
+
+    const {
+        name, headline, industry, size, website, country, city, established_year
+    } = req.body;
+
+    // Validate name if provided
+    if (name !== undefined && (!name || name.trim().length < 2)) {
+        return res.status(400).json({ message: 'Organization name must be at least 2 characters' });
+    }
+    // Validate headline length
+    if (headline !== undefined && headline !== null && headline.trim().length > 120) {
+        return res.status(400).json({ message: 'Headline must be 120 characters or less' });
+    }
+    // Validate website format (basic)
+    if (website && !/^https?:\/\/.+/.test(website)) {
+        return res.status(400).json({ message: 'Website must be a valid URL starting with http:// or https://' });
+    }
+
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+
+        // Permission check
+        const canEdit = await checkOrgPermission(client, orgId, userId, 'MANAGE_COMPANY_DETAILS');
+        if (!canEdit) {
+            throw Object.assign(new Error('Forbidden: You do not have permission to update organization details'), { statusCode: 403 });
+        }
+
+        // Build dynamic update to only touch fields defined for Step 1 Profile updates
+        const updates = [];
+        const params = [];
+        const addUpdate = (col, val) => {
+            if (val !== undefined) {
+                params.push(val);
+                updates.push(`${col} = $${params.length}`);
+            }
+        };
+
+        addUpdate('name', name?.trim() || null);
+        addUpdate('headline', headline?.trim() || null);
+        addUpdate('industry', industry || null);
+        addUpdate('size', size || null);
+        addUpdate('website', website?.trim() || null);
+        addUpdate('country', country?.trim() || null);
+        addUpdate('city', city?.trim() || null);
+        addUpdate('established_year', established_year ? parseInt(established_year) : null);
+
+        if (params.length === 0) {
+            await client.query('ROLLBACK');
+            return res.status(400).json({ message: 'No fields to update' });
+        }
+
+        params.push(orgId);
+        const query = `
+            UPDATE organizations
+            SET ${updates.join(', ')}, updated_at = NOW()
+            WHERE org_id = $${params.length} AND is_deleted = FALSE
+            RETURNING org_id, name, headline, industry, size, website, 
+                      country, city, established_year, logo_url, cover_url, 
+                      entity_type, updated_at
+        `;
+
+        const result = await client.query(query, params);
+
+        if (result.rowCount === 0) {
+            await client.query('ROLLBACK');
+            return res.status(404).json({ message: 'Organization not found' });
+        }
+
+        // Audit log
+        await client.query(
+            `INSERT INTO audit_logs (entity_type, entity_id, actor_id, action, metadata)
+             VALUES ('ORGANIZATION', $1, $2, 'UPDATE_PROFILE_DETAILS', $3)`,
+            [orgId, userId, JSON.stringify({ fields: Object.keys(req.body) })]
+        );
+
+        await client.query('COMMIT');
+        return res.json({ message: 'Profile updated successfully', organization: result.rows[0] });
+
+    } catch (err) {
+        await client.query('ROLLBACK');
+        console.error('updateOrgProfile error:', err);
+        if (err.statusCode === 403) return res.status(403).json({ message: err.message });
+        res.status(500).json({ message: 'Internal server error' });
+    } finally {
+        client.release();
+    }
+};
+
+// ---------------------------------------------------------------------------
+// API 9 — PUT /organizations/:orgId/about  (Update Step 2 — about)
+// ---------------------------------------------------------------------------
+
+exports.updateOrgAbout = async (req, res) => {
+    const { orgId } = req.params;
+    const userId = req.user.sub;
+
+    const { description, slogan, offices, links, specialties } = req.body;
+
+    // Basic validations
+    if (description !== undefined && description !== null && description.length > 5000) {
+        return res.status(400).json({ message: 'Description must be 5000 characters or less' });
+    }
+    if (slogan !== undefined && slogan !== null && slogan.length > 255) {
+        return res.status(400).json({ message: 'Slogan must be 255 characters or less' });
+    }
+    if (offices && !Array.isArray(offices)) {
+        return res.status(400).json({ message: 'offices must be an array' });
+    }
+    if (links && !Array.isArray(links)) {
+        return res.status(400).json({ message: 'links must be an array' });
+    }
+    if (specialties && !Array.isArray(specialties)) {
+        return res.status(400).json({ message: 'specialties must be an array' });
+    }
+
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+
+        // Permission check
+        const canEdit = await checkOrgPermission(client, orgId, userId, 'MANAGE_COMPANY_DETAILS');
+        if (!canEdit) {
+            throw Object.assign(new Error('Forbidden: You do not have permission to update about section'), { statusCode: 403 });
+        }
+
+        // Verify org exists
+        const orgCheck = await client.query(
+            'SELECT org_id FROM organizations WHERE org_id = $1 AND is_deleted = FALSE',
+            [orgId]
+        );
+        if (orgCheck.rowCount === 0) {
+            await client.query('ROLLBACK');
+            return res.status(404).json({ message: 'Organization not found' });
+        }
+
+        // 1. Update description & slogan dynamically
+        const updates = [];
+        const params = [];
+        if (description !== undefined) {
+            params.push(description || null);
+            updates.push(`description = $${params.length}`);
+        }
+        if (slogan !== undefined) {
+            params.push(slogan || null);
+            updates.push(`slogan = $${params.length}`);
+        }
+
+        if (updates.length > 0) {
+            params.push(orgId);
+            await client.query(
+                `UPDATE organizations
+                 SET ${updates.join(', ')}, updated_at = NOW()
+                 WHERE org_id = $${params.length}`,
+                params
+            );
+        }
+
+        // 2. Sync offices with soft deletes
+        if (offices !== undefined) {
+            // Get all current active office IDs
+            const currentRes = await client.query(
+                `SELECT office_id FROM organization_offices WHERE org_id = $1 AND is_deleted = FALSE`,
+                [orgId]
+            );
+            const existingOfficeIds = new Set(currentRes.rows.map(r => r.office_id));
+
+            for (const office of offices) {
+                if (!office.city || !office.country) continue;
+                
+                if (office.office_id && existingOfficeIds.has(office.office_id)) {
+                    // Update existing active office
+                    await client.query(
+                        `UPDATE organization_offices 
+                         SET city = $1, country = $2, is_headquarters = $3, is_deleted = FALSE 
+                         WHERE office_id = $4`,
+                        [office.city.trim(), office.country.trim(), !!office.is_headquarters, office.office_id]
+                    );
+                    existingOfficeIds.delete(office.office_id);
+                } else {
+                    // Insert new office
+                    await client.query(
+                        `INSERT INTO organization_offices (org_id, city, country, is_headquarters)
+                         VALUES ($1, $2, $3, $4)`,
+                        [orgId, office.city.trim(), office.country.trim(), !!office.is_headquarters]
+                    );
+                }
+            }
+
+            // Inactive (soft delete) remaining ones
+            if (existingOfficeIds.size > 0) {
+                await client.query(
+                    `UPDATE organization_offices SET is_deleted = TRUE WHERE office_id = ANY($1::uuid[])`,
+                    [Array.from(existingOfficeIds)]
+                );
+            }
+        }
+
+        // 3. Sync links with soft deletes
+        if (links !== undefined) {
+            // Get all current active link IDs
+            const currentRes = await client.query(
+                `SELECT link_id FROM organization_links WHERE org_id = $1 AND is_deleted = FALSE`,
+                [orgId]
+            );
+            const existingLinkIds = new Set(currentRes.rows.map(r => r.link_id));
+            const VALID_PLATFORMS = ['linkedin', 'twitter', 'instagram', 'facebook', 'youtube', 'github', 'other'];
+
+            for (const link of links) {
+                if (!link.url) continue;
+                const platform = VALID_PLATFORMS.includes(link.platform) ? link.platform : 'other';
+
+                if (link.link_id && existingLinkIds.has(link.link_id)) {
+                    // Update existing active link
+                    await client.query(
+                        `UPDATE organization_links 
+                         SET platform = $1, url = $2, display_label = $3, is_deleted = FALSE 
+                         WHERE link_id = $4`,
+                        [platform, link.url.trim(), link.display_label?.trim() || null, link.link_id]
+                    );
+                    existingLinkIds.delete(link.link_id);
+                } else {
+                    // Insert new link
+                    await client.query(
+                        `INSERT INTO organization_links (org_id, platform, url, display_label)
+                         VALUES ($1, $2, $3, $4)`,
+                        [orgId, platform, link.url.trim(), link.display_label?.trim() || null]
+                    );
+                }
+            }
+
+            // Inactive (soft delete) remaining ones
+            if (existingLinkIds.size > 0) {
+                await client.query(
+                    `UPDATE organization_links SET is_deleted = TRUE WHERE link_id = ANY($1::uuid[])`,
+                    [Array.from(existingLinkIds)]
+                );
+            }
+        }
+
+        // 4. Sync specialties with soft deletes
+        if (specialties !== undefined) {
+            // Get all current active specialties
+            const currentRes = await client.query(
+                `SELECT specialty_id, name FROM organization_specialties WHERE org_id = $1 AND is_deleted = FALSE`,
+                [orgId]
+            );
+            const activeSpecialties = new Map(currentRes.rows.map(r => [r.name.toLowerCase(), r.specialty_id]));
+
+            for (const name of specialties) {
+                if (!name || !name.trim()) continue;
+                const cleanName = name.trim();
+                const key = cleanName.toLowerCase();
+
+                if (activeSpecialties.has(key)) {
+                    // Keep active, remove from set of to-be-deleted
+                    activeSpecialties.delete(key);
+                } else {
+                    // Check if there's a soft-deleted entry for this name
+                    const deletedRes = await client.query(
+                        `SELECT specialty_id FROM organization_specialties 
+                         WHERE org_id = $1 AND LOWER(name) = $2 AND is_deleted = TRUE`,
+                        [orgId, key]
+                    );
+
+                    if (deletedRes.rowCount > 0) {
+                        // Restore soft deleted entry
+                        await client.query(
+                            `UPDATE organization_specialties SET is_deleted = FALSE WHERE specialty_id = $1`,
+                            [deletedRes.rows[0].specialty_id]
+                        );
+                    } else {
+                        // Insert new specialty
+                        await client.query(
+                            `INSERT INTO organization_specialties (org_id, name) VALUES ($1, $2)`,
+                            [orgId, cleanName]
+                        );
+                    }
+                }
+            }
+
+            // Inactive (soft delete) remaining ones
+            if (activeSpecialties.size > 0) {
+                await client.query(
+                    `UPDATE organization_specialties SET is_deleted = TRUE WHERE specialty_id = ANY($1::uuid[])`,
+                    [Array.from(activeSpecialties.values())]
+                );
+            }
+        }
+
+        // Audit log
+        await client.query(
+            `INSERT INTO audit_logs (entity_type, entity_id, actor_id, action, metadata)
+             VALUES ('ORGANIZATION', $1, $2, 'UPDATE_ABOUT', $3)`,
+            [orgId, userId, JSON.stringify({
+                updatedSections: Object.keys(req.body),
+                officesCount: offices?.length,
+                linksCount: links?.length,
+                specialtiesCount: specialties?.length,
+            })]
+        );
+
+        await client.query('COMMIT');
+        return res.json({ message: 'About updated successfully' });
+
+    } catch (err) {
+        await client.query('ROLLBACK');
+        console.error('updateOrgAbout error:', err);
+        if (err.statusCode === 403) return res.status(403).json({ message: err.message });
+        res.status(500).json({ message: 'Internal server error' });
+    } finally {
+        client.release();
+    }
+};
+
+// ---------------------------------------------------------------------------
+// API 10 — PUT /organizations/:orgId/verification  (Update Step 3 — verification details)
+// ---------------------------------------------------------------------------
+
+exports.updateOrgVerification = async (req, res) => {
+    const { orgId } = req.params;
+    const userId = req.user.sub;
+    const { country_of_operation } = req.body;
+
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+
+        // Resolve org
+        const orgCheck = await client.query(
+            `SELECT created_by, onboarding_completed FROM organizations WHERE org_id = $1 AND is_deleted = FALSE`,
+            [orgId]
+        );
+
+        if (orgCheck.rowCount === 0) {
+            await client.query('ROLLBACK');
+            return res.status(404).json({ message: 'Organization not found' });
+        }
+
+        const org = orgCheck.rows[0];
+
+        // Permission check: creator checks for onboarding, MANAGE_VERIFICATION for completed ones
+        if (org.onboarding_completed === false) {
+            if (org.created_by !== userId) {
+                await client.query('ROLLBACK');
+                return res.status(403).json({ message: 'Forbidden: You are not the creator of this onboarding draft' });
+            }
+        } else {
+            const canVerify = await checkOrgPermission(client, orgId, userId, 'MANAGE_VERIFICATION');
+            if (!canVerify) {
+                await client.query('ROLLBACK');
+                return res.status(403).json({ message: 'Forbidden: You do not have permission to manage verification details' });
+            }
+        }
+
+        // Update country (country_of_operation) and set verification status
+        if (country_of_operation) {
+            await client.query(
+                `UPDATE organizations 
+                 SET country = $1, 
+                     verification_status = 'DOCUMENT_PENDING',
+                     updated_at = NOW() 
+                 WHERE org_id = $2`,
+                [country_of_operation.trim(), orgId]
+            );
+        }
+
+        // Save verification documents
+        if (req.files && req.files.length > 0) {
+            for (const file of req.files) {
+                const docUrl = file.path.replace(/\\/g, "/");
+                const docName = file.originalname || 'document';
+                const docType = file.mimetype || 'application/pdf';
+
+                await client.query(
+                    `INSERT INTO organization_documents (org_id, document_url, document_name, document_type)
+                     VALUES ($1, $2, $3, $4)`,
+                    [orgId, docUrl, docName, docType]
+                );
+            }
+        }
+
+        // Audit log
+        await client.query(
+            `INSERT INTO audit_logs (entity_type, entity_id, actor_id, action, metadata)
+             VALUES ('ORGANIZATION', $1, $2, 'DOCUMENTS_SUBMITTED', $3)`,
+            [orgId, userId, JSON.stringify({ count: req.files ? req.files.length : 0, country: country_of_operation })]
+        );
+
+        await client.query('COMMIT');
+        return res.json({
+            success: true,
+            message: 'Verification details submitted successfully',
+            verification_status: 'DOCUMENT_PENDING'
+        });
+
+    } catch (err) {
+        await client.query('ROLLBACK');
+        console.error('updateOrgVerification error:', err);
+        res.status(500).json({ message: 'Internal server error' });
+    } finally {
+        client.release();
+    }
+};
+
+
