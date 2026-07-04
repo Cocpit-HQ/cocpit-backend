@@ -350,7 +350,6 @@ exports.getOrgTeam = async (req, res) => {
              ORDER BY cr.priority DESC NULLS LAST, cm.joined_at ASC`,
             [org.org_id]
         );
-
         return res.json({ team: result.rows });
 
     } catch (err) {
@@ -358,6 +357,139 @@ exports.getOrgTeam = async (req, res) => {
         res.status(500).json({ message: 'Internal server error' });
     }
 };
+
+async function getViewerMembership(orgId, userId) {
+    if (!userId) return null;
+    const result = await pool.query(
+        `SELECT cr.name AS role_name, cr.permissions, cr.priority
+         FROM organization_members cm
+         JOIN organization_roles cr ON cm.role_id = cr.role_id
+         WHERE cm.org_id = $1
+           AND cm.user_id = $2
+           AND cm.status = 'ACTIVE'
+           AND (cm.expires_at IS NULL OR cm.expires_at > NOW())`,
+        [orgId, userId]
+    );
+    return result.rows[0] || null;
+}
+
+/**
+ * Calculate demographics insights (Locations, Skills, Roles, Education) for matching members/alumni.
+ * Filters by active status and visibility parameters to match visible list.
+ */
+async function calculateOrgDemographics(client, orgId, type, search, graduationYear) {
+    const searchVal = (search && search.trim()) ? `%${search.trim()}%` : null;
+    const graduationYearVal = graduationYear ? parseInt(graduationYear) : null;
+
+    const params = type === 'PEOPLE' ? [orgId, searchVal] : [orgId, searchVal, graduationYearVal];
+
+    const cteQuery = type === 'PEOPLE'
+        ? `SELECT cm.user_id
+           FROM organization_members cm
+           JOIN active_users u ON cm.user_id = u.user_id
+           WHERE cm.org_id = $1
+             AND cm.status = 'ACTIVE'
+             AND cm.is_role_visible = TRUE
+             AND ($2::text IS NULL OR (u.full_name ILIKE $2::text OR cm.title ILIKE $2::text))`
+        : `SELECT ie.user_id
+           FROM institution_enrollments ie
+           JOIN active_users u ON ie.user_id = u.user_id
+           WHERE ie.org_id = $1
+             AND ie.role = 'ALUMNI'
+             AND ie.status = 'VERIFIED'
+             AND ($2::text IS NULL OR u.full_name ILIKE $2::text)
+             AND ($3::int IS NULL OR ie.graduation_year = $3::int)`;
+
+    // Get matching users count
+    const countRes = await client.query(`
+        WITH matching_users AS (${cteQuery})
+        SELECT COUNT(*)::int AS count FROM matching_users
+    `, params);
+    
+    const totalAssociates = countRes.rows[0]?.count || 0;
+
+    if (totalAssociates === 0) {
+        return {
+            totalAssociates: 0,
+            locationDistribution: [],
+            topSkills: [],
+            roleDistribution: [],
+            educationBreakdown: []
+        };
+    }
+
+    const limitClause = (search && search.trim()) ? 'LIMIT 5' : ''; // show top 5 when searching, all on initial load
+
+    // A. Location Distribution
+    const locationRes = await client.query(`
+        WITH matching_users AS (${cteQuery})
+        SELECT 
+            COALESCE(NULLIF(TRIM(u.location_city), ''), 'Unknown') AS name,
+            COUNT(*)::int AS count
+        FROM matching_users mu
+        JOIN active_users u ON mu.user_id = u.user_id
+        GROUP BY u.location_city
+        ORDER BY count DESC
+        ${limitClause}
+    `, params);
+
+    // B. Top Skills
+    const skillsRes = await client.query(`
+        WITH matching_users AS (${cteQuery})
+        SELECT 
+            s.name AS name,
+            COUNT(DISTINCT mu.user_id)::int AS count
+        FROM matching_users mu
+        JOIN profiles p ON mu.user_id = p.user_id
+        JOIN user_skills us ON p.profile_id = us.profile_id
+        JOIN skills s ON us.skill_id = s.skill_id
+        GROUP BY s.name
+        ORDER BY count DESC
+        ${limitClause}
+    `, params);
+
+    // C. Role Distribution
+    const roleRes = await client.query(`
+        WITH matching_users AS (${cteQuery})
+        SELECT 
+            COALESCE(NULLIF(TRIM(u.job_title), ''), 'Other') AS name,
+            COUNT(*)::int AS count
+        FROM matching_users mu
+        JOIN active_users u ON mu.user_id = u.user_id
+        GROUP BY u.job_title
+        ORDER BY count DESC
+        ${limitClause}
+    `, params);
+
+    // D. Education Breakdown
+    const eduRes = await client.query(`
+        WITH matching_users AS (${cteQuery})
+        SELECT 
+            COALESCE(NULLIF(TRIM(e.school_name), ''), 'Unknown') AS name,
+            COUNT(DISTINCT mu.user_id)::int AS count
+        FROM matching_users mu
+        JOIN profiles p ON mu.user_id = p.user_id
+        JOIN educations e ON p.profile_id = e.profile_id
+        GROUP BY e.school_name
+        ORDER BY count DESC
+        ${limitClause}
+    `, params);
+
+    const formatDistribution = (rows) => {
+        return rows.map(row => ({
+            name: row.name,
+            percentage: Math.round((row.count * 100) / totalAssociates)
+        }));
+    };
+
+    return {
+        totalAssociates,
+        locationDistribution: formatDistribution(locationRes.rows),
+        topSkills: formatDistribution(skillsRes.rows),
+        roleDistribution: formatDistribution(roleRes.rows),
+        educationBreakdown: formatDistribution(eduRes.rows)
+    };
+}
 
 // ---------------------------------------------------------------------------
 // API 6 — GET /organizations/:orgId/people
@@ -379,7 +511,14 @@ exports.getOrgPeople = async (req, res) => {
             searchClause = `AND (u.full_name ILIKE $${params.length} OR cm.title ILIKE $${params.length})`;
         }
 
-        const [peopleResult, countResult] = await Promise.all([
+        const countParams = [org.org_id];
+        let countSearchClause = '';
+        if (search && search.trim()) {
+            countParams.push(`%${search.trim()}%`);
+            countSearchClause = `AND (u.full_name ILIKE $2 OR cm.title ILIKE $2)`;
+        }
+
+        const [peopleResult, countResult, insights] = await Promise.all([
             pool.query(
                 `SELECT u.user_id, u.full_name, u.avatar_url, u.headline, u.account_name,
                         u.location,
@@ -405,9 +544,11 @@ exports.getOrgPeople = async (req, res) => {
                  JOIN active_users u ON cm.user_id = u.user_id
                  WHERE cm.org_id = $1
                    AND cm.status = 'ACTIVE'
-                   AND cm.is_role_visible = TRUE`,
-                [org.org_id]
+                   AND cm.is_role_visible = TRUE
+                   ${countSearchClause}`,
+                countParams
             ),
+            calculateOrgDemographics(pool, org.org_id, 'PEOPLE', search)
         ]);
 
         const total = countResult.rows[0].total;
@@ -420,6 +561,7 @@ exports.getOrgPeople = async (req, res) => {
                 limit: parseInt(limit),
                 total_pages: Math.ceil(total / parseInt(limit)),
             },
+            insights
         });
 
     } catch (err) {
@@ -459,7 +601,20 @@ exports.getOrgAlumni = async (req, res) => {
 
         const whereExtra = filters.length ? `AND ${filters.join(' AND ')}` : '';
 
-        const [alumniResult, countResult] = await Promise.all([
+        // Extract raw query filters for total/insights counts
+        const countParams = [org.org_id];
+        const countFilters = [];
+        if (search && search.trim()) {
+            countParams.push(`%${search.trim()}%`);
+            countFilters.push(`u.full_name ILIKE $${countParams.length}`);
+        }
+        if (graduation_year) {
+            countParams.push(parseInt(graduation_year));
+            countFilters.push(`ie.graduation_year = $${countParams.length}`);
+        }
+        const countWhereExtra = countFilters.length ? `AND ${countFilters.join(' AND ')}` : '';
+
+        const [alumniResult, countResult, insights] = await Promise.all([
             pool.query(
                 `SELECT u.user_id, u.full_name, u.avatar_url, u.headline, u.account_name,
                         u.location,
@@ -491,9 +646,11 @@ exports.getOrgAlumni = async (req, res) => {
                  JOIN active_users u ON ie.user_id = u.user_id
                  WHERE ie.org_id = $1
                    AND ie.role = 'ALUMNI'
-                   AND ie.status = 'VERIFIED'`,
-                [org.org_id]
+                   AND ie.status = 'VERIFIED'
+                   ${countWhereExtra}`,
+                countParams
             ),
+            calculateOrgDemographics(pool, org.org_id, 'ALUMNI', search, graduation_year)
         ]);
 
         const total = countResult.rows[0].total;
@@ -506,6 +663,7 @@ exports.getOrgAlumni = async (req, res) => {
                 limit: parseInt(limit),
                 total_pages: Math.ceil(total / parseInt(limit)),
             },
+            insights
         });
 
     } catch (err) {
