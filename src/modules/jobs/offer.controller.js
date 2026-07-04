@@ -33,14 +33,14 @@ exports.sendJobOffer = async (req, res) => {
             return res.status(404).json({ message: "Job not found or does not belong to this company/recruiter" });
         }
 
-        // 2. Check for existing pending offer
+        // 2. Check for existing pending, accepted, or declined offer
         const dupCheck = await client.query(
-            "SELECT 1 FROM job_offers WHERE job_id = $1 AND user_id = $2 AND status = 'pending'",
+            "SELECT 1 FROM job_offers WHERE job_id = $1 AND user_id = $2 AND status IN ('pending', 'accepted', 'declined')",
             [jobId, userId]
         );
         if (dupCheck.rowCount > 0) {
             await client.query('ROLLBACK');
-            return res.status(409).json({ message: "A pending offer for this job already exists for this user" });
+            return res.status(409).json({ message: "An active or finalized offer for this job already exists for this user" });
         }
 
         // 3. Create the offer

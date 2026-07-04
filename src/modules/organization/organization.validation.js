@@ -81,7 +81,7 @@ const verifyPhoneConfirmSchema = z.object({
 
 const saveVerificationSchema = z.object({
   body: z.object({
-    country_of_operation: z.string({ required_error: "Country of operation is required" }).trim(),
+    country_of_operation: z.string().trim().optional(),
   }),
 });
 

@@ -1073,11 +1073,11 @@ exports.saveDraftVerification = async (req, res) => {
 
         await client.query(
             `UPDATE organizations 
-             SET country = $1, 
+             SET country = COALESCE($1, country), 
                  verification_status = 'DOCUMENT_PENDING',
                  updated_at = NOW() 
              WHERE org_id = $2`,
-            [country_of_operation, orgId]
+            [country_of_operation || null, orgId]
         );
 
         if (req.files && req.files.length > 0) {
