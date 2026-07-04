@@ -85,10 +85,11 @@ exports.getOrgProfile = async (req, res) => {
             membershipResult,
             latestPostsResult,
         ] = await Promise.all([
-            // Counts (followers, members, posts, active jobs)
+            // Counts (followers, subscribers, members, posts, active jobs)
             pool.query(
                 `SELECT
                     (SELECT COUNT(*) FROM organization_followers WHERE org_id = $1)::int AS followers_count,
+                    (SELECT COUNT(*) FROM organization_subscribers WHERE org_id = $1 AND status = 'SUBSCRIBED')::int AS subscribers_count,
                     (SELECT COUNT(*) FROM organization_members WHERE org_id = $1 AND status = 'ACTIVE')::int AS members_count,
                     (SELECT COUNT(*) FROM posts WHERE author_org_id = $1)::int AS posts_count,
                     (SELECT COUNT(*) FROM jobs WHERE org_id = $1 AND status = 'ACTIVE' AND is_active = TRUE)::int AS active_jobs_count`,
@@ -153,16 +154,19 @@ exports.getOrgProfile = async (req, res) => {
                 const relResult = await pool.query(
                     `SELECT
                         EXISTS(SELECT 1 FROM organization_followers WHERE user_id = $1 AND org_id = $2) AS is_following,
+                        EXISTS(SELECT 1 FROM organization_subscribers WHERE user_id = $1 AND org_id = $2 AND status = 'SUBSCRIBED') AS is_subscribed,
                         EXISTS(SELECT 1 FROM organization_connections WHERE user_id = $1 AND org_id = $2) AS is_connected`,
                     [viewerId, org.org_id]
                 );
                 relationship = {
                     is_following: !!relResult.rows[0]?.is_following,
+                    is_subscribed: !!relResult.rows[0]?.is_subscribed,
                     is_connected: !!relResult.rows[0]?.is_connected,
                 };
             } else {
                 relationship = {
                     is_following: false,
+                    is_subscribed: false,
                     is_connected: false,
                 };
             }
@@ -220,6 +224,7 @@ exports.getOrgProfile = async (req, res) => {
                 ...org,
                 is_verified: ['DOMAIN_VERIFIED'].includes(org.verification_status),
                 followers_count: counts.followers_count,
+                subscribers_count: counts.subscribers_count || 0,
                 members_count: counts.members_count,
                 posts_count: counts.posts_count,
                 active_jobs_count: counts.active_jobs_count,

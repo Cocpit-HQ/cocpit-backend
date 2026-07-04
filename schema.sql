@@ -1911,5 +1911,13 @@ ALTER TABLE institution_enrollments
     ADD COLUMN IF NOT EXISTS graduation_year INTEGER,
     ADD COLUMN IF NOT EXISTS field_of_study VARCHAR(200);
 
-
-
+-- 04/07/2026 Migration: Company/Organization Subscription (Soft-Deletable)
+CREATE TABLE IF NOT EXISTS organization_subscribers (
+    user_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
+    org_id UUID REFERENCES organizations(org_id) ON DELETE CASCADE,
+    status VARCHAR(20) DEFAULT 'SUBSCRIBED' CHECK (status IN ('SUBSCRIBED', 'UNSUBSCRIBED')),
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    PRIMARY KEY (user_id, org_id)
+);
+CREATE INDEX IF NOT EXISTS idx_company_subscribers_company_id ON organization_subscribers(org_id);
