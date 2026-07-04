@@ -524,7 +524,7 @@ const generateUniqueSlug = async (client, name, orgId) => {
 exports.getCountriesList = async (req, res) => {
     res.json({
         success: true,
-        countries: ["India", "United Arab Emirates", "Singapore"]
+        countries: ["India", "UAE", "Japan"]
     });
 };
 
