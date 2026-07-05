@@ -3,8 +3,8 @@ const crypto = require("crypto");
 const redis = require("../../core/db/redis"); // existing Redis client
 
 const GOOGLE_PLACES_BASE = "https://places.googleapis.com/v1";
-const ALLOWED_COUNTRIES = ["India", "United Arab Emirates", "Singapore"];
-const INCLUDED_REGION_CODES = ["IN", "AE", "SG"];
+const ALLOWED_COUNTRIES = ["India", "United Arab Emirates", "Singapore", "Japan"];
+const INCLUDED_REGION_CODES = ["IN", "AE", "SG", "JP"];
 const CACHE_TTL_AUTOCOMPLETE = 60;    // seconds
 const CACHE_TTL_DETAILS = 86400;      // 24 hours
 
@@ -37,8 +37,8 @@ function parseAddressComponents(components = []) {
 // ─── Autocomplete ─────────────────────────────────────────────────────────────
 
 exports.getAutocomplete = async (req, res) => {
-  const { q, sessionToken } = req.query;
-  const cacheKey = `places:ac:${crypto.createHash("sha256").update(q.toLowerCase().trim()).digest("hex")}`;
+  const { q, sessionToken, country } = req.query;
+  const cacheKey = `places:ac:${crypto.createHash("sha256").update(`${q.toLowerCase().trim()}:${country || 'ALL'}`).digest("hex")}`;
   const startTime = Date.now();
 
   try {
@@ -62,13 +62,20 @@ exports.getAutocomplete = async (req, res) => {
         .json({ success: true, data: suggestions });
     }
 
+    let regionCodes = INCLUDED_REGION_CODES;
+    if (country) {
+      const countryMap = { "india": "in", "uae": "ae", "united arab emirates": "ae", "japan": "jp", "singapore": "sg" };
+      const code = countryMap[country.toLowerCase()];
+      if (code) regionCodes = [code];
+    }
+
     // Call Google Places Autocomplete (New)
     const response = await axios.post(
       `${GOOGLE_PLACES_BASE}/places:autocomplete`,
       {
         input: q,
         sessionToken,
-        includedRegionCodes: INCLUDED_REGION_CODES,
+        includedRegionCodes: regionCodes,
         includedPrimaryTypes: ["locality", "administrative_area_level_1"],
         languageCode: "en",
       },

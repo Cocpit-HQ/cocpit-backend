@@ -112,5 +112,5 @@ exports.verifySMSOTP = async (phone, otp, expectedOtp, country) => {
   }
 
   // Mock or Local DB verification fallback
-  return otp === expectedOtp || otp === "123456";
+  return otp === expectedOtp;
 };

@@ -34,12 +34,20 @@ router.get("/organizations/:orgId/progress", requireAuth, organizationController
 router.get("/organizations/:orgId/preview", requireAuth, organizationController.getProfilePreview);
 router.put("/organizations/:orgId/identity", requireAuth, uploadAvatar.single("logo"), validate(saveIdentitySchema), organizationController.saveDraftIdentity);
 router.put("/organizations/:orgId/presence", requireAuth, validate(savePresenceSchema), organizationController.saveDraftPresence);
-router.post("/organizations/:orgId/verify-email/send", requireAuth, validate(verifyEmailSendSchema), organizationController.sendEmailOTP);
-router.post("/organizations/:orgId/verify-email/confirm", requireAuth, validate(verifyEmailConfirmSchema), organizationController.confirmEmailOTP);
-router.post("/organizations/:orgId/verify-phone/send", requireAuth, validate(verifyPhoneSendSchema), organizationController.sendPhoneOTP);
-router.post("/organizations/:orgId/verify-phone/confirm", requireAuth, validate(verifyPhoneConfirmSchema), organizationController.confirmPhoneOTP);
+router.post("/organizations/verify-email/send", requireAuth, validate(verifyEmailSendSchema), organizationController.sendEmailOTP);
+router.post("/organizations/verify-email/confirm", requireAuth, validate(verifyEmailConfirmSchema), organizationController.confirmEmailOTP);
+router.post("/organizations/verify-phone/send", requireAuth, validate(verifyPhoneSendSchema), organizationController.sendPhoneOTP);
+router.post("/organizations/verify-phone/confirm", requireAuth, validate(verifyPhoneConfirmSchema), organizationController.confirmPhoneOTP);
 router.put("/organizations/:orgId/verification", requireAuth, uploadChatMedia.array("documents", 10), validate(saveVerificationSchema), organizationController.saveDraftVerification);
 router.post("/organizations/:orgId/complete", requireAuth, organizationController.completeOnboardingFlow);
+
+router.post(
+    "/organizations/publish-new",
+    requireAuth,
+    organizationActionLimiter,
+    uploadChatMedia.fields([{ name: "logo", maxCount: 1 }, { name: "documents", maxCount: 10 }]),
+    organizationController.publishNewOrganization
+);
 
 // --- PUBLIC & SHARED ---
 router.get("/organizations/check-slug", optionalAuth, organizationController.checkSlug);

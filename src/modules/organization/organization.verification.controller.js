@@ -41,7 +41,7 @@ exports.verifyDomain = async (req, res) => {
         if (otp) {
             const verifyRes = await client.query(
                 `SELECT * FROM organization_verifications 
-                 WHERE org_id = $1 AND (otp = $2 OR $2 = '123456') -- Allow Mock OTP
+                 WHERE org_id = $1 AND otp = $2
                  AND expires_at > NOW() 
                  AND is_verified = FALSE
                  ORDER BY created_at DESC LIMIT 1`,
@@ -153,7 +153,7 @@ exports.verifyByEduEmail = async (req, res) => {
         if (otp) {
             const verifyRes = await client.query(
                 `SELECT * FROM organization_verifications 
-                 WHERE org_id = $1 AND (otp = $2 OR $2 = '123456')
+                 WHERE org_id = $1 AND otp = $2
                  AND verification_type = 'EDU_EMAIL'
                  AND expires_at > NOW() 
                  AND is_verified = FALSE

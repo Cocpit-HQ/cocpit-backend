@@ -508,10 +508,11 @@ const generateUniqueSlug = async (client, name, orgId) => {
     let slug = baseSlug;
     let count = 1;
     while (true) {
-        const check = await client.query(
-            `SELECT 1 FROM organizations WHERE slug = $1 AND org_id != $2`,
-            [slug, orgId]
-        );
+        const query = orgId 
+            ? `SELECT 1 FROM organizations WHERE slug = $1 AND org_id != $2`
+            : `SELECT 1 FROM organizations WHERE slug = $1`;
+        const params = orgId ? [slug, orgId] : [slug];
+        const check = await client.query(query, params);
         if (check.rowCount === 0) {
             break;
         }
@@ -663,11 +664,13 @@ exports.getProfilePreview = async (req, res) => {
 exports.saveDraftIdentity = async (req, res) => {
     const { orgId } = req.params;
     const userId = req.user.sub;
-    const { name, established_year, industry, institution_type, campus_location } = req.body;
+    const { name, established_year, industry, institution_type, campus_location, remove_logo } = req.body;
 
     let logoUrl = null;
     if (req.file) {
         logoUrl = req.file.path.replace(/\\/g, "/");
+    } else if (remove_logo === 'true') {
+        logoUrl = 'REMOVE';
     }
 
     const client = await pool.connect();
@@ -692,7 +695,7 @@ exports.saveDraftIdentity = async (req, res) => {
             SET name = $1,
                 slug = $2,
                 established_year = $3,
-                logo_url = COALESCE($4, logo_url),
+                logo_url = CASE WHEN $4::text = 'REMOVE' THEN NULL ELSE COALESCE($4, logo_url) END,
                 industry = $5,
                 institution_type = $6,
                 campus_location = $7,
@@ -739,6 +742,19 @@ exports.saveDraftPresence = async (req, res) => {
     const { orgId } = req.params;
     const userId = req.user.sub;
     const { email, phone, website, size, country, city, headline, description } = req.body;
+
+    if (phone) {
+        const p = phone.trim();
+        if (p.startsWith('+91') && p.replace(/\D/g, '').length !== 12) {
+            return res.status(400).json({ success: false, message: "India phone numbers must be exactly 10 digits." });
+        }
+        if (p.startsWith('+971') && p.replace(/\D/g, '').length !== 12) {
+            return res.status(400).json({ success: false, message: "UAE phone numbers must be exactly 9 digits." });
+        }
+        if (p.startsWith('+81') && p.replace(/\D/g, '').length !== 12) {
+            return res.status(400).json({ success: false, message: "Japan phone numbers must be exactly 10 digits." });
+        }
+    }
 
     const client = await pool.connect();
     try {
@@ -792,7 +808,6 @@ exports.saveDraftPresence = async (req, res) => {
 };
 
 exports.sendEmailOTP = async (req, res) => {
-    const { orgId } = req.params;
     const userId = req.user.sub;
     const { email } = req.body;
     const normalizedEmail = email.toLowerCase().trim();
@@ -801,15 +816,6 @@ exports.sendEmailOTP = async (req, res) => {
     try {
         await client.query("BEGIN");
 
-        const orgCheck = await client.query(
-            `SELECT 1 FROM organizations WHERE org_id = $1 AND created_by = $2 AND is_deleted = FALSE`,
-            [orgId, userId]
-        );
-
-        if (orgCheck.rowCount === 0) {
-            throw new AppError("Draft organization not found or access denied", 404);
-        }
-
         const crypto = require("crypto");
         const otp = crypto.randomInt(100000, 999999).toString();
         const bcrypt = require("bcrypt");
@@ -817,9 +823,9 @@ exports.sendEmailOTP = async (req, res) => {
         const expiresAt = new Date(Date.now() + 10 * 60000);
 
         await client.query(
-            `INSERT INTO organization_verifications (org_id, otp, expires_at, verification_type, target_value)
+            `INSERT INTO organization_verifications (user_id, otp, expires_at, verification_type, target_value)
              VALUES ($1, $2, $3, 'EMAIL', $4)`,
-            [orgId, otpHash, expiresAt, normalizedEmail]
+            [userId, otpHash, expiresAt, normalizedEmail]
         );
 
         try {
@@ -845,7 +851,6 @@ exports.sendEmailOTP = async (req, res) => {
 };
 
 exports.confirmEmailOTP = async (req, res) => {
-    const { orgId } = req.params;
     const userId = req.user.sub;
     const { email, otp } = req.body;
     const normalizedEmail = email.toLowerCase().trim();
@@ -854,20 +859,11 @@ exports.confirmEmailOTP = async (req, res) => {
     try {
         await client.query("BEGIN");
 
-        const orgCheck = await client.query(
-            `SELECT 1 FROM organizations WHERE org_id = $1 AND created_by = $2 AND is_deleted = FALSE`,
-            [orgId, userId]
-        );
-
-        if (orgCheck.rowCount === 0) {
-            throw new AppError("Draft organization not found or access denied", 404);
-        }
-
         const vRes = await client.query(
             `SELECT * FROM organization_verifications 
-             WHERE org_id = $1 AND verification_type = 'EMAIL' AND target_value = $2 AND is_verified = FALSE
+             WHERE user_id = $1 AND verification_type = 'EMAIL' AND target_value = $2 AND is_verified = FALSE
              ORDER BY created_at DESC LIMIT 1`,
-            [orgId, normalizedEmail]
+            [userId, normalizedEmail]
         );
 
         if (vRes.rowCount === 0) {
@@ -890,7 +886,7 @@ exports.confirmEmailOTP = async (req, res) => {
         );
 
         const bcrypt = require("bcrypt");
-        const isValid = otp === "123456" || await bcrypt.compare(otp.toString(), record.otp);
+        const isValid = await bcrypt.compare(otp.toString(), record.otp);
 
         if (!isValid) {
             throw new AppError("Invalid verification code", 400);
@@ -899,11 +895,6 @@ exports.confirmEmailOTP = async (req, res) => {
         await client.query(
             `UPDATE organization_verifications SET is_verified = TRUE WHERE verification_id = $1`,
             [record.verification_id]
-        );
-
-        await client.query(
-            `UPDATE organizations SET email_verified = TRUE, email = $1 WHERE org_id = $2`,
-            [normalizedEmail, orgId]
         );
 
         await client.query("COMMIT");
@@ -921,27 +912,26 @@ exports.confirmEmailOTP = async (req, res) => {
 };
 
 exports.sendPhoneOTP = async (req, res) => {
-    const { orgId } = req.params;
     const userId = req.user.sub;
     const { phone } = req.body;
     const normalizedPhone = phone.trim();
+
+    if (normalizedPhone.startsWith('+91') && normalizedPhone.replace(/\D/g, '').length !== 12) {
+        return res.status(400).json({ success: false, message: "India phone numbers must be exactly 10 digits." });
+    }
+    if (normalizedPhone.startsWith('+971') && normalizedPhone.replace(/\D/g, '').length !== 12) {
+        return res.status(400).json({ success: false, message: "UAE phone numbers must be exactly 9 digits." });
+    }
+    if (normalizedPhone.startsWith('+81') && normalizedPhone.replace(/\D/g, '').length !== 12) {
+        return res.status(400).json({ success: false, message: "Japan phone numbers must be exactly 10 digits." });
+    }
 
     const client = await pool.connect();
     try {
         await client.query("BEGIN");
 
-        const orgCheck = await client.query(
-            `SELECT country FROM organizations WHERE org_id = $1 AND created_by = $2 AND is_deleted = FALSE`,
-            [orgId, userId]
-        );
-
-        if (orgCheck.rowCount === 0) {
-            throw new AppError("Draft organization not found or access denied", 404);
-        }
-
-        const country = orgCheck.rows[0].country;
         const smsService = require("../../core/services/sms.service");
-        const formattedPhone = smsService.normalizePhone(normalizedPhone, country);
+        const formattedPhone = smsService.normalizePhone(normalizedPhone);
 
         const crypto = require("crypto");
         const otp = crypto.randomInt(100000, 999999).toString();
@@ -950,12 +940,12 @@ exports.sendPhoneOTP = async (req, res) => {
         const expiresAt = new Date(Date.now() + 10 * 60000);
 
         await client.query(
-            `INSERT INTO organization_verifications (org_id, otp, expires_at, verification_type, target_value)
+            `INSERT INTO organization_verifications (user_id, otp, expires_at, verification_type, target_value)
              VALUES ($1, $2, $3, 'PHONE', $4)`,
-            [orgId, otpHash, expiresAt, formattedPhone]
+            [userId, otpHash, expiresAt, formattedPhone]
         );
 
-        await smsService.sendSMSOTP(formattedPhone, otp, country);
+        await smsService.sendSMSOTP(formattedPhone, otp);
 
         await client.query("COMMIT");
         res.json({ success: true, message: "Verification code sent via SMS." });
@@ -972,7 +962,6 @@ exports.sendPhoneOTP = async (req, res) => {
 };
 
 exports.confirmPhoneOTP = async (req, res) => {
-    const { orgId } = req.params;
     const userId = req.user.sub;
     const { phone, otp } = req.body;
     const normalizedPhone = phone.trim();
@@ -981,24 +970,14 @@ exports.confirmPhoneOTP = async (req, res) => {
     try {
         await client.query("BEGIN");
 
-        const orgCheck = await client.query(
-            `SELECT country FROM organizations WHERE org_id = $1 AND created_by = $2 AND is_deleted = FALSE`,
-            [orgId, userId]
-        );
-
-        if (orgCheck.rowCount === 0) {
-            throw new AppError("Draft organization not found or access denied", 404);
-        }
-
-        const country = orgCheck.rows[0].country;
         const smsService = require("../../core/services/sms.service");
-        const formattedPhone = smsService.normalizePhone(normalizedPhone, country);
+        const formattedPhone = smsService.normalizePhone(normalizedPhone);
 
         const vRes = await client.query(
             `SELECT * FROM organization_verifications 
-             WHERE org_id = $1 AND verification_type = 'PHONE' AND target_value = $2 AND is_verified = FALSE
+             WHERE user_id = $1 AND verification_type = 'PHONE' AND target_value = $2 AND is_verified = FALSE
              ORDER BY created_at DESC LIMIT 1`,
-            [orgId, formattedPhone]
+            [userId, formattedPhone]
         );
 
         if (vRes.rowCount === 0) {
@@ -1020,10 +999,10 @@ exports.confirmPhoneOTP = async (req, res) => {
             [record.verification_id]
         );
 
-        const isValid = await smsService.verifySMSOTP(formattedPhone, otp, record.otp, country);
+        const isValid = await smsService.verifySMSOTP(formattedPhone, otp, record.otp);
 
         const bcrypt = require("bcrypt");
-        const isBcryptValid = otp === "123456" || await bcrypt.compare(otp.toString(), record.otp);
+        const isBcryptValid = await bcrypt.compare(otp.toString(), record.otp);
 
         if (!isValid && !isBcryptValid) {
             throw new AppError("Invalid verification code", 400);
@@ -1032,11 +1011,6 @@ exports.confirmPhoneOTP = async (req, res) => {
         await client.query(
             `UPDATE organization_verifications SET is_verified = TRUE WHERE verification_id = $1`,
             [record.verification_id]
-        );
-
-        await client.query(
-            `UPDATE organizations SET phone_verified = TRUE, phone = $1 WHERE org_id = $2`,
-            [formattedPhone, orgId]
         );
 
         await client.query("COMMIT");
@@ -1232,6 +1206,164 @@ exports.completeOnboardingFlow = async (req, res) => {
     } catch (err) {
         await client.query("ROLLBACK");
         console.error("Complete onboarding flow error:", err);
+        if (err.statusCode) {
+            return res.status(err.statusCode).json({ message: err.message });
+        }
+        res.status(500).json({ message: "Internal server error" });
+    } finally {
+        client.release();
+    }
+};
+
+exports.publishNewOrganization = async (req, res) => {
+    const userId = req.user.sub;
+    const {
+        name,
+        established_year,
+        industry,
+        email,
+        phone,
+        website,
+        size,
+        country,
+        city,
+        headline,
+        description,
+        type,
+        country_of_operation
+    } = req.body;
+
+    const client = await pool.connect();
+    try {
+        await client.query("BEGIN");
+
+        if (email) {
+            const normalizedEmail = email.toLowerCase().trim();
+            const emailCheck = await client.query(
+                `SELECT 1 FROM organization_verifications 
+                 WHERE user_id = $1 AND target_value = $2 AND verification_type = 'EMAIL' AND is_verified = TRUE`,
+                [userId, normalizedEmail]
+            );
+            if (emailCheck.rowCount === 0) {
+                throw new AppError("Email has not been verified.", 400);
+            }
+        }
+
+        if (phone) {
+            const smsService = require("../../core/services/sms.service");
+            const normalizedPhone = smsService.normalizePhone(phone.trim());
+            const phoneCheck = await client.query(
+                `SELECT 1 FROM organization_verifications 
+                 WHERE user_id = $1 AND target_value = $2 AND verification_type = 'PHONE' AND is_verified = TRUE`,
+                [userId, normalizedPhone]
+            );
+            if (phoneCheck.rowCount === 0) {
+                throw new AppError("Phone number has not been verified.", 400);
+            }
+        }
+
+        let logoUrl = null;
+        if (req.files && req.files.logo && req.files.logo.length > 0) {
+            logoUrl = req.files.logo[0].path.replace(/\\/g, "/");
+        }
+
+        const slug = await generateUniqueSlug(client, name);
+        const establishedYearInt = established_year ? parseInt(established_year, 10) : null;
+
+        const insertQuery = `
+            INSERT INTO organizations (
+                name, slug, entity_type, established_year, industry, 
+                logo_url, email, phone, website, size, country, city, 
+                headline, description, created_by, onboarding_step, onboarding_completed, email_verified, phone_verified
+            ) VALUES (
+                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, 'COMPLETED', TRUE, TRUE, TRUE
+            ) RETURNING *
+        `;
+
+        const orgRes = await client.query(insertQuery, [
+            name,
+            slug,
+            type || 'COMPANY',
+            establishedYearInt,
+            industry || null,
+            logoUrl,
+            email ? email.toLowerCase().trim() : null,
+            phone ? phone.trim() : null,
+            website || null,
+            size || null,
+            country || null,
+            city || null,
+            headline || null,
+            description || null,
+            userId
+        ]);
+
+        const newOrg = orgRes.rows[0];
+        const orgId = newOrg.org_id;
+
+        // Determine roles based on entity type
+        const entityType = newOrg.entity_type;
+        let ownerRoleName, roles;
+
+        if (entityType === 'INSTITUTION') {
+            ownerRoleName = 'Admin';
+            roles = [
+                { name: 'Admin',             color: '#FFD700', permissions: ['*'],                                                                                                          priority: 100 },
+                { name: 'Faculty',           color: '#FF5733', permissions: ['CREATE_ACADEMIC_CONTENT', 'MODERATE_STUDENTS', 'VIEW_MEMBERS'],                                              priority: 80  },
+                { name: 'Student Moderator', color: '#28B463', permissions: ['CREATE_GENERAL_CONTENT', 'MODERATE_GENERAL', 'VIEW_MEMBERS'],                                                priority: 60  },
+                { name: 'Student',           color: '#3498DB', permissions: ['CREATE_GENERAL_CONTENT', 'VIEW_MEMBERS'],                                                                    priority: 10  }
+            ];
+        } else {
+            ownerRoleName = 'Owner';
+            roles = [
+                { name: 'Owner',     color: '#FFD700', permissions: ['*'],                                                                                                                priority: 100 },
+                { name: 'Admin',     color: '#FF5733', permissions: ['MANAGE_COMPANY', 'MANAGE_SETTINGS', 'MANAGE_ROLES', 'MANAGE_MEMBERS', 'INVITE_MEMBERS', 'POST_JOBS', 'VIEW_JOBS', 'MANAGE_JOBS', 'VIEW_APPLICANTS', 'MANAGE_APPLICANTS', 'CREATE_CONTENT', 'VIEW_ANALYTICS'], priority: 90  },
+                { name: 'Editor',    color: '#28B463', permissions: ['CREATE_CONTENT', 'VIEW_ANALYTICS', 'VIEW_MEMBERS', 'MANAGE_COMPANY_DETAILS'],                                        priority: 60  },
+                { name: 'Recruiter', color: '#3498DB', permissions: ['POST_JOBS', 'VIEW_JOBS', 'VIEW_APPLICANTS', 'MANAGE_APPLICANTS', 'VIEW_MEMBERS'],                                    priority: 50  },
+                { name: 'Analyst',   color: '#800080', permissions: ['VIEW_ANALYTICS', 'VIEW_MEMBERS'],                                                                                    priority: 40  }
+            ];
+        }
+
+        let ownerRoleId;
+        for (const r of roles) {
+            const rRes = await client.query(
+                `INSERT INTO organization_roles (org_id, name, color, permissions, priority, is_system_role)
+                 VALUES ($1, $2, $3, $4, $5, TRUE)
+                 RETURNING role_id`,
+                [orgId, r.name, r.color, JSON.stringify(r.permissions), r.priority]
+            );
+            if (r.name === ownerRoleName) ownerRoleId = rRes.rows[0].role_id;
+        }
+
+        // Add creator as owner/admin member with the correct role
+        await client.query(
+            `INSERT INTO organization_members (org_id, user_id, role_id, status, is_primary_display)
+             VALUES ($1, $2, $3, 'ACTIVE', FALSE)`,
+            [orgId, userId, ownerRoleId]
+        );
+
+        if (req.files && req.files.documents && req.files.documents.length > 0) {
+            for (let doc of req.files.documents) {
+                const docUrl = doc.path.replace(/\\/g, "/");
+                await client.query(
+                    `INSERT INTO organization_documents (org_id, document_url, document_name, document_type)
+                     VALUES ($1, $2, $3, $4)`,
+                    [orgId, docUrl, doc.originalname, doc.mimetype]
+                );
+            }
+        }
+
+        await client.query("COMMIT");
+
+        res.status(201).json({
+            success: true,
+            message: "Organization created successfully",
+            slug: slug,
+            org_id: orgId
+        });
+    } catch (err) {
+        await client.query("ROLLBACK");
+        console.error("Publish new organization error:", err);
         if (err.statusCode) {
             return res.status(err.statusCode).json({ message: err.message });
         }

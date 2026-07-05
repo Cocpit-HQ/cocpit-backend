@@ -1048,6 +1048,7 @@ CREATE INDEX idx_company_invites_token ON organization_invites(token);
 CREATE TABLE IF NOT EXISTS organization_verifications (
     verification_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     org_id UUID REFERENCES organizations(org_id) ON DELETE CASCADE,
+    user_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
     otp VARCHAR(255) NOT NULL,
     attempts INTEGER DEFAULT 0,
     expires_at TIMESTAMPTZ NOT NULL,
