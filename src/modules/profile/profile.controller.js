@@ -594,9 +594,24 @@ exports.updateExperience = async (req, res) => {
         }
         // ─────────────────────────────────────────────────────────────────────────
 
+        const resolvedTitle   = title        !== undefined ? title        : existing.title;
+        const resolvedDesc    = description  !== undefined ? description  : existing.description;
+        const resolvedLocation = location    !== undefined ? location     : existing.location;
+
         await client.query('BEGIN');
 
-        const data = { title, company_name, location, work_type, work_mode, start_date, end_date, is_current, description, org_id };
+        const data = { 
+            title: resolvedTitle, 
+            company_name: resolvedCompany, 
+            location: resolvedLocation, 
+            work_type: resolvedWType, 
+            work_mode: resolvedWMode, 
+            start_date: resolvedStart, 
+            end_date: resolvedEnd, 
+            is_current: resolvedCurrent, 
+            description: resolvedDesc, 
+            org_id: resolvedOrgId 
+        };
         await handleExperienceOrgLink(client, req.user.sub, data);
 
         const experience = await profileRepo.updateExperienceInTx(client, req.params.id, profileId, data);
@@ -696,8 +711,35 @@ exports.updateEducation = async (req, res) => {
         const profileId = await profileRepo.getProfileId(req.user.sub);
         if (!profileId) return res.status(404).json({ message: "Profile not found" });
 
+        // Fetch existing record to resolve undefined fields in PATCH
+        const existingRes = await client.query(
+            `SELECT * FROM educations WHERE education_id = $1 AND profile_id = $2`,
+            [req.params.id, profileId]
+        );
+        if (existingRes.rowCount === 0) return res.status(404).json({ message: "Education not found or not authorized" });
+        const existing = existingRes.rows[0];
+
         const { school_name, school_org_id, degree, field_of_study, location, start_date, end_date, description } = req.body;
-        const data = { school_name, school_org_id, degree, field_of_study, location, start_date, end_date, description };
+
+        const resolvedSchoolName = school_name !== undefined ? school_name : existing.school_name;
+        const resolvedSchoolOrgId = school_org_id !== undefined ? school_org_id : existing.school_org_id;
+        const resolvedDegree = degree !== undefined ? degree : existing.degree;
+        const resolvedField = field_of_study !== undefined ? field_of_study : existing.field_of_study;
+        const resolvedLocation = location !== undefined ? location : existing.location;
+        const resolvedStart = start_date !== undefined ? start_date : existing.start_date;
+        const resolvedEnd = end_date !== undefined ? end_date : existing.end_date;
+        const resolvedDesc = description !== undefined ? description : existing.description;
+
+        const data = {
+            school_name: resolvedSchoolName,
+            school_org_id: resolvedSchoolOrgId,
+            degree: resolvedDegree,
+            field_of_study: resolvedField,
+            location: resolvedLocation,
+            start_date: resolvedStart,
+            end_date: resolvedEnd,
+            description: resolvedDesc
+        };
 
         await client.query('BEGIN');
         await handleEducationOrgLink(client, req.user.sub, data);
