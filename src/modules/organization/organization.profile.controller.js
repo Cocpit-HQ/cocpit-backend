@@ -84,6 +84,7 @@ exports.getOrgProfile = async (req, res) => {
             countsResult,
             membershipResult,
             latestPostsResult,
+            linksResult,
         ] = await Promise.all([
             // Counts (followers, subscribers, members, posts, active jobs)
             pool.query(
@@ -118,6 +119,14 @@ exports.getOrgProfile = async (req, res) => {
                    AND (p.is_removed IS FALSE OR p.is_removed IS NULL)
                  ORDER BY p.created_at DESC
                  LIMIT 3`,
+                [org.org_id]
+            ),
+            // Organization links
+            pool.query(
+                `SELECT link_id, platform, url, display_label
+                 FROM organization_links 
+                 WHERE org_id = $1 AND is_deleted = FALSE
+                 ORDER BY platform ASC`,
                 [org.org_id]
             ),
         ]);
@@ -235,6 +244,7 @@ exports.getOrgProfile = async (req, res) => {
             about_snippet: org.description ? org.description.slice(0, 250) : null,
             core_team: teamResult.rows,
             latest_posts: latestPostsResult.rows,
+            links: linksResult.rows,
             relationship,
             relevance,
             community,
