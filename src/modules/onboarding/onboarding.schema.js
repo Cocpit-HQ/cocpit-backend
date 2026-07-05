@@ -38,6 +38,10 @@ const saveDetailsSchema = z.object({
     field_of_study: z.string().nullable().optional(),
     title: z.string().optional(),
     company_name: z.string().optional(),
+    org_id: z.string().uuid("Invalid organization ID").nullable().optional(),
+    location: z.string().nullable().optional(),
+    work_type: z.string().nullable().optional(),
+    work_mode: z.string().nullable().optional(),
   }).superRefine((data, ctx) => {
     if (["student", "fresher", "intern"].includes(data.role)) {
       if (!data.school_name || data.school_name.trim() === "") {

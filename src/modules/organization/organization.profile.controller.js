@@ -152,37 +152,37 @@ exports.getOrgProfile = async (req, res) => {
             [org.org_id]
         );
 
-        // 4. Relationship, Relevance, and Community (only for other/public views)
-        let relationship = null;
-        let relevance = null;
-        let community = null;
+        // 4. Relationship, Relevance, and Community (now computed dynamically)
+        let relationship = {
+            is_following: false,
+            is_subscribed: false,
+            is_connected: false,
+        };
+        let relevance = {
+            connections_who_follow: [],
+            mutual_connections_count: 0
+        };
+        let community = {
+            recent_followers: [],
+            total_followers: counts.followers_count
+        };
 
-        if (!isOwnProfile) {
-            // A. Relationship
-            if (viewerId) {
-                const relResult = await pool.query(
+        if (isOwnProfile) {
+            relationship = {
+                is_following: true,
+                is_subscribed: true,
+                is_connected: true,
+            };
+        } else if (viewerId) {
+            const [relResult, relevanceResult, mutualCountResult] = await Promise.all([
+                pool.query(
                     `SELECT
                         EXISTS(SELECT 1 FROM organization_followers WHERE user_id = $1 AND org_id = $2) AS is_following,
                         EXISTS(SELECT 1 FROM organization_subscribers WHERE user_id = $1 AND org_id = $2 AND status = 'SUBSCRIBED') AS is_subscribed,
                         EXISTS(SELECT 1 FROM organization_connections WHERE user_id = $1 AND org_id = $2) AS is_connected`,
                     [viewerId, org.org_id]
-                );
-                relationship = {
-                    is_following: !!relResult.rows[0]?.is_following,
-                    is_subscribed: !!relResult.rows[0]?.is_subscribed,
-                    is_connected: !!relResult.rows[0]?.is_connected,
-                };
-            } else {
-                relationship = {
-                    is_following: false,
-                    is_subscribed: false,
-                    is_connected: false,
-                };
-            }
-
-            // B. Relevance (connections of the viewer who follow this organization)
-            if (viewerId) {
-                const relevanceResult = await pool.query(
+                ),
+                pool.query(
                     `SELECT u.user_id, u.full_name, u.avatar_url, u.headline, u.account_name
                      FROM connections c
                      JOIN active_users u ON c.connected_user_id = u.user_id
@@ -190,43 +190,42 @@ exports.getOrgProfile = async (req, res) => {
                      WHERE c.user_id = $1 AND ofol.org_id = $2
                      LIMIT 5`,
                     [viewerId, org.org_id]
-                );
-
-                const mutualCountResult = await pool.query(
+                ),
+                pool.query(
                     `SELECT COUNT(*)::int AS count
                      FROM connections c
                      JOIN organization_followers ofol ON ofol.user_id = c.connected_user_id
                      WHERE c.user_id = $1 AND ofol.org_id = $2`,
                     [viewerId, org.org_id]
-                );
+                )
+            ]);
 
-                relevance = {
-                    connections_who_follow: relevanceResult.rows,
-                    mutual_connections_count: mutualCountResult.rows[0]?.count || 0
-                };
-            } else {
-                relevance = {
-                    connections_who_follow: [],
-                    mutual_connections_count: 0
-                };
-            }
+            relationship = {
+                is_following: !!relResult.rows[0]?.is_following,
+                is_subscribed: !!relResult.rows[0]?.is_subscribed,
+                is_connected: !!relResult.rows[0]?.is_connected,
+            };
 
-            // C. Community (recent followers of this organization)
-            const recentFollowersResult = await pool.query(
-                `SELECT u.user_id, u.full_name, u.avatar_url, u.headline, u.account_name
-                 FROM organization_followers ofol
-                 JOIN active_users u ON ofol.user_id = u.user_id
-                 WHERE ofol.org_id = $1
-                 ORDER BY ofol.created_at DESC
-                 LIMIT 5`,
-                [org.org_id]
-            );
-
-            community = {
-                recent_followers: recentFollowersResult.rows,
-                total_followers: counts.followers_count
+            relevance = {
+                connections_who_follow: relevanceResult.rows,
+                mutual_connections_count: mutualCountResult.rows[0]?.count || 0
             };
         }
+
+        const recentFollowersResult = await pool.query(
+            `SELECT u.user_id, u.full_name, u.avatar_url, u.headline, u.account_name
+             FROM organization_followers ofol
+             JOIN active_users u ON ofol.user_id = u.user_id
+             WHERE ofol.org_id = $1
+             ORDER BY ofol.created_at DESC
+             LIMIT 5`,
+            [org.org_id]
+        );
+
+        community = {
+            recent_followers: recentFollowersResult.rows,
+            total_followers: counts.followers_count
+        };
 
         return res.json({
             org: {
@@ -245,6 +244,9 @@ exports.getOrgProfile = async (req, res) => {
             core_team: teamResult.rows,
             latest_posts: latestPostsResult.rows,
             links: linksResult.rows,
+            is_following: relationship.is_following,
+            is_subscribed: relationship.is_subscribed,
+            is_connected: relationship.is_connected,
             relationship,
             relevance,
             community,

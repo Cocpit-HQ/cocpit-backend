@@ -7,6 +7,7 @@ const { z } = require("zod");
 const profileRepo = require("./profile.repository");
 const { checkBlockStatus } = require("../../core/utils/blockCheck");
 const pool = require("../../core/db/pool");
+const { handleExperienceOrgLink, handleEducationOrgLink, cleanupPreviousCompanyMemberships } = require("../../utils/orgLinkHelper");
 
 // ─── Experience Validation Helpers ──────────────────────────────────────────────
 
@@ -481,10 +482,17 @@ exports.addExperience = async (req, res) => {
         }
 
         // Step 2: Insert the new experience
+        const expData = { title, company_name, location, work_type, work_mode, start_date, end_date, is_current, description, org_id };
+        await handleExperienceOrgLink(client, req.user.sub, expData);
+
         const experience = await profileRepo.addExperienceInTx(
             client, profileId,
-            { title, company_name, location, work_type, work_mode, start_date, end_date, is_current, description, org_id }
+            expData
         );
+
+        // Run previous company membership cleanup if applicable
+        const prevOrgIds = [endedExperience?.org_id, expData.org_id];
+        await cleanupPreviousCompanyMemberships(client, req.user.sub, prevOrgIds);
 
         await client.query('COMMIT');
 
@@ -519,6 +527,7 @@ exports.addExperience = async (req, res) => {
 };
 
 exports.updateExperience = async (req, res) => {
+    const client = await pool.connect();
     try {
         const profileId = await profileRepo.getProfileId(req.user.sub);
         if (!profileId) return res.status(404).json({ message: "Profile not found" });
@@ -585,11 +594,25 @@ exports.updateExperience = async (req, res) => {
         }
         // ─────────────────────────────────────────────────────────────────────────
 
+        await client.query('BEGIN');
+
         const data = { title, company_name, location, work_type, work_mode, start_date, end_date, is_current, description, org_id };
-        const experience = await profileRepo.updateExperience(req.params.id, profileId, data);
-        if (!experience) return res.status(400).json({ message: "No fields provided to update" });
+        await handleExperienceOrgLink(client, req.user.sub, data);
+
+        const experience = await profileRepo.updateExperienceInTx(client, req.params.id, profileId, data);
+        if (!experience) {
+            await client.query('ROLLBACK');
+            return res.status(400).json({ message: "No fields provided to update" });
+        }
+
+        // Clean up previous organization membership if applicable
+        const prevOrgIds = [existing.org_id, experience.org_id];
+        await cleanupPreviousCompanyMemberships(client, req.user.sub, prevOrgIds);
+
+        await client.query('COMMIT');
         res.json({ message: "Experience updated successfully", experience, warning });
     } catch (err) {
+        if (client) await client.query('ROLLBACK');
         console.error("Update experience error:", err);
 
         // Handle specific Postgres error codes
@@ -607,49 +630,92 @@ exports.updateExperience = async (req, res) => {
         }
 
         res.status(500).json({ message: "Internal server error" });
+    } finally {
+        client.release();
     }
 };
 
 exports.deleteExperience = async (req, res) => {
+    const client = await pool.connect();
     try {
         const profileId = await profileRepo.getProfileId(req.user.sub);
         if (!profileId) return res.status(404).json({ message: "Profile not found" });
-        const deleted = await profileRepo.deleteExperience(req.params.id, profileId);
-        if (!deleted) return res.status(404).json({ message: "Experience not found" });
+
+        await client.query('BEGIN');
+        const deleted = await profileRepo.deleteExperienceInTx(client, req.params.id, profileId);
+        if (!deleted) {
+            await client.query('ROLLBACK');
+            return res.status(404).json({ message: "Experience not found" });
+        }
+
+        if (deleted.org_id) {
+            await cleanupPreviousCompanyMemberships(client, req.user.sub, [deleted.org_id]);
+        }
+
+        await client.query('COMMIT');
         res.json({ message: "Experience deleted successfully" });
     } catch (err) {
+        if (client) await client.query('ROLLBACK');
         console.error("Delete experience error:", err);
         res.status(500).json({ message: "Internal server error" });
+    } finally {
+        client.release();
     }
 };
 
 // ─── Educations ─────────────────────────────────────────────────────────────────
 
 exports.addEducation = async (req, res) => {
+    const client = await pool.connect();
     try {
         const profileId = await profileRepo.ensureProfileId(req.user.sub);
         if (!profileId) return res.status(404).json({ message: "Profile not found" });
-        const { school_name, degree, field_of_study, location, start_date, end_date, description } = req.body;
-        const education = await profileRepo.addEducation(profileId, { school_name, degree, field_of_study, location, start_date, end_date, description });
+
+        const { school_name, school_org_id, degree, field_of_study, location, start_date, end_date, description } = req.body;
+        const data = { school_name, school_org_id, degree, field_of_study, location, start_date, end_date, description };
+
+        await client.query('BEGIN');
+        await handleEducationOrgLink(client, req.user.sub, data);
+
+        const education = await profileRepo.addEducationInTx(client, profileId, data);
+
+        await client.query('COMMIT');
         res.status(201).json({ message: "Education added successfully", education });
     } catch (err) {
+        if (client) await client.query('ROLLBACK');
         console.error("Add education error:", err);
         res.status(500).json({ message: "Internal server error" });
+    } finally {
+        client.release();
     }
 };
 
 exports.updateEducation = async (req, res) => {
+    const client = await pool.connect();
     try {
         const profileId = await profileRepo.getProfileId(req.user.sub);
         if (!profileId) return res.status(404).json({ message: "Profile not found" });
-        const { school_name, degree, field_of_study, location, start_date, end_date, description } = req.body;
-        const data = { school_name, degree, field_of_study, location, start_date, end_date, description };
-        const education = await profileRepo.updateEducation(req.params.id, profileId, data);
-        if (!education) return res.status(400).json({ message: "No fields provided to update" });
+
+        const { school_name, school_org_id, degree, field_of_study, location, start_date, end_date, description } = req.body;
+        const data = { school_name, school_org_id, degree, field_of_study, location, start_date, end_date, description };
+
+        await client.query('BEGIN');
+        await handleEducationOrgLink(client, req.user.sub, data);
+
+        const education = await profileRepo.updateEducationInTx(client, req.params.id, profileId, data);
+        if (!education) {
+            await client.query('ROLLBACK');
+            return res.status(400).json({ message: "No fields provided to update" });
+        }
+
+        await client.query('COMMIT');
         res.json({ message: "Education updated successfully", education });
     } catch (err) {
+        if (client) await client.query('ROLLBACK');
         console.error("Update education error:", err);
         res.status(500).json({ message: "Internal server error" });
+    } finally {
+        client.release();
     }
 };
 
@@ -880,23 +946,44 @@ exports.getEducationList = async (req, res) => {
     try {
         const { school_search = "", degree_search = "", specialization_search = "" } = req.query;
 
-        // 🎯 School query — case-insensitive DISTINCT via DISTINCT ON
+        // 🎯 School query — UNION school names from educations and organizations table (type: INSTITUTION), de-duplicating case-insensitively
         let schoolQuery, schoolParams;
         if (school_search) {
             schoolParams = [`%${school_search}%`];
             schoolQuery = `
+                WITH combined AS (
+                    SELECT school_name
+                    FROM educations
+                    WHERE school_name IS NOT NULL AND school_name != ''
+                      AND LOWER(school_name) LIKE LOWER($1)
+                    UNION
+                    SELECT name AS school_name
+                    FROM organizations
+                    WHERE name IS NOT NULL AND name != ''
+                      AND entity_type = 'INSTITUTION'
+                      AND is_deleted = FALSE
+                      AND LOWER(name) LIKE LOWER($1)
+                )
                 SELECT DISTINCT ON (LOWER(TRIM(school_name))) school_name
-                FROM educations
-                WHERE school_name IS NOT NULL AND school_name != ''
-                  AND LOWER(school_name) LIKE LOWER($1)
+                FROM combined
                 ORDER BY LOWER(TRIM(school_name))
                 LIMIT 50`;
         } else {
             schoolParams = [];
             schoolQuery = `
+                WITH combined AS (
+                    SELECT school_name
+                    FROM educations
+                    WHERE school_name IS NOT NULL AND school_name != ''
+                    UNION
+                    SELECT name AS school_name
+                    FROM organizations
+                    WHERE name IS NOT NULL AND name != ''
+                      AND entity_type = 'INSTITUTION'
+                      AND is_deleted = FALSE
+                )
                 SELECT DISTINCT ON (LOWER(TRIM(school_name))) school_name
-                FROM educations
-                WHERE school_name IS NOT NULL AND school_name != ''
+                FROM combined
                 ORDER BY LOWER(TRIM(school_name))
                 LIMIT 50`;
         }
@@ -965,23 +1052,44 @@ exports.getCompanyList = async (req, res) => {
     try {
         const { company_search = "", title_search = "" } = req.query;
 
-        // 🎯 Company query — case-insensitive DISTINCT via DISTINCT ON
+        // 🎯 Company query — UNION company names from experiences and organizations table (type: COMPANY), de-duplicating case-insensitively
         let companyQuery, companyParams;
         if (company_search) {
             companyParams = [`%${company_search}%`];
             companyQuery = `
+                WITH combined AS (
+                    SELECT company_name
+                    FROM experiences
+                    WHERE company_name IS NOT NULL AND company_name != ''
+                      AND LOWER(company_name) LIKE LOWER($1)
+                    UNION
+                    SELECT name AS company_name
+                    FROM organizations
+                    WHERE name IS NOT NULL AND name != ''
+                      AND entity_type = 'COMPANY'
+                      AND is_deleted = FALSE
+                      AND LOWER(name) LIKE LOWER($1)
+                )
                 SELECT DISTINCT ON (LOWER(TRIM(company_name))) company_name
-                FROM experiences
-                WHERE company_name IS NOT NULL AND company_name != ''
-                  AND LOWER(company_name) LIKE LOWER($1)
+                FROM combined
                 ORDER BY LOWER(TRIM(company_name))
                 LIMIT 50`;
         } else {
             companyParams = [];
             companyQuery = `
+                WITH combined AS (
+                    SELECT company_name
+                    FROM experiences
+                    WHERE company_name IS NOT NULL AND company_name != ''
+                    UNION
+                    SELECT name AS company_name
+                    FROM organizations
+                    WHERE name IS NOT NULL AND name != ''
+                      AND entity_type = 'COMPANY'
+                      AND is_deleted = FALSE
+                )
                 SELECT DISTINCT ON (LOWER(TRIM(company_name))) company_name
-                FROM experiences
-                WHERE company_name IS NOT NULL AND company_name != ''
+                FROM combined
                 ORDER BY LOWER(TRIM(company_name))
                 LIMIT 50`;
         }
@@ -1214,22 +1322,41 @@ exports.batchUpdateExperiences = async (req, res) => {
         await client.query('BEGIN');
 
         const idMap = {}; // tempId -> databaseId
-        
+        const affectedOrgIds = [];
+
         // Execute DELETEs first, then UPDATEs, then CREATEs to avoid transient constraint violations
         const deleteOps = operations.filter(op => op.type === "DELETE");
         const updateOps = operations.filter(op => op.type === "UPDATE");
         const createOps = operations.filter(op => op.type === "CREATE");
 
         for (const op of deleteOps) {
-            await profileRepo.deleteExperienceInTx(client, op.id, profileId);
+            const deleted = await profileRepo.deleteExperienceInTx(client, op.id, profileId);
+            if (deleted && deleted.org_id) {
+                affectedOrgIds.push(deleted.org_id);
+            }
         }
         for (const op of updateOps) {
+            const existing = existingExperiences.find(e => e.experience_id === op.id);
+            if (existing && existing.org_id) {
+                affectedOrgIds.push(existing.org_id);
+            }
+            await handleExperienceOrgLink(client, userId, op.data);
+            if (op.data.org_id) {
+                affectedOrgIds.push(op.data.org_id);
+            }
             await profileRepo.updateExperienceInTx(client, op.id, profileId, op.data);
         }
         for (const op of createOps) {
+            await handleExperienceOrgLink(client, userId, op.data);
+            if (op.data.org_id) {
+                affectedOrgIds.push(op.data.org_id);
+            }
             const newExp = await profileRepo.addExperienceInTx(client, profileId, op.data);
             idMap[op.tempId] = newExp.experience_id;
         }
+
+        // Clean up previous memberships
+        await cleanupPreviousCompanyMemberships(client, userId, affectedOrgIds);
 
         // Increment version
         const newVersion = await profileRepo.incrementProfileVersion(client, profileId, version);

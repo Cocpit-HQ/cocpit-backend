@@ -4,6 +4,7 @@
  */
 const pool = require("../../core/db/pool");
 const authRepo = require("../auth/auth.repository");
+const { handleExperienceOrgLink, handleEducationOrgLink } = require("../../utils/orgLinkHelper");
 
 const ONBOARDING_STEPS = {
     ROLE: "ROLE",
@@ -87,7 +88,7 @@ exports.saveRole = async (req, res) => {
 };
 exports.saveDetails = async (req, res) => {
     const userId = req.user?.sub;
-    const { role, school_name, school_org_id, degree, field_of_study, location, work_type, work_mode, title, company_name } = req.body;
+    const { role, school_name, school_org_id, degree, field_of_study, location, work_type, work_mode, title, company_name, org_id } = req.body;
 
     const allowedRoles = ["student", "fresher", "intern", "self_employed", "employed", "unemployed"];
     if (!allowedRoles.includes(role)) {
@@ -106,16 +107,22 @@ exports.saveDetails = async (req, res) => {
         }
 
         if (["student", "fresher", "intern"].includes(role)) {
+            const eduData = { school_name, school_org_id, degree, field_of_study, location };
+            await handleEducationOrgLink(client, userId, eduData);
+
             await client.query(
                 `INSERT INTO educations (profile_id, school_name, school_org_id, degree, field_of_study, location)
                  VALUES ($1, $2, $3, $4, $5, $6)`,
-                [profileId, school_name, school_org_id || null, degree, field_of_study || null, location || null]
+                [profileId, eduData.school_name, eduData.school_org_id || null, eduData.degree, eduData.field_of_study || null, eduData.location || null]
             );
         } else if (["self_employed", "employed"].includes(role)) {
+            const expData = { title, company_name, location, work_type, work_mode, org_id };
+            await handleExperienceOrgLink(client, userId, expData);
+
             await client.query(
-                `INSERT INTO experiences (profile_id, title, company_name, location, work_type, work_mode)
-                 VALUES ($1, $2, $3, $4, $5, $6)`,
-                [profileId, title, company_name, location || null, work_type || null, work_mode || null]
+                `INSERT INTO experiences (profile_id, title, company_name, location, work_type, work_mode, org_id)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+                [profileId, expData.title, expData.company_name, expData.location || null, expData.work_type || null, expData.work_mode || null, expData.org_id || null]
             );
         }
 

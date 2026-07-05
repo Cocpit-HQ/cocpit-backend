@@ -166,9 +166,15 @@ const saveIdempotentResponse = async (requestId, statusCode, responseBody) => {
 
 const getExperiences = async (profileId) => {
     const result = await pool.query(
-        `SELECT e.*, o.logo_url 
+        `SELECT e.experience_id, e.profile_id, e.title, e.company_name, e.location, e.work_type, e.work_mode, e.start_date, e.end_date, e.is_current, e.description, e.created_at,
+                CASE WHEN om.status = 'ACTIVE' THEN e.org_id ELSE NULL END AS org_id,
+                CASE WHEN om.status = 'ACTIVE' THEN o.logo_url ELSE NULL END AS logo_url,
+                CASE WHEN om.status = 'ACTIVE' THEN o.name ELSE NULL END AS org_name,
+                CASE WHEN om.status = 'ACTIVE' THEN o.slug ELSE NULL END AS org_slug
          FROM experiences e 
+         LEFT JOIN profiles p ON e.profile_id = p.profile_id
          LEFT JOIN organizations o ON e.org_id = o.org_id 
+         LEFT JOIN organization_members om ON e.org_id = om.org_id AND p.user_id = om.user_id
          WHERE e.profile_id = $1 
          ORDER BY e.is_current DESC, e.start_date DESC`,
         [profileId]
@@ -341,32 +347,75 @@ const updateExperienceInTx = async (client, experienceId, profileId, data) => {
 
 const getEducations = async (profileId) => {
     const result = await pool.query(
-        `SELECT * FROM educations WHERE profile_id = $1 ORDER BY start_date DESC`,
+        `SELECT e.education_id, e.profile_id, e.school_name, e.degree, e.field_of_study, e.location, e.start_date, e.end_date, e.description, e.created_at,
+                CASE WHEN om.status = 'ACTIVE' THEN e.school_org_id ELSE NULL END AS school_org_id,
+                CASE WHEN om.status = 'ACTIVE' THEN o.logo_url ELSE NULL END AS school_logo,
+                CASE WHEN om.status = 'ACTIVE' THEN o.name ELSE NULL END AS school_org_name,
+                CASE WHEN om.status = 'ACTIVE' THEN o.slug ELSE NULL END AS school_org_slug
+         FROM educations e
+         LEFT JOIN profiles p ON e.profile_id = p.profile_id
+         LEFT JOIN organizations o ON e.school_org_id = o.org_id
+         LEFT JOIN organization_members om ON e.school_org_id = om.org_id AND p.user_id = om.user_id
+         WHERE e.profile_id = $1 
+         ORDER BY e.start_date DESC`,
         [profileId]
     );
     return result.rows;
 };
 
 const addEducation = async (profileId, data) => {
-    const { school_name, degree, field_of_study, location, start_date, end_date, description } = data;
+    const { school_name, school_org_id, degree, field_of_study, location, start_date, end_date, description } = data;
     const result = await pool.query(
-        `INSERT INTO educations (profile_id, school_name, degree, field_of_study, location, start_date, end_date, description)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
-        [profileId, school_name, degree, field_of_study, location, start_date, end_date, description]
+        `INSERT INTO educations (profile_id, school_name, school_org_id, degree, field_of_study, location, start_date, end_date, description)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
+        [profileId, school_name, school_org_id ?? null, degree ?? null, field_of_study ?? null, location ?? null, start_date ?? null, end_date ?? null, description ?? null]
     );
     return result.rows[0];
 };
+
+const addEducationInTx = async (client, profileId, data) => {
+    const { school_name, school_org_id, degree, field_of_study, location, start_date, end_date, description } = data;
+    const result = await client.query(
+        `INSERT INTO educations (profile_id, school_name, school_org_id, degree, field_of_study, location, start_date, end_date, description)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
+        [profileId, school_name, school_org_id ?? null, degree ?? null, field_of_study ?? null, location ?? null, start_date ?? null, end_date ?? null, description ?? null]
+    );
+    return result.rows[0];
+};
+
+const ALLOWED_EDUCATION_COLUMNS = new Set([
+    'school_name', 'school_org_id', 'degree', 'field_of_study', 'location',
+    'start_date', 'end_date', 'description'
+]);
 
 const updateEducation = async (educationId, profileId, data) => {
     const fields = [];
     const values = [];
     let idx = 1;
     for (const [key, val] of Object.entries(data)) {
+        if (!ALLOWED_EDUCATION_COLUMNS.has(key)) continue;
         if (val !== undefined) { fields.push(`${key} = $${idx++}`); values.push(val); }
     }
     if (fields.length === 0) return null;
     values.push(educationId, profileId);
     const result = await pool.query(
+        `UPDATE educations SET ${fields.join(", ")} WHERE education_id = $${idx++} AND profile_id = $${idx} RETURNING *`,
+        values
+    );
+    return result.rows[0] || null;
+};
+
+const updateEducationInTx = async (client, educationId, profileId, data) => {
+    const fields = [];
+    const values = [];
+    let idx = 1;
+    for (const [key, val] of Object.entries(data)) {
+        if (!ALLOWED_EDUCATION_COLUMNS.has(key)) continue;
+        if (val !== undefined) { fields.push(`${key} = $${idx++}`); values.push(val); }
+    }
+    if (fields.length === 0) return null;
+    values.push(educationId, profileId);
+    const result = await client.query(
         `UPDATE educations SET ${fields.join(", ")} WHERE education_id = $${idx++} AND profile_id = $${idx} RETURNING *`,
         values
     );
@@ -503,6 +552,7 @@ module.exports = {
     getExperiences, getExperiencesByProfileId, addExperience, findExperience, updateExperience, deleteExperience,
     endExperienceById, addExperienceInTx, updateExperienceInTx, deleteExperienceInTx,
     getEducations, addEducation, updateEducation, deleteEducation,
+    addEducationInTx, updateEducationInTx,
     getSkills, deleteSkillMapping,
     getCompanyRoles, getSocialCounts, getRelationshipInfo,
     getUserRole,
