@@ -167,14 +167,17 @@ const saveIdempotentResponse = async (requestId, statusCode, responseBody) => {
 const getExperiences = async (profileId) => {
     const result = await pool.query(
         `SELECT e.experience_id, e.profile_id, e.title, e.company_name, e.location, e.work_type, e.work_mode, e.start_date, e.end_date, e.is_current, e.description, e.created_at,
-                CASE WHEN om.status = 'ACTIVE' THEN e.org_id ELSE NULL END AS org_id,
-                CASE WHEN om.status = 'ACTIVE' THEN o.logo_url ELSE NULL END AS logo_url,
-                CASE WHEN om.status = 'ACTIVE' THEN o.name ELSE NULL END AS org_name,
-                CASE WHEN om.status = 'ACTIVE' THEN o.slug ELSE NULL END AS org_slug
+                o.org_id,
+                o.logo_url,
+                o.name AS org_name,
+                o.slug AS org_slug
          FROM experiences e 
-         LEFT JOIN profiles p ON e.profile_id = p.profile_id
-         LEFT JOIN organizations o ON e.org_id = o.org_id 
-         LEFT JOIN organization_members om ON e.org_id = om.org_id AND p.user_id = om.user_id
+         LEFT JOIN (
+             SELECT DISTINCT ON (LOWER(TRIM(name))) org_id, logo_url, name, slug
+             FROM organizations
+             WHERE entity_type = 'COMPANY' AND is_deleted = FALSE
+             ORDER BY LOWER(TRIM(name)), created_at ASC
+         ) o ON LOWER(TRIM(e.company_name)) = LOWER(TRIM(o.name))
          WHERE e.profile_id = $1 
          ORDER BY e.is_current DESC, e.start_date DESC`,
         [profileId]
@@ -348,14 +351,17 @@ const updateExperienceInTx = async (client, experienceId, profileId, data) => {
 const getEducations = async (profileId) => {
     const result = await pool.query(
         `SELECT e.education_id, e.profile_id, e.school_name, e.degree, e.field_of_study, e.location, e.start_date, e.end_date, e.description, e.created_at,
-                CASE WHEN om.status = 'ACTIVE' THEN e.school_org_id ELSE NULL END AS school_org_id,
-                CASE WHEN om.status = 'ACTIVE' THEN o.logo_url ELSE NULL END AS school_logo,
-                CASE WHEN om.status = 'ACTIVE' THEN o.name ELSE NULL END AS school_org_name,
-                CASE WHEN om.status = 'ACTIVE' THEN o.slug ELSE NULL END AS school_org_slug
+                o.org_id AS school_org_id,
+                o.logo_url AS school_logo,
+                o.name AS school_org_name,
+                o.slug AS school_org_slug
          FROM educations e
-         LEFT JOIN profiles p ON e.profile_id = p.profile_id
-         LEFT JOIN organizations o ON e.school_org_id = o.org_id
-         LEFT JOIN organization_members om ON e.school_org_id = om.org_id AND p.user_id = om.user_id
+         LEFT JOIN (
+             SELECT DISTINCT ON (LOWER(TRIM(name))) org_id, logo_url, name, slug
+             FROM organizations
+             WHERE entity_type = 'INSTITUTION' AND is_deleted = FALSE
+             ORDER BY LOWER(TRIM(name)), created_at ASC
+         ) o ON LOWER(TRIM(e.school_name)) = LOWER(TRIM(o.name))
          WHERE e.profile_id = $1 
          ORDER BY e.start_date DESC`,
         [profileId]

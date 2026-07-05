@@ -91,10 +91,21 @@ exports.getOrgProfile = async (req, res) => {
                 `SELECT
                     (SELECT COUNT(*) FROM organization_followers WHERE org_id = $1)::int AS followers_count,
                     (SELECT COUNT(*) FROM organization_subscribers WHERE org_id = $1 AND status = 'SUBSCRIBED')::int AS subscribers_count,
-                    (SELECT COUNT(*) FROM organization_members WHERE org_id = $1 AND status = 'ACTIVE')::int AS members_count,
+                    (
+                        SELECT COUNT(DISTINCT p.user_id)
+                        FROM experiences e
+                        JOIN profiles p ON e.profile_id = p.profile_id
+                        WHERE LOWER(TRIM(e.company_name)) = LOWER(TRIM($2)) AND (e.is_current = TRUE OR e.end_date IS NULL)
+                    )::int AS members_count,
+                    (
+                        SELECT COUNT(DISTINCT p.user_id)
+                        FROM educations ed
+                        JOIN profiles p ON ed.profile_id = p.profile_id
+                        WHERE LOWER(TRIM(ed.school_name)) = LOWER(TRIM($2))
+                    )::int AS alumni_count,
                     (SELECT COUNT(*) FROM posts WHERE author_org_id = $1)::int AS posts_count,
                     (SELECT COUNT(*) FROM jobs WHERE org_id = $1 AND status = 'ACTIVE' AND is_active = TRUE)::int AS active_jobs_count`,
-                [org.org_id]
+                [org.org_id, org.name]
             ),
             // Viewer membership check
             getViewerMembership(org.org_id, viewerId),
@@ -234,9 +245,10 @@ exports.getOrgProfile = async (req, res) => {
                 is_verified: ['DOMAIN_VERIFIED'].includes(org.verification_status),
                 followers_count: counts.followers_count,
                 subscribers_count: counts.subscribers_count || 0,
-                members_count: counts.members_count,
+                members_count: org.entity_type === 'INSTITUTION' ? counts.alumni_count : counts.members_count,
                 posts_count: counts.posts_count,
                 active_jobs_count: counts.active_jobs_count,
+                owner_id: org.created_by,
             },
             is_own_profile: isOwner,
             viewer_role: membership?.role_name || null,
@@ -391,28 +403,27 @@ async function getViewerMembership(orgId, userId) {
  * Calculate demographics insights (Locations, Skills, Roles, Education) for matching members/alumni.
  * Filters by active status and visibility parameters to match visible list.
  */
-async function calculateOrgDemographics(client, orgId, type, search, graduationYear) {
+async function calculateOrgDemographics(client, orgName, type, search, graduationYear) {
     const searchVal = (search && search.trim()) ? `%${search.trim()}%` : null;
     const graduationYearVal = graduationYear ? parseInt(graduationYear) : null;
 
-    const params = type === 'PEOPLE' ? [orgId, searchVal] : [orgId, searchVal, graduationYearVal];
+    const params = type === 'PEOPLE' ? [orgName, searchVal] : [orgName, searchVal, graduationYearVal];
 
     const cteQuery = type === 'PEOPLE'
-        ? `SELECT cm.user_id
-           FROM organization_members cm
-           JOIN active_users u ON cm.user_id = u.user_id
-           WHERE cm.org_id = $1
-             AND cm.status = 'ACTIVE'
-             AND cm.is_role_visible = TRUE
-             AND ($2::text IS NULL OR (u.full_name ILIKE $2::text OR cm.title ILIKE $2::text))`
-        : `SELECT ie.user_id
-           FROM institution_enrollments ie
-           JOIN active_users u ON ie.user_id = u.user_id
-           WHERE ie.org_id = $1
-             AND ie.role = 'ALUMNI'
-             AND ie.status = 'VERIFIED'
+        ? `SELECT DISTINCT ON (p.user_id) p.user_id
+           FROM experiences e
+           JOIN profiles p ON e.profile_id = p.profile_id
+           JOIN active_users u ON p.user_id = u.user_id
+           WHERE LOWER(TRIM(e.company_name)) = LOWER(TRIM($1))
+             AND (e.is_current = TRUE OR e.end_date IS NULL)
+             AND ($2::text IS NULL OR (u.full_name ILIKE $2::text OR e.title ILIKE $2::text))`
+        : `SELECT DISTINCT ON (p.user_id) p.user_id
+           FROM educations ed
+           JOIN profiles p ON ed.profile_id = p.profile_id
+           JOIN active_users u ON p.user_id = u.user_id
+           WHERE LOWER(TRIM(ed.school_name)) = LOWER(TRIM($1))
              AND ($2::text IS NULL OR u.full_name ILIKE $2::text)
-             AND ($3::int IS NULL OR ie.graduation_year = $3::int)`;
+             AND ($3::int IS NULL OR EXTRACT(YEAR FROM ed.end_date)::int = $3::int)`;
 
     // Get matching users count
     const countRes = await client.query(`
@@ -464,13 +475,22 @@ async function calculateOrgDemographics(client, orgId, type, search, graduationY
 
     // C. Role Distribution
     const roleRes = await client.query(`
-        WITH matching_users AS (${cteQuery})
+        WITH matching_users AS (${cteQuery}),
+        user_roles AS (
+            SELECT mu.user_id,
+                   (SELECT e.title 
+                    FROM experiences e
+                    JOIN profiles p ON e.profile_id = p.profile_id
+                    WHERE p.user_id = mu.user_id
+                    ORDER BY e.start_date DESC, e.created_at DESC 
+                    LIMIT 1) AS last_role
+            FROM matching_users mu
+        )
         SELECT 
-            COALESCE(NULLIF(TRIM(u.job_title), ''), 'Other') AS name,
+            COALESCE(NULLIF(TRIM(last_role), ''), 'Other') AS name,
             COUNT(*)::int AS count
-        FROM matching_users mu
-        JOIN active_users u ON mu.user_id = u.user_id
-        GROUP BY u.job_title
+        FROM user_roles
+        GROUP BY name
         ORDER BY count DESC
         ${limitClause}
     `, params);
@@ -511,69 +531,108 @@ async function calculateOrgDemographics(client, orgId, type, search, graduationY
 
 exports.getOrgPeople = async (req, res) => {
     const { orgId } = req.params;
-    const { page = 1, limit = 20, search } = req.query;
-    const offset = (parseInt(page) - 1) * parseInt(limit);
+    const { limit = 20, search, cursor } = req.query;
+    const limitVal = parseInt(limit);
 
     try {
         const org = await resolveOrg(orgId);
         if (!org) return res.status(404).json({ message: 'Organization not found' });
 
-        const params = [org.org_id, parseInt(limit), offset];
+        let cursorJoinedAt = null;
+        let cursorUserId = null;
+        if (cursor) {
+            try {
+                const decoded = Buffer.from(cursor, 'base64').toString('ascii');
+                const parts = decoded.split('|');
+                if (parts.length === 2) {
+                    cursorJoinedAt = parts[0];
+                    cursorUserId = parts[1];
+                }
+            } catch (_) { /* invalid cursor — ignore */ }
+        }
+
+        const params = [org.name, limitVal];
         let searchClause = '';
         if (search && search.trim()) {
             params.push(`%${search.trim()}%`);
-            searchClause = `AND (u.full_name ILIKE $${params.length} OR cm.title ILIKE $${params.length})`;
+            searchClause = `AND (u.full_name ILIKE $${params.length} OR e.title ILIKE $${params.length})`;
         }
 
-        const countParams = [org.org_id];
+        let cursorClause = '';
+        if (cursorJoinedAt && cursorUserId) {
+            params.push(cursorJoinedAt, cursorUserId);
+            cursorClause = `AND (
+                joined_at < $${params.length - 1}::date
+                OR (joined_at = $${params.length - 1}::date AND user_id > $${params.length}::uuid)
+            )`;
+        }
+
+        const countParams = [org.name];
         let countSearchClause = '';
         if (search && search.trim()) {
             countParams.push(`%${search.trim()}%`);
-            countSearchClause = `AND (u.full_name ILIKE $2 OR cm.title ILIKE $2)`;
+            countSearchClause = `AND (u.full_name ILIKE $2 OR e.title ILIKE $2)`;
         }
 
         const [peopleResult, countResult, insights] = await Promise.all([
             pool.query(
-                `SELECT u.user_id, u.full_name, u.avatar_url, u.headline, u.account_name,
-                        u.location,
-                        cm.title,
-                        cm.is_core_team,
-                        COALESCE(cr.name, cm.role) AS role_display,
-                        cr.color AS role_color,
-                        cm.joined_at
-                 FROM organization_members cm
-                 JOIN active_users u ON cm.user_id = u.user_id
-                 LEFT JOIN organization_roles cr ON cm.role_id = cr.role_id
-                 WHERE cm.org_id = $1
-                   AND cm.status = 'ACTIVE'
-                   AND cm.is_role_visible = TRUE
-                   ${searchClause}
-                 ORDER BY cr.priority DESC NULLS LAST, cm.joined_at ASC
-                 LIMIT $2 OFFSET $3`,
+                `WITH current_employees AS (
+                     SELECT DISTINCT ON (p.user_id)
+                            u.user_id, u.full_name, u.avatar_url, u.headline, u.account_name,
+                            u.location,
+                            e.title,
+                            e.title AS role_display,
+                            NULL AS role_color,
+                            FALSE AS is_core_team,
+                            COALESCE(e.start_date, '1970-01-01') AS joined_at
+                     FROM experiences e
+                     JOIN profiles p ON e.profile_id = p.profile_id
+                     JOIN active_users u ON p.user_id = u.user_id
+                     WHERE LOWER(TRIM(e.company_name)) = LOWER(TRIM($1))
+                       AND (e.is_current = TRUE OR e.end_date IS NULL)
+                       ${searchClause}
+                     ORDER BY p.user_id, e.start_date DESC
+                 )
+                 SELECT * FROM current_employees
+                 WHERE 1=1
+                   ${cursorClause}
+                 ORDER BY joined_at DESC, user_id ASC
+                 LIMIT $2`,
                 params
             ),
             pool.query(
-                `SELECT COUNT(*)::int AS total
-                 FROM organization_members cm
-                 JOIN active_users u ON cm.user_id = u.user_id
-                 WHERE cm.org_id = $1
-                   AND cm.status = 'ACTIVE'
-                   AND cm.is_role_visible = TRUE
-                   ${countSearchClause}`,
+                `WITH current_employees AS (
+                     SELECT DISTINCT ON (p.user_id) p.user_id
+                     FROM experiences e
+                     JOIN profiles p ON e.profile_id = p.profile_id
+                     JOIN active_users u ON p.user_id = u.user_id
+                     WHERE LOWER(TRIM(e.company_name)) = LOWER(TRIM($1))
+                       AND (e.is_current = TRUE OR e.end_date IS NULL)
+                       ${countSearchClause}
+                 )
+                 SELECT COUNT(*)::int AS total FROM current_employees`,
                 countParams
             ),
-            calculateOrgDemographics(pool, org.org_id, 'PEOPLE', search)
+            calculateOrgDemographics(pool, org.name, 'PEOPLE', search)
         ]);
+
+        const rows = peopleResult.rows;
+        let nextCursor = null;
+        if (rows.length === limitVal && limitVal > 0) {
+            const lastItem = rows[rows.length - 1];
+            const lastJoinedAt = lastItem.joined_at ? new Date(lastItem.joined_at).toISOString().split('T')[0] : '1970-01-01';
+            nextCursor = Buffer.from(`${lastJoinedAt}|${lastItem.user_id}`).toString('base64');
+        }
 
         const total = countResult.rows[0].total;
 
         return res.json({
-            people: peopleResult.rows,
+            people: rows,
             meta: {
                 total,
-                page: parseInt(page),
-                limit: parseInt(limit),
-                total_pages: Math.ceil(total / parseInt(limit)),
+                limit: limitVal,
+                next_cursor: nextCursor,
+                has_more: !!nextCursor
             },
             insights
         });
@@ -590,8 +649,8 @@ exports.getOrgPeople = async (req, res) => {
 
 exports.getOrgAlumni = async (req, res) => {
     const { orgId } = req.params;
-    const { page = 1, limit = 20, search, graduation_year } = req.query;
-    const offset = (parseInt(page) - 1) * parseInt(limit);
+    const { limit = 20, search, graduation_year, cursor } = req.query;
+    const limitVal = parseInt(limit);
 
     try {
         const org = await resolveOrg(orgId);
@@ -601,7 +660,20 @@ exports.getOrgAlumni = async (req, res) => {
             return res.status(404).json({ message: 'Alumni tab is only available for institutions' });
         }
 
-        const params = [org.org_id, parseInt(limit), offset];
+        let cursorGradYear = null;
+        let cursorUserId = null;
+        if (cursor) {
+            try {
+                const decoded = Buffer.from(cursor, 'base64').toString('ascii');
+                const parts = decoded.split('|');
+                if (parts.length === 2) {
+                    cursorGradYear = parseInt(parts[0]);
+                    cursorUserId = parts[1];
+                }
+            } catch (_) { /* invalid cursor — ignore */ }
+        }
+
+        const params = [org.name, limitVal];
         const filters = [];
 
         if (search && search.trim()) {
@@ -610,13 +682,22 @@ exports.getOrgAlumni = async (req, res) => {
         }
         if (graduation_year) {
             params.push(parseInt(graduation_year));
-            filters.push(`ie.graduation_year = $${params.length}`);
+            filters.push(`EXTRACT(YEAR FROM ed.end_date)::int = $${params.length}`);
+        }
+
+        let cursorClause = '';
+        if (cursorGradYear !== null && cursorUserId) {
+            params.push(cursorGradYear, cursorUserId);
+            cursorClause = `AND (
+                graduation_year < $${params.length - 1}
+                OR (graduation_year = $${params.length - 1} AND user_id > $${params.length}::uuid)
+            )`;
         }
 
         const whereExtra = filters.length ? `AND ${filters.join(' AND ')}` : '';
 
         // Extract raw query filters for total/insights counts
-        const countParams = [org.org_id];
+        const countParams = [org.name];
         const countFilters = [];
         if (search && search.trim()) {
             countParams.push(`%${search.trim()}%`);
@@ -624,58 +705,75 @@ exports.getOrgAlumni = async (req, res) => {
         }
         if (graduation_year) {
             countParams.push(parseInt(graduation_year));
-            countFilters.push(`ie.graduation_year = $${countParams.length}`);
+            countFilters.push(`EXTRACT(YEAR FROM ed.end_date)::int = $${countParams.length}`);
         }
         const countWhereExtra = countFilters.length ? `AND ${countFilters.join(' AND ')}` : '';
 
         const [alumniResult, countResult, insights] = await Promise.all([
             pool.query(
-                `SELECT u.user_id, u.full_name, u.avatar_url, u.headline, u.account_name,
-                        u.location,
-                        ie.graduation_year, ie.field_of_study, ie.verified_at,
-                        -- Latest current experience
-                        (SELECT e.title
-                         FROM experiences e
-                         JOIN profiles p ON e.profile_id = p.profile_id
-                         WHERE p.user_id = u.user_id AND e.is_current = TRUE
-                         ORDER BY e.start_date DESC LIMIT 1) AS current_title,
-                        (SELECT e.company_name
-                         FROM experiences e
-                         JOIN profiles p ON e.profile_id = p.profile_id
-                         WHERE p.user_id = u.user_id AND e.is_current = TRUE
-                         ORDER BY e.start_date DESC LIMIT 1) AS current_company
-                 FROM institution_enrollments ie
-                 JOIN active_users u ON ie.user_id = u.user_id
-                 WHERE ie.org_id = $1
-                   AND ie.role = 'ALUMNI'
-                   AND ie.status = 'VERIFIED'
-                   ${whereExtra}
-                 ORDER BY ie.graduation_year DESC NULLS LAST, u.full_name ASC
-                 LIMIT $2 OFFSET $3`,
+                `WITH school_alumni AS (
+                     SELECT DISTINCT ON (p.user_id)
+                            u.user_id, u.full_name, u.avatar_url, u.headline, u.account_name,
+                            u.location,
+                            COALESCE(EXTRACT(YEAR FROM ed.end_date)::int, 0) AS graduation_year,
+                            ed.field_of_study,
+                            -- Latest current experience
+                            (SELECT e.title
+                             FROM experiences e
+                             JOIN profiles p2 ON e.profile_id = p2.profile_id
+                             WHERE p2.user_id = u.user_id AND e.is_current = TRUE
+                             ORDER BY e.start_date DESC LIMIT 1) AS current_title,
+                            (SELECT e.company_name
+                             FROM experiences e
+                             JOIN profiles p2 ON e.profile_id = p2.profile_id
+                             WHERE p2.user_id = u.user_id AND e.is_current = TRUE
+                             ORDER BY e.start_date DESC LIMIT 1) AS current_company
+                     FROM educations ed
+                     JOIN profiles p ON ed.profile_id = p.profile_id
+                     JOIN active_users u ON p.user_id = u.user_id
+                     WHERE LOWER(TRIM(ed.school_name)) = LOWER(TRIM($1))
+                       ${whereExtra}
+                     ORDER BY p.user_id, ed.end_date DESC
+                 )
+                 SELECT * FROM school_alumni
+                 WHERE 1=1
+                   ${cursorClause}
+                 ORDER BY graduation_year DESC, user_id ASC
+                 LIMIT $2`,
                 params
             ),
             pool.query(
-                `SELECT COUNT(*)::int AS total
-                 FROM institution_enrollments ie
-                 JOIN active_users u ON ie.user_id = u.user_id
-                 WHERE ie.org_id = $1
-                   AND ie.role = 'ALUMNI'
-                   AND ie.status = 'VERIFIED'
-                   ${countWhereExtra}`,
+                `WITH school_alumni AS (
+                     SELECT DISTINCT ON (p.user_id) p.user_id
+                     FROM educations ed
+                     JOIN profiles p ON ed.profile_id = p.profile_id
+                     JOIN active_users u ON p.user_id = u.user_id
+                     WHERE LOWER(TRIM(ed.school_name)) = LOWER(TRIM($1))
+                       ${countWhereExtra}
+                 )
+                 SELECT COUNT(*)::int AS total FROM school_alumni`,
                 countParams
             ),
-            calculateOrgDemographics(pool, org.org_id, 'ALUMNI', search, graduation_year)
+            calculateOrgDemographics(pool, org.name, 'ALUMNI', search, graduation_year)
         ]);
+
+        const rows = alumniResult.rows;
+        let nextCursor = null;
+        if (rows.length === limitVal && limitVal > 0) {
+            const lastItem = rows[rows.length - 1];
+            const lastGradYear = lastItem.graduation_year !== null && lastItem.graduation_year !== undefined ? lastItem.graduation_year : 0;
+            nextCursor = Buffer.from(`${lastGradYear}|${lastItem.user_id}`).toString('base64');
+        }
 
         const total = countResult.rows[0].total;
 
         return res.json({
-            alumni: alumniResult.rows,
+            alumni: rows,
             meta: {
                 total,
-                page: parseInt(page),
-                limit: parseInt(limit),
-                total_pages: Math.ceil(total / parseInt(limit)),
+                limit: limitVal,
+                next_cursor: nextCursor,
+                has_more: !!nextCursor
             },
             insights
         });
