@@ -7,12 +7,11 @@ const errorHandler = (err, req, res, next) => {
     // Log error (for production, might want better logging)
     console.error("❌ ERROR:", err);
 
-    // Temporarily always show full error for debugging
+    const isDev = process.env.NODE_ENV === 'development';
     res.status(err.statusCode).json({
         status: err.status,
-        error: err,
         message: err.message,
-        stack: err.stack
+        ...(isDev && { error: err, stack: err.stack })
     });
 };
 
