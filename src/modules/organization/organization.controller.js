@@ -134,7 +134,7 @@ exports.createOrganization = async (req, res) => {
         }
 
         await client.query(
-            `INSERT INTO organization_members (org_id, user_id, role_id) VALUES ($1, $2, $3)`,
+            `INSERT INTO organization_members (org_id, user_id, role_id, is_core_team) VALUES ($1, $2, $3, TRUE)`,
             [company.org_id, userId, ownerRoleId]
         );
 
