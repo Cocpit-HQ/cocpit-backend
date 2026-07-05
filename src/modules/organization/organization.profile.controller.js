@@ -38,7 +38,7 @@ async function resolveOrg(orgIdOrSlug) {
                 description, entity_type, institution_type,
                 established_year, campus_location,
                 verification_status, email_verified, phone_verified,
-                country, city, created_at, updated_at
+                country, city, created_at, updated_at, created_by
          FROM organizations
          WHERE ${isUuid ? 'org_id = $1::uuid' : 'slug = $1'}
            AND is_deleted = FALSE`,
@@ -134,6 +134,7 @@ exports.getOrgProfile = async (req, res) => {
         const counts = countsResult.rows[0];
         const membership = membershipResult; // null if not a member
         const isOwnProfile = !!membership;
+        const isOwner = !!(viewerId && org.created_by && viewerId === org.created_by);
 
         // 3. Core team — always public (visible to all viewers)
         const teamResult = await pool.query(
@@ -167,7 +168,7 @@ exports.getOrgProfile = async (req, res) => {
             total_followers: counts.followers_count
         };
 
-        if (isOwnProfile) {
+        if (isOwner) {
             relationship = {
                 is_following: true,
                 is_subscribed: true,
@@ -237,13 +238,14 @@ exports.getOrgProfile = async (req, res) => {
                 posts_count: counts.posts_count,
                 active_jobs_count: counts.active_jobs_count,
             },
-            is_own_profile: isOwnProfile,
+            is_own_profile: isOwner,
             viewer_role: membership?.role_name || null,
             viewer_permissions: membership?.permissions || null,
             about_snippet: org.description ? org.description.slice(0, 250) : null,
             core_team: teamResult.rows,
             latest_posts: latestPostsResult.rows,
             links: linksResult.rows,
+            owner_id: org.created_by,
             is_following: relationship.is_following,
             is_subscribed: relationship.is_subscribed,
             is_connected: relationship.is_connected,
