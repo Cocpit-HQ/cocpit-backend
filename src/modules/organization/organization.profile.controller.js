@@ -95,17 +95,17 @@ exports.getOrgProfile = async (req, res) => {
                         SELECT COUNT(DISTINCT p.user_id)
                         FROM experiences e
                         JOIN profiles p ON e.profile_id = p.profile_id
-                        WHERE LOWER(TRIM(e.company_name)) = LOWER(TRIM($2)) AND (e.is_current = TRUE OR e.end_date IS NULL)
+                        WHERE e.org_id = $1::uuid AND (e.is_current = TRUE OR e.end_date IS NULL)
                     )::int AS members_count,
                     (
                         SELECT COUNT(DISTINCT p.user_id)
                         FROM educations ed
                         JOIN profiles p ON ed.profile_id = p.profile_id
-                        WHERE LOWER(TRIM(ed.school_name)) = LOWER(TRIM($2))
+                        WHERE ed.school_org_id = $1::uuid
                     )::int AS alumni_count,
                     (SELECT COUNT(*) FROM posts WHERE author_org_id = $1)::int AS posts_count,
                     (SELECT COUNT(*) FROM jobs WHERE org_id = $1 AND status = 'ACTIVE' AND is_active = TRUE)::int AS active_jobs_count`,
-                [org.org_id, org.name]
+                [org.org_id]
             ),
             // Viewer membership check
             getViewerMembership(org.org_id, viewerId),
@@ -403,25 +403,25 @@ async function getViewerMembership(orgId, userId) {
  * Calculate demographics insights (Locations, Skills, Roles, Education) for matching members/alumni.
  * Filters by active status and visibility parameters to match visible list.
  */
-async function calculateOrgDemographics(client, orgName, type, search, graduationYear) {
+async function calculateOrgDemographics(client, orgId, type, search, graduationYear) {
     const searchVal = (search && search.trim()) ? `%${search.trim()}%` : null;
     const graduationYearVal = graduationYear ? parseInt(graduationYear) : null;
 
-    const params = type === 'PEOPLE' ? [orgName, searchVal] : [orgName, searchVal, graduationYearVal];
+    const params = type === 'PEOPLE' ? [orgId, searchVal] : [orgId, searchVal, graduationYearVal];
 
     const cteQuery = type === 'PEOPLE'
         ? `SELECT DISTINCT ON (p.user_id) p.user_id
            FROM experiences e
            JOIN profiles p ON e.profile_id = p.profile_id
            JOIN active_users u ON p.user_id = u.user_id
-           WHERE LOWER(TRIM(e.company_name)) = LOWER(TRIM($1))
+           WHERE e.org_id = $1::uuid
              AND (e.is_current = TRUE OR e.end_date IS NULL)
              AND ($2::text IS NULL OR (u.full_name ILIKE $2::text OR e.title ILIKE $2::text))`
         : `SELECT DISTINCT ON (p.user_id) p.user_id
            FROM educations ed
            JOIN profiles p ON ed.profile_id = p.profile_id
            JOIN active_users u ON p.user_id = u.user_id
-           WHERE LOWER(TRIM(ed.school_name)) = LOWER(TRIM($1))
+           WHERE ed.school_org_id = $1::uuid
              AND ($2::text IS NULL OR u.full_name ILIKE $2::text)
              AND ($3::int IS NULL OR EXTRACT(YEAR FROM ed.end_date)::int = $3::int)`;
 
@@ -533,6 +533,7 @@ exports.getOrgPeople = async (req, res) => {
     const { orgId } = req.params;
     const { limit = 20, search, cursor } = req.query;
     const limitVal = parseInt(limit);
+    const viewerId = req.user?.sub || null;
 
     try {
         const org = await resolveOrg(orgId);
@@ -551,7 +552,7 @@ exports.getOrgPeople = async (req, res) => {
             } catch (_) { /* invalid cursor — ignore */ }
         }
 
-        const params = [org.name, limitVal];
+        const params = [org.org_id, limitVal, viewerId];
         let searchClause = '';
         if (search && search.trim()) {
             params.push(`%${search.trim()}%`);
@@ -567,7 +568,7 @@ exports.getOrgPeople = async (req, res) => {
             )`;
         }
 
-        const countParams = [org.name];
+        const countParams = [org.org_id];
         let countSearchClause = '';
         if (search && search.trim()) {
             countParams.push(`%${search.trim()}%`);
@@ -588,12 +589,36 @@ exports.getOrgPeople = async (req, res) => {
                      FROM experiences e
                      JOIN profiles p ON e.profile_id = p.profile_id
                      JOIN active_users u ON p.user_id = u.user_id
-                     WHERE LOWER(TRIM(e.company_name)) = LOWER(TRIM($1))
+                     WHERE e.org_id = $1::uuid
                        AND (e.is_current = TRUE OR e.end_date IS NULL)
                        ${searchClause}
                      ORDER BY p.user_id, e.start_date DESC
                  )
-                 SELECT * FROM current_employees
+                 SELECT *,
+                        COALESCE(
+                            CASE WHEN $3::uuid IS NULL THEN false
+                                 ELSE EXISTS(SELECT 1 FROM followers WHERE follower_id = $3::uuid AND following_id = user_id)
+                            END, false
+                        ) AS is_following,
+                        COALESCE(
+                            CASE WHEN $3::uuid IS NULL THEN false
+                                 ELSE EXISTS(SELECT 1 FROM followers WHERE follower_id = user_id AND following_id = $3::uuid)
+                            END, false
+                        ) AS is_followed_by,
+                        CASE 
+                            WHEN $3::uuid IS NULL THEN null
+                            WHEN EXISTS(SELECT 1 FROM connections WHERE user_id = $3::uuid AND connected_user_id = user_id) THEN 'connected'
+                            ELSE (SELECT status FROM connection_requests WHERE (sender_id = $3::uuid AND receiver_id = user_id) OR (sender_id = user_id AND receiver_id = $3::uuid) LIMIT 1)
+                        END AS connection_request_status,
+                        CASE 
+                            WHEN $3::uuid IS NULL THEN null
+                            ELSE (SELECT request_id FROM connection_requests WHERE (sender_id = $3::uuid AND receiver_id = user_id) OR (sender_id = user_id AND receiver_id = $3::uuid) LIMIT 1)
+                        END AS connection_request_id,
+                        CASE 
+                            WHEN $3::uuid IS NULL THEN null
+                            ELSE (SELECT CASE WHEN sender_id = $3::uuid THEN 'me' ELSE 'them' END FROM connection_requests WHERE (sender_id = $3::uuid AND receiver_id = user_id) OR (sender_id = user_id AND receiver_id = $3::uuid) LIMIT 1)
+                        END AS connection_request_sender
+                 FROM current_employees
                  WHERE 1=1
                    ${cursorClause}
                  ORDER BY joined_at DESC, user_id ASC
@@ -606,14 +631,14 @@ exports.getOrgPeople = async (req, res) => {
                      FROM experiences e
                      JOIN profiles p ON e.profile_id = p.profile_id
                      JOIN active_users u ON p.user_id = u.user_id
-                     WHERE LOWER(TRIM(e.company_name)) = LOWER(TRIM($1))
+                     WHERE e.org_id = $1::uuid
                        AND (e.is_current = TRUE OR e.end_date IS NULL)
                        ${countSearchClause}
                  )
                  SELECT COUNT(*)::int AS total FROM current_employees`,
                 countParams
             ),
-            calculateOrgDemographics(pool, org.name, 'PEOPLE', search)
+            calculateOrgDemographics(pool, org.org_id, 'PEOPLE', search)
         ]);
 
         const rows = peopleResult.rows;
@@ -651,6 +676,7 @@ exports.getOrgAlumni = async (req, res) => {
     const { orgId } = req.params;
     const { limit = 20, search, graduation_year, cursor } = req.query;
     const limitVal = parseInt(limit);
+    const viewerId = req.user?.sub || null;
 
     try {
         const org = await resolveOrg(orgId);
@@ -673,7 +699,7 @@ exports.getOrgAlumni = async (req, res) => {
             } catch (_) { /* invalid cursor — ignore */ }
         }
 
-        const params = [org.name, limitVal];
+        const params = [org.org_id, limitVal, viewerId];
         const filters = [];
 
         if (search && search.trim()) {
@@ -697,7 +723,7 @@ exports.getOrgAlumni = async (req, res) => {
         const whereExtra = filters.length ? `AND ${filters.join(' AND ')}` : '';
 
         // Extract raw query filters for total/insights counts
-        const countParams = [org.name];
+        const countParams = [org.org_id];
         const countFilters = [];
         if (search && search.trim()) {
             countParams.push(`%${search.trim()}%`);
@@ -731,11 +757,35 @@ exports.getOrgAlumni = async (req, res) => {
                      FROM educations ed
                      JOIN profiles p ON ed.profile_id = p.profile_id
                      JOIN active_users u ON p.user_id = u.user_id
-                     WHERE LOWER(TRIM(ed.school_name)) = LOWER(TRIM($1))
+                     WHERE ed.school_org_id = $1::uuid
                        ${whereExtra}
                      ORDER BY p.user_id, ed.end_date DESC
                  )
-                 SELECT * FROM school_alumni
+                 SELECT *,
+                        COALESCE(
+                            CASE WHEN $3::uuid IS NULL THEN false
+                                 ELSE EXISTS(SELECT 1 FROM followers WHERE follower_id = $3::uuid AND following_id = user_id)
+                            END, false
+                        ) AS is_following,
+                        COALESCE(
+                            CASE WHEN $3::uuid IS NULL THEN false
+                                 ELSE EXISTS(SELECT 1 FROM followers WHERE follower_id = user_id AND following_id = $3::uuid)
+                            END, false
+                        ) AS is_followed_by,
+                        CASE 
+                            WHEN $3::uuid IS NULL THEN null
+                            WHEN EXISTS(SELECT 1 FROM connections WHERE user_id = $3::uuid AND connected_user_id = user_id) THEN 'connected'
+                            ELSE (SELECT status FROM connection_requests WHERE (sender_id = $3::uuid AND receiver_id = user_id) OR (sender_id = user_id AND receiver_id = $3::uuid) LIMIT 1)
+                        END AS connection_request_status,
+                        CASE 
+                            WHEN $3::uuid IS NULL THEN null
+                            ELSE (SELECT request_id FROM connection_requests WHERE (sender_id = $3::uuid AND receiver_id = user_id) OR (sender_id = user_id AND receiver_id = $3::uuid) LIMIT 1)
+                        END AS connection_request_id,
+                        CASE 
+                            WHEN $3::uuid IS NULL THEN null
+                            ELSE (SELECT CASE WHEN sender_id = $3::uuid THEN 'me' ELSE 'them' END FROM connection_requests WHERE (sender_id = $3::uuid AND receiver_id = user_id) OR (sender_id = user_id AND receiver_id = $3::uuid) LIMIT 1)
+                        END AS connection_request_sender
+                 FROM school_alumni
                  WHERE 1=1
                    ${cursorClause}
                  ORDER BY graduation_year DESC, user_id ASC
@@ -748,13 +798,13 @@ exports.getOrgAlumni = async (req, res) => {
                      FROM educations ed
                      JOIN profiles p ON ed.profile_id = p.profile_id
                      JOIN active_users u ON p.user_id = u.user_id
-                     WHERE LOWER(TRIM(ed.school_name)) = LOWER(TRIM($1))
+                     WHERE ed.school_org_id = $1::uuid
                        ${countWhereExtra}
                  )
                  SELECT COUNT(*)::int AS total FROM school_alumni`,
                 countParams
             ),
-            calculateOrgDemographics(pool, org.name, 'ALUMNI', search, graduation_year)
+            calculateOrgDemographics(pool, org.org_id, 'ALUMNI', search, graduation_year)
         ]);
 
         const rows = alumniResult.rows;

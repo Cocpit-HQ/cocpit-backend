@@ -72,30 +72,30 @@ exports.optionalAuth = async (req, res, next) => {
       // Check 1: Whole account deleted
       const isDeleted = await redisClient.get(`deleted_user:${req.user.sub}`);
       if (isDeleted) {
-        req.user = null;
-        return next();
+        return res.status(401).json({ message: "User account no longer exists. Please log in again." });
       }
 
       // Check 2: Specific session revoked (e.g. removed from another device)
       const isRevoked = await redisClient.get(`revoked_session:${req.user.sid}`);
       if (isRevoked) {
-        req.user = null;
-        return next();
+        return res.status(401).json({ message: "Session has been terminated. Please log in again." });
       }
     } else {
       // Fallback to database check if Redis is unavailable
       const userCheck = await pool.query("SELECT 1 FROM users WHERE user_id = $1", [req.user.sub]);
       if (userCheck.rowCount === 0) {
-        req.user = null;
-        return next();
+        return res.status(401).json({ message: "User account no longer exists. Please log in again." });
       }
     }
 
     req.actor = await resolveActorContextForRequest(req);
+    next();
   } catch (err) {
-    // Ignore all errors for optional auth (including 403s from actor resolution)
+    if (err.statusCode) {
+      return res.status(err.statusCode).json({ message: err.message });
+    }
+    return res.status(401).json({ message: "Invalid or expired token" });
   }
-  next();
 };
 
 exports.requireActiveSession = async (req, res, next) => {
