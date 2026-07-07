@@ -31,6 +31,7 @@ const buildJobFilters = (params, paramCountStart = 1) => {
         maxSalary,
         salary_min,
         salary_max,
+        salaryRanges,
         datePosted,
         jobType,
         employment_type,
@@ -158,9 +159,66 @@ const buildJobFilters = (params, paramCountStart = 1) => {
         conditions.push(numCondition);
     }
 
+    // ─── Named salary range filter (multi-select, OR logic) ──────────────────
+    // Accepts `salaryRanges` as a comma-separated list of named ranges.
+    // Example: `?salaryRanges=Under 3L,10L+`
+    // Each named range is expanded into numeric bounds, then combined via OR so
+    // a job is included if its salary overlaps ANY of the selected ranges.
+    //
+    // Range map (INR):
+    //   Under 3L  → salary_max <= 300,000
+    //   3L-5L     → salary_min <= 500,000  AND salary_max >= 300,000
+    //   6L-10L    → salary_min <= 1,000,000 AND salary_max >= 600,000
+    //   10L+      → salary_min >= 1,000,000
+    const SALARY_RANGE_MAP = {
+        "under 3l":  { max: 300000 },
+        "3l-5l":     { min: 300000, max: 500000 },
+        "6l-10l":    { min: 600000, max: 1000000 },
+        "10l+":      { min: 1000000 },
+    };
+
+    if (salaryRanges) {
+        const selectedRanges = salaryRanges
+            .split(",")
+            .map(v => v.trim().toLowerCase())
+            .filter(Boolean)
+            .map(v => SALARY_RANGE_MAP[v])
+            .filter(Boolean);
+
+        if (selectedRanges.length > 0) {
+            const rangeClauses = selectedRanges.map(range => {
+                if (range.min !== undefined && range.max !== undefined) {
+                    // Overlapping range: job overlaps [min, max] when
+                    //   job.salary_max >= min AND job.salary_min <= max
+                    const clause = `(j.salary_max >= $${currentIndex} AND j.salary_min <= $${currentIndex + 1})`;
+                    values.push(range.min, range.max);
+                    currentIndex += 2;
+                    return clause;
+                } else if (range.min !== undefined) {
+                    // Open upper bound: job salary_min >= min
+                    const clause = `j.salary_min >= $${currentIndex}`;
+                    values.push(range.min);
+                    currentIndex++;
+                    return clause;
+                } else if (range.max !== undefined) {
+                    // Open lower bound: job salary_max <= max
+                    const clause = `j.salary_max <= $${currentIndex}`;
+                    values.push(range.max);
+                    currentIndex++;
+                    return clause;
+                }
+                return null;
+            }).filter(Boolean);
+
+            if (rangeClauses.length > 0) {
+                conditions.push(`(${rangeClauses.join(" OR ")})`);
+            }
+        }
+    }
+
     // ─── Salary range (overlapping range logic) ───────────────────────────────
     // A job overlaps [minSalary, maxSalary] when:
-    //   job.salary_max >= minSalary  AND  job.salary_min <= maxSalary
+    //   job.salary_max \>= minSalary  AND  job.salary_min \<= maxSalary
     // Treat empty string as absent to avoid 0-value false positives.
     const effMinSalary = salary_min !== undefined ? salary_min : minSalary;
     const effMaxSalary = salary_max !== undefined ? salary_max : maxSalary;
