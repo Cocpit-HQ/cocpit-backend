@@ -1337,8 +1337,8 @@ exports.publishNewOrganization = async (req, res) => {
 
         // Add creator as owner/admin member with the correct role
         await client.query(
-            `INSERT INTO organization_members (org_id, user_id, role_id, status, is_primary_display)
-             VALUES ($1, $2, $3, 'ACTIVE', FALSE)`,
+            `INSERT INTO organization_members (org_id, user_id, role_id, status, is_primary_display, is_core_team)
+             VALUES ($1, $2, $3, 'ACTIVE', FALSE, TRUE)`,
             [orgId, userId, ownerRoleId]
         );
 

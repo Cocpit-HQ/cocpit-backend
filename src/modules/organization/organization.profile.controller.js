@@ -114,7 +114,17 @@ exports.getOrgProfile = async (req, res) => {
                 `SELECT p.post_id, p.content, p.created_at,
                         COALESCE(lc.like_count, 0)::int AS like_count,
                         COALESCE(cc.comment_count, 0)::int AS comment_count,
-                        COALESCE(pm.media, '[]'::json) AS media
+                        COALESCE(pm.media, '[]'::json) AS media,
+                        (
+                            SELECT COALESCE(comp_like.slug, u_like.account_name)
+                            FROM post_likes pl_sample
+                            LEFT JOIN active_users u_like ON u_like.user_id = pl_sample.user_id
+                            LEFT JOIN organizations comp_like ON comp_like.org_id = pl_sample.org_id
+                            WHERE pl_sample.post_id = p.post_id
+                            ORDER BY pl_sample.created_at DESC
+                            LIMIT 1
+                        ) AS sample_liker_username,
+                        EXISTS(SELECT 1 FROM post_likes pl WHERE pl.post_id = p.post_id AND pl.user_id = $2) AS is_liked
                  FROM posts p
                  LEFT JOIN (
                      SELECT post_id, COUNT(*)::int AS like_count FROM post_likes GROUP BY post_id
@@ -130,7 +140,7 @@ exports.getOrgProfile = async (req, res) => {
                    AND (p.is_removed IS FALSE OR p.is_removed IS NULL)
                  ORDER BY p.created_at DESC
                  LIMIT 3`,
-                [org.org_id]
+                [org.org_id, viewerId || null]
             ),
             // Organization links
             pool.query(

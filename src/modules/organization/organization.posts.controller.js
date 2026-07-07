@@ -117,6 +117,16 @@ exports.getOrganizationPosts = async (req, res) => {
             COALESCE(pm.media, '[]'::json) AS media,
             COALESCE(lc.like_count, 0)::int AS like_count,
             COALESCE(cc.comment_count, 0)::int AS comment_count,
+            (
+                SELECT COALESCE(comp_like.slug, u_like.account_name)
+                FROM post_likes pl_sample
+                LEFT JOIN active_users u_like ON u_like.user_id = pl_sample.user_id
+                LEFT JOIN organizations comp_like ON comp_like.org_id = pl_sample.org_id
+                WHERE pl_sample.post_id = p.post_id
+                AND ($${userParamIdx}::uuid IS NULL OR pl_sample.user_id != $${userParamIdx}::uuid)
+                ORDER BY pl_sample.created_at DESC
+                LIMIT 1
+            ) AS sample_liker_username,
             EXISTS(SELECT 1 FROM post_likes pl WHERE pl.post_id = p.post_id AND pl.user_id = $${userParamIdx}) AS is_liked,
 
             pp.poll,

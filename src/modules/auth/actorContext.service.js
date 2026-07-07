@@ -19,7 +19,10 @@ const parseActorCookie = (rawValue) => {
 };
 
 const canSwitchToOrganization = (organization) => {
-    const permissions = organization?.viewer_role_data?.permissions || [];
+    let permissions = organization?.viewer_role_data?.permissions || [];
+    if (typeof permissions === 'string') {
+        try { permissions = JSON.parse(permissions); } catch (e) { permissions = []; }
+    }
     const isExpired = organization?.expires_at && new Date(organization.expires_at) < new Date();
     const hasSwitchPermission = permissions.includes("*") || permissions.includes("SWITCH_TO_COMPANY");
     return organization?.status === "ACTIVE" && !isExpired && hasSwitchPermission;
@@ -69,6 +72,9 @@ async function getOrganizationsForUser(userId) {
 async function getActorContext(userId, rawActorCookie) {
     const organizations = await getOrganizationsForUser(userId);
     const parsedCookie = parseActorCookie(rawActorCookie);
+    console.log("getActorContext -> rawActorCookie:", rawActorCookie);
+    console.log("getActorContext -> parsedCookie:", parsedCookie);
+    console.log("getActorContext -> organizations:", JSON.stringify(organizations, null, 2));
 
     if (parsedCookie?.type === "ORGANIZATION") {
         const organization = organizations.find(

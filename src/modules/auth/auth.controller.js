@@ -167,9 +167,14 @@ exports.getMe = async (req, res) => {
 
 exports.getActorContext = async (req, res) => {
     try {
+        let rawCookie = req.cookies?.[actorContextService.ACTOR_CONTEXT_COOKIE_NAME];
+        if (!rawCookie && req.headers["x-actor-type"] && req.headers["x-actor-id"]) {
+            rawCookie = `${req.headers["x-actor-type"]}:${req.headers["x-actor-id"]}`;
+        }
+
         const result = await actorContextService.getActorContext(
             req.user.sub,
-            req.cookies?.[actorContextService.ACTOR_CONTEXT_COOKIE_NAME]
+            rawCookie
         );
 
         if (result.clearCookie) {
