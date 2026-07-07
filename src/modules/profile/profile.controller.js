@@ -988,55 +988,73 @@ exports.getEducationList = async (req, res) => {
     try {
         const { school_search = "", degree_search = "", specialization_search = "" } = req.query;
 
-        // 🎯 School query — UNION school names from educations and organizations table (type: INSTITUTION), de-duplicating case-insensitively
+        // 🎯 School query — UNION school names from educations and organizations table (type: INSTITUTION)
         let schoolQuery, schoolParams;
         if (school_search) {
             schoolParams = [`%${school_search}%`];
             schoolQuery = `
-                WITH combined AS (
-                    SELECT school_name, school_org_id AS org_id, NULL::text AS logo_url
-                    FROM educations
-                    WHERE school_name IS NOT NULL AND school_name != ''
-                      AND LOWER(school_name) LIKE LOWER($1)
-                    UNION ALL
-                    SELECT name AS school_name, org_id, logo_url
+                WITH matched_orgs AS (
+                    SELECT name, org_id, logo_url
                     FROM organizations
                     WHERE name IS NOT NULL AND name != ''
                       AND entity_type = 'INSTITUTION'
                       AND is_deleted = FALSE
                       AND LOWER(name) LIKE LOWER($1)
+                ),
+                matched_edus AS (
+                    SELECT DISTINCT ON (LOWER(TRIM(school_name))) 
+                           school_name AS name, 
+                           school_org_id AS org_id
+                    FROM educations
+                    WHERE school_name IS NOT NULL AND school_name != ''
+                      AND LOWER(school_name) LIKE LOWER($1)
+                    ORDER BY LOWER(TRIM(school_name))
                 )
-                SELECT DISTINCT ON (LOWER(TRIM(c.school_name))) 
-                       c.school_name, 
-                       COALESCE(c.org_id, o.org_id) AS org_id, 
-                       o.logo_url
-                FROM combined c
-                LEFT JOIN organizations o ON (c.org_id = o.org_id OR LOWER(TRIM(c.school_name)) = LOWER(TRIM(o.name))) 
-                  AND o.entity_type = 'INSTITUTION' AND o.is_deleted = FALSE
-                ORDER BY LOWER(TRIM(c.school_name)), COALESCE(c.org_id, o.org_id) NULLS LAST, o.logo_url NULLS LAST
+                SELECT school_name, org_id, logo_url
+                FROM (
+                    SELECT name AS school_name, org_id, logo_url
+                    FROM matched_orgs
+                    UNION ALL
+                    SELECT e.name AS school_name, e.org_id, NULL::text AS logo_url
+                    FROM matched_edus e
+                    WHERE e.org_id IS NULL 
+                       OR NOT EXISTS (
+                           SELECT 1 FROM matched_orgs o WHERE o.org_id = e.org_id
+                       )
+                ) combined_all
+                ORDER BY (CASE WHEN org_id IS NOT NULL THEN 0 ELSE 1 END) ASC, LOWER(TRIM(school_name)) ASC
                 LIMIT 50`;
         } else {
             schoolParams = [];
             schoolQuery = `
-                WITH combined AS (
-                    SELECT school_name, school_org_id AS org_id, NULL::text AS logo_url
-                    FROM educations
-                    WHERE school_name IS NOT NULL AND school_name != ''
-                    UNION ALL
-                    SELECT name AS school_name, org_id, logo_url
+                WITH matched_orgs AS (
+                    SELECT name, org_id, logo_url
                     FROM organizations
                     WHERE name IS NOT NULL AND name != ''
                       AND entity_type = 'INSTITUTION'
                       AND is_deleted = FALSE
+                ),
+                matched_edus AS (
+                    SELECT DISTINCT ON (LOWER(TRIM(school_name))) 
+                           school_name AS name, 
+                           school_org_id AS org_id
+                    FROM educations
+                    WHERE school_name IS NOT NULL AND school_name != ''
+                    ORDER BY LOWER(TRIM(school_name))
                 )
-                SELECT DISTINCT ON (LOWER(TRIM(c.school_name))) 
-                       c.school_name, 
-                       COALESCE(c.org_id, o.org_id) AS org_id, 
-                       o.logo_url
-                FROM combined c
-                LEFT JOIN organizations o ON (c.org_id = o.org_id OR LOWER(TRIM(c.school_name)) = LOWER(TRIM(o.name))) 
-                  AND o.entity_type = 'INSTITUTION' AND o.is_deleted = FALSE
-                ORDER BY LOWER(TRIM(c.school_name)), COALESCE(c.org_id, o.org_id) NULLS LAST, o.logo_url NULLS LAST
+                SELECT school_name, org_id, logo_url
+                FROM (
+                    SELECT name AS school_name, org_id, logo_url
+                    FROM matched_orgs
+                    UNION ALL
+                    SELECT e.name AS school_name, e.org_id, NULL::text AS logo_url
+                    FROM matched_edus e
+                    WHERE e.org_id IS NULL 
+                       OR NOT EXISTS (
+                           SELECT 1 FROM matched_orgs o WHERE o.org_id = e.org_id
+                       )
+                ) combined_all
+                ORDER BY (CASE WHEN org_id IS NOT NULL THEN 0 ELSE 1 END) ASC, LOWER(TRIM(school_name)) ASC
                 LIMIT 50`;
         }
 
@@ -1091,7 +1109,6 @@ exports.getEducationList = async (req, res) => {
 
         return res.json({
             degrees: degreeResult.rows.map(r => r.degree),
-            school_names: schoolResult.rows.map(r => r.school_name),
             schools: schoolResult.rows.map(r => ({
                 name: r.school_name,
                 org_id: r.org_id,
@@ -1105,59 +1122,78 @@ exports.getEducationList = async (req, res) => {
         res.status(500).json({ message: "Internal server error" });
     }
 };
+
 exports.getCompanyList = async (req, res) => {
     try {
         const { company_search = "", title_search = "" } = req.query;
 
-        // 🎯 Company query — UNION company names from experiences and organizations table (type: COMPANY), de-duplicating case-insensitively
+        // 🎯 Company query — UNION company names from experiences and organizations table (type: COMPANY)
         let companyQuery, companyParams;
         if (company_search) {
             companyParams = [`%${company_search}%`];
             companyQuery = `
-                WITH combined AS (
-                    SELECT company_name, org_id, NULL::text AS logo_url
-                    FROM experiences
-                    WHERE company_name IS NOT NULL AND company_name != ''
-                      AND LOWER(company_name) LIKE LOWER($1)
-                    UNION ALL
-                    SELECT name AS company_name, org_id, logo_url
+                WITH matched_orgs AS (
+                    SELECT name, org_id, logo_url
                     FROM organizations
                     WHERE name IS NOT NULL AND name != ''
                       AND entity_type = 'COMPANY'
                       AND is_deleted = FALSE
                       AND LOWER(name) LIKE LOWER($1)
+                ),
+                matched_exps AS (
+                    SELECT DISTINCT ON (LOWER(TRIM(company_name))) 
+                           company_name AS name, 
+                           org_id
+                    FROM experiences
+                    WHERE company_name IS NOT NULL AND company_name != ''
+                      AND LOWER(company_name) LIKE LOWER($1)
+                    ORDER BY LOWER(TRIM(company_name))
                 )
-                SELECT DISTINCT ON (LOWER(TRIM(c.company_name))) 
-                       c.company_name, 
-                       COALESCE(c.org_id, o.org_id) AS org_id, 
-                       o.logo_url
-                FROM combined c
-                LEFT JOIN organizations o ON (c.org_id = o.org_id OR LOWER(TRIM(c.company_name)) = LOWER(TRIM(o.name))) 
-                  AND o.entity_type = 'COMPANY' AND o.is_deleted = FALSE
-                ORDER BY LOWER(TRIM(c.company_name)), COALESCE(c.org_id, o.org_id) NULLS LAST, o.logo_url NULLS LAST
+                SELECT company_name, org_id, logo_url
+                FROM (
+                    SELECT name AS company_name, org_id, logo_url
+                    FROM matched_orgs
+                    UNION ALL
+                    SELECT e.name AS company_name, e.org_id, NULL::text AS logo_url
+                    FROM matched_exps e
+                    WHERE e.org_id IS NULL 
+                       OR NOT EXISTS (
+                           SELECT 1 FROM matched_orgs o WHERE o.org_id = e.org_id
+                       )
+                ) combined_all
+                ORDER BY (CASE WHEN org_id IS NOT NULL THEN 0 ELSE 1 END) ASC, LOWER(TRIM(company_name)) ASC
                 LIMIT 50`;
         } else {
             companyParams = [];
             companyQuery = `
-                WITH combined AS (
-                    SELECT company_name, org_id, NULL::text AS logo_url
-                    FROM experiences
-                    WHERE company_name IS NOT NULL AND company_name != ''
-                    UNION ALL
-                    SELECT name AS company_name, org_id, logo_url
+                WITH matched_orgs AS (
+                    SELECT name, org_id, logo_url
                     FROM organizations
                     WHERE name IS NOT NULL AND name != ''
                       AND entity_type = 'COMPANY'
                       AND is_deleted = FALSE
+                ),
+                matched_exps AS (
+                    SELECT DISTINCT ON (LOWER(TRIM(company_name))) 
+                           company_name AS name, 
+                           org_id
+                    FROM experiences
+                    WHERE company_name IS NOT NULL AND company_name != ''
+                    ORDER BY LOWER(TRIM(company_name))
                 )
-                SELECT DISTINCT ON (LOWER(TRIM(c.company_name))) 
-                       c.company_name, 
-                       COALESCE(c.org_id, o.org_id) AS org_id, 
-                       o.logo_url
-                FROM combined c
-                LEFT JOIN organizations o ON (c.org_id = o.org_id OR LOWER(TRIM(c.company_name)) = LOWER(TRIM(o.name))) 
-                  AND o.entity_type = 'COMPANY' AND o.is_deleted = FALSE
-                ORDER BY LOWER(TRIM(c.company_name)), COALESCE(c.org_id, o.org_id) NULLS LAST, o.logo_url NULLS LAST
+                SELECT company_name, org_id, logo_url
+                FROM (
+                    SELECT name AS company_name, org_id, logo_url
+                    FROM matched_orgs
+                    UNION ALL
+                    SELECT e.name AS company_name, e.org_id, NULL::text AS logo_url
+                    FROM matched_exps e
+                    WHERE e.org_id IS NULL 
+                       OR NOT EXISTS (
+                           SELECT 1 FROM matched_orgs o WHERE o.org_id = e.org_id
+                       )
+                ) combined_all
+                ORDER BY (CASE WHEN org_id IS NOT NULL THEN 0 ELSE 1 END) ASC, LOWER(TRIM(company_name)) ASC
                 LIMIT 50`;
         }
 
@@ -1190,7 +1226,6 @@ exports.getCompanyList = async (req, res) => {
 
         return res.json({
             titles: titleResult.rows.map(r => r.title),
-            company_names: companyResult.rows.map(r => r.company_name),
             companies: companyResult.rows.map(r => ({
                 name: r.company_name,
                 org_id: r.org_id,
@@ -1203,6 +1238,7 @@ exports.getCompanyList = async (req, res) => {
         res.status(500).json({ message: "Internal server error" });
     }
 };
+
 // ─── Batch Experience API ───────────────────────────────────────────────────────
 
 const operationSchema = z.discriminatedUnion("type", [

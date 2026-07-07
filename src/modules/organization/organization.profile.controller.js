@@ -239,6 +239,93 @@ exports.getOrgProfile = async (req, res) => {
             total_followers: counts.followers_count
         };
 
+        const peopleQuery = org.entity_type === 'INSTITUTION'
+            ? `WITH school_alumni AS (
+                   SELECT DISTINCT ON (p.user_id)
+                          u.user_id, u.full_name, u.avatar_url, u.headline, u.account_name,
+                          u.location,
+                          COALESCE(EXTRACT(YEAR FROM ed.end_date)::int, 0) AS graduation_year,
+                          ed.field_of_study
+                   FROM educations ed
+                   JOIN profiles p ON ed.profile_id = p.profile_id
+                   JOIN active_users u ON p.user_id = u.user_id
+                   WHERE ed.school_org_id = $1::uuid
+                   ORDER BY p.user_id, ed.end_date DESC
+               )
+               SELECT *,
+                      COALESCE(
+                          CASE WHEN $2::uuid IS NULL THEN false
+                               ELSE EXISTS(SELECT 1 FROM followers WHERE follower_id = $2::uuid AND following_id = user_id)
+                          END, false
+                      ) AS is_following,
+                      COALESCE(
+                          CASE WHEN $2::uuid IS NULL THEN false
+                               ELSE EXISTS(SELECT 1 FROM followers WHERE follower_id = user_id AND following_id = $2::uuid)
+                          END, false
+                      ) AS is_followed_by,
+                      CASE 
+                          WHEN $2::uuid IS NULL THEN null
+                          WHEN EXISTS(SELECT 1 FROM connections WHERE user_id = $2::uuid AND connected_user_id = user_id) THEN 'connected'
+                          ELSE (SELECT status FROM connection_requests WHERE (sender_id = $2::uuid AND receiver_id = user_id) OR (sender_id = user_id AND receiver_id = $2::uuid) LIMIT 1)
+                      END AS connection_request_status,
+                      CASE 
+                          WHEN $2::uuid IS NULL THEN null
+                          ELSE (SELECT request_id FROM connection_requests WHERE (sender_id = $2::uuid AND receiver_id = user_id) OR (sender_id = user_id AND receiver_id = $2::uuid) LIMIT 1)
+                      END AS connection_request_id,
+                      CASE 
+                          WHEN $2::uuid IS NULL THEN null
+                          ELSE (SELECT CASE WHEN sender_id = $2::uuid THEN 'me' ELSE 'them' END FROM connection_requests WHERE (sender_id = $2::uuid AND receiver_id = user_id) OR (sender_id = user_id AND receiver_id = $2::uuid) LIMIT 1)
+                      END AS connection_request_sender
+               FROM school_alumni
+               ORDER BY graduation_year DESC, user_id ASC
+               LIMIT 5`
+            : `WITH current_employees AS (
+                   SELECT DISTINCT ON (p.user_id)
+                          u.user_id, u.full_name, u.avatar_url, u.headline, u.account_name,
+                          u.location,
+                          e.title,
+                          COALESCE(e.start_date, '1970-01-01') AS joined_at
+                   FROM experiences e
+                   JOIN profiles p ON e.profile_id = p.profile_id
+                   JOIN active_users u ON p.user_id = u.user_id
+                   WHERE e.org_id = $1::uuid
+                     AND (e.is_current = TRUE OR e.end_date IS NULL)
+                   ORDER BY p.user_id, e.start_date DESC
+               )
+               SELECT *,
+                      COALESCE(
+                          CASE WHEN $2::uuid IS NULL THEN false
+                               ELSE EXISTS(SELECT 1 FROM followers WHERE follower_id = $2::uuid AND following_id = user_id)
+                          END, false
+                      ) AS is_following,
+                      COALESCE(
+                          CASE WHEN $2::uuid IS NULL THEN false
+                               ELSE EXISTS(SELECT 1 FROM followers WHERE follower_id = user_id AND following_id = $2::uuid)
+                          END, false
+                      ) AS is_followed_by,
+                      CASE 
+                          WHEN $2::uuid IS NULL THEN null
+                          WHEN EXISTS(SELECT 1 FROM connections WHERE user_id = $2::uuid AND connected_user_id = user_id) THEN 'connected'
+                          ELSE (SELECT status FROM connection_requests WHERE (sender_id = $2::uuid AND receiver_id = user_id) OR (sender_id = user_id AND receiver_id = $2::uuid) LIMIT 1)
+                      END AS connection_request_status,
+                      CASE 
+                          WHEN $2::uuid IS NULL THEN null
+                          ELSE (SELECT request_id FROM connection_requests WHERE (sender_id = $2::uuid AND receiver_id = user_id) OR (sender_id = user_id AND receiver_id = $2::uuid) LIMIT 1)
+                      END AS connection_request_id,
+                      CASE 
+                          WHEN $2::uuid IS NULL THEN null
+                          ELSE (SELECT CASE WHEN sender_id = $2::uuid THEN 'me' ELSE 'them' END FROM connection_requests WHERE (sender_id = $2::uuid AND receiver_id = user_id) OR (sender_id = user_id AND receiver_id = $2::uuid) LIMIT 1)
+                      END AS connection_request_sender
+               FROM current_employees
+               ORDER BY joined_at DESC, user_id ASC
+               LIMIT 5`;
+
+        const peopleResult = await pool.query(peopleQuery, [org.org_id, viewerId]);
+        const peopleRows = peopleResult.rows.map(r => ({
+            ...r,
+            is_connection: !!(r.is_following && r.is_followed_by)
+        }));
+
         return res.json({
             org: {
                 ...org,
@@ -264,6 +351,7 @@ exports.getOrgProfile = async (req, res) => {
             relationship,
             relevance,
             community,
+            people: peopleRows,
         });
 
     } catch (err) {
@@ -641,7 +729,10 @@ exports.getOrgPeople = async (req, res) => {
             calculateOrgDemographics(pool, org.org_id, 'PEOPLE', search)
         ]);
 
-        const rows = peopleResult.rows;
+        const rows = peopleResult.rows.map(r => ({
+            ...r,
+            is_connection: !!(r.is_following && r.is_followed_by)
+        }));
         let nextCursor = null;
         if (rows.length === limitVal && limitVal > 0) {
             const lastItem = rows[rows.length - 1];
@@ -807,7 +898,10 @@ exports.getOrgAlumni = async (req, res) => {
             calculateOrgDemographics(pool, org.org_id, 'ALUMNI', search, graduation_year)
         ]);
 
-        const rows = alumniResult.rows;
+        const rows = alumniResult.rows.map(r => ({
+            ...r,
+            is_connection: !!(r.is_following && r.is_followed_by)
+        }));
         let nextCursor = null;
         if (rows.length === limitVal && limitVal > 0) {
             const lastItem = rows[rows.length - 1];
