@@ -1898,7 +1898,7 @@ CREATE INDEX IF NOT EXISTS idx_org_links_active ON organization_links(org_id) WH
 CREATE TABLE IF NOT EXISTS organization_specialties (
     specialty_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     org_id UUID NOT NULL REFERENCES organizations(org_id) ON DELETE CASCADE,
-    name VARCHAR(100) NOT NULL,
+    name TEXT NOT NULL,
     is_deleted BOOLEAN DEFAULT FALSE,
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
