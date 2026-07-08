@@ -72,9 +72,6 @@ async function getOrganizationsForUser(userId) {
 async function getActorContext(userId, rawActorCookie) {
     const organizations = await getOrganizationsForUser(userId);
     const parsedCookie = parseActorCookie(rawActorCookie);
-    console.log("getActorContext -> rawActorCookie:", rawActorCookie);
-    console.log("getActorContext -> parsedCookie:", parsedCookie);
-    console.log("getActorContext -> organizations:", JSON.stringify(organizations, null, 2));
 
     if (parsedCookie?.type === "ORGANIZATION") {
         const organization = organizations.find(

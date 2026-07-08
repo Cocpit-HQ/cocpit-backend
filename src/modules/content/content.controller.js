@@ -755,19 +755,25 @@ exports.createPost = async (req, res) => {
 
         // 0. If reposting, check if original is Personal or already reposted
         if (req.body.shared_post_id) {
-            // Check if Personal
+            // Check if Personal or already a repost
             const originalPostCheck = await client.query(
-                `SELECT pc.name FROM posts p 
+                `SELECT pc.name, p.shared_post_id FROM posts p 
                  LEFT JOIN post_categories pc ON p.category_id = pc.category_id 
                  WHERE p.post_id = $1`,
                 [req.body.shared_post_id]
             );
-            if (originalPostCheck.rowCount > 0 && originalPostCheck.rows[0].name === 'Personal') {
-                await client.query('ROLLBACK');
-                return res.status(403).json({ message: "Personal posts cannot be reposted." });
+            if (originalPostCheck.rowCount > 0) {
+                if (originalPostCheck.rows[0].name === 'Personal') {
+                    await client.query('ROLLBACK');
+                    return res.status(403).json({ message: "Personal posts cannot be reposted." });
+                }
+                if (originalPostCheck.rows[0].shared_post_id !== null) {
+                    await client.query('ROLLBACK');
+                    return res.status(403).json({ message: "Reposted posts cannot be reposted." });
+                }
             }
 
-            // Check for Duplicate
+            // Check for Duplicate (Direct Repost toggle)
             const duplicateCheck = await client.query(
                 `SELECT post_id
                  FROM posts
@@ -776,10 +782,19 @@ exports.createPost = async (req, res) => {
                         ($3::uuid IS NOT NULL AND author_org_id = $3::uuid)
                         OR
                         ($3::uuid IS NULL AND author_id = $2 AND author_org_id IS NULL)
-                   )`,
+                   )
+                   AND (content IS NULL OR content = '')
+                   AND (is_removed IS FALSE OR is_removed IS NULL)`,
                 [req.body.shared_post_id, userId, companyId || null]
             );
-            if (duplicateCheck.rowCount > 0) {
+            if (duplicateCheck.rowCount > 0 && (!content || content.trim() === '')) {
+                const existingPostId = duplicateCheck.rows[0].post_id;
+                await client.query(`DELETE FROM posts WHERE post_id = $1`, [existingPostId]);
+                await client.query('COMMIT');
+                return res.status(200).json({ reposted: false, message: "Repost removed" });
+            } else if (duplicateCheck.rowCount > 0) {
+                // If they are trying to do a direct repost but somehow bypassed, or quote repost exists?
+                // Actually, if it's a quote repost we allow multiple, but let's prevent duplicate direct reposts.
                 await client.query('ROLLBACK');
                 return res.status(409).json({ message: "You have already shared this post." });
             }
@@ -1182,6 +1197,59 @@ exports.getPostById = async (req, res) => {
     ) AS is_liked,
 
     EXISTS(
+        SELECT 1 FROM posts sp_rep
+        WHERE sp_rep.shared_post_id = p.post_id 
+        AND (
+            ($3::uuid IS NOT NULL AND sp_rep.author_org_id = $3::uuid)
+            OR
+            ($3::uuid IS NULL AND sp_rep.author_id = $2 AND sp_rep.author_org_id IS NULL)
+        )
+        AND (sp_rep.is_removed IS FALSE OR sp_rep.is_removed IS NULL)
+    ) AS is_reposted,
+
+    (
+        SELECT sp_rep.post_id FROM posts sp_rep
+        WHERE sp_rep.shared_post_id = p.post_id 
+        AND (
+            ($3::uuid IS NOT NULL AND sp_rep.author_org_id = $3::uuid)
+            OR
+            ($3::uuid IS NULL AND sp_rep.author_id = $2 AND sp_rep.author_org_id IS NULL)
+        )
+        AND (sp_rep.is_removed IS FALSE OR sp_rep.is_removed IS NULL)
+        LIMIT 1
+    ) AS repost_id,
+
+    (
+        SELECT COALESCE(
+            json_agg(json_build_object(
+                'username', COALESCE(comp_like.slug, u_like.account_name),
+                'avatar_url', COALESCE(comp_like.logo_url, u_like.avatar_url)
+            )),
+            '[]'::json
+        )
+        FROM (
+            SELECT pl_sample.user_id, pl_sample.org_id
+            FROM post_likes pl_sample
+            WHERE pl_sample.post_id = p.post_id
+              AND pl_sample.user_id IS NOT NULL
+              AND NOT (
+                  ($3::uuid IS NOT NULL AND pl_sample.org_id = $3::uuid)
+                  OR
+                  ($3::uuid IS NULL AND pl_sample.user_id = $2 AND pl_sample.org_id IS NULL)
+              )
+              AND EXISTS (
+                  SELECT 1 FROM followers f1 
+                  JOIN followers f2 ON f1.follower_id = f2.following_id AND f1.following_id = f2.follower_id 
+                  WHERE f1.follower_id = $2 AND f1.following_id = pl_sample.user_id
+              )
+            ORDER BY pl_sample.created_at DESC
+            LIMIT 3
+        ) sub
+        LEFT JOIN active_users u_like ON u_like.user_id = sub.user_id
+        LEFT JOIN organizations comp_like ON comp_like.org_id = sub.org_id
+    ) AS liked_users,
+
+    EXISTS(
         SELECT 1 FROM post_comments pc_me 
         WHERE pc_me.post_id = p.post_id 
         AND (
@@ -1309,6 +1377,56 @@ exports.getPostById = async (req, res) => {
                         OR
                         ($3::uuid IS NULL AND pl.user_id = $2 AND pl.org_id IS NULL)
                     )
+                ),
+                'is_reposted', EXISTS(
+                    SELECT 1 FROM posts sp_rep
+                    WHERE sp_rep.shared_post_id = sp.post_id 
+                    AND (
+                        ($3::uuid IS NOT NULL AND sp_rep.author_org_id = $3::uuid)
+                        OR
+                        ($3::uuid IS NULL AND sp_rep.author_id = $2 AND sp_rep.author_org_id IS NULL)
+                    )
+                    AND (sp_rep.is_removed IS FALSE OR sp_rep.is_removed IS NULL)
+                ),
+                'repost_id', (
+                    SELECT sp_rep.post_id FROM posts sp_rep
+                    WHERE sp_rep.shared_post_id = sp.post_id 
+                    AND (
+                        ($3::uuid IS NOT NULL AND sp_rep.author_org_id = $3::uuid)
+                        OR
+                        ($3::uuid IS NULL AND sp_rep.author_id = $2 AND sp_rep.author_org_id IS NULL)
+                    )
+                    AND (sp_rep.is_removed IS FALSE OR sp_rep.is_removed IS NULL)
+                    LIMIT 1
+                ),
+                'liked_users', (
+                    SELECT COALESCE(
+                        json_agg(json_build_object(
+                            'username', COALESCE(comp_like.slug, u_like.account_name),
+                            'avatar_url', COALESCE(comp_like.logo_url, u_like.avatar_url)
+                        )),
+                        '[]'::json
+                    )
+                    FROM (
+                        SELECT pl_sample.user_id, pl_sample.org_id
+                        FROM post_likes pl_sample
+                        WHERE pl_sample.post_id = sp.post_id
+                          AND pl_sample.user_id IS NOT NULL
+                          AND NOT (
+                              ($3::uuid IS NOT NULL AND pl_sample.org_id = $3::uuid)
+                              OR
+                              ($3::uuid IS NULL AND pl_sample.user_id = $2 AND pl_sample.org_id IS NULL)
+                          )
+                          AND EXISTS (
+                              SELECT 1 FROM followers f1 
+                              JOIN followers f2 ON f1.follower_id = f2.following_id AND f1.following_id = f2.follower_id 
+                              WHERE f1.follower_id = $2 AND f1.following_id = pl_sample.user_id
+                          )
+                        ORDER BY pl_sample.created_at DESC
+                        LIMIT 3
+                    ) sub
+                    LEFT JOIN active_users u_like ON u_like.user_id = sub.user_id
+                    LEFT JOIN organizations comp_like ON comp_like.org_id = sub.org_id
                 ),
                 'poll', (
                     SELECT json_build_object(

@@ -469,6 +469,44 @@ exports.getPublicProfilePosts = async (req, res) => {
         (SELECT COUNT(*) FROM post_comments pc WHERE pc.post_id = p.post_id)::int AS comment_count,
 
         EXISTS(SELECT 1 FROM post_likes pl WHERE pl.post_id = p.post_id AND pl.user_id = $${userParamIdx}) AS is_liked,
+        EXISTS(
+            SELECT 1 FROM posts sp_rep
+            WHERE sp_rep.shared_post_id = p.post_id 
+            AND sp_rep.author_id = $${userParamIdx} AND sp_rep.author_org_id IS NULL
+            AND (sp_rep.is_removed IS FALSE OR sp_rep.is_removed IS NULL)
+        ) AS is_reposted,
+        (
+            SELECT sp_rep.post_id FROM posts sp_rep
+            WHERE sp_rep.shared_post_id = p.post_id 
+            AND sp_rep.author_id = $${userParamIdx} AND sp_rep.author_org_id IS NULL
+            AND (sp_rep.is_removed IS FALSE OR sp_rep.is_removed IS NULL)
+            LIMIT 1
+        ) AS repost_id,
+        (
+            SELECT COALESCE(
+                json_agg(json_build_object(
+                    'username', COALESCE(comp_like.slug, u_like.account_name),
+                    'avatar_url', COALESCE(comp_like.logo_url, u_like.avatar_url)
+                )),
+                '[]'::json
+            )
+            FROM (
+                SELECT pl_sample.user_id, pl_sample.org_id
+                FROM post_likes pl_sample
+                WHERE pl_sample.post_id = p.post_id
+                  AND pl_sample.user_id IS NOT NULL
+                  AND pl_sample.user_id != $${userParamIdx}::uuid
+                  AND EXISTS (
+                      SELECT 1 FROM followers f1 
+                      JOIN followers f2 ON f1.follower_id = f2.following_id AND f1.following_id = f2.follower_id 
+                      WHERE f1.follower_id = $${userParamIdx}::uuid AND f1.following_id = pl_sample.user_id
+                  )
+                ORDER BY pl_sample.created_at DESC
+                LIMIT 3
+            ) sub
+            LEFT JOIN active_users u_like ON u_like.user_id = sub.user_id
+            LEFT JOIN organizations comp_like ON comp_like.org_id = sub.org_id
+        ) AS liked_users,
 
         (
           SELECT json_build_object(
@@ -524,6 +562,44 @@ exports.getPublicProfilePosts = async (req, res) => {
               'comment_count', (SELECT COUNT(*) FROM post_comments pc WHERE pc.post_id = sp.post_id)::int,
               'share_count', (SELECT COUNT(*) FROM posts sp_share2 WHERE sp_share2.shared_post_id = sp.post_id)::int,
               'is_liked', EXISTS(SELECT 1 FROM post_likes pl WHERE pl.post_id = sp.post_id AND pl.user_id = $${userParamIdx}),
+              'is_reposted', EXISTS(
+                  SELECT 1 FROM posts sp_rep
+                  WHERE sp_rep.shared_post_id = sp.post_id 
+                  AND sp_rep.author_id = $${userParamIdx} AND sp_rep.author_org_id IS NULL
+                  AND (sp_rep.is_removed IS FALSE OR sp_rep.is_removed IS NULL)
+              ),
+              'repost_id', (
+                  SELECT sp_rep.post_id FROM posts sp_rep
+                  WHERE sp_rep.shared_post_id = sp.post_id 
+                  AND sp_rep.author_id = $${userParamIdx} AND sp_rep.author_org_id IS NULL
+                  AND (sp_rep.is_removed IS FALSE OR sp_rep.is_removed IS NULL)
+                  LIMIT 1
+              ),
+              'liked_users', (
+                  SELECT COALESCE(
+                      json_agg(json_build_object(
+                          'username', COALESCE(comp_like.slug, u_like.account_name),
+                          'avatar_url', COALESCE(comp_like.logo_url, u_like.avatar_url)
+                      )),
+                      '[]'::json
+                  )
+                  FROM (
+                      SELECT pl_sample.user_id, pl_sample.org_id
+                      FROM post_likes pl_sample
+                      WHERE pl_sample.post_id = sp.post_id
+                        AND pl_sample.user_id IS NOT NULL
+                        AND pl_sample.user_id != $${userParamIdx}::uuid
+                        AND EXISTS (
+                            SELECT 1 FROM followers f1 
+                            JOIN followers f2 ON f1.follower_id = f2.following_id AND f1.following_id = f2.follower_id 
+                            WHERE f1.follower_id = $${userParamIdx}::uuid AND f1.following_id = pl_sample.user_id
+                        )
+                      ORDER BY pl_sample.created_at DESC
+                      LIMIT 3
+                  ) sub
+                  LEFT JOIN active_users u_like ON u_like.user_id = sub.user_id
+                  LEFT JOIN organizations comp_like ON comp_like.org_id = sub.org_id
+              ),
               'poll', (
                 SELECT json_build_object(
                   'poll_id', pp.poll_id,
@@ -720,6 +796,44 @@ exports.getPublicProfileCommentedPosts = async (req, res) => {
         COALESCE(lc.like_count, 0) AS like_count,
 
         EXISTS(SELECT 1 FROM post_likes pl_me WHERE pl_me.post_id = p.post_id AND pl_me.user_id = $${userParamIdx} AND pl_me.org_id IS NULL) AS is_liked,
+        EXISTS(
+            SELECT 1 FROM posts sp_rep
+            WHERE sp_rep.shared_post_id = p.post_id 
+            AND sp_rep.author_id = $${userParamIdx} AND sp_rep.author_org_id IS NULL
+            AND (sp_rep.is_removed IS FALSE OR sp_rep.is_removed IS NULL)
+        ) AS is_reposted,
+        (
+            SELECT sp_rep.post_id FROM posts sp_rep
+            WHERE sp_rep.shared_post_id = p.post_id 
+            AND sp_rep.author_id = $${userParamIdx} AND sp_rep.author_org_id IS NULL
+            AND (sp_rep.is_removed IS FALSE OR sp_rep.is_removed IS NULL)
+            LIMIT 1
+        ) AS repost_id,
+        (
+            SELECT COALESCE(
+                json_agg(json_build_object(
+                    'username', COALESCE(comp_like.slug, u_like.account_name),
+                    'avatar_url', COALESCE(comp_like.logo_url, u_like.avatar_url)
+                )),
+                '[]'::json
+            )
+            FROM (
+                SELECT pl_sample.user_id, pl_sample.org_id
+                FROM post_likes pl_sample
+                WHERE pl_sample.post_id = p.post_id
+                  AND pl_sample.user_id IS NOT NULL
+                  AND pl_sample.user_id != $${userParamIdx}::uuid
+                  AND EXISTS (
+                      SELECT 1 FROM followers f1 
+                      JOIN followers f2 ON f1.follower_id = f2.following_id AND f1.following_id = f2.follower_id 
+                      WHERE f1.follower_id = $${userParamIdx}::uuid AND f1.following_id = pl_sample.user_id
+                  )
+                ORDER BY pl_sample.created_at DESC
+                LIMIT 3
+            ) sub
+            LEFT JOIN active_users u_like ON u_like.user_id = sub.user_id
+            LEFT JOIN organizations comp_like ON comp_like.org_id = sub.org_id
+        ) AS liked_users,
         EXISTS(SELECT 1 FROM post_comments pc_me WHERE pc_me.post_id = p.post_id AND pc_me.author_id = $${userParamIdx} AND pc_me.author_org_id IS NULL) AS is_commented,
 
         EXISTS(SELECT 1 FROM saved_post sp_me WHERE sp_me.post_id = p.post_id AND sp_me.user_id = $${userParamIdx} AND sp_me.org_id IS NULL) AS is_saved,

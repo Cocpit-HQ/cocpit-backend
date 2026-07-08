@@ -111,6 +111,61 @@ const getPostHydrationSelect = (companyParamIdx, userParamIdx) => `
 
     (
         EXISTS(
+            SELECT 1 FROM posts sp_rep
+            WHERE sp_rep.shared_post_id = p.post_id 
+            AND (
+                ($${companyParamIdx}::uuid IS NOT NULL AND sp_rep.author_org_id = $${companyParamIdx}::uuid)
+                OR
+                ($${companyParamIdx}::uuid IS NULL AND sp_rep.author_id = $${userParamIdx} AND sp_rep.author_org_id IS NULL)
+            )
+            AND (sp_rep.is_removed IS FALSE OR sp_rep.is_removed IS NULL)
+        )
+    ) AS is_reposted,
+
+    (
+        SELECT sp_rep.post_id FROM posts sp_rep
+        WHERE sp_rep.shared_post_id = p.post_id 
+        AND (
+            ($${companyParamIdx}::uuid IS NOT NULL AND sp_rep.author_org_id = $${companyParamIdx}::uuid)
+            OR
+            ($${companyParamIdx}::uuid IS NULL AND sp_rep.author_id = $${userParamIdx} AND sp_rep.author_org_id IS NULL)
+        )
+        AND (sp_rep.is_removed IS FALSE OR sp_rep.is_removed IS NULL)
+        LIMIT 1
+    ) AS repost_id,
+
+    (
+        SELECT COALESCE(
+            json_agg(json_build_object(
+                'username', COALESCE(comp_like.slug, u_like.account_name),
+                'avatar_url', COALESCE(comp_like.logo_url, u_like.avatar_url)
+            )),
+            '[]'::json
+        )
+        FROM (
+            SELECT pl_sample.user_id, pl_sample.org_id
+            FROM post_likes pl_sample
+            WHERE pl_sample.post_id = p.post_id
+              AND pl_sample.user_id IS NOT NULL
+              AND NOT (
+                  ($${companyParamIdx}::uuid IS NOT NULL AND pl_sample.org_id = $${companyParamIdx}::uuid)
+                  OR
+                  ($${companyParamIdx}::uuid IS NULL AND pl_sample.user_id = $${userParamIdx}::uuid AND pl_sample.org_id IS NULL)
+              )
+              AND EXISTS (
+                  SELECT 1 FROM followers f1 
+                  JOIN followers f2 ON f1.follower_id = f2.following_id AND f1.following_id = f2.follower_id 
+                  WHERE f1.follower_id = $${userParamIdx}::uuid AND f1.following_id = pl_sample.user_id
+              )
+            ORDER BY pl_sample.created_at DESC
+            LIMIT 3
+        ) sub
+        LEFT JOIN active_users u_like ON u_like.user_id = sub.user_id
+        LEFT JOIN organizations comp_like ON comp_like.org_id = sub.org_id
+    ) AS liked_users,
+
+    (
+        EXISTS(
             SELECT 1 FROM post_comments pc_me 
             WHERE pc_me.post_id = p.post_id 
             AND (
