@@ -84,7 +84,7 @@ const JD_JSON_SCHEMA = {
     required_skills_keywords: {
       type: "array",
       items: { type: "string" },
-      description: "4-8 required skill keywords. Short terms only: ['React', 'Node.js']. No sentences.",
+      description: "Exactly 10 required skill keywords. Include a mix of technical and non-technical skills appropriate for the requested experience level and job role. Short terms only: ['React', 'Node.js', 'Leadership']. No sentences.",
     },
     // benefits: {
     //   type: "array",
@@ -112,19 +112,22 @@ const JD_JSON_SCHEMA = {
 // ─── Prompt Builder ───────────────────────────────────────────────────────────
 // Builds the user-turn message sent to Gemini.
 // The frontend NEVER sends this — it is always constructed server-side.
-/**
- * @param {string} role - The job title entered by the recruiter (e.g. "Software Engineer")
- * @param {string|null} companyName - Optional company name to contextualise the JD
- * @returns {string} The user-turn prompt string
- */
-const buildPrompt = (role, companyName = null) => {
+const buildPrompt = (role, companyName = null, location = null, experience = null, workType = null, workMode = null) => {
   const companyContext = companyName
     ? `Whenever referring to the hiring company, you MUST use the exact string "[Company Name]". Do not use generic terms like "our company", use the literal brackets. `
     : "";
 
+  let contextStr = "";
+  if (location) contextStr += `Location: ${location}. `;
+  if (experience) contextStr += `Experience: ${experience}. Ensure the generated responsibilities and the 10 skills are appropriate for this experience level. `;
+  if (workType) contextStr += `Employment Type: ${workType}. `;
+  if (workMode) contextStr += `Work Mode: ${workMode}. `;
+
+  contextStr += "You MUST generate exactly 10 skills in the required_skills_keywords field, containing a mix of technical and non-technical skills appropriate for the role. ";
+
   return (
     `Generate a complete, professional Job Description for the role: "${role}". ` +
-    companyContext +
+    companyContext + contextStr +
     `Include all of the following sections: ` +
     `job summary, detailed description, key responsibilities, requirements, ` +
     `preferred skills, benefits, employment type, experience range, ` +

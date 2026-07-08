@@ -205,7 +205,7 @@ exports.getCompanySentOffers = async (req, res) => {
                 MAX(jo.created_at) AS latest_offer_at
             FROM job_offers jo
             JOIN jobs j ON jo.job_id = j.job_id
-            JOIN organizations c ON jo.org_id = c.org_id
+            JOIN organizations c ON j.org_id = c.org_id
             WHERE jo.org_id = $1 AND j.is_active = TRUE
             GROUP BY j.job_id, j.title, j.job_type, j.work_mode, j.location,
                      j.experience_level, j.salary_min, j.salary_max, j.salary_currency,
@@ -627,7 +627,7 @@ exports.getRecruiterSentOffers = async (req, res) => {
                 MAX(jo.created_at) AS latest_offer_at
             FROM job_offers jo
             JOIN jobs j ON jo.job_id = j.job_id
-            LEFT JOIN organizations c ON jo.org_id = c.org_id
+            LEFT JOIN organizations c ON j.org_id = c.org_id
             WHERE jo.sent_by = $1
             GROUP BY j.job_id, j.title, j.job_type, j.work_mode, j.location,
                      j.experience_level, j.salary_min, j.salary_max, j.salary_currency,

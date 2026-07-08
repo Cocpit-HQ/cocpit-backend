@@ -220,6 +220,10 @@ const injectCompanyName = (dataObj, companyName) => {
 const generateJobDescription = async ({
   role,
   companyName = null,
+  location = null,
+  experience = null,
+  work_type = null,
+  work_mode = null,
   jobId,
   companyId,
 }) => {
@@ -234,7 +238,7 @@ const generateJobDescription = async ({
 
   // 1. Normalization & Hashing
   const normalizedRole = normalizeString(role);
-  const cacheKeyStr = `${normalizedRole}|${promptVersion}`;
+  const cacheKeyStr = `${normalizedRole}|${companyName || ''}|${location || ''}|${experience || ''}|${work_type || ''}|${work_mode || ''}|${promptVersion}`;
   const roleHash = crypto.createHash("sha256").update(cacheKeyStr).digest("hex");
   const redisCacheKey = `jd_cache:${roleHash}`;
   const redisLockKey = `jd_lock:${roleHash}`;
@@ -295,7 +299,7 @@ const generateJobDescription = async ({
     throw err;
   }
 
-  const promptText = buildPrompt(role, companyName);
+  const promptText = buildPrompt(role, companyName, location, experience, work_type, work_mode);
 
   const cleanupLock = async () => {
     if (lockAcquired && redisClient.isOpen) {

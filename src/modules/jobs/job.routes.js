@@ -21,6 +21,7 @@ const aiRateLimiter = createAIRateLimiter();
 // Public routes
 router.get("/", optionalAuth, jobController.getAllJobs);
 router.get("/roles", jobController.getJobRoles);
+router.get("/industries", jobController.getIndustries);
 
 // Specific routes MUST come before /:id catch-all
 router.get("/recommendations", optionalAuth, jobController.getRecommendations);

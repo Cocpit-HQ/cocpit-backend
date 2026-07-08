@@ -9,14 +9,14 @@ const dashboardService = require("../dashboard/dashboard.service");
  * Purpose: Real-time user discovery and mention autocomplete
  */
 exports.searchUsers = async (req, res) => {
-  const { q, accountType } = req.query;
+  const { q, accountType, excludeJobId } = req.query;
   const currentUserId = req.user.sub;
 
   if (!q || typeof q !== "string" || q.trim().length === 0) {
     return res.status(400).json({ message: "Search query 'q' is required" });
   }
 
-  const searchTerm = q.trim().replace(/^['\"]|['\"]$/g, '');
+  const searchTerm = q.trim().replace(/^['"]|['"]$/g, '');
 
   try {
     const queryParams = [currentUserId];
@@ -25,13 +25,25 @@ exports.searchUsers = async (req, res) => {
 
     let userAccountFilter = "";
     if (accountType) {
-      queryParams.push(accountType); // $3
-      userAccountFilter = `AND p.account_type = $3`;
+      queryParams.push(accountType); // $3 or so
+      userAccountFilter = `AND p.account_type = $${queryParams.length}`;
+    }
+
+    let excludeJobFilter = "";
+    if (excludeJobId) {
+      queryParams.push(excludeJobId);
+      excludeJobFilter = `
+        AND NOT EXISTS (
+          SELECT 1 FROM job_offers jo 
+          WHERE jo.job_id = $${queryParams.length} AND jo.user_id = u.user_id
+          AND jo.status IN ('pending', 'accepted', 'declined')
+        )
+      `;
     }
 
     // Similarity param (raw term)
     queryParams.push(searchTerm);
-    const simParamIdx = queryParams.length; // $3 or $4
+    const simParamIdx = queryParams.length;
 
     const queryText = `
       SELECT * FROM (
@@ -52,6 +64,7 @@ exports.searchUsers = async (req, res) => {
             AND u.full_name IS NOT NULL AND TRIM(u.full_name) <> ''
             AND u.account_name IS NOT NULL AND TRIM(u.account_name) <> ''
           ${userAccountFilter}
+          ${excludeJobFilter}
           AND NOT EXISTS (
             SELECT 1 FROM blocks b 
             WHERE (b.blocker_id = $1 AND b.blocked_id = u.user_id)
@@ -1064,8 +1077,23 @@ exports.resendRecoveryEmail = async (req, res) => {
  */
 exports.getSuggestedUsers = async (req, res) => {
   const currentUserId = req.user.sub;
+  const { excludeJobId } = req.query;
 
   try {
+    const params = [currentUserId];
+    let excludeJobFilter = '';
+
+    if (excludeJobId) {
+      params.push(excludeJobId);
+      excludeJobFilter = `
+        AND NOT EXISTS (
+          SELECT 1 FROM job_offers jo 
+          WHERE jo.job_id = $2 AND jo.user_id = u.user_id
+          AND jo.status IN ('pending', 'accepted', 'declined')
+        )
+      `;
+    }
+
     const query = `
       SELECT 
         u.user_id AS id,
@@ -1087,11 +1115,12 @@ exports.getSuggestedUsers = async (req, res) => {
         WHERE (b.blocker_id = $1 AND b.blocked_id = u.user_id)
            OR (b.blocker_id = u.user_id AND b.blocked_id = $1)
       )
+      ${excludeJobFilter}
       ORDER BY followers_count DESC, u.created_at DESC
       LIMIT 15
     `;
 
-    const result = await pool.query(query, [currentUserId]);
+    const result = await pool.query(query, params);
     res.status(200).json(result.rows);
   } catch (err) {
     console.error("Get suggested users error:", err);

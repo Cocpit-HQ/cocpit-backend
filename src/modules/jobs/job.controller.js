@@ -511,6 +511,15 @@ exports.updateDraft = async (req, res) => {
       );
     }
 
+    if (updates.industry) {
+      await pool.query(
+        `INSERT INTO industries_master (industry_name) 
+         VALUES ($1) 
+         ON CONFLICT (industry_name) DO NOTHING`,
+        [updates.industry]
+      );
+    }
+
     res.status(200).json({ message: "Job updated", job: updatedJobRes.rows[0] });
   } catch (err) {
     console.error(err);
@@ -1447,7 +1456,9 @@ exports.getMyJobs = async (req, res) => {
       SELECT 
         j.*, 
         u.full_name AS recruiter_name,
-        (SELECT COUNT(*)::int FROM job_applications ja_count WHERE ja_count.job_id = j.job_id) as applicants_count
+        (SELECT COUNT(*)::int FROM job_applications ja_count WHERE ja_count.job_id = j.job_id) as applicants_count,
+        (SELECT COUNT(*)::int FROM job_applications ja_count WHERE ja_count.job_id = j.job_id AND ja_count.current_status = 'Shortlisted') as shortlisted_count,
+        (SELECT COUNT(*)::int FROM job_offers jo_count WHERE jo_count.job_id = j.job_id) as offers_count
       FROM jobs j
       LEFT JOIN active_users u ON j.recruiter_id = u.user_id
       WHERE j.recruiter_id = $1 
@@ -1836,6 +1847,16 @@ exports.updateJob = async (req, res) => {
       );
     }
 
+    if (industry) {
+      // Automatically add this new industry to the master table
+      await client.query(
+        `INSERT INTO industries_master (industry_name) 
+         VALUES ($1) 
+         ON CONFLICT (industry_name) DO NOTHING`,
+        [industry]
+      );
+    }
+
     res.json({
       message: "Job updated successfully",
       job
@@ -1964,6 +1985,28 @@ exports.getJobRoles = async (req, res) => {
     }
 };
 
+exports.getIndustries = async (req, res) => {
+    try {
+        const { q } = req.query;
+        let query = `SELECT industry_name FROM industries_master`;
+        let values = [];
+
+        if (q) {
+            query += ` WHERE industry_name ILIKE $1`;
+            values.push(`%${q}%`);
+        }
+
+        query += ` ORDER BY industry_name ASC LIMIT 50`;
+
+        const result = await pool.query(query, values);
+        
+        res.json(result.rows);
+    } catch (err) {
+        console.error("Error fetching industries:", err);
+        res.status(500).json({ error: "Internal server error" });
+    }
+};
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Shared helper: formats a structured AI JD object into a flat markdown string.
 // Used by both createJob and generateJD so the output is always identical.
@@ -2002,7 +2045,7 @@ exports.generateJD = async (req, res) => {
   const startTime = Date.now();
 
   // ── Step 1: Input validation ────────────────────────────────────────────────
-  let role = req.body?.role;
+  let { role, company, location, experience, work_type, work_mode } = req.body;
 
   if (!role || typeof role !== "string") {
     return res.status(400).json({ message: "\"role\" is required and must be a string." });
@@ -2064,8 +2107,8 @@ exports.generateJD = async (req, res) => {
     }
 
     // ── Step 4: Redis cache check ─────────────────────────────────────────────
-    // Cache key: SHA256(role (normalised) + company_id)
-    const cacheInput = `${role.toLowerCase()}:${job.org_id || userId}`;
+    // Cache key: SHA256(role (normalised) + company_id + context)
+    const cacheInput = `${role.toLowerCase()}:${job.org_id || userId}:${company || ''}:${location || ''}:${experience || ''}:${work_type || ''}:${work_mode || ''}`;
     const cacheKey = `jd_gen:${crypto.createHash("sha256").update(cacheInput).digest("hex")}`;
 
     let cachedResult;
@@ -2094,17 +2137,43 @@ exports.generateJD = async (req, res) => {
         ai_metadata: { cached: true, model: process.env.AI_MODEL || "gemini-2.5-flash" },
       });
     }
+    
+    // ── Step 4.5: Job-based AI Generation Rate Limiting (24 hours) ────
+    const rateLimitKey = `ai_rate_limit:job:${id}`;
+    let generationCount = 0;
+    try {
+      generationCount = await redis.incr(rateLimitKey);
+      if (generationCount === 1) {
+        await redis.expire(rateLimitKey, 24 * 60 * 60);
+      }
+    } catch (err) {
+      console.warn("Redis rate limit failed, bypassing:", err);
+    }
+
+    if (generationCount > 3) {
+      await client.query("ROLLBACK");
+      return res.status(429).json({
+        message: "AI generation limit reached. You can only regenerate a Job Description up to 3 times per 24 hours for a single job. Please try again tomorrow.",
+      });
+    }
 
     // ── Step 5: Call AI service ───────────────────────────────────────────────
     let generated;
     try {
       generated = await aiService.generateJobDescription({
         role,
-        companyName: job.company_name || null,
+        companyName: company || job.company_name || null,
+        location,
+        experience,
+        work_type,
+        work_mode,
         jobId: id,
         companyId: job.org_id || null,
       });
     } catch (aiErr) {
+      // Revert the rate limit counter on failure
+      try { await redis.decr(rateLimitKey); } catch (e) { /* ignore */ }
+      
       await client.query("ROLLBACK");
       return res.status(aiErr.statusCode || 503).json({
         message: aiErr.message || "AI service is temporarily unavailable.",
@@ -2117,6 +2186,9 @@ exports.generateJD = async (req, res) => {
       validateBusiness(generated);
       validateContentSafety(generated);
     } catch (validationErr) {
+      // Revert the rate limit counter on failure
+      try { await redis.decr(rateLimitKey); } catch (e) { /* ignore */ }
+      
       await client.query("ROLLBACK");
       return res.status(validationErr.statusCode || 422).json({
         message: validationErr.message,

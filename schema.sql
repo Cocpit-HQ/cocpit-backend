@@ -1828,6 +1828,14 @@ CREATE TABLE IF NOT EXISTS job_roles_master (
 
 CREATE INDEX IF NOT EXISTS idx_job_roles_name ON job_roles_master (role_name);
 
+CREATE TABLE IF NOT EXISTS industries_master (
+    industry_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    industry_name VARCHAR(255) UNIQUE NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_industries_name ON industries_master (industry_name);
+
 -- Fix: Allow drafts to be created without industry
 ALTER TABLE jobs ALTER COLUMN industry DROP NOT NULL;
 

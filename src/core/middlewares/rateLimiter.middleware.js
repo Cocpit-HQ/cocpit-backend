@@ -19,18 +19,15 @@ const rateLimit = require("express-rate-limit");
 exports.createAIRateLimiter = () =>
   rateLimit({
     windowMs: 60 * 1000, // 1 minute
-    max: 3,              // max 3 AI JD generations per user per minute
-    standardHeaders: true,  // Return rate limit info in RateLimit-* headers
-    legacyHeaders: false,   // Disable X-RateLimit-* headers
+    max: 30,             // Bumped to 30 to act as basic DoS protection (business logic handles 3 per 24h)
+    standardHeaders: true,
+    legacyHeaders: false,
 
-    // Key by authenticated user ID so limits are per-user, not per-IP
-    keyGenerator: (req) => `ai_gen:${req.user?.sub || req.ip}`,
+    keyGenerator: (req) => `ai_gen_dos:${req.user?.sub || req.ip}`,
 
-    // Custom response when limit is exceeded
     handler: (req, res) => {
       res.status(429).json({
-        message:
-          "AI generation limit reached. You can generate up to 3 Job Descriptions per minute. Please wait and try again.",
+        message: "Too many requests. Please slow down and try again.",
         retryAfter: 60,
       });
     },
