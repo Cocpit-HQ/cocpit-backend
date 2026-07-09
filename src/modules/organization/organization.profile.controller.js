@@ -85,6 +85,7 @@ exports.getOrgProfile = async (req, res) => {
             membershipResult,
             latestPostsResult,
             linksResult,
+            growthData,
         ] = await Promise.all([
             // Counts (followers, subscribers, members, posts, active jobs)
             pool.query(
@@ -150,6 +151,8 @@ exports.getOrgProfile = async (req, res) => {
                  ORDER BY platform ASC`,
                 [org.org_id]
             ),
+            // Employee growth trend
+            calculateEmployeeGrowth(pool, org.org_id),
         ]);
 
         const counts = countsResult.rows[0];
@@ -182,7 +185,8 @@ exports.getOrgProfile = async (req, res) => {
         };
         let relevance = {
             connections_who_follow: [],
-            mutual_connections_count: 0
+            mutual_connections_count: 0,
+            employee_growth: growthData
         };
         let community = {
             recent_followers: [],
@@ -230,7 +234,8 @@ exports.getOrgProfile = async (req, res) => {
 
             relevance = {
                 connections_who_follow: relevanceResult.rows,
-                mutual_connections_count: mutualCountResult.rows[0]?.count || 0
+                mutual_connections_count: mutualCountResult.rows[0]?.count || 0,
+                employee_growth: growthData
             };
         }
 
@@ -1349,5 +1354,86 @@ exports.updateOrgVerification = async (req, res) => {
         client.release();
     }
 };
+
+async function calculateEmployeeGrowth(client, orgId) {
+    const query = `
+        WITH months AS (
+            SELECT m::int AS month_num 
+            FROM generate_series(1, EXTRACT(MONTH FROM CURRENT_DATE)::int) m
+        ),
+        start_count AS (
+            SELECT COUNT(DISTINCT profile_id) AS base_count
+            FROM experiences
+            WHERE org_id = $1::uuid
+              AND start_date < DATE_TRUNC('year', CURRENT_DATE)
+              AND (end_date IS NULL OR end_date >= DATE_TRUNC('year', CURRENT_DATE))
+        ),
+        joins AS (
+            SELECT 
+                EXTRACT(MONTH FROM start_date)::int AS month_num,
+                COUNT(DISTINCT profile_id)::int AS join_count
+            FROM experiences
+            WHERE org_id = $1::uuid
+              AND start_date >= DATE_TRUNC('year', CURRENT_DATE)
+              AND start_date <= CURRENT_DATE
+            GROUP BY month_num
+        )
+        SELECT 
+            (SELECT base_count FROM start_count) AS base_count,
+            json_agg(
+                json_build_object(
+                    'month_num', m.month_num,
+                    'join_count', COALESCE(j.join_count, 0)
+                ) ORDER BY m.month_num
+            ) AS monthly_joins
+        FROM months m
+        LEFT JOIN joins j ON m.month_num = j.month_num;
+    `;
+    const res = await client.query(query, [orgId]);
+    if (res.rowCount === 0) {
+        return {
+            percentage: "0.0%",
+            growth_value: 0,
+            base_count: 0,
+            total_joins: 0,
+            trend: []
+        };
+    }
+
+    const baseCount = parseInt(res.rows[0].base_count || 0);
+    const monthlyJoins = res.rows[0].monthly_joins || [];
+
+    const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+    let cumulativeJoins = 0;
+    const trend = monthlyJoins.map(item => {
+        cumulativeJoins += parseInt(item.join_count);
+        return {
+            month_num: item.month_num,
+            month: monthNames[item.month_num - 1],
+            joins: parseInt(item.join_count),
+            cumulative_joins: cumulativeJoins
+        };
+    });
+
+    let percentageStr = "0.0%";
+    let growthValue = 0;
+    if (baseCount > 0) {
+        growthValue = Math.round((cumulativeJoins / baseCount) * 100 * 10) / 10;
+        percentageStr = (growthValue >= 0 ? "+" : "") + growthValue + "%";
+    } else if (cumulativeJoins > 0) {
+        growthValue = 100.0;
+        percentageStr = "+100.0%";
+    }
+
+    return {
+        percentage: percentageStr,
+        growth_value: growthValue,
+        base_count: baseCount,
+        total_joins: cumulativeJoins,
+        trend
+    };
+}
+
 
 
