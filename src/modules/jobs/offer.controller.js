@@ -138,7 +138,9 @@ exports.getMyOffers = async (req, res) => {
                 j.company_name, j.recruiter_id,
                 j.is_active, j.status as job_status,
                 COALESCE(c.name, j.company_name) as company_display_name, c.logo_url as company_logo, c.slug as company_slug,
-                u.full_name as sent_by_name
+                u.full_name as sent_by_name,
+                u.avatar_url as sent_by_avatar,
+                u.headline as sent_by_headline
             FROM job_offers jo
             JOIN jobs j ON jo.job_id = j.job_id
             LEFT JOIN organizations c ON jo.org_id = c.org_id
