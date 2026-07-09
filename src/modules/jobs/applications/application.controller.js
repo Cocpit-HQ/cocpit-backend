@@ -19,25 +19,67 @@ const { redisClient } = require('../../../core/db/redis');
 
 // ─── Shared auth helper ───────────────────────────────────────────────────────
 // Asserts that the requesting user is either the direct recruiter or an org
-// member with one of the given permissions. Throws a 403-tagged error on failure.
-async function assertRecruiterAccess(req, { org_id, recruiter_id }, permissions) {
+// member with one of the given permissions.
+//
+// creatorOnly (default false):
+//   When true, non-admin org members can only act on applications for jobs THEY
+//   created (recruiter_id = userId). Admin-level actors ("*" or "MANAGE_COMPANY")
+//   bypass this restriction. Use for write operations (e.g. status updates).
+//   Leave false for read operations where all org members should have visibility.
+async function assertRecruiterAccess(req, { org_id, recruiter_id }, permissions, creatorOnly = false) {
   const userId = req.user.sub;
 
-  // 1. Direct recruiter ownership
+  // 1. Direct recruiter (job creator) — always allowed
   if (recruiter_id === userId) return;
 
   if (org_id) {
-    // 2. Actor-context check (set by actor-context.middleware for org tokens)
+    // 2. Actor-context check
     if (req.actor?.type === 'ORGANIZATION' && req.actor.orgId === org_id) {
+      const actorPermissions = req.actor.permissions || [];
       const hasPermission = permissions.some(p =>
-        hasActorPermission(req.actor.permissions || [], p)
+        hasActorPermission(actorPermissions, p)
       );
-      if (hasPermission) return;
+
+      if (hasPermission) {
+        // Admin-level bypass: wildcard or MANAGE_COMPANY can act on all org applicants
+        if (actorPermissions.includes('*') || actorPermissions.includes('MANAGE_COMPANY')) {
+          return;
+        }
+
+        // Creator isolation for write operations:
+        // non-admin members can only manage applicants for jobs they created.
+        if (creatorOnly) {
+          const err = new Error('You can only manage applicants for jobs that you created');
+          err.statusCode = 403;
+          throw err;
+        }
+
+        return; // Read operations: any permitted org member can view
+      }
     }
 
     // 3. DB-level RBAC fallback
     const ok = await checkOrgPermission(pool, org_id, userId, permissions);
-    if (ok) return;
+    if (ok) {
+      if (creatorOnly) {
+        // Determine admin-level via DB to decide creator isolation bypass
+        const memberRes = await pool.query(
+          `SELECT cr.permissions
+           FROM organization_members cm
+           LEFT JOIN organization_roles cr ON cm.role_id = cr.role_id
+           WHERE cm.org_id = $1 AND cm.user_id = $2`,
+          [org_id, userId]
+        );
+        const memberPerms = memberRes.rows[0]?.permissions || [];
+        if (memberPerms.includes('*') || memberPerms.includes('MANAGE_COMPANY')) {
+          return; // Admin-level — can manage all org applicants
+        }
+        const err = new Error('You can only manage applicants for jobs that you created');
+        err.statusCode = 403;
+        throw err;
+      }
+      return;
+    }
   }
 
   const err = new Error('Not authorized to access applicants for this job');
@@ -283,7 +325,7 @@ exports.updateApplicationStatus = async (req, res) => {
 
     await assertRecruiterAccess(req, ownership, [
       'MANAGE_APPLICANTS', 'MANAGE_COMPANY',
-    ]);
+    ], true);
 
     // Build SET clause — screening fields only written when Shortlisting with a task
     const setClauses = ['current_status = $1'];

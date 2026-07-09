@@ -58,6 +58,88 @@ const assertOrgPermission = async (req, orgId, permissions, queryable = pool) =>
   }
 };
 
+/**
+ * Actor-context-aware job write authorization.
+ *
+ * Enforces creator isolation based purely on actor context — no role names.
+ *   - Personal jobs (no org_id): caller is responsible for recruiter_id check.
+ *   - Org jobs, actor type ORGANIZATION:
+ *       • Admin-level (permissions includes "*" or "MANAGE_COMPANY") → can write any org job.
+ *       • All other org members → can only write jobs they personally created (recruiter_id = userId).
+ *   - No org actor context: DB-RBAC fallback with the same admin-vs-creator logic.
+ *
+ * Use this instead of assertOrgPermission for all write operations on existing jobs.
+ */
+const assertJobActorAccess = async (req, job, permissions, queryable = pool) => {
+  const userId = req.user.sub;
+
+  if (!job.org_id) {
+    // Personal job — creator check handled by the caller
+    return;
+  }
+
+  if (req.actor?.type === "ORGANIZATION") {
+    // Must be acting as the correct org
+    if (req.actor.orgId !== job.org_id) {
+      const err = new Error("Active organization actor does not match requested organization");
+      err.statusCode = 403;
+      throw err;
+    }
+
+    const actorPermissions = req.actor.permissions || [];
+
+    // Check required permission
+    if (!hasAnyActorPermission(actorPermissions, permissions)) {
+      const err = new Error("Not authorized for this organization");
+      err.statusCode = 403;
+      throw err;
+    }
+
+    // Admin-level bypass: wildcard or MANAGE_COMPANY can manage all org jobs
+    if (actorPermissions.includes("*") || actorPermissions.includes("MANAGE_COMPANY")) {
+      return;
+    }
+
+    // Creator isolation: non-admin members can only manage jobs they created
+    if (job.recruiter_id !== userId) {
+      const err = new Error("You can only manage jobs that you created");
+      err.statusCode = 403;
+      throw err;
+    }
+
+    return;
+  }
+
+  // No org actor context — DB-level RBAC fallback
+  const ok = await checkOrgPermission(queryable, job.org_id, userId, permissions);
+  if (!ok) {
+    const err = new Error("Not authorized for this organization");
+    err.statusCode = 403;
+    throw err;
+  }
+
+  // DB check passed — determine if admin-level to bypass creator isolation
+  const memberRes = await queryable.query(
+    `SELECT cr.permissions
+     FROM organization_members cm
+     LEFT JOIN organization_roles cr ON cm.role_id = cr.role_id
+     WHERE cm.org_id = $1 AND cm.user_id = $2`,
+    [job.org_id, userId]
+  );
+
+  const memberPerms = memberRes.rows[0]?.permissions || [];
+  if (memberPerms.includes("*") || memberPerms.includes("MANAGE_COMPANY")) {
+    return; // Admin-level — can manage all org jobs
+  }
+
+  // Creator isolation for non-admin fallback path
+  if (job.recruiter_id !== userId) {
+    const err = new Error("You can only manage jobs that you created");
+    err.statusCode = 403;
+    throw err;
+  }
+};
+
 exports.getAllJobs = async (req, res) => {
   const { limit = 10, cursor } = req.query;
   const userId = req.user?.sub;
@@ -495,12 +577,10 @@ exports.updateDraft = async (req, res) => {
     if (jobRes.rowCount === 0) return res.status(404).json({ message: "Job not found" });
     const job = jobRes.rows[0];
 
-    let requestedOrgId = null;
     if (job.org_id) {
-       requestedOrgId = getRequestedOrganizationActorId(req, job.org_id);
-       await assertOrgPermission(req, requestedOrgId, ["POST_JOBS", "MANAGE_COMPANY"]);
+      await assertJobActorAccess(req, job, ["POST_JOBS", "MANAGE_COMPANY"]);
     } else {
-       if (job.recruiter_id !== userId) return res.status(403).json({ message: "Unauthorized" });
+      if (job.recruiter_id !== userId) return res.status(403).json({ message: "Unauthorized" });
     }
 
     if (job.status !== 'DRAFT' && job.status !== 'ACTIVE') {
@@ -583,12 +663,12 @@ exports.submitJob = async (req, res) => {
     const job = jobRes.rows[0];
 
     if (job.org_id) {
-       await assertOrgPermission(req, getRequestedOrganizationActorId(req, job.org_id), ["POST_JOBS", "MANAGE_COMPANY"]);
+      await assertJobActorAccess(req, job, ["POST_JOBS", "MANAGE_COMPANY"], client);
     } else {
-       if (job.recruiter_id !== userId) {
-          await client.query("ROLLBACK");
-          return res.status(403).json({ message: "Unauthorized" });
-       }
+      if (job.recruiter_id !== userId) {
+        await client.query("ROLLBACK");
+        return res.status(403).json({ message: "Unauthorized" });
+      }
     }
 
     if (job.status !== 'DRAFT') {
@@ -651,9 +731,9 @@ exports.cloneJob = async (req, res) => {
     const job = jobRes.rows[0];
     
     if (job.org_id) {
-       await assertOrgPermission(req, getRequestedOrganizationActorId(req, job.org_id), ["POST_JOBS", "MANAGE_COMPANY"]);
+      await assertJobActorAccess(req, job, ["POST_JOBS", "MANAGE_COMPANY"], client);
     } else {
-       if (job.recruiter_id !== userId) throw new Error("Unauthorized");
+      if (job.recruiter_id !== userId) throw new Error("Unauthorized");
     }
     
     const insertRes = await client.query(
@@ -701,16 +781,16 @@ const performLifecycleAction = async (req, res, actionName, targetStatus, allowe
     }
     const job = jobRes.rows[0];
 
-    // Ownership check (Skip for admin actions approve/reject, handled by open access or separate check if needed. 
-    // Here we just allow if they own it, but anyone can post jobs, so we check if they are the recruiter or manage the company)
+    // Ownership check: approve/reject are admin-level actions (not yet role-gated).
+    // All other lifecycle actions (pause, close, archive) enforce actor-based creator isolation.
     if (actionName !== 'APPROVE' && actionName !== 'REJECT') {
       if (job.org_id) {
-         await assertOrgPermission(req, getRequestedOrganizationActorId(req, job.org_id), ["POST_JOBS", "MANAGE_COMPANY"]);
+        await assertJobActorAccess(req, job, ["POST_JOBS", "MANAGE_COMPANY"], client);
       } else {
-         if (job.recruiter_id !== userId) {
-            await client.query("ROLLBACK");
-            return res.status(403).json({ message: "Unauthorized" });
-         }
+        if (job.recruiter_id !== userId) {
+          await client.query("ROLLBACK");
+          return res.status(403).json({ message: "Unauthorized" });
+        }
       }
     }
 
@@ -1714,17 +1794,20 @@ exports.deleteJob = async (req, res) => {
     }
 
     const { org_id, recruiter_id } = jobCheck.rows[0];
-    let isAuthorized = recruiter_id === userId;
-    if (!isAuthorized && org_id) {
+    const _jobData = { org_id, recruiter_id };
+
+    // Personal job: only the creator can delete
+    if (!org_id && recruiter_id !== userId) {
+      return res.status(403).json({ message: "Not authorized to delete this job" });
+    }
+
+    // Org job: creator or admin-level member (actor context determines)
+    if (org_id) {
       try {
-        await assertOrgPermission(req, org_id, ['POST_JOBS', 'MANAGE_COMPANY']);
-        isAuthorized = true;
+        await assertJobActorAccess(req, _jobData, ['POST_JOBS', 'MANAGE_COMPANY']);
       } catch (err) {
         return res.status(err.statusCode || 403).json({ message: err.message || "Not authorized to delete this job" });
       }
-    }
-    if (!isAuthorized) {
-      return res.status(403).json({ message: "Not authorized to delete this job" });
     }
 
     // Soft delete by setting is_active = FALSE and status = 'CLOSED' for consistency
@@ -1792,19 +1875,22 @@ exports.updateJob = async (req, res) => {
     }
 
     const { org_id, recruiter_id } = checkRes.rows[0];
-    let isAuthorized = recruiter_id === userId;
-    if (!isAuthorized && org_id) {
+    const _jobData = { org_id, recruiter_id };
+
+    // Personal job: only the creator can update
+    if (!org_id && recruiter_id !== userId) {
+      await client.query("ROLLBACK");
+      return res.status(403).json({ message: "Not authorized to update this job" });
+    }
+
+    // Org job: creator or admin-level member (actor context determines)
+    if (org_id) {
       try {
-        await assertOrgPermission(req, org_id, ['POST_JOBS', 'MANAGE_COMPANY'], client);
-        isAuthorized = true;
+        await assertJobActorAccess(req, _jobData, ['POST_JOBS', 'MANAGE_COMPANY'], client);
       } catch (err) {
         await client.query("ROLLBACK");
         return res.status(err.statusCode || 403).json({ message: err.message || "Not authorized to update this job" });
       }
-    }
-    if (!isAuthorized) {
-      await client.query("ROLLBACK");
-      return res.status(403).json({ message: "Not authorized to update this job" });
     }
 
     let resolvedCompanyName = oldJobData.company_name;
@@ -2133,12 +2219,7 @@ exports.generateJD = async (req, res) => {
 
     // ── Step 3: Ownership check ───────────────────────────────────────────────
     if (job.org_id) {
-      await assertOrgPermission(
-        req,
-        getRequestedOrganizationActorId(req, job.org_id),
-        ["POST_JOBS", "MANAGE_COMPANY"],
-        client
-      );
+      await assertJobActorAccess(req, job, ["POST_JOBS", "MANAGE_COMPANY"], client);
     } else {
       if (job.recruiter_id !== userId) {
         await client.query("ROLLBACK");

@@ -292,7 +292,17 @@ exports.updateOrganizationJob = async (req, res) => {
 
         const oldJobData = jobCheck.rows[0];
 
-        // 2. State Transition Rules Check
+        // 2a. Creator isolation: only job creator or admin-level can modify.
+        // Admin-level is determined by actor context (no role names assumed).
+        // req.actor is set by actor-context.middleware; req.member by requireOrgPermission middleware.
+        const _actorPerms = req.actor?.permissions || req.member?.permissions || [];
+        const _isAdminLevel = _actorPerms.includes('*') || _actorPerms.includes('MANAGE_COMPANY');
+        if (!_isAdminLevel && oldJobData.recruiter_id !== userId) {
+            await client.query('ROLLBACK');
+            return res.status(403).json({ message: 'You can only manage jobs that you created' });
+        }
+
+        // 2b. State Transition Rules Check
         if (status && oldJobData.status !== status) {
             const validTransitions = {
                 'DRAFT': ['ACTIVE', 'CLOSED'],
