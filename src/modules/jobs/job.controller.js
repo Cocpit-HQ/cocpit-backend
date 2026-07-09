@@ -327,6 +327,14 @@ exports.getJobById = async (req, res) => {
 
     job.response_rate = responseRate;
     job.avg_reply = avgReply;
+    // Fetch AI generation limit for UI state
+    try {
+      const rateLimitKey = `ai_rate_limit:job:${resolvedJobId}`;
+      const count = await redis.get(rateLimitKey);
+      job.ai_generation_count = count ? parseInt(count, 10) : 0;
+    } catch (e) {
+      job.ai_generation_count = 0;
+    }
 
     res.json(job);
 
@@ -367,23 +375,45 @@ exports.createJob = async (req, res) => {
 
   const postedAsCompany = !!requestedOrgId;
 
+  const maxGenerationsPerDay = parseInt(process.env.AI_MAX_DRAFT_GENERATIONS_PER_DAY || "10", 10);
+  const rateLimitKey = `ai_draft_gen:user:${userId}:date:${new Date().toISOString().split('T')[0]}`;
+  let generationCount = 0;
+  try {
+    generationCount = await redis.incr(rateLimitKey);
+    if (generationCount === 1) {
+      await redis.expire(rateLimitKey, 24 * 60 * 60);
+    }
+  } catch (err) {
+    console.warn("Redis daily draft generation rate limit failed, bypassing:", err);
+  }
+
   // AI Generation Phase
   let aiDescription = "";
   let generated = null;
-  try {
-    const aiService = require("../../services/ai.service");
-    const companyReplacement = postedAsCompany ? resolvedCompanyName : "our team";
-    generated = await aiService.generateJobDescription({
-      role: title,
-      companyName: companyReplacement
-    });
+  
+  if (generationCount <= maxGenerationsPerDay) {
+    try {
+      const aiService = require("../../services/ai.service");
+      const companyReplacement = postedAsCompany ? resolvedCompanyName : "our team";
+      generated = await aiService.generateJobDescription({
+        role: title,
+        companyName: companyReplacement,
+        jobId: null,
+        companyId: org_id || null,
+        userId: userId,
+        orgId: org_id || null,
+        sourceIp: req.ip
+      });
 
-    // Use the shared helper so createJob and generateJD always produce
-    // identical description formatting.
-    aiDescription = buildAIDescription(generated);
-  } catch (e) {
-    console.error("Auto AI Generation failed during createJob:", e.message);
-    // If it fails, we just leave aiDescription blank and let the draft be created normally.
+      // Use the shared helper so createJob and generateJD always produce
+      // identical description formatting.
+      aiDescription = buildAIDescription(generated);
+    } catch (e) {
+      console.error("Auto AI Generation failed during createJob:", e.message);
+      // If it fails, we just leave aiDescription blank and let the draft be created normally.
+    }
+  } else {
+    console.warn(`[createJob] User ${userId} exceeded daily draft generation cap (${maxGenerationsPerDay}). Skipping AI generation.`);
   }
 
   const client = await pool.connect();
@@ -461,16 +491,7 @@ exports.updateDraft = async (req, res) => {
   if (updates.industry) updates.industry = sanitizeContent(updates.industry);
 
   try {
-    if (updates.description) {
-      const extracted = await extractRequirementsFromJDText(updates.description);
-      updates.ai_extracted_requirements = JSON.stringify(extracted);
-      // Only use AI-extracted experience_min if the user did NOT explicitly send one.
-      // This prevents the extractor from silently overwriting a value the user chose.
-      if (extracted.experience_min !== null && updates.experience_min === undefined) {
-        updates.experience_min = extracted.experience_min;
-      }
-    }
-    const jobRes = await pool.query(`SELECT org_id, recruiter_id, status FROM jobs WHERE job_id = $1`, [id]);
+    const jobRes = await pool.query(`SELECT org_id, recruiter_id, status, description FROM jobs WHERE job_id = $1`, [id]);
     if (jobRes.rowCount === 0) return res.status(404).json({ message: "Job not found" });
     const job = jobRes.rows[0];
 
@@ -484,6 +505,25 @@ exports.updateDraft = async (req, res) => {
 
     if (job.status !== 'DRAFT' && job.status !== 'ACTIVE') {
       return res.status(400).json({ message: "Can only update jobs in DRAFT or ACTIVE state" });
+    }
+
+    if (updates.description !== undefined) {
+      const isDescriptionChanged = updates.description.trim() !== (job.description || "").trim();
+      
+      if (isDescriptionChanged) {
+        if (job.status === 'DRAFT') {
+          // Defer extraction until submitJob (nulling out any previously extracted requirements)
+          updates.ai_extracted_requirements = null;
+        } else if (job.status === 'ACTIVE') {
+          // Synchronously run extraction for live edits so candidates can be matched accurately
+          const extracted = await extractRequirementsFromJDText(updates.description, id, userId, job.org_id, req.ip);
+          updates.ai_extracted_requirements = JSON.stringify(extracted);
+          // Only use AI-extracted experience_min if the user did NOT explicitly send one.
+          if (extracted.experience_min !== null && updates.experience_min === undefined) {
+            updates.experience_min = extracted.experience_min;
+          }
+        }
+      }
     }
 
     const setClauses = [];
@@ -2169,6 +2209,9 @@ exports.generateJD = async (req, res) => {
         work_mode,
         jobId: id,
         companyId: job.org_id || null,
+        userId: userId,
+        orgId: job.org_id || null,
+        sourceIp: req.ip,
       });
     } catch (aiErr) {
       // Revert the rate limit counter on failure

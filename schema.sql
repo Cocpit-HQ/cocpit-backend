@@ -822,11 +822,34 @@ CREATE TABLE IF NOT EXISTS ai_analysis_queue (
   reason          TEXT     NOT NULL DEFAULT 'TIER1_AUTO',
   retry_count     SMALLINT NOT NULL DEFAULT 0,
   error_message   TEXT,
-  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE INDEX IF NOT EXISTS idx_ai_queue_pending ON ai_analysis_queue(priority DESC, created_at ASC) WHERE status = 'PENDING';
 CREATE INDEX IF NOT EXISTS idx_ai_queue_application ON ai_analysis_queue(application_id);
+CREATE UNIQUE INDEX IF NOT EXISTS ai_analysis_queue_dedup_idx ON ai_analysis_queue(application_id) WHERE status IN ('PENDING', 'PROCESSING');
+
+CREATE TABLE IF NOT EXISTS ai_usage_log (
+  id BIGSERIAL PRIMARY KEY,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  user_id UUID,
+  org_id UUID,
+  feature TEXT NOT NULL,
+  related_entity_id UUID,
+  model TEXT,
+  prompt_tokens INT,
+  completion_tokens INT,
+  total_tokens INT,
+  cost_estimate_usd NUMERIC(10,6),
+  latency_ms INT,
+  cache_hit BOOLEAN DEFAULT FALSE,
+  success BOOLEAN,
+  error_message TEXT,
+  source_ip TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_ai_usage_log_user_time ON ai_usage_log (user_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_ai_usage_log_time ON ai_usage_log (created_at);
 
 CREATE TABLE job_saves (
   user_id UUID NOT NULL

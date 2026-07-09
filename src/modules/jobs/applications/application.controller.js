@@ -15,6 +15,7 @@ const { hasActorPermission } = require('../../../core/middlewares/actor-context.
 const pool = require('../../../core/db/pool');
 const { compareExperience, getLatestEducation, calculateTotalExperienceYears } = require('./application.utils');
 const { generateLocalSystemFallback, analyzeCandidate } = require('../../../services/candidateAnalysis.service');
+const { redisClient } = require('../../../core/db/redis');
 
 // ─── Shared auth helper ───────────────────────────────────────────────────────
 // Asserts that the requesting user is either the direct recruiter or an org
@@ -478,16 +479,47 @@ exports.triggerAnalysis = async (req, res) => {
       'VIEW_APPLICANTS', 'MANAGE_APPLICANTS', 'MANAGE_COMPANY',
     ]);
 
-    // 1. Run the analysis synchronously
-    await analyzeCandidate(applicationId);
+    // 1. Redis Cooldown Lock (NX) to prevent sequential abuse
+    const lockKey = `ai_analysis_cooldown:${applicationId}`;
+    if (redisClient.isOpen) {
+      const lockAcquired = await redisClient.set(lockKey, "1", "PX", 10000, "NX");
+      if (!lockAcquired) {
+        return res.status(429).json({ message: 'Analysis already triggered recently. Please wait.' });
+      }
+    }
 
-    // 2. Mark any pending/processing/failed items in the queue as COMPLETED
-    await pool.query(
-      `UPDATE ai_analysis_queue 
-       SET status = 'COMPLETED', error_message = NULL 
-       WHERE application_id = $1`,
-      [applicationId]
-    );
+    // 2. Database Deduplication (State Machine Correctness)
+    const queueRes = await pool.query(`
+      INSERT INTO ai_analysis_queue (application_id, status, reason)
+      VALUES ($1, 'PROCESSING', 'MANUAL_TRIGGER')
+      ON CONFLICT DO NOTHING
+    `, [applicationId]);
+
+    if (queueRes.rowCount === 0) {
+      // Row exists (either PENDING or PROCESSING)
+      return res.status(409).json({ message: 'Analysis is already in progress for this application.' });
+    }
+
+    // 3. Run the analysis synchronously with try/catch for state transitions
+    try {
+      await analyzeCandidate(applicationId, req.user?.sub, ownership.org_id, req.ip);
+      
+      await pool.query(
+        `UPDATE ai_analysis_queue 
+         SET status = 'COMPLETED', error_message = NULL 
+         WHERE application_id = $1`,
+        [applicationId]
+      );
+    } catch (analysisErr) {
+      console.error(`[triggerAnalysis] AI failure for ${applicationId}:`, analysisErr.message);
+      await pool.query(
+        `UPDATE ai_analysis_queue 
+         SET status = 'FAILED', error_message = $1 
+         WHERE application_id = $2 AND status = 'PROCESSING'`,
+        [analysisErr.message, applicationId]
+      );
+      return res.status(502).json({ message: 'AI analysis failed', error: analysisErr.message });
+    }
 
     // 3. Get the latest analysis
     const analysis = await getLatestAnalysis(applicationId);

@@ -9,10 +9,11 @@ const { requireOrgPermission, requireCompanyPermission } = require("../../core/m
 const { uploadApplicationFiles, uploadTaskSubmission } = require("../../core/middlewares/upload.middleware");
 const { validate } = require("../../core/middlewares/validation.middleware");
 const { createDraftSchema, updateDraftSchema, submitJobSchema } = require("../../schemas/job.schema");
-const { createAIRateLimiter } = require("../../core/middlewares/rateLimiter.middleware");
+const { createAIRateLimiter, createAutosaveRateLimiter } = require("../../core/middlewares/rateLimiter.middleware");
 
 // Initialise the AI rate limiter once (3 generations per user per minute)
 const aiRateLimiter = createAIRateLimiter();
+const aiAutosaveLimiter = createAutosaveRateLimiter();
 
 // ── Applications sub-module (handles /applicants list, /applications/:id detail,
 //    status updates, notes, and AI analysis read/trigger)
@@ -44,7 +45,7 @@ router.get("/:id", optionalAuth, jobController.getJobById);
 
 // Protected routes
 router.post("/", requireAuth, aiRateLimiter, validate(createDraftSchema), jobController.createJob);
-router.patch("/:id", requireAuth, validate(updateDraftSchema), jobController.updateDraft);
+router.patch("/:id", requireAuth, aiAutosaveLimiter, validate(updateDraftSchema), jobController.updateDraft);
 router.post("/:id/submit", requireAuth, validate(submitJobSchema), jobController.submitJob);
 router.post("/:id/clone", requireAuth, jobController.cloneJob);
 

@@ -54,6 +54,7 @@ jest.mock('../../../services/ai.service', () => ({
 // causes 429s after the first few requests inside the same process.
 jest.mock('../../../core/middlewares/rateLimiter.middleware', () => ({
   createAIRateLimiter: () => (req, res, next) => next(),
+  createAutosaveRateLimiter: () => (req, res, next) => next(),
 }));
 
 const jobRoutes = require('../job.routes');

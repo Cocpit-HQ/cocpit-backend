@@ -16,7 +16,7 @@ const {
  * @param {string} applicationId - UUID of the job application
  * @returns {Promise<object>} The Gemini analysis result
  */
-const analyzeCandidate = async (applicationId) => {
+const analyzeCandidate = async (applicationId, userId = null, orgId = null, sourceIp = null) => {
   const modelStr = process.env.AI_EVALUATOR_MODEL || "gemini-2.5-flash";
 
   // 1. Fetch frozen snapshots from DB
@@ -86,6 +86,8 @@ const analyzeCandidate = async (applicationId) => {
   let latencyMs = 0;
   let isFallback = false;
 
+  let geminiError = null;
+
   // 4. Call Gemini with retry & timeout, catch errors to use local fallback
   try {
     const callGemini = async () => {
@@ -138,8 +140,29 @@ const analyzeCandidate = async (applicationId) => {
     usage = attemptResult.usageMetadata || usage;
   } catch (err) {
     console.warn(`[AI Worker] Gemini call failed for application_id: ${applicationId}. Using local fallback. Error:`, err.message);
+    geminiError = err;
     isFallback = true;
   }
+
+  // Write Telemetry
+  const tokensIn = usage.promptTokenCount || 0;
+  const tokensOut = usage.candidatesTokenCount || 0;
+  const totalTokens = usage.totalTokenCount || (tokensIn + tokensOut);
+  const costEstimate = parseFloat(((tokensIn * 0.00000015) + (tokensOut * 0.0000006)).toFixed(8));
+
+  pool.query(`
+    INSERT INTO ai_usage_log (
+      user_id, org_id, feature, related_entity_id, model,
+      prompt_tokens, completion_tokens, total_tokens, cost_estimate_usd,
+      latency_ms, cache_hit, success, error_message, source_ip
+    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+  `, [
+    userId || null, orgId || null, 'candidate_analyze', applicationId, modelStr,
+    tokensIn, tokensOut, totalTokens, costEstimate,
+    latencyMs, false, !isFallback, geminiError ? geminiError.message : null, sourceIp || null
+  ]).catch(err => {
+    console.error("[AI Telemetry] Failed to write to ai_usage_log:", err.message);
+  });
 
   // 5. Build structured objects to persist
   let summaryJson;

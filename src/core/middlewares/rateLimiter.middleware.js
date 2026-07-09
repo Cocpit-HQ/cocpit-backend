@@ -32,3 +32,26 @@ exports.createAIRateLimiter = () =>
       });
     },
   });
+
+/**
+ * createAutosaveRateLimiter
+ *
+ * Configured specifically for the updateDraft (autosave) endpoint.
+ * Limits: 20 requests per user per 60-second window.
+ */
+exports.createAutosaveRateLimiter = () =>
+  rateLimit({
+    windowMs: 60 * 1000,
+    max: 20,
+    standardHeaders: true,
+    legacyHeaders: false,
+
+    keyGenerator: (req) => `ai_autosave:${req.user?.sub || req.ip}`,
+
+    handler: (req, res) => {
+      res.status(429).json({
+        message: "Too many saves. Please slow down and try again.",
+        retryAfter: 60,
+      });
+    },
+  });

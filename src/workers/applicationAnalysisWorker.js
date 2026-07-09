@@ -25,6 +25,44 @@ const pickJob = async (client) => {
 };
 
 /**
+ * Reclaims jobs that have been stuck in 'PROCESSING' for over 10 minutes.
+ * This recovers jobs from worker crashes.
+ */
+const reclaimStuckJobs = async () => {
+  try {
+    const res = await pool.query(`
+      UPDATE ai_analysis_queue
+      SET status = 'PENDING',
+          retry_count = retry_count + 1,
+          updated_at = NOW()
+      WHERE status = 'PROCESSING'
+        AND updated_at < NOW() - INTERVAL '10 minutes'
+        AND retry_count < $1
+    `, [MAX_QUEUE_RETRIES]);
+    
+    if (res.rowCount > 0) {
+      console.log(`[AI Worker] ♻️ Reclaimed ${res.rowCount} stuck jobs (stuck in PROCESSING > 10m).`);
+    }
+
+    const failRes = await pool.query(`
+      UPDATE ai_analysis_queue
+      SET status = 'FAILED',
+          error_message = 'Max retries reached after worker crash recovery',
+          updated_at = NOW()
+      WHERE status = 'PROCESSING'
+        AND updated_at < NOW() - INTERVAL '10 minutes'
+        AND retry_count >= $1
+    `, [MAX_QUEUE_RETRIES]);
+    
+    if (failRes.rowCount > 0) {
+      console.log(`[AI Worker] 💀 Failed ${failRes.rowCount} hopelessly stuck jobs.`);
+    }
+  } catch (err) {
+    console.error("[AI Worker] Reaper failed:", err);
+  }
+};
+
+/**
  * Processes a single job from the queue.
  */
 const processNextJob = async () => {
@@ -45,7 +83,7 @@ const processNextJob = async () => {
 
     // Mark as PROCESSING
     await client.query(
-      `UPDATE ai_analysis_queue SET status = 'PROCESSING' WHERE queue_id = $1`,
+      `UPDATE ai_analysis_queue SET status = 'PROCESSING', updated_at = NOW() WHERE queue_id = $1`,
       [queueId]
     );
     await client.query("COMMIT"); // Commit so other workers see it as PROCESSING
@@ -58,7 +96,7 @@ const processNextJob = async () => {
 
       // Mark as COMPLETED
       await client.query(
-        `UPDATE ai_analysis_queue SET status = 'COMPLETED', error_message = NULL WHERE queue_id = $1`,
+        `UPDATE ai_analysis_queue SET status = 'COMPLETED', error_message = NULL, updated_at = NOW() WHERE queue_id = $1`,
         [queueId]
       );
       console.log(`[AI Worker] ✅ Completed application_id: ${applicationId}`);
@@ -69,7 +107,7 @@ const processNextJob = async () => {
       if (newRetryCount >= MAX_QUEUE_RETRIES) {
         // Mark as FAILED
         await client.query(
-          `UPDATE ai_analysis_queue SET status = 'FAILED', error_message = $1, retry_count = $2 WHERE queue_id = $3`,
+          `UPDATE ai_analysis_queue SET status = 'FAILED', error_message = $1, retry_count = $2, updated_at = NOW() WHERE queue_id = $3`,
           [err.message.substring(0, 500), newRetryCount, queueId]
         );
         console.log(`[AI Worker] 💀 Max retries reached. Marked as FAILED.`);
@@ -77,7 +115,7 @@ const processNextJob = async () => {
         // Keep as PENDING with backoff (in a real system, you'd use a next_run_at timestamp for backoff)
         // For simplicity here, we just increment retry count and push it back to PENDING.
         await client.query(
-          `UPDATE ai_analysis_queue SET status = 'PENDING', error_message = $1, retry_count = $2 WHERE queue_id = $3`,
+          `UPDATE ai_analysis_queue SET status = 'PENDING', error_message = $1, retry_count = $2, updated_at = NOW() WHERE queue_id = $3`,
           [err.message.substring(0, 500), newRetryCount, queueId]
         );
         console.log(`[AI Worker] ⚠️ Retrying later. Attempt ${newRetryCount}/${MAX_QUEUE_RETRIES}`);
@@ -105,6 +143,8 @@ const startWorker = async () => {
 
   while (isRunning) {
     try {
+      await reclaimStuckJobs();
+
       const processed = await processNextJob();
       if (!processed) {
         // If no jobs, sleep for the poll interval

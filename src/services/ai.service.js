@@ -132,6 +132,9 @@ const emitTelemetry = ({
   role,
   jobId,
   companyId,
+  userId,
+  orgId,
+  sourceIp,
   model,
   startTime,
   usageMetadata,
@@ -148,11 +151,14 @@ const emitTelemetry = ({
 
   const tokensIn = usageMetadata?.promptTokenCount || 0;
   const tokensOut = usageMetadata?.candidatesTokenCount || 0;
+  const totalTokens = usageMetadata?.totalTokenCount || (tokensIn + tokensOut);
 
   // Approximate cost (Flash pricing: $0.15/1M in, $0.60/1M out)
   const costEstimate = parseFloat(
     ((tokensIn * 0.00000015) + (tokensOut * 0.0000006)).toFixed(8)
   );
+
+  const latencyMs = Date.now() - startTime;
 
   const logEntry = {
     event: "ai_jd_generation",
@@ -160,7 +166,7 @@ const emitTelemetry = ({
     job_id: jobId,
     company_id: companyId,
     model,
-    latency_ms: Date.now() - startTime,
+    latency_ms: latencyMs,
     tokens_in: tokensIn,
     tokens_out: tokensOut,
     cost_estimate_usd: costEstimate,
@@ -172,6 +178,21 @@ const emitTelemetry = ({
   };
 
   console.log("[AI Telemetry]", JSON.stringify(logEntry));
+
+  // Write to DB Ledger
+  pool.query(`
+    INSERT INTO ai_usage_log (
+      user_id, org_id, feature, related_entity_id, model,
+      prompt_tokens, completion_tokens, total_tokens, cost_estimate_usd,
+      latency_ms, cache_hit, success, error_message, source_ip
+    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+  `, [
+    userId || null, orgId || null, 'jd_generate', jobId || null, model,
+    tokensIn, tokensOut, totalTokens, costEstimate,
+    latencyMs, cached || false, !error, error ? error.message : null, sourceIp || null
+  ]).catch(err => {
+    console.error("[AI Telemetry] Failed to write to ai_usage_log:", err.message);
+  });
 };
 
 // ─── Public API ───────────────────────────────────────────────────────────────
@@ -226,6 +247,9 @@ const generateJobDescription = async ({
   work_mode = null,
   jobId,
   companyId,
+  userId = null,
+  orgId = null,
+  sourceIp = null,
 }) => {
   const startTime = Date.now();
   const primaryModel = process.env.AI_MODEL || "gemini-2.5-flash";
@@ -295,7 +319,7 @@ const generateJobDescription = async ({
       "AI service circuit breaker is OPEN. Too many recent failures. Please try again shortly."
     );
     err.statusCode = 503;
-    emitTelemetry({ role, jobId, companyId, model: primaryModel, startTime, usageMetadata: {}, retryCount: 0, cached: false, circuitState: "OPEN", error: err });
+    emitTelemetry({ role, jobId, companyId, userId, orgId, sourceIp, model: primaryModel, startTime, usageMetadata: {}, retryCount: 0, cached: false, circuitState: "OPEN", error: err });
     throw err;
   }
 
@@ -339,7 +363,7 @@ const generateJobDescription = async ({
     await persistCache(primaryAttempt.data);
     await cleanupLock();
 
-    emitTelemetry({ role, jobId, companyId, model: primaryModel, startTime, usageMetadata, retryCount, cached: false, circuitState: "CLOSED" });
+    emitTelemetry({ role, jobId, companyId, userId, orgId, sourceIp, model: primaryModel, startTime, usageMetadata, retryCount, cached: false, circuitState: "CLOSED" });
     return injectCompanyName(primaryAttempt.data, companyName);
 
   } catch (primaryErr) {
@@ -357,7 +381,7 @@ const generateJobDescription = async ({
       await persistCache(fallbackAttempt.data);
       await cleanupLock();
 
-      emitTelemetry({ role, jobId, companyId, model: fallbackModel, startTime, usageMetadata, retryCount, cached: false, circuitState: cbState });
+      emitTelemetry({ role, jobId, companyId, userId, orgId, sourceIp, model: fallbackModel, startTime, usageMetadata, retryCount, cached: false, circuitState: cbState });
       return injectCompanyName(fallbackAttempt.data, companyName);
 
     } catch (fallbackErr) {
@@ -365,7 +389,7 @@ const generateJobDescription = async ({
       recordFailure();
       await cleanupLock();
 
-      emitTelemetry({ role, jobId, companyId, model: usedModel, startTime, usageMetadata, retryCount, cached: false, circuitState: circuitBreaker.state, error: fallbackErr });
+      emitTelemetry({ role, jobId, companyId, userId, orgId, sourceIp, model: usedModel, startTime, usageMetadata, retryCount, cached: false, circuitState: circuitBreaker.state, error: fallbackErr });
       const err = new Error("AI service is temporarily unavailable. Both primary and fallback models failed. Please try again shortly.");
       err.statusCode = 503;
       throw err;
