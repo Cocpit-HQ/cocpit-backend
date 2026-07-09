@@ -2354,13 +2354,13 @@ exports.sendMessage = async (req, res) => {
 
     const senderId = actorScope.userId;
     const authorCompanyId = actorScope.orgId;
-    const { targetUserId, text_content, shared_post_id, replyMessageId, shared_profile_id, shared_profile_type } = req.body;
+    const { targetUserId, text_content, shared_post_id, replyMessageId, shared_profile_id, shared_profile_type, entity_type, entity_id } = req.body;
     const images = req.files; // Array of files from multer
 
     const trimmedText = text_content?.trim() || '';
-    // Basic validation: user needs target + (text OR post OR images OR shared_profile_id)
-    if (!targetUserId || (!trimmedText && !shared_post_id && !shared_profile_id && (!images || images.length === 0))) {
-        return res.status(400).json({ message: "targetUserId and content (text, post, images, or profile) are required" });
+    // Basic validation: user needs target + (text OR post OR images OR shared_profile_id OR entity_id)
+    if (!targetUserId || (!trimmedText && !shared_post_id && !shared_profile_id && !entity_id && (!images || images.length === 0))) {
+        return res.status(400).json({ message: "targetUserId and content (text, post, images, profile, or entity context) are required" });
     }
 
     if (senderId === targetUserId) {
@@ -2655,8 +2655,8 @@ exports.sendMessage = async (req, res) => {
             }
 
             const msgRes = await client.query(
-                `INSERT INTO messages (conversation_id, sender_id, text_content, shared_post_id, author_org_id, sender_type, session_id, replied_msg_id, shared_profile_id, shared_profile_type)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,
+                `INSERT INTO messages (conversation_id, sender_id, text_content, shared_post_id, author_org_id, sender_type, session_id, replied_msg_id, shared_profile_id, shared_profile_type, entity_type, entity_id)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING *`,
                 [
                     conversationId,
                     senderId,
@@ -2667,7 +2667,9 @@ exports.sendMessage = async (req, res) => {
                     sessionId,
                     replyMessageId || null,
                     shared_profile_id || null,
-                    finalSharedProfileType
+                    finalSharedProfileType,
+                    entity_type || null,
+                    entity_id || null
                 ]
             );
             const newMessage = msgRes.rows[0];
