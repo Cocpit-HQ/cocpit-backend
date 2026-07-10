@@ -159,7 +159,7 @@ exports.getOrganizationJobs = async (req, res) => {
     // We enforce the query filter.
 
     try {
-        let conditions = ["j.org_id = $1", "j.is_active = TRUE"];
+        let conditions = ["j.org_id = $1"];
         let params = [companyId];
         let paramCount = 2;
 
@@ -173,7 +173,7 @@ exports.getOrganizationJobs = async (req, res) => {
                 return res.status(403).json({ message: "Organization is suspended" });
             }
 
-            // Only ACTIVE jobs that are not expired
+            conditions.push("j.is_active = TRUE");
             conditions.push("j.status = 'ACTIVE'");
             conditions.push("(j.expires_at IS NULL OR j.expires_at > NOW())");
         } else if (scope === 'internal') {
@@ -242,7 +242,6 @@ exports.getOrganizationJobs = async (req, res) => {
                     COUNT(*) FILTER (WHERE j.status = 'IN REVIEW')::int AS "inReview"
                 FROM jobs j
                 WHERE j.org_id = $1
-                    AND j.is_active = TRUE
             `;
 
             const [result, countsResult] = await Promise.all([
