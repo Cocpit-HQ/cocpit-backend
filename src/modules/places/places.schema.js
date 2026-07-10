@@ -15,4 +15,11 @@ const detailsSchema = z.object({
   }),
 });
 
-module.exports = { autocompleteSchema, detailsSchema };
+const reverseGeocodeSchema = z.object({
+  query: z.object({
+    lat: z.string().refine(val => !isNaN(parseFloat(val)) && parseFloat(val) >= -90 && parseFloat(val) <= 90, "Invalid latitude"),
+    lng: z.string().refine(val => !isNaN(parseFloat(val)) && parseFloat(val) >= -180 && parseFloat(val) <= 180, "Invalid longitude"),
+  }),
+});
+
+module.exports = { autocompleteSchema, detailsSchema, reverseGeocodeSchema };
