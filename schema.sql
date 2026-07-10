@@ -687,6 +687,7 @@ CREATE TABLE jobs (
   salary_visibility VARCHAR(20) DEFAULT 'PUBLIC' CHECK (salary_visibility IN ('PUBLIC', 'PRIVATE')),
   ai_extracted_requirements JSONB,
   created_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ DEFAULT now(),
   CHECK (salary_min IS NULL OR salary_max IS NULL OR salary_min <= salary_max)
 );
 

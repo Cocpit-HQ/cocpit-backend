@@ -262,8 +262,13 @@ describe('POST /jobs/:id/generate — AI JD Generator', () => {
 
   it('TC-08: should return cached result and NOT call Gemini on cache hit', async () => {
     mockClient.query.mockImplementation(async (sql) => {
-      if (typeof sql === 'string' && sql.includes('SELECT job_id')) {
-        return { rowCount: 1, rows: [mockDraftJob()] };
+      if (typeof sql === 'string') {
+        if (sql.includes('SELECT job_id')) {
+          return { rowCount: 1, rows: [mockDraftJob()] };
+        }
+        if (sql.includes('UPDATE jobs SET')) {
+          return { rowCount: 1, rows: [{ job_id: 'job-1', title: 'Software Engineer' }] };
+        }
       }
       return {};
     });

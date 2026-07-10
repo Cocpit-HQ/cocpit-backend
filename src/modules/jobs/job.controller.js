@@ -618,6 +618,8 @@ exports.updateDraft = async (req, res) => {
 
     if (setClauses.length === 0) return res.status(200).json({ message: "No updates provided", job });
 
+    setClauses.push("updated_at = NOW()");
+
     values.push(id);
     const query = `UPDATE jobs SET ${setClauses.join(", ")} WHERE job_id = $${paramCount} RETURNING *`;
     const updatedJobRes = await pool.query(query, values);
@@ -878,6 +880,8 @@ exports.aiAction = async (req, res) => {
       await client.query("ROLLBACK");
       return res.status(200).json({ message: "No updates provided" });
     }
+
+    setClauses.push("updated_at = NOW()");
 
     values.push(id);
     const query = `UPDATE jobs SET ${setClauses.join(", ")} WHERE job_id = $${paramCount} RETURNING *`;
@@ -1846,6 +1850,8 @@ exports.updateJob = async (req, res) => {
     easy_apply,
     actively_hiring,
     org_id,
+    experience_min,
+    experience_max,
     skills = []
   } = req.body;
 
@@ -1857,6 +1863,8 @@ exports.updateJob = async (req, res) => {
   // Sanitize integer fields - default to 0 if empty because DB has NOT NULL constraint
   const safeMinSalary = (minSalary === "" || minSalary === null || minSalary === undefined) ? 0 : parseInt(minSalary);
   const safeMaxSalary = (maxSalary === "" || maxSalary === null || maxSalary === undefined) ? 0 : parseInt(maxSalary);
+  const safeExperienceMin = (experience_min === "" || experience_min === null || experience_min === undefined) ? null : parseInt(experience_min);
+  const safeExperienceMax = (experience_max === "" || experience_max === null || experience_max === undefined) ? null : parseInt(experience_max);
 
   const client = await pool.connect();
 
@@ -1865,7 +1873,7 @@ exports.updateJob = async (req, res) => {
 
     // 1. Check ownership
     const checkRes = await client.query(
-      `SELECT org_id, recruiter_id FROM jobs WHERE job_id = $1`,
+      `SELECT org_id, recruiter_id, company_name FROM jobs WHERE job_id = $1`,
       [id]
     );
 
@@ -1874,17 +1882,17 @@ exports.updateJob = async (req, res) => {
       return res.status(404).json({ message: "Job not found" });
     }
 
-    const { org_id, recruiter_id } = checkRes.rows[0];
-    const _jobData = { org_id, recruiter_id };
+    const { org_id: dbOrgId, recruiter_id } = checkRes.rows[0];
+    const _jobData = { org_id: dbOrgId, recruiter_id };
 
     // Personal job: only the creator can update
-    if (!org_id && recruiter_id !== userId) {
+    if (!dbOrgId && recruiter_id !== userId) {
       await client.query("ROLLBACK");
       return res.status(403).json({ message: "Not authorized to update this job" });
     }
 
     // Org job: creator or admin-level member (actor context determines)
-    if (org_id) {
+    if (dbOrgId) {
       try {
         await assertJobActorAccess(req, _jobData, ['POST_JOBS', 'MANAGE_COMPANY'], client);
       } catch (err) {
@@ -1893,7 +1901,7 @@ exports.updateJob = async (req, res) => {
       }
     }
 
-    let resolvedCompanyName = oldJobData.company_name;
+    let resolvedCompanyName = checkRes.rows[0].company_name;
     if (org_id) {
       const orgRes = await client.query('SELECT name FROM organizations WHERE org_id = $1', [org_id]);
       if (orgRes.rows.length) resolvedCompanyName = orgRes.rows[0].name;
@@ -1910,19 +1918,20 @@ exports.updateJob = async (req, res) => {
         title = $1, company_name = $2, location = $3,
         description = $4, salary_min = $5, salary_max = $6,
         job_type = $7, work_mode = $8, company_type = $9,
-        experience_level = $10, about_company = null, industry = $12,
-        easy_apply = $13, actively_hiring = $14, org_id = $15,
-        posted_as_company = $16
-      WHERE job_id = $17
+        experience_level = $10, about_company = null, industry = $11,
+        easy_apply = $12, actively_hiring = $13, org_id = $14,
+        posted_as_company = $15, experience_min = $16, experience_max = $17,
+        updated_at = NOW()
+      WHERE job_id = $18
       RETURNING *
       `,
       [
         title, resolvedCompanyName, location,
         description, safeMinSalary, safeMaxSalary,
         job_type, work_mode, null,
-        experience_level, null, industry,
+        experience_level, industry,
         easy_apply, actively_hiring, org_id || null,
-        !!org_id, id
+        !!org_id, safeExperienceMin, safeExperienceMax, id
       ]
     );
 
@@ -2356,6 +2365,8 @@ exports.generateJD = async (req, res) => {
       values.push(val);
       paramCount++;
     }
+
+    setClauses.push("updated_at = NOW()");
 
     values.push(id);
     const updateQuery = `UPDATE jobs SET ${setClauses.join(", ")} WHERE job_id = $${paramCount} RETURNING *`;

@@ -19,6 +19,8 @@ exports.createOrganizationJob = async (req, res) => {
         salary_visibility = "PUBLIC",
         job_type,
         work_mode,
+        experience_min,
+        experience_max,
         experience_level,
         industry,
         easy_apply = false,
@@ -54,8 +56,8 @@ exports.createOrganizationJob = async (req, res) => {
       (
         recruiter_id, title, company_name, org_id, location,
         description, salary_min, salary_max, job_type,
-        work_mode, null, experience_level,
-        null, industry, easy_apply, actively_hiring,
+        work_mode, experience_min, experience_level,
+        experience_max, industry, easy_apply, actively_hiring,
         posted_as_company, status, expires_at, salary_currency, salary_period, salary_visibility
       )
       VALUES
@@ -65,8 +67,8 @@ exports.createOrganizationJob = async (req, res) => {
             [
                 userId, title, companyName, companyId, location,
                 description, salary_min, salary_max, job_type,
-                work_mode, null, experience_level,
-                null, industry, easy_apply, actively_hiring,
+                work_mode, experience_min || null, experience_level,
+                experience_max || null, industry, easy_apply, actively_hiring,
                 true, status, expires_at || null, salary_currency, salary_period, salary_visibility
             ]
         );
@@ -215,11 +217,15 @@ exports.getOrganizationJobs = async (req, res) => {
             SELECT 
                 j.*,
                 u.full_name AS recruiter_name,
+                u.avatar_url AS recruiter_avatar,
+                o.logo_url AS company_logo,
+                o.slug AS company_slug,
                 (SELECT COUNT(*)::int FROM job_applications ja_count WHERE ja_count.job_id = j.job_id) as applicants_count,
                 (SELECT COUNT(*)::int FROM job_applications ja_count WHERE ja_count.job_id = j.job_id AND ja_count.current_status = 'Shortlisted') as shortlisted_count,
                 (SELECT COUNT(*)::int FROM job_offers jo_count WHERE jo_count.job_id = j.job_id) as offers_count
             FROM jobs j
             LEFT JOIN active_users u ON j.recruiter_id = u.user_id
+            LEFT JOIN organizations o ON j.org_id = o.org_id
             ${whereClause}
             ORDER BY j.created_at DESC
             ${limitClause}
@@ -278,7 +284,7 @@ exports.updateOrganizationJob = async (req, res) => {
         title, location, description,
         salary_min, salary_max, salary_currency, salary_period, salary_visibility,
         job_type, work_mode, experience_level, industry, easy_apply, actively_hiring,
-        status, expires_at, is_active
+        status, expires_at, is_active, experience_min, experience_max
     } = req.body;
 
     const client = await pool.connect();
@@ -335,12 +341,16 @@ exports.updateOrganizationJob = async (req, res) => {
                 actively_hiring = COALESCE($14, actively_hiring),
                 status = COALESCE($15, status),
                 expires_at = COALESCE($16, expires_at),
-                is_active = COALESCE($17, is_active)
-            WHERE job_id = $18
+                is_active = COALESCE($17, is_active),
+                experience_min = COALESCE($18, experience_min),
+                experience_max = COALESCE($19, experience_max),
+                updated_at = NOW()
+            WHERE job_id = $20
             RETURNING *
         `, [
             title, location, description, salary_min, salary_max, salary_currency, salary_period, salary_visibility,
-            job_type, work_mode, experience_level, industry, easy_apply, actively_hiring, status, expires_at, is_active, jobId
+            job_type, work_mode, experience_level, industry, easy_apply, actively_hiring, status, expires_at, is_active,
+            experience_min, experience_max, jobId
         ]);
 
         const updatedJob = updateRes.rows[0];
