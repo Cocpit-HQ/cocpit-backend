@@ -2,6 +2,11 @@ require('dotenv').config(); // Trigger reload
 const app = require('./admin.app');
 const pool = require('./core/db/pool');
 
+// Health check endpoint for Gateway
+app.get('/health', (req, res) => {
+  res.status(200).json({ status: 'ok', service: 'admin-api' });
+});
+
 const PORT = process.env.ADMIN_PORT || 5001;
 
 async function startServer() {
@@ -32,9 +37,29 @@ async function startServer() {
     process.exit(1);
   }
 
-  app.listen(PORT, () => {
-    console.log(`Admin Server listening on port ${PORT}`);
+  const server = app.listen(PORT, () => {
+    console.log(`[Admin API] Server listening on port ${PORT}`);
   });
+
+  // Graceful Shutdown
+  const gracefulShutdown = () => {
+    console.log('\n[Admin API] Shutting down gracefully...');
+    server.close(async () => {
+      console.log('[Admin API] Closed out remaining HTTP connections.');
+      try {
+        if (pool) {
+          await pool.end();
+          console.log('[Admin API] Database pool closed.');
+        }
+      } catch (err) {
+        console.error('[Admin API] Error closing DB pool:', err);
+      }
+      process.exit(0);
+    });
+  };
+
+  process.on('SIGINT', gracefulShutdown);
+  process.on('SIGTERM', gracefulShutdown);
 }
 
 startServer();
