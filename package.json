@@ -5,7 +5,11 @@
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js",
-    "dev": "nodemon src/server.js",
+    "start:main": "node src/server.js",
+    "start:admin": "node src/admin.server.js",
+    "dev": "concurrently \"npm run dev:main\" \"npm run dev:admin\"",
+    "dev:main": "nodemon src/server.js",
+    "dev:admin": "nodemon src/admin.server.js",
     "build": "npm run lint && npm test",
     "lint": "eslint .",
     "test": "jest --forceExit"
@@ -18,6 +22,7 @@
     "@google/genai": "^2.9.0",
     "@socket.io/redis-adapter": "^8.3.0",
     "apple-signin-auth": "^2.0.0",
+    "axios-retry": "^4.5.0",
     "bcrypt": "^6.0.0",
     "cloudinary": "^1.41.3",
     "cookie-parser": "^1.4.7",
@@ -26,6 +31,7 @@
     "dotenv": "^17.2.3",
     "express": "^5.2.1",
     "express-rate-limit": "^7.5.0",
+    "express-validator": "^7.3.2",
     "firebase-admin": "^12.7.0",
     "google-auth-library": "^10.6.1",
     "helmet": "^8.1.0",
@@ -47,6 +53,7 @@
   },
   "devDependencies": {
     "axios": "^1.13.2",
+    "concurrently": "^10.0.3",
     "jest": "^30.3.0",
     "nodemon": "^3.1.11",
     "supertest": "^7.2.2"

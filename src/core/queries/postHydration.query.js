@@ -10,6 +10,8 @@ const getPostHydrationSelect = (companyParamIdx, userParamIdx) => `
     p.created_at,
     p.visibility,
     p.post_type,
+    p.is_unlisted,
+    (SELECT status FROM post_appeals pa WHERE pa.post_id = p.post_id ORDER BY created_at DESC LIMIT 1) AS appeal_status,
 
     COALESCE(p.author_org_id, u.user_id) AS author_id,
     COALESCE(comp.name, u.full_name) AS author_name,
@@ -393,6 +395,8 @@ const getPublicFeedWhere = (userParamIdx) => `
         )
     )
     AND (p.is_removed IS FALSE OR p.is_removed IS NULL)
+    AND (p.is_deleted IS FALSE OR p.is_deleted IS NULL)
+    AND (p.is_unlisted IS FALSE OR p.is_unlisted IS NULL)
     AND NOT EXISTS (
         SELECT 1 FROM blocks b 
         WHERE (b.blocker_id = $${userParamIdx} AND b.blocked_id = p.author_id)

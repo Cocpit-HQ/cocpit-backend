@@ -21,6 +21,7 @@ router.post("/post", requireAuth, uploadPostMedia, validate(createPostSchema), c
 router.get("/post/:id", requireAuth, contentController.getPostById);
 router.put("/post/:id", requireAuth, contentController.updatePostById);
 router.delete("/post/:id", requireAuth, contentController.deletePost);
+router.post("/post/:id/appeal", requireAuth, contentController.submitPostAppeal);
 
 // Achievement Images
 router.get("/achievement-images", requireAuth, achievementImageController.getAll);
@@ -78,21 +79,5 @@ router.post("/stories/:id/comments", requireAuth, contentController.addStoryComm
 router.get("/stories/:id/comments", requireAuth, contentController.getStoryComments);
 router.delete("/stories/comments/:comment_id", requireAuth, contentController.deleteStoryComment);
 
-
-router.get("/debug-db", async (req, res) => {
-    const pool = require("../../core/db/pool");
-    try {
-        const result = await pool.query("SELECT current_database(), inet_server_addr(), inet_client_addr()");
-        res.json({
-            database: result.rows[0].current_database,
-            server_addr: result.rows[0].inet_server_addr,
-            client_addr: result.rows[0].inet_client_addr,
-            env_db_host: process.env.DB_HOST,
-            env_db_name: process.env.DB_NAME
-        });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
-});
 
 module.exports = router;

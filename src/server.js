@@ -31,6 +31,10 @@ if (process.env.NEW_RELIC_LICENSE_KEY) {
 // Initialize Socket.IO (backgrounded to avoid hanging on Redis connect)
 initSocket(server);
 
+// Initialize Redis Subscriber and Feature Flags
+require('./core/cache/redisSubscriber');
+require('./modules/config/featureFlags.service').initFlagsFromRedis();
+
 startSessionTimeoutWorker();
 
 // Start simple job expiry worker (Every 15 minutes)

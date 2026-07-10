@@ -243,6 +243,17 @@ const loginUser = async ({ email, password, userAgent, ipAddress }) => {
         return { error: { status: 401, message: "Invalid credentials" } };
     }
 
+    // 2.5 Block login if account is suspended
+    if (user.is_suspended) {
+        return {
+            error: {
+                status: 403,
+                code: "ACCOUNT_SUSPENDED",
+                message: "Your account has been suspended by an administrator. Please contact support.",
+            }
+        };
+    }
+
     // 3. Block login if account is pending deletion
     if (user.deletion_execute_at) {
         return {
@@ -452,7 +463,7 @@ const socialLogin = async ({ provider, idToken, accountType, userAgent, ipAddres
         }
     }
 
-    // ── Step 3: Block login if account is pending deletion ──
+    // ── Step 3: Block login if account is pending deletion or suspended ──
     if (user.deletion_execute_at) {
         return {
             error: {
@@ -462,6 +473,16 @@ const socialLogin = async ({ provider, idToken, accountType, userAgent, ipAddres
                 deletionDate: user.deletion_execute_at,
                 email: user.email,
             },
+        };
+    }
+
+    if (user.is_suspended) {
+        return {
+            error: {
+                status: 403,
+                code: "ACCOUNT_SUSPENDED",
+                message: "Your account has been suspended by an administrator. Please contact support.",
+            }
         };
     }
 

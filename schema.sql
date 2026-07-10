@@ -1408,6 +1408,7 @@ CREATE TABLE IF NOT EXISTS job_offers (
                CHECK (status IN ('pending', 'accepted', 'declined', 'withdrawn', 'expired')),
   responded_at TIMESTAMPTZ,
   expires_at   TIMESTAMPTZ DEFAULT (now() + INTERVAL '30 days'),
+  context_sent BOOLEAN DEFAULT FALSE,
   created_at   TIMESTAMPTZ DEFAULT now(),
   updated_at   TIMESTAMPTZ DEFAULT now()
 );

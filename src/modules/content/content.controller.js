@@ -1568,12 +1568,18 @@ exports.updatePostById = async (req, res) => {
         }
 
         // 2. Fetch Post & Check Permissions (CRITICAL FIX)
-        const postCheck = await client.query(`SELECT author_id, author_org_id, post_type, shared_post_id, shared_job_id FROM posts WHERE post_id = $1`, [postId]);
+        const postCheck = await client.query(`SELECT author_id, author_org_id, post_type, shared_post_id, shared_job_id, is_removed, is_deleted, is_unlisted FROM posts WHERE post_id = $1`, [postId]);
         if (postCheck.rowCount === 0) {
             await client.query("ROLLBACK");
             return res.status(404).json({ message: "Post not found" });
         }
-        const { author_id, author_org_id, post_type: currentPostType, shared_post_id, shared_job_id } = postCheck.rows[0];
+        const { author_id, author_org_id, post_type: currentPostType, shared_post_id, shared_job_id, is_removed, is_deleted, is_unlisted } = postCheck.rows[0];
+        
+        if (is_removed || is_deleted || is_unlisted) {
+            await client.query("ROLLBACK");
+            return res.status(403).json({ message: "Cannot edit a post that has been removed by moderation." });
+        }
+
         let canEdit = false;
 
         if (author_id === userId && !author_org_id) {
@@ -1880,6 +1886,81 @@ exports.deletePost = async (req, res) => {
         await client.query('ROLLBACK');
         console.error("Delete post error:", err);
         res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
+    } finally {
+        client.release();
+    }
+}
+
+// --- APPEALS ---
+exports.submitPostAppeal = async (req, res) => {
+    const postId = req.params.id;
+    const { reason } = req.body;
+
+    let actorScope;
+    try {
+        actorScope = getContentActorScope(req, req.body?.companyId || null);
+    } catch (err) {
+        return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
+    }
+
+    const { userId } = actorScope;
+
+    if (!postId || !reason) {
+        return res.status(400).json({ message: "postId and reason are required" });
+    }
+
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+
+        // Verify post exists and is unlisted
+        const postRes = await client.query(
+            `SELECT author_id, is_unlisted FROM posts WHERE post_id = $1`,
+            [postId]
+        );
+
+        if (postRes.rowCount === 0) {
+            await client.query('ROLLBACK');
+            return res.status(404).json({ message: "Post not found" });
+        }
+
+        const post = postRes.rows[0];
+
+        // Ensure user is the author
+        if (post.author_id !== userId) {
+            await client.query('ROLLBACK');
+            return res.status(403).json({ message: "You can only appeal your own posts" });
+        }
+
+        if (!post.is_unlisted) {
+            await client.query('ROLLBACK');
+            return res.status(400).json({ message: "Post is not unlisted, appeal not required" });
+        }
+
+        // Check for existing pending appeal
+        const existingAppeal = await client.query(
+            `SELECT appeal_id FROM post_appeals WHERE post_id = $1 AND status = 'pending'`,
+            [postId]
+        );
+
+        if (existingAppeal.rowCount > 0) {
+            await client.query('ROLLBACK');
+            return res.status(400).json({ message: "An appeal is already pending for this post" });
+        }
+
+        // Create appeal
+        await client.query(
+            `INSERT INTO post_appeals (post_id, user_id, appeal_reason, status) VALUES ($1, $2, $3, 'pending')`,
+            [postId, userId, reason]
+        );
+
+        await client.query('COMMIT');
+        res.status(201).json({ success: true, message: "Appeal submitted successfully" });
+
+    } catch (err) {
+        await client.query('ROLLBACK');
+        console.error("Submit appeal error:", err);
+        res.status(500).json({ message: "Internal server error" });
     } finally {
         client.release();
     }

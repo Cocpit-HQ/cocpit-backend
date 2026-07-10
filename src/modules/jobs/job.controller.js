@@ -1,5 +1,6 @@
 const { sanitizeContent } = require("../../utils/contentSanitizer");
 const pool = require("../../core/db/pool");
+const { getFlags } = require('../config/featureFlags.service');
 const { buildJobFilters } = require("../../core/utils/jobQueryBuilder");
 const { logAudit } = require("../../core/infrastructure/audit.service");
 const { checkOrgPermission } = require("../../core/utils/rbac");
@@ -1244,6 +1245,11 @@ exports.getJobOffers = async (req, res) => {
 };
 
 exports.saveJob = async (req, res) => {
+  const flags = getFlags();
+  if (!flags.saved_jobs) {
+    return res.status(403).json({ message: "Job saving is currently disabled by administrators." });
+  }
+
   const userId = req.user.sub;
   const jobId = req.params.id;
 

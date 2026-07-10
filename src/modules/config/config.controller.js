@@ -41,15 +41,8 @@ const getConfig = (req, res) => {
     fetched_at: new Date().toISOString(),
 
     // Feature flags — controls what the mobile app should show/hide.
-    // Add new flags here as features are built out.
-    features: {
-      location_autocomplete: toBool(
-        process.env.FEATURE_LOCATION_AUTOCOMPLETE ?? "true"
-      ),
-      ai_features: toBool(process.env.FEATURE_AI_FEATURES ?? "false"),
-      organizations: toBool(process.env.FEATURE_ORGANIZATIONS ?? "true"),
-      showcase_enabled: toBool(process.env.FEATURE_SHOWCASE_ENABLED ?? "false"),
-    },
+    // Fetched synchronously from in-memory cache (backed by Redis)
+    features: require('./featureFlags.service').getFlags(),
 
     // App versioning and maintenance controls.
     app: {

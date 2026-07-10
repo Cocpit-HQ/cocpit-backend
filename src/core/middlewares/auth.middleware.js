@@ -22,6 +22,12 @@ exports.requireAuth = async (req, res, next) => {
         return res.status(401).json({ message: "User account no longer exists. Please log in again." });
       }
 
+      // Check 1.5: Account Suspended
+      const isSuspended = await redisClient.get(`suspended_user:${req.user.sub}`);
+      if (isSuspended) {
+        return res.status(403).json({ message: "User account is suspended. Please contact support." });
+      }
+
       // Check 2: Specific session revoked (e.g. removed from another device)
       const isRevoked = await redisClient.get(`revoked_session:${req.user.sid}`);
       if (isRevoked) {
@@ -29,9 +35,12 @@ exports.requireAuth = async (req, res, next) => {
       }
     } else {
       // Fallback to database check if Redis is unavailable
-      const userCheck = await pool.query("SELECT 1 FROM users WHERE user_id = $1", [req.user.sub]);
+      const userCheck = await pool.query("SELECT is_suspended FROM users WHERE user_id = $1 AND is_deleted = false", [req.user.sub]);
       if (userCheck.rowCount === 0) {
         return res.status(401).json({ message: "User account no longer exists. Please log in again." });
+      }
+      if (userCheck.rows[0].is_suspended) {
+        return res.status(403).json({ message: "User account is suspended. Please contact support." });
       }
     }
 
@@ -75,6 +84,12 @@ exports.optionalAuth = async (req, res, next) => {
         return res.status(401).json({ message: "User account no longer exists. Please log in again." });
       }
 
+      // Check 1.5: Account Suspended
+      const isSuspended = await redisClient.get(`suspended_user:${req.user.sub}`);
+      if (isSuspended) {
+        return res.status(403).json({ message: "User account is suspended. Please contact support." });
+      }
+
       // Check 2: Specific session revoked (e.g. removed from another device)
       const isRevoked = await redisClient.get(`revoked_session:${req.user.sid}`);
       if (isRevoked) {
@@ -82,9 +97,12 @@ exports.optionalAuth = async (req, res, next) => {
       }
     } else {
       // Fallback to database check if Redis is unavailable
-      const userCheck = await pool.query("SELECT 1 FROM users WHERE user_id = $1", [req.user.sub]);
+      const userCheck = await pool.query("SELECT is_suspended FROM users WHERE user_id = $1 AND is_deleted = false", [req.user.sub]);
       if (userCheck.rowCount === 0) {
         return res.status(401).json({ message: "User account no longer exists. Please log in again." });
+      }
+      if (userCheck.rows[0].is_suspended) {
+        return res.status(403).json({ message: "User account is suspended. Please contact support." });
       }
     }
 
