@@ -197,7 +197,7 @@ exports.getCompanySentOffers = async (req, res) => {
                 j.description,
                 c.name AS company_display_name,
                 c.logo_url AS company_logo,
-                c.logo_url AS company_avatar,
+                COALESCE(c.logo_url, u.avatar_url) AS company_avatar,
                 c.slug AS company_slug,
                 TRUE AS is_offer,
                 COUNT(jo.offer_id) AS total_offers,
@@ -209,11 +209,12 @@ exports.getCompanySentOffers = async (req, res) => {
             FROM job_offers jo
             JOIN jobs j ON jo.job_id = j.job_id
             JOIN organizations c ON j.org_id = c.org_id
+            LEFT JOIN active_users u ON j.recruiter_id = u.user_id
             WHERE jo.org_id = $1 AND j.is_active = TRUE
             GROUP BY j.job_id, j.title, j.job_type, j.work_mode, j.location,
                      j.experience_level, j.salary_min, j.salary_max, j.salary_currency,
                      j.salary_period, j.company_name, j.description,
-                     c.name, c.logo_url, c.slug
+                     c.name, c.logo_url, c.slug, u.avatar_url
             ORDER BY latest_offer_at DESC
         `;
 
@@ -620,7 +621,7 @@ exports.getRecruiterSentOffers = async (req, res) => {
                 j.description,
                 COALESCE(c.name, j.company_name) AS company_display_name,
                 c.logo_url AS company_logo,
-                c.logo_url AS company_avatar,
+                COALESCE(c.logo_url, u.avatar_url) AS company_avatar,
                 c.slug AS company_slug,
                 TRUE AS is_offer,
                 COUNT(jo.offer_id) AS total_offers,
@@ -632,11 +633,12 @@ exports.getRecruiterSentOffers = async (req, res) => {
             FROM job_offers jo
             JOIN jobs j ON jo.job_id = j.job_id
             LEFT JOIN organizations c ON j.org_id = c.org_id
+            LEFT JOIN active_users u ON j.recruiter_id = u.user_id
             WHERE jo.sent_by = $1
             GROUP BY j.job_id, j.title, j.job_type, j.work_mode, j.location,
                      j.experience_level, j.salary_min, j.salary_max, j.salary_currency,
                      j.salary_period, j.company_name, j.description,
-                     c.name, c.logo_url, c.slug
+                     c.name, c.logo_url, c.slug, u.avatar_url
             ORDER BY latest_offer_at DESC
         `;
 

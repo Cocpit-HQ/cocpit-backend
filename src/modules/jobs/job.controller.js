@@ -177,7 +177,9 @@ exports.getAllJobs = async (req, res) => {
       SELECT 
         j.*,
         u.full_name AS recruiter_name,
+        u.avatar_url AS recruiter_avatar,
         c.logo_url AS company_logo,
+        COALESCE(c.logo_url, u.avatar_url) AS company_avatar,
         c.slug AS company_slug,
         ${userId ? '(js.user_id IS NOT NULL) AS "isSaved",' : 'FALSE AS "isSaved",'}
         ${userId ? '(ja.application_id IS NOT NULL AND ja.current_status != \'Withdrawn\') AS "hasApplied",' : 'FALSE AS "hasApplied",'}
@@ -230,7 +232,9 @@ exports.getRecommendations = async (req, res) => {
       SELECT 
         j.*,
         u.full_name AS recruiter_name,
+        u.avatar_url AS recruiter_avatar,
         c.logo_url AS company_logo,
+        COALESCE(c.logo_url, u.avatar_url) AS company_avatar,
         c.slug AS company_slug,
         ${userId ? '(js.user_id IS NOT NULL) AS "isSaved",' : 'FALSE AS "isSaved",'}
         ${userId ? '(ja.application_id IS NOT NULL AND ja.current_status != \'Withdrawn\') AS "hasApplied",' : 'FALSE AS "hasApplied",'}
@@ -323,7 +327,9 @@ exports.getJobById = async (req, res) => {
       SELECT 
         j.*,
         u.full_name AS recruiter_name,
+        u.avatar_url AS recruiter_avatar,
         c.logo_url AS company_logo,
+        COALESCE(c.logo_url, u.avatar_url) AS company_avatar,
         c.slug AS company_slug,
         ${userId ? '(js.user_id IS NOT NULL) AS "isSaved",' : 'FALSE AS "isSaved",'}
         ${userId ? '(ja.application_id IS NOT NULL AND ja.current_status != \'Withdrawn\') AS "hasApplied",' : 'FALSE AS "hasApplied",'}
@@ -1349,6 +1355,10 @@ exports.getMySavedJobs = async (req, res) => {
       SELECT 
         j.*, 
         u.full_name AS recruiter_name, 
+        u.avatar_url AS recruiter_avatar,
+        c.logo_url AS company_logo,
+        COALESCE(c.logo_url, u.avatar_url) AS company_avatar,
+        c.slug AS company_slug,
         TRUE AS "isSaved",
         (ja.application_id IS NOT NULL AND ja.current_status != 'Withdrawn') AS "hasApplied",
         ja.current_status AS "applicationStatus",
@@ -1361,6 +1371,7 @@ exports.getMySavedJobs = async (req, res) => {
       FROM job_saves js
       JOIN jobs j ON js.job_id = j.job_id
       LEFT JOIN active_users u ON j.recruiter_id = u.user_id
+      LEFT JOIN organizations c ON j.org_id = c.org_id
       LEFT JOIN job_applications ja ON ja.job_id = j.job_id AND ja.applicant_id = $1
       LEFT JOIN job_offers jo ON jo.job_id = j.job_id AND jo.user_id = $1
       WHERE js.user_id = $1 AND j.is_active = TRUE
@@ -1580,7 +1591,10 @@ exports.getMyJobs = async (req, res) => {
       SELECT 
         j.*, 
         u.full_name AS recruiter_name,
-        c.logo_url AS company_avatar,
+        u.avatar_url AS recruiter_avatar,
+        c.logo_url AS company_logo,
+        COALESCE(c.logo_url, u.avatar_url) AS company_avatar,
+        c.slug AS company_slug,
         (SELECT COUNT(*)::int FROM job_applications ja_count WHERE ja_count.job_id = j.job_id) as applicants_count,
         (SELECT COUNT(*)::int FROM job_applications ja_count WHERE ja_count.job_id = j.job_id AND ja_count.current_status = 'Shortlisted') as shortlisted_count,
         (SELECT COUNT(*)::int FROM job_offers jo_count WHERE jo_count.job_id = j.job_id) as offers_count
