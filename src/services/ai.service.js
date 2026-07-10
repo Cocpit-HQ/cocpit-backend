@@ -22,6 +22,40 @@ const pool = require("../core/db/pool");
 const TIMEOUT_MS = 15_000;           // Hard timeout per Gemini call
 const { withTimeout, withRetry } = require("../core/ai/helpers");
 
+const FALLBACK_JD = {
+  title: "Professional Placeholder Title",
+  summary: "We are currently looking for a dedicated and skilled professional to join our team. This role offers an exciting opportunity to work on impactful projects in a collaborative environment.",
+  description: "As a key member of our organization, you will be responsible for driving results, collaborating with cross-functional teams, and contributing to our long-term success. We value innovation, commitment, and a proactive approach to problem-solving.",
+  responsibilities: [
+    "Contribute to the team's core projects and deliverables.",
+    "Collaborate with internal and external stakeholders to achieve business goals.",
+    "Maintain high standards of quality and performance in all tasks.",
+    "Participate in regular team meetings and strategic planning sessions."
+  ],
+  requirements: [
+    "Proven experience in a relevant professional capacity.",
+    "Strong communication and interpersonal skills.",
+    "Ability to work both independently and as part of a team.",
+    "Excellent problem-solving and analytical abilities."
+  ],
+  preferred_skills: [
+    "Experience with modern tools and methodologies related to the field.",
+    "Strong project management or organizational skills.",
+    "Adaptability in a fast-paced work environment."
+  ],
+  benefits: [
+    "Competitive compensation package.",
+    "Opportunities for professional growth and career advancement.",
+    "Flexible work arrangements.",
+    "Comprehensive health and wellness benefits."
+  ],
+  experience_min: 1,
+  experience_max: 3,
+  education: "Bachelor's degree or equivalent practical experience.",
+  skills: ["Communication", "Teamwork", "Problem Solving", "Adaptability"],
+  required_skills_keywords: ["Communication", "Teamwork", "Problem Solving", "Adaptability"]
+};
+
 // ─── Circuit Breaker ──────────────────────────────────────────────────────────
 // In-memory; resets on process restart (acceptable for single-instance apps).
 // For multi-instance deployments, move state to Redis.
@@ -300,6 +334,16 @@ const generateJobDescription = async ({
   // 4. Cache Stampede Protection (Distributed Lock)
   let lockAcquired = false;
   if (redisClient.isOpen) {
+    try {
+      const isEnabled = await redisClient.get("config:ai_generation_enabled");
+      if (isEnabled === "false") {
+        console.log(`⚡ [AI Service] AI Generation is disabled via config. Using fallback JD for: ${role}`);
+        return injectCompanyName({ ...FALLBACK_JD, title: role }, companyName);
+      }
+    } catch (err) {
+      console.error("Redis config check error:", err);
+    }
+
     const result = await redisClient.set(redisLockKey, "1", "PX", 15000, "NX");
     if (!result) {
       console.log(`⏳ [AI Service] Cache stampede prevented! Waiting for lock on: ${role}`);
@@ -320,7 +364,9 @@ const generateJobDescription = async ({
     );
     err.statusCode = 503;
     emitTelemetry({ role, jobId, companyId, userId, orgId, sourceIp, model: primaryModel, startTime, usageMetadata: {}, retryCount: 0, cached: false, circuitState: "OPEN", error: err });
-    throw err;
+    
+    console.log(`⚡ [AI Service] Circuit breaker is OPEN. Returning fallback JD for: ${role}`);
+    return injectCompanyName({ ...FALLBACK_JD, title: role }, companyName);
   }
 
   const promptText = buildPrompt(role, companyName, location, experience, work_type, work_mode);
@@ -390,9 +436,9 @@ const generateJobDescription = async ({
       await cleanupLock();
 
       emitTelemetry({ role, jobId, companyId, userId, orgId, sourceIp, model: usedModel, startTime, usageMetadata, retryCount, cached: false, circuitState: circuitBreaker.state, error: fallbackErr });
-      const err = new Error("AI service is temporarily unavailable. Both primary and fallback models failed. Please try again shortly.");
-      err.statusCode = 503;
-      throw err;
+      
+      console.log(`⚡ [AI Service] Returning fallback JD due to total failure for: ${role}`);
+      return injectCompanyName({ ...FALLBACK_JD, title: role }, companyName);
     }
   }
 };

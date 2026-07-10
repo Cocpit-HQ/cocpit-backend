@@ -72,4 +72,27 @@ const getConfig = (req, res) => {
   });
 };
 
-module.exports = { getConfig };
+const toggleAIGeneration = async (req, res) => {
+  const { enabled } = req.body;
+  
+  if (typeof enabled !== "boolean") {
+    return res.status(400).json({ message: "'enabled' must be a boolean" });
+  }
+
+  try {
+    const redis = require("../../core/db/redis");
+    if (redis.isOpen || redis.isReady) {
+      await redis.set("config:ai_generation_enabled", enabled ? "true" : "false");
+      return res.status(200).json({ 
+        message: `AI Generation has been ${enabled ? 'enabled' : 'disabled'}.`
+      });
+    } else {
+      return res.status(503).json({ message: "Redis is not connected" });
+    }
+  } catch (err) {
+    console.error("Toggle AI Generation error:", err);
+    return res.status(500).json({ message: "Internal server error" });
+  }
+};
+
+module.exports = { getConfig, toggleAIGeneration };
