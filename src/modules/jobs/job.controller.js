@@ -1580,11 +1580,13 @@ exports.getMyJobs = async (req, res) => {
       SELECT 
         j.*, 
         u.full_name AS recruiter_name,
+        c.logo_url AS company_avatar,
         (SELECT COUNT(*)::int FROM job_applications ja_count WHERE ja_count.job_id = j.job_id) as applicants_count,
         (SELECT COUNT(*)::int FROM job_applications ja_count WHERE ja_count.job_id = j.job_id AND ja_count.current_status = 'Shortlisted') as shortlisted_count,
         (SELECT COUNT(*)::int FROM job_offers jo_count WHERE jo_count.job_id = j.job_id) as offers_count
       FROM jobs j
       LEFT JOIN active_users u ON j.recruiter_id = u.user_id
+      LEFT JOIN organizations c ON j.org_id = c.org_id
       WHERE j.recruiter_id = $1 
         AND (j.posted_as_company IS FALSE OR j.posted_as_company IS NULL OR j.org_id IS NULL)
         AND j.is_active = TRUE 
