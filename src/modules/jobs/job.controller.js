@@ -359,7 +359,7 @@ exports.getJobById = async (req, res) => {
       userId ? [resolvedJobId, userId] : [resolvedJobId]
     );
 
-    if (result.rowCount === 0) {
+    if (result.rowCount === 0 || !result.rows[0].is_active) {
       return res.status(404).json({ message: "Job not found" });
     }
 
@@ -1805,11 +1805,11 @@ exports.deleteJob = async (req, res) => {
   try {
     // Check ownership and existence
     const jobCheck = await pool.query(
-      `SELECT org_id, recruiter_id FROM jobs WHERE job_id = $1`,
+      `SELECT org_id, recruiter_id, is_active FROM jobs WHERE job_id = $1`,
       [id]
     );
 
-    if (jobCheck.rowCount === 0) {
+    if (jobCheck.rowCount === 0 || !jobCheck.rows[0].is_active) {
       return res.status(404).json({ message: "Job not found" });
     }
 
@@ -1889,11 +1889,11 @@ exports.updateJob = async (req, res) => {
 
     // 1. Check ownership
     const checkRes = await client.query(
-      `SELECT org_id, recruiter_id, company_name FROM jobs WHERE job_id = $1`,
+      `SELECT org_id, recruiter_id, company_name, is_active FROM jobs WHERE job_id = $1`,
       [id]
     );
 
-    if (checkRes.rowCount === 0) {
+    if (checkRes.rowCount === 0 || !checkRes.rows[0].is_active) {
       await client.query("ROLLBACK");
       return res.status(404).json({ message: "Job not found" });
     }
