@@ -85,6 +85,7 @@ exports.getOrgProfile = async (req, res) => {
             membershipResult,
             latestPostsResult,
             linksResult,
+            keyOfferingsResult,
             growthData,
         ] = await Promise.all([
             // Counts (followers, subscribers, members, posts, active jobs)
@@ -146,9 +147,17 @@ exports.getOrgProfile = async (req, res) => {
             // Organization links
             pool.query(
                 `SELECT link_id, platform, url, display_label
-                 FROM organization_links 
+                 FROM organization_links
                  WHERE org_id = $1 AND is_deleted = FALSE
                  ORDER BY platform ASC`,
+                [org.org_id]
+            ),
+            // Key offerings (Profile tab — public profile "Key offerings" section)
+            pool.query(
+                `SELECT offering_id, content
+                 FROM organization_key_offerings
+                 WHERE org_id = $1 AND is_deleted = FALSE
+                 ORDER BY position ASC`,
                 [org.org_id]
             ),
             // Employee growth trend
@@ -351,6 +360,7 @@ exports.getOrgProfile = async (req, res) => {
                 posts_count: counts.posts_count,
                 active_jobs_count: counts.active_jobs_count,
                 owner_id: org.created_by,
+                key_offerings: keyOfferingsResult.rows.map(r => r.content),
             },
             is_own_profile: isOwner,
             viewer_role: membership?.role_name || null,
@@ -952,7 +962,7 @@ exports.updateOrgProfile = async (req, res) => {
     const userId = req.user.sub;
 
     const {
-        name, headline, industry, size, website, country, city, established_year
+        name, headline, industry, size, website, country, city, established_year, keyOfferings
     } = req.body;
 
     // Validate name if provided
@@ -966,6 +976,10 @@ exports.updateOrgProfile = async (req, res) => {
     // Validate website format (basic)
     if (website && !/^https?:\/\/.+/.test(website)) {
         return res.status(400).json({ message: 'Website must be a valid URL starting with http:// or https://' });
+    }
+    // Validate keyOfferings if provided
+    if (keyOfferings !== undefined && !Array.isArray(keyOfferings)) {
+        return res.status(400).json({ message: 'keyOfferings must be an array' });
     }
 
     const client = await pool.connect();
@@ -997,26 +1011,52 @@ exports.updateOrgProfile = async (req, res) => {
         addUpdate('city', city?.trim() || null);
         addUpdate('established_year', established_year ? parseInt(established_year) : null);
 
-        if (params.length === 0) {
+        if (params.length === 0 && keyOfferings === undefined) {
             await client.query('ROLLBACK');
             return res.status(400).json({ message: 'No fields to update' });
         }
 
-        params.push(orgId);
-        const query = `
-            UPDATE organizations
-            SET ${updates.join(', ')}, updated_at = NOW()
-            WHERE org_id = $${params.length} AND is_deleted = FALSE
-            RETURNING org_id, name, headline, industry, size, website, 
-                      country, city, established_year, logo_url, cover_url, 
-                      entity_type, updated_at
-        `;
-
-        const result = await client.query(query, params);
+        let result;
+        if (params.length > 0) {
+            params.push(orgId);
+            const query = `
+                UPDATE organizations
+                SET ${updates.join(', ')}, updated_at = NOW()
+                WHERE org_id = $${params.length} AND is_deleted = FALSE
+                RETURNING org_id, name, headline, industry, size, website,
+                          country, city, established_year, logo_url, cover_url,
+                          entity_type, updated_at
+            `;
+            result = await client.query(query, params);
+        } else {
+            result = await client.query(
+                `SELECT org_id, name, headline, industry, size, website,
+                        country, city, established_year, logo_url, cover_url,
+                        entity_type, updated_at
+                 FROM organizations WHERE org_id = $1 AND is_deleted = FALSE`,
+                [orgId]
+            );
+        }
 
         if (result.rowCount === 0) {
             await client.query('ROLLBACK');
             return res.status(404).json({ message: 'Organization not found' });
+        }
+
+        // Sync key offerings (child table, ordered list — full replace keeps display order intact)
+        if (keyOfferings !== undefined) {
+            await client.query(
+                `UPDATE organization_key_offerings SET is_deleted = TRUE WHERE org_id = $1 AND is_deleted = FALSE`,
+                [orgId]
+            );
+
+            const cleanOfferings = keyOfferings.map(text => (text || '').trim()).filter(Boolean);
+            for (let i = 0; i < cleanOfferings.length; i++) {
+                await client.query(
+                    `INSERT INTO organization_key_offerings (org_id, content, position) VALUES ($1, $2, $3)`,
+                    [orgId, cleanOfferings[i], i]
+                );
+            }
         }
 
         // Audit log
