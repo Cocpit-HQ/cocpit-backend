@@ -12,7 +12,18 @@ const getRequestedOrganizationActorId = (req, fallbackOrgId = null) => {
         }
         return actorOrgId;
     }
-    return fallbackOrgId;
+
+    if (fallbackOrgId) {
+        const userOrgs = req.userOrganizations || [];
+        if (!userOrgs.includes(fallbackOrgId)) {
+            const err = new Error("You do not have permission to act as this organization");
+            err.statusCode = 403;
+            throw err;
+        }
+        return fallbackOrgId;
+    }
+
+    return null;
 };
 
 const getContentActorScope = (req, fallbackOrgId = null) => {

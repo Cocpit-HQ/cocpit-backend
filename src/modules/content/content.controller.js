@@ -26,9 +26,18 @@ const getRequestedOrganizationActorId = (req, fallbackOrgId = null) => {
         return actorOrgId;
     }
 
-    // 2. Fallback to Passed companyId if user has permission to act as that company
-    // This is useful for requests where headers might be stripped or for specific API calls
-    return fallbackOrgId;
+    // 2. Fallback to Passed companyId - but verify membership
+    if (fallbackOrgId) {
+        const userOrgs = req.userOrganizations || [];
+        if (!userOrgs.includes(fallbackOrgId)) {
+            const err = new Error("You do not have permission to act as this organization");
+            err.statusCode = 403;
+            throw err;
+        }
+        return fallbackOrgId;
+    }
+
+    return null;
 };
 
 const getContentActorScope = (req, fallbackOrgId = null) => {
@@ -1524,6 +1533,39 @@ WHERE p.post_id = $1;
             }
         }
 
+        // STRICT VISIBILITY CHECK
+        if (post.visibility === 'private') {
+            if (!userId) {
+                return res.status(403).json({ message: "You are not authorized to view this private post." });
+            }
+            if (post.author_org_id) {
+                if (!companyId || companyId !== post.author_org_id) {
+                    return res.status(403).json({ message: "You are not authorized to view this private post." });
+                }
+            } else {
+                if (companyId || post.author_id !== userId) {
+                    return res.status(403).json({ message: "You are not authorized to view this private post." });
+                }
+            }
+        }
+
+        if (post.visibility === 'public' && post.category_name === 'Personal') {
+            if (!userId) {
+                return res.status(403).json({ message: "This post is only visible to connections." });
+            }
+            if (post.author_id !== userId) {
+                const connectionCheck = await pool.query(
+                    `SELECT 1 FROM followers f1 
+                     JOIN followers f2 ON f1.follower_id = f2.following_id AND f1.following_id = f2.follower_id 
+                     WHERE f1.follower_id = $1 AND f1.following_id = $2`,
+                    [userId, post.author_id]
+                );
+                if (connectionCheck.rowCount === 0) {
+                    return res.status(403).json({ message: "This post is only visible to connections." });
+                }
+            }
+        }
+
         res.status(200).json(result.rows[0]);
     } catch (err) {
         console.error("Get post error:", err);
@@ -1576,15 +1618,13 @@ exports.updatePostById = async (req, res) => {
         const { author_id, author_org_id, post_type: currentPostType, shared_post_id, shared_job_id } = postCheck.rows[0];
         let canEdit = false;
 
-        if (author_id === userId && !author_org_id) {
-            canEdit = true;
-        } else if (author_org_id) {
+        if (author_org_id) {
             if (orgId && author_org_id === orgId) {
                 canEdit = true;
-            } else if (author_id === userId) {
+            }
+        } else {
+            if (!orgId && author_id === userId) {
                 canEdit = true;
-            } else {
-                canEdit = await checkOrgPermission(client, author_org_id, userId, ['MANAGE_COMPANY', 'CREATE_CONTENT']);
             }
         }
 
@@ -1827,18 +1867,13 @@ exports.deletePost = async (req, res) => {
         let canDelete = false;
 
         // 2. Check Permissions
-        if (author_id === userId && !author_org_id) {
-            // Personal Post -> Author can delete
-            canDelete = true;
-        } else if (author_org_id) {
-            // Company Post -> Check Company Permissions
-            // Allow if Author (User acting as company) OR if has MANAGE_COMPANY / CREATE_CONTENT
+        if (author_org_id) {
             if (orgId && author_org_id === orgId) {
                 canDelete = true;
-            } else if (author_id === userId) {
+            }
+        } else {
+            if (!orgId && author_id === userId) {
                 canDelete = true;
-            } else {
-                canDelete = await checkOrgPermission(client, author_org_id, userId, ['MANAGE_COMPANY', 'CREATE_CONTENT']);
             }
         }
 

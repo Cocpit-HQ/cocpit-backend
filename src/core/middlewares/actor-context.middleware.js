@@ -105,6 +105,18 @@ async function resolveActorContextForRequest(req) {
     if (!req.user?.sub) return null;
 
     const userId = req.user.sub;
+
+    try {
+        const orgsRes = await pool.query(
+            "SELECT org_id FROM organization_members WHERE user_id = $1 AND status = 'ACTIVE'",
+            [userId]
+        );
+        req.userOrganizations = orgsRes.rows.map(r => r.org_id);
+    } catch (e) {
+        console.error("Failed to pre-fetch user organizations:", e);
+        req.userOrganizations = [];
+    }
+
     const requestedActor = getRequestedActorInput(req);
 
     if (!requestedActor) {
