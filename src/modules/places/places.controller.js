@@ -37,8 +37,9 @@ function parseAddressComponents(components = []) {
 // ─── Autocomplete ─────────────────────────────────────────────────────────────
 
 exports.getAutocomplete = async (req, res) => {
-  const { q, sessionToken, country, allowedCountryCodes } = req.query;
-  const filterKey = allowedCountryCodes || country || 'ALL';
+  const { q, sessionToken, country, allowedCountryCodes, global } = req.query;
+  const isGlobal = global === 'true';
+  const filterKey = isGlobal ? 'GLOBAL' : (allowedCountryCodes || country || 'ALL');
   const cacheKey = `places:ac:${crypto.createHash("sha256").update(`${q.toLowerCase().trim()}:${filterKey}`).digest("hex")}`;
   const startTime = Date.now();
 
@@ -64,7 +65,9 @@ exports.getAutocomplete = async (req, res) => {
     }
 
     let regionCodes = INCLUDED_REGION_CODES;
-    if (allowedCountryCodes) {
+    if (isGlobal) {
+      regionCodes = undefined;
+    } else if (allowedCountryCodes) {
       regionCodes = allowedCountryCodes.split(',').map(c => c.trim().toLowerCase());
     } else if (country) {
       const countryMap = { "india": "in", "uae": "ae", "united arab emirates": "ae", "japan": "jp", "singapore": "sg" };
@@ -72,16 +75,20 @@ exports.getAutocomplete = async (req, res) => {
       if (code) regionCodes = [code];
     }
 
+    const requestBody = {
+      input: q,
+      sessionToken,
+      includedPrimaryTypes: ["locality", "administrative_area_level_1"],
+      languageCode: "en",
+    };
+    if (regionCodes && regionCodes.length > 0) {
+      requestBody.includedRegionCodes = regionCodes;
+    }
+
     // Call Google Places Autocomplete (New)
     const response = await axios.post(
       `${GOOGLE_PLACES_BASE}/places:autocomplete`,
-      {
-        input: q,
-        sessionToken,
-        includedRegionCodes: regionCodes,
-        includedPrimaryTypes: ["locality", "administrative_area_level_1"],
-        languageCode: "en",
-      },
+      requestBody,
       {
         headers: {
           "X-Goog-Api-Key": process.env.GOOGLE_MAPS_API_KEY,
@@ -148,7 +155,8 @@ exports.getAutocomplete = async (req, res) => {
 // ─── Place Details ─────────────────────────────────────────────────────────────
 
 exports.getPlaceDetails = async (req, res) => {
-  const { placeId, sessionToken } = req.query;
+  const { placeId, sessionToken, global } = req.query;
+  const isGlobal = global === 'true';
   const cacheKey = `places:detail:${placeId}`;
   const startTime = Date.now();
 
@@ -165,6 +173,15 @@ exports.getPlaceDetails = async (req, res) => {
         cache: "HIT",
         latency_ms: Date.now() - startTime
       }));
+
+      // Server-side country validation
+      if (!isGlobal && !ALLOWED_COUNTRIES.includes(result.country)) {
+        return res.status(400).json({
+          success: false,
+          message: "Location must be in India, UAE, Singapore, or Japan",
+          code: "INVALID_LOCATION_COUNTRY",
+        });
+      }
 
       return res
         .set("X-Cache", "HIT")
@@ -190,10 +207,10 @@ exports.getPlaceDetails = async (req, res) => {
     );
 
     // Server-side country validation
-    if (!ALLOWED_COUNTRIES.includes(country)) {
+    if (!isGlobal && !ALLOWED_COUNTRIES.includes(country)) {
       return res.status(400).json({
         success: false,
-        message: "Location must be in India, UAE, or Singapore",
+        message: "Location must be in India, UAE, Singapore, or Japan",
         code: "INVALID_LOCATION_COUNTRY",
       });
     }

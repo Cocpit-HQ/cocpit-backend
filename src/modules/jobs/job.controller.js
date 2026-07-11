@@ -478,7 +478,7 @@ exports.createJob = async (req, res) => {
   // AI Generation Phase
   let aiDescription = "";
   let generated = null;
-  
+
   if (generationCount <= maxGenerationsPerDay) {
     try {
       const aiService = require("../../services/ai.service");
@@ -595,7 +595,7 @@ exports.updateDraft = async (req, res) => {
 
     if (updates.description !== undefined) {
       const isDescriptionChanged = updates.description.trim() !== (job.description || "").trim();
-      
+
       if (isDescriptionChanged) {
         if (job.status === 'DRAFT') {
           // Defer extraction until submitJob (nulling out any previously extracted requirements)
@@ -662,7 +662,7 @@ exports.submitJob = async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
-    
+
     const jobRes = await client.query(`SELECT * FROM jobs WHERE job_id = $1`, [id]);
     if (jobRes.rowCount === 0) {
       await client.query("ROLLBACK");
@@ -717,7 +717,7 @@ exports.submitJob = async (req, res) => {
 
     await client.query("COMMIT");
     res.status(200).json({ message: "Job submitted for review", job: updated.rows[0] });
-  } catch(err) {
+  } catch (err) {
     await client.query("ROLLBACK");
     console.error(err);
     res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
@@ -729,21 +729,21 @@ exports.submitJob = async (req, res) => {
 exports.cloneJob = async (req, res) => {
   const { id } = req.params;
   const userId = req.user.sub;
-  
+
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
-    
+
     const jobRes = await client.query(`SELECT * FROM jobs WHERE job_id = $1`, [id]);
     if (jobRes.rowCount === 0) throw new Error("Job not found");
     const job = jobRes.rows[0];
-    
+
     if (job.org_id) {
       await assertJobActorAccess(req, job, ["POST_JOBS", "MANAGE_COMPANY"], client);
     } else {
       if (job.recruiter_id !== userId) throw new Error("Unauthorized");
     }
-    
+
     const insertRes = await client.query(
       `INSERT INTO jobs 
        (recruiter_id, title, company_name, org_id, location, description, salary_min, salary_max, 
@@ -753,12 +753,12 @@ exports.cloneJob = async (req, res) => {
        ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, 'DRAFT')
        RETURNING *`,
       [userId, `Copy of ${job.title}`, job.company_name, job.org_id, job.location, job.description, job.salary_min, job.salary_max,
-       job.job_type, job.work_mode, job.company_type, job.experience_min, job.experience_max, job.experience_label, job.experience_level,
-       job.about_company, job.industry, job.easy_apply, job.actively_hiring, job.posted_as_company]
+        job.job_type, job.work_mode, job.company_type, job.experience_min, job.experience_max, job.experience_label, job.experience_level,
+        job.about_company, job.industry, job.easy_apply, job.actively_hiring, job.posted_as_company]
     );
-    
+
     const newJob = insertRes.rows[0];
-    
+
     await client.query(
       `INSERT INTO job_activity (job_id, actor_id, action) VALUES ($1, $2, 'DRAFT_CREATED')`,
       [newJob.job_id, userId]
@@ -766,7 +766,7 @@ exports.cloneJob = async (req, res) => {
 
     await client.query("COMMIT");
     res.status(201).json({ message: "Job cloned successfully", job: newJob });
-  } catch(err) {
+  } catch (err) {
     await client.query("ROLLBACK");
     res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
   } finally {
@@ -781,7 +781,7 @@ const performLifecycleAction = async (req, res, actionName, targetStatus, allowe
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
-    
+
     const jobRes = await client.query(`SELECT * FROM jobs WHERE job_id = $1`, [id]);
     if (jobRes.rowCount === 0) {
       await client.query("ROLLBACK");
@@ -819,7 +819,7 @@ const performLifecycleAction = async (req, res, actionName, targetStatus, allowe
 
     await client.query("COMMIT");
     res.status(200).json({ message: `Job ${actionName.toLowerCase()} successfully`, job: updated.rows[0] });
-  } catch(err) {
+  } catch (err) {
     await client.query("ROLLBACK");
     console.error(err);
     res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
@@ -859,12 +859,12 @@ exports.aiAction = async (req, res) => {
     const job = jobRes.rows[0];
 
     if (job.org_id) {
-       await assertOrgPermission(req, getRequestedOrganizationActorId(req, job.org_id), ["POST_JOBS", "MANAGE_COMPANY"]);
+      await assertOrgPermission(req, getRequestedOrganizationActorId(req, job.org_id), ["POST_JOBS", "MANAGE_COMPANY"]);
     } else {
-       if (job.recruiter_id !== userId) {
-          await client.query("ROLLBACK");
-          return res.status(403).json({ message: "Unauthorized" });
-       }
+      if (job.recruiter_id !== userId) {
+        await client.query("ROLLBACK");
+        return res.status(403).json({ message: "Unauthorized" });
+      }
     }
 
     if (job.status !== 'DRAFT' && job.status !== 'ACTIVE') {
@@ -924,7 +924,7 @@ exports.applyJob = async (req, res) => {
   // Take other fields from request body (guard against undefined body e.g. missing Content-Type)
   const body = req.body || {};
   let { full_name, email, phone, mobile_number, cover_note } = body;
-  
+
   // Sanitize user-generated content
   cover_note = sanitizeContent(cover_note);
   const contactPhone = phone || mobile_number;
@@ -1044,7 +1044,7 @@ exports.applyJob = async (req, res) => {
     // 4. Calculate scalars
     const totalYears = calculateTotalExperienceYears(experienceRows);
     const highestDegree = getLatestEducation(educationRows)?.degree || null;
-    const candidateLocation = req.body.location || null; 
+    const candidateLocation = req.body.location || null;
 
     // 5. Calculate backend score
     const backendScore = calculateBackendScore({
@@ -1068,7 +1068,7 @@ exports.applyJob = async (req, res) => {
          RETURNING application_id`,
         [id, userId, full_name, email, contactPhone, resume_url, cover_note, Math.round(totalYears), candidateLocation, candidateSkills, highestDegree, backendScore, resume_file_name]
       );
-      
+
       // Cleanup old snapshot/analyses for re-application
       await client.query(`DELETE FROM application_snapshots WHERE application_id = $1`, [appResult.rows[0].application_id]);
       await client.query(`DELETE FROM application_ai_analyses WHERE application_id = $1`, [appResult.rows[0].application_id]);
@@ -1136,7 +1136,7 @@ exports.applyJob = async (req, res) => {
       const rank = parseInt(rankRes.rows[0].rank, 10);
 
       const TIER1_THRESHOLD = parseInt(process.env.AI_TIER1_SCORE_THRESHOLD || '65', 10);
-      const TIER1_TOP_N     = parseInt(process.env.AI_TIER1_TOP_N || '15', 10);
+      const TIER1_TOP_N = parseInt(process.env.AI_TIER1_TOP_N || '15', 10);
       const TIER2_THRESHOLD = parseInt(process.env.AI_TIER2_SCORE_THRESHOLD || '30', 10);
 
       if (backendScore >= TIER1_THRESHOLD || rank <= TIER1_TOP_N) {
@@ -1425,7 +1425,7 @@ exports.getMyRecentResumes = async (req, res) => {
     const resumes = result.rows.map(row => {
       const url = row.resume_url;
       let name = row.resume_file_name;
-      
+
       if (!name) {
         name = url.split('/').pop() || 'Resume.pdf';
         // Clean up Cloudinary name (remove user id prefix if present)
@@ -1473,7 +1473,7 @@ exports.getMyApplications = async (req, res) => {
   const userId = req.user.sub;
   const { limit = 10, cursor, status } = req.query;
 
-  const allowedStatus = ['applied', 'in progress', 'in past', 'saved', 'in-progress', 'in-past'];
+  const allowedStatus = ['all', 'applied', 'in progress', 'in past', 'saved', 'in-progress', 'in-past', 'shortlisted', 'in review', 'in-review', 'declined', 'rejected'];
 
   if (status && !allowedStatus.includes(status.toLowerCase())) {
     return res.status(400).json({ message: "Invalid status" });
@@ -1512,7 +1512,14 @@ exports.getMyApplications = async (req, res) => {
         // Now 'Applied' shows everything that was previously split between Applied and In Past.
         // We only exclude 'Offer' related statuses if they are handled in the 'Offers' tab.
         baseQuery += ` AND (ja.current_status NOT ILIKE 'Offer%' OR ja.current_status IS NULL)`;
+      } else if (s === 'in review' || s === 'in-review') {
+        baseQuery += ` AND ja.current_status ILIKE 'in-review'`;
+      } else if (s === 'declined' || s === 'rejected') {
+        baseQuery += ` AND (ja.current_status ILIKE 'declined' OR ja.current_status ILIKE 'rejected')`;
+      } else if (s === 'shortlisted') {
+        baseQuery += ` AND ja.current_status ILIKE 'shortlisted'`;
       }
+      // If s === 'all', we don't add any specific status filter.
     }
 
     // Pagination (Cursor-based on applied_at)
@@ -2115,47 +2122,47 @@ exports.submitTask = async (req, res) => {
 // reviewApplication — removed (was an alias for updateApplicationStatus)
 
 exports.getJobRoles = async (req, res) => {
-    try {
-        const { q } = req.query;
-        let query = `SELECT role_name, category FROM job_roles_master`;
-        let values = [];
+  try {
+    const { q } = req.query;
+    let query = `SELECT role_name, category FROM job_roles_master`;
+    let values = [];
 
-        if (q) {
-            query += ` WHERE role_name ILIKE $1`;
-            values.push(`%${q}%`);
-        }
-
-        query += ` ORDER BY role_name ASC LIMIT 10`;
-
-        const result = await pool.query(query, values);
-        
-        res.json(result.rows);
-    } catch (err) {
-        console.error("Error fetching job roles:", err);
-        res.status(500).json({ error: "Internal server error" });
+    if (q) {
+      query += ` WHERE role_name ILIKE $1`;
+      values.push(`%${q}%`);
     }
+
+    query += ` ORDER BY role_name ASC LIMIT 10`;
+
+    const result = await pool.query(query, values);
+
+    res.json(result.rows);
+  } catch (err) {
+    console.error("Error fetching job roles:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
 };
 
 exports.getIndustries = async (req, res) => {
-    try {
-        const { q } = req.query;
-        let query = `SELECT industry_name FROM industries_master`;
-        let values = [];
+  try {
+    const { q } = req.query;
+    let query = `SELECT industry_name FROM industries_master`;
+    let values = [];
 
-        if (q) {
-            query += ` WHERE industry_name ILIKE $1`;
-            values.push(`%${q}%`);
-        }
-
-        query += ` ORDER BY industry_name ASC LIMIT 50`;
-
-        const result = await pool.query(query, values);
-        
-        res.json(result.rows);
-    } catch (err) {
-        console.error("Error fetching industries:", err);
-        res.status(500).json({ error: "Internal server error" });
+    if (q) {
+      query += ` WHERE industry_name ILIKE $1`;
+      values.push(`%${q}%`);
     }
+
+    query += ` ORDER BY industry_name ASC LIMIT 50`;
+
+    const result = await pool.query(query, values);
+
+    res.json(result.rows);
+  } catch (err) {
+    console.error("Error fetching industries:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2173,12 +2180,12 @@ const buildAIDescription = (jdJson) => {
   };
 
   const sections = [
-    jdJson.summary       ? jdJson.summary                                   : null,
-    addSection("Description",      jdJson.description),
+    jdJson.summary ? jdJson.summary : null,
+    addSection("Description", jdJson.description),
     addSection("Responsibilities", jdJson.responsibilities),
-    addSection("Requirements",     jdJson.requirements),
+    addSection("Requirements", jdJson.requirements),
     addSection("Preferred Skills", jdJson.preferred_skills),
-    addSection("Benefits",         jdJson.benefits),
+    addSection("Benefits", jdJson.benefits),
   ].filter(Boolean);
 
   return sections.join("\n\n").trim();
@@ -2283,7 +2290,7 @@ exports.generateJD = async (req, res) => {
         ai_metadata: { cached: true, model: process.env.AI_MODEL || "gemini-2.5-flash" },
       });
     }
-    
+
     // ── Step 4.5: Job-based AI Generation Rate Limiting (24 hours) ────
     const rateLimitKey = `ai_rate_limit:job:${id}`;
     let generationCount = 0;
@@ -2322,7 +2329,7 @@ exports.generateJD = async (req, res) => {
     } catch (aiErr) {
       // Revert the rate limit counter on failure
       try { await redis.decr(rateLimitKey); } catch (e) { /* ignore */ }
-      
+
       await client.query("ROLLBACK");
       return res.status(aiErr.statusCode || 503).json({
         message: aiErr.message || "AI service is temporarily unavailable.",
@@ -2337,7 +2344,7 @@ exports.generateJD = async (req, res) => {
     } catch (validationErr) {
       // Revert the rate limit counter on failure
       try { await redis.decr(rateLimitKey); } catch (e) { /* ignore */ }
-      
+
       await client.query("ROLLBACK");
       return res.status(validationErr.statusCode || 422).json({
         message: validationErr.message,
