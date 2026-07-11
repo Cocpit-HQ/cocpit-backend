@@ -245,9 +245,10 @@ describe('feed.integration.test.js — Full Pipeline Integration', () => {
   });
 
   // ===========================================================================
-  // B11.1c — Seen Set: repeated request excludes seen items
+  // B11.1c — Seen Set: paginated requests exclude seen items; fresh reloads
+  // don't (ID-160 follow-up — see rerankCandidates' isInitialPage doc comment)
   // ===========================================================================
-  test('Seen set registers viewed items and excludes them from subsequent requests', async () => {
+  test('Seen set excludes viewed items from a paginated (cursor) request', async () => {
     const testUserId = `${userId}-seen`;
     // First request gets a feed with item post-uuid-0 and post-uuid-1
     const page = await feedService.getFeed({
@@ -265,22 +266,52 @@ describe('feed.integration.test.js — Full Pipeline Integration', () => {
     if (!mockRedisStore[seenSetKey]) mockRedisStore[seenSetKey] = [];
     seenIds.forEach(id => mockRedisStore[seenSetKey].push(id));
 
-    // Force cache miss by clearing the initial cached slice
-    delete mockRedisStore[`feed:slice:${testUserId}:initial`];
-
-    // Request feed again with skipCache to force generation bypass cache
-    const freshPage = await feedService.getFeed({
+    // Real "load more" pagination continuation (cursor supplied) — the
+    // seen-set filter SHOULD apply here.
+    const nextPage = await feedService.getFeed({
       userId: testUserId,
+      cursor: page.data.cursor,
       limit: 5,
       context: 'home',
       pool,
     });
 
-    // None of the newly served items should belong to the seen set list
-    const freshPageIds = freshPage.data.items.map(item => item.id);
+    const nextPageIds = nextPage.data.items.map(item => item.id);
     seenIds.forEach(id => {
-      expect(freshPageIds).not.toContain(id);
+      expect(nextPageIds).not.toContain(id);
     });
+  });
+
+  test('Seen set does NOT exclude viewed items from a fresh reload (no cursor)', async () => {
+    const testUserId = `${userId}-seen-reload`;
+    const page = await feedService.getFeed({
+      userId: testUserId,
+      limit: 2,
+      context: 'home',
+      pool,
+    });
+
+    const seenIds = page.data.items.map(item => item.id);
+    expect(seenIds.length).toBe(2);
+
+    const seenSetKey = `feed:seen:${testUserId}`;
+    if (!mockRedisStore[seenSetKey]) mockRedisStore[seenSetKey] = [];
+    seenIds.forEach(id => mockRedisStore[seenSetKey].push(id));
+
+    // Force a fresh generation on the SAME 'initial' cursor (e.g. a plain
+    // page refresh) by clearing its cached slice.
+    delete mockRedisStore[`feed:slice:${testUserId}:initial`];
+
+    const freshReload = await feedService.getFeed({
+      userId: testUserId,
+      limit: 2,
+      context: 'home',
+      pool,
+    });
+
+    // With a thin candidate pool and low userbase, a plain refresh should
+    // show the top of the feed again rather than come back empty.
+    expect(freshReload.data.items.map(item => item.id)).toEqual(seenIds);
   });
 
   // ===========================================================================
@@ -296,11 +327,19 @@ describe('feed.integration.test.js — Full Pipeline Integration', () => {
     const seenSetKey = `feed:seen:${testUserId}`;
     mockRedisStore[seenSetKey] = [servedId];
 
-    // Force cache miss by clearing the initial cached slice
-    delete mockRedisStore[`feed:slice:${testUserId}:initial`];
+    // ID-160: the seen-set filter only applies to real pagination
+    // continuations (a cursor supplied), so exercise it via "load more"
+    // rather than a plain reload — see rerankCandidates' isInitialPage doc.
+    const sliceKey = `feed:slice:${testUserId}:${page.data.cursor}`;
+    delete mockRedisStore[sliceKey];
 
-    // Verify another generation skips it
-    const pageSkipped = await feedService.getFeed({ userId: testUserId, limit: 1, pool });
+    // Verify another generation (same cursor) skips the already-seen item
+    const pageSkipped = await feedService.getFeed({
+      userId: testUserId,
+      cursor: page.data.cursor,
+      limit: 1,
+      pool,
+    });
     expect(pageSkipped.data.items[0].id).not.toBe(servedId);
 
     // Trigger session reset via Redis del mocking simulation (feedSessionService reset session)
@@ -308,11 +347,16 @@ describe('feed.integration.test.js — Full Pipeline Integration', () => {
     delete mockRedisStore[sessionKey];
     delete mockRedisStore[seenSetKey];
 
-    // Force cache miss by clearing the initial cached slice
-    delete mockRedisStore[`feed:slice:${testUserId}:initial`];
+    // Force cache miss on the same cursor's slice so it regenerates
+    delete mockRedisStore[sliceKey];
 
-    // Generate again - original post is now allowed back in
-    const pageRestored = await feedService.getFeed({ userId: testUserId, limit: 1, pool });
+    // Generate again (same cursor) - original post is now allowed back in
+    const pageRestored = await feedService.getFeed({
+      userId: testUserId,
+      cursor: page.data.cursor,
+      limit: 1,
+      pool,
+    });
     expect(pageRestored.data.items[0].id).toBe(servedId);
   });
 
