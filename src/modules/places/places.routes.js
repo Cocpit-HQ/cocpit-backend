@@ -4,7 +4,7 @@ const { requireAuth } = require("../../core/middlewares/auth.middleware");
 const { validate } = require("../../core/middlewares/validation.middleware");
 const { createRateLimit } = require("../../core/middlewares/rateLimit.middleware");
 const placesController = require("./places.controller");
-const { autocompleteSchema, detailsSchema } = require("./places.schema");
+const { autocompleteSchema, detailsSchema, reverseGeocodeSchema } = require("./places.schema");
 
 const placesLimiter = createRateLimit({
   windowMs: 60 * 1000,   // 1 minute
@@ -26,6 +26,14 @@ router.get(
   placesLimiter,
   validate(detailsSchema),
   placesController.getPlaceDetails
+);
+
+router.get(
+  "/reverse-geocode",
+  requireAuth,
+  placesLimiter,
+  validate(reverseGeocodeSchema),
+  placesController.getReverseGeocode
 );
 
 module.exports = router;

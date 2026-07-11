@@ -37,8 +37,9 @@ function parseAddressComponents(components = []) {
 // ─── Autocomplete ─────────────────────────────────────────────────────────────
 
 exports.getAutocomplete = async (req, res) => {
-  const { q, sessionToken, country } = req.query;
-  const cacheKey = `places:ac:${crypto.createHash("sha256").update(`${q.toLowerCase().trim()}:${country || 'ALL'}`).digest("hex")}`;
+  const { q, sessionToken, country, allowedCountryCodes } = req.query;
+  const filterKey = allowedCountryCodes || country || 'ALL';
+  const cacheKey = `places:ac:${crypto.createHash("sha256").update(`${q.toLowerCase().trim()}:${filterKey}`).digest("hex")}`;
   const startTime = Date.now();
 
   try {
@@ -63,7 +64,9 @@ exports.getAutocomplete = async (req, res) => {
     }
 
     let regionCodes = INCLUDED_REGION_CODES;
-    if (country) {
+    if (allowedCountryCodes) {
+      regionCodes = allowedCountryCodes.split(',').map(c => c.trim().toLowerCase());
+    } else if (country) {
       const countryMap = { "india": "in", "uae": "ae", "united arab emirates": "ae", "japan": "jp", "singapore": "sg" };
       const code = countryMap[country.toLowerCase()];
       if (code) regionCodes = [code];
@@ -237,6 +240,106 @@ exports.getPlaceDetails = async (req, res) => {
       success: false,
       message: "Location service temporarily unavailable",
       fallback: true,
+    });
+  }
+};
+
+// ─── Reverse Geocoding ────────────────────────────────────────────────────────
+
+exports.getReverseGeocode = async (req, res) => {
+  const { lat, lng } = req.query;
+  const latNum = parseFloat(lat);
+  const lngNum = parseFloat(lng);
+  
+  // Cache key with rounding for ~110m precision
+  const cacheKey = `places:revgeo:${latNum.toFixed(3)},${lngNum.toFixed(3)}`;
+  const startTime = Date.now();
+
+  try {
+    const cached = await redis.get(cacheKey);
+    if (cached) {
+      const result = JSON.parse(cached);
+      console.log(JSON.stringify({
+        event: "reverse_geocode_request",
+        cache: "HIT",
+        latency_ms: Date.now() - startTime
+      }));
+      return res.set("X-Cache", "HIT").json({ success: true, data: result });
+    }
+
+    const response = await axios.get(
+      `https://maps.googleapis.com/maps/api/geocode/json`,
+      {
+        params: {
+          latlng: `${lat},${lng}`,
+          key: process.env.GOOGLE_MAPS_API_KEY
+        },
+        timeout: 5000,
+      }
+    );
+
+    const results = response.data.results;
+    if (!results || results.length === 0) {
+      return res.status(404).json({ success: false, message: "Location not found" });
+    }
+
+    // Use the most specific result
+    const place = results[0];
+    
+    // Geocoding API uses long_name and short_name in address_components
+    let country = null, state = null, city = null;
+    
+    for (const comp of place.address_components || []) {
+      const types = comp.types || [];
+      const name = comp.long_name || comp.short_name || "";
+      
+      if (types.includes("country")) {
+        country = name;
+      } else if (types.includes("administrative_area_level_1")) {
+        state = name.replace(/^Emirate of /i, "").trim();
+      } else if (
+        types.includes("locality") ||
+        types.includes("postal_town") ||
+        types.includes("administrative_area_level_2")
+      ) {
+        if (!city) city = name;
+      }
+    }
+
+    if (!ALLOWED_COUNTRIES.includes(country)) {
+      return res.status(400).json({
+        success: false,
+        message: "Location must be in India, UAE, or Japan",
+        code: "UNSUPPORTED_COUNTRY",
+      });
+    }
+
+    const result = {
+      placeId: place.place_id,
+      country,
+      state: state || null,
+      city: city || null,
+      formattedAddress: [city, state, country].filter(Boolean).join(", "),
+      latitude: latNum,
+      longitude: lngNum,
+    };
+
+    // Cache for 7 days
+    await redis.setex(cacheKey, 7 * 24 * 60 * 60, JSON.stringify(result));
+
+    console.log(JSON.stringify({
+      event: "reverse_geocode_request",
+      cache: "MISS",
+      latency_ms: Date.now() - startTime
+    }));
+
+    return res.set("X-Cache", "MISS").json({ success: true, data: result });
+
+  } catch (err) {
+    console.error("[Reverse Geocode Error]", err?.response?.data || err.message);
+    return res.status(502).json({
+      success: false,
+      message: "Location service error",
     });
   }
 };

@@ -564,10 +564,10 @@ exports.updateLocation = async (req, res) => {
     const { location, country, state, city, formattedAddress, latitude, longitude, placeId } = req.body;
 
     // New Google Places mode
-    const ALLOWED_COUNTRIES = ["India", "United Arab Emirates", "Singapore"];
+    const ALLOWED_COUNTRIES = ["India", "United Arab Emirates", "Japan"];
     if (!ALLOWED_COUNTRIES.includes(country)) {
         return res.status(400).json({
-            success: false, message: "Location must be in India, UAE, or Singapore",
+            success: false, message: "Location must be in India, UAE, or Japan",
             code: "INVALID_LOCATION_COUNTRY"
         });
     }

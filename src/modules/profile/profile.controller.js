@@ -893,6 +893,12 @@ exports.deleteSkill = async (req, res) => {
     try {
         const profileId = await profileRepo.getProfileId(req.user.sub);
         if (!profileId) return res.status(404).json({ message: "Profile not found" });
+
+        const userSkills = await profileRepo.getSkills(profileId);
+        if (userSkills.length <= 3) {
+            return res.status(400).json({ message: "You must have a minimum of 3 skills on your profile." });
+        }
+
         const deleted = await profileRepo.deleteSkillMapping(profileId, req.params.id);
         if (!deleted) return res.status(404).json({ message: "Skill not found or not authorized to delete" });
         res.json({ message: "Skill removed successfully", skillId: req.params.id });

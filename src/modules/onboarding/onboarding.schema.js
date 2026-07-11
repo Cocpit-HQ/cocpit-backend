@@ -128,8 +128,8 @@ const updateProfileSchema = z.object({
 const updateLocationSchema = z.object({
   body: z.object({
     country: z.string().min(1).refine(
-      v => ["India", "United Arab Emirates", "Singapore"].includes(v),
-      { message: "Location must be in India, UAE, or Singapore" }
+      v => ["India", "United Arab Emirates", "Japan"].includes(v),
+      { message: "Location must be in India, UAE, or Japan" }
     ).optional(),
     state: z.string().nullable().optional(),
     city: z.string().min(1).optional(),
