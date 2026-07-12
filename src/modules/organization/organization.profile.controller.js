@@ -263,6 +263,21 @@ exports.getOrgProfile = async (req, res) => {
             total_followers: counts.followers_count
         };
 
+        const commDbRes = await pool.query(
+            `SELECT community_id, name, banner_url, description 
+             FROM communities 
+             WHERE org_id = $1 AND is_active = TRUE`,
+            [org.org_id]
+        );
+        const communityDetails = commDbRes.rowCount > 0 ? {
+            exists: true,
+            community_id: commDbRes.rows[0].community_id,
+            name: commDbRes.rows[0].name,
+            banner_url: commDbRes.rows[0].banner_url,
+            description: commDbRes.rows[0].description,
+            is_subscribed: relationship.is_subscribed
+        } : null;
+
         const peopleQuery = org.entity_type === 'INSTITUTION'
             ? `WITH school_alumni AS (
                    SELECT DISTINCT ON (p.user_id)
@@ -376,6 +391,7 @@ exports.getOrgProfile = async (req, res) => {
             relationship,
             relevance,
             community,
+            community_details: communityDetails,
             people: peopleRows,
         });
 

@@ -490,6 +490,19 @@ exports.subscribeCompany = async (req, res) => {
     try {
         await client.query('BEGIN');
 
+        // Check if community exists and is active for the organization
+        const communityCheck = await client.query(
+            `SELECT 1 FROM communities WHERE org_id = $1 AND is_active = TRUE`,
+            [orgId]
+        );
+
+        if (communityCheck.rowCount === 0) {
+            await client.query('ROLLBACK');
+            return res.status(400).json({
+                message: "Subscribing is only allowed for organizations with an active community."
+            });
+        }
+
         // Check if the user trying to subscribe is Owner, Admin, or Editor in this organization
         const roleCheck = await client.query(
             `SELECT COALESCE(cr.name, cm.role) as role_name

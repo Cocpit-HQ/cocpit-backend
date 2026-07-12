@@ -1909,7 +1909,7 @@ exports.deletePost = async (req, res) => {
         }
 
         await client.query(
-            `DELETE FROM posts WHERE post_id = $1`,
+            `UPDATE posts SET is_active = FALSE WHERE post_id = $1`,
             [postId]
         );
 
@@ -2262,6 +2262,26 @@ exports.addComment = async (req, res) => {
 
         const postAuthorId = post.rows[0].author_id;
         const postCompanyId = post.rows[0].author_org_id;
+
+        // Thoughts subscription check
+        if (postCompanyId) {
+            const communityCheck = await pool.query(
+                `SELECT 1 FROM communities WHERE org_id = $1 AND is_active = TRUE`,
+                [postCompanyId]
+            );
+            if (communityCheck.rowCount > 0) {
+                const subscriptionCheck = await pool.query(
+                    `SELECT status FROM organization_subscribers 
+                     WHERE org_id = $1 AND user_id = $2 AND status = 'SUBSCRIBED'`,
+                    [postCompanyId, userId]
+                );
+                if (subscriptionCheck.rowCount === 0) {
+                    return res.status(403).json({
+                        message: "You must subscribe to the community to post thoughts"
+                    });
+                }
+            }
+        }
 
         // Block Check: Post Author (skip if company)
         if (!companyId) {
@@ -2939,9 +2959,31 @@ exports.getComments = async (req, res) => {
         const { userId, orgId: companyId } = getContentActorScope(req, requestedCompanyId || null);
         const targetCommentId = req.query.target_comment_id || null;
 
-        const post = await pool.query(`select post_id from posts where post_id = $1`, [postId])
+        const post = await pool.query(`select post_id, author_org_id from posts where post_id = $1`, [postId])
         if (post.rowCount === 0) {
             return res.status(404).json({ message: "Post not found" })
+        }
+
+        const postCompanyId = post.rows[0].author_org_id;
+
+        // Thoughts subscription check
+        if (postCompanyId) {
+            const communityCheck = await pool.query(
+                `SELECT 1 FROM communities WHERE org_id = $1 AND is_active = TRUE`,
+                [postCompanyId]
+            );
+            if (communityCheck.rowCount > 0) {
+                const subscriptionCheck = await pool.query(
+                    `SELECT status FROM organization_subscribers 
+                     WHERE org_id = $1 AND user_id = $2 AND status = 'SUBSCRIBED'`,
+                    [postCompanyId, userId]
+                );
+                if (subscriptionCheck.rowCount === 0) {
+                    return res.status(403).json({
+                        message: "Thoughts access requires subscription"
+                    });
+                }
+            }
         }
         const comments = await pool.query(
             `
