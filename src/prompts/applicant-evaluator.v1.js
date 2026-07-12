@@ -37,7 +37,8 @@ const ANALYSIS_SCHEMA = {
     },
     recommendation: {
       type: "string",
-      description: "One of: 'Strong Hire', 'Hire', 'Borderline', 'No Hire'.",
+      description: "One of: 'Strong Hire', 'Hire', 'Borderline', 'Not a Strong Match'.",
+      enum: ["Strong Hire", "Hire", "Borderline", "Not a Strong Match"],
     },
     skills: {
       type: "object",

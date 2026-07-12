@@ -181,10 +181,13 @@ const analyzeCandidate = async (applicationId, userId = null, orgId = null, sour
   } else {
     // Gemini succeeded, parse results
     finalMatchScore = analysisData.match_score;
+    // Normalise: older prompt versions (and any off-schema model output) may still
+    // return the legacy 'No Hire' label; the UI copy uses 'Not a Strong Match'.
+    const rawRecommendation = analysisData.recommendation || 'Borderline';
     summaryJson = {
       strengths: analysisData.strengths || [],
       concerns: analysisData.weaknesses || [],
-      recommendation: analysisData.recommendation || 'Borderline',
+      recommendation: rawRecommendation === 'No Hire' ? 'Not a Strong Match' : rawRecommendation,
       text: analysisData.summary || '',
     };
 
@@ -301,7 +304,7 @@ const generateLocalSystemFallback = (candidateSnapshot, jobSnapshot, experienceJ
   const recommendation = localMatchScore >= 75 ? 'Strong Hire'
                        : localMatchScore >= 60 ? 'Hire'
                        : localMatchScore >= 40 ? 'Borderline'
-                       : 'No Hire';
+                       : 'Not a Strong Match';
 
   const summaryJson = {
     strengths: strengths.length > 0 ? strengths : ["Has basic qualifications."],

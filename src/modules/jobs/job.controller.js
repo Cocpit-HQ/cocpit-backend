@@ -2203,7 +2203,7 @@ exports.generateJD = async (req, res) => {
   const startTime = Date.now();
 
   // ── Step 1: Input validation ────────────────────────────────────────────────
-  let { role, company, location, experience, work_type, work_mode } = req.body;
+  let { role, company, location, experience, work_type, work_mode, experience_min, experience_max } = req.body;
 
   if (!role || typeof role !== "string") {
     return res.status(400).json({ message: "\"role\" is required and must be a string." });
@@ -2223,6 +2223,33 @@ exports.generateJD = async (req, res) => {
     return res.status(400).json({
       message: "Role name must not contain HTML.",
       field: "role",
+    });
+  }
+
+  // experience_min/experience_max are optional, but if the caller (the Create
+  // Job form) sends the recruiter's current selection, it must be well-formed.
+  // These are never taken from the AI response — see Step 8.
+  const hasExperienceMin = experience_min !== undefined && experience_min !== null;
+  const hasExperienceMax = experience_max !== undefined && experience_max !== null;
+
+  if (hasExperienceMin && (typeof experience_min !== "number" || !Number.isInteger(experience_min) || experience_min < 0)) {
+    return res.status(400).json({
+      message: "\"experience_min\" must be a non-negative integer.",
+      field: "experience_min",
+    });
+  }
+
+  if (hasExperienceMax && (typeof experience_max !== "number" || !Number.isInteger(experience_max) || experience_max < 0)) {
+    return res.status(400).json({
+      message: "\"experience_max\" must be a non-negative integer.",
+      field: "experience_max",
+    });
+  }
+
+  if (hasExperienceMin && hasExperienceMax && experience_max < experience_min) {
+    return res.status(400).json({
+      message: "\"experience_max\" must be greater than or equal to \"experience_min\".",
+      field: "experience_max",
     });
   }
 
@@ -2367,17 +2394,21 @@ exports.generateJD = async (req, res) => {
 
     const aiRequirements = {
       skills: generated.required_skills_keywords || [],
-      experience_min: generated.experience_min || null,
       education: generated.education || null,
     };
 
+    // experience_min/experience_max are recruiter-authored form fields, not
+    // AI output — the Gemini schema no longer generates them (jd-generator.v1.js).
+    // Only touch these columns when the caller sent the current form values;
+    // otherwise leave whatever is already persisted untouched.
     const AI_FIELD_MAP = {
       title: generated.title || role,
       description: fullDescription,
-      experience_min: generated.experience_min,
-      experience_max: generated.experience_max,
       ai_extracted_requirements: JSON.stringify(aiRequirements),
     };
+
+    if (hasExperienceMin) AI_FIELD_MAP.experience_min = experience_min;
+    if (hasExperienceMax) AI_FIELD_MAP.experience_max = experience_max;
 
     const setClauses = [];
     const values = [];

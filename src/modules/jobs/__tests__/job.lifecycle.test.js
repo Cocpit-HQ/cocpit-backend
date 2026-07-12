@@ -386,4 +386,76 @@ describe('POST /jobs/:id/generate — AI JD Generator', () => {
     expect(res.statusCode).toBe(422);
     expect(res.body.field).toBe('experience_max');
   });
+
+  // ── Experience Range: request body, not AI response (ID-184) ──────────────
+
+  it('TC-15: should persist experience_min/experience_max from the request body, not the AI response', async () => {
+    mockClient.query.mockImplementation(async (sql) => {
+      if (typeof sql !== 'string') return {};
+      if (sql.includes('SELECT job_id')) return { rowCount: 1, rows: [mockDraftJob()] };
+      if (sql.includes('UPDATE jobs SET')) {
+        return { rowCount: 1, rows: [{ job_id: 'job-1', title: 'Software Engineer' }] };
+      }
+      return { rowCount: 1, rows: [] };
+    });
+    // AI response carries its own (stale/hallucinated) experience_min/max — must be ignored.
+    aiService.generateJobDescription.mockResolvedValue({ ...MOCK_GENERATED_JD, experience_min: 3, experience_max: 6 });
+
+    const res = await request(app)
+      .post('/jobs/job-1/generate')
+      .send({ role: 'Software Engineer', experience_min: 4, experience_max: 7 });
+
+    expect(res.statusCode).toBe(200);
+    const updateCall = mockClient.query.mock.calls.find(
+      ([sql]) => typeof sql === 'string' && sql.includes('UPDATE jobs SET')
+    );
+    expect(updateCall).toBeDefined();
+    expect(updateCall[0]).toContain('experience_min');
+    expect(updateCall[0]).toContain('experience_max');
+    expect(updateCall[1]).toContain(4);
+    expect(updateCall[1]).toContain(7);
+    expect(updateCall[1]).not.toContain(3);
+    expect(updateCall[1]).not.toContain(6);
+  });
+
+  it('TC-16: should leave experience_min/experience_max untouched when not provided in the request body', async () => {
+    mockClient.query.mockImplementation(async (sql) => {
+      if (typeof sql !== 'string') return {};
+      if (sql.includes('SELECT job_id')) return { rowCount: 1, rows: [mockDraftJob()] };
+      if (sql.includes('UPDATE jobs SET')) {
+        return { rowCount: 1, rows: [{ job_id: 'job-1', title: 'Software Engineer' }] };
+      }
+      return { rowCount: 1, rows: [] };
+    });
+
+    const res = await request(app).post('/jobs/job-1/generate').send({ role: 'Software Engineer' });
+
+    expect(res.statusCode).toBe(200);
+    const updateCall = mockClient.query.mock.calls.find(
+      ([sql]) => typeof sql === 'string' && sql.includes('UPDATE jobs SET')
+    );
+    expect(updateCall).toBeDefined();
+    expect(updateCall[0]).not.toContain('experience_min');
+    expect(updateCall[0]).not.toContain('experience_max');
+  });
+
+  it('TC-17: should return 400 when experience_min > experience_max in the request body', async () => {
+    const res = await request(app)
+      .post('/jobs/job-1/generate')
+      .send({ role: 'Developer', experience_min: 10, experience_max: 2 });
+
+    expect(res.statusCode).toBe(400);
+    expect(res.body.field).toBe('experience_max');
+    expect(aiService.generateJobDescription).not.toHaveBeenCalled();
+  });
+
+  it('TC-18: should return 400 when experience_min is negative', async () => {
+    const res = await request(app)
+      .post('/jobs/job-1/generate')
+      .send({ role: 'Developer', experience_min: -1 });
+
+    expect(res.statusCode).toBe(400);
+    expect(res.body.field).toBe('experience_min');
+    expect(aiService.generateJobDescription).not.toHaveBeenCalled();
+  });
 });
