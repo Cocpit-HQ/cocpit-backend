@@ -23,10 +23,18 @@ exports.getCommunityStatus = async (req, res, next) => {
             });
         }
 
+        const row = result.rows[0];
         return res.status(200).json({
             success: true,
             has_community: true,
-            community: result.rows[0]
+            community: {
+                id: row.community_id,
+                name: row.name,
+                description: row.description,
+                bannerUrl: row.banner_url,
+                subscriberCount: row.subscriber_count,
+                orgId: orgId
+            }
         });
     } catch (err) {
         console.error("[CommunityController] getCommunityStatus error:", err);
@@ -67,12 +75,20 @@ exports.createCommunity = async (req, res, next) => {
             [orgId, name, description, bannerUrl, userId]
         );
 
+        const row = insertRes.rows[0];
+
         await client.query("COMMIT");
 
         return res.status(201).json({
             success: true,
             message: "Community created and published successfully",
-            data: insertRes.rows[0]
+            data: {
+                id: row.community_id,
+                name: row.name,
+                description: row.description,
+                bannerUrl: row.banner_url,
+                orgId: row.org_id
+            }
         });
     } catch (err) {
         await client.query("ROLLBACK");
@@ -113,12 +129,19 @@ exports.updateCommunity = async (req, res, next) => {
             throw new AppError("Community not found or inactive", 404);
         }
 
+        const row = updateRes.rows[0];
+
         await client.query("COMMIT");
 
         return res.status(200).json({
             success: true,
             message: "Community updated successfully",
-            data: updateRes.rows[0]
+            data: {
+                id: row.community_id,
+                name: row.name,
+                description: row.description,
+                bannerUrl: row.banner_url
+            }
         });
     } catch (err) {
         await client.query("ROLLBACK");
@@ -197,9 +220,21 @@ exports.getSubscribedCommunities = async (req, res, next) => {
             [userId]
         );
 
+        const mappedRows = result.rows.map(row => ({
+            id: row.community_id,
+            name: row.name,
+            description: row.description,
+            bannerUrl: row.banner_url,
+            orgId: row.org_id,
+            companyName: row.company_name,
+            companySlug: row.company_slug,
+            logoUrl: row.logo_url,
+            subscriberCount: row.subscriber_count
+        }));
+
         return res.status(200).json({
             success: true,
-            data: result.rows
+            data: mappedRows
         });
     } catch (err) {
         console.error("[CommunityController] getSubscribedCommunities error:", err);
@@ -213,23 +248,66 @@ exports.getCommunityArticles = async (req, res, next) => {
     const page = Math.max(1, parseInt(req.query.page || "1"));
     const limit = Math.min(50, Math.max(1, parseInt(req.query.limit || "10")));
     const offset = (page - 1) * limit;
+    const requestedStatus = req.query.status || "published";
+
+    if (requestedStatus !== "published" && requestedStatus !== "draft") {
+        return next(new AppError("Invalid status parameter. Must be 'published' or 'draft'", 400));
+    }
 
     try {
+        // Fetch community and check organization ID
+        const commRes = await pool.query(
+            `SELECT org_id FROM communities WHERE community_id = $1 AND is_active = TRUE`,
+            [communityId]
+        );
+
+        if (commRes.rowCount === 0) {
+            throw new AppError("Community not found or inactive", 404);
+        }
+
+        const orgId = commRes.rows[0].org_id;
+
+        // If requesting draft articles, verify organization membership
+        if (requestedStatus === "draft") {
+            if (!req.user) {
+                throw new AppError("Authentication required to view drafts", 401);
+            }
+            const checkMember = await pool.query(
+                `SELECT 1 FROM organization_members WHERE org_id = $1 AND user_id = $2 AND status = 'ACTIVE'`,
+                [orgId, req.user.sub || req.user.user_id]
+            );
+            if (checkMember.rowCount === 0) {
+                throw new AppError("Forbidden: You cannot view draft articles for this organization", 403);
+            }
+        }
+
         const result = await pool.query(
-            `SELECT p.post_id, p.title, p.content, p.created_at,
+            `SELECT p.post_id, p.author_org_id, p.title, p.content, p.status, p.created_at, p.updated_at,
                     (SELECT pm.url FROM post_media pm WHERE pm.post_id = p.post_id LIMIT 1) AS banner_url
              FROM posts p
-             WHERE p.author_org_id = (SELECT org_id FROM communities WHERE community_id = $1 AND is_active = TRUE)
+             WHERE p.author_org_id = $1
                AND p.post_type = 'article'
                AND p.is_active = TRUE
+               AND p.status = $2
              ORDER BY p.created_at DESC
-             LIMIT $2 OFFSET $3`,
-            [communityId, limit, offset]
+             LIMIT $3 OFFSET $4`,
+            [orgId, requestedStatus, limit, offset]
         );
+
+        const mappedRows = result.rows.map(row => ({
+            id: row.post_id,
+            channelId: row.author_org_id,
+            title: row.title,
+            content: row.content,
+            coverImage: row.banner_url || null,
+            status: row.status,
+            publishedAt: row.created_at,
+            updatedAt: row.updated_at
+        }));
 
         return res.status(200).json({
             success: true,
-            data: result.rows,
+            data: mappedRows,
             page,
             limit
         });
@@ -302,9 +380,17 @@ exports.getInviteSuggestions = async (req, res, next) => {
 
         const result = await pool.query(query, params);
 
+        const mappedRows = result.rows.map(row => ({
+            id: row.user_id,
+            name: row.name,
+            avatarUrl: row.avatar,
+            headline: row.headline,
+            isInvited: row.is_invited
+        }));
+
         return res.status(200).json({
             success: true,
-            data: result.rows
+            data: mappedRows
         });
     } catch (err) {
         console.error("[CommunityController] getInviteSuggestions error:", err);
@@ -420,9 +506,18 @@ exports.getPendingInvitations = async (req, res, next) => {
             [userId]
         );
 
+        const mappedRows = result.rows.map(row => ({
+            inviteId: row.invite_id,
+            createdAt: row.created_at,
+            senderOrgId: row.sender_org_id,
+            companyName: row.company_name,
+            logoUrl: row.logo_url,
+            companySlug: row.company_slug
+        }));
+
         return res.status(200).json({
             success: true,
-            data: result.rows
+            data: mappedRows
         });
     } catch (err) {
         console.error("[CommunityController] getPendingInvitations error:", err);
@@ -578,9 +673,20 @@ exports.getRecommendedCommunities = async (req, res, next) => {
             [userId, limit]
         );
 
+        const mappedRows = result.rows.map(row => ({
+            id: row.community_id,
+            name: row.name,
+            description: row.description,
+            bannerUrl: row.banner_url,
+            orgId: row.org_id,
+            companyName: row.company_name,
+            logoUrl: row.logo_url,
+            subscriberCount: row.subscriber_count
+        }));
+
         return res.status(200).json({
             success: true,
-            data: result.rows
+            data: mappedRows
         });
     } catch (err) {
         console.error("[CommunityController] getRecommendedCommunities error:", err);
@@ -615,14 +721,64 @@ exports.searchCommunities = async (req, res, next) => {
             [userId, `%${search}%`, limit, offset]
         );
 
+        const mappedRows = result.rows.map(row => ({
+            id: row.community_id,
+            name: row.name,
+            description: row.description,
+            bannerUrl: row.banner_url,
+            orgId: row.org_id,
+            companyName: row.company_name,
+            logoUrl: row.logo_url,
+            subscriberCount: row.subscriber_count,
+            isSubscribed: row.is_subscribed
+        }));
+
         return res.status(200).json({
             success: true,
-            data: result.rows,
+            data: mappedRows,
             page,
             limit
         });
     } catch (err) {
         console.error("[CommunityController] searchCommunities error:", err);
+        return next(err);
+    }
+};
+
+// 3. Get Subscriber Growth (For analytics dashboard)
+exports.getSubscriberGrowth = async (req, res, next) => {
+    const { orgId } = req.params;
+    try {
+        // Strict Actor Context Check
+        if (!req.actor || req.actor.type !== "ORGANIZATION" || req.actor.id !== orgId) {
+            throw new AppError("Invalid or mismatched organization actor context", 403);
+        }
+
+        const result = await pool.query(
+            `SELECT DATE_TRUNC('day', updated_at) AS date, COUNT(*)::int AS subscribers
+             FROM organization_subscribers
+             WHERE org_id = $1 AND status = 'SUBSCRIBED'
+             GROUP BY DATE_TRUNC('day', updated_at)
+             ORDER BY DATE_TRUNC('day', updated_at) ASC`,
+            [orgId]
+        );
+
+        // Map date to string formatted like "Jan 1" or YYYY-MM-DD
+        const mapped = result.rows.map(row => {
+            const d = new Date(row.date);
+            const formattedDate = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+            return {
+                date: formattedDate,
+                subscribers: row.subscribers
+            };
+        });
+
+        return res.status(200).json({
+            success: true,
+            data: mapped
+        });
+    } catch (err) {
+        console.error("[CommunityController] getSubscriberGrowth error:", err);
         return next(err);
     }
 };

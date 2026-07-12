@@ -36,6 +36,13 @@ router.delete(
     communityController.deactivateCommunity
 );
 
+router.get(
+    "/organizations/:orgId/community/growth",
+    requireAuth,
+    requireOrgPermission("MANAGE_COMPANY_DETAILS"),
+    communityController.getSubscriberGrowth
+);
+
 // --- GROUP 2: Subscription & Engagement (User Side) ---
 router.get(
     "/communities/subscriptions",

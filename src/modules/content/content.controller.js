@@ -699,7 +699,13 @@ exports.createPost = async (req, res) => {
     }
 
     const { userId, orgId: companyId } = actorScope;
-    let { content, category, visibility, media_urls, post_type, title, poll_options, poll_duration, is_broadcast, location, achievement_image_id } = req.body; // category is name, media_urls is array
+    let { content, category, visibility, media_urls, post_type, title, poll_options, poll_duration, is_broadcast, location, achievement_image_id, status } = req.body; // category is name, media_urls is array
+
+    if (status !== undefined && status !== "published" && status !== "draft") {
+        return res.status(400).json({ message: "Invalid status. Allowed values: 'published', 'draft'" });
+    }
+
+    status = status || (post_type === "article" ? "draft" : "published");
 
     // Extract uploaded files
     const uploadedFiles = req.files || [];
@@ -965,10 +971,10 @@ exports.createPost = async (req, res) => {
 
         // 2. Insert Post
         const postResult = await client.query(
-            ` INSERT INTO posts (author_id, category_id, content, visibility, post_type, title, shared_post_id, shared_job_id, author_org_id, is_broadcast, broadcast_scope, location, achievement_image_id)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+            ` INSERT INTO posts (author_id, category_id, content, visibility, post_type, title, shared_post_id, shared_job_id, author_org_id, is_broadcast, broadcast_scope, location, achievement_image_id, status)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
       RETURNING post_id, created_at
-      `, [userId, categoryId, content, visibility || 'public', post_type, title, req.body.shared_post_id || null, req.body.shared_job_id || null, companyId || null, is_broadcast ? true : false, is_broadcast ? 'CHILDREN' : null, location || null, achievement_image_id || null]
+      `, [userId, categoryId, content, visibility || 'public', post_type, title, req.body.shared_post_id || null, req.body.shared_job_id || null, companyId || null, is_broadcast ? true : false, is_broadcast ? 'CHILDREN' : null, location || null, achievement_image_id || null, status || 'published']
         );
 
         const postId = postResult.rows[0].post_id;
@@ -1113,19 +1119,22 @@ exports.createPost = async (req, res) => {
         logIntentActivity({ userId, action: "create_post", metadata: { postId, postType: post_type, category } });
 
         res.status(201).json({
-            message: "Post created", postId,
-            "title": title,
-            "content": content,
-            "category": category,
-            "visibility": visibility,
-            "post_type": post_type,
-            "media_urls": media_urls,
-            "media_type": type,
+            message: "Post created", 
+            postId,
+            id: postId,
+            title: title,
+            content: content,
+            category: category,
+            visibility: visibility,
+            postType: post_type,
+            mediaUrls: media_urls,
+            mediaType: type,
+            status: status || 'published',
             poll: {
-                poll_id: pollId,
+                pollId: pollId,
                 duration: poll_duration,
-                is_active: true,
-                options: poll_options // Now contains objects with option_id
+                isActive: true,
+                options: poll_options
             }
         });
 
@@ -1571,7 +1580,33 @@ WHERE p.post_id = $1;
             }
         }
 
-        res.status(200).json(result.rows[0]);
+        // STRICT DRAFT STATUS CHECK
+        if (post.status === 'draft') {
+            if (!post.author_org_id) {
+                if (post.author_id !== userId) {
+                    return res.status(403).json({ message: "Forbidden: You cannot view this draft" });
+                }
+            } else {
+                const checkMember = await pool.query(
+                    `SELECT 1 FROM organization_members WHERE org_id = $1 AND user_id = $2 AND status = 'ACTIVE'`,
+                    [post.author_org_id, userId]
+                );
+                if (checkMember.rowCount === 0) {
+                    return res.status(403).json({ message: "Forbidden: You cannot view this draft" });
+                }
+            }
+        }
+
+        const mappedPost = {
+            ...post,
+            id: post.post_id,
+            channelId: post.author_org_id,
+            coverImage: (post.media && post.media.length > 0) ? post.media[0].url : null,
+            publishedAt: post.created_at,
+            updatedAt: post.updated_at
+        };
+
+        res.status(200).json(mappedPost);
     } catch (err) {
         console.error("Get post error:", err);
         res.status(500).json({ message: "Internal server error" });
@@ -1580,7 +1615,11 @@ WHERE p.post_id = $1;
 
 exports.updatePostById = async (req, res) => {
     const postId = req.params.id;
-    let { content, category, visibility, media_urls, post_type, title, poll_options, location } = req.body;
+    let { content, category, visibility, media_urls, post_type, title, poll_options, location, status } = req.body;
+
+    if (status !== undefined && status !== "published" && status !== "draft") {
+        return res.status(400).json({ message: "Invalid status. Allowed values: 'published', 'draft'" });
+    }
 
     // Sanitize user-generated content
     if (post_type !== 'article') {
@@ -1667,6 +1706,12 @@ exports.updatePostById = async (req, res) => {
         if (location !== undefined) {
             updates.push(`location = $${index++}`);
             values.push(location);
+        }
+
+        // status
+        if (status !== undefined) {
+            updates.push(`status = $${index++}`);
+            values.push(status);
         }
 
         // visibility
@@ -1820,11 +1865,17 @@ WHERE p.post_id = $1;
 
         const result = await pool.query(query, [postId]);
 
-        if (result.rows.length === 0) {
-            return res.status(404).json({ message: "Post not found" });
-        }
+        const post = result.rows[0];
+        const mappedPost = {
+            ...post,
+            id: post.post_id,
+            channelId: post.author_org_id,
+            coverImage: (post.media && post.media.length > 0) ? post.media[0].url : null,
+            publishedAt: post.created_at,
+            updatedAt: post.updated_at
+        };
 
-        res.status(200).json(result.rows[0]);
+        res.status(200).json(mappedPost);
 
     } catch (err) {
         await client.query('ROLLBACK');
@@ -1914,7 +1965,7 @@ exports.deletePost = async (req, res) => {
         );
 
         await client.query('COMMIT');
-        res.status(200).json({ message: "Post deleted", deletedPostId: postId });
+        res.status(200).json({ message: "Post deleted", deletedPostId: postId, id: postId });
 
     } catch (err) {
         await client.query('ROLLBACK');
@@ -2544,18 +2595,32 @@ exports.addComment = async (req, res) => {
             [newComment.comment_id]
         );
 
+        const commentRow = fullCommentRes.rows[0];
+        const mappedComment = {
+            ...commentRow,
+            id: commentRow.comment_id,
+            parentId: commentRow.parent_id,
+            createdAt: commentRow.created_at,
+            authorId: commentRow.author_id,
+            authorName: commentRow.full_name,
+            authorAvatarUrl: commentRow.avatar_url,
+            isPinned: commentRow.is_pinned,
+            pinnedAt: commentRow.pinned_at,
+            pinnedBy: commentRow.pinned_by
+        };
+
         const ioService = require("../../core/infrastructure/socket.service");
         if (ioService && ioService.notifyPost) {
             ioService.notifyPost(postId, "post_comment_added", {
                 postId,
-                comment: fullCommentRes.rows[0]
+                comment: mappedComment
             });
         }
 
         return res.status(200).json({
             message: "comment added",
-            comment: fullCommentRes.rows[0]
-        })
+            comment: mappedComment
+        });
 
 
 
@@ -3075,7 +3140,19 @@ exports.getComments = async (req, res) => {
       `,
             [postId, userId, companyId || null, targetCommentId || null]
         );
-        return res.status(200).json(comments.rows);
+        const mappedComments = comments.rows.map(row => ({
+            ...row,
+            id: row.comment_id,
+            parentId: row.parent_id,
+            createdAt: row.created_at,
+            authorId: row.author_id,
+            authorName: row.full_name,
+            authorAvatarUrl: row.avatar_url,
+            isPinned: row.is_pinned,
+            pinnedAt: row.pinned_at,
+            pinnedBy: row.pinned_by
+        }));
+        return res.status(200).json(mappedComments);
     } catch (err) {
         console.error("Get comments error:", err);
         return res.status(500).json({ message: "Internal server error" })
