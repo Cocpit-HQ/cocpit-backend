@@ -223,7 +223,6 @@ exports.getMyPosts = async (req, res) => {
             idx++;
         }
 
-        // ✅ Interaction Filter (remaining cases)
         if (filter) {
             if (filter === 'Post') {
                 whereClause += ` AND p.shared_post_id IS NULL AND p.shared_job_id IS NULL `;
@@ -232,6 +231,10 @@ exports.getMyPosts = async (req, res) => {
             } else if (filter === 'Private post') {
                 whereClause += ` AND p.visibility = 'private' `;
             }
+        }
+
+        if (filter !== 'Private post') {
+            whereClause += ` AND (p.visibility IS NULL OR p.visibility != 'private') `;
         }
 
         // ✅ Cursor-based pagination (stable)

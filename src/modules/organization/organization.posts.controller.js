@@ -67,12 +67,33 @@ exports.getOrganizationPosts = async (req, res) => {
         cursorCreatedAt,
         cursorPostId,
         limit = 10,
+        filter,
     } = req.query;
 
     try {
+        let hasPrivateAccess = false;
+        if (userId) {
+            hasPrivateAccess = await checkOrgPermission(pool, companyId, userId, ['MANAGE_COMPANY', 'SWITCH_TO_COMPANY', 'MANAGE_ORGANIZATION', 'SWITCH_TO_ORGANIZATION']);
+        }
+
         const params = [companyId];
         let idx = 2;
         let whereClause = `WHERE p.author_org_id = $1`;
+
+        if (filter === 'Post') {
+            whereClause += ` AND p.shared_post_id IS NULL AND p.shared_job_id IS NULL `;
+        } else if (filter === 'Repost') {
+            whereClause += ` AND (p.shared_post_id IS NOT NULL OR p.shared_job_id IS NOT NULL) `;
+        } else if (filter === 'Private post') {
+            if (!hasPrivateAccess) {
+                return res.json({ posts: [], nextCursor: null });
+            }
+            whereClause += ` AND p.visibility = 'private' `;
+        }
+
+        if (filter !== 'Private post') {
+            whereClause += ` AND (p.visibility IS NULL OR p.visibility != 'private') `;
+        }
 
         // We can expose a userId param for "is_liked" check even if public
         // For now, let's assume req.user is populated if authenticated
