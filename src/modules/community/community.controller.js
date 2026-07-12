@@ -8,7 +8,8 @@ exports.getCommunityStatus = async (req, res, next) => {
     const { orgId } = req.params;
     try {
         const result = await pool.query(
-            `SELECT community_id, name, description, banner_url 
+            `SELECT community_id, name, description, banner_url,
+                    (SELECT COUNT(*) FROM organization_subscribers WHERE org_id = communities.org_id AND status = 'SUBSCRIBED')::int AS subscriber_count
              FROM communities 
              WHERE org_id = $1 AND is_active = TRUE`,
             [orgId]
@@ -186,7 +187,8 @@ exports.getSubscribedCommunities = async (req, res, next) => {
     try {
         const result = await pool.query(
             `SELECT c.community_id, c.name, c.description, c.banner_url, c.org_id,
-                    o.name AS company_name, o.slug AS company_slug, o.logo_url
+                    o.name AS company_name, o.slug AS company_slug, o.logo_url,
+                    (SELECT COUNT(*) FROM organization_subscribers WHERE org_id = c.org_id AND status = 'SUBSCRIBED')::int AS subscriber_count
              FROM organization_subscribers os
              JOIN communities c ON os.org_id = c.org_id
              JOIN organizations o ON c.org_id = o.org_id
@@ -563,7 +565,8 @@ exports.getRecommendedCommunities = async (req, res, next) => {
     try {
         const result = await pool.query(
             `SELECT c.community_id, c.name, c.description, c.banner_url, c.org_id,
-                    o.name AS company_name, o.logo_url
+                    o.name AS company_name, o.logo_url,
+                    (SELECT COUNT(*) FROM organization_subscribers WHERE org_id = c.org_id AND status = 'SUBSCRIBED')::int AS subscriber_count
              FROM communities c
              JOIN organizations o ON c.org_id = o.org_id
              WHERE c.is_active = TRUE AND o.is_deleted = FALSE
@@ -597,6 +600,7 @@ exports.searchCommunities = async (req, res, next) => {
         const result = await pool.query(
             `SELECT c.community_id, c.name, c.description, c.banner_url, c.org_id,
                     o.name AS company_name, o.logo_url,
+                    (SELECT COUNT(*) FROM organization_subscribers WHERE org_id = c.org_id AND status = 'SUBSCRIBED')::int AS subscriber_count,
                     COALESCE(
                         EXISTS(
                             SELECT 1 FROM organization_subscribers os 
