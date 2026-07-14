@@ -437,7 +437,7 @@ exports.getOrgAbout = async (req, res) => {
 
         const [officesResult, linksResult, specialtiesResult] = await Promise.all([
             pool.query(
-                `SELECT office_id, city, country, is_headquarters
+                `SELECT office_id, city, country, address, is_headquarters
                  FROM organization_offices 
                  WHERE org_id = $1 AND is_deleted = FALSE
                  ORDER BY is_headquarters DESC, city ASC`,
@@ -1193,22 +1193,23 @@ exports.updateOrgAbout = async (req, res) => {
 
             for (const office of offices) {
                 if (!office.city || !office.country) continue;
+                const cleanAddress = office.address ? office.address.trim() : '';
                 
                 if (office.office_id && existingOfficeIds.has(office.office_id)) {
                     // Update existing active office
                     await client.query(
                         `UPDATE organization_offices 
-                         SET city = $1, country = $2, is_headquarters = $3, is_deleted = FALSE 
-                         WHERE office_id = $4`,
-                        [office.city.trim(), office.country.trim(), !!office.is_headquarters, office.office_id]
+                         SET city = $1, country = $2, address = $3, is_headquarters = $4, is_deleted = FALSE 
+                         WHERE office_id = $5`,
+                        [office.city.trim(), office.country.trim(), cleanAddress, !!office.is_headquarters, office.office_id]
                     );
                     existingOfficeIds.delete(office.office_id);
                 } else {
                     // Insert new office
                     await client.query(
-                        `INSERT INTO organization_offices (org_id, city, country, is_headquarters)
-                         VALUES ($1, $2, $3, $4)`,
-                        [orgId, office.city.trim(), office.country.trim(), !!office.is_headquarters]
+                        `INSERT INTO organization_offices (org_id, city, country, address, is_headquarters)
+                         VALUES ($1, $2, $3, $4, $5)`,
+                        [orgId, office.city.trim(), office.country.trim(), cleanAddress, !!office.is_headquarters]
                     );
                 }
             }

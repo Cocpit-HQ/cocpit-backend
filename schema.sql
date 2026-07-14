@@ -1898,6 +1898,7 @@ CREATE TABLE IF NOT EXISTS organization_offices (
     org_id UUID NOT NULL REFERENCES organizations(org_id) ON DELETE CASCADE,
     city VARCHAR(100) NOT NULL,
     country VARCHAR(100) NOT NULL,
+    address TEXT DEFAULT '',
     is_headquarters BOOLEAN DEFAULT FALSE,
     is_deleted BOOLEAN DEFAULT FALSE,
     created_at TIMESTAMPTZ DEFAULT NOW()
