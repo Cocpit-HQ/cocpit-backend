@@ -1,5 +1,5 @@
-const pool = require('../../core/db/pool');
-const redis = require('../../core/cache/redis');
+const pool = require('../../../core/db/pool');
+const redis = require('../../../core/cache/redis');
 
 exports.getOrganizations = async (req, res) => {
   try {
@@ -376,7 +376,7 @@ exports.reviewOrganizationVerification = async (req, res) => {
       return res.status(400).json({ error: 'Invalid verification status' });
     }
     
-    const { createAuditLog } = require('../middlewares/auditLog.middleware');
+    const { createAuditLog } = require('../../middlewares/auditLog.middleware');
 const client = await pool.connect();
     try {
       await client.query('BEGIN');

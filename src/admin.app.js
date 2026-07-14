@@ -25,7 +25,7 @@ app.get('/health', (req, res) => {
   res.status(200).json({ status: 'OK', service: 'admin' });
 });
 
-const authRoutes = require('./admin/routes/auth.routes');
+const authRoutes = require('./admin/modules/auth/auth.routes');
 app.use('/api/auth', authRoutes);
 
 // Admin Routes

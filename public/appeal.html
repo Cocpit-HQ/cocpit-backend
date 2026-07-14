@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Moderation Appeal | Cocpit</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-color: #0f111a;
+            --surface: #1e2130;
+            --surface-hover: #26293a;
+            --primary: #4338ca;
+            --primary-hover: #4f46e5;
+            --danger: #e11d48;
+            --text-main: #f8fafc;
+            --text-muted: #94a3b8;
+            --border: #334155;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            font-family: 'Inter', sans-serif;
+        }
+
+        body {
+            background-color: var(--bg-color);
+            color: var(--text-main);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            width: 100%;
+            max-width: 500px;
+            padding: 40px;
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+            animation: slideUp 0.5s ease-out forwards;
+            opacity: 0;
+            transform: translateY(20px);
+        }
+
+        @keyframes slideUp {
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+
+        .header h1 {
+            font-size: 24px;
+            font-weight: 700;
+            margin-bottom: 8px;
+            background: linear-gradient(135deg, #f8fafc 0%, #94a3b8 100%);
+            -webkit-background-clip: text;
+            background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .header p {
+            color: var(--text-muted);
+            font-size: 14px;
+        }
+
+        .info-card {
+            background: rgba(225, 29, 72, 0.1);
+            border: 1px solid rgba(225, 29, 72, 0.2);
+            border-radius: 8px;
+            padding: 16px;
+            margin-bottom: 24px;
+        }
+
+        .info-card h3 {
+            color: var(--danger);
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 8px;
+        }
+
+        .info-card p {
+            font-size: 14px;
+            line-height: 1.5;
+            color: #cbd5e1;
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 8px;
+            font-size: 14px;
+            font-weight: 500;
+            color: #e2e8f0;
+        }
+
+        .form-group textarea {
+            width: 100%;
+            background: var(--bg-color);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 12px;
+            color: var(--text-main);
+            font-size: 14px;
+            resize: vertical;
+            min-height: 120px;
+            transition: all 0.3s ease;
+        }
+
+        .form-group textarea:focus {
+            outline: none;
+            border-color: var(--primary);
+            box-shadow: 0 0 0 3px rgba(67, 56, 202, 0.2);
+        }
+
+        .form-group .checkbox-container {
+            display: flex;
+            align-items: flex-start;
+            gap: 12px;
+            cursor: pointer;
+        }
+
+        .form-group input[type="checkbox"] {
+            margin-top: 4px;
+            width: 16px;
+            height: 16px;
+            accent-color: var(--primary);
+        }
+
+        .form-group .checkbox-text {
+            font-size: 13px;
+            color: var(--text-muted);
+            line-height: 1.5;
+        }
+
+        button {
+            width: 100%;
+            background: var(--primary);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            padding: 14px;
+            font-size: 15px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            position: relative;
+            overflow: hidden;
+        }
+
+        button:hover {
+            background: var(--primary-hover);
+            transform: translateY(-1px);
+        }
+
+        button:active {
+            transform: translateY(1px);
+        }
+
+        button:disabled {
+            background: var(--border);
+            color: var(--text-muted);
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .loading {
+            text-align: center;
+            color: var(--text-muted);
+        }
+
+        .spinner {
+            border: 3px solid rgba(255,255,255,0.1);
+            border-radius: 50%;
+            border-top: 3px solid var(--primary);
+            width: 30px;
+            height: 30px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 16px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .hidden {
+            display: none !important;
+        }
+
+        .success-state {
+            text-align: center;
+        }
+        .success-icon {
+            width: 60px;
+            height: 60px;
+            background: rgba(34, 197, 94, 0.1);
+            color: #22c55e;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 30px;
+            margin: 0 auto 20px;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="container" id="app-container">
+        
+        <div id="loading-state" class="loading">
+            <div class="spinner"></div>
+            <p>Verifying secure link...</p>
+        </div>
+
+        <div id="error-state" class="hidden" style="text-align: center;">
+            <div class="info-card" style="background: rgba(225, 29, 72, 0.1); border-color: var(--danger);">
+                <h3 style="margin-bottom: 12px; font-size: 14px;">Link Invalid</h3>
+                <p id="error-message">This appeal link is invalid or has expired.</p>
+            </div>
+            <p style="font-size: 13px; color: var(--text-muted);">Please contact support if you believe this is an error.</p>
+        </div>
+
+        <div id="form-state" class="hidden">
+            <div class="header">
+                <h1>Appeal Moderation Action</h1>
+                <p>Submit an appeal for your account suspension</p>
+            </div>
+
+            <div class="info-card">
+                <h3>Suspension Reason</h3>
+                <p id="suspend-reason" style="margin-bottom: 8px;">Loading...</p>
+                <div style="font-size: 12px; color: var(--text-muted); margin-top: 12px; display: flex; justify-content: space-between;">
+                    <span>Date: <strong id="suspend-date" style="color: #cbd5e1;">...</strong></span>
+                    <span>Duration: <strong id="suspend-duration" style="color: #cbd5e1;">...</strong></span>
+                </div>
+            </div>
+
+            <form id="appeal-form">
+                <div class="form-group">
+                    <label for="reason">Why do you believe this was a mistake?</label>
+                    <textarea id="reason" placeholder="Please provide specific details..." required></textarea>
+                </div>
+                
+                <div class="form-group">
+                    <label class="checkbox-container">
+                        <input type="checkbox" id="declare" required>
+                        <span class="checkbox-text">I declare that the information provided is true and accurate. I understand that submitting false claims may result in a permanent ban.</span>
+                    </label>
+                </div>
+
+                <button type="submit" id="submit-btn">Submit Appeal</button>
+            </form>
+        </div>
+
+        <div id="success-state" class="hidden success-state">
+            <div class="success-icon">✓</div>
+            <h2 style="font-size: 20px; margin-bottom: 12px; color: white;">Appeal Submitted Successfully</h2>
+            <p style="color: var(--text-muted); font-size: 14px; line-height: 1.6;">
+                Your appeal has been securely transmitted to our Trust & Safety team. 
+                We will review your case and notify you via email of the final decision within 48-72 hours.
+            </p>
+        </div>
+
+    </div>
+
+    <script src="/appeal.js"></script>
+</body>
+</html>

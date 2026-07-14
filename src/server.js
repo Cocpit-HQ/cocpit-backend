@@ -73,7 +73,7 @@ startAiAnalysisWorker().catch(e => console.error("AI Worker crashed:", e));
 
 // Event Outbox Processor disabled
 
-server.listen(PORT, '0.0.0.0', () => {
+server.listen(PORT, () => {
   console.log('[Main API] Server running on port ' + PORT);
 });
 

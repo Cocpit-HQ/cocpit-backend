@@ -1,9 +1,9 @@
-const db = require('../../core/db/pool');
+const db = require('../../../core/db/pool');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const { validationResult } = require('express-validator');
-const { logAdminActivity } = require('../utils/auditLogger');
+const { logAdminActivity } = require('../../utils/auditLogger');
 
 const hashToken = (token) => crypto.createHash('sha256').update(token).digest('hex');
 

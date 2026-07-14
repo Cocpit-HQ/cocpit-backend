@@ -1,9 +1,9 @@
 const rateLimit = require('express-rate-limit');
 
-// Global Limiter for all Admin Routes (100 reqs per 15 minutes)
+// Global Limiter for all Admin Routes (10000 reqs per 15 minutes for dev)
 const adminGlobalLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, 
-  max: 100, 
+  max: 10000, 
   message: {
     success: false,
     error: 'Too many requests from this IP, please try again after 15 minutes'

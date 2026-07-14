@@ -1,4 +1,4 @@
-const pool = require('../../core/db/pool');
+const pool = require('../../../core/db/pool');
 
 exports.getReportReasons = async (req, res) => {
   try {

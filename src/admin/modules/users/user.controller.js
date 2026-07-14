@@ -1,5 +1,7 @@
-const pool = require('../../core/db/pool');
-const redis = require('../../core/cache/redis');
+const pool = require('../../../core/db/pool');
+const redis = require('../../../core/cache/redis');
+const crypto = require('crypto');
+const { sendSuspensionAppealEmail } = require('../../../core/services/email.service');
 
 exports.getUserRoles = async (req, res) => {
   try {
@@ -266,6 +268,11 @@ exports.warnUser = async (req, res) => {
       [id, reason, message, isSevere]
     );
 
+    await pool.query(
+      'INSERT INTO moderation_actions (user_id, action_type, reason, message, created_by) VALUES ($1, $2, $3, $4, $5)',
+      [id, 'WARNING', reason, message, req.user.userId]
+    );
+
     // Increment moderation flags
     const updateQuery = `
       UPDATE users 
@@ -297,6 +304,11 @@ exports.warnUser = async (req, res) => {
         [adminId, 'USER_SUSPENDED', `Automatically suspended ${targetName} due to exceeding 7 moderation flags.`]
       );
       
+      await pool.query(
+        'INSERT INTO moderation_actions (user_id, action_type, reason, message, duration_days, created_by) VALUES ($1, $2, $3, $4, $5, $6)',
+        [id, 'SUSPENSION', `Auto-suspension for exceeding 7 moderation flags`, `Your account has been automatically suspended due to repeated violations.`, 7, adminId]
+      );
+
       // Notify Main API to kill active sessions and blacklist token
       await redis.publish('admin:users', JSON.stringify({ action: 'suspended', userId: id }));
       await redis.setex(`suspended_user:${id}`, 7 * 24 * 60 * 60, 'true'); // 7 days TTL
@@ -340,7 +352,7 @@ exports.suspendUser = async (req, res) => {
     }
 
     const result = await pool.query(
-      'UPDATE users SET is_suspended = true, suspended_until = $2, suspension_count = COALESCE(suspension_count, 0) + 1 WHERE user_id = $1 RETURNING full_name', 
+      'UPDATE users SET is_suspended = true, suspended_until = $2, suspension_count = COALESCE(suspension_count, 0) + 1 WHERE user_id = $1 RETURNING full_name, email', 
       [id, suspendedUntil]
     );
     if (result.rows.length === 0) {
@@ -348,13 +360,41 @@ exports.suspendUser = async (req, res) => {
     }
 
     const targetName = result.rows[0].full_name || 'user';
+    const userEmail = result.rows[0].email;
     const adminId = req.user.userId;
     const suspensionDuration = duration || 'Indefinite';
+    
+    let durationDays = null;
+    if (duration === 'Short Temporary (3-7 days)') durationDays = 7;
+    else if (duration === 'Long Temporary (30 days)') durationDays = 30;
 
     await pool.query(
       'INSERT INTO admin_audit_logs (user_id, action_type, description) VALUES ($1, $2, $3)',
       [adminId, 'USER_SUSPENDED', `Manually suspended ${targetName}. Duration: ${suspensionDuration}.`]
     );
+
+    const actionRes = await pool.query(
+      'INSERT INTO moderation_actions (user_id, action_type, reason, message, duration_days, created_by) VALUES ($1, $2, $3, $4, $5, $6) RETURNING action_id',
+      [id, 'SUSPENSION', `Manual suspension by admin`, `Your account has been suspended. Duration: ${suspensionDuration}.`, durationDays, adminId]
+    );
+    
+    const actionId = actionRes.rows[0].action_id;
+    const appealToken = crypto.randomBytes(32).toString('hex');
+    const expiresAt = new Date();
+    expiresAt.setDate(expiresAt.getDate() + 7);
+
+    await pool.query(
+      'INSERT INTO appeal_tokens (action_id, user_id, token_string, expires_at) VALUES ($1, $2, $3, $4)',
+      [actionId, id, appealToken, expiresAt]
+    );
+
+    try {
+      if (userEmail) {
+        await sendSuspensionAppealEmail(userEmail, targetName, appealToken, `Manual suspension by admin for ${suspensionDuration}.`);
+      }
+    } catch (e) {
+      console.error('Failed to send suspension email:', e);
+    }
 
     // Notify Main API to kill active sessions and blacklist token
     await redis.publish('admin:users', JSON.stringify({ action: 'suspended', userId: id }));
@@ -419,9 +459,14 @@ exports.bulkWarnUsers = async (req, res) => {
         [id, reason, message, isSevere]
       );
 
+      await pool.query(
+        'INSERT INTO moderation_actions (user_id, action_type, reason, message, created_by) VALUES ($1, $2, $3, $4, $5)',
+        [id, 'WARNING', reason, message, adminId]
+      );
+
       // 2. Increment flags
       const updateResult = await pool.query(
-        'UPDATE users SET moderation_flags = COALESCE(moderation_flags, 0) + $2 WHERE user_id = $1 RETURNING moderation_flags, full_name',
+        'UPDATE users SET moderation_flags = COALESCE(moderation_flags, 0) + $2 WHERE user_id = $1 RETURNING moderation_flags, full_name, email',
         [id, points]
       );
 
@@ -432,6 +477,7 @@ exports.bulkWarnUsers = async (req, res) => {
 
       const newFlagsCount = parseInt(updateResult.rows[0].moderation_flags);
       const targetName = updateResult.rows[0].full_name || 'user';
+      const userEmail = updateResult.rows[0].email;
       let autoSuspended = false;
 
       // 3. Auto-suspension check
@@ -446,6 +492,29 @@ exports.bulkWarnUsers = async (req, res) => {
           [adminId, 'USER_SUSPENDED', `Automatically suspended ${targetName} due to exceeding 7 moderation flags.`]
         );
         
+        const actionRes = await pool.query(
+          'INSERT INTO moderation_actions (user_id, action_type, reason, message, duration_days, created_by) VALUES ($1, $2, $3, $4, $5, $6) RETURNING action_id',
+          [id, 'SUSPENSION', `Auto-suspension for exceeding 7 moderation flags`, `Your account has been automatically suspended due to repeated violations.`, 7, adminId]
+        );
+
+        const actionId = actionRes.rows[0].action_id;
+        const appealToken = crypto.randomBytes(32).toString('hex');
+        const expiresAt = new Date();
+        expiresAt.setDate(expiresAt.getDate() + 7);
+
+        await pool.query(
+          'INSERT INTO appeal_tokens (action_id, user_id, token_string, expires_at) VALUES ($1, $2, $3, $4)',
+          [actionId, id, appealToken, expiresAt]
+        );
+
+        try {
+          if (userEmail) {
+            await sendSuspensionAppealEmail(userEmail, targetName, appealToken, `Auto-suspension for exceeding 7 moderation flags.`);
+          }
+        } catch (e) {
+          console.error('Failed to send suspension email:', e);
+        }
+
         // Notify Main API to kill active sessions and blacklist token
         await redis.publish('admin:users', JSON.stringify({ action: 'suspended', userId: id }));
         await redis.setex(`suspended_user:${id}`, 7 * 24 * 60 * 60, 'true'); // 7 days TTL
@@ -482,7 +551,7 @@ exports.bulkSuspendUsers = async (req, res) => {
 
     for (const id of userIds) {
       const updateResult = await pool.query(
-        'UPDATE users SET is_suspended = true, suspension_count = COALESCE(suspension_count, 0) + 1 WHERE user_id = $1 RETURNING full_name',
+        'UPDATE users SET is_suspended = true, suspension_count = COALESCE(suspension_count, 0) + 1 WHERE user_id = $1 RETURNING full_name, email',
         [id]
       );
 
@@ -492,10 +561,34 @@ exports.bulkSuspendUsers = async (req, res) => {
       }
 
       const targetName = updateResult.rows[0].full_name || 'user';
+      const userEmail = updateResult.rows[0].email;
       await pool.query(
         'INSERT INTO admin_audit_logs (user_id, action_type, description) VALUES ($1, $2, $3)',
         [adminId, 'USER_SUSPENDED', `Manually suspended ${targetName} (Bulk Action).`]
       );
+
+      const actionRes = await pool.query(
+        'INSERT INTO moderation_actions (user_id, action_type, reason, message, created_by) VALUES ($1, $2, $3, $4, $5) RETURNING action_id',
+        [id, 'SUSPENSION', `Bulk manual suspension by admin`, `Your account has been suspended for violating community guidelines.`, adminId]
+      );
+
+      const actionId = actionRes.rows[0].action_id;
+      const appealToken = crypto.randomBytes(32).toString('hex');
+      const expiresAt = new Date();
+      expiresAt.setDate(expiresAt.getDate() + 7);
+
+      await pool.query(
+        'INSERT INTO appeal_tokens (action_id, user_id, token_string, expires_at) VALUES ($1, $2, $3, $4)',
+        [actionId, id, appealToken, expiresAt]
+      );
+
+      try {
+        if (userEmail) {
+          await sendSuspensionAppealEmail(userEmail, targetName, appealToken, `Bulk manual suspension by admin.`);
+        }
+      } catch (e) {
+        console.error('Failed to send suspension email:', e);
+      }
 
       // Notify Main API to kill active sessions and blacklist token
       await redis.publish('admin:users', JSON.stringify({ action: 'suspended', userId: id }));
@@ -581,6 +674,11 @@ exports.deleteUser = async (req, res) => {
     await pool.query(
       'INSERT INTO admin_audit_logs (user_id, action_type, description) VALUES ($1, $2, $3)',
       [adminId, 'USER_DELETED', `Soft deleted user ${result.rows[0].full_name}`]
+    );
+
+    await pool.query(
+      'INSERT INTO moderation_actions (user_id, action_type, reason, message, created_by) VALUES ($1, $2, $3, $4, $5)',
+      [id, 'BAN', `Manual soft deletion by admin`, `Your account has been deleted.`, adminId]
     );
 
     res.json({ success: true, message: 'User deleted successfully' });

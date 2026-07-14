@@ -1,5 +1,5 @@
-const pool = require('../../core/db/pool');
-const redis = require('../../core/cache/redis');
+const pool = require('../../../core/db/pool');
+const redis = require('../../../core/cache/redis');
 exports.getDashboardMetrics = async (req, res) => {
   try {
     const cacheKey = `dashboard:metrics:${req.query.startDate || 'default'}:${req.query.endDate || 'default'}`;

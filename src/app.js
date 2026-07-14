@@ -71,6 +71,7 @@ app.use(express.json({ limit: "100mb" }));
 app.use(express.urlencoded({ limit: "100mb", extended: true }));
 app.use(cookieParser());
 app.use("/uploads", express.static("uploads"));
+app.use(express.static("public"));
 
 app.use((req, res, next) => {
   req.url = req.url.replace(/\/+/g, "/");
@@ -96,8 +97,13 @@ app.use("/api/auth", authRoutes);
 app.use("/api/onboarding", onboardingRoutes);
 app.use("/api/config", configRoutes);
 
+const publicAppealRoutes = require("./modules/public_appeal/public_appeal.routes");
+
 // Global Onboarding Enforcement for all other /api routes
 // optionalAuth extracts user from token without blocking; enforceOnboarding blocks if onboarding is incomplete
+
+app.use("/api/public/appeals", publicAppealRoutes);
+
 app.use("/api", optionalAuth);
 app.use("/api", enforceOnboarding);
 

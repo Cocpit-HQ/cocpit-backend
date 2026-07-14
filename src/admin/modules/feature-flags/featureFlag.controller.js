@@ -1,4 +1,4 @@
-const redis = require('../../core/cache/redis');
+const redis = require('../../../core/cache/redis');
 
 const getFlags = async (req, res) => {
   try {

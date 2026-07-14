@@ -1,5 +1,5 @@
-const pool = require('../../core/db/pool');
-const { logAdminActivity } = require('../utils/auditLogger');
+const pool = require('../../../core/db/pool');
+const { logAdminActivity } = require('../../utils/auditLogger');
 
 exports.getJobs = async (req, res) => {
   try {

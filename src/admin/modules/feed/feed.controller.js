@@ -1,5 +1,5 @@
-const pool = require('../../core/db/pool');
-const redis = require('../../core/cache/redis');
+const pool = require('../../../core/db/pool');
+const redis = require('../../../core/cache/redis');
 
 // GET /api/admin/feed/metrics
 exports.getFeedMetrics = async (req, res) => {
