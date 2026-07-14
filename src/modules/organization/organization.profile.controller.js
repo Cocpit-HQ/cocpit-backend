@@ -1078,13 +1078,14 @@ exports.updateOrgProfile = async (req, res) => {
         }
 
         // Sync key offerings (child table, ordered list — full replace keeps display order intact)
+        let cleanOfferings; // undefined when keyOfferings wasn't part of this update
         if (keyOfferings !== undefined) {
             await client.query(
                 `UPDATE organization_key_offerings SET is_deleted = TRUE WHERE org_id = $1 AND is_deleted = FALSE`,
                 [orgId]
             );
 
-            const cleanOfferings = keyOfferings.map(text => (text || '').trim()).filter(Boolean);
+            cleanOfferings = keyOfferings.map(text => (text || '').trim()).filter(Boolean);
             for (let i = 0; i < cleanOfferings.length; i++) {
                 await client.query(
                     `INSERT INTO organization_key_offerings (org_id, content, position) VALUES ($1, $2, $3)`,
@@ -1101,7 +1102,15 @@ exports.updateOrgProfile = async (req, res) => {
         );
 
         await client.query('COMMIT');
-        return res.json({ message: 'Profile updated successfully', organization: result.rows[0] });
+
+        // Return the authoritative saved state (incl. key_offerings) so the client
+        // can update its cache directly from this response instead of refetching.
+        const organization = result.rows[0];
+        if (cleanOfferings !== undefined) {
+            organization.key_offerings = cleanOfferings;
+        }
+
+        return res.json({ message: 'Profile updated successfully', organization });
 
     } catch (err) {
         await client.query('ROLLBACK');
@@ -1231,7 +1240,7 @@ exports.updateOrgAbout = async (req, res) => {
                 [orgId]
             );
             const existingLinkIds = new Set(currentRes.rows.map(r => r.link_id));
-            const VALID_PLATFORMS = ['linkedin', 'twitter', 'instagram', 'facebook', 'youtube', 'github', 'other'];
+            const VALID_PLATFORMS = ['linkedin', 'twitter', 'instagram', 'facebook', 'youtube', 'discord', 'github', 'other'];
 
             for (const link of links) {
                 if (!link.url) continue;
@@ -1328,7 +1337,37 @@ exports.updateOrgAbout = async (req, res) => {
         );
 
         await client.query('COMMIT');
-        return res.json({ message: 'About updated successfully' });
+
+        // Return the authoritative saved state so the client can update its
+        // cache directly from this response instead of racing a refetch.
+        const [aboutRes, officesRes, linksRes, specialtiesRes] = await Promise.all([
+            pool.query(`SELECT description, slogan FROM organizations WHERE org_id = $1`, [orgId]),
+            pool.query(
+                `SELECT office_id, city, country, address, is_headquarters
+                 FROM organization_offices WHERE org_id = $1 AND is_deleted = FALSE
+                 ORDER BY is_headquarters DESC, city ASC`,
+                [orgId]
+            ),
+            pool.query(
+                `SELECT link_id, platform, url, display_label
+                 FROM organization_links WHERE org_id = $1 AND is_deleted = FALSE
+                 ORDER BY platform ASC`,
+                [orgId]
+            ),
+            pool.query(
+                `SELECT specialty_id, name FROM organization_specialties
+                 WHERE org_id = $1 AND is_deleted = FALSE ORDER BY name ASC`,
+                [orgId]
+            ),
+        ]);
+
+        return res.json({
+            message: 'About updated successfully',
+            about: aboutRes.rows[0],
+            offices: officesRes.rows,
+            links: linksRes.rows,
+            specialties: specialtiesRes.rows,
+        });
 
     } catch (err) {
         await client.query('ROLLBACK');
