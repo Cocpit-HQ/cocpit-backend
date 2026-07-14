@@ -52,6 +52,62 @@ const FEED_SLICE_TTL    = 300;   // 5 minutes — per redis-key-registry.md
 const EXPLORATION_SLOTS = 3;     // slots requested from exploration pool
 
 // ---------------------------------------------------------------------------
+// ID-160/D1 — Actor-scoped cache/session identifier
+// ---------------------------------------------------------------------------
+
+/**
+ * buildCacheScopeId
+ *
+ * Builds the identifier used for feed SLICE cache, SESSION state, and the
+ * SEEN-SET — i.e. everything that must not be shared between a human's
+ * personal feed and a company/organization they're acting as. Candidate
+ * generation and ranking intentionally keep using the real `userId` (they
+ * key off the human's own social graph / intent signals in the DB; that's
+ * unrelated to which cache entry serves the response — see ID-160
+ * implementation plan, "D1 minimal" scope).
+ *
+ * Falls back to the bare userId — today's exact behavior and key shape —
+ * whenever no organization actor is present, which is always true for
+ * callers that never send x-actor-type/x-actor-id (e.g. mobile clients
+ * today), so their cache keys are byte-for-byte unchanged.
+ *
+ * @param {string} userId
+ * @param {string} [orgActorId]
+ * @returns {string}
+ */
+function buildCacheScopeId(userId, orgActorId) {
+  return orgActorId ? `${userId}:org:${orgActorId}` : userId;
+}
+
+// ---------------------------------------------------------------------------
+// ID-160/D1 — Actor-scoped cache/session identifier
+// ---------------------------------------------------------------------------
+
+/**
+ * buildCacheScopeId
+ *
+ * Builds the identifier used for feed SLICE cache, SESSION state, and the
+ * SEEN-SET — i.e. everything that must not be shared between a human's
+ * personal feed and a company/organization they're acting as. Candidate
+ * generation and ranking intentionally keep using the real `userId` (they
+ * key off the human's own social graph / intent signals in the DB; that's
+ * unrelated to which cache entry serves the response — see ID-160
+ * implementation plan, "D1 minimal" scope).
+ *
+ * Falls back to the bare userId — today's exact behavior and key shape —
+ * whenever no organization actor is present, which is always true for
+ * callers that never send x-actor-type/x-actor-id (e.g. mobile clients
+ * today), so their cache keys are byte-for-byte unchanged.
+ *
+ * @param {string} userId
+ * @param {string} [orgActorId]
+ * @returns {string}
+ */
+function buildCacheScopeId(userId, orgActorId) {
+  return orgActorId ? `${userId}:org:${orgActorId}` : userId;
+}
+
+// ---------------------------------------------------------------------------
 // Internal: run the full generation → ranking → reranking pipeline
 // ---------------------------------------------------------------------------
 
@@ -62,13 +118,16 @@ const EXPLORATION_SLOTS = 3;     // slots requested from exploration pool
  * (ranking + explore fetch run in parallel) → rerankingEngine.
  *
  * @param {object} params
- * @param {string} params.userId   - Requesting user UUID
- * @param {number} params.limit    - Page size (default 20)
- * @param {object} params.pool     - pg Pool instance
- * @param {object} params.session  - FeedSession (from feedSession.service)
+ * @param {string} params.userId        - Requesting user UUID (real identity — used for DB-backed personalization)
+ * @param {string} params.scopeId       - Cache-scope id (see buildCacheScopeId) — used for the seen-set only
+ * @param {number} params.limit         - Page size (default 20)
+ * @param {object} params.pool          - pg Pool instance
+ * @param {object} params.session       - FeedSession (from feedSession.service)
+ * @param {boolean} params.isInitialPage - ID-160 follow-up: true when this is a fresh page
+ *   load (no cursor), so rerankCandidates skips the seen-set filter — see its own doc comment.
  * @returns {Promise<Array>}       - FeedItem[] from rerankingEngine
  */
-async function _runPipeline({ userId, limit, pool, session }) {
+async function _runPipeline({ userId, scopeId, limit, pool, session, isInitialPage }) {
   // ── Step 1: Generate candidates (all 4 sources) ───────────────────────────
   const candidates = await generateCandidates({ userId, pool });
   const totalCandidates = candidates.length;
@@ -76,7 +135,7 @@ async function _runPipeline({ userId, limit, pool, session }) {
   // ── Step 2: Rank + fetch exploration pool (parallel) ─────────────────────
   const [rankedCandidates, explorationCandidates] = await Promise.all([
     rankCandidates(candidates, userId, pool),
-    getExplorationCandidates(userId, EXPLORATION_SLOTS),
+    getExplorationCandidates(scopeId, EXPLORATION_SLOTS),
   ]);
 
   // ── Step 3: Extract opportunity candidates from ranked list ───────────────
@@ -87,12 +146,16 @@ async function _runPipeline({ userId, limit, pool, session }) {
     .map(item => item._candidate);  // pass raw CandidateItem to slot injector
 
   // ── Step 4: Rerank + slot injection ──────────────────────────────────────
+  // scopeId (not userId) so the seen-set dedup matches whichever actor is
+  // actually viewing — see buildCacheScopeId. isInitialPage disables the
+  // seen-set filter for a fresh page load — see rerankCandidates doc comment.
   const feedItems = await rerankCandidates(
     rankedCandidates,
-    userId,
+    scopeId,
     session,
     opportunityCandidates,
     explorationCandidates,
+    isInitialPage,
   );
 
   return { feedItems, totalCandidates };
@@ -102,7 +165,7 @@ async function _runPipeline({ userId, limit, pool, session }) {
 // Internal: hydrate post data from DB
 // ---------------------------------------------------------------------------
 
-async function _hydrateFeedItems(items, userId, pool) {
+async function _hydrateFeedItems(items, userId, pool, orgActorId = null) {
   if (!items || items.length === 0) return items;
   if (!pool) return items; // Can't hydrate without DB pool
 
@@ -116,7 +179,11 @@ async function _hydrateFeedItems(items, userId, pool) {
       ${getPublicFeedWhere(1)}
       AND p.post_id = ANY($3::uuid[])
     `;
-    const params = [userId, null, postIds]; // param 1: user, param 2: company (null for user feed)
+    // param 1: user (always real identity — blocks/membership checks etc.)
+    // param 2: company — ID-160/D1: pass the acting org so is_liked/is_saved/
+    //   is_commented/broadcast-visibility reflect the company's own state
+    //   instead of always falling back to the human's personal state.
+    const params = [userId, orgActorId, postIds];
 
     const { rows } = await pool.query(query, params);
     
@@ -195,23 +262,32 @@ function _buildResponse(items, session, cacheHit, nextCursor, totalCandidates = 
  * cursor + seen set are updated.
  *
  * @param {object}  params
- * @param {string}  params.userId   - Requesting user UUID (required)
- * @param {string}  [params.cursor] - Pagination cursor from previous response
- * @param {number}  [params.limit]  - Items per page (default: 20, max: 50)
- * @param {object}  [params.pool]   - pg Pool instance (required for live generation)
- * @param {string}  [params.context]- Feed context: home | explore | startup
+ * @param {string}  params.userId     - Requesting user UUID (required)
+ * @param {string}  [params.cursor]   - Pagination cursor from previous response
+ * @param {number}  [params.limit]    - Items per page (default: 20, max: 50)
+ * @param {object}  [params.pool]     - pg Pool instance (required for live generation)
+ * @param {string}  [params.context]  - Feed context: home | explore | startup
+ * @param {string}  [params.orgActorId] - ID-160/D1: organization id when the request is
+ *   scoped to a company/organization actor (from req.actor, set only when the caller sends
+ *   x-actor-type/x-actor-id — mobile clients never send these, so this is undefined for them
+ *   and behavior is unchanged). Used to keep cache/session/seen-state and like/save/comment
+ *   hydration separate from the same human's personal feed.
  * @returns {Promise<object>}       - FeedResponse matching api-contracts.md
  */
-async function getFeed({ userId, cursor = null, limit = DEFAULT_PAGE_SIZE, pool = null, context = 'home' } = {}) {
+async function getFeed({ userId, cursor = null, limit = DEFAULT_PAGE_SIZE, pool = null, context = 'home', orgActorId = null } = {}) {
   if (!userId) throw new Error('feedService.getFeed: `userId` is required');
 
   const pageSize   = Math.min(limit, 50);  // enforce max from api-contracts.md
   const effectiveCursor = cursor || 'initial';
+  const scopeId = buildCacheScopeId(userId, orgActorId);
+  // ID-160 follow-up: true only for a genuinely fresh page load (no cursor
+  // supplied) — see rerankCandidates' isInitialPage doc comment.
+  const isInitialPage = !cursor;
 
   // ── B7.2: Check Redis cache first ─────────────────────────────────────────
   let cachedSlice = null;
   try {
-    cachedSlice = await getFeedSlice(userId, effectiveCursor);
+    cachedSlice = await getFeedSlice(scopeId, effectiveCursor);
   } catch (cacheErr) {
     console.warn('[feedService] Cache read failed, falling through to pipeline:', cacheErr.message);
   }
@@ -219,19 +295,22 @@ async function getFeed({ userId, cursor = null, limit = DEFAULT_PAGE_SIZE, pool 
   // ── Get or create session ─────────────────────────────────────────────────
   let session = null;
   try {
-    session = await getSession(userId);
+    session = await getSession(scopeId);
     if (!session) {
-      session = await createSession(userId, context);
+      session = await createSession(scopeId, context);
     }
   } catch (sessionErr) {
     console.warn('[feedService] Session read failed, continuing with null session:', sessionErr.message);
   }
 
   // ── Cache HIT: return immediately ─────────────────────────────────────────
-  if (cachedSlice !== null && Array.isArray(cachedSlice)) {
+  // NOTE: an empty array is deliberately NOT treated as a hit — a previous
+  // cold-start/failed generation must not be replayed for the full TTL.
+  // Falls through to the generation pipeline below instead.
+  if (cachedSlice !== null && Array.isArray(cachedSlice) && cachedSlice.length > 0) {
     const nextCursor = session?.cursor ?? effectiveCursor;
     const sliced = cachedSlice.slice(0, pageSize);
-    const hydratedSlicedItems = await _hydrateFeedItems(sliced, userId, pool);
+    const hydratedSlicedItems = await _hydrateFeedItems(sliced, userId, pool, orgActorId);
     return _buildResponse(hydratedSlicedItems, session, true, nextCursor, 0);
   }
 
@@ -240,7 +319,7 @@ async function getFeed({ userId, cursor = null, limit = DEFAULT_PAGE_SIZE, pool 
   let totalCandidates = 0;
 
   try {
-    const pipelineResult = await _runPipeline({ userId, limit: pageSize, pool, session });
+    const pipelineResult = await _runPipeline({ userId, scopeId, limit: pageSize, pool, session, isInitialPage });
     feedItems = pipelineResult.feedItems;
     totalCandidates = pipelineResult.totalCandidates;
   } catch (pipelineErr) {
@@ -249,14 +328,14 @@ async function getFeed({ userId, cursor = null, limit = DEFAULT_PAGE_SIZE, pool 
     try {
       const { getTrendingCandidates } = require('./candidates/sources/trendingSource');
       const trending = await getTrendingCandidates({ userId, limit: pageSize, pool });
-      feedItems = trending.map((c, index) => ({ 
-        id: c.contentId, 
-        type: c.itemType, 
-        content: c.metadata || {}, 
-        author: { id: c.authorId }, 
-        score: c.score, 
+      feedItems = trending.map((c, index) => ({
+        id: c.contentId,
+        type: c.itemType,
+        content: c.metadata || {},
+        author: { id: c.authorId },
+        score: c.score,
         slot_type: 'organic',
-        position: index 
+        position: index
       }));
     } catch (fallbackErr) {
       feedItems = [];
@@ -268,7 +347,7 @@ async function getFeed({ userId, cursor = null, limit = DEFAULT_PAGE_SIZE, pool 
   const slicedItems = feedItems.slice(0, pageSize);
   try {
     const ttl = slicedItems.length > 0 ? FEED_SLICE_TTL : 15;
-    await setFeedSlice(userId, effectiveCursor, slicedItems, ttl);
+    await setFeedSlice(scopeId, effectiveCursor, slicedItems, ttl);
   } catch (writeErr) {
     console.warn('[feedService] Cache write failed (non-fatal):', writeErr.message);
   }
@@ -277,16 +356,16 @@ async function getFeed({ userId, cursor = null, limit = DEFAULT_PAGE_SIZE, pool 
   try {
     const itemIds = slicedItems.map(i => i.id).filter(Boolean);
     await Promise.all([
-      updateCursor(userId, nextCursor),
-      itemIds.length > 0 ? addToSeenSet(userId, itemIds) : Promise.resolve(),
-      incrementSeenCount(userId, slicedItems.length),
+      updateCursor(scopeId, nextCursor),
+      itemIds.length > 0 ? addToSeenSet(scopeId, itemIds) : Promise.resolve(),
+      incrementSeenCount(scopeId, slicedItems.length),
     ]);
   } catch (sessionUpdateErr) {
     console.warn('[feedService] Session update failed (non-fatal):', sessionUpdateErr.message);
   }
 
   // ── Hydrate items ─────────────────────────────────────────────────────────
-  const hydratedSlicedItems = await _hydrateFeedItems(slicedItems, userId, pool);
+  const hydratedSlicedItems = await _hydrateFeedItems(slicedItems, userId, pool, orgActorId);
 
   // ── B7.5: Return response ─────────────────────────────────────────────────
   return _buildResponse(hydratedSlicedItems, session, false, nextCursor, totalCandidates);
@@ -303,12 +382,14 @@ async function getFeed({ userId, cursor = null, limit = DEFAULT_PAGE_SIZE, pool 
  * 2. Logs the analytics event
  * 3. Applies a negative penalty to user's hashtag score
  */
-async function hidePost({ userId, postId, sessionId, position, pool }) {
+async function hidePost({ userId, postId, sessionId, position, pool, orgActorId = null }) {
   if (!userId || !postId) throw new Error('hidePost: userId and postId are required');
+
+  const scopeId = buildCacheScopeId(userId, orgActorId);
 
   // 1. Permanently hide from future feed generations (addToSeenSet)
   try {
-    await addToSeenSet(userId, [postId]);
+    await addToSeenSet(scopeId, [postId]);
   } catch (err) {
     console.warn('[feedService] hidePost addToSeenSet failed:', err.message);
   }
@@ -344,6 +425,7 @@ async function hidePost({ userId, postId, sessionId, position, pool }) {
 module.exports = {
   getFeed,
   hidePost,
+  buildCacheScopeId,
 
   // Exported for unit tests
   _buildResponse,

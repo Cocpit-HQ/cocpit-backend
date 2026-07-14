@@ -313,6 +313,12 @@ function _buildSlottedPage(organicItems, opportunityCandidates, explorationCandi
  * @param {object}  [session={}]           - Feed session (reads exploration_enabled)
  * @param {Array}   [opportunityCandidates=[]] - CandidateItem[] from opportunitySource (A6)
  * @param {Array}   [explorationCandidates=[]] - CandidateItem[] from explorationPool (A7)
+ * @param {boolean} [isInitialPage=false]   - ID-160 follow-up: true for a fresh page load
+ *   (cursor not provided / 'initial'). When true, the seen-set filter below is skipped so a
+ *   plain refresh shows the top of the feed again instead of an empty result once every
+ *   available candidate has already been served once (seen-set persists 24h independently
+ *   of the 30-min session). Still applied for real pagination (cursor present) so "load more"
+ *   within one scroll session doesn't repeat a post you just saw.
  * @returns {Promise<Array>}               - FeedItem[] with positions assigned, ≤ 20 items
  */
 async function rerankCandidates(
@@ -321,6 +327,7 @@ async function rerankCandidates(
   session               = {},
   opportunityCandidates = [],
   explorationCandidates = [],
+  isInitialPage         = false,
 ) {
   if (!Array.isArray(rankedCandidates) || rankedCandidates.length === 0) {
     return [];
@@ -330,17 +337,21 @@ async function rerankCandidates(
   }
 
   // ── 1. Seen-set filter ────────────────────────────────────────────────────
+  let unseen = rankedCandidates;
   let seenIds = new Set();
-  try {
-    const seenArr = await getSeenSet(userId);
-    seenIds = new Set(seenArr);
-  } catch (err) {
-    console.warn('[rerankingEngine] Could not fetch seen set, skipping filter:', err.message);
-  }
 
-  const unseen = seenIds.size > 0
-    ? rankedCandidates.filter(item => !seenIds.has(item._candidate?.contentId ?? item.item_id))
-    : rankedCandidates;
+  if (!isInitialPage) {
+    try {
+      const seenArr = await getSeenSet(userId);
+      seenIds = new Set(seenArr);
+    } catch (err) {
+      console.warn('[rerankingEngine] Could not fetch seen set, skipping filter:', err.message);
+    }
+
+    unseen = seenIds.size > 0
+      ? rankedCandidates.filter(item => !seenIds.has(item._candidate?.contentId ?? item.item_id))
+      : rankedCandidates;
+  }
 
   let filteredOpportunity = opportunityCandidates;
   let filteredExploration = explorationCandidates;

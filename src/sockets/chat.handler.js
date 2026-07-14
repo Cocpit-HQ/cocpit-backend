@@ -54,6 +54,9 @@ module.exports.registerChatHandlers = (io, socket) => {
   // Helper to notify other conversation/group participants via their personal rooms
   const notifyParticipants = async (conversationId, event, payload, senderId) => {
     try {
+      const uuidRegex = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+      if (!conversationId || !uuidRegex.test(conversationId)) return;
+
       const participants = await pool.query(
         `SELECT user_id, org_id 
          FROM conversation_participants 
@@ -88,7 +91,8 @@ module.exports.registerChatHandlers = (io, socket) => {
 
   // Typing Indicator
   socket.on("typing", async ({ conversationId }) => {
-    if (!conversationId) return;
+    const uuidRegex = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+    if (!conversationId || !uuidRegex.test(conversationId)) return;
     
     // Track typing status in-memory
     socketService.setTyping(userId, conversationId, true);
@@ -124,7 +128,8 @@ module.exports.registerChatHandlers = (io, socket) => {
 
   // Stop Typing Indicator
   socket.on("stopTyping", async ({ conversationId }) => {
-    if (!conversationId) return;
+    const uuidRegex = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+    if (!conversationId || !uuidRegex.test(conversationId)) return;
 
     // Track typing status in-memory
     socketService.setTyping(userId, conversationId, false);
@@ -240,7 +245,8 @@ module.exports.registerChatHandlers = (io, socket) => {
 
   // Group Typing Indicator
   socket.on("groupTyping", async ({ groupId }) => {
-    if (!groupId) return;
+    const uuidRegex = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+    if (!groupId || !uuidRegex.test(groupId)) return;
 
     // Track group typing status in-memory
     socketService.setTyping(userId, groupId, true);
@@ -276,7 +282,8 @@ module.exports.registerChatHandlers = (io, socket) => {
 
   // Stop Group Typing
   socket.on("stopGroupTyping", async ({ groupId }) => {
-    if (!groupId) return;
+    const uuidRegex = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+    if (!groupId || !uuidRegex.test(groupId)) return;
 
     // Track group typing status in-memory
     socketService.setTyping(userId, groupId, false);

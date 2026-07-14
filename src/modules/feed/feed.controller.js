@@ -15,6 +15,11 @@ const feedService        = require("./feed.service");
 const feedAnalytics      = require("./analytics/feedAnalytics.service");
 const pool               = require("../../core/db/pool");
 
+// ID-160/D1 — see feed.service.js:buildCacheScopeId. Requests without
+// x-actor-type/x-actor-id (mobile clients today) resolve to `undefined`
+// here, so scopeId === userId — identical to pre-D1 behavior.
+const getOrgActorId = (req) => (req.actor?.type === "ORGANIZATION" ? req.actor.id : undefined);
+
 // ─── GET /api/feed ────────────────────────────────────────────────────────────
 /**
  * Returns the next paginated feed slice for the authenticated user.
@@ -64,6 +69,7 @@ exports.getFeed = async (req, res, next) => {
       limit,
       pool,
       context,
+      orgActorId: getOrgActorId(req),
     });
 
     return res.status(200).json(response);
@@ -111,8 +117,9 @@ exports.trackEvent = async (req, res, next) => {
       pool,
     });
 
-    // Touch session to keep it alive
-    await feedSessionService.touchSession(userId).catch(() => {}); // non-fatal
+    // Touch session to keep it alive (scoped to the acting org, if any — D1)
+    const touchScopeId = feedService.buildCacheScopeId(userId, getOrgActorId(req));
+    await feedSessionService.touchSession(touchScopeId).catch(() => {}); // non-fatal
 
     return res.status(202).json({
       ok:      true,
@@ -138,10 +145,11 @@ exports.getSession = async (req, res, next) => {
     if (!userId) return res.status(401).json({ ok: false, message: "Unauthenticated" });
 
     const context = req.query.context || "home";
+    const scopeId = feedService.buildCacheScopeId(userId, getOrgActorId(req));
 
-    let session = await feedSessionService.getSession(userId);
+    let session = await feedSessionService.getSession(scopeId);
     if (!session) {
-      session = await feedSessionService.createSession(userId, context);
+      session = await feedSessionService.createSession(scopeId, context);
     }
 
     return res.status(200).json({
@@ -171,7 +179,8 @@ exports.resetSession = async (req, res, next) => {
     const userId = req.user?.sub;
     if (!userId) return res.status(401).json({ ok: false, message: "Unauthenticated" });
 
-    await feedSessionService.resetSession(userId);
+    const scopeId = feedService.buildCacheScopeId(userId, getOrgActorId(req));
+    await feedSessionService.resetSession(scopeId);
 
     return res.status(200).json({
       ok:      true,
@@ -202,7 +211,8 @@ exports.hidePost = async (req, res, next) => {
       postId: item_id,
       sessionId: session_id,
       position: position,
-      pool
+      pool,
+      orgActorId: getOrgActorId(req),
     });
 
     return res.status(200).json({

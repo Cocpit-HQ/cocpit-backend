@@ -271,7 +271,9 @@ const getPostHydrationSelect = (companyParamIdx, userParamIdx) => `
                     'user_id', COALESCE(sp.author_org_id, sp_u.user_id),
                     'full_name', COALESCE(sp_comp.name, sp_u.full_name),
                     'avatar_url', COALESCE(sp_comp.logo_url, sp_u.avatar_url),
-                    'author_headline', COALESCE(sp_comp.slogan, sp_u.headline)
+                    'author_headline', COALESCE(sp_comp.slogan, sp_u.headline),
+                    'author_slug', COALESCE(sp_comp.slug, sp_u.account_name),
+                    'is_organization_post', (sp.author_org_id IS NOT NULL)
                 ),
                  'media', COALESCE((SELECT json_agg(json_build_object('url', pm.url, 'media_type', pm.media_type)) FROM post_media pm WHERE pm.post_id = sp.post_id), '[]'::json),
                  'achievement_image_url', sp_ai.cloudinary_url,

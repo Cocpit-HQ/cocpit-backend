@@ -551,11 +551,12 @@ exports.getPublicProfilePosts = async (req, res) => {
               'content', sp.content,
               'created_at', sp.created_at,
               'author', json_build_object(
-                'user_id', sp_u.user_id,
-                'full_name', sp_u.full_name,
-                'avatar_url', sp_u.avatar_url,
-                'author_slug', sp_u.account_name,
-                'author_headline', sp_u.headline
+                'user_id', COALESCE(sp.author_org_id, sp_u.user_id),
+                'full_name', COALESCE(sp_comp.name, sp_u.full_name),
+                'avatar_url', COALESCE(sp_comp.logo_url, sp_u.avatar_url),
+                'author_slug', COALESCE(sp_comp.slug, sp_u.account_name),
+                'author_headline', COALESCE(sp_comp.slogan, sp_u.headline),
+                'is_organization_post', (sp.author_org_id IS NOT NULL)
               ),
               'media', COALESCE((SELECT json_agg(json_build_object('url', pm.url, 'media_type', pm.media_type)) FROM post_media pm WHERE pm.post_id = sp.post_id), '[]'::json),
               'like_count', (SELECT COUNT(*) FROM post_likes pl WHERE pl.post_id = sp.post_id)::int,
@@ -643,6 +644,7 @@ exports.getPublicProfilePosts = async (req, res) => {
       LEFT JOIN post_categories pc ON pc.category_id = p.category_id
       LEFT JOIN posts sp ON p.shared_post_id = sp.post_id
       LEFT JOIN active_users sp_u ON sp.author_id = sp_u.user_id
+      LEFT JOIN organizations sp_comp ON sp_comp.org_id = sp.author_org_id
       LEFT JOIN post_categories sp_cat ON sp.category_id = sp_cat.category_id
 
       ${whereClause}

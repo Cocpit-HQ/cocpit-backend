@@ -149,10 +149,12 @@ async function generateCandidates({
   void context; // accepted for future use (A/B bucket, device type, etc.)
 
   // ── 2. Cache-first check ──────────────────────────────────────────────────
+  // NOTE: an empty cached pool is NOT treated as a hit — a previous
+  // cold-start/failed generation must not be replayed for the full TTL.
   if (!skipCache) {
     try {
       const cached = await getCandidatePool(userId);
-      if (cached !== null) {
+      if (cached !== null && cached.length > 0) {
         // Slice in case limit changed since the cache was written
         return cached.slice(0, limit);
       }

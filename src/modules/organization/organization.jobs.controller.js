@@ -159,7 +159,7 @@ exports.getOrganizationJobs = async (req, res) => {
     // We enforce the query filter.
 
     try {
-        let conditions = ["j.org_id = $1"];
+        let conditions = ["j.org_id = $1", "j.is_active = TRUE"];
         let params = [companyId];
         let paramCount = 2;
 
@@ -173,7 +173,6 @@ exports.getOrganizationJobs = async (req, res) => {
                 return res.status(403).json({ message: "Organization is suspended" });
             }
 
-            conditions.push("j.is_active = TRUE");
             conditions.push("j.status = 'ACTIVE'");
             conditions.push("(j.expires_at IS NULL OR j.expires_at > NOW())");
         } else if (scope === 'internal') {
@@ -242,7 +241,7 @@ exports.getOrganizationJobs = async (req, res) => {
                     COUNT(*) FILTER (WHERE j.status = 'DRAFT')::int AS "draft",
                     COUNT(*) FILTER (WHERE j.status = 'IN REVIEW')::int AS "inReview"
                 FROM jobs j
-                WHERE j.org_id = $1
+                WHERE j.org_id = $1 AND j.is_active = TRUE
             `;
 
             const [result, countsResult] = await Promise.all([
@@ -293,7 +292,7 @@ exports.updateOrganizationJob = async (req, res) => {
         await client.query("BEGIN");
 
         // 1. Verify Job Ownership
-        const jobCheck = await client.query("SELECT * FROM jobs WHERE job_id = $1 AND org_id = $2 FOR UPDATE", [jobId, companyId]);
+        const jobCheck = await client.query("SELECT * FROM jobs WHERE job_id = $1 AND org_id = $2 AND is_active = TRUE FOR UPDATE", [jobId, companyId]);
         if (jobCheck.rowCount === 0) return res.status(404).json({ message: "Job not found in this organization." });
 
         const oldJobData = jobCheck.rows[0];
@@ -388,6 +387,7 @@ exports.updateOrganizationJob = async (req, res) => {
 
 exports.deleteOrganizationJob = async (req, res) => {
     // Soft delete equivalent
+    req.body = req.body || {};
     req.body.status = 'CLOSED';
     req.body.is_active = false;
     return exports.updateOrganizationJob(req, res);

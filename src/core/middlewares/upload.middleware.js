@@ -18,6 +18,7 @@ createDir(path.join(uploadsDir, 'avatars'));
 createDir(path.join(uploadsDir, 'posts'));
 createDir(path.join(uploadsDir, 'resumes'));
 createDir(path.join(uploadsDir, 'events'));
+createDir(path.join(uploadsDir, 'communities'));
 
 let storage;
 let avatarStorage;
@@ -143,6 +144,32 @@ const eventBannerStorage = new CloudinaryStorage({
 });
 
 const uploadEventBanner = multer({ storage: eventBannerStorage, limits: { fileSize: 5 * 1024 * 1024 } }); // 5MB limit
+
+// Community Banner Upload
+let communityBannerStorage;
+if (hasCloudinary) {
+  communityBannerStorage = new CloudinaryStorage({
+    cloudinary,
+    params: {
+      folder: "communities",
+      resource_type: "image",
+      public_id: (req, file) => `banner-${Date.now()}-${file.originalname}`
+    }
+  });
+} else {
+  communityBannerStorage = multer.diskStorage({
+    destination: (req, file, cb) => {
+      cb(null, 'uploads/communities/');
+    },
+    filename: (req, file, cb) => {
+      const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+      const ext = path.extname(file.originalname);
+      cb(null, 'community-' + uniqueSuffix + ext);
+    }
+  });
+}
+
+const uploadCommunityBanner = multer({ storage: communityBannerStorage, limits: { fileSize: 5 * 1024 * 1024 } }); // 5MB limit
 
 // --- Story Upload Optimization ---
 let storyStorage;
@@ -411,6 +438,7 @@ module.exports = {
   uploadResume,
   uploadAvatar,
   uploadEventBanner,
+  uploadCommunityBanner,
   uploadStory,
   uploadCover,
   uploadApplicationFiles,

@@ -1955,3 +1955,19 @@ CREATE TABLE IF NOT EXISTS organization_subscribers (
     PRIMARY KEY (user_id, org_id)
 );
 CREATE INDEX IF NOT EXISTS idx_company_subscribers_company_id ON organization_subscribers(org_id);
+
+-- ==========================================================================
+-- ORGANISATION KEY OFFERINGS (2026-07-10)
+-- Editable "Key offerings" list on the Profile edit tab, shown on the
+-- public profile Home tab (formerly the static "Relevance" bullets).
+-- ==========================================================================
+CREATE TABLE IF NOT EXISTS organization_key_offerings (
+    offering_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    org_id UUID NOT NULL REFERENCES organizations(org_id) ON DELETE CASCADE,
+    content TEXT NOT NULL,
+    position INTEGER NOT NULL DEFAULT 0,
+    is_deleted BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_org_key_offerings_org_id ON organization_key_offerings(org_id);
+CREATE INDEX IF NOT EXISTS idx_org_key_offerings_active ON organization_key_offerings(org_id) WHERE is_deleted = FALSE;

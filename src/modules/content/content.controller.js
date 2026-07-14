@@ -26,9 +26,18 @@ const getRequestedOrganizationActorId = (req, fallbackOrgId = null) => {
         return actorOrgId;
     }
 
-    // 2. Fallback to Passed companyId if user has permission to act as that company
-    // This is useful for requests where headers might be stripped or for specific API calls
-    return fallbackOrgId;
+    // 2. Fallback to Passed companyId - but verify membership
+    if (fallbackOrgId) {
+        const userOrgs = req.userOrganizations || [];
+        if (!userOrgs.includes(fallbackOrgId)) {
+            const err = new Error("You do not have permission to act as this organization");
+            err.statusCode = 403;
+            throw err;
+        }
+        return fallbackOrgId;
+    }
+
+    return null;
 };
 
 const getContentActorScope = (req, fallbackOrgId = null) => {
@@ -214,7 +223,6 @@ exports.getMyPosts = async (req, res) => {
             idx++;
         }
 
-        // ✅ Interaction Filter (remaining cases)
         if (filter) {
             if (filter === 'Post') {
                 whereClause += ` AND p.shared_post_id IS NULL AND p.shared_job_id IS NULL `;
@@ -223,6 +231,10 @@ exports.getMyPosts = async (req, res) => {
             } else if (filter === 'Private post') {
                 whereClause += ` AND p.visibility = 'private' `;
             }
+        }
+
+        if (filter !== 'Private post') {
+            whereClause += ` AND (p.visibility IS NULL OR p.visibility != 'private') `;
         }
 
         // ✅ Cursor-based pagination (stable)
@@ -687,7 +699,13 @@ exports.createPost = async (req, res) => {
     }
 
     const { userId, orgId: companyId } = actorScope;
-    let { content, category, visibility, media_urls, post_type, title, poll_options, poll_duration, is_broadcast, location, achievement_image_id } = req.body; // category is name, media_urls is array
+    let { content, category, visibility, media_urls, post_type, title, poll_options, poll_duration, is_broadcast, location, achievement_image_id, status } = req.body; // category is name, media_urls is array
+
+    if (status !== undefined && status !== "published" && status !== "draft") {
+        return res.status(400).json({ message: "Invalid status. Allowed values: 'published', 'draft'" });
+    }
+
+    status = status || (post_type === "article" ? "draft" : "published");
 
     // Extract uploaded files
     const uploadedFiles = req.files || [];
@@ -953,10 +971,10 @@ exports.createPost = async (req, res) => {
 
         // 2. Insert Post
         const postResult = await client.query(
-            ` INSERT INTO posts (author_id, category_id, content, visibility, post_type, title, shared_post_id, shared_job_id, author_org_id, is_broadcast, broadcast_scope, location, achievement_image_id)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+            ` INSERT INTO posts (author_id, category_id, content, visibility, post_type, title, shared_post_id, shared_job_id, author_org_id, is_broadcast, broadcast_scope, location, achievement_image_id, status)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
       RETURNING post_id, created_at
-      `, [userId, categoryId, content, visibility || 'public', post_type, title, req.body.shared_post_id || null, req.body.shared_job_id || null, companyId || null, is_broadcast ? true : false, is_broadcast ? 'CHILDREN' : null, location || null, achievement_image_id || null]
+      `, [userId, categoryId, content, visibility || 'public', post_type, title, req.body.shared_post_id || null, req.body.shared_job_id || null, companyId || null, is_broadcast ? true : false, is_broadcast ? 'CHILDREN' : null, location || null, achievement_image_id || null, status || 'published']
         );
 
         const postId = postResult.rows[0].post_id;
@@ -1101,19 +1119,22 @@ exports.createPost = async (req, res) => {
         logIntentActivity({ userId, action: "create_post", metadata: { postId, postType: post_type, category } });
 
         res.status(201).json({
-            message: "Post created", postId,
-            "title": title,
-            "content": content,
-            "category": category,
-            "visibility": visibility,
-            "post_type": post_type,
-            "media_urls": media_urls,
-            "media_type": type,
+            message: "Post created", 
+            postId,
+            id: postId,
+            title: title,
+            content: content,
+            category: category,
+            visibility: visibility,
+            postType: post_type,
+            mediaUrls: media_urls,
+            mediaType: type,
+            status: status || 'published',
             poll: {
-                poll_id: pollId,
+                pollId: pollId,
                 duration: poll_duration,
-                is_active: true,
-                options: poll_options // Now contains objects with option_id
+                isActive: true,
+                options: poll_options
             }
         });
 
@@ -1363,7 +1384,9 @@ exports.getPostById = async (req, res) => {
                     'user_id', COALESCE(sp.author_org_id, sp_u.user_id),
                     'full_name', COALESCE(sp_comp.name, sp_u.full_name),
                     'avatar_url', COALESCE(sp_comp.logo_url, sp_u.avatar_url),
-                    'author_headline', COALESCE(sp_comp.slogan, sp_u.headline)
+                    'author_headline', COALESCE(sp_comp.slogan, sp_u.headline),
+                    'author_slug', COALESCE(sp_comp.slug, sp_u.account_name),
+                    'is_organization_post', (sp.author_org_id IS NOT NULL)
                 ),
                 'media', COALESCE(sp_media.media, '[]'::json),
                 'like_count', (SELECT COUNT(*) FROM post_likes pl WHERE pl.post_id = sp.post_id)::int,
@@ -1524,7 +1547,66 @@ WHERE p.post_id = $1;
             }
         }
 
-        res.status(200).json(result.rows[0]);
+        // STRICT VISIBILITY CHECK
+        if (post.visibility === 'private') {
+            if (!userId) {
+                return res.status(403).json({ message: "You are not authorized to view this private post." });
+            }
+            if (post.author_org_id) {
+                if (!companyId || companyId !== post.author_org_id) {
+                    return res.status(403).json({ message: "You are not authorized to view this private post." });
+                }
+            } else {
+                if (companyId || post.author_id !== userId) {
+                    return res.status(403).json({ message: "You are not authorized to view this private post." });
+                }
+            }
+        }
+
+        if (post.visibility === 'public' && post.category_name === 'Personal') {
+            if (!userId) {
+                return res.status(403).json({ message: "This post is only visible to connections." });
+            }
+            if (post.author_id !== userId) {
+                const connectionCheck = await pool.query(
+                    `SELECT 1 FROM followers f1 
+                     JOIN followers f2 ON f1.follower_id = f2.following_id AND f1.following_id = f2.follower_id 
+                     WHERE f1.follower_id = $1 AND f1.following_id = $2`,
+                    [userId, post.author_id]
+                );
+                if (connectionCheck.rowCount === 0) {
+                    return res.status(403).json({ message: "This post is only visible to connections." });
+                }
+            }
+        }
+
+        // STRICT DRAFT STATUS CHECK
+        if (post.status === 'draft') {
+            if (!post.author_org_id) {
+                if (post.author_id !== userId) {
+                    return res.status(403).json({ message: "Forbidden: You cannot view this draft" });
+                }
+            } else {
+                const checkMember = await pool.query(
+                    `SELECT 1 FROM organization_members WHERE org_id = $1 AND user_id = $2 AND status = 'ACTIVE'`,
+                    [post.author_org_id, userId]
+                );
+                if (checkMember.rowCount === 0) {
+                    return res.status(403).json({ message: "Forbidden: You cannot view this draft" });
+                }
+            }
+        }
+
+        const mappedPost = {
+            ...post,
+            id: post.post_id,
+            channelId: post.author_org_id,
+            coverImage: (post.media && post.media.length > 0) ? post.media[0].url : null,
+            publishedAt: post.created_at,
+            updatedAt: post.updated_at
+        };
+
+        res.status(200).json(mappedPost);
     } catch (err) {
         console.error("Get post error:", err);
         res.status(500).json({ message: "Internal server error" });
@@ -1533,7 +1615,11 @@ WHERE p.post_id = $1;
 
 exports.updatePostById = async (req, res) => {
     const postId = req.params.id;
-    let { content, category, visibility, media_urls, post_type, title, poll_options, location } = req.body;
+    let { content, category, visibility, media_urls, post_type, title, poll_options, location, status } = req.body;
+
+    if (status !== undefined && status !== "published" && status !== "draft") {
+        return res.status(400).json({ message: "Invalid status. Allowed values: 'published', 'draft'" });
+    }
 
     // Sanitize user-generated content
     if (post_type !== 'article') {
@@ -1582,15 +1668,13 @@ exports.updatePostById = async (req, res) => {
 
         let canEdit = false;
 
-        if (author_id === userId && !author_org_id) {
-            canEdit = true;
-        } else if (author_org_id) {
+        if (author_org_id) {
             if (orgId && author_org_id === orgId) {
                 canEdit = true;
-            } else if (author_id === userId) {
+            }
+        } else {
+            if (!orgId && author_id === userId) {
                 canEdit = true;
-            } else {
-                canEdit = await checkOrgPermission(client, author_org_id, userId, ['MANAGE_COMPANY', 'CREATE_CONTENT']);
             }
         }
 
@@ -1628,6 +1712,12 @@ exports.updatePostById = async (req, res) => {
         if (location !== undefined) {
             updates.push(`location = $${index++}`);
             values.push(location);
+        }
+
+        // status
+        if (status !== undefined) {
+            updates.push(`status = $${index++}`);
+            values.push(status);
         }
 
         // visibility
@@ -1781,11 +1871,17 @@ WHERE p.post_id = $1;
 
         const result = await pool.query(query, [postId]);
 
-        if (result.rows.length === 0) {
-            return res.status(404).json({ message: "Post not found" });
-        }
+        const post = result.rows[0];
+        const mappedPost = {
+            ...post,
+            id: post.post_id,
+            channelId: post.author_org_id,
+            coverImage: (post.media && post.media.length > 0) ? post.media[0].url : null,
+            publishedAt: post.created_at,
+            updatedAt: post.updated_at
+        };
 
-        res.status(200).json(result.rows[0]);
+        res.status(200).json(mappedPost);
 
     } catch (err) {
         await client.query('ROLLBACK');
@@ -1833,18 +1929,13 @@ exports.deletePost = async (req, res) => {
         let canDelete = false;
 
         // 2. Check Permissions
-        if (author_id === userId && !author_org_id) {
-            // Personal Post -> Author can delete
-            canDelete = true;
-        } else if (author_org_id) {
-            // Company Post -> Check Company Permissions
-            // Allow if Author (User acting as company) OR if has MANAGE_COMPANY / CREATE_CONTENT
+        if (author_org_id) {
             if (orgId && author_org_id === orgId) {
                 canDelete = true;
-            } else if (author_id === userId) {
+            }
+        } else {
+            if (!orgId && author_id === userId) {
                 canDelete = true;
-            } else {
-                canDelete = await checkOrgPermission(client, author_org_id, userId, ['MANAGE_COMPANY', 'CREATE_CONTENT']);
             }
         }
 
@@ -1875,12 +1966,12 @@ exports.deletePost = async (req, res) => {
         }
 
         await client.query(
-            `DELETE FROM posts WHERE post_id = $1`,
+            `UPDATE posts SET is_active = FALSE WHERE post_id = $1`,
             [postId]
         );
 
         await client.query('COMMIT');
-        res.status(200).json({ message: "Post deleted", deletedPostId: postId });
+        res.status(200).json({ message: "Post deleted", deletedPostId: postId, id: postId });
 
     } catch (err) {
         await client.query('ROLLBACK');
@@ -2304,6 +2395,26 @@ exports.addComment = async (req, res) => {
         const postAuthorId = post.rows[0].author_id;
         const postCompanyId = post.rows[0].author_org_id;
 
+        // Thoughts subscription check
+        if (postCompanyId) {
+            const communityCheck = await pool.query(
+                `SELECT 1 FROM communities WHERE org_id = $1 AND is_active = TRUE`,
+                [postCompanyId]
+            );
+            if (communityCheck.rowCount > 0) {
+                const subscriptionCheck = await pool.query(
+                    `SELECT status FROM organization_subscribers 
+                     WHERE org_id = $1 AND user_id = $2 AND status = 'SUBSCRIBED'`,
+                    [postCompanyId, userId]
+                );
+                if (subscriptionCheck.rowCount === 0) {
+                    return res.status(403).json({
+                        message: "You must subscribe to the community to post thoughts"
+                    });
+                }
+            }
+        }
+
         // Block Check: Post Author (skip if company)
         if (!companyId) {
             const isBlockedByPostAuthor = await checkBlockStatus(postAuthorId, userId);
@@ -2565,18 +2676,32 @@ exports.addComment = async (req, res) => {
             [newComment.comment_id]
         );
 
+        const commentRow = fullCommentRes.rows[0];
+        const mappedComment = {
+            ...commentRow,
+            id: commentRow.comment_id,
+            parentId: commentRow.parent_id,
+            createdAt: commentRow.created_at,
+            authorId: commentRow.author_id,
+            authorName: commentRow.full_name,
+            authorAvatarUrl: commentRow.avatar_url,
+            isPinned: commentRow.is_pinned,
+            pinnedAt: commentRow.pinned_at,
+            pinnedBy: commentRow.pinned_by
+        };
+
         const ioService = require("../../core/infrastructure/socket.service");
         if (ioService && ioService.notifyPost) {
             ioService.notifyPost(postId, "post_comment_added", {
                 postId,
-                comment: fullCommentRes.rows[0]
+                comment: mappedComment
             });
         }
 
         return res.status(200).json({
             message: "comment added",
-            comment: fullCommentRes.rows[0]
-        })
+            comment: mappedComment
+        });
 
 
 
@@ -2980,9 +3105,31 @@ exports.getComments = async (req, res) => {
         const { userId, orgId: companyId } = getContentActorScope(req, requestedCompanyId || null);
         const targetCommentId = req.query.target_comment_id || null;
 
-        const post = await pool.query(`select post_id from posts where post_id = $1`, [postId])
+        const post = await pool.query(`select post_id, author_org_id from posts where post_id = $1`, [postId])
         if (post.rowCount === 0) {
             return res.status(404).json({ message: "Post not found" })
+        }
+
+        const postCompanyId = post.rows[0].author_org_id;
+
+        // Thoughts subscription check
+        if (postCompanyId) {
+            const communityCheck = await pool.query(
+                `SELECT 1 FROM communities WHERE org_id = $1 AND is_active = TRUE`,
+                [postCompanyId]
+            );
+            if (communityCheck.rowCount > 0) {
+                const subscriptionCheck = await pool.query(
+                    `SELECT status FROM organization_subscribers 
+                     WHERE org_id = $1 AND user_id = $2 AND status = 'SUBSCRIBED'`,
+                    [postCompanyId, userId]
+                );
+                if (subscriptionCheck.rowCount === 0) {
+                    return res.status(403).json({
+                        message: "Thoughts access requires subscription"
+                    });
+                }
+            }
         }
         const comments = await pool.query(
             `
@@ -3074,7 +3221,19 @@ exports.getComments = async (req, res) => {
       `,
             [postId, userId, companyId || null, targetCommentId || null]
         );
-        return res.status(200).json(comments.rows);
+        const mappedComments = comments.rows.map(row => ({
+            ...row,
+            id: row.comment_id,
+            parentId: row.parent_id,
+            createdAt: row.created_at,
+            authorId: row.author_id,
+            authorName: row.full_name,
+            authorAvatarUrl: row.avatar_url,
+            isPinned: row.is_pinned,
+            pinnedAt: row.pinned_at,
+            pinnedBy: row.pinned_by
+        }));
+        return res.status(200).json(mappedComments);
     } catch (err) {
         console.error("Get comments error:", err);
         return res.status(500).json({ message: "Internal server error" })

@@ -27,6 +27,12 @@
 
 jest.mock('./feed.service', () => ({
   getFeed: jest.fn(),
+  hidePost: jest.fn(),
+  // ID-160/D1 — real implementation is a pure function; mirror it so scope-id
+  // call assertions (e.g. toHaveBeenCalledWith('test-user-uuid', ...)) still
+  // hold for requests with no organization actor (the only case these tests
+  // exercise, since req.actor is never set when calling handlers directly).
+  buildCacheScopeId: jest.fn((userId, orgActorId) => (orgActorId ? `${userId}:org:${orgActorId}` : userId)),
 }));
 
 jest.mock('./session/feedSession.service', () => ({
