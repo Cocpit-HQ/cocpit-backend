@@ -1552,23 +1552,43 @@ WHERE p.post_id = $1;
             }
         }
 
+        // Check if the user is authorized because the post is shared in a conversation they participate in
+        let isSharedWithUser = false;
+        if (userId) {
+            const shareCheck = await pool.query(
+                `SELECT 1 FROM messages m
+                 JOIN conversation_participants cp ON m.conversation_id = cp.conversation_id
+                 WHERE (m.shared_post_id = $1 OR m.text_content LIKE $4) AND (cp.user_id = $2 OR (cp.org_id IS NOT NULL AND cp.org_id = $3))`,
+                [postId, userId, companyId || null, `%${postId}%`]
+            );
+            if (shareCheck.rowCount > 0) {
+                isSharedWithUser = true;
+            }
+        }
+
         // STRICT VISIBILITY CHECK
-        if (post.visibility === 'private') {
+        if (post.visibility === 'private' && !isSharedWithUser) {
             if (!userId) {
                 return res.status(403).json({ message: "You are not authorized to view this private post." });
             }
             if (post.author_org_id) {
                 if (!companyId || companyId !== post.author_org_id) {
-                    return res.status(403).json({ message: "You are not authorized to view this private post." });
+                    const checkMember = await pool.query(
+                        `SELECT 1 FROM organization_members WHERE org_id = $1 AND user_id = $2 AND status = 'ACTIVE'`,
+                        [post.author_org_id, userId]
+                    );
+                    if (checkMember.rowCount === 0) {
+                        return res.status(403).json({ message: "You are not authorized to view this private post." });
+                    }
                 }
             } else {
-                if (companyId || post.author_id !== userId) {
+                if (post.author_id !== userId) {
                     return res.status(403).json({ message: "You are not authorized to view this private post." });
                 }
             }
         }
 
-        if (post.visibility === 'public' && post.category_name === 'Personal') {
+        if (post.visibility === 'public' && post.category_name === 'Personal' && !isSharedWithUser) {
             if (!userId) {
                 return res.status(403).json({ message: "This post is only visible to connections." });
             }
