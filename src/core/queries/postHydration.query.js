@@ -395,6 +395,8 @@ const getPublicFeedWhere = (userParamIdx) => `
         )
     )
     AND (p.is_removed IS FALSE OR p.is_removed IS NULL)
+    AND p.is_active = TRUE
+    AND NOT (p.post_type = 'article' AND p.author_org_id IS NOT NULL)
     AND NOT EXISTS (
         SELECT 1 FROM blocks b 
         WHERE (b.blocker_id = $${userParamIdx} AND b.blocked_id = p.author_id)

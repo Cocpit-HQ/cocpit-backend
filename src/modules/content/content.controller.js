@@ -907,10 +907,10 @@ exports.createPost = async (req, res) => {
 
                 } else {
                     // Normal Company Post
-                    if (!companyAllowed.includes(category)) {
-                        await client.query('ROLLBACK');
-                        return res.status(400).json({ message: `Invalid category for Company posts. Allowed: Update, Hiring, Milestone, Insight` });
-                    }
+                    // if (!companyAllowed.includes(category)) {
+                    //     await client.query('ROLLBACK');
+                    //     return res.status(400).json({ message: `Invalid category for Company posts. Allowed: Update, Hiring, Milestone, Insight` });
+                    // }
                 }
             } else {
                 // User Post
@@ -1119,7 +1119,7 @@ exports.createPost = async (req, res) => {
         logIntentActivity({ userId, action: "create_post", metadata: { postId, postType: post_type, category } });
 
         res.status(201).json({
-            message: "Post created", 
+            message: "Post created",
             postId,
             id: postId,
             title: title,
