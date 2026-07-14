@@ -50,6 +50,18 @@ router.get(
     communityController.getSubscribedCommunities
 );
 
+router.post(
+    "/communities/:communityId/subscribe",
+    requireAuth,
+    communityController.subscribeCommunity
+);
+
+router.delete(
+    "/communities/:communityId/unsubscribe",
+    requireAuth,
+    communityController.unsubscribeCommunity
+);
+
 router.get(
     "/communities/:communityId/articles",
     requireAuth,

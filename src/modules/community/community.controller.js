@@ -1,5 +1,6 @@
 const pool = require("../../core/db/pool");
 const AppError = require("../../core/errors/AppError");
+const redisClient = require("../../core/db/redis");
 
 // --- GROUP 1: Community Creation (Company Side) ---
 
@@ -9,7 +10,7 @@ exports.getCommunityStatus = async (req, res, next) => {
     try {
         const result = await pool.query(
             `SELECT community_id, name, description, banner_url,
-                    (SELECT COUNT(*) FROM organization_subscribers WHERE org_id = communities.org_id AND status = 'SUBSCRIBED')::int AS subscriber_count
+                    (SELECT COUNT(*) FROM community_subscriptions WHERE community_id = communities.community_id AND status = 'SUBSCRIBED')::int AS subscriber_count
              FROM communities 
              WHERE org_id = $1 AND is_active = TRUE`,
             [orgId]
@@ -211,11 +212,11 @@ exports.getSubscribedCommunities = async (req, res, next) => {
         const result = await pool.query(
             `SELECT c.community_id, c.name, c.description, c.banner_url, c.org_id,
                     o.name AS company_name, o.slug AS company_slug, o.logo_url,
-                    (SELECT COUNT(*) FROM organization_subscribers WHERE org_id = c.org_id AND status = 'SUBSCRIBED')::int AS subscriber_count
-             FROM organization_subscribers os
-             JOIN communities c ON os.org_id = c.org_id
+                    (SELECT COUNT(*) FROM community_subscriptions WHERE community_id = c.community_id AND status = 'SUBSCRIBED')::int AS subscriber_count
+             FROM community_subscriptions cs
+             JOIN communities c ON cs.community_id = c.community_id
              JOIN organizations o ON c.org_id = o.org_id
-             WHERE os.user_id = $1 AND os.status = 'SUBSCRIBED' 
+             WHERE cs.user_id = $1 AND cs.status = 'SUBSCRIBED' 
                AND c.is_active = TRUE AND o.is_deleted = FALSE`,
             [userId]
         );
@@ -239,6 +240,121 @@ exports.getSubscribedCommunities = async (req, res, next) => {
     } catch (err) {
         console.error("[CommunityController] getSubscribedCommunities error:", err);
         return next(err);
+    }
+};
+
+// 1.2 Subscribe to a Community
+exports.subscribeCommunity = async (req, res, next) => {
+    const userId = req.user.sub;
+    const { communityId } = req.params;
+
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+
+        // Check if community exists and is active
+        const communityCheck = await client.query(
+            `SELECT org_id FROM communities WHERE community_id = $1 AND is_active = TRUE`,
+            [communityId]
+        );
+
+        if (communityCheck.rowCount === 0) {
+            await client.query('ROLLBACK');
+            return res.status(404).json({
+                message: "Community not found or inactive."
+            });
+        }
+
+        const orgId = communityCheck.rows[0].org_id;
+
+        // Check if the user trying to subscribe is Owner, Admin, or Editor in this organization
+        const roleCheck = await client.query(
+            `SELECT COALESCE(cr.name, cm.role) as role_name
+             FROM organization_members cm
+             LEFT JOIN organization_roles cr ON cm.role_id = cr.role_id
+             WHERE cm.org_id = $1 AND cm.user_id = $2 AND cm.status = 'ACTIVE'`,
+            [orgId, userId]
+        );
+
+        if (roleCheck.rowCount > 0) {
+            const roleName = roleCheck.rows[0].role_name;
+            if (['Owner', 'Admin', 'Editor'].includes(roleName)) {
+                await client.query('ROLLBACK');
+                return res.status(403).json({
+                    message: `Users with role '${roleName}' are not allowed to subscribe to this community.`
+                });
+            }
+        }
+
+        // Upsert subscriber record with status = 'SUBSCRIBED'
+        await client.query(
+            `INSERT INTO community_subscriptions (user_id, community_id, status)
+             VALUES ($1, $2, 'SUBSCRIBED')
+             ON CONFLICT (user_id, community_id)
+             DO UPDATE SET status = 'SUBSCRIBED', updated_at = NOW()`,
+            [userId, communityId]
+        );
+
+        await client.query('COMMIT');
+
+        // Invalidate Cache
+        try {
+            if (redisClient.isOpen) {
+                await redisClient.del(`user:${userId}:subscribed_communities`);
+                await redisClient.del(`community:${communityId}:subscribers`);
+            }
+        } catch (cacheErr) {
+            console.warn("[SUBSCRIBE_COMMUNITY] Cache invalidation failed:", cacheErr.message);
+        }
+
+        res.status(200).json({ message: "Subscribed successfully" });
+
+    } catch (err) {
+        await client.query('ROLLBACK');
+        console.error("Subscribe community error:", err);
+        res.status(500).json({ message: "Internal server error" });
+    } finally {
+        client.release();
+    }
+};
+
+// 1.3 Unsubscribe from a Community
+exports.unsubscribeCommunity = async (req, res, next) => {
+    const userId = req.user.sub;
+    const { communityId } = req.params;
+
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+
+        // Update subscriber record status to 'UNSUBSCRIBED'
+        await client.query(
+            `UPDATE community_subscriptions
+             SET status = 'UNSUBSCRIBED', updated_at = NOW()
+             WHERE user_id = $1 AND community_id = $2`,
+            [userId, communityId]
+        );
+
+        await client.query('COMMIT');
+
+        // Invalidate Cache
+        try {
+            if (redisClient.isOpen) {
+                await redisClient.del(`user:${userId}:subscribed_communities`);
+                await redisClient.del(`community:${communityId}:subscribers`);
+            }
+        } catch (cacheErr) {
+            console.warn("[UNSUBSCRIBE_COMMUNITY] Cache invalidation failed:", cacheErr.message);
+        }
+
+        res.status(200).json({ message: "Unsubscribed successfully" });
+
+    } catch (err) {
+        await client.query('ROLLBACK');
+        console.error("Unsubscribe community error:", err);
+        res.status(500).json({ message: "Internal server error" });
+    } finally {
+        client.release();
     }
 };
 
@@ -561,13 +677,13 @@ exports.acceptInvitation = async (req, res, next) => {
             [inviteId]
         );
 
-        // Subscribe candidate to company community
+        // Subscribe candidate to community
         await client.query(
-            `INSERT INTO organization_subscribers (user_id, org_id, status)
+            `INSERT INTO community_subscriptions (user_id, community_id, status)
              VALUES ($1, $2, 'SUBSCRIBED')
-             ON CONFLICT (user_id, org_id)
+             ON CONFLICT (user_id, community_id)
              DO UPDATE SET status = 'SUBSCRIBED', updated_at = NOW()`,
-            [userId, org_id]
+            [userId, community_id]
         );
 
         // Fetch candidate details
@@ -661,13 +777,13 @@ exports.getRecommendedCommunities = async (req, res, next) => {
         const result = await pool.query(
             `SELECT c.community_id, c.name, c.description, c.banner_url, c.org_id,
                     o.name AS company_name, o.logo_url,
-                    (SELECT COUNT(*) FROM organization_subscribers WHERE org_id = c.org_id AND status = 'SUBSCRIBED')::int AS subscriber_count
+                    (SELECT COUNT(*) FROM community_subscriptions WHERE community_id = c.community_id AND status = 'SUBSCRIBED')::int AS subscriber_count
              FROM communities c
              JOIN organizations o ON c.org_id = o.org_id
              WHERE c.is_active = TRUE AND o.is_deleted = FALSE
                AND NOT EXISTS (
-                   SELECT 1 FROM organization_subscribers os 
-                   WHERE os.org_id = c.org_id AND os.user_id = $1 AND os.status = 'SUBSCRIBED'
+                   SELECT 1 FROM community_subscriptions cs 
+                   WHERE cs.community_id = c.community_id AND cs.user_id = $1 AND cs.status = 'SUBSCRIBED'
                )
              LIMIT $2`,
             [userId, limit]
@@ -706,11 +822,11 @@ exports.searchCommunities = async (req, res, next) => {
         const result = await pool.query(
             `SELECT c.community_id, c.name, c.description, c.banner_url, c.org_id,
                     o.name AS company_name, o.logo_url,
-                    (SELECT COUNT(*) FROM organization_subscribers WHERE org_id = c.org_id AND status = 'SUBSCRIBED')::int AS subscriber_count,
+                    (SELECT COUNT(*) FROM community_subscriptions WHERE community_id = c.community_id AND status = 'SUBSCRIBED')::int AS subscriber_count,
                     COALESCE(
                         EXISTS(
-                            SELECT 1 FROM organization_subscribers os 
-                            WHERE os.org_id = c.org_id AND os.user_id = $1 AND os.status = 'SUBSCRIBED'
+                            SELECT 1 FROM community_subscriptions cs 
+                            WHERE cs.community_id = c.community_id AND cs.user_id = $1 AND cs.status = 'SUBSCRIBED'
                         ), FALSE
                     ) AS is_subscribed
              FROM communities c
@@ -755,11 +871,12 @@ exports.getSubscriberGrowth = async (req, res, next) => {
         }
 
         const result = await pool.query(
-            `SELECT DATE_TRUNC('day', updated_at) AS date, COUNT(*)::int AS subscribers
-             FROM organization_subscribers
-             WHERE org_id = $1 AND status = 'SUBSCRIBED'
-             GROUP BY DATE_TRUNC('day', updated_at)
-             ORDER BY DATE_TRUNC('day', updated_at) ASC`,
+            `SELECT DATE_TRUNC('day', cs.updated_at) AS date, COUNT(*)::int AS subscribers
+             FROM community_subscriptions cs
+             JOIN communities c ON cs.community_id = c.community_id
+             WHERE c.org_id = $1 AND cs.status = 'SUBSCRIBED'
+             GROUP BY DATE_TRUNC('day', cs.updated_at)
+             ORDER BY DATE_TRUNC('day', cs.updated_at) ASC`,
             [orgId]
         );
 

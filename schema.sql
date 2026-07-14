@@ -1955,6 +1955,17 @@ CREATE TABLE IF NOT EXISTS organization_subscribers (
 );
 CREATE INDEX IF NOT EXISTS idx_company_subscribers_company_id ON organization_subscribers(org_id);
 
+-- 07/14/2026 Migration: Community Subscription
+CREATE TABLE IF NOT EXISTS community_subscriptions (
+    user_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
+    community_id UUID REFERENCES communities(community_id) ON DELETE CASCADE,
+    status VARCHAR(20) DEFAULT 'SUBSCRIBED' CHECK (status IN ('SUBSCRIBED', 'UNSUBSCRIBED')),
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    PRIMARY KEY (user_id, community_id)
+);
+CREATE INDEX IF NOT EXISTS idx_community_subscribers_comm_id ON community_subscriptions(community_id);
+
 -- ==========================================================================
 -- ORGANISATION KEY OFFERINGS (2026-07-10)
 -- Editable "Key offerings" list on the Profile edit tab, shown on the

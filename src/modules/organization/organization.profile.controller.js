@@ -92,7 +92,15 @@ exports.getOrgProfile = async (req, res) => {
             pool.query(
                 `SELECT
                     (SELECT COUNT(*) FROM organization_followers WHERE org_id = $1)::int AS followers_count,
-                    (SELECT COUNT(*) FROM organization_subscribers WHERE org_id = $1 AND status = 'SUBSCRIBED')::int AS subscribers_count,
+                    (
+                        SELECT COUNT(DISTINCT cs.user_id) 
+                        FROM community_subscriptions cs 
+                        WHERE cs.community_id = (
+                            SELECT community_id FROM communities 
+                            WHERE org_id = $1 AND is_active = TRUE 
+                            ORDER BY created_at DESC LIMIT 1
+                        ) AND cs.status = 'SUBSCRIBED'
+                    )::int AS subscribers_count,
                     (
                         SELECT COUNT(DISTINCT p.user_id)
                         FROM experiences e
@@ -213,7 +221,7 @@ exports.getOrgProfile = async (req, res) => {
                 pool.query(
                     `SELECT
                         EXISTS(SELECT 1 FROM organization_followers WHERE user_id = $1 AND org_id = $2) AS is_following,
-                        EXISTS(SELECT 1 FROM organization_subscribers WHERE user_id = $1 AND org_id = $2 AND status = 'SUBSCRIBED') AS is_subscribed,
+                        EXISTS(SELECT 1 FROM community_subscriptions cs JOIN communities c ON cs.community_id = c.community_id WHERE cs.user_id = $1 AND c.org_id = $2 AND cs.status = 'SUBSCRIBED') AS is_subscribed,
                         EXISTS(SELECT 1 FROM organization_connections WHERE user_id = $1 AND org_id = $2) AS is_connected`,
                     [viewerId, org.org_id]
                 ),
@@ -264,10 +272,18 @@ exports.getOrgProfile = async (req, res) => {
         };
 
         const commDbRes = await pool.query(
-            `SELECT community_id, name, banner_url, description 
-             FROM communities 
-             WHERE org_id = $1 AND is_active = TRUE`,
-            [org.org_id]
+            `SELECT c.community_id, c.name, c.banner_url, c.description,
+                    (SELECT COUNT(*) FROM community_subscriptions WHERE community_id = c.community_id AND status = 'SUBSCRIBED')::int AS subscriber_count,
+                    COALESCE(
+                        EXISTS(
+                            SELECT 1 FROM community_subscriptions 
+                            WHERE user_id = $2 AND community_id = c.community_id AND status = 'SUBSCRIBED'
+                        ), FALSE
+                    ) AS is_subscribed
+             FROM communities c
+             WHERE c.org_id = $1 AND c.is_active = TRUE
+             ORDER BY c.created_at DESC`,
+            [org.org_id, viewerId]
         );
         const communityDetails = commDbRes.rowCount > 0 ? {
             exists: true,
@@ -275,7 +291,8 @@ exports.getOrgProfile = async (req, res) => {
             name: commDbRes.rows[0].name,
             banner_url: commDbRes.rows[0].banner_url,
             description: commDbRes.rows[0].description,
-            is_subscribed: relationship.is_subscribed
+            is_subscribed: commDbRes.rows[0].is_subscribed,
+            subscriber_count: commDbRes.rows[0].subscriber_count
         } : null;
 
         const peopleQuery = org.entity_type === 'INSTITUTION'
@@ -392,6 +409,7 @@ exports.getOrgProfile = async (req, res) => {
             relevance,
             community,
             community_details: communityDetails,
+            communities: commDbRes.rows,
             people: peopleRows,
         });
 
