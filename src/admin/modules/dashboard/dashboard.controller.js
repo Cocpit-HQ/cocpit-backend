@@ -44,10 +44,10 @@ exports.getDashboardMetrics = async (req, res) => {
       'SELECT COUNT(*) FROM users WHERE created_at >= $1 AND created_at <= $2',
       [prevStart.toISOString(), prevEnd.toISOString()]
     );
-    
+
     const currUsers = parseInt(newUsersCurrentRes.rows[0].count, 10);
     const prevUsers = parseInt(newUsersPrevRes.rows[0].count, 10);
-    
+
     let userGrowth = null;
     if (prevUsers === 0) {
       userGrowth = currUsers > 0 ? 100 : 0;
@@ -81,10 +81,10 @@ exports.getDashboardMetrics = async (req, res) => {
       'SELECT COUNT(*) FROM organizations WHERE is_deleted = FALSE AND created_at >= $1 AND created_at <= $2',
       [prevStart.toISOString(), prevEnd.toISOString()]
     );
-    
+
     const currOrgs = parseInt(newOrgsCurrentRes.rows[0].count, 10);
     const prevOrgs = parseInt(newOrgsPrevRes.rows[0].count, 10);
-    
+
     let orgGrowth = null;
     if (prevOrgs === 0) {
       orgGrowth = currOrgs > 0 ? 100 : 0;
@@ -139,7 +139,7 @@ exports.getDashboardMetrics = async (req, res) => {
       ORDER BY time_bucket.ts ASC
     `;
     const chartRes = await pool.query(chartQuery, [start.toISOString(), end.toISOString()]);
-    
+
     // Format the date string based on bucketFormat to be UI friendly
     const chartData = chartRes.rows.map(row => {
       const d = new Date(row.date);
@@ -192,7 +192,7 @@ exports.getRecentAuditLogs = async (req, res) => {
   try {
     const userRoles = req.user.roles || [];
     const isModeratorOnly = userRoles.includes('Moderator') && !userRoles.includes('Admin') && !userRoles.includes('Developer');
-    
+
     let query = `
       SELECT 
         l.log_id, l.action_type, l.description, l.created_at,
@@ -201,7 +201,7 @@ exports.getRecentAuditLogs = async (req, res) => {
       FROM admin_audit_logs l
       LEFT JOIN users u ON l.user_id = u.user_id
     `;
-    
+
     const queryParams = [];
 
     // RBAC: Moderators only see moderation actions. Admins/Devs see everything.
@@ -212,7 +212,7 @@ exports.getRecentAuditLogs = async (req, res) => {
     query += ` ORDER BY l.created_at DESC LIMIT 5`;
 
     const logsRes = await pool.query(query, queryParams);
-    
+
     // Format response
     const logs = logsRes.rows.map(row => ({
       id: row.log_id,
@@ -287,7 +287,7 @@ exports.getAllAuditLogs = async (req, res) => {
       ORDER BY l.created_at DESC
       LIMIT $${paramIndex++} OFFSET $${paramIndex++}
     `;
-    
+
     const logsRes = await pool.query(dataQuery, [...queryParams, limit, offset]);
 
     const logs = logsRes.rows.map(row => ({
@@ -339,7 +339,7 @@ exports.getEngagementHeatmap = async (req, res) => {
       const d = parseInt(row.day_of_week, 10);
       const h = parseInt(row.hour_of_day, 10);
       const val = parseInt(row.engagement_events, 10);
-      
+
       const cell = heatmap.find(c => c.day === d && c.hour === h);
       if (cell) {
         cell.value = val;
@@ -414,7 +414,7 @@ exports.getCohortRetention = async (req, res) => {
       const month = d.toLocaleDateString('en-US', { month: 'short' });
       const weekOfMonth = Math.ceil(d.getDate() / 7);
       const cohortLabel = `${month} (Week ${weekOfMonth})`;
-      
+
       const mapKey = d.toISOString();
 
       if (!cohortsMap.has(mapKey)) {
@@ -428,13 +428,13 @@ exports.getCohortRetention = async (req, res) => {
 
       const cohort = cohortsMap.get(mapKey);
       const weekIndex = parseInt(row.week_number, 10);
-      
+
       // If we have activity data for up to 5 weeks (indices 0 to 4)
       if (weekIndex >= 0 && weekIndex < 5) {
         const retained = parseInt(row.retained_users, 10);
         const total = parseInt(row.total_users, 10);
         const pct = Math.round((retained / total) * 100);
-        
+
         // Week 0 (Week 1 in UI) should always be 100% because signing up IS their activity
         if (weekIndex === 0) {
           cohort.retention[weekIndex] = 100;
@@ -488,7 +488,7 @@ exports.getFeatureAdoption = async (req, res) => {
       else if (type === 'EVENT_JOINED' || type === 'EVENT_VIEWED') categories['Events'].value += count;
       else if (type === 'AI_PROMPT_USED') categories['AI Features'].value += count;
       // Default mapping for basic activities can go to Feed or be ignored, we will map them to Feed for demo purposes
-      else categories['Feed'].value += count; 
+      else categories['Feed'].value += count;
     });
 
     const formattedData = Object.keys(categories)
@@ -662,16 +662,16 @@ exports.getDemographicMomentum = async (req, res) => {
     const result = segments.map(seg => {
       const currentCount = currentData[seg.type] || 0;
       const prevCount = prevData[seg.type] || 0;
-      
+
       const value = currentTotal > 0 ? Math.round((currentCount / currentTotal) * 100) : 0;
-      
+
       let trend = 0;
       if (prevCount === 0) {
         trend = currentCount > 0 ? 100 : 0;
       } else {
         trend = Math.round(((currentCount - prevCount) / prevCount) * 100);
       }
-      
+
       const trendStr = trend >= 0 ? `+${trend}%` : `${trend}%`;
 
       return {
@@ -815,18 +815,18 @@ exports.getRegionalHotspots = async (req, res) => {
     });
 
     const regions = ['North America', 'Europe', 'Asia Pacific', 'Latin America'];
-    
+
     const formattedData = regions.map(region => {
       const currentCount = currentRegions[region] || 0;
       const prevCount = prevRegions[region] || 0;
-      
+
       let trend = 0;
       if (prevCount === 0) {
         trend = currentCount > 0 ? 100 : 0;
       } else {
         trend = ((currentCount - prevCount) / prevCount) * 100;
       }
-      
+
       let status = 'Declining';
       if (trend >= 20) status = 'Hyper-growth';
       else if (trend >= 10) status = 'Accelerating';
@@ -837,7 +837,7 @@ exports.getRegionalHotspots = async (req, res) => {
 
       return {
         region,
-        users: currentCount > 1000 ? (currentCount/1000).toFixed(1) + 'K' : currentCount.toString(),
+        users: currentCount > 1000 ? (currentCount / 1000).toFixed(1) + 'K' : currentCount.toString(),
         growth: trendStr,
         status
       };
@@ -908,7 +908,7 @@ exports.getOrganizationDemographics = async (req, res) => {
       LIMIT 4
     `;
     const industryResult = await pool.query(industryQuery, [end.toISOString()]);
-    
+
     // Calculate total for percentages
     const totalIndRes = await pool.query(`
       SELECT COUNT(*) as total FROM organizations 
@@ -966,7 +966,7 @@ exports.getSeatUtilization = async (req, res) => {
   try {
     const end = req.query.endDate ? new Date(req.query.endDate) : new Date();
     const start = req.query.startDate ? new Date(req.query.startDate) : new Date(end.getTime() - 30 * 24 * 60 * 60 * 1000);
-    
+
     // Calculate duration to shift backward for previous period
     const durationMs = end.getTime() - start.getTime();
     const prevEnd = start;
@@ -1023,7 +1023,7 @@ exports.getB2BActivity = async (req, res) => {
         (SELECT COUNT(*) FROM posts WHERE author_org_id IS NOT NULL AND created_at >= $1 AND created_at <= $2) AS posts_count
     `;
     const activityRes = await pool.query(activityQuery, [start.toISOString(), end.toISOString()]);
-    
+
     const sourcingCount = parseInt(activityRes.rows[0].sourcing_count, 10);
     const jobsCount = parseInt(activityRes.rows[0].jobs_count, 10);
     const postsCount = parseInt(activityRes.rows[0].posts_count, 10);
@@ -1055,7 +1055,7 @@ exports.getB2BActivity = async (req, res) => {
       const posts = parseInt(org.posts_published, 10);
       const views = parseInt(org.profiles_viewed, 10);
       const totalEngagement = jobs + posts + views;
-      
+
       let primaryActivity = 'Publishing Content';
       if (jobs >= posts && jobs >= views) primaryActivity = 'Posting Jobs';
       if (views > jobs && views > posts) primaryActivity = 'Sourcing Candidates';
@@ -1070,9 +1070,9 @@ exports.getB2BActivity = async (req, res) => {
         activity: primaryActivity
       };
     })
-    .sort((a, b) => b.totalEngagement - a.totalEngagement)
-    .slice(0, 5) // Top 5
-    .map((org, index) => ({ ...org, id: index + 1 })); // Re-index for the table
+      .sort((a, b) => b.totalEngagement - a.totalEngagement)
+      .slice(0, 5) // Top 5
+      .map((org, index) => ({ ...org, id: index + 1 })); // Re-index for the table
 
     res.json({
       activityData,
@@ -1088,7 +1088,7 @@ exports.getOrganizationGrowthBreakdown = async (req, res) => {
   try {
     const end = req.query.endDate ? new Date(req.query.endDate) : new Date();
     const start = req.query.startDate ? new Date(req.query.startDate) : new Date(end.getTime() - 30 * 24 * 60 * 60 * 1000);
-    
+
     const durationMs = end.getTime() - start.getTime();
     const prevEnd = start;
     const prevStart = new Date(start.getTime() - durationMs);
@@ -1124,7 +1124,7 @@ exports.getOrganizationGrowthBreakdown = async (req, res) => {
       WHERE created_at >= $1 AND created_at <= $2 AND is_deleted = FALSE AND industry IS NOT NULL AND industry != ''
       GROUP BY industry
     `;
-    
+
     const [currIndRes, prevIndRes] = await Promise.all([
       pool.query(currIndustryQuery, [start.toISOString(), end.toISOString()]),
       pool.query(prevIndustryQuery, [prevStart.toISOString(), prevEnd.toISOString()])
@@ -1140,7 +1140,7 @@ exports.getOrganizationGrowthBreakdown = async (req, res) => {
       const industry = row.industry ? row.industry.charAt(0).toUpperCase() + row.industry.slice(1).toLowerCase() : 'Unknown';
       const curr = parseInt(row.count, 10);
       const prev = prevIndMap[industry] || 0;
-      
+
       let growthPct = 0;
       if (prev === 0) {
         growthPct = curr > 0 ? 100 : 0;
@@ -1284,7 +1284,7 @@ exports.getJobsMetrics = async (req, res) => {
       ORDER BY saves DESC 
       LIMIT 3
     `);
-    
+
     const defaultTrending = [
       { jobId: null, title: 'AI Engineer', saves: 5, trend: '+12%' },
       { jobId: null, title: 'Drone Fleet Manager', saves: 3, trend: '+5%' },
@@ -1340,15 +1340,15 @@ exports.getOrganizationStats = async (req, res) => {
     // 1. Total Organizations
     const totalOrgsRes = await pool.query('SELECT COUNT(*) FROM organizations WHERE is_deleted = false');
     const totalOrgs = parseInt(totalOrgsRes.rows[0].count, 10);
-    
+
     const prevOrgsRes = await pool.query('SELECT COUNT(*) FROM organizations WHERE is_deleted = false AND created_at <= $1', [thirtyDaysAgo]);
     const prevOrgsCount = parseInt(prevOrgsRes.rows[0].count, 10);
-    
+
     let orgGrowth = 0;
     if (prevOrgsCount > 0) {
-        orgGrowth = ((totalOrgs - prevOrgsCount) / prevOrgsCount) * 100;
+      orgGrowth = ((totalOrgs - prevOrgsCount) / prevOrgsCount) * 100;
     } else if (totalOrgs > 0) {
-        orgGrowth = 100;
+      orgGrowth = 100;
     }
 
     // 2. Pending Verification
@@ -1365,7 +1365,7 @@ exports.getOrganizationStats = async (req, res) => {
         FROM organizations
         WHERE verification_status = 'DOMAIN_VERIFIED' AND verified_at IS NOT NULL
     `);
-    
+
     const avgVerificationTimeSeconds = parseFloat(avgVerificationTimeRes.rows[0].avg_seconds || 0);
     const avgVerificationTimeDays = avgVerificationTimeSeconds > 0 ? (avgVerificationTimeSeconds / 86400).toFixed(1) : 0;
 
@@ -1376,16 +1376,16 @@ exports.getOrganizationStats = async (req, res) => {
         FROM organizations
         WHERE verification_status = 'DOMAIN_VERIFIED' AND verified_at IS NOT NULL AND verified_at <= $1
     `, [sevenDaysAgo]);
-    
+
     const prevAvgVerificationTimeSeconds = parseFloat(prevAvgVerificationTimeRes.rows[0].avg_seconds || avgVerificationTimeSeconds);
     const prevAvgVerificationTimeDays = prevAvgVerificationTimeSeconds > 0 ? (prevAvgVerificationTimeSeconds / 86400).toFixed(1) : 0;
-    
+
     const avgVerificationTimeChange = (avgVerificationTimeDays - prevAvgVerificationTimeDays).toFixed(1);
 
     // 5. Active Organizations
     const activeOrgsRes = await pool.query(
-        "SELECT COUNT(*) FROM organizations WHERE last_active_at >= $1 AND is_deleted = false AND is_suspended = false",
-        [thirtyDaysAgo]
+      "SELECT COUNT(*) FROM organizations WHERE last_active_at >= $1 AND is_deleted = false AND is_suspended = false",
+      [thirtyDaysAgo]
     );
     const activeOrganizations = parseInt(activeOrgsRes.rows[0].count, 10);
 
@@ -1394,14 +1394,14 @@ exports.getOrganizationStats = async (req, res) => {
     const suspended = parseInt(suspendedRes.rows[0].count, 10);
 
     const responseData = {
-        totalOrganizations: totalOrgs,
-        organizationGrowth: orgGrowth.toFixed(1),
-        pendingVerification,
-        incompleteOnboarding,
-        avgVerificationTime: avgVerificationTimeDays,
-        avgVerificationTimeChange,
-        activeOrganizations,
-        suspended
+      totalOrganizations: totalOrgs,
+      organizationGrowth: orgGrowth.toFixed(1),
+      pendingVerification,
+      incompleteOnboarding,
+      avgVerificationTime: avgVerificationTimeDays,
+      avgVerificationTimeChange,
+      activeOrganizations,
+      suspended
     };
 
     await redis.setex(cacheKey, 300, JSON.stringify(responseData)); // Cache for 5 minutes
@@ -1429,7 +1429,7 @@ exports.getSystemAlerts = async (req, res) => {
 exports.getSystemMetrics = async (req, res) => {
   try {
     const os = require('os');
-    
+
     // CPU
     const loadAvg = os.loadavg()[0];
     const cpuCount = os.cpus().length;
@@ -1504,7 +1504,7 @@ exports.getBackgroundTasks = async (req, res) => {
     const pendingRes = await pool.query("SELECT count(*) FROM background_tasks WHERE status = 'Pending'");
     const deadLetterRes = await pool.query("SELECT count(*) FROM background_tasks WHERE status = 'Dead Letter'");
     const tasksRes = await pool.query("SELECT * FROM background_tasks WHERE status = 'Dead Letter' ORDER BY created_at DESC");
-    
+
     res.json({
       pendingCount: parseInt(pendingRes.rows[0].count, 10),
       deadLetterCount: parseInt(deadLetterRes.rows[0].count, 10),
@@ -1513,5 +1513,226 @@ exports.getBackgroundTasks = async (req, res) => {
   } catch (error) {
     console.error('Error fetching background tasks:', error);
     res.status(500).json({ error: 'Failed to fetch background tasks' });
+  }
+};
+
+exports.getNetworkingHealth = async (req, res) => {
+  try {
+    // KPI STATS & STATUS DATA
+    const overallQuery = `
+      SELECT 
+        COUNT(*) as total_requests,
+        COUNT(*) FILTER (WHERE status = 'connected') as total_accepted,
+        COUNT(*) FILTER (WHERE status = 'pending') as total_pending,
+        COUNT(*) FILTER (WHERE status = 'rejected') as total_rejected,
+        COUNT(*) FILTER (WHERE DATE(created_at) = CURRENT_DATE) as new_today,
+        AVG(EXTRACT(EPOCH FROM (updated_at - created_at))) FILTER (WHERE status = 'connected') as avg_acceptance_time
+      FROM connection_requests
+    `;
+    const overallRes = await pool.query(overallQuery);
+    const overall = overallRes.rows[0];
+
+    const totalRequests = parseInt(overall.total_requests || 0, 10);
+    const totalAccepted = parseInt(overall.total_accepted || 0, 10);
+    const totalPending = parseInt(overall.total_pending || 0, 10);
+    const totalRejected = parseInt(overall.total_rejected || 0, 10);
+    const newToday = parseInt(overall.new_today || 0, 10);
+    
+    // Fallback if no real data
+    const safeTotal = totalRequests > 0 ? totalRequests : 5240;
+    const safeAccepted = totalRequests > 0 ? totalAccepted : 3480;
+    const safePending = totalRequests > 0 ? totalPending : 1050;
+    const safeRejected = totalRequests > 0 ? totalRejected : 710;
+
+    const acceptanceRate = safeTotal > 0 ? ((safeAccepted / safeTotal) * 100).toFixed(1) : "0.0";
+    
+    let avgHours = 0;
+    let avgMins = 0;
+    if (overall.avg_acceptance_time) {
+      const totalMins = Math.floor(parseFloat(overall.avg_acceptance_time) / 60);
+      avgHours = Math.floor(totalMins / 60);
+      avgMins = totalMins % 60;
+    }
+
+    const kpiStats = {
+      newConnectionsToday: totalRequests > 0 ? newToday : 1240,
+      acceptanceRate: `${acceptanceRate}%`,
+      avgAcceptanceTime: totalRequests > 0 ? `${avgHours}h ${avgMins}m` : '3h 21m',
+      avgConnectionsPerUser: '34.2', // Mocked as requested
+      spamAccountsFlagged: '0',
+      rateLimitedUsers: '0'
+    };
+
+    const statusData = [
+      { name: 'Accepted', value: safeAccepted, color: '#10B981' },
+      { name: 'Pending', value: safePending, color: '#3B82F6' },
+      { name: 'Rejected', value: safeRejected, color: '#EF4444' }
+    ];
+
+    // LIQUIDITY DATA (Last 45 days for better visuals)
+    const liquidityQuery = `
+      WITH days AS (
+        SELECT generate_series(
+          date_trunc('day', NOW()) - INTERVAL '44 days',
+          date_trunc('day', NOW()),
+          '1 day'::interval
+        ) AS ts
+      ),
+      requests AS (
+        SELECT 
+          date_trunc('day', created_at) AS ts,
+          status,
+          COUNT(*) AS count
+        FROM connection_requests
+        WHERE created_at >= NOW() - INTERVAL '45 days'
+        GROUP BY 1, 2
+      )
+      SELECT 
+        d.ts AS date,
+        COALESCE(SUM(r.count) FILTER (WHERE r.status = 'connected'), 0) AS accepted,
+        COALESCE(SUM(r.count), 0) AS total
+      FROM days d
+      LEFT JOIN requests r ON d.ts = r.ts
+      GROUP BY d.ts
+      ORDER BY d.ts ASC
+    `;
+    const liquidityRes = await pool.query(liquidityQuery);
+    
+    const liquidityData = liquidityRes.rows.map(row => {
+      const d = new Date(row.date);
+      const dateLabel = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+      const accepted = parseInt(row.accepted, 10);
+      const total = parseInt(row.total, 10);
+      const val = total > 0 ? parseFloat(((accepted / total) * 100).toFixed(1)) : 0;
+      return { time: dateLabel, val };
+    });
+
+    const dailyConnectionsData = liquidityRes.rows.map(row => {
+      const d = new Date(row.date);
+      const dateLabel = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+      return { day: dateLabel, val: parseInt(row.total, 10) };
+    });
+
+    // PENDING AGING
+    const agingQuery = `
+      SELECT 
+        COUNT(*) FILTER (WHERE NOW() - created_at < INTERVAL '1 day') as day_1,
+        COUNT(*) FILTER (WHERE NOW() - created_at >= INTERVAL '1 day' AND NOW() - created_at < INTERVAL '3 days') as days_1_3,
+        COUNT(*) FILTER (WHERE NOW() - created_at >= INTERVAL '3 days' AND NOW() - created_at < INTERVAL '7 days') as days_3_7,
+        COUNT(*) FILTER (WHERE NOW() - created_at >= INTERVAL '7 days' AND NOW() - created_at < INTERVAL '30 days') as days_7_30,
+        COUNT(*) FILTER (WHERE NOW() - created_at >= INTERVAL '30 days') as days_30_plus
+      FROM connection_requests
+      WHERE status = 'pending'
+    `;
+    const agingRes = await pool.query(agingQuery);
+    const ag = agingRes.rows[0];
+    
+    // If no pending, use mock data
+    const hasPending = parseInt(ag.day_1) + parseInt(ag.days_1_3) + parseInt(ag.days_3_7) + parseInt(ag.days_7_30) + parseInt(ag.days_30_plus) > 0;
+    
+    const agingData = hasPending ? [
+      { name: '< 1 Day', value: parseInt(ag.day_1), color: '#10B981' },
+      { name: '1 - 3 Days', value: parseInt(ag.days_1_3), color: '#3B82F6' },
+      { name: '3 - 7 Days', value: parseInt(ag.days_3_7), color: '#8B5CF6' },
+      { name: '7 - 30 Days', value: parseInt(ag.days_7_30), color: '#F59E0B' },
+      { name: '30+ Days', value: parseInt(ag.days_30_plus), color: '#EF4444' }
+    ] : [
+      { name: '< 1 Day', value: 400, color: '#10B981' },
+      { name: '1 - 3 Days', value: 250, color: '#3B82F6' },
+      { name: '3 - 7 Days', value: 180, color: '#8B5CF6' },
+      { name: '7 - 30 Days', value: 150, color: '#F59E0B' },
+      { name: '30+ Days', value: 70, color: '#EF4444' }
+    ];
+
+    // SPAM WATCHLIST
+    const watchlistQuery = `
+      SELECT 
+        r.target_id as user_id, 
+        u.full_name as user_name, 
+        MAX(r.content_preview) as headline,
+        SUM(r.offenses) as total_offenses
+      FROM reports r
+      JOIN users u ON r.target_id = u.user_id
+      WHERE r.target_type = 'user' 
+        AND (r.reason ILIKE '%spam%' OR r.reason ILIKE '%scam%' OR r.reason ILIKE '%fake%')
+        AND r.status = 'active'
+      GROUP BY r.target_id, u.full_name
+      ORDER BY total_offenses DESC
+      LIMIT 5
+    `;
+    const watchlistRes = await pool.query(watchlistQuery);
+    const spamUsers = watchlistRes.rows.map((row) => {
+      const offenses = parseInt(row.total_offenses, 10) || 1;
+      const riskScore = Math.min(99, Math.round(50 + (offenses * 10)));
+      return {
+        id: row.user_id,
+        name: row.user_name || `User-${row.user_id.substring(0,6)}`,
+        handle: `@${(row.user_name || '').toLowerCase().replace(/\s+/g, '')}`,
+        reqs: `${offenses * 10} / day`,
+        accRate: '5.0%',
+        reports: offenses,
+        risk: riskScore,
+        reason: row.headline || 'Suspicious behavior',
+        avatar: (row.user_name || 'U').substring(0,2).toUpperCase()
+      };
+    });
+
+    // MOCK DATA FOR MISSING SCHEMA TABLES
+    const industryData = [
+      { name: 'Software Development', val: 2450 },
+      { name: 'Recruitment', val: 1680 },
+      { name: 'Education', val: 1240 },
+      { name: 'Marketing', val: 980 },
+      { name: 'Finance', val: 750 }
+    ];
+    
+    const locationsQuery = `
+      SELECT location_city as name, COUNT(*) as count 
+      FROM users 
+      WHERE location_city IS NOT NULL 
+      GROUP BY location_city 
+      ORDER BY count DESC 
+      LIMIT 5
+    `;
+    const locationsRes = await pool.query(locationsQuery);
+    
+    const locationsData = locationsRes.rows.length > 0 
+      ? locationsRes.rows.map(row => ({
+          name: row.name,
+          val: parseInt(row.count, 10).toLocaleString()
+        }))
+      : [
+          { name: 'Bangalore', val: '6,200' },
+          { name: 'Mumbai', val: '4,500' },
+          { name: 'Pune', val: '2,100' },
+          { name: 'Delhi', val: '1,800' },
+          { name: 'Hyderabad', val: '1,450' }
+        ];
+
+    const rateLimitedUsers = [
+      { id: 'r1', name: 'Deepak Yadav', handle: '@deepakyadav', limit: '10 / day', reason: 'High reject rate', until: 'Jun 20, 2025', remaining: 3, avatar: 'DY' },
+      { id: 'r2', name: 'Suresh Nair', handle: '@sureshnair', limit: '5 / day', reason: 'Spam reports', until: 'Jun 18, 2025', remaining: 1, avatar: 'SN' }
+    ];
+
+    const alerts = [
+      { id: 1, type: 'danger', title: 'Acceptance rate dropped 15%', desc: 'Compared to last week', time: '2h ago', icon: 'trending_down', color: 'text-red-600', bg: 'bg-red-50' },
+      { id: 4, type: 'success', title: 'Recruiter connections up', desc: '+15% this week', time: '1d ago', icon: 'trending_up', color: 'text-green-500', bg: 'bg-green-50' }
+    ];
+
+    res.json({
+      kpiStats,
+      statusData,
+      liquidityData,
+      dailyConnectionsData,
+      agingData,
+      spamUsers,
+      industryData,
+      locationsData,
+      rateLimitedUsers,
+      alerts
+    });
+  } catch (error) {
+    console.error('Error fetching networking health:', error);
+    res.status(500).json({ error: 'Failed to fetch networking health' });
   }
 };

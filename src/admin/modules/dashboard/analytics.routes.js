@@ -9,5 +9,6 @@ router.get('/engagement-heatmap', requireRoles(['Developer', 'Admin', 'Moderator
 router.get('/cohort-retention', requireRoles(['Developer', 'Admin', 'Moderator']), dashboardController.getCohortRetention);
 router.get('/feature-adoption', requireRoles(['Admin', 'Moderator', 'Developer']), dashboardController.getFeatureAdoption);
 router.get('/user-demographics', requireRoles(['Admin', 'Moderator', 'Developer']), dashboardController.getActiveUserDemographics);
+router.get('/networking-health', dashboardController.getNetworkingHealth);
 
 module.exports = router;

@@ -508,7 +508,7 @@ const generateUniqueSlug = async (client, name, orgId) => {
     let slug = baseSlug;
     let count = 1;
     while (true) {
-        const query = orgId 
+        const query = orgId
             ? `SELECT 1 FROM organizations WHERE slug = $1 AND org_id != $2`
             : `SELECT 1 FROM organizations WHERE slug = $1`;
         const params = orgId ? [slug, orgId] : [slug];
@@ -572,7 +572,7 @@ exports.createDraftType = async (req, res) => {
             RETURNING *
         `;
         const result = await client.query(insertText, [draftId, tempName, tempSlug, type, userId]);
-        
+
         await logAudit(client, {
             entityId: draftId,
             actorId: userId,
@@ -1270,13 +1270,17 @@ exports.publishNewOrganization = async (req, res) => {
         const slug = await generateUniqueSlug(client, name);
         const establishedYearInt = established_year ? parseInt(established_year, 10) : null;
 
+        // Combine city + country into location string
+        const locationStr = [city, country].filter(Boolean).join(', ') || null;
+
         const insertQuery = `
             INSERT INTO organizations (
-                name, slug, entity_type, established_year, industry, 
-                logo_url, email, phone, website, size, country, city, 
-                headline, description, created_by, onboarding_step, onboarding_completed, email_verified, phone_verified
+                name, slug, entity_type, industry,
+                logo_url, email, website, size, location,
+                headline, description, created_by,
+                verification_status
             ) VALUES (
-                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, 'COMPLETED', TRUE, TRUE, TRUE
+                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'DOCUMENT_PENDING'
             ) RETURNING *
         `;
 
@@ -1284,15 +1288,12 @@ exports.publishNewOrganization = async (req, res) => {
             name,
             slug,
             type || 'COMPANY',
-            establishedYearInt,
             industry || null,
             logoUrl,
             email ? email.toLowerCase().trim() : null,
-            phone ? phone.trim() : null,
             website || null,
             size || null,
-            country || null,
-            city || null,
+            locationStr,
             headline || null,
             description || null,
             userId
@@ -1308,19 +1309,19 @@ exports.publishNewOrganization = async (req, res) => {
         if (entityType === 'INSTITUTION') {
             ownerRoleName = 'Admin';
             roles = [
-                { name: 'Admin',             color: '#FFD700', permissions: ['*'],                                                                                                          priority: 100 },
-                { name: 'Faculty',           color: '#FF5733', permissions: ['CREATE_ACADEMIC_CONTENT', 'MODERATE_STUDENTS', 'VIEW_MEMBERS'],                                              priority: 80  },
-                { name: 'Student Moderator', color: '#28B463', permissions: ['CREATE_GENERAL_CONTENT', 'MODERATE_GENERAL', 'VIEW_MEMBERS'],                                                priority: 60  },
-                { name: 'Student',           color: '#3498DB', permissions: ['CREATE_GENERAL_CONTENT', 'VIEW_MEMBERS'],                                                                    priority: 10  }
+                { name: 'Admin', color: '#FFD700', permissions: ['*'], priority: 100 },
+                { name: 'Faculty', color: '#FF5733', permissions: ['CREATE_ACADEMIC_CONTENT', 'MODERATE_STUDENTS', 'VIEW_MEMBERS'], priority: 80 },
+                { name: 'Student Moderator', color: '#28B463', permissions: ['CREATE_GENERAL_CONTENT', 'MODERATE_GENERAL', 'VIEW_MEMBERS'], priority: 60 },
+                { name: 'Student', color: '#3498DB', permissions: ['CREATE_GENERAL_CONTENT', 'VIEW_MEMBERS'], priority: 10 }
             ];
         } else {
             ownerRoleName = 'Owner';
             roles = [
-                { name: 'Owner',     color: '#FFD700', permissions: ['*'],                                                                                                                priority: 100 },
-                { name: 'Admin',     color: '#FF5733', permissions: ['MANAGE_COMPANY', 'MANAGE_SETTINGS', 'MANAGE_ROLES', 'MANAGE_MEMBERS', 'INVITE_MEMBERS', 'POST_JOBS', 'VIEW_JOBS', 'MANAGE_JOBS', 'VIEW_APPLICANTS', 'MANAGE_APPLICANTS', 'CREATE_CONTENT', 'VIEW_ANALYTICS'], priority: 90  },
-                { name: 'Editor',    color: '#28B463', permissions: ['CREATE_CONTENT', 'VIEW_ANALYTICS', 'VIEW_MEMBERS', 'MANAGE_COMPANY_DETAILS'],                                        priority: 60  },
-                { name: 'Recruiter', color: '#3498DB', permissions: ['POST_JOBS', 'VIEW_JOBS', 'VIEW_APPLICANTS', 'MANAGE_APPLICANTS', 'VIEW_MEMBERS'],                                    priority: 50  },
-                { name: 'Analyst',   color: '#800080', permissions: ['VIEW_ANALYTICS', 'VIEW_MEMBERS'],                                                                                    priority: 40  }
+                { name: 'Owner', color: '#FFD700', permissions: ['*'], priority: 100 },
+                { name: 'Admin', color: '#FF5733', permissions: ['MANAGE_COMPANY', 'MANAGE_SETTINGS', 'MANAGE_ROLES', 'MANAGE_MEMBERS', 'INVITE_MEMBERS', 'POST_JOBS', 'VIEW_JOBS', 'MANAGE_JOBS', 'VIEW_APPLICANTS', 'MANAGE_APPLICANTS', 'CREATE_CONTENT', 'VIEW_ANALYTICS'], priority: 90 },
+                { name: 'Editor', color: '#28B463', permissions: ['CREATE_CONTENT', 'VIEW_ANALYTICS', 'VIEW_MEMBERS', 'MANAGE_COMPANY_DETAILS'], priority: 60 },
+                { name: 'Recruiter', color: '#3498DB', permissions: ['POST_JOBS', 'VIEW_JOBS', 'VIEW_APPLICANTS', 'MANAGE_APPLICANTS', 'VIEW_MEMBERS'], priority: 50 },
+                { name: 'Analyst', color: '#800080', permissions: ['VIEW_ANALYTICS', 'VIEW_MEMBERS'], priority: 40 }
             ];
         }
 

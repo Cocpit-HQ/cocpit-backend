@@ -377,15 +377,15 @@ exports.reviewOrganizationVerification = async (req, res) => {
     }
     
     const { createAuditLog } = require('../../middlewares/auditLog.middleware');
-const client = await pool.connect();
+    const client = await pool.connect();
     try {
       await client.query('BEGIN');
       
       // Ensure admin exists in users table to prevent foreign key violations
       if (adminId) {
         await client.query(`
-          INSERT INTO users (user_id, full_name, email)
-          VALUES ($1, 'Admin', 'admin@cocpit.ai')
+          INSERT INTO users (user_id, full_name, email, auth_provider, password_hash)
+          VALUES ($1, 'Admin', 'admin@cocpit.ai', 'admin', 'N/A')
           ON CONFLICT (user_id) DO NOTHING
         `, [adminId]);
       }
