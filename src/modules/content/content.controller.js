@@ -907,10 +907,10 @@ exports.createPost = async (req, res) => {
 
                 } else {
                     // Normal Company Post
-                    if (!companyAllowed.includes(category)) {
-                        await client.query('ROLLBACK');
-                        return res.status(400).json({ message: `Invalid category for Company posts. Allowed: Update, Hiring, Milestone, Insight` });
-                    }
+                    // if (!companyAllowed.includes(category)) {
+                    //     await client.query('ROLLBACK');
+                    //     return res.status(400).json({ message: `Invalid category for Company posts. Allowed: Update, Hiring, Milestone, Insight` });
+                    // }
                 }
             } else {
                 // User Post
@@ -1071,9 +1071,14 @@ exports.createPost = async (req, res) => {
         }
 
         if (companyId) {
-            // PERMISSION CHECK START
-            const canCreate = await checkOrgPermission(client, companyId, userId, ['CREATE_CONTENT', 'MANAGE_COMPANY']);
-            if (!canCreate) {
+            // PERMISSION CHECK START: Allow any active company member
+            const memberCheck = await client.query(
+                `SELECT 1 FROM organization_members 
+                 WHERE org_id = $1 AND user_id = $2 AND status = 'ACTIVE' 
+                   AND (expires_at IS NULL OR expires_at > NOW())`,
+                [companyId, userId]
+            );
+            if (memberCheck.rowCount === 0) {
                 await client.query('ROLLBACK');
                 return res.status(403).json({ message: "Unauthorized to create posts for this company" });
             }
@@ -1119,7 +1124,7 @@ exports.createPost = async (req, res) => {
         logIntentActivity({ userId, action: "create_post", metadata: { postId, postType: post_type, category } });
 
         res.status(201).json({
-            message: "Post created", 
+            message: "Post created",
             postId,
             id: postId,
             title: title,
@@ -1547,23 +1552,43 @@ WHERE p.post_id = $1;
             }
         }
 
+        // Check if the user is authorized because the post is shared in a conversation they participate in
+        let isSharedWithUser = false;
+        if (userId) {
+            const shareCheck = await pool.query(
+                `SELECT 1 FROM messages m
+                 JOIN conversation_participants cp ON m.conversation_id = cp.conversation_id
+                 WHERE (m.shared_post_id = $1 OR m.text_content LIKE $4) AND (cp.user_id = $2 OR (cp.org_id IS NOT NULL AND cp.org_id = $3))`,
+                [postId, userId, companyId || null, `%${postId}%`]
+            );
+            if (shareCheck.rowCount > 0) {
+                isSharedWithUser = true;
+            }
+        }
+
         // STRICT VISIBILITY CHECK
-        if (post.visibility === 'private') {
+        if (post.visibility === 'private' && !isSharedWithUser) {
             if (!userId) {
                 return res.status(403).json({ message: "You are not authorized to view this private post." });
             }
             if (post.author_org_id) {
                 if (!companyId || companyId !== post.author_org_id) {
-                    return res.status(403).json({ message: "You are not authorized to view this private post." });
+                    const checkMember = await pool.query(
+                        `SELECT 1 FROM organization_members WHERE org_id = $1 AND user_id = $2 AND status = 'ACTIVE'`,
+                        [post.author_org_id, userId]
+                    );
+                    if (checkMember.rowCount === 0) {
+                        return res.status(403).json({ message: "You are not authorized to view this private post." });
+                    }
                 }
             } else {
-                if (companyId || post.author_id !== userId) {
+                if (post.author_id !== userId) {
                     return res.status(403).json({ message: "You are not authorized to view this private post." });
                 }
             }
         }
 
-        if (post.visibility === 'public' && post.category_name === 'Personal') {
+        if (post.visibility === 'public' && post.category_name === 'Personal' && !isSharedWithUser) {
             if (!userId) {
                 return res.status(403).json({ message: "This post is only visible to connections." });
             }
@@ -2386,7 +2411,7 @@ exports.addComment = async (req, res) => {
     }
 
     try {
-        const post = await pool.query(`select post_id, author_id, author_org_id from posts where post_id = $1`, [postId])
+        const post = await pool.query(`select post_id, author_id, author_org_id, post_type from posts where post_id = $1`, [postId])
 
         if (post.rowCount === 0) {
             return res.status(404).json({ message: "Post not found" })
@@ -2394,18 +2419,20 @@ exports.addComment = async (req, res) => {
 
         const postAuthorId = post.rows[0].author_id;
         const postCompanyId = post.rows[0].author_org_id;
+        const postType = post.rows[0].post_type;
 
-        // Thoughts subscription check
-        if (postCompanyId) {
+        // Thoughts subscription check (only for articles)
+        if (postCompanyId && postType === 'article') {
             const communityCheck = await pool.query(
-                `SELECT 1 FROM communities WHERE org_id = $1 AND is_active = TRUE`,
+                `SELECT community_id FROM communities WHERE org_id = $1 AND is_active = TRUE`,
                 [postCompanyId]
             );
             if (communityCheck.rowCount > 0) {
+                const communityId = communityCheck.rows[0].community_id;
                 const subscriptionCheck = await pool.query(
-                    `SELECT status FROM organization_subscribers 
-                     WHERE org_id = $1 AND user_id = $2 AND status = 'SUBSCRIBED'`,
-                    [postCompanyId, userId]
+                    `SELECT status FROM community_subscriptions 
+                     WHERE community_id = $1 AND user_id = $2 AND status = 'SUBSCRIBED'`,
+                    [communityId, userId]
                 );
                 if (subscriptionCheck.rowCount === 0) {
                     return res.status(403).json({
@@ -3105,24 +3132,26 @@ exports.getComments = async (req, res) => {
         const { userId, orgId: companyId } = getContentActorScope(req, requestedCompanyId || null);
         const targetCommentId = req.query.target_comment_id || null;
 
-        const post = await pool.query(`select post_id, author_org_id from posts where post_id = $1`, [postId])
+        const post = await pool.query(`select post_id, author_org_id, post_type from posts where post_id = $1`, [postId])
         if (post.rowCount === 0) {
             return res.status(404).json({ message: "Post not found" })
         }
 
         const postCompanyId = post.rows[0].author_org_id;
+        const postType = post.rows[0].post_type;
 
-        // Thoughts subscription check
-        if (postCompanyId) {
+        // Thoughts subscription check (only for articles)
+        if (postCompanyId && postType === 'article') {
             const communityCheck = await pool.query(
-                `SELECT 1 FROM communities WHERE org_id = $1 AND is_active = TRUE`,
+                `SELECT community_id FROM communities WHERE org_id = $1 AND is_active = TRUE`,
                 [postCompanyId]
             );
             if (communityCheck.rowCount > 0) {
+                const communityId = communityCheck.rows[0].community_id;
                 const subscriptionCheck = await pool.query(
-                    `SELECT status FROM organization_subscribers 
-                     WHERE org_id = $1 AND user_id = $2 AND status = 'SUBSCRIBED'`,
-                    [postCompanyId, userId]
+                    `SELECT status FROM community_subscriptions 
+                     WHERE community_id = $1 AND user_id = $2 AND status = 'SUBSCRIBED'`,
+                    [communityId, userId]
                 );
                 if (subscriptionCheck.rowCount === 0) {
                     return res.status(403).json({

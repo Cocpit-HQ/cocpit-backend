@@ -1,5 +1,6 @@
 const pool = require('../../../core/db/pool');
 const redis = require('../../../core/cache/redis');
+const socketService = require('../../../core/infrastructure/socket.service');
 
 exports.getOrganizations = async (req, res) => {
   try {
@@ -396,7 +397,7 @@ exports.reviewOrganizationVerification = async (req, res) => {
         UPDATE organizations
         SET verification_status = $1, review_notes = $2, reviewed_by = $3, reviewed_at = NOW(), verified_at = $5
         WHERE org_id = $4
-        RETURNING name
+        RETURNING name, created_by
       `;
       const verifiedAt = status === 'VERIFIED' ? new Date() : null;
       const orgRes = await client.query(updateOrgQuery, [status, fullNotes, adminId, id, verifiedAt]);
@@ -404,6 +405,7 @@ exports.reviewOrganizationVerification = async (req, res) => {
         throw new Error('Organization not found');
       }
       const orgName = orgRes.rows[0].name;
+      const orgCreatorId = orgRes.rows[0].created_by;
       
       await client.query(
         `UPDATE organization_verifications
@@ -418,6 +420,34 @@ exports.reviewOrganizationVerification = async (req, res) => {
       );
       // Log the verification action
       await createAuditLog(adminId, `ORG_VERIFICATION_${status}`, `Final review for organization "${orgName}": ${status}. Notes: ${fullNotes}`);
+      
+      // Notify the organization creator
+      if (orgCreatorId) {
+        const notificationText = status === 'VERIFIED' 
+          ? `Your organization "${orgName}" has been verified.`
+          : `Your organization "${orgName}" verification was rejected. Reason: ${rejectionReason || 'See notes'}`;
+          
+        // Notify the user
+        await client.query(`
+          INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata)
+          VALUES ($1, $2, $3, $4, $5, $6)
+        `, [orgCreatorId, adminId, 'organization_verification', notificationText, id, JSON.stringify({ orgId: id, status, rejectionReason })]);
+        
+        // Notify the organization (so it shows up when acting as the company)
+        await client.query(`
+          INSERT INTO notifications (recipient_org_id, sender_id, type, text, reference_id, metadata)
+          VALUES ($1, $2, $3, $4, $5, $6)
+        `, [id, adminId, 'organization_verification', notificationText, id, JSON.stringify({ orgId: id, status, rejectionReason })]);
+        
+        socketService.notifyUser(orgCreatorId, "notification", {
+          user_id: orgCreatorId,
+          type: 'organization_verification',
+          text: notificationText,
+          reference_id: id,
+          created_at: new Date()
+        });
+      }
+      
       await client.query('COMMIT');
       
       // Notify Main API

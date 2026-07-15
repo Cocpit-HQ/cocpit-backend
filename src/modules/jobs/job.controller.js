@@ -1305,7 +1305,7 @@ exports.unsaveJob = async (req, res) => {
     );
 
     if (result.rowCount === 0) {
-      return res.status(404).json({ message: "Job not found in saved list" });
+      return res.status(200).json({ message: "Job not found in saved list, but considered unsaved." });
     }
 
     res.json({ message: "Job removed from saved list" });
@@ -1608,7 +1608,7 @@ exports.getMyJobs = async (req, res) => {
         c.logo_url AS company_logo,
         COALESCE(c.logo_url, u.avatar_url) AS company_avatar,
         c.slug AS company_slug,
-        (SELECT COUNT(*)::int FROM job_applications ja_count WHERE ja_count.job_id = j.job_id) as applicants_count,
+        (SELECT COUNT(*)::int FROM job_applications ja_count WHERE ja_count.job_id = j.job_id AND ja_count.current_status != 'Withdrawn') as applicants_count,
         (SELECT COUNT(*)::int FROM job_applications ja_count WHERE ja_count.job_id = j.job_id AND ja_count.current_status = 'Shortlisted') as shortlisted_count,
         (SELECT COUNT(*)::int FROM job_offers jo_count WHERE jo_count.job_id = j.job_id) as offers_count
       FROM jobs j

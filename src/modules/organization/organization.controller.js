@@ -221,7 +221,8 @@ exports.getOrganization = async (req, res) => {
                 'entity_type', p.entity_type
             )
         ELSE NULL END AS parent_org,
-        (SELECT COUNT(*) FROM organizations ch WHERE ch.parent_org_id = c.org_id AND ch.is_deleted = FALSE) AS children_count
+        (SELECT COUNT(*) FROM organizations ch WHERE ch.parent_org_id = c.org_id AND ch.is_deleted = FALSE) AS children_count,
+        (SELECT document_urls FROM organization_verifications WHERE org_id = c.org_id ORDER BY created_at DESC LIMIT 1) as verification_documents
        FROM organizations c
        LEFT JOIN organizations p ON c.parent_org_id = p.org_id
        WHERE (c.slug = $1 OR (
@@ -1125,14 +1126,27 @@ exports.completeOnboardingFlow = async (req, res) => {
             throw new AppError("Organization phone number must be verified before completing onboarding", 400);
         }
 
+        const docsRes = await client.query(`SELECT document_url FROM organization_documents WHERE org_id = $1`, [orgId]);
+        let finalVerificationStatus = 'DOMAIN_VERIFIED';
+        
+        if (docsRes.rowCount > 0) {
+            finalVerificationStatus = 'DOCUMENT_PENDING';
+            const docUrls = docsRes.rows.map(row => row.document_url);
+            await client.query(
+                `INSERT INTO organization_verifications (org_id, verification_type, document_urls, is_verified, otp, expires_at)
+                 VALUES ($1, 'DOCUMENT', $2, FALSE, 'N/A', NOW() + INTERVAL '1 day')`,
+                [orgId, JSON.stringify(docUrls)]
+            );
+        }
+
         await client.query(
             `UPDATE organizations 
              SET onboarding_completed = TRUE,
                  onboarding_step = NULL,
-                 verification_status = 'DOMAIN_VERIFIED',
+                 verification_status = $1,
                  updated_at = NOW()
-             WHERE org_id = $1`,
-            [orgId]
+             WHERE org_id = $2`,
+            [finalVerificationStatus, orgId]
         );
 
         let roles;

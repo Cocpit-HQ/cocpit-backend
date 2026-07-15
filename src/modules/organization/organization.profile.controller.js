@@ -92,7 +92,15 @@ exports.getOrgProfile = async (req, res) => {
             pool.query(
                 `SELECT
                     (SELECT COUNT(*) FROM organization_followers WHERE org_id = $1)::int AS followers_count,
-                    (SELECT COUNT(*) FROM organization_subscribers WHERE org_id = $1 AND status = 'SUBSCRIBED')::int AS subscribers_count,
+                    (
+                        SELECT COUNT(DISTINCT cs.user_id) 
+                        FROM community_subscriptions cs 
+                        WHERE cs.community_id = (
+                            SELECT community_id FROM communities 
+                            WHERE org_id = $1 AND is_active = TRUE 
+                            ORDER BY created_at DESC LIMIT 1
+                        ) AND cs.status = 'SUBSCRIBED'
+                    )::int AS subscribers_count,
                     (
                         SELECT COUNT(DISTINCT p.user_id)
                         FROM experiences e
@@ -213,7 +221,7 @@ exports.getOrgProfile = async (req, res) => {
                 pool.query(
                     `SELECT
                         EXISTS(SELECT 1 FROM organization_followers WHERE user_id = $1 AND org_id = $2) AS is_following,
-                        EXISTS(SELECT 1 FROM organization_subscribers WHERE user_id = $1 AND org_id = $2 AND status = 'SUBSCRIBED') AS is_subscribed,
+                        EXISTS(SELECT 1 FROM community_subscriptions cs JOIN communities c ON cs.community_id = c.community_id WHERE cs.user_id = $1 AND c.org_id = $2 AND cs.status = 'SUBSCRIBED') AS is_subscribed,
                         EXISTS(SELECT 1 FROM organization_connections WHERE user_id = $1 AND org_id = $2) AS is_connected`,
                     [viewerId, org.org_id]
                 ),
@@ -264,10 +272,18 @@ exports.getOrgProfile = async (req, res) => {
         };
 
         const commDbRes = await pool.query(
-            `SELECT community_id, name, banner_url, description 
-             FROM communities 
-             WHERE org_id = $1 AND is_active = TRUE`,
-            [org.org_id]
+            `SELECT c.community_id, c.name, c.banner_url, c.description,
+                    (SELECT COUNT(*) FROM community_subscriptions WHERE community_id = c.community_id AND status = 'SUBSCRIBED')::int AS subscriber_count,
+                    COALESCE(
+                        EXISTS(
+                            SELECT 1 FROM community_subscriptions 
+                            WHERE user_id = $2 AND community_id = c.community_id AND status = 'SUBSCRIBED'
+                        ), FALSE
+                    ) AS is_subscribed
+             FROM communities c
+             WHERE c.org_id = $1 AND c.is_active = TRUE
+             ORDER BY c.created_at DESC`,
+            [org.org_id, viewerId]
         );
         const communityDetails = commDbRes.rowCount > 0 ? {
             exists: true,
@@ -275,7 +291,8 @@ exports.getOrgProfile = async (req, res) => {
             name: commDbRes.rows[0].name,
             banner_url: commDbRes.rows[0].banner_url,
             description: commDbRes.rows[0].description,
-            is_subscribed: relationship.is_subscribed
+            is_subscribed: commDbRes.rows[0].is_subscribed,
+            subscriber_count: commDbRes.rows[0].subscriber_count
         } : null;
 
         const peopleQuery = org.entity_type === 'INSTITUTION'
@@ -392,6 +409,7 @@ exports.getOrgProfile = async (req, res) => {
             relevance,
             community,
             community_details: communityDetails,
+            communities: commDbRes.rows,
             people: peopleRows,
         });
 
@@ -419,7 +437,7 @@ exports.getOrgAbout = async (req, res) => {
 
         const [officesResult, linksResult, specialtiesResult] = await Promise.all([
             pool.query(
-                `SELECT office_id, city, country, is_headquarters
+                `SELECT office_id, city, country, address, is_headquarters
                  FROM organization_offices 
                  WHERE org_id = $1 AND is_deleted = FALSE
                  ORDER BY is_headquarters DESC, city ASC`,
@@ -1060,13 +1078,14 @@ exports.updateOrgProfile = async (req, res) => {
         }
 
         // Sync key offerings (child table, ordered list — full replace keeps display order intact)
+        let cleanOfferings; // undefined when keyOfferings wasn't part of this update
         if (keyOfferings !== undefined) {
             await client.query(
                 `UPDATE organization_key_offerings SET is_deleted = TRUE WHERE org_id = $1 AND is_deleted = FALSE`,
                 [orgId]
             );
 
-            const cleanOfferings = keyOfferings.map(text => (text || '').trim()).filter(Boolean);
+            cleanOfferings = keyOfferings.map(text => (text || '').trim()).filter(Boolean);
             for (let i = 0; i < cleanOfferings.length; i++) {
                 await client.query(
                     `INSERT INTO organization_key_offerings (org_id, content, position) VALUES ($1, $2, $3)`,
@@ -1083,7 +1102,15 @@ exports.updateOrgProfile = async (req, res) => {
         );
 
         await client.query('COMMIT');
-        return res.json({ message: 'Profile updated successfully', organization: result.rows[0] });
+
+        // Return the authoritative saved state (incl. key_offerings) so the client
+        // can update its cache directly from this response instead of refetching.
+        const organization = result.rows[0];
+        if (cleanOfferings !== undefined) {
+            organization.key_offerings = cleanOfferings;
+        }
+
+        return res.json({ message: 'Profile updated successfully', organization });
 
     } catch (err) {
         await client.query('ROLLBACK');
@@ -1175,22 +1202,23 @@ exports.updateOrgAbout = async (req, res) => {
 
             for (const office of offices) {
                 if (!office.city || !office.country) continue;
+                const cleanAddress = office.address ? office.address.trim() : '';
                 
                 if (office.office_id && existingOfficeIds.has(office.office_id)) {
                     // Update existing active office
                     await client.query(
                         `UPDATE organization_offices 
-                         SET city = $1, country = $2, is_headquarters = $3, is_deleted = FALSE 
-                         WHERE office_id = $4`,
-                        [office.city.trim(), office.country.trim(), !!office.is_headquarters, office.office_id]
+                         SET city = $1, country = $2, address = $3, is_headquarters = $4, is_deleted = FALSE 
+                         WHERE office_id = $5`,
+                        [office.city.trim(), office.country.trim(), cleanAddress, !!office.is_headquarters, office.office_id]
                     );
                     existingOfficeIds.delete(office.office_id);
                 } else {
                     // Insert new office
                     await client.query(
-                        `INSERT INTO organization_offices (org_id, city, country, is_headquarters)
-                         VALUES ($1, $2, $3, $4)`,
-                        [orgId, office.city.trim(), office.country.trim(), !!office.is_headquarters]
+                        `INSERT INTO organization_offices (org_id, city, country, address, is_headquarters)
+                         VALUES ($1, $2, $3, $4, $5)`,
+                        [orgId, office.city.trim(), office.country.trim(), cleanAddress, !!office.is_headquarters]
                     );
                 }
             }
@@ -1212,7 +1240,7 @@ exports.updateOrgAbout = async (req, res) => {
                 [orgId]
             );
             const existingLinkIds = new Set(currentRes.rows.map(r => r.link_id));
-            const VALID_PLATFORMS = ['linkedin', 'twitter', 'instagram', 'facebook', 'youtube', 'github', 'other'];
+            const VALID_PLATFORMS = ['linkedin', 'twitter', 'instagram', 'facebook', 'youtube', 'discord', 'github', 'other'];
 
             for (const link of links) {
                 if (!link.url) continue;
@@ -1309,7 +1337,37 @@ exports.updateOrgAbout = async (req, res) => {
         );
 
         await client.query('COMMIT');
-        return res.json({ message: 'About updated successfully' });
+
+        // Return the authoritative saved state so the client can update its
+        // cache directly from this response instead of racing a refetch.
+        const [aboutRes, officesRes, linksRes, specialtiesRes] = await Promise.all([
+            pool.query(`SELECT description, slogan FROM organizations WHERE org_id = $1`, [orgId]),
+            pool.query(
+                `SELECT office_id, city, country, address, is_headquarters
+                 FROM organization_offices WHERE org_id = $1 AND is_deleted = FALSE
+                 ORDER BY is_headquarters DESC, city ASC`,
+                [orgId]
+            ),
+            pool.query(
+                `SELECT link_id, platform, url, display_label
+                 FROM organization_links WHERE org_id = $1 AND is_deleted = FALSE
+                 ORDER BY platform ASC`,
+                [orgId]
+            ),
+            pool.query(
+                `SELECT specialty_id, name FROM organization_specialties
+                 WHERE org_id = $1 AND is_deleted = FALSE ORDER BY name ASC`,
+                [orgId]
+            ),
+        ]);
+
+        return res.json({
+            message: 'About updated successfully',
+            about: aboutRes.rows[0],
+            offices: officesRes.rows,
+            links: linksRes.rows,
+            specialties: specialtiesRes.rows,
+        });
 
     } catch (err) {
         await client.query('ROLLBACK');

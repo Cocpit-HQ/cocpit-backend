@@ -397,6 +397,8 @@ const getPublicFeedWhere = (userParamIdx) => `
         )
     )
     AND (p.is_removed IS FALSE OR p.is_removed IS NULL)
+    AND p.is_active = TRUE
+    AND NOT (p.post_type = 'article' AND p.author_org_id IS NOT NULL)
     AND (p.is_deleted IS FALSE OR p.is_deleted IS NULL)
     AND (p.is_unlisted IS FALSE OR p.is_unlisted IS NULL)
     AND NOT EXISTS (

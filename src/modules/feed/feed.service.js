@@ -79,33 +79,6 @@ function buildCacheScopeId(userId, orgActorId) {
   return orgActorId ? `${userId}:org:${orgActorId}` : userId;
 }
 
-// ---------------------------------------------------------------------------
-// ID-160/D1 — Actor-scoped cache/session identifier
-// ---------------------------------------------------------------------------
-
-/**
- * buildCacheScopeId
- *
- * Builds the identifier used for feed SLICE cache, SESSION state, and the
- * SEEN-SET — i.e. everything that must not be shared between a human's
- * personal feed and a company/organization they're acting as. Candidate
- * generation and ranking intentionally keep using the real `userId` (they
- * key off the human's own social graph / intent signals in the DB; that's
- * unrelated to which cache entry serves the response — see ID-160
- * implementation plan, "D1 minimal" scope).
- *
- * Falls back to the bare userId — today's exact behavior and key shape —
- * whenever no organization actor is present, which is always true for
- * callers that never send x-actor-type/x-actor-id (e.g. mobile clients
- * today), so their cache keys are byte-for-byte unchanged.
- *
- * @param {string} userId
- * @param {string} [orgActorId]
- * @returns {string}
- */
-function buildCacheScopeId(userId, orgActorId) {
-  return orgActorId ? `${userId}:org:${orgActorId}` : userId;
-}
 
 // ---------------------------------------------------------------------------
 // Internal: run the full generation → ranking → reranking pipeline

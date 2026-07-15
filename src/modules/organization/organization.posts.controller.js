@@ -94,6 +94,8 @@ exports.getOrganizationPosts = async (req, res) => {
         if (filter !== 'Private post') {
             whereClause += ` AND (p.visibility IS NULL OR p.visibility != 'private') `;
         }
+        
+        whereClause += ` AND (p.post_type IS NULL OR p.post_type != 'article') `;
 
         // We can expose a userId param for "is_liked" check even if public
         // For now, let's assume req.user is populated if authenticated
@@ -123,6 +125,8 @@ exports.getOrganizationPosts = async (req, res) => {
             p.content,
             p.created_at,
             p.visibility,
+            p.post_type,
+            p.title,
 
             -- Author is always the company here
             comp.org_id AS author_id, -- Mapped to author_id for frontend compatibility
@@ -306,7 +310,7 @@ exports.getOrganizationPosts = async (req, res) => {
              FROM post_media GROUP BY post_id
         ) sp_media ON sp.post_id = sp_media.post_id
         
-        ${whereClause} AND (p.is_removed IS FALSE OR p.is_removed IS NULL)
+        ${whereClause} AND (p.is_removed IS FALSE OR p.is_removed IS NULL) AND p.is_active = TRUE
         ORDER BY p.created_at DESC, p.post_id DESC
         LIMIT $${idx}
         `;
@@ -321,6 +325,6 @@ exports.getOrganizationPosts = async (req, res) => {
 
     } catch (err) {
         console.error("Get organization posts error:", err);
-        res.status(500).json({ message: "Internal server error" });
+        res.status(500).json({ message: "Internal server error", error: err.message });
     }
 };
