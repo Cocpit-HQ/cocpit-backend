@@ -79,4 +79,29 @@ describe('feed.service', () => {
     expect(result.data.items).toEqual([]);
     expect(result.ok).toBe(true);
   });
+
+  test('bypasses pipeline when algorithm is false (chronological feed)', async () => {
+    feedCache.getFeedSlice.mockResolvedValue(null);
+    feedCache.getHiddenSet.mockResolvedValue(['hidden-1']);
+    const mockPool = {
+      query: jest.fn().mockResolvedValue({
+        rows: [
+          { id: 'c1', type: 'post', slot_type: 'organic', created_at: '2026-07-15T10:00:00.000Z' },
+          { id: 'hidden-1', type: 'post', slot_type: 'organic', created_at: '2026-07-15T09:00:00.000Z' }
+        ]
+      })
+    };
+    feedSessionService.getSession.mockResolvedValue({ session_id: 's1' });
+
+    const result = await getFeed({ userId: 'u1', pool: mockPool, algorithm: false });
+
+    // Should only have c1 because hidden-1 is filtered out
+    expect(result.data.items).toHaveLength(1);
+    expect(result.data.items[0].id).toBe('c1');
+    expect(mockPool.query).toHaveBeenCalled();
+    
+    // Pipeline should NOT be called
+    const { generateCandidates } = require('./candidates/candidateGenerator');
+    expect(generateCandidates).not.toHaveBeenCalled();
+  });
 });

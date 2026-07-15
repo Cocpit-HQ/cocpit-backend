@@ -37,6 +37,8 @@ const {
   getFeedSlice,
   setFeedSlice,
   addToSeenSet,
+  addToHiddenSet,
+  getHiddenSet,
 } = require('./cache/feedCache');
 const { getSession, updateCursor, incrementSeenCount, createSession } = require('./session/feedSession.service');
 const { getPostHydrationSelect, getPostHydrationJoins, getPublicFeedWhere } = require('../../core/queries/postHydration.query');
@@ -80,31 +82,68 @@ function buildCacheScopeId(userId, orgActorId) {
 }
 
 // ---------------------------------------------------------------------------
-// ID-160/D1 — Actor-scoped cache/session identifier
+// Main Entry
 // ---------------------------------------------------------------------------
 
 /**
- * buildCacheScopeId
- *
- * Builds the identifier used for feed SLICE cache, SESSION state, and the
- * SEEN-SET — i.e. everything that must not be shared between a human's
- * personal feed and a company/organization they're acting as. Candidate
- * generation and ranking intentionally keep using the real `userId` (they
- * key off the human's own social graph / intent signals in the DB; that's
- * unrelated to which cache entry serves the response — see ID-160
- * implementation plan, "D1 minimal" scope).
- *
- * Falls back to the bare userId — today's exact behavior and key shape —
- * whenever no organization actor is present, which is always true for
- * callers that never send x-actor-type/x-actor-id (e.g. mobile clients
- * today), so their cache keys are byte-for-byte unchanged.
- *
- * @param {string} userId
- * @param {string} [orgActorId]
- * @returns {string}
+ * Fetch a chronological feed, bypassing all ranking logic and seen-set filtering.
+ * It will filter out explicitly hidden posts and blocked users.
  */
-function buildCacheScopeId(userId, orgActorId) {
-  return orgActorId ? `${userId}:org:${orgActorId}` : userId;
+async function _fetchChronologicalFeed(userId, cursor, limit, pool, orgActorId) {
+  const scopeId = buildCacheScopeId(userId, orgActorId);
+  
+  // Use timestamp string (e.g. ts:2026-07-15T10:00:00.000Z) or default to now
+  let cursorTs = new Date().toISOString();
+  if (cursor && cursor.startsWith('ts:')) {
+    cursorTs = cursor.slice(3);
+  }
+
+  // Fetch chronological posts, filtering blocked users directly in SQL
+  const query = `
+    SELECT p.post_id AS id, 'post' AS type, 'organic' AS slot_type, p.created_at
+    FROM posts p
+    WHERE p.visibility = 'public'
+      AND (p.is_removed IS FALSE OR p.is_removed IS NULL)
+      AND p.created_at < $1
+      AND NOT EXISTS (
+        SELECT 1 FROM blocks b
+        WHERE (b.blocker_id = $2 AND b.blocked_id = p.author_id)
+           OR (b.blocker_id = p.author_id AND b.blocked_id = $2)
+      )
+    ORDER BY p.created_at DESC
+    LIMIT $3
+  `;
+  const result = await pool.query(query, [cursorTs, userId, limit]);
+  let items = result.rows;
+
+  // Filter explicitly hidden posts
+  try {
+    const hiddenSet = await getHiddenSet(scopeId);
+    if (hiddenSet && hiddenSet.length > 0) {
+      const hiddenIds = new Set(hiddenSet);
+      items = items.filter(item => !hiddenIds.has(item.id));
+    }
+  } catch (err) {
+    console.warn('[feedService] Failed to fetch hidden set for chronological feed:', err.message);
+  }
+
+  // Map to position for standard response format
+  const formattedItems = items.map((item, index) => ({
+    id: item.id,
+    type: item.type,
+    slot_type: item.slot_type,
+    position: index,
+    created_at: item.created_at
+  }));
+
+  // Determine next cursor based on the last item's created_at
+  let nextCursor = null;
+  if (formattedItems.length > 0) {
+    const lastItemTs = new Date(formattedItems[formattedItems.length - 1].created_at).toISOString();
+    nextCursor = `ts:${lastItemTs}`;
+  }
+
+  return { items: formattedItems, nextCursor };
 }
 
 // ---------------------------------------------------------------------------
@@ -274,12 +313,24 @@ function _buildResponse(items, session, cacheHit, nextCursor, totalCandidates = 
  *   hydration separate from the same human's personal feed.
  * @returns {Promise<object>}       - FeedResponse matching api-contracts.md
  */
-async function getFeed({ userId, cursor = null, limit = DEFAULT_PAGE_SIZE, pool = null, context = 'home', orgActorId = null } = {}) {
+async function getFeed({ userId, cursor = null, limit = DEFAULT_PAGE_SIZE, pool = null, context = 'home', orgActorId = null, algorithm = true } = {}) {
   if (!userId) throw new Error('feedService.getFeed: `userId` is required');
 
-  const pageSize   = Math.min(limit, 50);  // enforce max from api-contracts.md
+  const pageSize = Math.min(Math.max(limit, 1), 50);  // enforce max from api-contracts.md
   const effectiveCursor = cursor || 'initial';
   const scopeId = buildCacheScopeId(userId, orgActorId);
+  
+  // ── 0. Chronological By-pass (algorithm=false) ────────────────────────────
+  if (algorithm === false) {
+    const chronoResult = await _fetchChronologicalFeed(userId, cursor, pageSize, pool, orgActorId);
+    const hydratedSlicedItems = await _hydrateFeedItems(chronoResult.items, userId, pool, orgActorId);
+    
+    // We construct a mock session just to populate the response properly.
+    const mockSession = { session_id: 'chrono-session' };
+    
+    return _buildResponse(hydratedSlicedItems, mockSession, false, chronoResult.nextCursor, chronoResult.items.length);
+  }
+
   // ID-160 follow-up: true only for a genuinely fresh page load (no cursor
   // supplied) — see rerankCandidates' isInitialPage doc comment.
   const isInitialPage = !cursor;
@@ -387,11 +438,14 @@ async function hidePost({ userId, postId, sessionId, position, pool, orgActorId 
 
   const scopeId = buildCacheScopeId(userId, orgActorId);
 
-  // 1. Permanently hide from future feed generations (addToSeenSet)
+  // 1. Permanently hide from future feed generations (addToSeenSet and addToHiddenSet)
   try {
-    await addToSeenSet(scopeId, [postId]);
+    await Promise.all([
+      addToSeenSet(scopeId, [postId]),
+      addToHiddenSet(scopeId, [postId])
+    ]);
   } catch (err) {
-    console.warn('[feedService] hidePost addToSeenSet failed:', err.message);
+    console.warn('[feedService] hidePost Redis sets update failed:', err.message);
   }
 
   // 2. Track analytics event as 'hide'
