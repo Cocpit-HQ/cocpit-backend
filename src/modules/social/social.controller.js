@@ -4676,3 +4676,83 @@ exports.upsertReaction = async (req, res) => {
         res.status(500).json({ message: "Internal server error" });
     }
 };
+
+// Check if job/offer context has already been sent in a conversation and not deleted
+exports.checkContextSent = async (req, res) => {
+    const { conversationId } = req.params;
+    const { entityId, entityType } = req.query;
+    const userId = req.user.sub || req.user.user_id;
+
+    if (!conversationId || !entityId || !entityType) {
+        return res.status(400).json({ message: "conversationId, entityId, and entityType are required" });
+    }
+
+    try {
+        // 1. Verify if user is participant of the conversation
+        const partCheck = await pool.query(
+            `SELECT 1 FROM conversation_participants 
+             WHERE conversation_id = $1 
+             AND (user_id = $2 OR org_id IN (SELECT org_id FROM organization_members WHERE user_id = $2)) 
+             AND left_at IS NULL`,
+            [conversationId, userId]
+        );
+
+        if (partCheck.rowCount === 0) {
+            return res.status(403).json({ message: "Not a participant in this conversation" });
+        }
+
+        // 2. Identify potential entity IDs to search
+        let entityIdsToCheck = [entityId];
+        let jobId = null;
+
+        if (entityType === 'job') {
+            jobId = entityId;
+        } else if (entityType === 'offer') {
+            const offerRes = await pool.query(
+                `SELECT job_id FROM job_offers WHERE offer_id = $1`,
+                [entityId]
+            );
+            if (offerRes.rowCount > 0 && offerRes.rows[0].job_id) {
+                jobId = offerRes.rows[0].job_id;
+                entityIdsToCheck.push(jobId);
+            }
+        }
+
+        if (jobId) {
+            const offersRes = await pool.query(
+                `SELECT offer_id FROM job_offers WHERE job_id = $1`,
+                [jobId]
+            );
+            for (const row of offersRes.rows) {
+                if (row.offer_id && !entityIdsToCheck.includes(row.offer_id)) {
+                    entityIdsToCheck.push(row.offer_id);
+                }
+            }
+        }
+
+        // 3. Search messages for matching entity context
+        // Check for any message in this conversation with entity_id equal to entityId or jobIdOfOffer
+        // and is_deleted_for_everyone is FALSE
+        // and is not deleted for the user
+        const msgCheck = await pool.query(
+            `SELECT 1 FROM messages m
+             WHERE m.conversation_id = $1 
+               AND m.is_deleted_for_everyone = FALSE 
+               AND NOT EXISTS (
+                 SELECT 1 FROM message_delete md 
+                 WHERE md.message_id = m.message_id AND md.user_id = $3
+               )
+               AND m.entity_id::text = ANY($2::text[])
+             LIMIT 1`,
+            [conversationId, entityIdsToCheck, userId]
+        );
+
+        const isSent = msgCheck.rowCount > 0;
+        return res.json({ sent: isSent });
+
+    } catch (err) {
+        console.error("Check context sent error:", err);
+        return res.status(500).json({ message: "Internal server error" });
+    }
+};
+

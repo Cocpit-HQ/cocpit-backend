@@ -95,4 +95,7 @@ router.patch("/notifications/read-all", requireAuth, socialController.markAllNot
 router.delete("/notifications/bulk", requireAuth, socialController.deleteNotificationsBulk);
 router.delete("/notifications/:id", requireAuth, socialController.deleteNotification);
 
+// Check if job/offer context has already been sent in conversation
+router.get("/conversations/:conversationId/check-context", requireAuth, socialController.checkContextSent);
+
 module.exports = router;
