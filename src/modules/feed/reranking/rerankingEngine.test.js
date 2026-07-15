@@ -25,11 +25,12 @@ const {
   _FEED_PAGE_SIZE,
 } = require('./rerankingEngine');
 
-const { getSeenSet } = require('../cache/feedCache');
+const { getSeenSet, getHiddenSet } = require('../cache/feedCache');
 
-// Mock feedCache getSeenSet helper
+// Mock feedCache getSeenSet and getHiddenSet helper
 jest.mock('../cache/feedCache', () => ({
   getSeenSet: jest.fn(),
+  getHiddenSet: jest.fn(),
 }));
 
 // Helper to make a standard ScoredCandidate for testing
@@ -206,6 +207,7 @@ describe('Reranking Engine - Unit Tests', () => {
 
     test('filters out already seen content IDs', async () => {
       getSeenSet.mockResolvedValue(['c2']);
+      getHiddenSet.mockResolvedValue([]);
 
       const candidates = [
         makeScoredCandidate({ contentId: 'c1', final_score: 1.0 }),
@@ -223,19 +225,8 @@ describe('Reranking Engine - Unit Tests', () => {
 
     test('re-sorts items if diversity penalty changes relative rank', async () => {
       getSeenSet.mockResolvedValue([]);
+      getHiddenSet.mockResolvedValue([]);
 
-      // After author penalty:
-      // c1: author a1 (1st) -> final_score = 0.95
-      // c3: author a1 (2nd) -> penalty 0.075 applied -> final_score = 0.865
-      // c2: author a2 (1st) -> final_score = 0.90
-      // Order should remain c1 (0.95), c2 (0.90), c3 (0.865) instead of c1, c3, c2.
-      // Let's make one where author penalty makes it flip:
-      // c1: author a1 (1st) -> 0.90
-      // c3: author a1 (2nd) -> starts at 0.88, but gets author penalty (0.075) -> 0.805
-      // c2: author a2 (1st) -> 0.85
-      // Initial sorted order by raw score would be c1 (0.90), c3 (0.88), c2 (0.85).
-      // After author penalty: c1 (0.90), c2 (0.85), c3 (0.805).
-      // Order should flip to c1, c2, c3.
       const candidates3 = [
         makeScoredCandidate({ contentId: 'c1', authorId: 'a1', itemType: 'post', final_score: 0.90 }),
         makeScoredCandidate({ contentId: 'c3', authorId: 'a1', itemType: 'job', final_score: 0.88 }),
@@ -250,6 +241,7 @@ describe('Reranking Engine - Unit Tests', () => {
 
     test('assigns 0-indexed positions to the final resorted list', async () => {
       getSeenSet.mockResolvedValue([]);
+      getHiddenSet.mockResolvedValue([]);
 
       const candidates = [
         makeScoredCandidate({ contentId: 'c1', final_score: 0.95 }),
@@ -265,6 +257,7 @@ describe('Reranking Engine - Unit Tests', () => {
 
     test('degrades gracefully (ignores filtering) when Redis seen set fetch fails', async () => {
       getSeenSet.mockRejectedValue(new Error('Redis connection lost'));
+      getHiddenSet.mockResolvedValue([]);
 
       const candidates = [
         makeScoredCandidate({ contentId: 'c1', final_score: 1.0 }),
@@ -287,6 +280,7 @@ describe('Reranking Engine - Unit Tests', () => {
 
     test('drops 4th author appearance (anti-spam)', async () => {
       getSeenSet.mockResolvedValue([]);
+      getHiddenSet.mockResolvedValue([]);
       const candidates = [
         makeScoredCandidate({ contentId: 'c1', authorId: 'a1', final_score: 1.0 }),
         makeScoredCandidate({ contentId: 'c2', authorId: 'a1', final_score: 0.9 }),
@@ -299,6 +293,7 @@ describe('Reranking Engine - Unit Tests', () => {
 
     test('drops 6th type appearance (anti-spam)', async () => {
       getSeenSet.mockResolvedValue([]);
+      getHiddenSet.mockResolvedValue([]);
       const candidates = [
         makeScoredCandidate({ contentId: 'c1', authorId: 'a1', itemType: 'job', final_score: 1.0 }),
         makeScoredCandidate({ contentId: 'c2', authorId: 'a2', itemType: 'job', final_score: 0.9 }),
@@ -313,6 +308,7 @@ describe('Reranking Engine - Unit Tests', () => {
 
     test('drops engagement bait', async () => {
       getSeenSet.mockResolvedValue([]);
+      getHiddenSet.mockResolvedValue([]);
       const candidates = [
         makeScoredCandidate({ contentId: 'c1', final_score: 1.0, _candidate: { metadata: { share_count: 50, like_count: 2, comment_count: 1 } } }),
         makeScoredCandidate({ contentId: 'c2', final_score: 0.9 }),
@@ -324,6 +320,7 @@ describe('Reranking Engine - Unit Tests', () => {
 
     test('injects slots exactly at expected positions', async () => {
       getSeenSet.mockResolvedValue([]);
+      getHiddenSet.mockResolvedValue([]);
       // 20 organic items with unique authors and cycled types to bypass anti-spam limits
       const organic = Array(20).fill(0).map((_, i) => makeScoredCandidate({
         contentId: `o${i}`,
@@ -364,6 +361,7 @@ describe('Reranking Engine - Unit Tests', () => {
 
     test('respects exploration_enabled flag', async () => {
       getSeenSet.mockResolvedValue([]);
+      getHiddenSet.mockResolvedValue([]);
       const organic = Array(20).fill(0).map((_, i) => makeScoredCandidate({ contentId: `o${i}`, final_score: (20-i)*0.05 }));
       const exp = [{ contentId: 'exp1', itemType: 'post', score: 0.9 }];
       
