@@ -294,7 +294,8 @@ exports.getOrgProfile = async (req, res) => {
             banner_url: commDbRes.rows[0].banner_url,
             description: commDbRes.rows[0].description,
             is_subscribed: commDbRes.rows[0].is_subscribed,
-            subscriber_count: commDbRes.rows[0].subscriber_count
+            subscriber_count: commDbRes.rows[0].subscriber_count,
+            is_owner: isOwner
         } : null;
 
         const peopleQuery = org.entity_type === 'INSTITUTION'
