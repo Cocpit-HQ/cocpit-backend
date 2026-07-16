@@ -705,7 +705,14 @@ exports.createPost = async (req, res) => {
         return res.status(400).json({ message: "Invalid status. Allowed values: 'published', 'draft'" });
     }
 
-    status = status || (post_type === "article" ? "draft" : "published");
+    let isCommunityArticle = false;
+    if (req.body.is_community_article !== undefined) {
+        isCommunityArticle = req.body.is_community_article === true || req.body.is_community_article === 'true';
+    } else if (post_type === 'article' && companyId) {
+        isCommunityArticle = true;
+    }
+
+    status = status || ((post_type === "article" && isCommunityArticle) ? "draft" : "published");
 
     // Extract uploaded files
     const uploadedFiles = req.files || [];
@@ -969,7 +976,7 @@ exports.createPost = async (req, res) => {
             }
         }
 
-        let isCommunityArticle = false;
+        isCommunityArticle = false;
         if (req.body.is_community_article !== undefined) {
             isCommunityArticle = req.body.is_community_article === true || req.body.is_community_article === 'true';
         } else if (post_type === 'article' && companyId) {
@@ -1614,7 +1621,7 @@ WHERE p.post_id = $1;
         }
 
         // STRICT DRAFT STATUS CHECK
-        if (post.status === 'draft') {
+        if (post.is_community_article && post.status === 'draft' && !isSharedWithUser) {
             if (!post.author_org_id) {
                 if (post.author_id !== userId) {
                     return res.status(403).json({ message: "Forbidden: You cannot view this draft" });
