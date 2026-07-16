@@ -114,4 +114,17 @@ router.get(
     communityController.searchCommunities
 );
 
+router.get(
+    "/communities/:communityId",
+    optionalAuth,
+    communityController.getCommunityById
+);
+
+router.post(
+    "/organizations/:orgId/community/request-access",
+    requireAuth,
+    communityController.requestEditAccess
+);
+
 module.exports = router;
+

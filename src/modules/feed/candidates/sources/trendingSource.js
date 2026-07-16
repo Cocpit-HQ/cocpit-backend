@@ -52,6 +52,7 @@ async function _fetchTrendingFromDb(pool) {
     WHERE p.created_at  > NOW() - INTERVAL '${TRENDING_DB_WINDOW_HOURS} hours'
       AND p.visibility  = 'public'
       AND (p.is_removed IS FALSE OR p.is_removed IS NULL)
+      AND p.is_community_article IS NOT TRUE
     ORDER BY (
       (SELECT COUNT(*) FROM post_likes    pl WHERE pl.post_id = p.post_id) * 0.6 +
       (SELECT COUNT(*) FROM post_comments pc WHERE pc.post_id = p.post_id) * 1.2 +

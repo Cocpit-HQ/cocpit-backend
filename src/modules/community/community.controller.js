@@ -899,3 +899,134 @@ exports.getSubscriberGrowth = async (req, res, next) => {
         return next(err);
     }
 };
+
+// Get community details by community ID
+exports.getCommunityById = async (req, res, next) => {
+    const { communityId } = req.params;
+    const userId = req.user?.sub || null;
+    try {
+        const result = await pool.query(
+            `SELECT c.community_id, c.org_id, c.name, c.description, c.banner_url,
+                    o.name AS company_name, o.slug AS company_slug, o.logo_url,
+                    (SELECT COUNT(*) FROM community_subscriptions WHERE community_id = c.community_id AND status = 'SUBSCRIBED')::int AS subscriber_count,
+                    COALESCE(
+                        EXISTS(
+                            SELECT 1 FROM community_subscriptions cs 
+                            WHERE cs.community_id = c.community_id AND cs.user_id = $1 AND cs.status = 'SUBSCRIBED'
+                        ) OR EXISTS(
+                            SELECT 1 FROM organization_members om
+                            WHERE om.org_id = c.org_id AND om.user_id = $1 AND om.status = 'ACTIVE'
+                        ), FALSE
+                    ) AS is_subscribed
+             FROM communities c
+             JOIN organizations o ON c.org_id = o.org_id
+             WHERE c.community_id = $2 AND c.is_active = TRUE AND o.is_deleted = FALSE`,
+            [userId, communityId]
+        );
+
+        if (result.rowCount === 0) {
+            throw new AppError("Community not found or inactive", 404);
+        }
+
+        const row = result.rows[0];
+        return res.status(200).json({
+            success: true,
+            data: {
+                id: row.community_id,
+                name: row.name,
+                description: row.description,
+                bannerUrl: row.banner_url,
+                orgId: row.org_id,
+                companyName: row.company_name,
+                companySlug: row.company_slug,
+                logoUrl: row.logo_url,
+                subscriberCount: row.subscriber_count,
+                isSubscribed: row.is_subscribed
+            }
+        });
+    } catch (err) {
+        console.error("[CommunityController] getCommunityById error:", err);
+        return next(err);
+    }
+};
+
+// Request edit access for a community
+exports.requestEditAccess = async (req, res, next) => {
+    const { orgId } = req.params;
+    const userId = req.user.sub;
+
+    try {
+        // Fetch organization details
+        const orgRes = await pool.query(
+            `SELECT name FROM organizations WHERE org_id = $1`,
+            [orgId]
+        );
+        if (orgRes.rowCount === 0) {
+            throw new AppError("Organization not found", 404);
+        }
+        const companyName = orgRes.rows[0].name;
+
+        // Fetch user details
+        const userRes = await pool.query(
+            `SELECT full_name FROM users WHERE user_id = $1`,
+            [userId]
+        );
+        const userName = userRes.rows[0]?.full_name || "A user";
+
+        // Find Owner or Admins of the organization to notify
+        const adminsRes = await pool.query(
+            `SELECT cm.user_id 
+             FROM organization_members cm
+             LEFT JOIN organization_roles cr ON cm.role_id = cr.role_id
+             WHERE cm.org_id = $1 AND cm.status = 'ACTIVE' 
+               AND (COALESCE(cr.name, cm.role) IN ('Owner', 'Admin'))`,
+            [orgId]
+        );
+
+        if (adminsRes.rowCount > 0) {
+            const notificationText = `${userName} requested edit access to the ${companyName} community`;
+            const meta = {
+                org_id: orgId,
+                requestee_id: userId
+            };
+
+            const notificationQueries = adminsRes.rows.map(admin => {
+                return pool.query(
+                    `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata, recipient_org_id)
+                     VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+                    [admin.user_id, userId, "community_access_request", notificationText, orgId, JSON.stringify(meta), orgId]
+                );
+            });
+
+            await Promise.all(notificationQueries);
+
+            // Notify via socket for each admin
+            try {
+                const socketService = require("../../core/infrastructure/socket.service");
+                adminsRes.rows.forEach(admin => {
+                    socketService.notifyUser(admin.user_id, "notification", {
+                        type: "community_access_request",
+                        text: notificationText,
+                        from: userId,
+                        senderName: userName,
+                        referenceId: orgId,
+                        metadata: meta,
+                        time: "Just now",
+                        recipient_org_id: orgId
+                    });
+                });
+            } catch (socketErr) {
+                console.error("[CommunityController] requestEditAccess socket notification failed:", socketErr);
+            }
+        }
+
+        return res.status(200).json({
+            success: true,
+            message: "Edit access request sent successfully."
+        });
+    } catch (err) {
+        console.error("[CommunityController] requestEditAccess error:", err);
+        return next(err);
+    }
+};
+

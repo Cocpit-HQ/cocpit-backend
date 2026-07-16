@@ -969,12 +969,19 @@ exports.createPost = async (req, res) => {
             }
         }
 
+        let isCommunityArticle = false;
+        if (req.body.is_community_article !== undefined) {
+            isCommunityArticle = req.body.is_community_article === true || req.body.is_community_article === 'true';
+        } else if (post_type === 'article' && companyId) {
+            isCommunityArticle = true;
+        }
+
         // 2. Insert Post
         const postResult = await client.query(
-            ` INSERT INTO posts (author_id, category_id, content, visibility, post_type, title, shared_post_id, shared_job_id, author_org_id, is_broadcast, broadcast_scope, location, achievement_image_id, status)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+            ` INSERT INTO posts (author_id, category_id, content, visibility, post_type, title, shared_post_id, shared_job_id, author_org_id, is_broadcast, broadcast_scope, location, achievement_image_id, status, is_community_article)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
       RETURNING post_id, created_at
-      `, [userId, categoryId, content, visibility || 'public', post_type, title, req.body.shared_post_id || null, req.body.shared_job_id || null, companyId || null, is_broadcast ? true : false, is_broadcast ? 'CHILDREN' : null, location || null, achievement_image_id || null, status || 'published']
+      `, [userId, categoryId, content, visibility || 'public', post_type, title, req.body.shared_post_id || null, req.body.shared_job_id || null, companyId || null, is_broadcast ? true : false, is_broadcast ? 'CHILDREN' : null, location || null, achievement_image_id || null, status || 'published', isCommunityArticle]
         );
 
         const postId = postResult.rows[0].post_id;
@@ -1184,6 +1191,7 @@ exports.getPostById = async (req, res) => {
     COALESCE(comp.slug, u.account_name) AS author_slug,
     COALESCE(comp.slogan, u.headline) AS author_headline,
     (p.author_org_id IS NOT NULL) AS is_organization_post,
+    (SELECT community_id FROM communities WHERE org_id = p.author_org_id AND is_active = TRUE LIMIT 1) AS community_id,
     c.name AS category_name,
     p.location,
     ai.cloudinary_url AS achievement_image_url,
@@ -2330,7 +2338,7 @@ exports.addComment = async (req, res) => {
     }
 
     try {
-        const post = await pool.query(`select post_id, author_id, author_org_id, post_type from posts where post_id = $1`, [postId])
+        const post = await pool.query(`select post_id, author_id, author_org_id, post_type, is_community_article from posts where post_id = $1`, [postId])
 
         if (post.rowCount === 0) {
             return res.status(404).json({ message: "Post not found" })
@@ -2339,9 +2347,10 @@ exports.addComment = async (req, res) => {
         const postAuthorId = post.rows[0].author_id;
         const postCompanyId = post.rows[0].author_org_id;
         const postType = post.rows[0].post_type;
+        const isCommunityArticle = post.rows[0].is_community_article;
 
-        // Thoughts subscription check (only for articles)
-        if (postCompanyId && postType === 'article') {
+        // Thoughts subscription check (only for community articles)
+        if (isCommunityArticle && postCompanyId) {
             const communityCheck = await pool.query(
                 `SELECT community_id FROM communities WHERE org_id = $1 AND is_active = TRUE`,
                 [postCompanyId]
@@ -2353,7 +2362,12 @@ exports.addComment = async (req, res) => {
                      WHERE community_id = $1 AND user_id = $2 AND status = 'SUBSCRIBED'`,
                     [communityId, userId]
                 );
-                if (subscriptionCheck.rowCount === 0) {
+                const memberCheck = await pool.query(
+                    `SELECT 1 FROM organization_members 
+                     WHERE org_id = $1 AND user_id = $2 AND status = 'ACTIVE'`,
+                    [postCompanyId, userId]
+                );
+                if (subscriptionCheck.rowCount === 0 && memberCheck.rowCount === 0) {
                     return res.status(403).json({
                         message: "You must subscribe to the community to post thoughts"
                     });
@@ -3051,16 +3065,17 @@ exports.getComments = async (req, res) => {
         const { userId, orgId: companyId } = getContentActorScope(req, requestedCompanyId || null);
         const targetCommentId = req.query.target_comment_id || null;
 
-        const post = await pool.query(`select post_id, author_org_id, post_type from posts where post_id = $1`, [postId])
+        const post = await pool.query(`select post_id, author_org_id, post_type, is_community_article from posts where post_id = $1`, [postId])
         if (post.rowCount === 0) {
             return res.status(404).json({ message: "Post not found" })
         }
 
         const postCompanyId = post.rows[0].author_org_id;
         const postType = post.rows[0].post_type;
+        const isCommunityArticle = post.rows[0].is_community_article;
 
-        // Thoughts subscription check (only for articles)
-        if (postCompanyId && postType === 'article') {
+        // Thoughts subscription check (only for community articles)
+        if (isCommunityArticle && postCompanyId) {
             const communityCheck = await pool.query(
                 `SELECT community_id FROM communities WHERE org_id = $1 AND is_active = TRUE`,
                 [postCompanyId]
@@ -3072,10 +3087,13 @@ exports.getComments = async (req, res) => {
                      WHERE community_id = $1 AND user_id = $2 AND status = 'SUBSCRIBED'`,
                     [communityId, userId]
                 );
-                if (subscriptionCheck.rowCount === 0) {
-                    return res.status(403).json({
-                        message: "Thoughts access requires subscription"
-                    });
+                const memberCheck = await pool.query(
+                    `SELECT 1 FROM organization_members 
+                     WHERE org_id = $1 AND user_id = $2 AND status = 'ACTIVE'`,
+                    [postCompanyId, userId]
+                );
+                if (subscriptionCheck.rowCount === 0 && memberCheck.rowCount === 0) {
+                    return res.status(200).json([]);
                 }
             }
         }

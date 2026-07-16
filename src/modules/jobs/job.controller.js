@@ -967,7 +967,7 @@ exports.applyJob = async (req, res) => {
         WHERE p.user_id = $1 ORDER BY end_date DESC LIMIT 2`, [userId]),
       client.query(`
         SELECT title, description, experience_min, experience_max,
-               experience_label, location, ai_extracted_requirements, org_id, recruiter_id
+               experience_label, location, ai_extracted_requirements, org_id, recruiter_id, status, is_active
         FROM jobs WHERE job_id = $1`, [id]),
     ]);
 
@@ -977,6 +977,10 @@ exports.applyJob = async (req, res) => {
     }
 
     const job = jobRes.rows[0];
+    if (job.status === 'CLOSED' || job.is_active === false) {
+      await client.query("ROLLBACK");
+      return res.status(403).json({ message: "This job is closed and no longer accepting applications" });
+    }
     const candidateSkills = skillsRes.rows.map(r => r.name);
     const experienceRows = expRes.rows;
     const educationRows = eduRes.rows;

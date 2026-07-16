@@ -95,7 +95,7 @@ exports.getOrganizationPosts = async (req, res) => {
             whereClause += ` AND (p.visibility IS NULL OR p.visibility != 'private') `;
         }
         
-        whereClause += ` AND (p.post_type IS NULL OR p.post_type != 'article') `;
+        whereClause += ` AND p.is_community_article IS NOT TRUE `;
 
         // We can expose a userId param for "is_liked" check even if public
         // For now, let's assume req.user is populated if authenticated

@@ -63,6 +63,7 @@ async function _fetchFirstDegree(userId, pool) {
       AND p.created_at  > NOW() - INTERVAL '${FIRST_DEGREE_WINDOW_HOURS} hours'
       AND p.visibility  = 'public'
       AND (p.is_removed IS FALSE OR p.is_removed IS NULL)
+      AND p.is_community_article IS NOT TRUE
     ORDER BY p.created_at DESC
     LIMIT ${SOURCE_CAP}
   `;
@@ -95,6 +96,7 @@ async function _fetchSecondDegree(userId, pool) {
       AND p.created_at    > NOW() - INTERVAL '${SECOND_DEGREE_WINDOW_HOURS} hours'
       AND p.visibility    = 'public'
       AND (p.is_removed IS FALSE OR p.is_removed IS NULL)
+      AND p.is_community_article IS NOT TRUE
       AND NOT EXISTS (
         SELECT 1 FROM followers direct
         WHERE direct.follower_id = $1 AND direct.following_id = p.author_id

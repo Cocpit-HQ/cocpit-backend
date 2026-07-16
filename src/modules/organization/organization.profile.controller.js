@@ -147,6 +147,7 @@ exports.getOrgProfile = async (req, res) => {
                      FROM post_media GROUP BY post_id
                  ) pm ON pm.post_id = p.post_id
                  WHERE p.author_org_id = $1
+                   AND p.is_community_article IS NOT TRUE
                    AND (p.is_removed IS FALSE OR p.is_removed IS NULL)
                  ORDER BY p.created_at DESC
                  LIMIT 3`,

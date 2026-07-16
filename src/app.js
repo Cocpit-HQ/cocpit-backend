@@ -69,7 +69,7 @@ app.use(cors(corsOptions));
 app.use(express.json({ limit: "100mb" }));
 app.use(express.urlencoded({ limit: "100mb", extended: true }));
 app.use(cookieParser());
-app.use("/uploads", express.static("uploads"));
+app.use("/uploads", express.static("uploads")); 
 
 app.use((req, res, next) => {
   req.url = req.url.replace(/\/+/g, "/");

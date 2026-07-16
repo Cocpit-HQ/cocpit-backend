@@ -104,6 +104,7 @@ async function _fetchChronologicalFeed(userId, cursor, limit, pool, orgActorId) 
     FROM posts p
     WHERE p.visibility = 'public'
       AND (p.is_removed IS FALSE OR p.is_removed IS NULL)
+      AND p.is_community_article IS NOT TRUE
       AND p.created_at < $1
       AND NOT EXISTS (
         SELECT 1 FROM blocks b
