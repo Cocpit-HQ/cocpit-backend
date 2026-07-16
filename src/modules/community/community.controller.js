@@ -210,17 +210,21 @@ exports.getSubscribedCommunities = async (req, res, next) => {
     const userId = req.user.sub;
     try {
         const result = await pool.query(
-            `SELECT c.community_id, c.name, c.description, c.banner_url, c.org_id,
+            `SELECT DISTINCT c.community_id, c.name, c.description, c.banner_url, c.org_id,
                     o.name AS company_name, o.slug AS company_slug, o.logo_url,
-                    (SELECT COUNT(*) FROM community_subscriptions WHERE community_id = c.community_id AND status = 'SUBSCRIBED')::int AS subscriber_count
-             FROM community_subscriptions cs
-             JOIN communities c ON cs.community_id = c.community_id
+                    (SELECT COUNT(*) FROM community_subscriptions WHERE community_id = c.community_id AND status = 'SUBSCRIBED')::int AS subscriber_count,
+                    COALESCE(o.created_by = $1, FALSE) AS is_owner
+             FROM communities c
              JOIN organizations o ON c.org_id = o.org_id
-             WHERE cs.user_id = $1 AND cs.status = 'SUBSCRIBED' 
-               AND c.is_active = TRUE AND o.is_deleted = FALSE`,
+             LEFT JOIN community_subscriptions cs ON cs.community_id = c.community_id AND cs.user_id = $1 AND cs.status = 'SUBSCRIBED'
+             WHERE c.is_active = TRUE AND o.is_deleted = FALSE
+               AND (
+                 cs.status = 'SUBSCRIBED'
+                 OR o.created_by = $1
+               )`,
             [userId]
         );
-
+ 
         const mappedRows = result.rows.map(row => ({
             id: row.community_id,
             name: row.name,
@@ -230,7 +234,8 @@ exports.getSubscribedCommunities = async (req, res, next) => {
             companyName: row.company_name,
             companySlug: row.company_slug,
             logoUrl: row.logo_url,
-            subscriberCount: row.subscriber_count
+            subscriberCount: row.subscriber_count,
+            isOwner: row.is_owner
         }));
 
         return res.status(200).json({
@@ -785,6 +790,7 @@ exports.getRecommendedCommunities = async (req, res, next) => {
                    SELECT 1 FROM community_subscriptions cs 
                    WHERE cs.community_id = c.community_id AND cs.user_id = $1 AND cs.status = 'SUBSCRIBED'
                )
+               AND o.created_by != $1
              LIMIT $2`,
             [userId, limit]
         );
@@ -827,8 +833,9 @@ exports.searchCommunities = async (req, res, next) => {
                         EXISTS(
                             SELECT 1 FROM community_subscriptions cs 
                             WHERE cs.community_id = c.community_id AND cs.user_id = $1 AND cs.status = 'SUBSCRIBED'
-                        ), FALSE
-                    ) AS is_subscribed
+                        ) OR (o.created_by = $1), FALSE
+                    ) AS is_subscribed,
+                    COALESCE(o.created_by = $1, FALSE) AS is_owner
              FROM communities c
              JOIN organizations o ON c.org_id = o.org_id
              WHERE c.is_active = TRUE AND o.is_deleted = FALSE
@@ -836,7 +843,7 @@ exports.searchCommunities = async (req, res, next) => {
              LIMIT $3 OFFSET $4`,
             [userId, `%${search}%`, limit, offset]
         );
-
+ 
         const mappedRows = result.rows.map(row => ({
             id: row.community_id,
             name: row.name,
@@ -846,7 +853,8 @@ exports.searchCommunities = async (req, res, next) => {
             companyName: row.company_name,
             logoUrl: row.logo_url,
             subscriberCount: row.subscriber_count,
-            isSubscribed: row.is_subscribed
+            isSubscribed: row.is_subscribed,
+            isOwner: row.is_owner
         }));
 
         return res.status(200).json({
@@ -913,11 +921,9 @@ exports.getCommunityById = async (req, res, next) => {
                         EXISTS(
                             SELECT 1 FROM community_subscriptions cs 
                             WHERE cs.community_id = c.community_id AND cs.user_id = $1 AND cs.status = 'SUBSCRIBED'
-                        ) OR EXISTS(
-                            SELECT 1 FROM organization_members om
-                            WHERE om.org_id = c.org_id AND om.user_id = $1 AND om.status = 'ACTIVE'
-                        ), FALSE
-                    ) AS is_subscribed
+                        ) OR (o.created_by = $1), FALSE
+                    ) AS is_subscribed,
+                    COALESCE(o.created_by = $1, FALSE) AS is_owner
              FROM communities c
              JOIN organizations o ON c.org_id = o.org_id
              WHERE c.community_id = $2 AND c.is_active = TRUE AND o.is_deleted = FALSE`,
@@ -941,7 +947,8 @@ exports.getCommunityById = async (req, res, next) => {
                 companySlug: row.company_slug,
                 logoUrl: row.logo_url,
                 subscriberCount: row.subscriber_count,
-                isSubscribed: row.is_subscribed
+                isSubscribed: row.is_subscribed,
+                isOwner: row.is_owner
             }
         });
     } catch (err) {

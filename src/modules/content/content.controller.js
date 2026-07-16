@@ -2362,12 +2362,12 @@ exports.addComment = async (req, res) => {
                      WHERE community_id = $1 AND user_id = $2 AND status = 'SUBSCRIBED'`,
                     [communityId, userId]
                 );
-                const memberCheck = await pool.query(
-                    `SELECT 1 FROM organization_members 
-                     WHERE org_id = $1 AND user_id = $2 AND status = 'ACTIVE'`,
+                const ownerCheck = await pool.query(
+                    `SELECT 1 FROM organizations 
+                     WHERE org_id = $1 AND created_by = $2`,
                     [postCompanyId, userId]
                 );
-                if (subscriptionCheck.rowCount === 0 && memberCheck.rowCount === 0) {
+                if (subscriptionCheck.rowCount === 0 && ownerCheck.rowCount === 0) {
                     return res.status(403).json({
                         message: "You must subscribe to the community to post thoughts"
                     });
@@ -3087,12 +3087,12 @@ exports.getComments = async (req, res) => {
                      WHERE community_id = $1 AND user_id = $2 AND status = 'SUBSCRIBED'`,
                     [communityId, userId]
                 );
-                const memberCheck = await pool.query(
-                    `SELECT 1 FROM organization_members 
-                     WHERE org_id = $1 AND user_id = $2 AND status = 'ACTIVE'`,
+                const ownerCheck = await pool.query(
+                    `SELECT 1 FROM organizations 
+                     WHERE org_id = $1 AND created_by = $2`,
                     [postCompanyId, userId]
                 );
-                if (subscriptionCheck.rowCount === 0 && memberCheck.rowCount === 0) {
+                if (subscriptionCheck.rowCount === 0 && ownerCheck.rowCount === 0) {
                     return res.status(200).json([]);
                 }
             }
