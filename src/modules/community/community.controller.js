@@ -908,6 +908,51 @@ exports.getSubscriberGrowth = async (req, res, next) => {
     }
 };
 
+// 4. Get Community Subscribers (for company profile modal)
+exports.getCommunitySubscribers = async (req, res, next) => {
+    const { orgId } = req.params;
+    const { search } = req.query;
+
+    try {
+        const queryParams = [orgId];
+        let searchClause = "";
+
+        if (search && search.trim()) {
+            searchClause = ` AND u.full_name ILIKE $2`;
+            queryParams.push(`%${search.trim()}%`);
+        }
+
+        const result = await pool.query(
+            `SELECT u.user_id, u.full_name AS name, u.avatar_url AS avatar, u.headline,
+                    MAX(cs.updated_at) AS subscribed_at
+             FROM community_subscriptions cs
+             JOIN communities c ON cs.community_id = c.community_id
+             JOIN active_users u ON cs.user_id = u.user_id
+             WHERE c.org_id = $1 AND cs.status = 'SUBSCRIBED'
+             ${searchClause}
+             GROUP BY u.user_id, u.full_name, u.avatar_url, u.headline
+             ORDER BY subscribed_at DESC`,
+            queryParams
+        );
+
+        const mappedRows = result.rows.map(row => ({
+            id: row.user_id,
+            name: row.name,
+            avatarUrl: row.avatar,
+            headline: row.headline,
+            subscribedAt: row.subscribed_at
+        }));
+
+        return res.status(200).json({
+            success: true,
+            data: mappedRows
+        });
+    } catch (err) {
+        console.error("[CommunityController] getCommunitySubscribers error:", err);
+        return next(err);
+    }
+};
+
 // Get community details by community ID
 exports.getCommunityById = async (req, res, next) => {
     const { communityId } = req.params;
@@ -953,6 +998,39 @@ exports.getCommunityById = async (req, res, next) => {
         });
     } catch (err) {
         console.error("[CommunityController] getCommunityById error:", err);
+        return next(err);
+    }
+};
+
+// 5. Remove Community Subscriber (company side action)
+exports.removeCommunitySubscriber = async (req, res, next) => {
+    const { orgId, userId } = req.params;
+
+    try {
+        const result = await pool.query(
+            `UPDATE community_subscriptions
+             SET status = 'UNSUBSCRIBED', updated_at = NOW()
+             WHERE user_id = $2
+               AND status = 'SUBSCRIBED'
+               AND community_id IN (SELECT community_id FROM communities WHERE org_id = $1)
+             RETURNING community_id`,
+            [orgId, userId]
+        );
+
+        if (result.rowCount === 0) {
+            return res.status(404).json({ message: "Subscriber not found or already unsubscribed." });
+        }
+
+        try {
+            if (redisClient.isOpen) {
+                await redisClient.del(`user:${userId}:subscribed_communities`);
+                await redisClient.del(`community:${result.rows[0].community_id}:subscribers`);
+            }
+        } catch (cacheErr) {}
+
+        return res.status(200).json({ success: true, message: "Subscriber removed successfully." });
+    } catch (err) {
+        console.error("[CommunityController] removeCommunitySubscriber error:", err);
         return next(err);
     }
 };

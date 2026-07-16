@@ -624,7 +624,11 @@ exports.getCompanyFollowers = async (req, res) => {
 
     try {
         let query = `
-            SELECT u.user_id, u.full_name, u.headline, u.avatar_url, cf.created_at as followed_at
+            SELECT u.user_id, u.full_name, u.headline, u.avatar_url, cf.created_at as followed_at,
+                   EXISTS(
+                       SELECT 1 FROM organization_user_follows ouf
+                       WHERE ouf.org_id = $1 AND ouf.user_id = u.user_id
+                   ) as is_followed_back
             FROM organization_followers cf
             JOIN active_users u ON cf.user_id = u.user_id
             WHERE cf.org_id = $1
@@ -721,22 +725,33 @@ exports.getFollowers = async (req, res) => {
             userId = resolveResult.rows[0].user_id;
         }
 
-        let query = `
-            SELECT u.user_id, u.full_name, u.avatar_url, u.headline, f.created_at, 'user' as type,
+        // Build UNION query: users following this user + companies following this user
+        let userQuery = `
+            SELECT u.user_id, u.full_name, u.avatar_url, u.headline, f.created_at, 'user' as type, NULL as slug,
                    (EXISTS (SELECT 1 FROM followers WHERE follower_id = $2 AND following_id = u.user_id)) as is_following_back
             FROM followers f 
             JOIN active_users u ON f.follower_id = u.user_id 
             WHERE f.following_id = $1
         `;
+
+        let companyQuery = `
+            SELECT o.org_id as user_id, o.name as full_name, o.logo_url as avatar_url, o.slogan as headline, ouf.created_at, 'company' as type, o.slug,
+                   (EXISTS (SELECT 1 FROM organization_followers WHERE user_id = $2 AND org_id = o.org_id)) as is_following_back
+            FROM organization_user_follows ouf
+            JOIN organizations o ON ouf.org_id = o.org_id
+            WHERE ouf.user_id = $1 AND o.is_deleted = FALSE
+        `;
+
         const params = [userId, requesterId];
 
         if (search) {
-            query += ` AND (u.full_name ILIKE $3 OR u.headline ILIKE $3)`;
+            userQuery += ` AND (u.full_name ILIKE $3 OR u.headline ILIKE $3)`;
+            companyQuery += ` AND (o.name ILIKE $3 OR o.slogan ILIKE $3)`;
             params.push(`%${search}%`);
         }
 
-        // Always exclude blocked users from the viewer's perspective
-        query += ` 
+        // Apply block filtering to user followers
+        userQuery += ` 
             AND NOT EXISTS (
                 SELECT 1 FROM blocks b 
                 WHERE (b.blocker_id = $2 AND b.blocked_id = u.user_id)
@@ -744,9 +759,9 @@ exports.getFollowers = async (req, res) => {
             )
         `;
 
-        query += ` ORDER BY f.created_at DESC`;
+        const fullQuery = `(${userQuery}) UNION ALL (${companyQuery}) ORDER BY created_at DESC`;
 
-        const result = await pool.query(query, params);
+        const result = await pool.query(fullQuery, params);
 
         const formattedConnections = result.rows.map(row => {
             const timeAgoVal = formatDistanceToNow(new Date(row.created_at), {
@@ -847,7 +862,10 @@ exports.getFollowersCount = async (req, res) => {
 
     try {
         const result = await pool.query(
-            `SELECT COUNT(*) FROM followers WHERE following_id = $1`,
+            `SELECT 
+                (SELECT COUNT(*) FROM followers WHERE following_id = $1) + 
+                (SELECT COUNT(*) FROM organization_user_follows cf JOIN organizations c ON cf.org_id = c.org_id WHERE cf.user_id = $1 AND c.is_deleted = FALSE) 
+             as count`,
             [userId]
         );
         res.json({ followers_count: result.rows[0].count });
@@ -4755,4 +4773,108 @@ exports.checkContextSent = async (req, res) => {
         return res.status(500).json({ message: "Internal server error" });
     }
 };
+
+// --- ORGANIZATION FOLLOWING (Option B) ---
+
+// Organization follows a user
+exports.organizationFollowUser = async (req, res) => {
+    const { orgId, userId } = req.params;
+    try {
+        await pool.query(
+            `INSERT INTO organization_user_follows (org_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+            [orgId, userId]
+        );
+        res.status(200).json({ success: true, message: "Organization followed user" });
+    } catch (err) {
+        console.error("organizationFollowUser error:", err);
+        res.status(500).json({ message: "Internal server error" });
+    }
+};
+
+// Organization unfollows a user
+exports.organizationUnfollowUser = async (req, res) => {
+    const { orgId, userId } = req.params;
+    try {
+        await pool.query(
+            `DELETE FROM organization_user_follows WHERE org_id = $1 AND user_id = $2`,
+            [orgId, userId]
+        );
+        res.status(200).json({ success: true, message: "Organization unfollowed user" });
+    } catch (err) {
+        console.error("organizationUnfollowUser error:", err);
+        res.status(500).json({ message: "Internal server error" });
+    }
+};
+
+// Organization follows an organization
+exports.organizationFollowOrganization = async (req, res) => {
+    const { orgId, targetOrgId } = req.params;
+    if (orgId === targetOrgId) {
+        return res.status(400).json({ message: "Cannot follow yourself" });
+    }
+    try {
+        await pool.query(
+            `INSERT INTO organization_org_follows (follower_org_id, following_org_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+            [orgId, targetOrgId]
+        );
+        res.status(200).json({ success: true, message: "Organization followed organization" });
+    } catch (err) {
+        console.error("organizationFollowOrganization error:", err);
+        res.status(500).json({ message: "Internal server error" });
+    }
+};
+
+// Organization unfollows an organization
+exports.organizationUnfollowOrganization = async (req, res) => {
+    const { orgId, targetOrgId } = req.params;
+    try {
+        await pool.query(
+            `DELETE FROM organization_org_follows WHERE follower_org_id = $1 AND following_org_id = $2`,
+            [orgId, targetOrgId]
+        );
+        res.status(200).json({ success: true, message: "Organization unfollowed organization" });
+    } catch (err) {
+        console.error("organizationUnfollowOrganization error:", err);
+        res.status(500).json({ message: "Internal server error" });
+    }
+};
+
+// Get list of entities an organization is following
+exports.getOrganizationFollowing = async (req, res) => {
+    const { orgId } = req.params;
+    const { search } = req.query;
+
+    try {
+        let userQuery = `
+            SELECT u.user_id, u.full_name AS name, u.avatar_url AS avatar, u.headline, f.created_at, 'user' as type
+            FROM organization_user_follows f
+            JOIN active_users u ON f.user_id = u.user_id
+            WHERE f.org_id = $1
+        `;
+
+        let companyQuery = `
+            SELECT c.org_id as user_id, c.name AS name, c.logo_url as avatar, c.industry as headline, cf.created_at, 'company' as type
+            FROM organization_org_follows cf
+            JOIN organizations c ON cf.following_org_id = c.org_id
+            WHERE cf.follower_org_id = $1 AND c.is_deleted = FALSE
+        `;
+
+        const params = [orgId];
+
+        if (search && search.trim()) {
+            userQuery += ` AND (u.full_name ILIKE $2 OR u.headline ILIKE $2)`;
+            companyQuery += ` AND (c.name ILIKE $2 OR c.industry ILIKE $2)`;
+            params.push(`%${search.trim()}%`);
+        }
+
+        const fullQuery = `(${userQuery}) UNION ALL (${companyQuery}) ORDER BY created_at DESC`;
+        const result = await pool.query(fullQuery, params);
+
+        res.status(200).json({ success: true, data: result.rows });
+    } catch (err) {
+        console.error("getOrganizationFollowing error:", err);
+        res.status(500).json({ message: "Internal server error" });
+    }
+};
+
 
