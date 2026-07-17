@@ -396,7 +396,7 @@ exports.getOrgProfile = async (req, res) => {
                 posts_count: counts.posts_count,
                 active_jobs_count: counts.active_jobs_count,
                 owner_id: org.created_by,
-                key_offerings: keyOfferingsResult.rows.map(r => ({ id: r.offering_id, icon: r.icon, content: r.content })),
+                key_offerings: keyOfferingsResult.rows.map(r => ({ id: r.offering_id, icon: r.icon, label: r.label, content: r.content })),
             },
             is_own_profile: isOwner,
             viewer_role: membership?.role_name || null,
@@ -1134,14 +1134,15 @@ exports.updateOrgProfile = async (req, res) => {
             cleanOfferings = keyOfferings
                 .map(off => ({
                     icon: (off.icon || '').trim(),
+                    label: (off.label || '').trim(),
                     content: (off.content || '').trim()
                 }))
                 .filter(off => off.content); // require at least content
 
             for (let i = 0; i < cleanOfferings.length; i++) {
                 await client.query(
-                    `INSERT INTO organization_key_offerings (org_id, icon, content, position) VALUES ($1, $2, $3, $4)`,
-                    [orgId, cleanOfferings[i].icon, cleanOfferings[i].content, i]
+                    `INSERT INTO organization_key_offerings (org_id, icon, label, content, position) VALUES ($1, $2, $3, $4, $5)`,
+                    [orgId, cleanOfferings[i].icon, cleanOfferings[i].label, cleanOfferings[i].content, i]
                 );
             }
         }
