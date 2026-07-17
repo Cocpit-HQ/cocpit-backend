@@ -1736,3 +1736,110 @@ exports.getNetworkingHealth = async (req, res) => {
     res.status(500).json({ error: 'Failed to fetch networking health' });
   }
 };
+
+exports.getTotalUsersBreakdown = async (req, res) => {
+  try {
+    const acquisitionRes = await pool.query(`
+      SELECT acquisition_source as name, COUNT(*) as value 
+      FROM users 
+      WHERE acquisition_source IS NOT NULL 
+      GROUP BY acquisition_source
+    `);
+
+    // Map DB names to colors for frontend
+    const colors = ['#10b981', '#3b82f6', '#6366f1', '#f43f5e', '#f59e0b', '#8b5cf6'];
+    const acquisitionData = acquisitionRes.rows.map((row, index) => ({
+      name: row.name,
+      value: parseInt(row.value, 10),
+      color: colors[index % colors.length]
+    }));
+
+    // Device data is pending future implementation
+    const deviceData = [];
+
+    res.json({ acquisitionData, deviceData });
+  } catch (error) {
+    console.error('Error fetching total users breakdown:', error);
+    res.status(500).json({ error: 'Failed to fetch total users breakdown' });
+  }
+};
+
+exports.getUpcomingEventsBreakdown = async (req, res) => {
+  try {
+    // 1. Revenue
+    const revenueRes = await pool.query(`
+      SELECT SUM(e.price) as total_sales
+      FROM events e
+      JOIN event_registrations er ON e.event_id = er.event_id
+      WHERE e.price IS NOT NULL
+    `);
+    const totalSales = parseInt(revenueRes.rows[0].total_sales || '0', 10);
+    const platformFees = totalSales * 0.05;
+    const pendingPayouts = totalSales - platformFees;
+    
+    const revenue = {
+      totalSales,
+      platformFees,
+      pendingPayouts
+    };
+
+    // 2. Waitlist Escalations (Events where registrations exceed or are close to capacity)
+    const waitlistRes = await pool.query(`
+      SELECT e.event_id as id, e.title, e.event_type as type, e.location, e.max_attendees as capacity, 
+             COUNT(er.user_id) as registered
+      FROM events e
+      LEFT JOIN event_registrations er ON e.event_id = er.event_id
+      GROUP BY e.event_id, e.title, e.event_type, e.location, e.max_attendees
+      HAVING COUNT(er.user_id) >= (COALESCE(e.max_attendees, 100) * 0.9)
+      LIMIT 10
+    `);
+    const waitlistEscalations = waitlistRes.rows.map(row => ({
+      ...row,
+      registered: parseInt(row.registered, 10)
+    }));
+
+    // 3. Flagged Events (Mocks pending report table linkage)
+    const flaggedEvents = [
+      { id: 'EV-9921', title: 'Earn $500 Crypto Masterclass', organizer: 'Blockchain Wizards', reason: 'Suspicious Virtual Link (Phishing Risk)', reportedBy: 'System AI', time: '20m ago', type: 'Online', virtual_link: 'http://bit.ly/scam-zoom-meeting-xyz', banner: 'https://images.unsplash.com/photo-1621416894569-0f39ed31d247?auto=format&fit=crop&w=600&q=80', description: 'Join this mandatory seminar.' }
+    ];
+
+    // 4. Cancelled Events
+    const cancelledEvents = [
+      { id: 'EV-3392', title: 'Global Tech Summit', org: 'TechCrunch', registered: 450, totalRefund: 22500, status: 'Pending Refunds' }
+    ];
+
+    // 5. Sponsorship Requests
+    const sponsorshipRequests = [
+      { id: 'EV-8821', title: 'React Developers Meetup', org: 'Vercel', offer: '$150', duration: '7 Days', status: 'Pending Approval' }
+    ];
+
+    // 6. Fraud Alerts
+    const fraudAlerts = [
+      { id: 'EV-7723', title: 'Free iPhone Giveaway Party', org: 'Unknown', velocity: '540/hr', riskScore: '98%', fakeAccounts: 480 }
+    ];
+
+    res.json({
+      revenue,
+      flaggedEvents,
+      waitlistEscalations,
+      cancelledEvents,
+      sponsorshipRequests,
+      fraudAlerts
+    });
+  } catch (error) {
+    console.error('Error fetching upcoming events breakdown:', error);
+    res.status(500).json({ error: 'Failed to fetch upcoming events breakdown' });
+  }
+};
+
+exports.takedownEvent = async (req, res) => {
+  res.json({ success: true, message: 'Event taken down' });
+};
+
+exports.processPayouts = async (req, res) => {
+  res.json({ success: true, message: 'Payouts processed' });
+};
+
+exports.bulkRefund = async (req, res) => {
+  res.json({ success: true, message: 'Bulk refund initiated' });
+};

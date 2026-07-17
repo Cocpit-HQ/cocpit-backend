@@ -179,7 +179,7 @@ exports.warnOrganization = async (req, res) => {
       UPDATE organizations 
       SET moderation_flags = COALESCE(moderation_flags, 0) + $2 
       WHERE org_id = $1 
-      RETURNING moderation_flags, name
+      RETURNING moderation_flags, name, created_by
     `;
     const result = await pool.query(updateQuery, [id, points]);
     
@@ -189,6 +189,7 @@ exports.warnOrganization = async (req, res) => {
     
     const newFlagsCount = parseInt(result.rows[0].moderation_flags);
     const targetName = result.rows[0].name || 'organization';
+    const orgCreatorId = result.rows[0].created_by;
     const adminId = req.user.userId;
     let autoSuspended = false;
     
@@ -206,6 +207,32 @@ exports.warnOrganization = async (req, res) => {
       );
     }
     
+    // Notify the organization owner
+    if (orgCreatorId) {
+      const notificationText = isSevere 
+        ? `Your organization "${targetName}" has received a severe warning. Reason: ${reason}. Message: ${message || 'No additional details'}`
+        : `Your organization "${targetName}" has received a warning. Reason: ${reason}. Message: ${message || 'No additional details'}`;
+      
+      await pool.query(`
+        INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata)
+        VALUES ($1, $2, $3, $4, $5, $6)
+      `, [orgCreatorId, adminId, 'organization_warning', notificationText, id, JSON.stringify({ orgId: id, reason, message, isSevere, autoSuspended })]);
+      
+      // Notify the organization (so it shows up when acting as the company)
+      await pool.query(`
+        INSERT INTO notifications (recipient_org_id, sender_id, type, text, reference_id, metadata)
+        VALUES ($1, $2, $3, $4, $5, $6)
+      `, [id, adminId, 'organization_warning', notificationText, id, JSON.stringify({ orgId: id, reason, message, isSevere, autoSuspended })]);
+      
+      socketService.notifyUser(orgCreatorId, "notification", {
+        user_id: orgCreatorId,
+        type: 'organization_warning',
+        text: notificationText,
+        reference_id: id,
+        created_at: new Date()
+      });
+    }
+
     // Log the warning action to audit logs
     await pool.query(
       'INSERT INTO admin_audit_logs (user_id, action_type, description) VALUES ($1, $2, $3)',
