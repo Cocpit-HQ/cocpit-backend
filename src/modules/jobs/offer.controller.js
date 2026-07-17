@@ -249,6 +249,7 @@ exports.getCompanyOfferRecipients = async (req, res) => {
         let query = `
             SELECT 
                 jo.offer_id,
+                jo.org_id,
                 jo.status,
                 jo.message,
                 jo.created_at,
