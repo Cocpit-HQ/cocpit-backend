@@ -264,8 +264,9 @@ exports.getUserProfile = async (req, res) => {
         const requestCheck = await pool.query(
           `SELECT request_id, sender_id, status 
            FROM connection_requests 
-           WHERE (sender_id = $1 AND receiver_id = $2) 
-              OR (sender_id = $2 AND receiver_id = $1)`,
+           WHERE ((sender_id = $1 AND receiver_id = $2) 
+              OR (sender_id = $2 AND receiver_id = $1))
+             AND status != 'connected'`,
           [currentUserId, targetUserId]
         );
 
@@ -288,8 +289,8 @@ exports.getUserProfile = async (req, res) => {
     // 6. Fetch follower/following/connection counts
     const countsResult = await pool.query(
       `SELECT 
-        (SELECT COUNT(*) FROM followers WHERE following_id = $1) as followers_count,
-        (SELECT COUNT(*) FROM followers WHERE follower_id = $1) as following_count,
+        (SELECT COUNT(*) FROM followers WHERE following_id = $1) + (SELECT COUNT(*) FROM organization_user_follows cf JOIN organizations c ON cf.org_id = c.org_id WHERE cf.user_id = $1 AND c.is_deleted = FALSE) as followers_count,
+        (SELECT COUNT(*) FROM followers WHERE follower_id = $1) + (SELECT COUNT(*) FROM organization_followers cf JOIN organizations c ON cf.org_id = c.org_id WHERE cf.user_id = $1 AND c.is_deleted = FALSE) as following_count,
         (SELECT COUNT(*) FROM connections WHERE user_id = $1) as connections_count
       `,
       [targetUserId]
@@ -1218,7 +1219,7 @@ exports.getSuggestedUsers = async (req, res) => {
         u.avatar_url,
         u.headline,
         p.account_type,
-        (SELECT COUNT(*) FROM followers WHERE following_id = u.user_id) as followers_count
+        (SELECT COUNT(*) FROM followers WHERE following_id = u.user_id) + (SELECT COUNT(*) FROM organization_user_follows cf JOIN organizations c ON cf.org_id = c.org_id WHERE cf.user_id = u.user_id AND c.is_deleted = FALSE) as followers_count
       FROM active_users u
       LEFT JOIN profiles p ON u.user_id = p.user_id
       WHERE u.full_name IS NOT NULL AND TRIM(u.full_name) <> ''

@@ -28,7 +28,7 @@
 
 'use strict';
 
-const { getSeenSet } = require('../cache/feedCache');
+const { getSeenSet, getHiddenSet } = require('../cache/feedCache');
 
 // ---------------------------------------------------------------------------
 // Constants (from ranking-features.md — FROZEN)
@@ -336,8 +336,33 @@ async function rerankCandidates(
     throw new Error('rerankCandidates: `userId` is required');
   }
 
+  // ── 0. Hidden-set filter (ALWAYS apply) ───────────────────────────────────
+  let hiddenIds = new Set();
+  try {
+    const hiddenArr = await getHiddenSet(userId);
+    if (hiddenArr && hiddenArr.length > 0) {
+      hiddenIds = new Set(hiddenArr);
+    }
+  } catch (err) {
+    console.warn('[rerankingEngine] Could not fetch hidden set, skipping filter:', err.message);
+  }
+
+  let validCandidates = rankedCandidates;
+  let validOpportunity = opportunityCandidates;
+  let validExploration = explorationCandidates;
+
+  if (hiddenIds.size > 0) {
+    validCandidates = rankedCandidates.filter(item => !hiddenIds.has(item._candidate?.contentId ?? item.item_id));
+    if (Array.isArray(opportunityCandidates)) {
+      validOpportunity = opportunityCandidates.filter(c => !hiddenIds.has(c.contentId));
+    }
+    if (Array.isArray(explorationCandidates)) {
+      validExploration = explorationCandidates.filter(c => !hiddenIds.has(c.contentId));
+    }
+  }
+
   // ── 1. Seen-set filter ────────────────────────────────────────────────────
-  let unseen = rankedCandidates;
+  let unseen = validCandidates;
   let seenIds = new Set();
 
   if (!isInitialPage) {
@@ -353,8 +378,8 @@ async function rerankCandidates(
       : rankedCandidates;
   }
 
-  let filteredOpportunity = opportunityCandidates;
-  let filteredExploration = explorationCandidates;
+  let filteredOpportunity = validOpportunity;
+  let filteredExploration = validExploration;
 
   if (seenIds.size > 0) {
     if (Array.isArray(opportunityCandidates)) {

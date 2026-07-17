@@ -22,6 +22,7 @@ const redis = require("../../../core/cache/redis");
 const keys = {
   feedSlice:     (userId, cursor)         => `feed:slice:${userId}:${cursor}`,
   seenSet:       (userId)                 => `feed:seen:${userId}`,
+  hiddenSet:     (userId)                 => `feed:hidden:${userId}`,
   candidatePool: (userId)                 => `feed:candidates:${userId}`,
   // Day 3 keys (all pre-registered in redis-key-registry.md)
   explorePool:   ()                       => 'feed:explore:pool',
@@ -161,6 +162,49 @@ async function clearSeenSet(userId) {
   await redis.del(key);
 }
 
+// ─── Hidden Set Management ──────────────────────────────────────────────────
+/**
+ * Add item IDs to the user's hidden set (explicitly "not interested").
+ * @param {string}   userId
+ * @param {string[]} itemIds - Array of item UUIDs
+ * @returns {Promise<void>}
+ */
+async function addToHiddenSet(userId, itemIds) {
+  if (!userId) throw new Error("addToHiddenSet: userId is required");
+  if (!Array.isArray(itemIds) || itemIds.length === 0) return;
+
+  const key = keys.hiddenSet(userId);
+
+  const pipeline = redis.pipeline();
+  pipeline.sadd(key, ...itemIds);
+  pipeline.expire(key, TTL.SEEN_SET); // Use same TTL as seen set
+  await pipeline.exec();
+}
+
+/**
+ * Get all item IDs in the user's hidden set.
+ * @param {string} userId
+ * @returns {Promise<string[]>}
+ */
+async function getHiddenSet(userId) {
+  if (!userId) throw new Error("getHiddenSet: userId is required");
+
+  const key = keys.hiddenSet(userId);
+  return redis.smembers(key);
+}
+
+/**
+ * Delete the user's hidden set from Redis.
+ * Called on session reset.
+ * @param {string} userId
+ * @returns {Promise<void>}
+ */
+async function clearHiddenSet(userId) {
+  if (!userId) throw new Error("clearHiddenSet: userId is required");
+
+  const key = keys.hiddenSet(userId);
+  await redis.del(key);
+}
 
 // ─── B1.7: Key pattern verification helper ────────────────────────────────────
 /**
@@ -172,6 +216,7 @@ function getRegisteredKeyPatterns() {
   return {
     feedSlice:     "feed:slice:{user_id}:{cursor}",
     seenSet:       "feed:seen:{user_id}",
+    hiddenSet:     "feed:hidden:{user_id}",
     candidatePool: "feed:candidates:{user_id}",
   };
 }
@@ -236,6 +281,10 @@ module.exports = {
   addToSeenSet,
   getSeenSet,
   clearSeenSet,
+  // Hidden set
+  addToHiddenSet,
+  getHiddenSet,
+  clearHiddenSet,
   // Candidate pool (Day 2)
   setCandidatePool,
   getCandidatePool,

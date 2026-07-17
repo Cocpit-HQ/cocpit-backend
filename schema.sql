@@ -1977,9 +1977,14 @@ CREATE TABLE IF NOT EXISTS organization_key_offerings (
     offering_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     org_id UUID NOT NULL REFERENCES organizations(org_id) ON DELETE CASCADE,
     content TEXT NOT NULL,
+    icon VARCHAR(100),
     position INTEGER NOT NULL DEFAULT 0,
     is_deleted BOOLEAN DEFAULT FALSE,
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_org_key_offerings_org_id ON organization_key_offerings(org_id);
 CREATE INDEX IF NOT EXISTS idx_org_key_offerings_active ON organization_key_offerings(org_id) WHERE is_deleted = FALSE;
+
+-- 07/16/2026 Migration: Community Article Indicator
+ALTER TABLE posts ADD COLUMN IF NOT EXISTS is_community_article BOOLEAN DEFAULT FALSE;
+

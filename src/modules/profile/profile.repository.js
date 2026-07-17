@@ -476,8 +476,8 @@ const getCompanyRoles = async (userId) => {
 const getSocialCounts = async (userId) => {
     const result = await pool.query(
         `SELECT 
-       (SELECT COUNT(*) FROM followers WHERE following_id = $1) as followers_count,
-       (SELECT COUNT(*) FROM followers WHERE follower_id = $1) as following_count,
+       (SELECT COUNT(*) FROM followers WHERE following_id = $1) + (SELECT COUNT(*) FROM organization_user_follows cf JOIN organizations c ON cf.org_id = c.org_id WHERE cf.user_id = $1 AND c.is_deleted = FALSE) as followers_count,
+       (SELECT COUNT(*) FROM followers WHERE follower_id = $1) + (SELECT COUNT(*) FROM organization_followers cf JOIN organizations c ON cf.org_id = c.org_id WHERE cf.user_id = $1 AND c.is_deleted = FALSE) as following_count,
        (SELECT COUNT(*) FROM connections WHERE user_id = $1) as connections_count`,
         [userId]
     );
@@ -512,7 +512,7 @@ const getRelationshipInfo = async (viewerId, targetId) => {
     } else {
         const requestCheck = await pool.query(
             `SELECT request_id, sender_id, status FROM connection_requests
-       WHERE (sender_id = $1 AND receiver_id = $2) OR (sender_id = $2 AND receiver_id = $1)`,
+       WHERE ((sender_id = $1 AND receiver_id = $2) OR (sender_id = $2 AND receiver_id = $1)) AND status != 'connected'`,
             [viewerId, targetId]
         );
         if (requestCheck.rowCount > 0) {

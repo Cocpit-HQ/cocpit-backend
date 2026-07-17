@@ -180,7 +180,7 @@ exports.getAllJobs = async (req, res) => {
         u.full_name AS recruiter_name,
         u.avatar_url AS recruiter_avatar,
         c.logo_url AS company_logo,
-        COALESCE(c.logo_url, u.avatar_url) AS company_avatar,
+        COALESCE(c.logo_url, '') AS company_avatar,
         c.slug AS company_slug,
         ${userId ? '(js.user_id IS NOT NULL) AS "isSaved",' : 'FALSE AS "isSaved",'}
         ${userId ? '(ja.application_id IS NOT NULL AND ja.current_status != \'Withdrawn\') AS "hasApplied",' : 'FALSE AS "hasApplied",'}
@@ -235,7 +235,7 @@ exports.getRecommendations = async (req, res) => {
         u.full_name AS recruiter_name,
         u.avatar_url AS recruiter_avatar,
         c.logo_url AS company_logo,
-        COALESCE(c.logo_url, u.avatar_url) AS company_avatar,
+        COALESCE(c.logo_url, '') AS company_avatar,
         c.slug AS company_slug,
         ${userId ? '(js.user_id IS NOT NULL) AS "isSaved",' : 'FALSE AS "isSaved",'}
         ${userId ? '(ja.application_id IS NOT NULL AND ja.current_status != \'Withdrawn\') AS "hasApplied",' : 'FALSE AS "hasApplied",'}
@@ -330,7 +330,7 @@ exports.getJobById = async (req, res) => {
         u.full_name AS recruiter_name,
         u.avatar_url AS recruiter_avatar,
         c.logo_url AS company_logo,
-        COALESCE(c.logo_url, u.avatar_url) AS company_avatar,
+        COALESCE(c.logo_url, '') AS company_avatar,
         c.slug AS company_slug,
         ${userId ? '(js.user_id IS NOT NULL) AS "isSaved",' : 'FALSE AS "isSaved",'}
         ${userId ? '(ja.application_id IS NOT NULL AND ja.current_status != \'Withdrawn\') AS "hasApplied",' : 'FALSE AS "hasApplied",'}
@@ -968,7 +968,7 @@ exports.applyJob = async (req, res) => {
         WHERE p.user_id = $1 ORDER BY end_date DESC LIMIT 2`, [userId]),
       client.query(`
         SELECT title, description, experience_min, experience_max,
-               experience_label, location, ai_extracted_requirements, org_id, recruiter_id
+               experience_label, location, ai_extracted_requirements, org_id, recruiter_id, status, is_active
         FROM jobs WHERE job_id = $1`, [id]),
     ]);
 
@@ -978,6 +978,10 @@ exports.applyJob = async (req, res) => {
     }
 
     const job = jobRes.rows[0];
+    if (job.status === 'CLOSED' || job.is_active === false) {
+      await client.query("ROLLBACK");
+      return res.status(403).json({ message: "This job is closed and no longer accepting applications" });
+    }
     const candidateSkills = skillsRes.rows.map(r => r.name);
     const experienceRows = expRes.rows;
     const educationRows = eduRes.rows;
@@ -1363,7 +1367,7 @@ exports.getMySavedJobs = async (req, res) => {
         u.full_name AS recruiter_name, 
         u.avatar_url AS recruiter_avatar,
         c.logo_url AS company_logo,
-        COALESCE(c.logo_url, u.avatar_url) AS company_avatar,
+        COALESCE(c.logo_url, '') AS company_avatar,
         c.slug AS company_slug,
         TRUE AS "isSaved",
         (ja.application_id IS NOT NULL AND ja.current_status != 'Withdrawn') AS "hasApplied",
@@ -1606,7 +1610,7 @@ exports.getMyJobs = async (req, res) => {
         u.full_name AS recruiter_name,
         u.avatar_url AS recruiter_avatar,
         c.logo_url AS company_logo,
-        COALESCE(c.logo_url, u.avatar_url) AS company_avatar,
+        COALESCE(c.logo_url, '') AS company_avatar,
         c.slug AS company_slug,
         (SELECT COUNT(*)::int FROM job_applications ja_count WHERE ja_count.job_id = j.job_id AND ja_count.current_status != 'Withdrawn') as applicants_count,
         (SELECT COUNT(*)::int FROM job_applications ja_count WHERE ja_count.job_id = j.job_id AND ja_count.current_status = 'Shortlisted') as shortlisted_count,

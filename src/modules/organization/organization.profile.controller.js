@@ -91,15 +91,16 @@ exports.getOrgProfile = async (req, res) => {
             // Counts (followers, subscribers, members, posts, active jobs)
             pool.query(
                 `SELECT
+                    (
+                        (SELECT COUNT(*) FROM organization_user_follows WHERE org_id = $1) +
+                        (SELECT COUNT(*) FROM organization_org_follows WHERE follower_org_id = $1)
+                    )::int AS following_count,
                     (SELECT COUNT(*) FROM organization_followers WHERE org_id = $1)::int AS followers_count,
                     (
                         SELECT COUNT(DISTINCT cs.user_id) 
-                        FROM community_subscriptions cs 
-                        WHERE cs.community_id = (
-                            SELECT community_id FROM communities 
-                            WHERE org_id = $1 AND is_active = TRUE 
-                            ORDER BY created_at DESC LIMIT 1
-                        ) AND cs.status = 'SUBSCRIBED'
+                        FROM community_subscriptions cs
+                        JOIN communities c ON cs.community_id = c.community_id
+                        WHERE c.org_id = $1 AND cs.status = 'SUBSCRIBED'
                     )::int AS subscribers_count,
                     (
                         SELECT COUNT(DISTINCT p.user_id)
@@ -147,6 +148,7 @@ exports.getOrgProfile = async (req, res) => {
                      FROM post_media GROUP BY post_id
                  ) pm ON pm.post_id = p.post_id
                  WHERE p.author_org_id = $1
+                   AND p.is_community_article IS NOT TRUE
                    AND (p.is_removed IS FALSE OR p.is_removed IS NULL)
                  ORDER BY p.created_at DESC
                  LIMIT 3`,
@@ -162,7 +164,7 @@ exports.getOrgProfile = async (req, res) => {
             ),
             // Key offerings (Profile tab — public profile "Key offerings" section)
             pool.query(
-                `SELECT offering_id, content
+                `SELECT offering_id, icon, content
                  FROM organization_key_offerings
                  WHERE org_id = $1 AND is_deleted = FALSE
                  ORDER BY position ASC`,
@@ -292,7 +294,8 @@ exports.getOrgProfile = async (req, res) => {
             banner_url: commDbRes.rows[0].banner_url,
             description: commDbRes.rows[0].description,
             is_subscribed: commDbRes.rows[0].is_subscribed,
-            subscriber_count: commDbRes.rows[0].subscriber_count
+            subscriber_count: commDbRes.rows[0].subscriber_count,
+            is_owner: isOwner
         } : null;
 
         const peopleQuery = org.entity_type === 'INSTITUTION'
@@ -321,16 +324,16 @@ exports.getOrgProfile = async (req, res) => {
                       ) AS is_followed_by,
                       CASE 
                           WHEN $2::uuid IS NULL THEN null
-                          WHEN EXISTS(SELECT 1 FROM connections WHERE user_id = $2::uuid AND connected_user_id = user_id) THEN 'connected'
-                          ELSE (SELECT status FROM connection_requests WHERE (sender_id = $2::uuid AND receiver_id = user_id) OR (sender_id = user_id AND receiver_id = $2::uuid) LIMIT 1)
+                          WHEN EXISTS(SELECT 1 FROM connections c WHERE c.user_id = $2::uuid AND c.connected_user_id = school_alumni.user_id) THEN 'connected'
+                          ELSE (SELECT status FROM connection_requests WHERE ((sender_id = $2::uuid AND receiver_id = user_id) OR (sender_id = user_id AND receiver_id = $2::uuid)) AND status != 'connected' LIMIT 1)
                       END AS connection_request_status,
                       CASE 
                           WHEN $2::uuid IS NULL THEN null
-                          ELSE (SELECT request_id FROM connection_requests WHERE (sender_id = $2::uuid AND receiver_id = user_id) OR (sender_id = user_id AND receiver_id = $2::uuid) LIMIT 1)
+                          ELSE (SELECT request_id FROM connection_requests WHERE ((sender_id = $2::uuid AND receiver_id = user_id) OR (sender_id = user_id AND receiver_id = $2::uuid)) AND status != 'connected' LIMIT 1)
                       END AS connection_request_id,
                       CASE 
                           WHEN $2::uuid IS NULL THEN null
-                          ELSE (SELECT CASE WHEN sender_id = $2::uuid THEN 'me' ELSE 'them' END FROM connection_requests WHERE (sender_id = $2::uuid AND receiver_id = user_id) OR (sender_id = user_id AND receiver_id = $2::uuid) LIMIT 1)
+                          ELSE (SELECT CASE WHEN sender_id = $2::uuid THEN 'me' ELSE 'them' END FROM connection_requests WHERE ((sender_id = $2::uuid AND receiver_id = user_id) OR (sender_id = user_id AND receiver_id = $2::uuid)) AND status != 'connected' LIMIT 1)
                       END AS connection_request_sender
                FROM school_alumni
                ORDER BY graduation_year DESC, user_id ASC
@@ -361,16 +364,16 @@ exports.getOrgProfile = async (req, res) => {
                       ) AS is_followed_by,
                       CASE 
                           WHEN $2::uuid IS NULL THEN null
-                          WHEN EXISTS(SELECT 1 FROM connections WHERE user_id = $2::uuid AND connected_user_id = user_id) THEN 'connected'
-                          ELSE (SELECT status FROM connection_requests WHERE (sender_id = $2::uuid AND receiver_id = user_id) OR (sender_id = user_id AND receiver_id = $2::uuid) LIMIT 1)
+                          WHEN EXISTS(SELECT 1 FROM connections c WHERE c.user_id = $2::uuid AND c.connected_user_id = current_employees.user_id) THEN 'connected'
+                          ELSE (SELECT status FROM connection_requests WHERE ((sender_id = $2::uuid AND receiver_id = user_id) OR (sender_id = user_id AND receiver_id = $2::uuid)) AND status != 'connected' LIMIT 1)
                       END AS connection_request_status,
                       CASE 
                           WHEN $2::uuid IS NULL THEN null
-                          ELSE (SELECT request_id FROM connection_requests WHERE (sender_id = $2::uuid AND receiver_id = user_id) OR (sender_id = user_id AND receiver_id = $2::uuid) LIMIT 1)
+                          ELSE (SELECT request_id FROM connection_requests WHERE ((sender_id = $2::uuid AND receiver_id = user_id) OR (sender_id = user_id AND receiver_id = $2::uuid)) AND status != 'connected' LIMIT 1)
                       END AS connection_request_id,
                       CASE 
                           WHEN $2::uuid IS NULL THEN null
-                          ELSE (SELECT CASE WHEN sender_id = $2::uuid THEN 'me' ELSE 'them' END FROM connection_requests WHERE (sender_id = $2::uuid AND receiver_id = user_id) OR (sender_id = user_id AND receiver_id = $2::uuid) LIMIT 1)
+                          ELSE (SELECT CASE WHEN sender_id = $2::uuid THEN 'me' ELSE 'them' END FROM connection_requests WHERE ((sender_id = $2::uuid AND receiver_id = user_id) OR (sender_id = user_id AND receiver_id = $2::uuid)) AND status != 'connected' LIMIT 1)
                       END AS connection_request_sender
                FROM current_employees
                ORDER BY joined_at DESC, user_id ASC
@@ -386,13 +389,14 @@ exports.getOrgProfile = async (req, res) => {
             org: {
                 ...org,
                 is_verified: ['DOMAIN_VERIFIED'].includes(org.verification_status),
+                following_count: counts.following_count || 0,
                 followers_count: counts.followers_count,
                 subscribers_count: counts.subscribers_count || 0,
                 members_count: org.entity_type === 'INSTITUTION' ? counts.alumni_count : counts.members_count,
                 posts_count: counts.posts_count,
                 active_jobs_count: counts.active_jobs_count,
                 owner_id: org.created_by,
-                key_offerings: keyOfferingsResult.rows.map(r => r.content),
+                key_offerings: keyOfferingsResult.rows.map(r => ({ id: r.offering_id, icon: r.icon, content: r.content })),
             },
             is_own_profile: isOwner,
             viewer_role: membership?.role_name || null,
@@ -686,15 +690,17 @@ exports.getOrgPeople = async (req, res) => {
         const org = await resolveOrg(orgId);
         if (!org) return res.status(404).json({ message: 'Organization not found' });
 
+        let cursorIsConnected = null;
         let cursorJoinedAt = null;
         let cursorUserId = null;
         if (cursor) {
             try {
                 const decoded = Buffer.from(cursor, 'base64').toString('ascii');
                 const parts = decoded.split('|');
-                if (parts.length === 2) {
-                    cursorJoinedAt = parts[0];
-                    cursorUserId = parts[1];
+                if (parts.length === 3) {
+                    cursorIsConnected = parts[0] === '1';
+                    cursorJoinedAt = parts[1];
+                    cursorUserId = parts[2];
                 }
             } catch (_) { /* invalid cursor — ignore */ }
         }
@@ -707,19 +713,23 @@ exports.getOrgPeople = async (req, res) => {
         }
 
         let cursorClause = '';
-        if (cursorJoinedAt && cursorUserId) {
-            params.push(cursorJoinedAt, cursorUserId);
+        if (cursorIsConnected !== null && cursorJoinedAt && cursorUserId) {
+            params.push(cursorIsConnected, cursorJoinedAt, cursorUserId);
+            const pIsConnected = params.length - 2;
+            const pJoinedAt = params.length - 1;
+            const pUserId = params.length;
             cursorClause = `AND (
-                joined_at < $${params.length - 1}::date
-                OR (joined_at = $${params.length - 1}::date AND user_id > $${params.length}::uuid)
+                (sub.connection_request_status = 'connected') < $${pIsConnected}::boolean
+                OR ((sub.connection_request_status = 'connected') = $${pIsConnected}::boolean AND sub.joined_at < $${pJoinedAt}::date)
+                OR ((sub.connection_request_status = 'connected') = $${pIsConnected}::boolean AND sub.joined_at = $${pJoinedAt}::date AND sub.user_id > $${pUserId}::uuid)
             )`;
         }
 
-        const countParams = [org.org_id];
+        const countParams = [org.org_id, viewerId];
         let countSearchClause = '';
         if (search && search.trim()) {
             countParams.push(`%${search.trim()}%`);
-            countSearchClause = `AND (u.full_name ILIKE $2 OR e.title ILIKE $2)`;
+            countSearchClause = `AND (u.full_name ILIKE $${countParams.length} OR e.title ILIKE $${countParams.length})`;
         }
 
         const [peopleResult, countResult, insights] = await Promise.all([
@@ -740,35 +750,38 @@ exports.getOrgPeople = async (req, res) => {
                        AND (e.is_current = TRUE OR e.end_date IS NULL)
                        ${searchClause}
                      ORDER BY p.user_id, e.start_date DESC
+                 ),
+                 enriched AS (
+                     SELECT *,
+                            COALESCE(
+                                CASE WHEN $3::uuid IS NULL THEN false
+                                     ELSE EXISTS(SELECT 1 FROM followers WHERE follower_id = $3::uuid AND following_id = user_id)
+                                END, false
+                            ) AS is_following,
+                            COALESCE(
+                                CASE WHEN $3::uuid IS NULL THEN false
+                                     ELSE EXISTS(SELECT 1 FROM followers WHERE follower_id = user_id AND following_id = $3::uuid)
+                                END, false
+                            ) AS is_followed_by,
+                            CASE
+                                WHEN $3::uuid IS NULL THEN null
+                                WHEN EXISTS(SELECT 1 FROM connections c WHERE c.user_id = $3::uuid AND c.connected_user_id = current_employees.user_id) THEN 'connected'
+                                ELSE (SELECT status FROM connection_requests WHERE ((sender_id = $3::uuid AND receiver_id = user_id) OR (sender_id = user_id AND receiver_id = $3::uuid)) AND status != 'connected' LIMIT 1)
+                            END AS connection_request_status,
+                            CASE
+                                WHEN $3::uuid IS NULL THEN null
+                                ELSE (SELECT request_id FROM connection_requests WHERE ((sender_id = $3::uuid AND receiver_id = user_id) OR (sender_id = user_id AND receiver_id = $3::uuid)) AND status != 'connected' LIMIT 1)
+                            END AS connection_request_id,
+                            CASE
+                                WHEN $3::uuid IS NULL THEN null
+                                ELSE (SELECT CASE WHEN sender_id = $3::uuid THEN 'me' ELSE 'them' END FROM connection_requests WHERE ((sender_id = $3::uuid AND receiver_id = user_id) OR (sender_id = user_id AND receiver_id = $3::uuid)) AND status != 'connected' LIMIT 1)
+                            END AS connection_request_sender
+                     FROM current_employees
                  )
-                 SELECT *,
-                        COALESCE(
-                            CASE WHEN $3::uuid IS NULL THEN false
-                                 ELSE EXISTS(SELECT 1 FROM followers WHERE follower_id = $3::uuid AND following_id = user_id)
-                            END, false
-                        ) AS is_following,
-                        COALESCE(
-                            CASE WHEN $3::uuid IS NULL THEN false
-                                 ELSE EXISTS(SELECT 1 FROM followers WHERE follower_id = user_id AND following_id = $3::uuid)
-                            END, false
-                        ) AS is_followed_by,
-                        CASE 
-                            WHEN $3::uuid IS NULL THEN null
-                            WHEN EXISTS(SELECT 1 FROM connections WHERE user_id = $3::uuid AND connected_user_id = user_id) THEN 'connected'
-                            ELSE (SELECT status FROM connection_requests WHERE (sender_id = $3::uuid AND receiver_id = user_id) OR (sender_id = user_id AND receiver_id = $3::uuid) LIMIT 1)
-                        END AS connection_request_status,
-                        CASE 
-                            WHEN $3::uuid IS NULL THEN null
-                            ELSE (SELECT request_id FROM connection_requests WHERE (sender_id = $3::uuid AND receiver_id = user_id) OR (sender_id = user_id AND receiver_id = $3::uuid) LIMIT 1)
-                        END AS connection_request_id,
-                        CASE 
-                            WHEN $3::uuid IS NULL THEN null
-                            ELSE (SELECT CASE WHEN sender_id = $3::uuid THEN 'me' ELSE 'them' END FROM connection_requests WHERE (sender_id = $3::uuid AND receiver_id = user_id) OR (sender_id = user_id AND receiver_id = $3::uuid) LIMIT 1)
-                        END AS connection_request_sender
-                 FROM current_employees
+                 SELECT * FROM enriched sub
                  WHERE 1=1
                    ${cursorClause}
-                 ORDER BY joined_at DESC, user_id ASC
+                 ORDER BY (sub.connection_request_status = 'connected') DESC NULLS LAST, sub.joined_at DESC, sub.user_id ASC
                  LIMIT $2`,
                 params
             ),
@@ -782,7 +795,15 @@ exports.getOrgPeople = async (req, res) => {
                        AND (e.is_current = TRUE OR e.end_date IS NULL)
                        ${countSearchClause}
                  )
-                 SELECT COUNT(*)::int AS total FROM current_employees`,
+                 SELECT
+                     COUNT(*)::int AS total,
+                     COUNT(*) FILTER (
+                         WHERE $2::uuid IS NOT NULL
+                           AND (
+                               EXISTS(SELECT 1 FROM connections c WHERE c.user_id = $2::uuid AND c.connected_user_id = current_employees.user_id)
+                           )
+                     )::int AS connections_total
+                 FROM current_employees`,
                 countParams
             ),
             calculateOrgDemographics(pool, org.org_id, 'PEOPLE', search)
@@ -790,21 +811,25 @@ exports.getOrgPeople = async (req, res) => {
 
         const rows = peopleResult.rows.map(r => ({
             ...r,
-            is_connection: !!(r.is_following && r.is_followed_by)
+            is_connection: !!(r.is_following && r.is_followed_by),
+            is_connected: r.connection_request_status === 'connected'
         }));
         let nextCursor = null;
         if (rows.length === limitVal && limitVal > 0) {
             const lastItem = rows[rows.length - 1];
             const lastJoinedAt = lastItem.joined_at ? new Date(lastItem.joined_at).toISOString().split('T')[0] : '1970-01-01';
-            nextCursor = Buffer.from(`${lastJoinedAt}|${lastItem.user_id}`).toString('base64');
+            const lastIsConnected = lastItem.is_connected ? '1' : '0';
+            nextCursor = Buffer.from(`${lastIsConnected}|${lastJoinedAt}|${lastItem.user_id}`).toString('base64');
         }
 
         const total = countResult.rows[0].total;
+        const connectionsTotal = countResult.rows[0].connections_total || 0;
 
         return res.json({
             people: rows,
             meta: {
                 total,
+                connections_total: connectionsTotal,
                 limit: limitVal,
                 next_cursor: nextCursor,
                 has_more: !!nextCursor
@@ -836,15 +861,17 @@ exports.getOrgAlumni = async (req, res) => {
             return res.status(404).json({ message: 'Alumni tab is only available for institutions' });
         }
 
+        let cursorIsConnected = null;
         let cursorGradYear = null;
         let cursorUserId = null;
         if (cursor) {
             try {
                 const decoded = Buffer.from(cursor, 'base64').toString('ascii');
                 const parts = decoded.split('|');
-                if (parts.length === 2) {
-                    cursorGradYear = parseInt(parts[0]);
-                    cursorUserId = parts[1];
+                if (parts.length === 3) {
+                    cursorIsConnected = parts[0] === '1';
+                    cursorGradYear = parseInt(parts[1]);
+                    cursorUserId = parts[2];
                 }
             } catch (_) { /* invalid cursor — ignore */ }
         }
@@ -862,18 +889,22 @@ exports.getOrgAlumni = async (req, res) => {
         }
 
         let cursorClause = '';
-        if (cursorGradYear !== null && cursorUserId) {
-            params.push(cursorGradYear, cursorUserId);
+        if (cursorIsConnected !== null && cursorGradYear !== null && cursorUserId) {
+            params.push(cursorIsConnected, cursorGradYear, cursorUserId);
+            const pIsConnected = params.length - 2;
+            const pGradYear = params.length - 1;
+            const pUserId = params.length;
             cursorClause = `AND (
-                graduation_year < $${params.length - 1}
-                OR (graduation_year = $${params.length - 1} AND user_id > $${params.length}::uuid)
+                (sub.connection_request_status = 'connected') < $${pIsConnected}::boolean
+                OR ((sub.connection_request_status = 'connected') = $${pIsConnected}::boolean AND sub.graduation_year < $${pGradYear})
+                OR ((sub.connection_request_status = 'connected') = $${pIsConnected}::boolean AND sub.graduation_year = $${pGradYear} AND sub.user_id > $${pUserId}::uuid)
             )`;
         }
 
         const whereExtra = filters.length ? `AND ${filters.join(' AND ')}` : '';
 
         // Extract raw query filters for total/insights counts
-        const countParams = [org.org_id];
+        const countParams = [org.org_id, viewerId];
         const countFilters = [];
         if (search && search.trim()) {
             countParams.push(`%${search.trim()}%`);
@@ -910,35 +941,38 @@ exports.getOrgAlumni = async (req, res) => {
                      WHERE ed.school_org_id = $1::uuid
                        ${whereExtra}
                      ORDER BY p.user_id, ed.end_date DESC
+                 ),
+                 enriched AS (
+                     SELECT *,
+                            COALESCE(
+                                CASE WHEN $3::uuid IS NULL THEN false
+                                     ELSE EXISTS(SELECT 1 FROM followers WHERE follower_id = $3::uuid AND following_id = user_id)
+                                END, false
+                            ) AS is_following,
+                            COALESCE(
+                                CASE WHEN $3::uuid IS NULL THEN false
+                                     ELSE EXISTS(SELECT 1 FROM followers WHERE follower_id = user_id AND following_id = $3::uuid)
+                                END, false
+                            ) AS is_followed_by,
+                            CASE
+                                WHEN $3::uuid IS NULL THEN null
+                                WHEN EXISTS(SELECT 1 FROM connections c WHERE c.user_id = $3::uuid AND c.connected_user_id = school_alumni.user_id) THEN 'connected'
+                                ELSE (SELECT status FROM connection_requests WHERE ((sender_id = $3::uuid AND receiver_id = user_id) OR (sender_id = user_id AND receiver_id = $3::uuid)) AND status != 'connected' LIMIT 1)
+                            END AS connection_request_status,
+                            CASE
+                                WHEN $3::uuid IS NULL THEN null
+                                ELSE (SELECT request_id FROM connection_requests WHERE ((sender_id = $3::uuid AND receiver_id = user_id) OR (sender_id = user_id AND receiver_id = $3::uuid)) AND status != 'connected' LIMIT 1)
+                            END AS connection_request_id,
+                            CASE
+                                WHEN $3::uuid IS NULL THEN null
+                                ELSE (SELECT CASE WHEN sender_id = $3::uuid THEN 'me' ELSE 'them' END FROM connection_requests WHERE ((sender_id = $3::uuid AND receiver_id = user_id) OR (sender_id = user_id AND receiver_id = $3::uuid)) AND status != 'connected' LIMIT 1)
+                            END AS connection_request_sender
+                     FROM school_alumni
                  )
-                 SELECT *,
-                        COALESCE(
-                            CASE WHEN $3::uuid IS NULL THEN false
-                                 ELSE EXISTS(SELECT 1 FROM followers WHERE follower_id = $3::uuid AND following_id = user_id)
-                            END, false
-                        ) AS is_following,
-                        COALESCE(
-                            CASE WHEN $3::uuid IS NULL THEN false
-                                 ELSE EXISTS(SELECT 1 FROM followers WHERE follower_id = user_id AND following_id = $3::uuid)
-                            END, false
-                        ) AS is_followed_by,
-                        CASE 
-                            WHEN $3::uuid IS NULL THEN null
-                            WHEN EXISTS(SELECT 1 FROM connections WHERE user_id = $3::uuid AND connected_user_id = user_id) THEN 'connected'
-                            ELSE (SELECT status FROM connection_requests WHERE (sender_id = $3::uuid AND receiver_id = user_id) OR (sender_id = user_id AND receiver_id = $3::uuid) LIMIT 1)
-                        END AS connection_request_status,
-                        CASE 
-                            WHEN $3::uuid IS NULL THEN null
-                            ELSE (SELECT request_id FROM connection_requests WHERE (sender_id = $3::uuid AND receiver_id = user_id) OR (sender_id = user_id AND receiver_id = $3::uuid) LIMIT 1)
-                        END AS connection_request_id,
-                        CASE 
-                            WHEN $3::uuid IS NULL THEN null
-                            ELSE (SELECT CASE WHEN sender_id = $3::uuid THEN 'me' ELSE 'them' END FROM connection_requests WHERE (sender_id = $3::uuid AND receiver_id = user_id) OR (sender_id = user_id AND receiver_id = $3::uuid) LIMIT 1)
-                        END AS connection_request_sender
-                 FROM school_alumni
+                 SELECT * FROM enriched sub
                  WHERE 1=1
                    ${cursorClause}
-                 ORDER BY graduation_year DESC, user_id ASC
+                 ORDER BY (sub.connection_request_status = 'connected') DESC NULLS LAST, sub.graduation_year DESC, sub.user_id ASC
                  LIMIT $2`,
                 params
             ),
@@ -951,7 +985,15 @@ exports.getOrgAlumni = async (req, res) => {
                      WHERE ed.school_org_id = $1::uuid
                        ${countWhereExtra}
                  )
-                 SELECT COUNT(*)::int AS total FROM school_alumni`,
+                 SELECT
+                     COUNT(*)::int AS total,
+                     COUNT(*) FILTER (
+                         WHERE $2::uuid IS NOT NULL
+                           AND (
+                               EXISTS(SELECT 1 FROM connections c WHERE c.user_id = $2::uuid AND c.connected_user_id = school_alumni.user_id)
+                           )
+                     )::int AS connections_total
+                 FROM school_alumni`,
                 countParams
             ),
             calculateOrgDemographics(pool, org.org_id, 'ALUMNI', search, graduation_year)
@@ -959,21 +1001,25 @@ exports.getOrgAlumni = async (req, res) => {
 
         const rows = alumniResult.rows.map(r => ({
             ...r,
-            is_connection: !!(r.is_following && r.is_followed_by)
+            is_connection: !!(r.is_following && r.is_followed_by),
+            is_connected: r.connection_request_status === 'connected'
         }));
         let nextCursor = null;
         if (rows.length === limitVal && limitVal > 0) {
             const lastItem = rows[rows.length - 1];
             const lastGradYear = lastItem.graduation_year !== null && lastItem.graduation_year !== undefined ? lastItem.graduation_year : 0;
-            nextCursor = Buffer.from(`${lastGradYear}|${lastItem.user_id}`).toString('base64');
+            const lastIsConnected = lastItem.is_connected ? '1' : '0';
+            nextCursor = Buffer.from(`${lastIsConnected}|${lastGradYear}|${lastItem.user_id}`).toString('base64');
         }
 
         const total = countResult.rows[0].total;
+        const connectionsTotal = countResult.rows[0].connections_total || 0;
 
         return res.json({
             alumni: rows,
             meta: {
                 total,
+                connections_total: connectionsTotal,
                 limit: limitVal,
                 next_cursor: nextCursor,
                 has_more: !!nextCursor
@@ -1013,7 +1059,7 @@ exports.updateOrgProfile = async (req, res) => {
     }
     // Validate keyOfferings if provided
     if (keyOfferings !== undefined && !Array.isArray(keyOfferings)) {
-        return res.status(400).json({ message: 'keyOfferings must be an array' });
+        return res.status(400).json({ message: 'keyOfferings must be an array of objects' });
     }
 
     const client = await pool.connect();
@@ -1085,11 +1131,17 @@ exports.updateOrgProfile = async (req, res) => {
                 [orgId]
             );
 
-            cleanOfferings = keyOfferings.map(text => (text || '').trim()).filter(Boolean);
+            cleanOfferings = keyOfferings
+                .map(off => ({
+                    icon: (off.icon || '').trim(),
+                    content: (off.content || '').trim()
+                }))
+                .filter(off => off.content); // require at least content
+
             for (let i = 0; i < cleanOfferings.length; i++) {
                 await client.query(
-                    `INSERT INTO organization_key_offerings (org_id, content, position) VALUES ($1, $2, $3)`,
-                    [orgId, cleanOfferings[i], i]
+                    `INSERT INTO organization_key_offerings (org_id, icon, content, position) VALUES ($1, $2, $3, $4)`,
+                    [orgId, cleanOfferings[i].icon, cleanOfferings[i].content, i]
                 );
             }
         }

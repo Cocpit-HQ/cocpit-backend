@@ -37,6 +37,8 @@ const {
   getFeedSlice,
   setFeedSlice,
   addToSeenSet,
+  addToHiddenSet,
+  getHiddenSet,
 } = require('./cache/feedCache');
 const { getSession, updateCursor, incrementSeenCount, createSession } = require('./session/feedSession.service');
 const { getPostHydrationSelect, getPostHydrationJoins, getPublicFeedWhere } = require('../../core/queries/postHydration.query');
@@ -247,12 +249,24 @@ function _buildResponse(items, session, cacheHit, nextCursor, totalCandidates = 
  *   hydration separate from the same human's personal feed.
  * @returns {Promise<object>}       - FeedResponse matching api-contracts.md
  */
-async function getFeed({ userId, cursor = null, limit = DEFAULT_PAGE_SIZE, pool = null, context = 'home', orgActorId = null } = {}) {
+async function getFeed({ userId, cursor = null, limit = DEFAULT_PAGE_SIZE, pool = null, context = 'home', orgActorId = null, algorithm = true } = {}) {
   if (!userId) throw new Error('feedService.getFeed: `userId` is required');
 
-  const pageSize   = Math.min(limit, 50);  // enforce max from api-contracts.md
+  const pageSize = Math.min(Math.max(limit, 1), 50);  // enforce max from api-contracts.md
   const effectiveCursor = cursor || 'initial';
   const scopeId = buildCacheScopeId(userId, orgActorId);
+  
+  // ── 0. Chronological By-pass (algorithm=false) ────────────────────────────
+  if (algorithm === false) {
+    const chronoResult = await _fetchChronologicalFeed(userId, cursor, pageSize, pool, orgActorId);
+    const hydratedSlicedItems = await _hydrateFeedItems(chronoResult.items, userId, pool, orgActorId);
+    
+    // We construct a mock session just to populate the response properly.
+    const mockSession = { session_id: 'chrono-session' };
+    
+    return _buildResponse(hydratedSlicedItems, mockSession, false, chronoResult.nextCursor, chronoResult.items.length);
+  }
+
   // ID-160 follow-up: true only for a genuinely fresh page load (no cursor
   // supplied) — see rerankCandidates' isInitialPage doc comment.
   const isInitialPage = !cursor;
@@ -360,11 +374,14 @@ async function hidePost({ userId, postId, sessionId, position, pool, orgActorId 
 
   const scopeId = buildCacheScopeId(userId, orgActorId);
 
-  // 1. Permanently hide from future feed generations (addToSeenSet)
+  // 1. Permanently hide from future feed generations (addToSeenSet and addToHiddenSet)
   try {
-    await addToSeenSet(scopeId, [postId]);
+    await Promise.all([
+      addToSeenSet(scopeId, [postId]),
+      addToHiddenSet(scopeId, [postId])
+    ]);
   } catch (err) {
-    console.warn('[feedService] hidePost addToSeenSet failed:', err.message);
+    console.warn('[feedService] hidePost Redis sets update failed:', err.message);
   }
 
   // 2. Track analytics event as 'hide'

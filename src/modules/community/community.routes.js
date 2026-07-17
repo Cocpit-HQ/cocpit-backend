@@ -43,6 +43,19 @@ router.get(
     communityController.getSubscriberGrowth
 );
 
+router.get(
+    "/organizations/:orgId/community/subscribers",
+    optionalAuth,
+    communityController.getCommunitySubscribers
+);
+
+router.delete(
+    "/organizations/:orgId/community/subscribers/:userId",
+    requireAuth,
+    requireOrgPermission("MANAGE_COMPANY_DETAILS"),
+    communityController.removeCommunitySubscriber
+);
+
 // --- GROUP 2: Subscription & Engagement (User Side) ---
 router.get(
     "/communities/subscriptions",
@@ -114,4 +127,17 @@ router.get(
     communityController.searchCommunities
 );
 
+router.get(
+    "/communities/:communityId",
+    optionalAuth,
+    communityController.getCommunityById
+);
+
+router.post(
+    "/organizations/:orgId/community/request-access",
+    requireAuth,
+    communityController.requestEditAccess
+);
+
 module.exports = router;
+

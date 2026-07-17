@@ -197,7 +197,7 @@ exports.getCompanySentOffers = async (req, res) => {
                 j.description,
                 c.name AS company_display_name,
                 c.logo_url AS company_logo,
-                COALESCE(c.logo_url, u.avatar_url) AS company_avatar,
+                COALESCE(c.logo_url, '') AS company_avatar,
                 c.slug AS company_slug,
                 TRUE AS is_offer,
                 COUNT(jo.offer_id) AS total_offers,
@@ -249,6 +249,7 @@ exports.getCompanyOfferRecipients = async (req, res) => {
         let query = `
             SELECT 
                 jo.offer_id,
+                jo.org_id,
                 jo.status,
                 jo.message,
                 jo.created_at,
@@ -621,7 +622,7 @@ exports.getRecruiterSentOffers = async (req, res) => {
                 j.description,
                 COALESCE(c.name, j.company_name) AS company_display_name,
                 c.logo_url AS company_logo,
-                COALESCE(c.logo_url, u.avatar_url) AS company_avatar,
+                COALESCE(c.logo_url, '') AS company_avatar,
                 c.slug AS company_slug,
                 TRUE AS is_offer,
                 COUNT(jo.offer_id) AS total_offers,

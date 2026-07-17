@@ -40,7 +40,19 @@ exports.getFeed = async (req, res, next) => {
 
     const cursor  = req.query.cursor  || null;
     const context = req.query.context || "home";
+    let algorithm = req.query.algorithm !== 'false';
     const rawLimit = req.query.limit;
+
+    // Check global algorithm override
+    try {
+      const redis = require('../../core/cache/redis');
+      const globalEnabled = await redis.get('config:feed_algorithm_enabled');
+      if (globalEnabled === 'false') {
+        algorithm = false;
+      }
+    } catch (err) {
+      console.warn('Failed to check global feed algorithm config:', err.message);
+    }
 
     // B8.6 — Validate limit (api-contracts.md: default 20, max 50)
     let limit = 20;
@@ -70,6 +82,7 @@ exports.getFeed = async (req, res, next) => {
       pool,
       context,
       orgActorId: getOrgActorId(req),
+      algorithm,
     });
 
     return res.status(200).json(response);

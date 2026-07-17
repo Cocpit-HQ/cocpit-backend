@@ -59,6 +59,14 @@ exports.createCommunity = async (req, res, next) => {
             throw new AppError("Invalid or mismatched organization actor context", 403);
         }
 
+        if (!description) {
+            throw new AppError("Description is required.", 400);
+        }
+        const wordCount = description.trim() ? description.trim().split(/\s+/).length : 0;
+        if (wordCount < 20 || wordCount > 150) {
+            throw new AppError("Description must be between 20 and 150 words.", 400);
+        }
+
         // Check if community already exists
         const checkRes = await client.query(
             `SELECT community_id FROM communities WHERE org_id = $1 AND is_active = TRUE`,
@@ -113,6 +121,16 @@ exports.updateCommunity = async (req, res, next) => {
         // Strict Actor Context Check
         if (!req.actor || req.actor.type !== "ORGANIZATION" || req.actor.id !== orgId) {
             throw new AppError("Invalid or mismatched organization actor context", 403);
+        }
+
+        if (description !== undefined) {
+            if (!description) {
+                throw new AppError("Description is required.", 400);
+            }
+            const wordCount = description.trim() ? description.trim().split(/\s+/).length : 0;
+            if (wordCount < 20 || wordCount > 150) {
+                throw new AppError("Description must be between 20 and 150 words.", 400);
+            }
         }
 
         const updateRes = await client.query(
@@ -210,17 +228,21 @@ exports.getSubscribedCommunities = async (req, res, next) => {
     const userId = req.user.sub;
     try {
         const result = await pool.query(
-            `SELECT c.community_id, c.name, c.description, c.banner_url, c.org_id,
+            `SELECT DISTINCT c.community_id, c.name, c.description, c.banner_url, c.org_id,
                     o.name AS company_name, o.slug AS company_slug, o.logo_url,
-                    (SELECT COUNT(*) FROM community_subscriptions WHERE community_id = c.community_id AND status = 'SUBSCRIBED')::int AS subscriber_count
-             FROM community_subscriptions cs
-             JOIN communities c ON cs.community_id = c.community_id
+                    (SELECT COUNT(*) FROM community_subscriptions WHERE community_id = c.community_id AND status = 'SUBSCRIBED')::int AS subscriber_count,
+                    COALESCE(o.created_by = $1, FALSE) AS is_owner
+             FROM communities c
              JOIN organizations o ON c.org_id = o.org_id
-             WHERE cs.user_id = $1 AND cs.status = 'SUBSCRIBED' 
-               AND c.is_active = TRUE AND o.is_deleted = FALSE`,
+             LEFT JOIN community_subscriptions cs ON cs.community_id = c.community_id AND cs.user_id = $1 AND cs.status = 'SUBSCRIBED'
+             WHERE c.is_active = TRUE AND o.is_deleted = FALSE
+               AND (
+                 cs.status = 'SUBSCRIBED'
+                 OR o.created_by = $1
+               )`,
             [userId]
         );
-
+ 
         const mappedRows = result.rows.map(row => ({
             id: row.community_id,
             name: row.name,
@@ -230,7 +252,8 @@ exports.getSubscribedCommunities = async (req, res, next) => {
             companyName: row.company_name,
             companySlug: row.company_slug,
             logoUrl: row.logo_url,
-            subscriberCount: row.subscriber_count
+            subscriberCount: row.subscriber_count,
+            isOwner: row.is_owner
         }));
 
         return res.status(200).json({
@@ -785,6 +808,7 @@ exports.getRecommendedCommunities = async (req, res, next) => {
                    SELECT 1 FROM community_subscriptions cs 
                    WHERE cs.community_id = c.community_id AND cs.user_id = $1 AND cs.status = 'SUBSCRIBED'
                )
+               AND o.created_by != $1
              LIMIT $2`,
             [userId, limit]
         );
@@ -827,8 +851,9 @@ exports.searchCommunities = async (req, res, next) => {
                         EXISTS(
                             SELECT 1 FROM community_subscriptions cs 
                             WHERE cs.community_id = c.community_id AND cs.user_id = $1 AND cs.status = 'SUBSCRIBED'
-                        ), FALSE
-                    ) AS is_subscribed
+                        ) OR (o.created_by = $1), FALSE
+                    ) AS is_subscribed,
+                    COALESCE(o.created_by = $1, FALSE) AS is_owner
              FROM communities c
              JOIN organizations o ON c.org_id = o.org_id
              WHERE c.is_active = TRUE AND o.is_deleted = FALSE
@@ -836,7 +861,7 @@ exports.searchCommunities = async (req, res, next) => {
              LIMIT $3 OFFSET $4`,
             [userId, `%${search}%`, limit, offset]
         );
-
+ 
         const mappedRows = result.rows.map(row => ({
             id: row.community_id,
             name: row.name,
@@ -846,7 +871,8 @@ exports.searchCommunities = async (req, res, next) => {
             companyName: row.company_name,
             logoUrl: row.logo_url,
             subscriberCount: row.subscriber_count,
-            isSubscribed: row.is_subscribed
+            isSubscribed: row.is_subscribed,
+            isOwner: row.is_owner
         }));
 
         return res.status(200).json({
@@ -899,3 +925,211 @@ exports.getSubscriberGrowth = async (req, res, next) => {
         return next(err);
     }
 };
+
+// 4. Get Community Subscribers (for company profile modal)
+exports.getCommunitySubscribers = async (req, res, next) => {
+    const { orgId } = req.params;
+    const { search } = req.query;
+
+    try {
+        const queryParams = [orgId];
+        let searchClause = "";
+
+        if (search && search.trim()) {
+            searchClause = ` AND u.full_name ILIKE $2`;
+            queryParams.push(`%${search.trim()}%`);
+        }
+
+        const result = await pool.query(
+            `SELECT u.user_id, u.full_name AS name, u.avatar_url AS avatar, u.headline,
+                    MAX(cs.updated_at) AS subscribed_at
+             FROM community_subscriptions cs
+             JOIN communities c ON cs.community_id = c.community_id
+             JOIN active_users u ON cs.user_id = u.user_id
+             WHERE c.org_id = $1 AND cs.status = 'SUBSCRIBED'
+             ${searchClause}
+             GROUP BY u.user_id, u.full_name, u.avatar_url, u.headline
+             ORDER BY subscribed_at DESC`,
+            queryParams
+        );
+
+        const mappedRows = result.rows.map(row => ({
+            id: row.user_id,
+            name: row.name,
+            avatarUrl: row.avatar,
+            headline: row.headline,
+            subscribedAt: row.subscribed_at
+        }));
+
+        return res.status(200).json({
+            success: true,
+            data: mappedRows
+        });
+    } catch (err) {
+        console.error("[CommunityController] getCommunitySubscribers error:", err);
+        return next(err);
+    }
+};
+
+// Get community details by community ID
+exports.getCommunityById = async (req, res, next) => {
+    const { communityId } = req.params;
+    const userId = req.user?.sub || null;
+    try {
+        const result = await pool.query(
+            `SELECT c.community_id, c.org_id, c.name, c.description, c.banner_url,
+                    o.name AS company_name, o.slug AS company_slug, o.logo_url,
+                    (SELECT COUNT(*) FROM community_subscriptions WHERE community_id = c.community_id AND status = 'SUBSCRIBED')::int AS subscriber_count,
+                    COALESCE(
+                        EXISTS(
+                            SELECT 1 FROM community_subscriptions cs 
+                            WHERE cs.community_id = c.community_id AND cs.user_id = $1 AND cs.status = 'SUBSCRIBED'
+                        ) OR (o.created_by = $1), FALSE
+                    ) AS is_subscribed,
+                    COALESCE(o.created_by = $1, FALSE) AS is_owner
+             FROM communities c
+             JOIN organizations o ON c.org_id = o.org_id
+             WHERE c.community_id = $2 AND c.is_active = TRUE AND o.is_deleted = FALSE`,
+            [userId, communityId]
+        );
+
+        if (result.rowCount === 0) {
+            throw new AppError("Community not found or inactive", 404);
+        }
+
+        const row = result.rows[0];
+        return res.status(200).json({
+            success: true,
+            data: {
+                id: row.community_id,
+                name: row.name,
+                description: row.description,
+                bannerUrl: row.banner_url,
+                orgId: row.org_id,
+                companyName: row.company_name,
+                companySlug: row.company_slug,
+                logoUrl: row.logo_url,
+                subscriberCount: row.subscriber_count,
+                isSubscribed: row.is_subscribed,
+                isOwner: row.is_owner
+            }
+        });
+    } catch (err) {
+        console.error("[CommunityController] getCommunityById error:", err);
+        return next(err);
+    }
+};
+
+// 5. Remove Community Subscriber (company side action)
+exports.removeCommunitySubscriber = async (req, res, next) => {
+    const { orgId, userId } = req.params;
+
+    try {
+        const result = await pool.query(
+            `UPDATE community_subscriptions
+             SET status = 'UNSUBSCRIBED', updated_at = NOW()
+             WHERE user_id = $2
+               AND status = 'SUBSCRIBED'
+               AND community_id IN (SELECT community_id FROM communities WHERE org_id = $1)
+             RETURNING community_id`,
+            [orgId, userId]
+        );
+
+        if (result.rowCount === 0) {
+            return res.status(404).json({ message: "Subscriber not found or already unsubscribed." });
+        }
+
+        try {
+            if (redisClient.isOpen) {
+                await redisClient.del(`user:${userId}:subscribed_communities`);
+                await redisClient.del(`community:${result.rows[0].community_id}:subscribers`);
+            }
+        } catch (cacheErr) {}
+
+        return res.status(200).json({ success: true, message: "Subscriber removed successfully." });
+    } catch (err) {
+        console.error("[CommunityController] removeCommunitySubscriber error:", err);
+        return next(err);
+    }
+};
+
+// Request edit access for a community
+exports.requestEditAccess = async (req, res, next) => {
+    const { orgId } = req.params;
+    const userId = req.user.sub;
+
+    try {
+        // Fetch organization details
+        const orgRes = await pool.query(
+            `SELECT name FROM organizations WHERE org_id = $1`,
+            [orgId]
+        );
+        if (orgRes.rowCount === 0) {
+            throw new AppError("Organization not found", 404);
+        }
+        const companyName = orgRes.rows[0].name;
+
+        // Fetch user details
+        const userRes = await pool.query(
+            `SELECT full_name FROM users WHERE user_id = $1`,
+            [userId]
+        );
+        const userName = userRes.rows[0]?.full_name || "A user";
+
+        // Find Owner or Admins of the organization to notify
+        const adminsRes = await pool.query(
+            `SELECT cm.user_id 
+             FROM organization_members cm
+             LEFT JOIN organization_roles cr ON cm.role_id = cr.role_id
+             WHERE cm.org_id = $1 AND cm.status = 'ACTIVE' 
+               AND (COALESCE(cr.name, cm.role) IN ('Owner', 'Admin'))`,
+            [orgId]
+        );
+
+        if (adminsRes.rowCount > 0) {
+            const notificationText = `${userName} requested edit access to the ${companyName} community`;
+            const meta = {
+                org_id: orgId,
+                requestee_id: userId
+            };
+
+            const notificationQueries = adminsRes.rows.map(admin => {
+                return pool.query(
+                    `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata, recipient_org_id)
+                     VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+                    [admin.user_id, userId, "community_access_request", notificationText, orgId, JSON.stringify(meta), orgId]
+                );
+            });
+
+            await Promise.all(notificationQueries);
+
+            // Notify via socket for each admin
+            try {
+                const socketService = require("../../core/infrastructure/socket.service");
+                adminsRes.rows.forEach(admin => {
+                    socketService.notifyUser(admin.user_id, "notification", {
+                        type: "community_access_request",
+                        text: notificationText,
+                        from: userId,
+                        senderName: userName,
+                        referenceId: orgId,
+                        metadata: meta,
+                        time: "Just now",
+                        recipient_org_id: orgId
+                    });
+                });
+            } catch (socketErr) {
+                console.error("[CommunityController] requestEditAccess socket notification failed:", socketErr);
+            }
+        }
+
+        return res.status(200).json({
+            success: true,
+            message: "Edit access request sent successfully."
+        });
+    } catch (err) {
+        console.error("[CommunityController] requestEditAccess error:", err);
+        return next(err);
+    }
+};
+

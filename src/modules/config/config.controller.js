@@ -88,4 +88,27 @@ const toggleAIGeneration = async (req, res) => {
   }
 };
 
-module.exports = { getConfig, toggleAIGeneration };
+const toggleFeedAlgorithm = async (req, res) => {
+  const { enabled } = req.body;
+  
+  if (typeof enabled !== "boolean") {
+    return res.status(400).json({ message: "'enabled' must be a boolean" });
+  }
+
+  try {
+    const redis = require("../../core/cache/redis"); // use cache/redis
+    if (redis.isOpen || redis.isReady || redis.status === 'ready') {
+      await redis.set("config:feed_algorithm_enabled", enabled ? "true" : "false");
+      return res.status(200).json({ 
+        message: `Feed Algorithm has been ${enabled ? 'enabled' : 'disabled'} globally.`
+      });
+    } else {
+      return res.status(503).json({ message: "Redis is not connected" });
+    }
+  } catch (err) {
+    console.error("Toggle Feed Algorithm error:", err);
+    return res.status(500).json({ message: "Internal server error" });
+  }
+};
+
+module.exports = { getConfig, toggleAIGeneration, toggleFeedAlgorithm };

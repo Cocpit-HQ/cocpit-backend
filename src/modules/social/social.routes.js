@@ -26,6 +26,14 @@ router.delete("/organizations/:orgId/unfollow", requireAuth, socialController.un
 router.get("/organizations/:orgId/relationship", requireAuth, socialController.getCompanyRelationship);
 router.get("/organizations/:orgId/followers", socialController.getCompanyFollowers);
 router.delete("/organizations/:orgId/followers/:followerId", requireAuth, requireOrgPermission("MANAGE_MEMBERS"), socialController.removeCompanyFollower);
+
+// Organization Following Entities
+router.post("/organizations/:orgId/following/users/:userId", requireAuth, requireOrgPermission("MANAGE_COMPANY"), socialController.organizationFollowUser);
+router.delete("/organizations/:orgId/following/users/:userId", requireAuth, requireOrgPermission("MANAGE_COMPANY"), socialController.organizationUnfollowUser);
+router.post("/organizations/:orgId/following/organizations/:targetOrgId", requireAuth, requireOrgPermission("MANAGE_COMPANY"), socialController.organizationFollowOrganization);
+router.delete("/organizations/:orgId/following/organizations/:targetOrgId", requireAuth, requireOrgPermission("MANAGE_COMPANY"), socialController.organizationUnfollowOrganization);
+router.get("/organizations/:orgId/following", socialController.getOrganizationFollowing);
+
 // Company/Organization Subscribe
 router.post("/organizations/:orgId/subscribe", requireAuth, socialController.subscribeCompany);
 router.delete("/organizations/:orgId/unsubscribe", requireAuth, socialController.unsubscribeCompany);
@@ -94,5 +102,8 @@ router.patch("/notifications/:id/read", requireAuth, socialController.markNotifi
 router.patch("/notifications/read-all", requireAuth, socialController.markAllNotificationsRead);
 router.delete("/notifications/bulk", requireAuth, socialController.deleteNotificationsBulk);
 router.delete("/notifications/:id", requireAuth, socialController.deleteNotification);
+
+// Check if job/offer context has already been sent in conversation
+router.get("/conversations/:conversationId/check-context", requireAuth, socialController.checkContextSent);
 
 module.exports = router;
