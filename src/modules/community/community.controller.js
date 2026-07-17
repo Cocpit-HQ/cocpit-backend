@@ -59,6 +59,14 @@ exports.createCommunity = async (req, res, next) => {
             throw new AppError("Invalid or mismatched organization actor context", 403);
         }
 
+        if (!description) {
+            throw new AppError("Description is required.", 400);
+        }
+        const wordCount = description.trim() ? description.trim().split(/\s+/).length : 0;
+        if (wordCount < 20 || wordCount > 150) {
+            throw new AppError("Description must be between 20 and 150 words.", 400);
+        }
+
         // Check if community already exists
         const checkRes = await client.query(
             `SELECT community_id FROM communities WHERE org_id = $1 AND is_active = TRUE`,
@@ -113,6 +121,16 @@ exports.updateCommunity = async (req, res, next) => {
         // Strict Actor Context Check
         if (!req.actor || req.actor.type !== "ORGANIZATION" || req.actor.id !== orgId) {
             throw new AppError("Invalid or mismatched organization actor context", 403);
+        }
+
+        if (description !== undefined) {
+            if (!description) {
+                throw new AppError("Description is required.", 400);
+            }
+            const wordCount = description.trim() ? description.trim().split(/\s+/).length : 0;
+            if (wordCount < 20 || wordCount > 150) {
+                throw new AppError("Description must be between 20 and 150 words.", 400);
+            }
         }
 
         const updateRes = await client.query(

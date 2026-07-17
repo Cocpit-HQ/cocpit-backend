@@ -164,7 +164,7 @@ exports.getOrgProfile = async (req, res) => {
             ),
             // Key offerings (Profile tab — public profile "Key offerings" section)
             pool.query(
-                `SELECT offering_id, content
+                `SELECT offering_id, icon, content
                  FROM organization_key_offerings
                  WHERE org_id = $1 AND is_deleted = FALSE
                  ORDER BY position ASC`,
@@ -396,7 +396,7 @@ exports.getOrgProfile = async (req, res) => {
                 posts_count: counts.posts_count,
                 active_jobs_count: counts.active_jobs_count,
                 owner_id: org.created_by,
-                key_offerings: keyOfferingsResult.rows.map(r => r.content),
+                key_offerings: keyOfferingsResult.rows.map(r => ({ id: r.offering_id, icon: r.icon, content: r.content })),
             },
             is_own_profile: isOwner,
             viewer_role: membership?.role_name || null,
@@ -1059,7 +1059,7 @@ exports.updateOrgProfile = async (req, res) => {
     }
     // Validate keyOfferings if provided
     if (keyOfferings !== undefined && !Array.isArray(keyOfferings)) {
-        return res.status(400).json({ message: 'keyOfferings must be an array' });
+        return res.status(400).json({ message: 'keyOfferings must be an array of objects' });
     }
 
     const client = await pool.connect();
@@ -1131,11 +1131,17 @@ exports.updateOrgProfile = async (req, res) => {
                 [orgId]
             );
 
-            cleanOfferings = keyOfferings.map(text => (text || '').trim()).filter(Boolean);
+            cleanOfferings = keyOfferings
+                .map(off => ({
+                    icon: (off.icon || '').trim(),
+                    content: (off.content || '').trim()
+                }))
+                .filter(off => off.content); // require at least content
+
             for (let i = 0; i < cleanOfferings.length; i++) {
                 await client.query(
-                    `INSERT INTO organization_key_offerings (org_id, content, position) VALUES ($1, $2, $3)`,
-                    [orgId, cleanOfferings[i], i]
+                    `INSERT INTO organization_key_offerings (org_id, icon, content, position) VALUES ($1, $2, $3, $4)`,
+                    [orgId, cleanOfferings[i].icon, cleanOfferings[i].content, i]
                 );
             }
         }
