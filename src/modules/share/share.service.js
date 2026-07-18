@@ -405,9 +405,11 @@ async function findOrCreateConversation(client, senderId, targetId, targetType, 
         // Company-to-Company
         existingConv = await client.query(
             `SELECT c.conversation_id FROM conversations c
-             JOIN conversation_participants cp1 ON c.conversation_id = cp1.conversation_id AND cp1.org_id = $1
-             JOIN conversation_participants cp2 ON c.conversation_id = cp2.conversation_id AND cp2.org_id = $2
-             WHERE c.is_group = FALSE AND c.is_active = TRUE`,
+             JOIN conversation_participants cp ON c.conversation_id = cp.conversation_id
+             WHERE c.is_group = FALSE AND c.is_active = TRUE
+               AND cp.org_id IN ($1, $2)
+             GROUP BY c.conversation_id
+             HAVING COUNT(*) = 2`,
             [senderOrgId, targetId]
         );
     } else if (senderOrgId && targetType === "user") {
@@ -432,9 +434,11 @@ async function findOrCreateConversation(client, senderId, targetId, targetType, 
         // User-to-User
         existingConv = await client.query(
             `SELECT c.conversation_id FROM conversations c
-             JOIN conversation_participants cp1 ON c.conversation_id = cp1.conversation_id AND cp1.user_id = $1
-             JOIN conversation_participants cp2 ON c.conversation_id = cp2.conversation_id AND cp2.user_id = $2
-             WHERE c.is_group = FALSE AND c.is_active = TRUE`,
+             JOIN conversation_participants cp ON c.conversation_id = cp.conversation_id
+             WHERE c.is_group = FALSE AND c.is_active = TRUE
+               AND cp.user_id IN ($1, $2)
+             GROUP BY c.conversation_id
+             HAVING COUNT(*) = 2`,
             [senderId, targetId]
         );
     }

@@ -1646,6 +1646,21 @@ WHERE p.post_id = $1;
             updatedAt: post.updated_at
         };
 
+        // If this is a community article, check if the requesting user is subscribed
+        if (post.is_community_article && post.community_id && userId) {
+            const subCheck = await pool.query(
+                `SELECT 1 FROM community_subscriptions
+                 WHERE community_id = $1 AND user_id = $2 AND status = 'SUBSCRIBED'`,
+                [post.community_id, userId]
+            );
+            mappedPost.isSubscribed = subCheck.rowCount > 0;
+            mappedPost.is_subscribed = mappedPost.isSubscribed;
+        } else if (post.is_community_article) {
+            // Not logged in or no community → default to false
+            mappedPost.isSubscribed = false;
+            mappedPost.is_subscribed = false;
+        }
+
         res.status(200).json(mappedPost);
     } catch (err) {
         console.error("Get post error:", err);

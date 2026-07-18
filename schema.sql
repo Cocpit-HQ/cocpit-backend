@@ -1978,6 +1978,7 @@ CREATE TABLE IF NOT EXISTS organization_key_offerings (
     org_id UUID NOT NULL REFERENCES organizations(org_id) ON DELETE CASCADE,
     content TEXT NOT NULL,
     icon VARCHAR(100),
+    label VARCHAR(50),
     position INTEGER NOT NULL DEFAULT 0,
     is_deleted BOOLEAN DEFAULT FALSE,
     created_at TIMESTAMPTZ DEFAULT NOW()

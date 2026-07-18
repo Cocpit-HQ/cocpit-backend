@@ -384,9 +384,8 @@ exports.unsubscribeCommunity = async (req, res, next) => {
 // 2. Get Community Article Feed
 exports.getCommunityArticles = async (req, res, next) => {
     const { communityId } = req.params;
-    const page = Math.max(1, parseInt(req.query.page || "1"));
     const limit = Math.min(50, Math.max(1, parseInt(req.query.limit || "10")));
-    const offset = (page - 1) * limit;
+    const cursor = req.query.cursor || null;
     const requestedStatus = req.query.status || "published";
 
     if (requestedStatus !== "published" && requestedStatus !== "draft") {
@@ -420,6 +419,25 @@ exports.getCommunityArticles = async (req, res, next) => {
             }
         }
 
+        // Get total count of articles matching the criteria
+        const countRes = await pool.query(
+            `SELECT COUNT(*) FROM posts p
+             WHERE p.author_org_id = $1
+               AND p.post_type = 'article'
+               AND p.is_active = TRUE
+               AND p.status = $2`,
+            [orgId, requestedStatus]
+        );
+        const total = parseInt(countRes.rows[0].count);
+
+        let queryParams = [orgId, requestedStatus, limit];
+        let cursorCondition = "";
+
+        if (cursor) {
+            cursorCondition = "AND p.created_at < $4";
+            queryParams.push(cursor);
+        }
+
         const result = await pool.query(
             `SELECT p.post_id, p.author_org_id, p.title, p.content, p.status, p.created_at, p.updated_at,
                     (SELECT pm.url FROM post_media pm WHERE pm.post_id = p.post_id LIMIT 1) AS banner_url
@@ -428,9 +446,10 @@ exports.getCommunityArticles = async (req, res, next) => {
                AND p.post_type = 'article'
                AND p.is_active = TRUE
                AND p.status = $2
+               ${cursorCondition}
              ORDER BY p.created_at DESC
-             LIMIT $3 OFFSET $4`,
-            [orgId, requestedStatus, limit, offset]
+             LIMIT $3`,
+            queryParams
         );
 
         const mappedRows = result.rows.map(row => ({
@@ -444,10 +463,13 @@ exports.getCommunityArticles = async (req, res, next) => {
             updatedAt: row.updated_at
         }));
 
+        const nextCursor = mappedRows.length === limit ? mappedRows[mappedRows.length - 1].publishedAt : null;
+
         return res.status(200).json({
             success: true,
             data: mappedRows,
-            page,
+            total,
+            nextCursor,
             limit
         });
     } catch (err) {
@@ -474,16 +496,24 @@ exports.getInviteSuggestions = async (req, res, next) => {
             // Suggest search from active users
             query = `
                 SELECT DISTINCT u.user_id, u.full_name AS name, u.avatar_url AS avatar, u.headline,
-                       EXISTS(
-                           SELECT 1 FROM community_invitations ci
-                           JOIN communities comm ON ci.community_id = comm.community_id
-                           WHERE ci.invitee_id = u.user_id 
-                             AND comm.org_id = $1 
-                             AND ci.status = 'PENDING'
-                             AND ci.is_active = TRUE
-                       ) AS is_invited
+                       FALSE AS is_invited
                 FROM active_users u
                 WHERE u.full_name ILIKE $2 AND u.user_id != $3
+                  AND NOT EXISTS (
+                      SELECT 1 FROM community_invitations ci
+                      JOIN communities comm ON ci.community_id = comm.community_id
+                      WHERE ci.invitee_id = u.user_id 
+                        AND comm.org_id = $1 
+                        AND ci.status = 'PENDING'
+                        AND ci.is_active = TRUE
+                  )
+                  AND NOT EXISTS (
+                      SELECT 1 FROM community_subscriptions cs
+                      JOIN communities comm ON cs.community_id = comm.community_id
+                      WHERE cs.user_id = u.user_id 
+                        AND comm.org_id = $1 
+                        AND cs.status = 'SUBSCRIBED'
+                  )
                 LIMIT $4 OFFSET $5
             `;
             params = [orgId, `%${search}%`, userId, limit, offset];
@@ -502,16 +532,24 @@ exports.getInviteSuggestions = async (req, res, next) => {
                     WHERE ofol.org_id = $2
                 )
                 SELECT c.user_id, c.name, c.avatar, c.headline,
-                       EXISTS(
-                           SELECT 1 FROM community_invitations ci
-                           JOIN communities comm ON ci.community_id = comm.community_id
-                           WHERE ci.invitee_id = c.user_id 
-                             AND comm.org_id = $2
-                             AND ci.status = 'PENDING'
-                             AND ci.is_active = TRUE
-                       ) AS is_invited
+                       FALSE AS is_invited
                 FROM candidates c
                 WHERE c.user_id != $1
+                  AND NOT EXISTS (
+                      SELECT 1 FROM community_invitations ci
+                      JOIN communities comm ON ci.community_id = comm.community_id
+                      WHERE ci.invitee_id = c.user_id 
+                        AND comm.org_id = $2
+                        AND ci.status = 'PENDING'
+                        AND ci.is_active = TRUE
+                  )
+                  AND NOT EXISTS (
+                      SELECT 1 FROM community_subscriptions cs
+                      JOIN communities comm ON cs.community_id = comm.community_id
+                      WHERE cs.user_id = c.user_id 
+                        AND comm.org_id = $2 
+                        AND cs.status = 'SUBSCRIBED'
+                  )
                 LIMIT $3 OFFSET $4
             `;
             params = [userId, orgId, limit, offset];
@@ -563,6 +601,28 @@ exports.sendInvitation = async (req, res, next) => {
         }
 
         const { community_id, name: communityName } = commRes.rows[0];
+
+        // Guard: block invitation if user is already subscribed
+        const subCheck = await client.query(
+            `SELECT 1 FROM community_subscriptions
+             WHERE user_id = $1 AND community_id = $2 AND status = 'SUBSCRIBED'`,
+            [invitee_id, community_id]
+        );
+        if (subCheck.rowCount > 0) {
+            await client.query("ROLLBACK");
+            throw new AppError("User is already subscribed to this community", 400);
+        }
+
+        // Guard: block invitation if user already has a pending invitation
+        const inviteCheck = await client.query(
+            `SELECT 1 FROM community_invitations
+             WHERE invitee_id = $1 AND community_id = $2 AND status = 'PENDING' AND is_active = TRUE`,
+            [invitee_id, community_id]
+        );
+        if (inviteCheck.rowCount > 0) {
+            await client.query("ROLLBACK");
+            throw new AppError("This user has already been invited", 400);
+        }
 
         // Fetch company name
         const orgRes = await client.query(
@@ -686,7 +746,7 @@ exports.acceptInvitation = async (req, res, next) => {
             throw new AppError("Invitation not found or already processed", 404);
         }
 
-        const { invitee_id, inviter_id, org_id } = inviteRes.rows[0];
+        const { community_id, invitee_id, inviter_id, org_id } = inviteRes.rows[0];
 
         if (invitee_id !== userId) {
             throw new AppError("Not authorized to accept this invitation", 403);
@@ -700,14 +760,21 @@ exports.acceptInvitation = async (req, res, next) => {
             [inviteId]
         );
 
-        // Subscribe candidate to community
-        await client.query(
-            `INSERT INTO community_subscriptions (user_id, community_id, status)
-             VALUES ($1, $2, 'SUBSCRIBED')
-             ON CONFLICT (user_id, community_id)
-             DO UPDATE SET status = 'SUBSCRIBED', updated_at = NOW()`,
+        // Subscribe only if not already subscribed (user may have subscribed directly)
+        const alreadySubscribed = await client.query(
+            `SELECT 1 FROM community_subscriptions
+             WHERE user_id = $1 AND community_id = $2 AND status = 'SUBSCRIBED'`,
             [userId, community_id]
         );
+        if (alreadySubscribed.rowCount === 0) {
+            await client.query(
+                `INSERT INTO community_subscriptions (user_id, community_id, status)
+                 VALUES ($1, $2, 'SUBSCRIBED')
+                 ON CONFLICT (user_id, community_id)
+                 DO UPDATE SET status = 'SUBSCRIBED', updated_at = NOW()`,
+                [userId, community_id]
+            );
+        }
 
         // Fetch candidate details
         const inviteeNameRes = await client.query(

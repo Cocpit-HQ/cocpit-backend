@@ -1619,7 +1619,7 @@ exports.getMyJobs = async (req, res) => {
       LEFT JOIN active_users u ON j.recruiter_id = u.user_id
       LEFT JOIN organizations c ON j.org_id = c.org_id
       WHERE j.recruiter_id = $1 
-        AND (j.posted_as_company IS FALSE OR j.posted_as_company IS NULL OR j.org_id IS NULL)
+        AND j.org_id IS NULL
         AND j.is_active = TRUE 
     `;
     const params = [recruiterId];
@@ -1746,7 +1746,7 @@ exports.getMyJobs = async (req, res) => {
         COUNT(*) FILTER (WHERE j.status = 'IN REVIEW')::int AS "inReview"
       FROM jobs j
       WHERE j.recruiter_id = $1
-        AND (j.posted_as_company IS FALSE OR j.posted_as_company IS NULL OR j.org_id IS NULL)
+        AND j.org_id IS NULL
         AND j.is_active = TRUE
     `;
 
@@ -1786,17 +1786,16 @@ exports.getDashboardStats = async (req, res) => {
   try {
     const stats = await pool.query(`
       SELECT
-        COUNT(j.job_id) FILTER (WHERE j.is_active = TRUE ${actorOrgId ? "AND j.posted_as_company IS TRUE" : "AND (j.posted_as_company IS FALSE OR j.posted_as_company IS NULL)"}) as "activeJobs",
-        COUNT(j.job_id) FILTER (WHERE ${actorOrgId ? "j.posted_as_company IS TRUE" : "(j.posted_as_company IS FALSE OR j.posted_as_company IS NULL)"}) as "totalJobs",
+        COUNT(j.job_id) FILTER (WHERE j.is_active = TRUE) as "activeJobs",
+        COUNT(j.job_id) as "totalJobs",
         (
            SELECT COUNT(*) 
            FROM job_applications ja 
            JOIN jobs j2 ON ja.job_id = j2.job_id 
-           WHERE ${actorOrgId ? "j2.org_id = $1" : "j2.recruiter_id = $1"}
+           WHERE ${actorOrgId ? "j2.org_id = $1" : "j2.recruiter_id = $1 AND j2.org_id IS NULL"}
         ) as "totalApplicants"
       FROM jobs j
-      WHERE ${actorOrgId ? "j.org_id = $1" : "j.recruiter_id = $1"}
-        AND ${actorOrgId ? "j.posted_as_company IS TRUE" : "(j.posted_as_company IS FALSE OR j.posted_as_company IS NULL)"}
+      WHERE ${actorOrgId ? "j.org_id = $1" : "j.recruiter_id = $1 AND j.org_id IS NULL"}
     `, [actorOrgId || userId]);
 
     const data = stats.rows[0];
