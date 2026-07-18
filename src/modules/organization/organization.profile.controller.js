@@ -1126,6 +1126,37 @@ exports.updateOrgProfile = async (req, res) => {
         // Sync key offerings (child table, ordered list — full replace keeps display order intact)
         let cleanOfferings; // undefined when keyOfferings wasn't part of this update
         if (keyOfferings !== undefined) {
+            const KEY_OFFERING_ICONS_MAP = {
+                "iconoir:rocket": "Rocket",
+                "iconoir:globe": "Globe",
+                "lucide:trending-up": "Trending Up",
+                "lucide:folder-tree": "Folder Tree",
+                "iconoir:lightbulb": "Lightbulb",
+                "lucide:shield-check": "Shield Check",
+                "lucide:settings": "Settings",
+                "iconoir:tools": "Tools",
+                "iconoir:leaf": "Leaf",
+                "lucide:handshake": "Handshake"
+            };
+
+            for (let i = 0; i < keyOfferings.length; i++) {
+                const off = keyOfferings[i];
+                if (!off.content || !off.content.trim()) continue; // will be filtered out anyway
+
+                const icon = (off.icon || '').trim();
+                const label = (off.label || '').trim();
+                
+                if (!KEY_OFFERING_ICONS_MAP[icon]) {
+                    await client.query('ROLLBACK');
+                    return res.status(400).json({ message: `Invalid icon '${icon}' provided for Key Offerings.` });
+                }
+                
+                if (KEY_OFFERING_ICONS_MAP[icon] !== label) {
+                    await client.query('ROLLBACK');
+                    return res.status(400).json({ message: `Invalid label '${label}' for icon '${icon}'. Expected label is '${KEY_OFFERING_ICONS_MAP[icon]}'.` });
+                }
+            }
+
             await client.query(
                 `UPDATE organization_key_offerings SET is_deleted = TRUE WHERE org_id = $1 AND is_deleted = FALSE`,
                 [orgId]
