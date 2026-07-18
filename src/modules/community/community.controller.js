@@ -495,10 +495,13 @@ exports.getInviteSuggestions = async (req, res, next) => {
         if (search) {
             // Suggest search from active users
             query = `
-                SELECT DISTINCT u.user_id, u.full_name AS name, u.avatar_url AS avatar, u.headline,
+                SELECT u.user_id, u.full_name AS name, u.avatar_url AS avatar, u.headline,
                        FALSE AS is_invited
                 FROM active_users u
-                WHERE u.full_name ILIKE $2 AND u.user_id != $3
+                WHERE u.full_name ILIKE $2 
+                  AND u.user_id != $3
+                  AND u.full_name IS NOT NULL 
+                  AND TRIM(u.full_name) != ''
                   AND NOT EXISTS (
                       SELECT 1 FROM community_invitations ci
                       JOIN communities comm ON ci.community_id = comm.community_id
@@ -514,45 +517,50 @@ exports.getInviteSuggestions = async (req, res, next) => {
                         AND comm.org_id = $1 
                         AND cs.status = 'SUBSCRIBED'
                   )
+                ORDER BY u.full_name ASC
                 LIMIT $4 OFFSET $5
             `;
             params = [orgId, `%${search}%`, userId, limit, offset];
         } else {
-            // Suggest default: Recruiter's connections and company followers
+            // Suggest default: All active users, but prioritize recruiter's connections and company followers
             query = `
-                WITH candidates AS (
-                    SELECT u.user_id, u.full_name AS name, u.avatar_url AS avatar, u.headline
-                    FROM connections c
-                    JOIN active_users u ON c.connected_user_id = u.user_id
-                    WHERE c.user_id = $1
-                    UNION
-                    SELECT u.user_id, u.full_name AS name, u.avatar_url AS avatar, u.headline
-                    FROM organization_followers ofol
-                    JOIN active_users u ON ofol.user_id = u.user_id
-                    WHERE ofol.org_id = $2
-                )
-                SELECT c.user_id, c.name, c.avatar, c.headline,
-                       FALSE AS is_invited
-                FROM candidates c
-                WHERE c.user_id != $1
+                SELECT u.user_id, u.full_name AS name, u.avatar_url AS avatar, u.headline,
+                       FALSE AS is_invited,
+                       CASE 
+                           WHEN EXISTS (
+                               SELECT 1 FROM connections c 
+                               WHERE (c.user_id = $2 AND c.connected_user_id = u.user_id) 
+                                  OR (c.connected_user_id = $2 AND c.user_id = u.user_id)
+                           ) THEN 1
+                           WHEN EXISTS (
+                               SELECT 1 FROM organization_followers ofol 
+                               WHERE ofol.user_id = u.user_id AND ofol.org_id = $1
+                           ) THEN 2
+                           ELSE 3
+                       END AS priority
+                FROM active_users u
+                WHERE u.user_id != $2
+                  AND u.full_name IS NOT NULL 
+                  AND TRIM(u.full_name) != ''
                   AND NOT EXISTS (
                       SELECT 1 FROM community_invitations ci
                       JOIN communities comm ON ci.community_id = comm.community_id
-                      WHERE ci.invitee_id = c.user_id 
-                        AND comm.org_id = $2
+                      WHERE ci.invitee_id = u.user_id 
+                        AND comm.org_id = $1 
                         AND ci.status = 'PENDING'
                         AND ci.is_active = TRUE
                   )
                   AND NOT EXISTS (
                       SELECT 1 FROM community_subscriptions cs
                       JOIN communities comm ON cs.community_id = comm.community_id
-                      WHERE cs.user_id = c.user_id 
-                        AND comm.org_id = $2 
+                      WHERE cs.user_id = u.user_id 
+                        AND comm.org_id = $1 
                         AND cs.status = 'SUBSCRIBED'
                   )
+                ORDER BY priority ASC, u.full_name ASC
                 LIMIT $3 OFFSET $4
             `;
-            params = [userId, orgId, limit, offset];
+            params = [orgId, userId, limit, offset];
         }
 
         const result = await pool.query(query, params);
