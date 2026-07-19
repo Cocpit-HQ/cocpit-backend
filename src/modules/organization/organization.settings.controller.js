@@ -1,14 +1,7 @@
 const pool = require("../../core/db/pool");
 const { checkOrgPermission } = require("../../core/utils/rbac");
 
-// Helper for Audit Logging
-const logAudit = async (client, { entityId, actorId, action, metadata = {} }) => {
-    const query = `
-    INSERT INTO audit_logs (entity_type, entity_id, actor_id, action, metadata)
-    VALUES ($1, $2, $3, $4, $5)
-  `;
-    await client.query(query, ['ORGANIZATION', entityId, actorId, action, metadata]);
-};
+const { logAudit } = require("../../core/infrastructure/audit.service");
 
 // --- Tech Stack ---
 

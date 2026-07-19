@@ -7,7 +7,6 @@ const postsController = require("./organization.posts.controller");
 const settingsController = require("./organization.settings.controller");
 const organizationJobsController = require("./organization.jobs.controller");
 const analyticsController = require("./organization.analytics.controller");
-const roleController = require("./organization.roles.controller");
 const { requireAuth, optionalAuth } = require("../../core/middlewares/auth.middleware");
 const { requireOrgPermission } = require("../../core/middlewares/organization.auth.middleware");
 const { organizationActionLimiter, otpGenerationLimiter } = require("../../core/middlewares/rateLimit.middleware");
@@ -70,15 +69,9 @@ router.post("/organizations/invites/accept", requireAuth, membersController.acce
 router.post("/companies/invites/accept", requireAuth, membersController.acceptInvite);
 
 // --- MEMBERSHIP ---
-router.post("/organizations/:orgId/members/invite", requireAuth, requireOrgPermission("INVITE_MEMBERS"), organizationActionLimiter, membersController.inviteMember);
-router.get("/organizations/:orgId/members", requireAuth, requireOrgPermission("VIEW_MEMBERS"), membersController.getMembers);
-router.delete("/organizations/:orgId/members/:memberId", requireAuth, requireOrgPermission("REMOVE_MEMBERS"), membersController.removeMember);
 router.post("/organizations/:orgId/leave", requireAuth, membersController.leaveOrganization);
 
 // Legacy Member Aliases
-router.post("/companies/:orgId/members/invite", requireAuth, requireOrgPermission("INVITE_MEMBERS"), organizationActionLimiter, membersController.inviteMember);
-router.get("/companies/:orgId/members", requireAuth, requireOrgPermission("VIEW_MEMBERS"), membersController.getMembers);
-router.delete("/companies/:orgId/members/:memberId", requireAuth, requireOrgPermission("REMOVE_MEMBERS"), membersController.removeMember);
 router.post("/companies/:orgId/leave", requireAuth, membersController.leaveOrganization);
 
 // --- INSTITUTION ENROLLMENT ---
@@ -96,7 +89,6 @@ router.post("/organizations/:orgId/verify/document", requireAuth, requireOrgPerm
 router.post("/companies/:orgId/verify/domain", requireAuth, requireOrgPermission("MANAGE_SETTINGS"), otpGenerationLimiter, verifyController.verifyDomain);
 
 // --- MANAGEMENT ---
-router.post("/organizations/:orgId/transfer-ownership", requireAuth, organizationActionLimiter, membersController.transferOwnership);
 router.put("/organizations/:orgId", requireAuth, requireOrgPermission("MANAGE_COMPANY_DETAILS"), organizationController.updateOrganization);
 router.delete("/organizations/:orgId", requireAuth, requireOrgPermission("MANAGE_COMPANY"), organizationActionLimiter, organizationController.deleteOrganization);
 
@@ -110,7 +102,6 @@ router.put("/admin/verifications/:verificationId/review", requireAuth, requireRo
 router.get("/organizations/:orgId/analytics/overview", requireAuth, requireOrgPermission("VIEW_ANALYTICS"), analyticsController.getOverview);
 router.get("/organizations/:orgId/analytics/engagement", requireAuth, requireOrgPermission("VIEW_ANALYTICS"), analyticsController.getEngagement);
 router.get("/organizations/:orgId/analytics/jobs", requireAuth, requireOrgPermission("VIEW_ANALYTICS"), analyticsController.getJobs);
-router.get("/organizations/:orgId/audit-logs", requireAuth, requireOrgPermission("MANAGE_COMPANY"), analyticsController.getAuditLogs);
 
 // --- SETTINGS (TECH STACK / GALLERY) ---
 router.get("/organizations/:slug/tech-stack", optionalAuth, settingsController.getTechStack);
@@ -135,13 +126,7 @@ router.delete("/organizations/:orgId/jobs/:jobId", requireAuth, requireOrgPermis
 router.get("/companies/:orgId/jobs", optionalAuth, organizationJobsController.getOrganizationJobs);
 
 // --- ROLES & PERMISSIONS ---
-router.get("/organizations/:orgId/roles", requireAuth, roleController.getOrganizationRoles);
-router.post("/organizations/:orgId/roles", requireAuth, requireOrgPermission("MANAGE_ROLES"), roleController.createOrganizationRole);
-router.put("/organizations/:orgId/roles/:roleId", requireAuth, requireOrgPermission("MANAGE_ROLES"), roleController.updateOrganizationRole);
-router.delete("/organizations/:orgId/roles/:roleId", requireAuth, requireOrgPermission("MANAGE_ROLES"), roleController.deleteOrganizationRole);
-
-router.put("/organizations/:orgId/members/:userId/role", requireAuth, requireOrgPermission("MANAGE_MEMBERS"), roleController.assignRoleToMember);
-router.put("/organizations/:orgId/my-role-settings", requireAuth, roleController.updateMemberRoleSettings);
+router.put("/organizations/:orgId/my-role-settings", requireAuth, membersController.updateMemberRoleSettings);
 
 // --- ASSETS ---
 router.post("/organizations/:orgId/logo", requireAuth, requireOrgPermission("MANAGE_SETTINGS"), uploadAvatar.single("avatar"), settingsController.uploadLogo);

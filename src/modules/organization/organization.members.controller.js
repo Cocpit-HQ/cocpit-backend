@@ -4,14 +4,7 @@ const chatSessionCtrl = require("../messaging/chatSession.controller");
 const { checkOrgPermission } = require("../../core/utils/rbac");
 const socketService = require("../../core/infrastructure/socket.service");
 
-// Helper for Audit Logging
-const logAudit = async (client, { entityId, actorId, action, metadata = {} }) => {
-    const query = `
-    INSERT INTO audit_logs (entity_type, entity_id, actor_id, action, metadata)
-    VALUES ($1, $2, $3, $4, $5)
-  `;
-    await client.query(query, ['ORGANIZATION', entityId, actorId, action, metadata]);
-};
+const { logAudit } = require("../../core/infrastructure/audit.service");
 
 exports.inviteMember = async (req, res) => {
     const { orgId: companyId } = req.params;
@@ -25,10 +18,6 @@ exports.inviteMember = async (req, res) => {
     const client = await pool.connect();
     try {
         await client.query("BEGIN");
-
-        // 1. Permission Check
-        const canInvite = await checkOrgPermission(client, companyId, userId, 'INVITE_MEMBERS');
-        if (!canInvite) throw new Error("Forbidden: You do not have permission to invite members");
 
         // 2. Role Escalation Check
         // Get inviter's priority
@@ -275,10 +264,6 @@ exports.getMembers = async (req, res) => {
 
     const client = await pool.connect();
     try {
-        // Permission Check
-        const canView = await checkOrgPermission(client, companyId, userId, 'VIEW_MEMBERS');
-        if (!canView) return res.status(403).json({ message: "Forbidden" });
-
         // Build Query
         let whereClause = `WHERE cm.org_id = $1`;
         const params = [companyId, limit, offset];
@@ -333,10 +318,6 @@ exports.removeMember = async (req, res) => {
     const client = await pool.connect();
     try {
         await client.query("BEGIN");
-
-        // 1. Check requester role (REMOVE_MEMBERS)
-        const canRemove = await checkOrgPermission(client, companyId, userId, 'REMOVE_MEMBERS');
-        if (!canRemove) throw new Error("Forbidden: You cannot remove members");
 
         // 2. Check target member role
         const targetRes = await client.query(
@@ -407,14 +388,16 @@ exports.leaveOrganization = async (req, res) => {
 
         // 1. Check existence and role
         const resRole = await client.query(
-            `SELECT role FROM organization_members WHERE org_id = $1 AND user_id = $2`,
+            `SELECT oroles.name AS role_name FROM organization_members om
+             JOIN organization_roles oroles ON om.role_id = oroles.role_id
+             WHERE om.org_id = $1 AND om.user_id = $2`,
             [companyId, userId]
         );
         if (resRole.rowCount === 0) throw new Error("You are not a member of this organization");
-        const role = resRole.rows[0].role;
+        const roleName = resRole.rows[0].role_name;
 
         // 2. OWNER cannot leave
-        if (role === 'OWNER') throw new Error("OWNER cannot leave. Transfer ownership first.");
+        if (roleName === 'Owner') throw new Error("OWNER cannot leave. Transfer ownership first.");
 
         // 3. Leave
         await client.query(
@@ -426,7 +409,7 @@ exports.leaveOrganization = async (req, res) => {
             entityId: companyId,
             actorId: userId, // Self-action
             action: 'LEAVE_ORGANIZATION',
-            metadata: { role }
+            metadata: { role: roleName }
         });
 
         await client.query("COMMIT");
@@ -531,6 +514,58 @@ exports.transferOwnership = async (req, res) => {
             return res.status(403).json({ message: err.message });
         }
         res.status(500).json({ message: "Internal server error" });
+    } finally {
+        client.release();
+    }
+};
+
+// Update member role settings (Self-service: set primary, toggle visibility)
+exports.updateMemberRoleSettings = async (req, res, next) => {
+    const { orgId: companyId } = req.params;
+    const userId = req.user.sub;
+    const { is_primary_display, is_role_visible } = req.body;
+
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+
+        // Check verification (ensure user is actually a member)
+        const memberCheck = await client.query(
+            `SELECT 1 FROM organization_members WHERE org_id = $1 AND user_id = $2`,
+            [companyId, userId]
+        );
+
+        if (memberCheck.rowCount === 0) {
+            throw new AppError("You are not a member of this organization", 403);
+        }
+
+        // Handle Primary Display Logic
+        if (is_primary_display === true) {
+            // Unset primary for all other roles of this user
+            await client.query(
+                `UPDATE organization_members SET is_primary_display = FALSE WHERE user_id = $1`,
+                [userId]
+            );
+        }
+
+        // Update the specific record
+        const query = `
+            UPDATE organization_members 
+            SET 
+                is_primary_display = COALESCE($1, is_primary_display),
+                is_role_visible = COALESCE($2, is_role_visible)
+            WHERE org_id = $3 AND user_id = $4
+            RETURNING *
+        `;
+
+        const result = await client.query(query, [is_primary_display, is_role_visible, companyId, userId]);
+
+        await client.query('COMMIT');
+        res.json(result.rows[0]);
+
+    } catch (err) {
+        await client.query('ROLLBACK');
+        next(err);
     } finally {
         client.release();
     }

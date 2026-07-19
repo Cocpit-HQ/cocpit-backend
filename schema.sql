@@ -297,12 +297,23 @@ CREATE TABLE organization_roles (
     org_id UUID REFERENCES organizations(org_id) ON DELETE CASCADE,
     name VARCHAR(50) NOT NULL,
     color VARCHAR(7) DEFAULT '#808080',
+    description TEXT,
     permissions JSONB DEFAULT '[]'::jsonb,
     priority INTEGER DEFAULT 0,
     is_system_role BOOLEAN DEFAULT FALSE,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW(),
     UNIQUE(org_id, name)
+);
+
+CREATE TABLE IF NOT EXISTS organization_permission_keys (
+    permission_key  VARCHAR(100) PRIMARY KEY,
+    label           VARCHAR(200) NOT NULL,
+    ui_type         VARCHAR(10)  NOT NULL DEFAULT 'toggle'
+        CHECK (ui_type IN ('toggle', 'checkbox')),
+    parent_key      VARCHAR(100) REFERENCES organization_permission_keys(permission_key),
+    requires_parent BOOLEAN      NOT NULL DEFAULT FALSE,
+    sort_order      INTEGER      NOT NULL DEFAULT 0
 );
 
 CREATE TABLE organization_members (
@@ -1054,10 +1065,11 @@ CREATE TABLE IF NOT EXISTS organization_invites (
     org_id UUID REFERENCES organizations(org_id) ON DELETE CASCADE,
     inviter_id UUID REFERENCES users(user_id) ON DELETE SET NULL, -- Who sent the invite
     email VARCHAR(255) NOT NULL,
+    invited_user_id UUID REFERENCES users(user_id) ON DELETE SET NULL,
     role_id UUID REFERENCES organization_roles(role_id) ON DELETE SET NULL, -- Modern link
     role VARCHAR(50), -- Fallback role name
     token VARCHAR(255) NOT NULL, -- For email link
-    status VARCHAR(20) DEFAULT 'PENDING' CHECK (status IN ('PENDING', 'ACCEPTED', 'EXPIRED')),
+    status VARCHAR(20) DEFAULT 'PENDING' CHECK (status IN ('PENDING', 'ACCEPTED', 'EXPIRED', 'CANCELLED')),
     expires_at TIMESTAMPTZ NOT NULL,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW(),
@@ -1105,6 +1117,7 @@ CREATE TABLE IF NOT EXISTS audit_logs (
     entity_type VARCHAR(50) NOT NULL, -- e.g., 'COMPANY'
     entity_id UUID NOT NULL, -- org_id
     actor_id UUID REFERENCES users(user_id) ON DELETE SET NULL, -- Who performed the action
+    actor_role VARCHAR(100),
     action VARCHAR(50) NOT NULL, -- 'CREATE', 'UPDATE', 'DELETE', 'TRANSFER_OWNERSHIP', 'VERIFY_DOMAIN', 'INVITE_MEMBER'
     metadata JSONB DEFAULT '{}'::jsonb, -- Store diffs or details
     ip_address INET,
@@ -1114,6 +1127,7 @@ CREATE TABLE IF NOT EXISTS audit_logs (
 
 CREATE INDEX idx_audit_logs_entity ON audit_logs(entity_type, entity_id);
 CREATE INDEX idx_audit_logs_actor ON audit_logs(actor_id);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_org_actor ON audit_logs(entity_id, actor_id, created_at DESC);
 
 
 -- Triggers for updated_at
