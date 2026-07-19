@@ -189,7 +189,6 @@ exports.getOrgProfile = async (req, res) => {
              JOIN active_users u ON cm.user_id = u.user_id
              LEFT JOIN organization_roles cr ON cm.role_id = cr.role_id
              WHERE cm.org_id = $1
-               AND cm.is_core_team = TRUE
                AND cm.status = 'ACTIVE'
              ORDER BY cr.priority DESC NULLS LAST, cm.joined_at ASC
              LIMIT 6`,
@@ -522,7 +521,6 @@ exports.getOrgTeam = async (req, res) => {
              JOIN active_users u ON cm.user_id = u.user_id
              LEFT JOIN organization_roles cr ON cm.role_id = cr.role_id
              WHERE cm.org_id = $1
-               AND cm.is_core_team = TRUE
                AND cm.status = 'ACTIVE'
              ORDER BY cr.priority DESC NULLS LAST, cm.joined_at ASC`,
             [org.org_id]
