@@ -16,6 +16,7 @@ async function isTargetOwner(client, orgId, userId) {
 }
 
 // 1. Get all roles in the organization
+// 1. Get all roles in the organization
 exports.getRoles = async (req, res, next) => {
     const orgId = req.params.orgId;
     try {
@@ -28,21 +29,25 @@ exports.getRoles = async (req, res, next) => {
                                 'user_id', u.user_id,
                                 'name', u.full_name,
                                 'full_name', u.full_name,
-                                'avatar', u.avatar_url
+                                'avatar', u.avatar_url,
+                                'status', m.status
                             )
                         ) FILTER (WHERE u.user_id IS NOT NULL),
                         '[]'::json
                     ) AS members
              FROM organization_roles r
              LEFT JOIN organization_members m ON (
-                 m.role_id = r.role_id 
-                 OR (
-                     LOWER(r.name) = 'admin' 
-                     AND m.role_id IN (
-                         SELECT role_id FROM organization_roles 
-                         WHERE org_id = r.org_id AND LOWER(name) = 'owner'
+                 (
+                     m.role_id = r.role_id 
+                     OR (
+                         LOWER(r.name) = 'admin' 
+                         AND m.role_id IN (
+                             SELECT role_id FROM organization_roles 
+                             WHERE org_id = r.org_id AND LOWER(name) = 'owner'
+                         )
                      )
                  )
+                 AND m.status = 'ACTIVE'
              )
              LEFT JOIN active_users u ON m.user_id = u.user_id
              WHERE r.org_id = $1 AND LOWER(r.name) != 'owner' AND r.is_active = TRUE
@@ -73,23 +78,33 @@ exports.getRoleById = async (req, res, next) => {
                                 'user_id', u.user_id,
                                 'name', u.full_name,
                                 'full_name', u.full_name,
-                                'avatar', u.avatar_url
+                                'avatar', u.avatar_url,
+                                'status', m.status,
+                                'invite_id', oi.invite_id
                             )
                         ) FILTER (WHERE u.user_id IS NOT NULL),
                         '[]'::json
                     ) AS members
              FROM organization_roles r
              LEFT JOIN organization_members m ON (
-                 m.role_id = r.role_id 
-                 OR (
-                     LOWER(r.name) = 'admin' 
-                     AND m.role_id IN (
-                         SELECT role_id FROM organization_roles 
-                         WHERE org_id = r.org_id AND LOWER(name) = 'owner'
+                 (
+                     m.role_id = r.role_id 
+                     OR (
+                         LOWER(r.name) = 'admin' 
+                         AND m.role_id IN (
+                             SELECT role_id FROM organization_roles 
+                             WHERE org_id = r.org_id AND LOWER(name) = 'owner'
+                         )
                      )
                  )
+                 AND m.status IN ('ACTIVE', 'PENDING_INVITE')
              )
              LEFT JOIN active_users u ON m.user_id = u.user_id
+             LEFT JOIN organization_invites oi ON (
+                 oi.org_id = r.org_id 
+                 AND oi.invited_user_id = m.user_id 
+                 AND oi.status = 'PENDING'
+             )
              WHERE r.org_id = $1 AND r.role_id = $2 AND LOWER(r.name) != 'owner' AND r.is_active = TRUE
              GROUP BY r.role_id`,
             [orgId, roleId]
