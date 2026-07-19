@@ -1957,6 +1957,19 @@ CREATE TABLE IF NOT EXISTS organization_subscribers (
 );
 CREATE INDEX IF NOT EXISTS idx_company_subscribers_company_id ON organization_subscribers(org_id);
 
+-- Migration: Communities
+CREATE TABLE IF NOT EXISTS communities (
+    community_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    org_id UUID NOT NULL REFERENCES organizations(org_id) ON DELETE CASCADE,
+    is_active BOOLEAN DEFAULT true,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    created_by UUID REFERENCES users(user_id) ON DELETE SET NULL,
+    name VARCHAR(255) NOT NULL,
+    description TEXT,
+    banner_url TEXT
+);
+
 -- 07/14/2026 Migration: Community Subscription
 CREATE TABLE IF NOT EXISTS community_subscriptions (
     user_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
