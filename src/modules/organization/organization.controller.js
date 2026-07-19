@@ -1306,9 +1306,6 @@ exports.publishNewOrganization = async (req, res) => {
             roles = [
                 { name: 'Owner',     color: '#FFD700', permissions: ['*'],                                                                                                                priority: 100 },
                 { name: 'Admin',     color: '#FF5733', permissions: ['MANAGE_COMPANY', 'MANAGE_SETTINGS', 'MANAGE_ROLES', 'MANAGE_MEMBERS', 'INVITE_MEMBERS', 'POST_JOBS', 'VIEW_JOBS', 'MANAGE_JOBS', 'VIEW_APPLICANTS', 'MANAGE_APPLICANTS', 'CREATE_CONTENT', 'VIEW_ANALYTICS'], priority: 90  },
-                { name: 'Editor',    color: '#28B463', permissions: ['CREATE_CONTENT', 'VIEW_ANALYTICS', 'VIEW_MEMBERS', 'MANAGE_COMPANY_DETAILS'],                                        priority: 60  },
-                { name: 'Recruiter', color: '#3498DB', permissions: ['POST_JOBS', 'VIEW_JOBS', 'VIEW_APPLICANTS', 'MANAGE_APPLICANTS', 'VIEW_MEMBERS'],                                    priority: 50  },
-                { name: 'Analyst',   color: '#800080', permissions: ['VIEW_ANALYTICS', 'VIEW_MEMBERS'],                                                                                    priority: 40  }
             ];
         }
 

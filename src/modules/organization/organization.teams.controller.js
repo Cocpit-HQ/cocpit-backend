@@ -20,10 +20,32 @@ exports.getRoles = async (req, res, next) => {
     const orgId = req.params.orgId;
     try {
         const result = await pool.query(
-            `SELECT r.*, COUNT(m.user_id)::int AS member_count
+            `SELECT r.*, COUNT(DISTINCT m.user_id)::int AS member_count,
+                    COALESCE(
+                        json_agg(
+                            json_build_object(
+                                'id', u.user_id,
+                                'user_id', u.user_id,
+                                'name', u.full_name,
+                                'full_name', u.full_name,
+                                'avatar', u.avatar_url
+                            )
+                        ) FILTER (WHERE u.user_id IS NOT NULL),
+                        '[]'::json
+                    ) AS members
              FROM organization_roles r
-             LEFT JOIN organization_members m ON r.role_id = m.role_id
-             WHERE r.org_id = $1
+             LEFT JOIN organization_members m ON (
+                 m.role_id = r.role_id 
+                 OR (
+                     LOWER(r.name) = 'admin' 
+                     AND m.role_id IN (
+                         SELECT role_id FROM organization_roles 
+                         WHERE org_id = r.org_id AND LOWER(name) = 'owner'
+                     )
+                 )
+             )
+             LEFT JOIN active_users u ON m.user_id = u.user_id
+             WHERE r.org_id = $1 AND LOWER(r.name) != 'owner'
              GROUP BY r.role_id
              ORDER BY r.priority DESC, r.created_at ASC`,
             [orgId]
@@ -39,10 +61,32 @@ exports.getRoleById = async (req, res, next) => {
     const { orgId, roleId } = req.params;
     try {
         const result = await pool.query(
-            `SELECT r.*, COUNT(m.user_id)::int AS member_count
+            `SELECT r.*, COUNT(DISTINCT m.user_id)::int AS member_count,
+                    COALESCE(
+                        json_agg(
+                            json_build_object(
+                                'id', u.user_id,
+                                'user_id', u.user_id,
+                                'name', u.full_name,
+                                'full_name', u.full_name,
+                                'avatar', u.avatar_url
+                            )
+                        ) FILTER (WHERE u.user_id IS NOT NULL),
+                        '[]'::json
+                    ) AS members
              FROM organization_roles r
-             LEFT JOIN organization_members m ON r.role_id = m.role_id
-             WHERE r.org_id = $1 AND r.role_id = $2
+             LEFT JOIN organization_members m ON (
+                 m.role_id = r.role_id 
+                 OR (
+                     LOWER(r.name) = 'admin' 
+                     AND m.role_id IN (
+                         SELECT role_id FROM organization_roles 
+                         WHERE org_id = r.org_id AND LOWER(name) = 'owner'
+                     )
+                 )
+             )
+             LEFT JOIN active_users u ON m.user_id = u.user_id
+             WHERE r.org_id = $1 AND r.role_id = $2 AND LOWER(r.name) != 'owner'
              GROUP BY r.role_id`,
             [orgId, roleId]
         );
@@ -67,8 +111,8 @@ exports.createRole = async (req, res, next) => {
         return next(new AppError("Role name is required", 400));
     }
 
-    if (name.toLowerCase() === 'owner') {
-        return next(new AppError("Cannot create a role named Owner", 400));
+    if (name.toLowerCase() === 'owner' || name.toLowerCase() === 'admin') {
+        return next(new AppError("Cannot create a role named Owner or Admin", 400));
     }
 
     // Validation: ACTIVITY_LOGS requires TEAMS
@@ -160,8 +204,8 @@ exports.updateRole = async (req, res, next) => {
             throw new AppError("Cannot change the name of a system role", 400);
         }
 
-        if (name && name.toLowerCase() === 'owner' && role.name.toLowerCase() !== 'owner') {
-            throw new AppError("Cannot rename a role to Owner", 400);
+        if (name && (name.toLowerCase() === 'owner' || name.toLowerCase() === 'admin') && role.name.toLowerCase() !== name.toLowerCase()) {
+            throw new AppError("Cannot rename a role to Owner or Admin", 400);
         }
 
         if (name && name !== role.name) {
@@ -291,7 +335,7 @@ exports.getRoleMembers = async (req, res, next) => {
 
     try {
         let query = `
-            SELECT u.user_id, u.full_name, u.avatar_url, u.headline, om.joined_at, om.status
+            SELECT u.user_id, u.full_name, u.avatar_url AS avatar, u.headline, om.joined_at, om.status
             FROM organization_members om
             JOIN active_users u ON om.user_id = u.user_id
             WHERE om.org_id = $1 AND om.role_id = $2
@@ -361,7 +405,7 @@ exports.getMembers = async (req, res, next) => {
 
     try {
         let query = `
-            SELECT u.user_id, u.full_name, u.avatar_url, u.headline,
+            SELECT u.user_id, u.full_name, u.avatar_url AS avatar, u.headline,
                    om.joined_at, om.status, om.expires_at, om.is_core_team,
                    r.role_id, r.name AS role_name, r.color AS role_color, r.priority AS role_priority
             FROM organization_members om
@@ -416,7 +460,7 @@ exports.getMemberDetail = async (req, res, next) => {
     const { orgId, userId } = req.params;
     try {
         const result = await pool.query(
-            `SELECT u.user_id, u.full_name, u.avatar_url, u.headline, u.email,
+            `SELECT u.user_id, u.full_name, u.avatar_url AS avatar, u.headline, u.email,
                     om.joined_at, om.status, om.expires_at, om.is_core_team, om.title, om.description,
                     r.role_id, r.name AS role_name, r.color AS role_color, r.priority AS role_priority, r.permissions
              FROM organization_members om
@@ -659,7 +703,7 @@ exports.getInviteCandidates = async (req, res, next) => {
 
     try {
         let query = `
-            SELECT u.user_id, u.full_name, u.avatar_url, u.headline, ofol.created_at as followed_at
+            SELECT u.user_id, u.full_name, u.avatar_url AS avatar, u.headline, ofol.created_at as followed_at
             FROM organization_followers ofol
             JOIN active_users u ON ofol.user_id = u.user_id
             WHERE ofol.org_id = $1
@@ -903,7 +947,7 @@ exports.getPendingInvites = async (req, res, next) => {
     try {
         const result = await pool.query(
             `SELECT oi.invite_id, oi.status, oi.expires_at, oi.created_at AS invited_at,
-                    oi.invited_user_id AS user_id, u.full_name, u.avatar_url, u.headline,
+                    oi.invited_user_id AS user_id, u.full_name, u.avatar_url AS avatar, u.headline,
                     r.role_id, r.name AS role_name, r.color AS role_color
              FROM organization_invites oi
              LEFT JOIN active_users u ON oi.invited_user_id = u.user_id
