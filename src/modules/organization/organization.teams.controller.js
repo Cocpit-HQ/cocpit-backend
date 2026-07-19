@@ -857,11 +857,11 @@ exports.sendInvite = async (req, res, next) => {
         const token = require("crypto").randomBytes(32).toString('hex');
         const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days expiry
         await client.query(
-            `INSERT INTO organization_invites (org_id, inviter_id, email, invited_user_id, role_id, token, status, expires_at)
-             VALUES ($1, $2, $3, $4, $5, $6, 'PENDING', $7)
+            `INSERT INTO organization_invites (org_id, inviter_id, email, invited_user_id, role_id, role, token, status, expires_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, 'PENDING', $8)
              ON CONFLICT (org_id, email) DO UPDATE
-             SET inviter_id = $2, invited_user_id = $4, role_id = $5, token = $6, status = 'PENDING', expires_at = $7, updated_at = NOW()`,
-            [orgId, actorId, email, userId, roleId, token, expiresAt]
+             SET inviter_id = $2, invited_user_id = $4, role_id = $5, role = $6, token = $7, status = 'PENDING', expires_at = $8, updated_at = NOW()`,
+            [orgId, actorId, email, userId, roleId, targetRole.name, token, expiresAt]
         );
 
         // 7. Audit Log
