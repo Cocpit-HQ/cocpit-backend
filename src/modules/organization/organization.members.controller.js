@@ -193,7 +193,7 @@ exports.acceptTeamsInvite = async (req, res) => {
 
         // 2b. Check if User is ALREADY a member
         const memberCheck = await client.query(
-            `SELECT cr.name as role FROM organization_members cm JOIN organization_roles cr ON cm.role_id = cr.role_id WHERE cm.org_id = $1 AND cm.user_id = $2`,
+            `SELECT cr.name as role FROM organization_members cm JOIN organization_roles cr ON cm.role_id = cr.role_id WHERE cm.org_id = $1 AND cm.user_id = $2 AND cm.status IN ('ACTIVE', 'SUSPENDED')`,
             [invite.org_id, userId]
         );
 
@@ -576,7 +576,7 @@ exports.updateMemberRoleSettings = async (req, res, next) => {
     }
 };
 
-exports.getUserPendingTeamsInvites = async (req, res) => {
+exports.getUserPendingTeamsInvites = async (req, res, next) => {
     const userId = req.user.sub;
     try {
         const userRes = await pool.query("SELECT email FROM users WHERE user_id = $1", [userId]);
@@ -597,16 +597,15 @@ exports.getUserPendingTeamsInvites = async (req, res) => {
         );
         res.json(result.rows);
     } catch (err) {
-        console.error("Get user pending invites error:", err);
-        res.status(500).json({ message: "Internal server error" });
+        next(err);
     }
 };
 
-exports.declineTeamsInvite = async (req, res) => {
+exports.declineTeamsInvite = async (req, res, next) => {
     const { token } = req.body;
     const userId = req.user.sub;
 
-    if (!token) return res.status(400).json({ message: "Token is required" });
+    if (!token) return next(new AppError("Token is required", 400));
 
     const client = await pool.connect();
     try {
@@ -618,13 +617,13 @@ exports.declineTeamsInvite = async (req, res) => {
         );
 
         if (inviteRes.rowCount === 0) {
-            throw new Error("Invalid or expired invitation");
+            throw new AppError("Invalid or expired invitation", 404);
         }
         const invite = inviteRes.rows[0];
 
         const userRes = await client.query(`SELECT email FROM users WHERE user_id = $1`, [userId]);
         if (userRes.rows[0].email !== invite.email) {
-            return res.status(403).json({ message: `This invitation was sent to ${invite.email}. You are logged in as ${userRes.rows[0].email}.` });
+            throw new AppError(`This invitation was sent to ${invite.email}. You are logged in as ${userRes.rows[0].email}.`, 403);
         }
 
         await client.query(
@@ -650,8 +649,7 @@ exports.declineTeamsInvite = async (req, res) => {
         res.json({ message: "Invitation declined successfully" });
     } catch (err) {
         await client.query("ROLLBACK");
-        console.error("Decline invite error:", err);
-        res.status(500).json({ message: "Internal server error" });
+        next(err);
     } finally {
         client.release();
     }
