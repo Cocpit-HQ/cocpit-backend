@@ -20,7 +20,7 @@ exports.getRoles = async (req, res, next) => {
     const orgId = req.params.orgId;
     try {
         const result = await pool.query(
-            `SELECT r.*, COUNT(DISTINCT m.user_id)::int AS member_count,
+            `SELECT r.*, r.is_active AS "isActive", COUNT(DISTINCT m.user_id)::int AS member_count,
                     COALESCE(
                         json_agg(
                             json_build_object(
@@ -45,7 +45,7 @@ exports.getRoles = async (req, res, next) => {
                  )
              )
              LEFT JOIN active_users u ON m.user_id = u.user_id
-             WHERE r.org_id = $1 AND LOWER(r.name) != 'owner'
+             WHERE r.org_id = $1 AND LOWER(r.name) != 'owner' AND r.is_active = TRUE
              GROUP BY r.role_id
              ORDER BY r.priority DESC, r.created_at ASC`,
             [orgId]
@@ -61,7 +61,7 @@ exports.getRoleById = async (req, res, next) => {
     const { orgId, roleId } = req.params;
     try {
         const result = await pool.query(
-            `SELECT r.*, COUNT(DISTINCT m.user_id)::int AS member_count,
+            `SELECT r.*, r.is_active AS "isActive", COUNT(DISTINCT m.user_id)::int AS member_count,
                     COALESCE(
                         json_agg(
                             json_build_object(
@@ -86,7 +86,7 @@ exports.getRoleById = async (req, res, next) => {
                  )
              )
              LEFT JOIN active_users u ON m.user_id = u.user_id
-             WHERE r.org_id = $1 AND r.role_id = $2 AND LOWER(r.name) != 'owner'
+             WHERE r.org_id = $1 AND r.role_id = $2 AND LOWER(r.name) != 'owner' AND r.is_active = TRUE
              GROUP BY r.role_id`,
             [orgId, roleId]
         );
@@ -126,7 +126,7 @@ exports.createRole = async (req, res, next) => {
 
         // Check uniqueness within organization
         const dupCheck = await client.query(
-            `SELECT 1 FROM organization_roles WHERE org_id = $1 AND LOWER(name) = LOWER($2)`,
+            `SELECT 1 FROM organization_roles WHERE org_id = $1 AND LOWER(name) = LOWER($2) AND is_active = TRUE`,
             [orgId, name]
         );
         if (dupCheck.rowCount > 0) {
@@ -192,7 +192,7 @@ exports.updateRole = async (req, res, next) => {
         await client.query("BEGIN");
 
         const roleRes = await client.query(
-            `SELECT * FROM organization_roles WHERE org_id = $1 AND role_id = $2`,
+            `SELECT * FROM organization_roles WHERE org_id = $1 AND role_id = $2 AND is_active = TRUE`,
             [orgId, roleId]
         );
         if (roleRes.rowCount === 0) {
@@ -200,17 +200,18 @@ exports.updateRole = async (req, res, next) => {
         }
         const role = roleRes.rows[0];
 
-        if (role.is_system_role && name && name !== role.name) {
-            throw new AppError("Cannot change the name of a system role", 400);
+        const currentNameLower = role.name.toLowerCase();
+        if ((currentNameLower === 'owner' || currentNameLower === 'admin') && name && name.toLowerCase() !== currentNameLower) {
+            throw new AppError("Cannot rename the Owner or Admin role", 400);
         }
 
-        if (name && (name.toLowerCase() === 'owner' || name.toLowerCase() === 'admin') && role.name.toLowerCase() !== name.toLowerCase()) {
+        if (name && (name.toLowerCase() === 'owner' || name.toLowerCase() === 'admin') && currentNameLower !== name.toLowerCase()) {
             throw new AppError("Cannot rename a role to Owner or Admin", 400);
         }
 
         if (name && name !== role.name) {
             const dupCheck = await client.query(
-                `SELECT 1 FROM organization_roles WHERE org_id = $1 AND LOWER(name) = LOWER($2) AND role_id != $3`,
+                `SELECT 1 FROM organization_roles WHERE org_id = $1 AND LOWER(name) = LOWER($2) AND role_id != $3 AND is_active = TRUE`,
                 [orgId, name, roleId]
             );
             if (dupCheck.rowCount > 0) {
@@ -278,7 +279,7 @@ exports.deleteRole = async (req, res, next) => {
         await client.query("BEGIN");
 
         const roleRes = await client.query(
-            `SELECT * FROM organization_roles WHERE org_id = $1 AND role_id = $2`,
+            `SELECT * FROM organization_roles WHERE org_id = $1 AND role_id = $2 AND is_active = TRUE`,
             [orgId, roleId]
         );
         if (roleRes.rowCount === 0) {
@@ -286,25 +287,28 @@ exports.deleteRole = async (req, res, next) => {
         }
         const role = roleRes.rows[0];
 
-        if (role.is_system_role) {
-            throw new AppError("Cannot delete system roles", 400);
+        const roleNameLower = role.name.toLowerCase();
+        if (roleNameLower === 'owner' || roleNameLower === 'admin') {
+            throw new AppError("Cannot delete Owner or Admin roles", 400);
         }
 
         if (role.priority >= actorPriority && actorRole !== 'Owner') {
             throw new AppError("Cannot delete a role with equal or higher priority than your own", 403);
         }
 
-        // Check if members are assigned to this role
-        const memberCheck = await client.query(
-            `SELECT COUNT(*)::int FROM organization_members WHERE org_id = $1 AND role_id = $2`,
+        // Break relation of members from this role (set role_id to NULL)
+        await client.query(
+            `UPDATE organization_members SET role_id = NULL WHERE org_id = $1 AND role_id = $2`,
             [orgId, roleId]
         );
-        if (memberCheck.rows[0].count > 0) {
-            throw new AppError("Cannot delete this role. Members are currently assigned to it. Reassign them first.", 400);
-        }
 
+        // Soft delete the role (and append a unique suffix to its name to free up the UNIQUE constraint for name reuse)
         await client.query(
-            `DELETE FROM organization_roles WHERE org_id = $1 AND role_id = $2`,
+            `UPDATE organization_roles 
+             SET is_active = FALSE, 
+                 name = name || '_deleted_' || EXTRACT(EPOCH FROM NOW())::text,
+                 updated_at = NOW() 
+             WHERE org_id = $1 AND role_id = $2`,
             [orgId, roleId]
         );
 
