@@ -161,7 +161,7 @@ exports.inviteMember = async (req, res) => {
     }
 };
 
-exports.acceptInvite = async (req, res) => {
+exports.acceptTeamsInvite = async (req, res) => {
     const { token } = req.body;
     const userId = req.user.sub; // User accepting the invite
 
@@ -216,8 +216,8 @@ exports.acceptInvite = async (req, res) => {
 
         if (roleId) {
             await client.query(
-                `INSERT INTO organization_members (org_id, user_id, role_id) VALUES ($1, $2, $3)
-                 ON CONFLICT (org_id, user_id) DO UPDATE SET role_id = EXCLUDED.role_id`,
+                `INSERT INTO organization_members (org_id, user_id, role_id, status) VALUES ($1, $2, $3, 'ACTIVE')
+                 ON CONFLICT (org_id, user_id) DO UPDATE SET role_id = EXCLUDED.role_id, status = 'ACTIVE', updated_at = NOW()`,
                 [invite.org_id, userId, roleId]
             );
         } else {
@@ -293,8 +293,13 @@ exports.getMembers = async (req, res) => {
             params
         );
 
+        const formattedRows = result.rows.map(r => ({
+            ...r,
+            role_color: (r.role && r.role.toLowerCase() === 'admin') ? '#06B6D4' : r.role_color
+        }));
+
         res.json({
-            data: result.rows,
+            data: formattedRows,
             meta: {
                 total,
                 page: parseInt(page),
@@ -566,6 +571,87 @@ exports.updateMemberRoleSettings = async (req, res, next) => {
     } catch (err) {
         await client.query('ROLLBACK');
         next(err);
+    } finally {
+        client.release();
+    }
+};
+
+exports.getUserPendingTeamsInvites = async (req, res) => {
+    const userId = req.user.sub;
+    try {
+        const userRes = await pool.query("SELECT email FROM users WHERE user_id = $1", [userId]);
+        const email = userRes.rows[0]?.email;
+
+        const result = await pool.query(
+            `SELECT oi.invite_id, oi.org_id, o.name AS org_name, o.logo_url AS org_logo,
+                    oi.role, oi.role_id, oi.token, oi.expires_at, oi.created_at AS invited_at,
+                    u.full_name AS inviter_name, u.avatar_url AS inviter_avatar
+             FROM organization_invites oi
+             JOIN organizations o ON oi.org_id = o.org_id
+             LEFT JOIN users u ON oi.inviter_id = u.user_id
+             WHERE (oi.invited_user_id = $1 OR LOWER(oi.email) = LOWER($2)) 
+               AND oi.status = 'PENDING' 
+               AND oi.expires_at > NOW()
+             ORDER BY oi.created_at DESC`,
+            [userId, email]
+        );
+        res.json(result.rows);
+    } catch (err) {
+        console.error("Get user pending invites error:", err);
+        res.status(500).json({ message: "Internal server error" });
+    }
+};
+
+exports.declineTeamsInvite = async (req, res) => {
+    const { token } = req.body;
+    const userId = req.user.sub;
+
+    if (!token) return res.status(400).json({ message: "Token is required" });
+
+    const client = await pool.connect();
+    try {
+        await client.query("BEGIN");
+
+        const inviteRes = await client.query(
+            `SELECT * FROM organization_invites WHERE token = $1 AND status = 'PENDING' AND expires_at > NOW()`,
+            [token]
+        );
+
+        if (inviteRes.rowCount === 0) {
+            throw new Error("Invalid or expired invitation");
+        }
+        const invite = inviteRes.rows[0];
+
+        const userRes = await client.query(`SELECT email FROM users WHERE user_id = $1`, [userId]);
+        if (userRes.rows[0].email !== invite.email) {
+            return res.status(403).json({ message: `This invitation was sent to ${invite.email}. You are logged in as ${userRes.rows[0].email}.` });
+        }
+
+        await client.query(
+            `UPDATE organization_invites SET status = 'DECLINED', updated_at = NOW() WHERE invite_id = $1`,
+            [invite.invite_id]
+        );
+
+        if (invite.invited_user_id) {
+            await client.query(
+                `DELETE FROM organization_members WHERE org_id = $1 AND user_id = $2 AND status = 'PENDING_INVITE'`,
+                [invite.org_id, invite.invited_user_id]
+            );
+        }
+
+        await logAudit(client, {
+            entityId: invite.org_id,
+            actorId: userId,
+            action: 'DECLINE_INVITATION',
+            metadata: { inviteId: invite.invite_id, role: invite.role }
+        });
+
+        await client.query("COMMIT");
+        res.json({ message: "Invitation declined successfully" });
+    } catch (err) {
+        await client.query("ROLLBACK");
+        console.error("Decline invite error:", err);
+        res.status(500).json({ message: "Internal server error" });
     } finally {
         client.release();
     }

@@ -65,8 +65,9 @@ router.get("/companies/:slug", optionalAuth, organizationController.getOrganizat
 router.post("/organizations", requireAuth, organizationActionLimiter, organizationController.createOrganization);
 router.post("/companies", requireAuth, organizationActionLimiter, organizationController.createOrganization);
 
-router.post("/organizations/invites/accept", requireAuth, membersController.acceptInvite);
-router.post("/companies/invites/accept", requireAuth, membersController.acceptInvite);
+router.post("/organizations/teams/invites/accept", requireAuth, membersController.acceptTeamsInvite);
+router.get("/organizations/teams/invites/pending", requireAuth, membersController.getUserPendingTeamsInvites);
+router.post("/organizations/teams/invites/decline", requireAuth, membersController.declineTeamsInvite);
 
 // --- MEMBERSHIP ---
 router.post("/organizations/:orgId/leave", requireAuth, membersController.leaveOrganization);

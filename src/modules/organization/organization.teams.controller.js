@@ -50,7 +50,11 @@ exports.getRoles = async (req, res, next) => {
              ORDER BY r.priority DESC, r.created_at ASC`,
             [orgId]
         );
-        res.json(result.rows);
+        const roles = result.rows.map(r => ({
+            ...r,
+            color: r.name.toLowerCase() === 'admin' ? '#06B6D4' : r.color
+        }));
+        res.json(roles);
     } catch (err) {
         next(err);
     }
@@ -93,7 +97,9 @@ exports.getRoleById = async (req, res, next) => {
         if (result.rowCount === 0) {
             return next(new AppError("Role not found", 404));
         }
-        res.json(result.rows[0]);
+        const role = result.rows[0];
+        role.color = role.name.toLowerCase() === 'admin' ? '#06B6D4' : role.color;
+        res.json(role);
     } catch (err) {
         next(err);
     }
@@ -445,8 +451,12 @@ exports.getMembers = async (req, res, next) => {
         const countRes = await pool.query(countQuery, countParams);
         const total = countRes.rows[0].count;
 
+        const formattedRows = result.rows.map(r => ({
+            ...r,
+            role_color: (r.role_name && r.role_name.toLowerCase() === 'admin') ? '#06B6D4' : r.role_color
+        }));
         res.json({
-            data: result.rows,
+            data: formattedRows,
             meta: {
                 total,
                 page: parseInt(page),
@@ -476,7 +486,11 @@ exports.getMemberDetail = async (req, res, next) => {
         if (result.rowCount === 0) {
             return next(new AppError("Member not found", 404));
         }
-        res.json(result.rows[0]);
+        const member = result.rows[0];
+        if (member.role_name && member.role_name.toLowerCase() === 'admin') {
+            member.role_color = '#06B6D4';
+        }
+        res.json(member);
     } catch (err) {
         next(err);
     }
@@ -960,8 +974,12 @@ exports.getPendingInvites = async (req, res, next) => {
              ORDER BY oi.created_at DESC`,
             [orgId]
         );
+        const formattedRows = result.rows.map(r => ({
+            ...r,
+            role_color: (r.role_name && r.role_name.toLowerCase() === 'admin') ? '#06B6D4' : r.role_color
+        }));
         res.json({
-            data: result.rows,
+            data: formattedRows,
             meta: { total: result.rowCount }
         });
     } catch (err) {
