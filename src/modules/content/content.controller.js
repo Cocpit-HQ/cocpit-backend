@@ -1715,7 +1715,7 @@ exports.updatePostById = async (req, res) => {
             return res.status(404).json({ message: "Post not found" });
         }
         const { author_id, author_org_id, post_type: currentPostType, shared_post_id, shared_job_id, is_removed, is_deleted, is_unlisted } = postCheck.rows[0];
-        
+
         if (is_removed || is_deleted || is_unlisted) {
             await client.query("ROLLBACK");
             return res.status(403).json({ message: "Cannot edit a post that has been removed by moderation." });

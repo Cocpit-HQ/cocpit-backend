@@ -1986,6 +1986,7 @@ CREATE TABLE IF NOT EXISTS organization_key_offerings (
 CREATE INDEX IF NOT EXISTS idx_org_key_offerings_org_id ON organization_key_offerings(org_id);
 CREATE INDEX IF NOT EXISTS idx_org_key_offerings_active ON organization_key_offerings(org_id) WHERE is_deleted = FALSE;
 
--- 07/16/2026 Migration: Community Article Indicator
+-- 07/16/2026 Migration: Community Article Indicator and Post Status
 ALTER TABLE posts ADD COLUMN IF NOT EXISTS is_community_article BOOLEAN DEFAULT FALSE;
+ALTER TABLE posts ADD COLUMN IF NOT EXISTS status VARCHAR(50) DEFAULT 'published';
 
