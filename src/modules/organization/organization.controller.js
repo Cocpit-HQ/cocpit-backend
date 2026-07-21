@@ -130,8 +130,9 @@ exports.createOrganization = async (req, res) => {
         await logAudit(client, {
             entityId: company.org_id,
             actorId: userId,
-            action: 'CREATE',
-            metadata: { name, slug }
+            actorRole: ownerRoleName,
+            action: 'CREATE_PAGE',
+            metadata: { name, slug, targetType: 'organization', targetId: company.org_id, targetName: name }
         });
 
         await client.query("COMMIT");
@@ -233,12 +234,21 @@ exports.getOrganization = async (req, res) => {
                 .catch(err => console.error("Error recording organization profile view:", err));
         }
 
-        // Audit Log for Analytics (Legacy / Additional logging)
+        // Audit Log for Analytics (Log only external non-member views)
         if (userId && company.org_id) {
             (async () => {
                 const auditClient = await pool.connect();
                 try {
-                    // Refinement: Debounce VIEW logs (1 hour cooldown)
+                    // Check if viewer is an active team member of this org
+                    const memberCheck = await auditClient.query(
+                        `SELECT 1 FROM organization_members WHERE org_id = $1 AND user_id = $2 AND status = 'ACTIVE'`,
+                        [company.org_id, userId]
+                    );
+
+                    // Skip logging if user is an active team member of their own org
+                    if (memberCheck.rowCount > 0) return;
+
+                    // Refinement: Debounce VIEW logs (5 seconds cooldown)
                     const lastViewRes = await auditClient.query(
                         `SELECT created_at FROM audit_logs 
                          WHERE entity_id = $1 AND entity_type = 'ORGANIZATION' AND actor_id = $2 AND action = 'VIEW' 
@@ -250,7 +260,7 @@ exports.getOrganization = async (req, res) => {
                     if (lastViewRes.rowCount > 0) {
                         const lastViewTime = new Date(lastViewRes.rows[0].created_at).getTime();
                         const timeDiff = Date.now() - lastViewTime;
-                        if (timeDiff < 60 * 60 * 1000) { // 1 hour
+                        if (timeDiff < 5 * 1000) { // 5 seconds debounce
                             shouldLog = false;
                         }
                     }

@@ -85,7 +85,8 @@ const requireOrgAccess = (featureKey, isPublicRoute = false) => async (req, res,
             return next(new AppError("You are not a member of this organization", 403));
         }
 
-        // 6. Log organization activity (since actor is ORGANIZATION type)
+        // 6. Log organization activity (COMMENTED OUT: Internal page view logging disabled; only public profile views and explicit actions are logged)
+        /*
         const { logAudit } = require("../infrastructure/audit.service");
         logAudit(pool, {
             entityId: req.actor.orgId,
@@ -99,6 +100,7 @@ const requireOrgAccess = (featureKey, isPublicRoute = false) => async (req, res,
                 userAgent: req.headers['user-agent']
             }
         }).catch(err => console.error("Failed to log organization activity:", err));
+        */
 
         // 7. If this is a public GET / open route, skip permission enforcement
         if (isPublicRoute) {

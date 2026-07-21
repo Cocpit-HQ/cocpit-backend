@@ -127,6 +127,8 @@ exports.createRole = async (req, res, next) => {
     const actorRole = req.actor.roleName;
     const actorPriority = req.actor.rolePriority || 0;
     const { name, color, description, permissions = [] } = req.body;
+    const upperPermissions = (Array.isArray(permissions) ? permissions : [])
+        .map(p => typeof p === 'string' ? p.toUpperCase().trim() : p);
 
     if (!name) {
         return next(new AppError("Role name is required", 400));
@@ -137,7 +139,7 @@ exports.createRole = async (req, res, next) => {
     }
 
     // Validation: ACTIVITY_LOGS requires TEAMS
-    if (permissions.includes('ACTIVITY_LOGS') && !permissions.includes('TEAMS')) {
+    if (upperPermissions.includes('ACTIVITY_LOGS') && !upperPermissions.includes('TEAMS')) {
         return next(new AppError("Activity logs requires Teams to be enabled for this role", 400));
     }
 
@@ -158,7 +160,7 @@ exports.createRole = async (req, res, next) => {
         const invalidKeyCheck = await client.query(
             `SELECT permission_key FROM organization_permission_keys 
              WHERE permission_key = ANY($1) AND sort_order = 0`,
-            [permissions]
+            [upperPermissions]
         );
         if (invalidKeyCheck.rowCount > 0) {
             throw new AppError("System permission keys are not allowed for dynamic roles", 400);
@@ -171,7 +173,7 @@ exports.createRole = async (req, res, next) => {
             `INSERT INTO organization_roles (org_id, name, color, description, permissions, priority, is_system_role)
              VALUES ($1, $2, $3, $4, $5, $6, FALSE)
              RETURNING *`,
-            [orgId, name, color || '#808080', description || null, JSON.stringify(permissions), rolePriority]
+            [orgId, name, color || '#808080', description || null, JSON.stringify(upperPermissions), rolePriority]
         );
 
         const newRole = insertRes.rows[0];
@@ -182,7 +184,7 @@ exports.createRole = async (req, res, next) => {
             actorId,
             actorRole,
             action: 'CREATE_ROLE',
-            metadata: { roleName: name, permissions }
+            metadata: { roleName: name, permissions: upperPermissions }
         });
 
         await client.query("COMMIT");
@@ -202,9 +204,11 @@ exports.updateRole = async (req, res, next) => {
     const actorRole = req.actor.roleName;
     const actorPriority = req.actor.rolePriority || 0;
     const { name, color, description, permissions = [] } = req.body;
+    const upperPermissions = (Array.isArray(permissions) ? permissions : [])
+        .map(p => typeof p === 'string' ? p.toUpperCase().trim() : p);
 
     // Validation: ACTIVITY_LOGS requires TEAMS
-    if (permissions.includes('ACTIVITY_LOGS') && !permissions.includes('TEAMS')) {
+    if (upperPermissions.includes('ACTIVITY_LOGS') && !upperPermissions.includes('TEAMS')) {
         return next(new AppError("Activity logs requires Teams to be enabled for this role", 400));
     }
 
@@ -244,7 +248,7 @@ exports.updateRole = async (req, res, next) => {
         const invalidKeyCheck = await client.query(
             `SELECT permission_key FROM organization_permission_keys 
              WHERE permission_key = ANY($1) AND sort_order = 0`,
-            [permissions]
+            [upperPermissions]
         );
         if (invalidKeyCheck.rowCount > 0) {
             throw new AppError("System permission keys are not allowed for dynamic roles", 400);
@@ -264,7 +268,7 @@ exports.updateRole = async (req, res, next) => {
                  updated_at = NOW()
              WHERE org_id = $1 AND role_id = $2
              RETURNING *`,
-            [orgId, roleId, name, color, description, JSON.stringify(permissions)]
+            [orgId, roleId, name, color, description, JSON.stringify(upperPermissions)]
         );
 
         const updatedRole = updateRes.rows[0];
@@ -1035,8 +1039,9 @@ exports.getPendingInvites = async (req, res, next) => {
 // 17. Get Activity / Audit Logs
 exports.getActivityLogs = async (req, res, next) => {
     const orgId = req.params.orgId;
-    const { page = 1, limit = 20, action, memberId, roleId, dateFrom, dateTo, search } = req.query;
-    const offset = (page - 1) * limit;
+    const { page = 1, limit = 20, action, memberId, roleId, dateFrom, dateTo, search, cursorCreatedAt, cursorLogId } = req.query;
+    const limitNum = parseInt(limit, 10) || 20;
+    const offset = (parseInt(page, 10) - 1) * limitNum;
 
     try {
         let query = `
@@ -1046,9 +1051,16 @@ exports.getActivityLogs = async (req, res, next) => {
             JOIN active_users u ON al.actor_id = u.user_id
             JOIN organization_members om ON om.user_id = al.actor_id AND om.org_id = al.entity_id AND om.status = 'ACTIVE'
             WHERE al.entity_id = $1 AND al.entity_type = 'ORGANIZATION'
+              AND al.action NOT IN ('TEAMS', 'ACTIVITY_LOGS', 'ROLES', 'VIEW_TEAMS', 'VIEW_ACTIVITY_LOGS', 'VIEW_ROLES', 'VIEW_MEMBERS', 'MEMBERS')
         `;
         const params = [orgId];
         let paramIdx = 2;
+
+        if (cursorCreatedAt && cursorLogId) {
+            query += ` AND (al.created_at, al.log_id) < ($${paramIdx}, $${paramIdx + 1})`;
+            params.push(cursorCreatedAt, cursorLogId);
+            paramIdx += 2;
+        }
 
         if (action) {
             query += ` AND al.action = $${paramIdx}`;
@@ -1083,19 +1095,26 @@ exports.getActivityLogs = async (req, res, next) => {
             paramIdx++;
         }
 
-        if (search) {
+        if (search && search.trim().length >= 3) {
+            const term = search.trim();
             query += ` AND (
                 al.action ILIKE $${paramIdx} OR
                 u.full_name ILIKE $${paramIdx} OR
                 al.actor_role ILIKE $${paramIdx} OR
-                al.metadata::text ILIKE $${paramIdx}
+                al.metadata::text ILIKE $${paramIdx} OR
+                (LOWER($${paramIdx}) LIKE '%feed%' AND al.action IN ('CREATE_POST', 'EDIT_POST', 'LIKE', 'COMMENT', 'REPOST', 'SHARE_POST', 'SAVE_POST'))
             )`;
-            params.push(`%${search}%`);
+            params.push(`%${term}%`);
             paramIdx++;
         }
 
-        query += ` ORDER BY al.created_at DESC LIMIT $${paramIdx} OFFSET $${paramIdx + 1}`;
-        params.push(limit, offset);
+        if (cursorCreatedAt && cursorLogId) {
+            query += ` ORDER BY al.created_at DESC, al.log_id DESC LIMIT $${paramIdx}`;
+            params.push(limitNum);
+        } else {
+            query += ` ORDER BY al.created_at DESC, al.log_id DESC LIMIT $${paramIdx} OFFSET $${paramIdx + 1}`;
+            params.push(limitNum, offset);
+        }
 
         const result = await pool.query(query, params);
 
@@ -1105,6 +1124,7 @@ exports.getActivityLogs = async (req, res, next) => {
             JOIN active_users u ON al.actor_id = u.user_id
             JOIN organization_members om ON om.user_id = al.actor_id AND om.org_id = al.entity_id AND om.status = 'ACTIVE'
             WHERE al.entity_id = $1 AND al.entity_type = 'ORGANIZATION'
+              AND al.action NOT IN ('TEAMS', 'ACTIVITY_LOGS', 'ROLES', 'VIEW_TEAMS', 'VIEW_ACTIVITY_LOGS', 'VIEW_ROLES', 'VIEW_MEMBERS', 'MEMBERS')
         `;
         const countParams = [orgId];
         let countParamIdx = 2;
@@ -1142,27 +1162,31 @@ exports.getActivityLogs = async (req, res, next) => {
             countParamIdx++;
         }
 
-        if (search) {
+        if (search && search.trim().length >= 3) {
+            const term = search.trim();
             countQuery += ` AND (
                 al.action ILIKE $${countParamIdx} OR
                 u.full_name ILIKE $${countParamIdx} OR
                 al.actor_role ILIKE $${countParamIdx} OR
-                al.metadata::text ILIKE $${countParamIdx}
+                al.metadata::text ILIKE $${countParamIdx} OR
+                (LOWER($${countParamIdx}) LIKE '%feed%' AND al.action IN ('CREATE_POST', 'EDIT_POST', 'LIKE', 'COMMENT', 'REPOST', 'SHARE_POST', 'SAVE_POST'))
             )`;
-            countParams.push(`%${search}%`);
+            countParams.push(`%${term}%`);
             countParamIdx++;
         }
 
         const countRes = await pool.query(countQuery, countParams);
         const total = countRes.rows[0].count;
+        const lastRow = result.rows[result.rows.length - 1];
 
         res.json({
             data: result.rows,
+            nextCursor: lastRow ? { cursorCreatedAt: lastRow.created_at, cursorLogId: lastRow.log_id } : null,
             meta: {
                 total,
-                page: parseInt(page),
-                limit: parseInt(limit),
-                total_pages: Math.ceil(total / limit)
+                page: parseInt(page, 10),
+                limit: limitNum,
+                total_pages: Math.ceil(total / limitNum)
             }
         });
     } catch (err) {

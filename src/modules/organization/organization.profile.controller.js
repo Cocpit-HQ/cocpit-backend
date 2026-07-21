@@ -19,6 +19,7 @@
 
 const pool = require('../../core/db/pool');
 const { checkOrgPermission } = require('../../core/utils/rbac');
+const { logAudit } = require('../../core/infrastructure/audit.service');
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -383,6 +384,17 @@ exports.getOrgProfile = async (req, res) => {
             ...r,
             is_connection: !!(r.is_following && r.is_followed_by)
         }));
+
+        // Log public profile view only when an external user (non-member) views the org profile
+        if (viewerId && !isOwnProfile) {
+            logAudit(pool, {
+                entityId: org.org_id,
+                actorId: viewerId,
+                actorRole: membership?.role_name || null,
+                action: 'VIEW',
+                metadata: { source: 'public_profile', orgName: org.name }
+            }).catch(err => console.error("Profile view audit log error:", err));
+        }
 
         return res.json({
             org: {

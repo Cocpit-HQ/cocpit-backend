@@ -5,6 +5,8 @@
 const authService = require("./auth.service");
 const otpService = require("./otp.service");
 const actorContextService = require("./actorContext.service");
+const pool = require("../../core/db/pool");
+const { logAudit } = require("../../core/infrastructure/audit.service");
 
 // ─── Register ──────────────────────────────────────────────────────────────────
 // changed api as per new figma design
@@ -210,6 +212,21 @@ exports.setActorContext = async (req, res) => {
                 actorContextService.ACTOR_CONTEXT_COOKIE_NAME,
                 actorContextService.ACTOR_CONTEXT_COOKIE_OPTIONS
             );
+        }
+
+        if (result.actor && result.actor.type === "ORGANIZATION") {
+            await logAudit(pool, {
+                entityId: result.actor.id,
+                actorId: req.user.sub,
+                actorRole: result.actor.viewer_role_data?.name || null,
+                action: 'ACTOR_SWITCH',
+                metadata: {
+                    actorType: 'ORGANIZATION',
+                    orgId: result.actor.id,
+                    orgName: result.actor.name,
+                    timestamp: new Date().toISOString()
+                }
+            });
         }
 
         return res.json({
