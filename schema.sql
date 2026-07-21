@@ -36,6 +36,7 @@ CREATE TABLE users (
     about_text TEXT,
   created_at TIMESTAMPTZ DEFAULT now(),
   updated_at TIMESTAMPTZ DEFAULT now(),
+  last_login_at TIMESTAMPTZ,
   deletion_scheduled_at TIMESTAMPTZ,
   deletion_execute_at TIMESTAMPTZ,
   CONSTRAINT mobile_format CHECK (mobile_number ~ '^[0-9]{10}$')
