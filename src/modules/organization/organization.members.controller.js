@@ -4,14 +4,7 @@ const chatSessionCtrl = require("../messaging/chatSession.controller");
 const { checkOrgPermission } = require("../../core/utils/rbac");
 const socketService = require("../../core/infrastructure/socket.service");
 
-// Helper for Audit Logging
-const logAudit = async (client, { entityId, actorId, action, metadata = {} }) => {
-    const query = `
-    INSERT INTO audit_logs (entity_type, entity_id, actor_id, action, metadata)
-    VALUES ($1, $2, $3, $4, $5)
-  `;
-    await client.query(query, ['ORGANIZATION', entityId, actorId, action, metadata]);
-};
+const { logAudit } = require("../../core/infrastructure/audit.service");
 
 exports.inviteMember = async (req, res) => {
     const { orgId: companyId } = req.params;
@@ -25,10 +18,6 @@ exports.inviteMember = async (req, res) => {
     const client = await pool.connect();
     try {
         await client.query("BEGIN");
-
-        // 1. Permission Check
-        const canInvite = await checkOrgPermission(client, companyId, userId, 'INVITE_MEMBERS');
-        if (!canInvite) throw new Error("Forbidden: You do not have permission to invite members");
 
         // 2. Role Escalation Check
         // Get inviter's priority
@@ -172,7 +161,7 @@ exports.inviteMember = async (req, res) => {
     }
 };
 
-exports.acceptInvite = async (req, res) => {
+exports.acceptTeamsInvite = async (req, res) => {
     const { token } = req.body;
     const userId = req.user.sub; // User accepting the invite
 
@@ -204,7 +193,7 @@ exports.acceptInvite = async (req, res) => {
 
         // 2b. Check if User is ALREADY a member
         const memberCheck = await client.query(
-            `SELECT cr.name as role FROM organization_members cm JOIN organization_roles cr ON cm.role_id = cr.role_id WHERE cm.org_id = $1 AND cm.user_id = $2`,
+            `SELECT cr.name as role FROM organization_members cm JOIN organization_roles cr ON cm.role_id = cr.role_id WHERE cm.org_id = $1 AND cm.user_id = $2 AND cm.status IN ('ACTIVE', 'SUSPENDED')`,
             [invite.org_id, userId]
         );
 
@@ -227,8 +216,8 @@ exports.acceptInvite = async (req, res) => {
 
         if (roleId) {
             await client.query(
-                `INSERT INTO organization_members (org_id, user_id, role_id) VALUES ($1, $2, $3)
-                 ON CONFLICT (org_id, user_id) DO UPDATE SET role_id = EXCLUDED.role_id`,
+                `INSERT INTO organization_members (org_id, user_id, role_id, status) VALUES ($1, $2, $3, 'ACTIVE')
+                 ON CONFLICT (org_id, user_id) DO UPDATE SET role_id = EXCLUDED.role_id, status = 'ACTIVE', updated_at = NOW()`,
                 [invite.org_id, userId, roleId]
             );
         } else {
@@ -275,10 +264,6 @@ exports.getMembers = async (req, res) => {
 
     const client = await pool.connect();
     try {
-        // Permission Check
-        const canView = await checkOrgPermission(client, companyId, userId, 'VIEW_MEMBERS');
-        if (!canView) return res.status(403).json({ message: "Forbidden" });
-
         // Build Query
         let whereClause = `WHERE cm.org_id = $1`;
         const params = [companyId, limit, offset];
@@ -308,8 +293,13 @@ exports.getMembers = async (req, res) => {
             params
         );
 
+        const formattedRows = result.rows.map(r => ({
+            ...r,
+            role_color: (r.role && r.role.toLowerCase() === 'admin') ? '#06B6D4' : r.role_color
+        }));
+
         res.json({
-            data: result.rows,
+            data: formattedRows,
             meta: {
                 total,
                 page: parseInt(page),
@@ -333,10 +323,6 @@ exports.removeMember = async (req, res) => {
     const client = await pool.connect();
     try {
         await client.query("BEGIN");
-
-        // 1. Check requester role (REMOVE_MEMBERS)
-        const canRemove = await checkOrgPermission(client, companyId, userId, 'REMOVE_MEMBERS');
-        if (!canRemove) throw new Error("Forbidden: You cannot remove members");
 
         // 2. Check target member role
         const targetRes = await client.query(
@@ -407,14 +393,16 @@ exports.leaveOrganization = async (req, res) => {
 
         // 1. Check existence and role
         const resRole = await client.query(
-            `SELECT role FROM organization_members WHERE org_id = $1 AND user_id = $2`,
+            `SELECT oroles.name AS role_name FROM organization_members om
+             JOIN organization_roles oroles ON om.role_id = oroles.role_id
+             WHERE om.org_id = $1 AND om.user_id = $2`,
             [companyId, userId]
         );
         if (resRole.rowCount === 0) throw new Error("You are not a member of this organization");
-        const role = resRole.rows[0].role;
+        const roleName = resRole.rows[0].role_name;
 
         // 2. OWNER cannot leave
-        if (role === 'OWNER') throw new Error("OWNER cannot leave. Transfer ownership first.");
+        if (roleName === 'Owner') throw new Error("OWNER cannot leave. Transfer ownership first.");
 
         // 3. Leave
         await client.query(
@@ -426,7 +414,7 @@ exports.leaveOrganization = async (req, res) => {
             entityId: companyId,
             actorId: userId, // Self-action
             action: 'LEAVE_ORGANIZATION',
-            metadata: { role }
+            metadata: { role: roleName }
         });
 
         await client.query("COMMIT");
@@ -531,6 +519,137 @@ exports.transferOwnership = async (req, res) => {
             return res.status(403).json({ message: err.message });
         }
         res.status(500).json({ message: "Internal server error" });
+    } finally {
+        client.release();
+    }
+};
+
+// Update member role settings (Self-service: set primary, toggle visibility)
+exports.updateMemberRoleSettings = async (req, res, next) => {
+    const { orgId: companyId } = req.params;
+    const userId = req.user.sub;
+    const { is_primary_display, is_role_visible } = req.body;
+
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+
+        // Check verification (ensure user is actually a member)
+        const memberCheck = await client.query(
+            `SELECT 1 FROM organization_members WHERE org_id = $1 AND user_id = $2`,
+            [companyId, userId]
+        );
+
+        if (memberCheck.rowCount === 0) {
+            throw new AppError("You are not a member of this organization", 403);
+        }
+
+        // Handle Primary Display Logic
+        if (is_primary_display === true) {
+            // Unset primary for all other roles of this user
+            await client.query(
+                `UPDATE organization_members SET is_primary_display = FALSE WHERE user_id = $1`,
+                [userId]
+            );
+        }
+
+        // Update the specific record
+        const query = `
+            UPDATE organization_members 
+            SET 
+                is_primary_display = COALESCE($1, is_primary_display),
+                is_role_visible = COALESCE($2, is_role_visible)
+            WHERE org_id = $3 AND user_id = $4
+            RETURNING *
+        `;
+
+        const result = await client.query(query, [is_primary_display, is_role_visible, companyId, userId]);
+
+        await client.query('COMMIT');
+        res.json(result.rows[0]);
+
+    } catch (err) {
+        await client.query('ROLLBACK');
+        next(err);
+    } finally {
+        client.release();
+    }
+};
+
+exports.getUserPendingTeamsInvites = async (req, res, next) => {
+    const userId = req.user.sub;
+    try {
+        const userRes = await pool.query("SELECT email FROM users WHERE user_id = $1", [userId]);
+        const email = userRes.rows[0]?.email;
+
+        const result = await pool.query(
+            `SELECT oi.invite_id, oi.org_id, o.name AS org_name, o.logo_url AS org_logo,
+                    oi.role, oi.role_id, oi.token, oi.expires_at, oi.created_at AS invited_at,
+                    u.full_name AS inviter_name, u.avatar_url AS inviter_avatar
+             FROM organization_invites oi
+             JOIN organizations o ON oi.org_id = o.org_id
+             LEFT JOIN users u ON oi.inviter_id = u.user_id
+             WHERE (oi.invited_user_id = $1 OR LOWER(oi.email) = LOWER($2)) 
+               AND oi.status = 'PENDING' 
+               AND oi.expires_at > NOW()
+             ORDER BY oi.created_at DESC`,
+            [userId, email]
+        );
+        res.json(result.rows);
+    } catch (err) {
+        next(err);
+    }
+};
+
+exports.declineTeamsInvite = async (req, res, next) => {
+    const { token } = req.body;
+    const userId = req.user.sub;
+
+    if (!token) return next(new AppError("Token is required", 400));
+
+    const client = await pool.connect();
+    try {
+        await client.query("BEGIN");
+
+        const inviteRes = await client.query(
+            `SELECT * FROM organization_invites WHERE token = $1 AND status = 'PENDING' AND expires_at > NOW()`,
+            [token]
+        );
+
+        if (inviteRes.rowCount === 0) {
+            throw new AppError("Invalid or expired invitation", 404);
+        }
+        const invite = inviteRes.rows[0];
+
+        const userRes = await client.query(`SELECT email FROM users WHERE user_id = $1`, [userId]);
+        if (userRes.rows[0].email !== invite.email) {
+            throw new AppError(`This invitation was sent to ${invite.email}. You are logged in as ${userRes.rows[0].email}.`, 403);
+        }
+
+        await client.query(
+            `UPDATE organization_invites SET status = 'DECLINED', updated_at = NOW() WHERE invite_id = $1`,
+            [invite.invite_id]
+        );
+
+        if (invite.invited_user_id) {
+            await client.query(
+                `DELETE FROM organization_members WHERE org_id = $1 AND user_id = $2 AND status = 'PENDING_INVITE'`,
+                [invite.org_id, invite.invited_user_id]
+            );
+        }
+
+        await logAudit(client, {
+            entityId: invite.org_id,
+            actorId: userId,
+            action: 'DECLINE_INVITATION',
+            metadata: { inviteId: invite.invite_id, role: invite.role }
+        });
+
+        await client.query("COMMIT");
+        res.json({ message: "Invitation declined successfully" });
+    } catch (err) {
+        await client.query("ROLLBACK");
+        next(err);
     } finally {
         client.release();
     }

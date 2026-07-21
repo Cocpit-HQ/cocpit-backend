@@ -140,9 +140,6 @@ async function resolveActorContextForRequest(req) {
         assertActiveMembership(member);
 
         const permissions = member.permissions || [];
-        if (!permissions.includes("*") && !permissions.includes("SWITCH_TO_COMPANY")) {
-            throw new AppError("You do not have permission to act as this organization", 403);
-        }
 
         req.member = {
             role: member.role_name,

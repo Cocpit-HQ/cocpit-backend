@@ -3,14 +3,7 @@ const AppError = require("../../core/errors/AppError");
 const { checkOrgPermission } = require("../../core/utils/rbac");
 const { wouldCreateCycle } = require("./organization.hierarchy.controller");
 
-// Helper for Audit Logging
-const logAudit = async (client, { entityId, actorId, action, metadata = {} }) => {
-    const query = `
-    INSERT INTO audit_logs (entity_type, entity_id, actor_id, action, metadata)
-    VALUES ($1, $2, $3, $4, $5)
-  `;
-    await client.query(query, ['ORGANIZATION', entityId, actorId, action, metadata]);
-};
+const { logAudit } = require("../../core/infrastructure/audit.service");
 
 // Helper: checkRole was removed in favor of checkCompanyPermission
 
@@ -52,7 +45,9 @@ exports.createOrganization = async (req, res) => {
 
         // 2b. Max Active Companies Limit (5)
         const activeRes = await client.query(
-            `SELECT COUNT(*) FROM organization_members WHERE user_id = $1 AND role = 'OWNER'`,
+            `SELECT COUNT(*) FROM organization_members om
+             JOIN organization_roles oroles ON om.role_id = oroles.role_id
+             WHERE om.user_id = $1 AND oroles.name = 'Owner'`,
             [userId]
         );
         if (parseInt(activeRes.rows[0].count) >= 5) {
@@ -99,26 +94,19 @@ exports.createOrganization = async (req, res) => {
         ]);
         const company = companyRes.rows[0];
 
-        // 5. Add Creator as Primary Admin/Owner role
+        // 5. Add Creator as Primary Admin/Owner role (only seed this single role)
         let roles;
         let ownerRoleName;
 
         if (entityType === 'INSTITUTION') {
             ownerRoleName = 'Admin';
             roles = [
-                { name: 'Admin', color: '#FFD700', permissions: ["*"], priority: 100, is_system: true },
-                { name: 'Faculty', color: '#FF0000', permissions: ["SWITCH_TO_COMPANY", "CREATE_ACADEMIC_CONTENT", "MODERATE_STUDENTS", "VIEW_MEMBERS"], priority: 80, is_system: true },
-                { name: 'Student Moderator', color: '#00FF00', permissions: ["SWITCH_TO_COMPANY", "CREATE_GENERAL_CONTENT", "MODERATE_GENERAL", "VIEW_MEMBERS"], priority: 60, is_system: true },
-                { name: 'Student', color: '#0000FF', permissions: ["SWITCH_TO_COMPANY", "CREATE_GENERAL_CONTENT", "VIEW_MEMBERS"], priority: 10, is_system: true }
+                { name: 'Admin', color: '#FFD700', permissions: ["*"], priority: 100, is_system: true }
             ];
         } else {
             ownerRoleName = 'Owner';
             roles = [
-                { name: 'Owner', color: '#FFD700', permissions: ["*"], priority: 100, is_system: true },
-                { name: 'Admin', color: '#FF0000', permissions: ["SWITCH_TO_COMPANY", "MANAGE_COMPANY", "MANAGE_COMPANY_DETAILS", "MANAGE_SETTINGS", "MANAGE_ROLES", "MANAGE_MEMBERS", "INVITE_MEMBERS", "REMOVE_MEMBERS", "VIEW_MEMBERS", "POST_JOBS", "VIEW_JOBS", "MANAGE_JOBS", "VIEW_APPLICANTS", "MANAGE_APPLICANTS", "CREATE_CONTENT", "MANAGE_COMMENTS", "VIEW_ANALYTICS"], priority: 90, is_system: true },
-                { name: 'Editor', color: '#00FF00', permissions: ["SWITCH_TO_COMPANY", "CREATE_CONTENT", "VIEW_ANALYTICS", "VIEW_MEMBERS", "MANAGE_COMPANY_DETAILS"], priority: 60, is_system: true },
-                { name: 'Recruiter', color: '#0000FF', permissions: ["SWITCH_TO_COMPANY", "POST_JOBS", "VIEW_JOBS", "VIEW_APPLICANTS", "MANAGE_APPLICANTS", "VIEW_MEMBERS"], priority: 50, is_system: true },
-                { name: 'Analyst', color: '#800080', permissions: ["SWITCH_TO_COMPANY", "VIEW_ANALYTICS", "VIEW_MEMBERS"], priority: 40, is_system: true }
+                { name: 'Owner', color: '#FFD700', permissions: ["*"], priority: 100, is_system: true }
             ];
         }
 
@@ -1331,11 +1319,8 @@ exports.publishNewOrganization = async (req, res) => {
         } else {
             ownerRoleName = 'Owner';
             roles = [
-                { name: 'Owner', color: '#FFD700', permissions: ['*'], priority: 100 },
-                { name: 'Admin', color: '#FF5733', permissions: ['MANAGE_COMPANY', 'MANAGE_SETTINGS', 'MANAGE_ROLES', 'MANAGE_MEMBERS', 'INVITE_MEMBERS', 'POST_JOBS', 'VIEW_JOBS', 'MANAGE_JOBS', 'VIEW_APPLICANTS', 'MANAGE_APPLICANTS', 'CREATE_CONTENT', 'VIEW_ANALYTICS'], priority: 90 },
-                { name: 'Editor', color: '#28B463', permissions: ['CREATE_CONTENT', 'VIEW_ANALYTICS', 'VIEW_MEMBERS', 'MANAGE_COMPANY_DETAILS'], priority: 60 },
-                { name: 'Recruiter', color: '#3498DB', permissions: ['POST_JOBS', 'VIEW_JOBS', 'VIEW_APPLICANTS', 'MANAGE_APPLICANTS', 'VIEW_MEMBERS'], priority: 50 },
-                { name: 'Analyst', color: '#800080', permissions: ['VIEW_ANALYTICS', 'VIEW_MEMBERS'], priority: 40 }
+                { name: 'Owner',     color: '#FFD700', permissions: ['*'],                                                                                                                priority: 100 },
+                { name: 'Admin',     color: '#FF5733', permissions: ['MANAGE_COMPANY', 'MANAGE_SETTINGS', 'MANAGE_ROLES', 'MANAGE_MEMBERS', 'INVITE_MEMBERS', 'POST_JOBS', 'VIEW_JOBS', 'MANAGE_JOBS', 'VIEW_APPLICANTS', 'MANAGE_APPLICANTS', 'CREATE_CONTENT', 'VIEW_ANALYTICS'], priority: 90  },
             ];
         }
 
