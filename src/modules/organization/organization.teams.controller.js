@@ -355,7 +355,7 @@ exports.deleteRole = async (req, res, next) => {
 // 6. Get members in a specific role
 exports.getRoleMembers = async (req, res, next) => {
     const { orgId, roleId } = req.params;
-    const { page = 1, limit = 20, search = '' } = req.query;
+    const { page = 1, limit = 20, search = '', status = 'ACTIVE' } = req.query;
     const offset = (page - 1) * limit;
 
     try {
@@ -367,6 +367,12 @@ exports.getRoleMembers = async (req, res, next) => {
         `;
         const params = [orgId, roleId];
         let paramIndex = 3;
+
+        if (status && status !== 'all') {
+            query += ` AND om.status = $${paramIndex}`;
+            params.push(status);
+            paramIndex++;
+        }
 
         if (search) {
             query += ` AND (u.full_name ILIKE $${paramIndex} OR u.headline ILIKE $${paramIndex})`;
@@ -386,9 +392,18 @@ exports.getRoleMembers = async (req, res, next) => {
             WHERE om.org_id = $1 AND om.role_id = $2
         `;
         const countParams = [orgId, roleId];
+        let countParamIdx = 3;
+
+        if (status && status !== 'all') {
+            countQuery += ` AND om.status = $${countParamIdx}`;
+            countParams.push(status);
+            countParamIdx++;
+        }
+
         if (search) {
-            countQuery += ` AND (u.full_name ILIKE $3 OR u.headline ILIKE $3)`;
+            countQuery += ` AND (u.full_name ILIKE $${countParamIdx} OR u.headline ILIKE $${countParamIdx})`;
             countParams.push(`%${search}%`);
+            countParamIdx++;
         }
 
         const countRes = await pool.query(countQuery, countParams);
@@ -425,7 +440,7 @@ exports.getPermissionKeys = async (req, res, next) => {
 // 8. Get all members in organization
 exports.getMembers = async (req, res, next) => {
     const orgId = req.params.orgId;
-    const { page = 1, limit = 20, search = '' } = req.query;
+    const { page = 1, limit = 20, search = '', status = 'ACTIVE' } = req.query;
     const offset = (page - 1) * limit;
 
     try {
@@ -440,6 +455,12 @@ exports.getMembers = async (req, res, next) => {
         `;
         const params = [orgId];
         let paramIndex = 2;
+
+        if (status && status !== 'all') {
+            query += ` AND om.status = $${paramIndex}`;
+            params.push(status);
+            paramIndex++;
+        }
 
         if (search) {
             query += ` AND (u.full_name ILIKE $${paramIndex} OR u.headline ILIKE $${paramIndex})`;
@@ -458,9 +479,18 @@ exports.getMembers = async (req, res, next) => {
             WHERE om.org_id = $1
         `;
         const countParams = [orgId];
+        let countParamIdx = 2;
+
+        if (status && status !== 'all') {
+            countQuery += ` AND om.status = $${countParamIdx}`;
+            countParams.push(status);
+            countParamIdx++;
+        }
+
         if (search) {
-            countQuery += ` AND (u.full_name ILIKE $2 OR u.headline ILIKE $2)`;
+            countQuery += ` AND (u.full_name ILIKE $${countParamIdx} OR u.headline ILIKE $${countParamIdx})`;
             countParams.push(`%${search}%`);
+            countParamIdx++;
         }
 
         const countRes = await pool.query(countQuery, countParams);
@@ -1005,7 +1035,7 @@ exports.getPendingInvites = async (req, res, next) => {
 // 17. Get Activity / Audit Logs
 exports.getActivityLogs = async (req, res, next) => {
     const orgId = req.params.orgId;
-    const { page = 1, limit = 20, action, memberId, dateFrom, dateTo } = req.query;
+    const { page = 1, limit = 20, action, memberId, roleId, dateFrom, dateTo, search } = req.query;
     const offset = (page - 1) * limit;
 
     try {
@@ -1013,7 +1043,8 @@ exports.getActivityLogs = async (req, res, next) => {
             SELECT al.log_id, al.action, al.created_at, al.actor_role, al.metadata,
                    u.user_id AS actor_id, u.full_name AS actor_name, u.avatar_url AS actor_avatar
             FROM audit_logs al
-            LEFT JOIN active_users u ON al.actor_id = u.user_id
+            JOIN active_users u ON al.actor_id = u.user_id
+            JOIN organization_members om ON om.user_id = al.actor_id AND om.org_id = al.entity_id AND om.status = 'ACTIVE'
             WHERE al.entity_id = $1 AND al.entity_type = 'ORGANIZATION'
         `;
         const params = [orgId];
@@ -1025,7 +1056,16 @@ exports.getActivityLogs = async (req, res, next) => {
             paramIdx++;
         }
 
-        if (memberId) {
+        if (roleId && roleId !== 'all') {
+            query += ` AND (
+                om.role_id = $${paramIdx} OR 
+                LOWER(al.actor_role) = (SELECT LOWER(name) FROM organization_roles WHERE role_id = $${paramIdx} AND org_id = $1)
+            )`;
+            params.push(roleId);
+            paramIdx++;
+        }
+
+        if (memberId && memberId !== 'all') {
             query += ` AND al.actor_id = $${paramIdx}`;
             params.push(memberId);
             paramIdx++;
@@ -1043,6 +1083,17 @@ exports.getActivityLogs = async (req, res, next) => {
             paramIdx++;
         }
 
+        if (search) {
+            query += ` AND (
+                al.action ILIKE $${paramIdx} OR
+                u.full_name ILIKE $${paramIdx} OR
+                al.actor_role ILIKE $${paramIdx} OR
+                al.metadata::text ILIKE $${paramIdx}
+            )`;
+            params.push(`%${search}%`);
+            paramIdx++;
+        }
+
         query += ` ORDER BY al.created_at DESC LIMIT $${paramIdx} OFFSET $${paramIdx + 1}`;
         params.push(limit, offset);
 
@@ -1050,7 +1101,9 @@ exports.getActivityLogs = async (req, res, next) => {
 
         // Get total count
         let countQuery = `
-            SELECT COUNT(*)::int FROM audit_logs al
+            SELECT COUNT(DISTINCT al.log_id)::int FROM audit_logs al
+            JOIN active_users u ON al.actor_id = u.user_id
+            JOIN organization_members om ON om.user_id = al.actor_id AND om.org_id = al.entity_id AND om.status = 'ACTIVE'
             WHERE al.entity_id = $1 AND al.entity_type = 'ORGANIZATION'
         `;
         const countParams = [orgId];
@@ -1062,7 +1115,16 @@ exports.getActivityLogs = async (req, res, next) => {
             countParamIdx++;
         }
 
-        if (memberId) {
+        if (roleId && roleId !== 'all') {
+            countQuery += ` AND (
+                om.role_id = $${countParamIdx} OR 
+                LOWER(al.actor_role) = (SELECT LOWER(name) FROM organization_roles WHERE role_id = $${countParamIdx} AND org_id = $1)
+            )`;
+            countParams.push(roleId);
+            countParamIdx++;
+        }
+
+        if (memberId && memberId !== 'all') {
             countQuery += ` AND al.actor_id = $${countParamIdx}`;
             countParams.push(memberId);
             countParamIdx++;
@@ -1077,6 +1139,17 @@ exports.getActivityLogs = async (req, res, next) => {
         if (dateTo) {
             countQuery += ` AND al.created_at <= $${countParamIdx}`;
             countParams.push(new Date(dateTo));
+            countParamIdx++;
+        }
+
+        if (search) {
+            countQuery += ` AND (
+                al.action ILIKE $${countParamIdx} OR
+                u.full_name ILIKE $${countParamIdx} OR
+                al.actor_role ILIKE $${countParamIdx} OR
+                al.metadata::text ILIKE $${countParamIdx}
+            )`;
+            countParams.push(`%${search}%`);
             countParamIdx++;
         }
 
