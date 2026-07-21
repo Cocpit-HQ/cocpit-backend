@@ -847,6 +847,72 @@ exports.addSkills = async (req, res) => {
     }
 };
 
+exports.syncSkills = async (req, res) => {
+    const skillNames = req.body.skills || req.body.name;
+
+    if (!Array.isArray(skillNames)) {
+        return res.status(400).json({ message: "Skills must be an array" });
+    }
+
+    const skillList = [...new Set(
+        skillNames.filter(s => typeof s === "string")
+            .map(s => s.trim().toLowerCase().replace(/\s+/g, " ").split(" ").map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(" "))
+            .filter(Boolean)
+    )];
+
+    const client = await profileRepo.getClient();
+    try {
+        await client.query("BEGIN");
+
+        const profileId = await profileRepo.ensureProfileId(req.user.sub);
+        if (!profileId) throw new Error("PROFILE_NOT_FOUND");
+
+        // Clear existing skills
+        await client.query(`DELETE FROM user_skills WHERE profile_id = $1`, [profileId]);
+
+        if (skillList.length > 0) {
+            await client.query(`INSERT INTO skills (name) SELECT UNNEST($1::text[]) ON CONFLICT (lower(name)) DO NOTHING RETURNING skill_id, name`, [skillList]);
+
+            const { rows: skills } = await client.query(
+                `SELECT skill_id, name FROM skills WHERE lower(name) IN (SELECT lower(s) FROM UNNEST($1::text[]) AS s)`,
+                [skillList]
+            );
+
+            if (skills.length > 0) {
+                const values = skills.map((s, i) => `($1, $${i + 2})`).join(",");
+                await client.query(
+                    `INSERT INTO user_skills (profile_id, skill_id) VALUES ${values} ON CONFLICT DO NOTHING`,
+                    [profileId, ...skills.map(s => s.skill_id)]
+                );
+            }
+        }
+
+        await client.query("COMMIT");
+
+        // Recommendation System Phase 1: Boost affinity safely out of transaction
+        try {
+            if (skillList.length > 0) {
+                const userId = req.user.userId || req.user.id || req.user.sub || req.body.userId;
+                incrementUserHashtagScore(userId, 5, skillList, null).catch(() => { });
+            }
+        } catch (e) { }
+
+        // Fetch ALL skills for this profile to return to frontend
+        const allSkills = await profileRepo.getSkills(profileId);
+        res.status(200).json({
+            message: "Skills synced successfully",
+            skills: allSkills
+        });
+    } catch (err) {
+        await client.query("ROLLBACK");
+        if (err.message === "PROFILE_NOT_FOUND") return res.status(404).json({ message: "Profile not found" });
+        console.error("Sync skills error:", err);
+        res.status(500).json({ message: "Internal server error" });
+    } finally {
+        client.release();
+    }
+};
+
 exports.updateSkill = async (req, res) => {
     const skillId = req.params.id;
     const { name } = req.body;
@@ -870,12 +936,18 @@ exports.updateSkill = async (req, res) => {
         if (skillExists.rowCount > 0) {
             finalSkillId = skillExists.rows[0].skill_id;
             finalSkillName = skillExists.rows[0].name;
-            await client.query(`UPDATE user_skills SET skill_id = $1 WHERE profile_id = $2 AND skill_id = $3`, [finalSkillId, profileId, skillId]);
+            if (finalSkillId !== skillId) {
+                await client.query(`INSERT INTO user_skills (profile_id, skill_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`, [profileId, finalSkillId]);
+                await client.query(`DELETE FROM user_skills WHERE profile_id = $1 AND skill_id = $2`, [profileId, skillId]);
+            }
         } else {
             const newSkill = await client.query(`INSERT INTO skills (name) VALUES ($1) RETURNING skill_id, name`, [newSkillName]);
             finalSkillId = newSkill.rows[0].skill_id;
             finalSkillName = newSkill.rows[0].name;
-            await client.query(`UPDATE user_skills SET skill_id = $1 WHERE profile_id = $2 AND skill_id = $3`, [finalSkillId, profileId, skillId]);
+            if (finalSkillId !== skillId) {
+                await client.query(`INSERT INTO user_skills (profile_id, skill_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`, [profileId, finalSkillId]);
+                await client.query(`DELETE FROM user_skills WHERE profile_id = $1 AND skill_id = $2`, [profileId, skillId]);
+            }
         }
 
         await client.query("COMMIT");

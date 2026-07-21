@@ -41,6 +41,7 @@ router.delete("/educations/:id", requireAuth, requireActiveSession, profileContr
 // Skills
 router.get("/skills", requireAuth, profileController.getSkills);
 router.post("/skills", requireAuth, requireActiveSession, profileController.addSkills);
+router.put("/skills/sync", requireAuth, requireActiveSession, profileController.syncSkills);
 router.put("/skills/:id", requireAuth, requireActiveSession, profileController.updateSkill);
 router.delete("/skills/:id", requireAuth, requireActiveSession, profileController.deleteSkill);
 
