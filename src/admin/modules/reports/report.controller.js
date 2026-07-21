@@ -12,25 +12,40 @@ exports.getReportReasons = async (req, res) => {
 
 exports.getReports = async (req, res) => {
   try {
-    const { status = 'active', page = 1, limit = 10, type, reason, severity } = req.query;
+    const { status = 'active', page = 1, limit = 10, type, reason, severity, targetUserId, reporterId } = req.query;
     const offset = (page - 1) * limit;
-    
-    let whereClause = `WHERE status = $1`;
-    let queryParams = [status];
-    
+
+    let whereConditions = [];
+    let queryParams = [];
+
+    if (status && status !== 'all') {
+      queryParams.push(status);
+      whereConditions.push(`status = $${queryParams.length}`);
+    }
+
     if (type && type !== 'All') {
       queryParams.push(type);
-      whereClause += ` AND target_type = $${queryParams.length}`;
+      whereConditions.push(`target_type = $${queryParams.length}`);
     }
     if (reason && reason !== 'All') {
       queryParams.push(reason);
-      whereClause += ` AND reason = $${queryParams.length}`;
+      whereConditions.push(`reason = $${queryParams.length}`);
     }
     if (severity && severity !== 'All') {
       queryParams.push(severity);
-      whereClause += ` AND severity = $${queryParams.length}`;
+      whereConditions.push(`severity = $${queryParams.length}`);
     }
-    
+    if (targetUserId) {
+      queryParams.push(targetUserId);
+      whereConditions.push(`target_user_id = $${queryParams.length}`);
+    }
+    if (reporterId) {
+      queryParams.push(reporterId);
+      whereConditions.push(`reporter_id = $${queryParams.length}`);
+    }
+
+    let whereClause = whereConditions.length > 0 ? `WHERE ` + whereConditions.join(' AND ') : '';
+
     // Get total count for pagination
     const countQuery = `SELECT COUNT(*) FROM admin_reports_view ${whereClause}`;
     const countResult = await pool.query(countQuery, queryParams);
@@ -58,9 +73,9 @@ exports.getReports = async (req, res) => {
       ORDER BY created_at DESC
       LIMIT $${queryParams.length + 1} OFFSET $${queryParams.length + 2}
     `;
-    
+
     const result = await pool.query(query, [...queryParams, limit, offset]);
-    
+
     res.json({
       reports: result.rows,
       total,
@@ -77,7 +92,7 @@ exports.updateReport = async (req, res) => {
   try {
     const { id } = req.params;
     const { status } = req.body; // 'escalated', 'resolved', 'dismissed'
-    
+
     if (!status) return res.status(400).json({ error: 'Status is required' });
 
     const result = await pool.query(
@@ -220,7 +235,7 @@ exports.updateAppeal = async (req, res) => {
 exports.deleteReportedPost = async (req, res) => {
   try {
     const { id } = req.params;
-    
+
     // Soft delete the post
     const updateRes = await pool.query(
       'UPDATE posts SET is_deleted = true WHERE post_id = $1 RETURNING *',
@@ -247,7 +262,7 @@ exports.deleteReportedPost = async (req, res) => {
 exports.deleteReportedComment = async (req, res) => {
   try {
     const { id } = req.params;
-    
+
     // Soft delete the comment
     const updateRes = await pool.query(
       'UPDATE post_comments SET is_deleted = true WHERE comment_id = $1 RETURNING *',

@@ -176,11 +176,17 @@ exports.getUserDetails = async (req, res) => {
     const statsResult = await pool.query(statsQuery, [id]);
     const stats = statsResult.rows[0];
 
-    // 3. Activity Feed
     const activityQuery = `
       SELECT id, action_type, entity_type, created_at 
-      FROM user_activity_log 
-      WHERE user_id = $1 
+      FROM (
+        SELECT id::text as id, action_type, entity_type, created_at 
+        FROM user_activity_log 
+        WHERE user_id = $1
+        UNION ALL
+        SELECT post_id::text as id, 'POST_CREATED' as action_type, 'post' as entity_type, created_at 
+        FROM posts 
+        WHERE author_id = $1
+      ) combined_activities
       ORDER BY created_at DESC 
       LIMIT 15
     `;
