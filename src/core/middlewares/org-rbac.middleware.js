@@ -21,7 +21,7 @@ function checkFeaturePermission(permissions, requiredKey) {
     if (jobsSubPerms.includes(targetKey) && upperPerms.includes("JOBS")) return true;
 
     // TEAMS parent implies sub-permissions
-    const teamsSubPerms = ["VIEW_MEMBERS", "INVITE_MEMBERS", "REMOVE_MEMBERS", "MANAGE_MEMBERS", "MANAGE_ROLES", "ACTIVITY_LOGS", "TEAMS"];
+    const teamsSubPerms = ["VIEW_MEMBERS", "INVITE_MEMBERS", "REMOVE_MEMBERS", "MANAGE_MEMBERS", "MANAGE_ROLES", "TEAMS"];
     if (teamsSubPerms.includes(targetKey) && upperPerms.includes("TEAMS")) return true;
 
     // CHANNEL parent implies channel-related details

@@ -28,6 +28,7 @@ exports.getRoles = async (req, res, next) => {
                                 'name', u.full_name,
                                 'full_name', u.full_name,
                                 'avatar', u.avatar_url,
+                                'email', u.email,
                                 'status', m.status
                             )
                         ) FILTER (WHERE u.user_id IS NOT NULL),
@@ -65,6 +66,7 @@ exports.getRoleById = async (req, res, next) => {
                                 'name', u.full_name,
                                 'full_name', u.full_name,
                                 'avatar', u.avatar_url,
+                                'email', u.email,
                                 'status', m.status,
                                 'invite_id', oi.invite_id
                             )
@@ -420,7 +422,7 @@ exports.getMembers = async (req, res, next) => {
 
     try {
         let query = `
-            SELECT u.user_id, u.full_name, u.avatar_url AS avatar, u.headline,
+            SELECT u.user_id, u.full_name, u.avatar_url AS avatar, u.headline, u.email,
                    om.joined_at, om.status, om.expires_at, om.is_core_team,
                    r.role_id, r.name AS role_name, r.color AS role_color, r.priority AS role_priority
             FROM organization_members om
