@@ -9,8 +9,10 @@ const loginSchema = z.object({
 
 const updateFlagSchema = z.object({
   body: z.object({
-    key: z.string().min(1, 'Key is required'),
-    value: z.boolean({ required_error: 'Value must be a boolean' })
+    key: z.string().optional(),
+    value: z.boolean().optional(),
+    features: z.record(z.any()).optional(),
+    flags: z.record(z.any()).optional()
   })
 });
 

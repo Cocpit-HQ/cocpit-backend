@@ -2,6 +2,10 @@ require('dotenv').config(); // Trigger reload
 const app = require('./admin.app');
 const pool = require('./core/db/pool');
 
+// Initialize Redis Subscriber and load Feature Flags from Redis into memory
+require('./core/cache/redisSubscriber');
+require('./modules/config/featureFlags.service').initFlagsFromRedis();
+
 // Health check endpoint for Gateway
 app.get('/health', (req, res) => {
   res.status(200).json({ status: 'ok', service: 'admin-api' });

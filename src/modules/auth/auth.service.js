@@ -12,6 +12,7 @@ const authRepo = require("./auth.repository");
 const redisClient = require("../../core/db/redis");
 const pool = require("../../core/db/pool");
 const socketService = require("../../core/infrastructure/socket.service");
+const featureFlagsService = require("../config/featureFlags.service");
 
 const MAX_DEVICES = 10;
 const REFRESH_REPLAY_WINDOW_SECONDS = Math.max(1, Number(process.env.REFRESH_REPLAY_WINDOW_SECONDS || 15));
@@ -435,6 +436,16 @@ const socialLogin = async ({ provider, idToken, accountType, userAgent, ipAddres
 
         } else {
             // Case 3: Brand new user — accountType defaults to Student if not provided
+            const flags = featureFlagsService.getFlags();
+            if (flags["enableUserSignup"] === false) {
+                return {
+                    error: {
+                        status: 403,
+                        message: "User registration is currently disabled.",
+                    },
+                };
+            }
+
             const finalAccountType = accountType || "Student";
 
             const validTypes = ["Fresher", "Student", "Employer", "Admin"];

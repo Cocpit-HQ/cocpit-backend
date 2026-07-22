@@ -20,10 +20,8 @@ const toBool = (val) => val === "true";
  * Public endpoint — no authentication required.
  */
 const getConfig = (req, res) => {
-  // Cache for 5 minutes — safe for a public, near-static endpoint.
-  // Browsers and CDNs will respect this; Flutter http clients typically won't
-  // unless explicitly configured to, but it helps at the infrastructure level.
-  res.set("Cache-Control", "public, max-age=300");
+  // Prevent browser & CDN caching so feature flag toggles update instantly
+  res.set("Cache-Control", "no-cache, no-store, must-revalidate");
 
   return res.status(200).json({
     // Schema version — increment (e.g., "1.1") when the structure changes

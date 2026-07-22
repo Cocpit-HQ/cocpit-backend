@@ -9,10 +9,19 @@ const { logAudit } = require("../../core/infrastructure/audit.service");
 
 // --- Updated Permissions Helper ---
 const { requireOrgPermission } = require("../../core/middlewares/organization.auth.middleware");
+const featureFlagsService = require("../config/featureFlags.service");
 
 exports.createOrganization = async (req, res) => {
     const userId = req.user.sub;
     const { name, slug, email, industry, size, website, location, description, parent_org_id } = req.body;
+
+    const flags = featureFlagsService.getFlags();
+    if (flags["enableOrganizationsModule"] === false) {
+        return res.status(403).json({ message: "Organizations module is currently disabled." });
+    }
+    if (flags["enableOrgCreation"] === false) {
+        return res.status(403).json({ message: "Organization creation is currently disabled." });
+    }
 
     // 1. Validation
     if (!name || !slug) {

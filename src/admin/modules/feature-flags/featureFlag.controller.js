@@ -18,21 +18,29 @@ const getFlags = async (req, res) => {
 
 const updateFlag = async (req, res) => {
   try {
-    const { key, value } = req.body;
-    if (!key || value === undefined) {
-      return res.status(400).json({ success: false, message: 'Key and value are required' });
+    const { key, value, features, flags } = req.body;
+    const itemsToUpdate = features || flags || (key !== undefined ? { [key]: value } : null);
+
+    if (!itemsToUpdate || typeof itemsToUpdate !== 'object') {
+      return res.status(400).json({ success: false, message: 'Invalid payload: key/value or features object required' });
+    }
+
+    const updated = [];
+    for (const [k, v] of Object.entries(itemsToUpdate)) {
+      if (v !== undefined && v !== null) {
+        const strVal = String(v);
+        const boolVal = v === true || v === 'true';
+        await redis.set(`feature_flag:${k}`, strVal);
+        await redis.publish('admin:feature_flags', JSON.stringify({
+          action_taken: 'updated',
+          key: k,
+          value: boolVal
+        }));
+        updated.push({ key: k, value: boolVal });
+      }
     }
     
-    await redis.set(`feature_flag:${key}`, String(value));
-    
-    // Publish update to Redis Pub/Sub channel
-    await redis.publish('admin:feature_flags', JSON.stringify({
-      action_taken: 'updated',
-      key,
-      value: Boolean(value)
-    }));
-    
-    res.json({ success: true, message: `Flag ${key} updated successfully`, data: { key, value } });
+    res.json({ success: true, message: `${updated.length} flag(s) updated successfully`, data: updated });
   } catch (error) {
     console.error('Error updating flag:', error);
     res.status(500).json({ success: false, message: 'Failed to update flag' });

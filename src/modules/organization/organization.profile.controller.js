@@ -19,7 +19,8 @@
 
 const pool = require('../../core/db/pool');
 const { checkOrgPermission } = require('../../core/utils/rbac');
-const { logAudit } = require('../../core/infrastructure/audit.service');
+const { logAudit } = require("../../core/infrastructure/audit.service");
+const featureFlagsService = require("../config/featureFlags.service");
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -72,6 +73,14 @@ async function getViewerMembership(orgId, userId) {
 // ---------------------------------------------------------------------------
 
 exports.getOrgProfile = async (req, res) => {
+    const flags = featureFlagsService.getFlags();
+    if (flags["enableOrganizationsModule"] === false) {
+        return res.status(403).json({ message: "Organizations module is currently disabled." });
+    }
+    if (flags["enableOrganizations"] === false) {
+        return res.status(403).json({ message: "Organization profiles are currently disabled." });
+    }
+
     const { orgId } = req.params;
     const viewerId = req.user?.sub || null;
 

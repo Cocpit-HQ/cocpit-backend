@@ -28,6 +28,10 @@ app.get('/health', (req, res) => {
 const authRoutes = require('./admin/modules/auth/auth.routes');
 app.use('/api/auth', authRoutes);
 
+// Public Config Endpoint (Feature Flags)
+const configRoutes = require('./modules/config/config.routes');
+app.use('/api/config', configRoutes);
+
 // Admin Routes
 app.use('/api/admin', adminGlobalLimiter, adminRoutes);
 
