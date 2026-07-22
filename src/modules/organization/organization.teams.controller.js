@@ -4,15 +4,13 @@ const pool = require("../../core/db/pool");
 const AppError = require("../../core/errors/AppError");
 const { logAudit } = require("../../core/infrastructure/audit.service");
 
-// Helper to check target is Owner
+// Helper to check target is Owner (creator of the organization)
 async function isTargetOwner(client, orgId, userId) {
     const res = await client.query(
-        `SELECT r.name FROM organization_members m
-         JOIN organization_roles r ON m.role_id = r.role_id
-         WHERE m.org_id = $1 AND m.user_id = $2`,
-        [orgId, userId]
+        `SELECT created_by FROM organizations WHERE org_id = $1`,
+        [orgId]
     );
-    return res.rowCount > 0 && res.rows[0].name === 'Owner';
+    return res.rowCount > 0 && res.rows[0].created_by === userId;
 }
 
 // 1. Get all roles in the organization
@@ -36,21 +34,9 @@ exports.getRoles = async (req, res, next) => {
                         '[]'::json
                     ) AS members
              FROM organization_roles r
-             LEFT JOIN organization_members m ON (
-                 (
-                     m.role_id = r.role_id 
-                     OR (
-                         LOWER(r.name) = 'admin' 
-                         AND m.role_id IN (
-                             SELECT role_id FROM organization_roles 
-                             WHERE org_id = r.org_id AND LOWER(name) = 'owner'
-                         )
-                     )
-                 )
-                 AND m.status = 'ACTIVE'
-             )
+             LEFT JOIN organization_members m ON m.role_id = r.role_id AND m.status = 'ACTIVE'
              LEFT JOIN active_users u ON m.user_id = u.user_id
-             WHERE r.org_id = $1 AND LOWER(r.name) != 'owner' AND r.is_active = TRUE
+             WHERE r.org_id = $1 AND r.is_active = TRUE
              GROUP BY r.role_id
              ORDER BY r.priority DESC, r.created_at ASC`,
             [orgId]
@@ -86,26 +72,14 @@ exports.getRoleById = async (req, res, next) => {
                         '[]'::json
                     ) AS members
              FROM organization_roles r
-             LEFT JOIN organization_members m ON (
-                 (
-                     m.role_id = r.role_id 
-                     OR (
-                         LOWER(r.name) = 'admin' 
-                         AND m.role_id IN (
-                             SELECT role_id FROM organization_roles 
-                             WHERE org_id = r.org_id AND LOWER(name) = 'owner'
-                         )
-                     )
-                 )
-                 AND m.status IN ('ACTIVE', 'PENDING_INVITE')
-             )
+             LEFT JOIN organization_members m ON m.role_id = r.role_id AND m.status IN ('ACTIVE', 'PENDING_INVITE')
              LEFT JOIN active_users u ON m.user_id = u.user_id
              LEFT JOIN organization_invites oi ON (
                  oi.org_id = r.org_id 
                  AND oi.invited_user_id = m.user_id 
                  AND oi.status = 'PENDING'
              )
-             WHERE r.org_id = $1 AND r.role_id = $2 AND LOWER(r.name) != 'owner' AND r.is_active = TRUE
+             WHERE r.org_id = $1 AND r.role_id = $2 AND r.is_active = TRUE
              GROUP BY r.role_id`,
             [orgId, roleId]
         );
@@ -321,9 +295,11 @@ exports.deleteRole = async (req, res, next) => {
             throw new AppError("Cannot delete a role with equal or higher priority than your own", 403);
         }
 
-        // Break relation of members from this role (set role_id to NULL)
+        // Soft delete members who were in this role by setting status = 'REMOVED' and role_id = NULL
         await client.query(
-            `UPDATE organization_members SET role_id = NULL WHERE org_id = $1 AND role_id = $2`,
+            `UPDATE organization_members 
+             SET status = 'REMOVED', role_id = NULL, updated_at = NOW() 
+             WHERE org_id = $1 AND role_id = $2`,
             [orgId, roleId]
         );
 
@@ -704,47 +680,36 @@ exports.transferOwnership = async (req, res, next) => {
             throw new AppError("Target user is not an active member of this organization", 400);
         }
 
-        // 3. Find/Get the Owner role
-        const ownerRoleRes = await client.query(
-            `SELECT role_id FROM organization_roles WHERE org_id = $1 AND name = 'Owner'`,
-            [orgId]
-        );
-        if (ownerRoleRes.rowCount === 0) {
-            throw new AppError("Owner role not found", 500);
-        }
-        const ownerRoleId = ownerRoleRes.rows[0].role_id;
-
-        // 4. Find/Create an Admin role for the old owner to fallback to
-        let fallbackRoleId;
-        const fallbackRes = await client.query(
+        // 3. Find/Get the Admin role (create if not exists)
+        let adminRoleId;
+        const adminRoleRes = await client.query(
             `SELECT role_id FROM organization_roles WHERE org_id = $1 AND name = 'Admin' LIMIT 1`,
             [orgId]
         );
-        if (fallbackRes.rowCount > 0) {
-            fallbackRoleId = fallbackRes.rows[0].role_id;
+        if (adminRoleRes.rowCount > 0) {
+            adminRoleId = adminRoleRes.rows[0].role_id;
         } else {
-            // Create fallback admin role if doesn't exist
-            const fallbackCreate = await client.query(
+            const adminCreate = await client.query(
                 `INSERT INTO organization_roles (org_id, name, color, permissions, priority, is_system_role)
-                 VALUES ($1, 'Admin', '#FF0000', '["*"]', 90, TRUE) RETURNING role_id`,
+                 VALUES ($1, 'Admin', '#FFD700', '["*"]', 100, TRUE) RETURNING role_id`,
                 [orgId]
             );
-            fallbackRoleId = fallbackCreate.rows[0].role_id;
+            adminRoleId = adminCreate.rows[0].role_id;
         }
 
-        // 5. Update old owner to fallback role
+        // 4. Update new owner to Admin role in organization_members
         await client.query(
             `UPDATE organization_members SET role_id = $3, updated_at = NOW() WHERE org_id = $1 AND user_id = $2`,
-            [orgId, actorId, fallbackRoleId]
+            [orgId, newOwnerId, adminRoleId]
         );
 
-        // 6. Update new owner to Owner role
+        // 5. Update organizations created_by
         await client.query(
-            `UPDATE organization_members SET role_id = $3, updated_at = NOW() WHERE org_id = $1 AND user_id = $2`,
-            [orgId, newOwnerId, ownerRoleId]
+            `UPDATE organizations SET created_by = $2, updated_at = NOW() WHERE org_id = $1`,
+            [orgId, newOwnerId]
         );
 
-        // 7. Audit Log
+        // 6. Audit Log
         await logAudit(client, {
             entityId: orgId,
             actorId,
@@ -1049,7 +1014,7 @@ exports.getActivityLogs = async (req, res, next) => {
                    u.user_id AS actor_id, u.full_name AS actor_name, u.avatar_url AS actor_avatar
             FROM audit_logs al
             JOIN active_users u ON al.actor_id = u.user_id
-            JOIN organization_members om ON om.user_id = al.actor_id AND om.org_id = al.entity_id AND om.status = 'ACTIVE'
+            JOIN organization_members om ON om.user_id = al.actor_id AND om.org_id = al.entity_id AND om.status IN ('ACTIVE', 'SUSPENDED', 'REMOVED')
             WHERE al.entity_id = $1 AND al.entity_type = 'ORGANIZATION'
               AND al.action NOT IN ('TEAMS', 'ACTIVITY_LOGS', 'ROLES', 'VIEW_TEAMS', 'VIEW_ACTIVITY_LOGS', 'VIEW_ROLES', 'VIEW_MEMBERS', 'MEMBERS')
         `;
@@ -1122,7 +1087,7 @@ exports.getActivityLogs = async (req, res, next) => {
         let countQuery = `
             SELECT COUNT(DISTINCT al.log_id)::int FROM audit_logs al
             JOIN active_users u ON al.actor_id = u.user_id
-            JOIN organization_members om ON om.user_id = al.actor_id AND om.org_id = al.entity_id AND om.status = 'ACTIVE'
+            JOIN organization_members om ON om.user_id = al.actor_id AND om.org_id = al.entity_id AND om.status IN ('ACTIVE', 'SUSPENDED', 'REMOVED')
             WHERE al.entity_id = $1 AND al.entity_type = 'ORGANIZATION'
               AND al.action NOT IN ('TEAMS', 'ACTIVITY_LOGS', 'ROLES', 'VIEW_TEAMS', 'VIEW_ACTIVITY_LOGS', 'VIEW_ROLES', 'VIEW_MEMBERS', 'MEMBERS')
         `;
