@@ -40,9 +40,30 @@ const hasActorPermission = (permissions = [], permission) => {
     const upperPerms = (Array.isArray(permissions) ? permissions : [])
         .map(p => String(p).toUpperCase().trim());
 
-    return upperPerms.includes("*") ||
-        upperPerms.includes(targetPerm) ||
-        (targetPerm.startsWith("VIEW_") && upperPerms.includes(targetPerm.replace("VIEW_", "MANAGE_")));
+    if (upperPerms.includes("*") || upperPerms.includes(targetPerm)) return true;
+
+    // Hierarchy / Parent-child permission mappings
+    if (targetPerm === "VIEW_ANALYTICS" && upperPerms.includes("ANALYTICS")) return true;
+    
+    // JOBS parent implies sub-permissions
+    const jobsSubPerms = ["POST_JOBS", "VIEW_APPLICANTS", "JOBS_CHAT", "JOBS"];
+    if (jobsSubPerms.includes(targetPerm) && upperPerms.includes("JOBS")) return true;
+
+    // TEAMS parent implies sub-permissions
+    const teamsSubPerms = ["VIEW_MEMBERS", "INVITE_MEMBERS", "REMOVE_MEMBERS", "MANAGE_MEMBERS", "MANAGE_ROLES", "ACTIVITY_LOGS", "TEAMS"];
+    if (teamsSubPerms.includes(targetPerm) && upperPerms.includes("TEAMS")) return true;
+
+    // CHANNEL parent implies channel-related details
+    const channelSubPerms = ["MANAGE_COMPANY_DETAILS", "INVITE_MEMBERS", "CHANNEL"];
+    if (channelSubPerms.includes(targetPerm) && upperPerms.includes("CHANNEL")) return true;
+
+    // CHAT parent implies sub-permissions
+    if (targetPerm === "QUERIES" && upperPerms.includes("CHAT")) return true;
+
+    // Hierarchy: MANAGE_X implies VIEW_X
+    if (targetPerm.startsWith("VIEW_") && upperPerms.includes(targetPerm.replace("VIEW_", "MANAGE_"))) return true;
+
+    return false;
 };
 
 async function getOrganizationMembership(orgId, userId, queryable = pool) {

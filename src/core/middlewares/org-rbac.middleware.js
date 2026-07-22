@@ -4,18 +4,33 @@ const AppError = require("../errors/AppError");
 function checkFeaturePermission(permissions, requiredKey) {
     if (!permissions || !Array.isArray(permissions)) return false;
 
-    // Owner wildcard
-    if (permissions.includes('*')) return true;
+    const upperPerms = permissions.map(p => String(p).toUpperCase().trim());
+    const targetKey = String(requiredKey).toUpperCase().trim();
 
-    // Admin system key: MANAGE_COMPANY grants everything
-    if (permissions.includes('MANAGE_COMPANY')) return true;
+    if (upperPerms.includes('*') || upperPerms.includes('MANAGE_COMPANY') || upperPerms.includes(targetKey)) return true;
 
-    // Exact match
-    if (permissions.includes(requiredKey)) return true;
+    // Channel fallback
+    if (targetKey === 'CHANNELS' && upperPerms.includes('CHANNEL')) return true;
+    if (targetKey === 'CHANNEL' && upperPerms.includes('CHANNELS')) return true;
+
+    // Analytics fallback
+    if (targetKey === 'VIEW_ANALYTICS' && upperPerms.includes('ANALYTICS')) return true;
+
+    // JOBS parent implies sub-permissions
+    const jobsSubPerms = ["POST_JOBS", "VIEW_APPLICANTS", "JOBS_CHAT", "JOBS"];
+    if (jobsSubPerms.includes(targetKey) && upperPerms.includes("JOBS")) return true;
+
+    // TEAMS parent implies sub-permissions
+    const teamsSubPerms = ["VIEW_MEMBERS", "INVITE_MEMBERS", "REMOVE_MEMBERS", "MANAGE_MEMBERS", "MANAGE_ROLES", "ACTIVITY_LOGS", "TEAMS"];
+    if (teamsSubPerms.includes(targetKey) && upperPerms.includes("TEAMS")) return true;
+
+    // CHANNEL parent implies channel-related details
+    const channelSubPerms = ["MANAGE_COMPANY_DETAILS", "INVITE_MEMBERS", "CHANNEL"];
+    if (channelSubPerms.includes(targetKey) && upperPerms.includes("CHANNEL")) return true;
 
     // Sub-permission fallbacks
-    if (requiredKey === 'QUERIES' && permissions.includes('CHAT')) return true;
-    if (requiredKey === 'JOBS_CHAT' && permissions.includes('JOBS')) return true;
+    if (targetKey === 'QUERIES' && upperPerms.includes('CHAT')) return true;
+    if (targetKey === 'JOBS_CHAT' && upperPerms.includes('JOBS')) return true;
 
     return false;
 }
