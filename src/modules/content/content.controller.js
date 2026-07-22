@@ -1101,7 +1101,8 @@ exports.createPost = async (req, res) => {
             await logAudit(client, {
                 entityId: companyId,
                 actorId: userId,
-                action: 'CREATE_POST',
+                actorRole: req.actor?.roleName || null,
+                action: req.body.shared_post_id ? 'REPOST' : 'CREATE_POST',
                 metadata: {
                     type: 'post',
                     id: postId,
@@ -2284,6 +2285,13 @@ exports.toggleLike = async (req, res) => {
                     "INSERT INTO post_likes (post_id, user_id, org_id) VALUES ($1, $2, $3)",
                     [postId, userId, companyId]
                 );
+                await logAudit(pool, {
+                    entityId: companyId,
+                    actorId: userId,
+                    actorRole: req.actor?.roleName || null,
+                    action: 'LIKE',
+                    metadata: { postId }
+                });
             } else {
                 await pool.query(
                     "INSERT INTO post_likes (post_id, user_id) VALUES ($1, $2)",
@@ -2532,6 +2540,16 @@ exports.addComment = async (req, res) => {
         );
 
         const newComment = result.rows[0];
+
+        if (companyId) {
+            await logAudit(pool, {
+                entityId: companyId,
+                actorId: userId,
+                actorRole: req.actor?.roleName || null,
+                action: 'COMMENT',
+                metadata: { postId, commentId: newComment.comment_id, content: content.trim() }
+            });
+        }
 
         // --- NOTIFICATIONS & SOCKETS ---
 

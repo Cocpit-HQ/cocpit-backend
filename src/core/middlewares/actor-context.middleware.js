@@ -1,5 +1,6 @@
 const pool = require("../db/pool");
 const AppError = require("../errors/AppError");
+const { logAudit } = require("../infrastructure/audit.service");
 
 const MEMBER_STATUS = {
     ACTIVE: "ACTIVE",
@@ -35,10 +36,13 @@ const getRequestedActorInput = (req) => {
 
 const hasActorPermission = (permissions = [], permission) => {
     if (!permission) return true;
+    const targetPerm = String(permission).toUpperCase().trim();
+    const upperPerms = (Array.isArray(permissions) ? permissions : [])
+        .map(p => String(p).toUpperCase().trim());
 
-    return permissions.includes("*") ||
-        permissions.includes(permission) ||
-        (permission.startsWith("VIEW_") && permissions.includes(permission.replace("VIEW_", "MANAGE_")));
+    return upperPerms.includes("*") ||
+        upperPerms.includes(targetPerm) ||
+        (targetPerm.startsWith("VIEW_") && upperPerms.includes(targetPerm.replace("VIEW_", "MANAGE_")));
 };
 
 async function getOrganizationMembership(orgId, userId, queryable = pool) {
@@ -86,7 +90,9 @@ function buildUserActor(userId, source = "default_user") {
 }
 
 function buildOrganizationActor(orgId, userId, member, source) {
-    const permissions = member.permissions || [];
+    const rawPermissions = member.permissions || [];
+    const permissions = (Array.isArray(rawPermissions) ? rawPermissions : [])
+        .map(p => String(p).toUpperCase().trim());
 
     return {
         type: "ORGANIZATION",
@@ -202,6 +208,19 @@ const requireOrgActorPermission = (permission) => (req, res, next) => {
     }
 
     if (!hasActorPermission(req.actor.permissions, permission)) {
+        if (req.actor?.orgId && req.actor?.userId) {
+            logAudit(pool, {
+                entityId: req.actor.orgId,
+                actorId: req.actor.userId,
+                actorRole: req.actor.roleName || null,
+                action: 'UNAUTHORIZED_ACCESS_ATTEMPT',
+                metadata: {
+                    attemptedPermission: permission,
+                    attemptedRoute: req.originalUrl || req.url,
+                    unauthorizedAttempt: true
+                }
+            });
+        }
         return next(new AppError(`You do not have permission: ${permission}`, 403));
     }
 

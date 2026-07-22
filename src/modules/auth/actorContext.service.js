@@ -23,15 +23,25 @@ const canSwitchToOrganization = (organization) => {
     return organization?.status === "ACTIVE" && !isExpired;
 };
 
-const buildOrganizationActor = (organization) => ({
-    type: "ORGANIZATION",
-    id: organization.org_id || organization.company_id,
-    slug: organization.slug,
-    name: organization.name,
-    avatar_url: organization.logo_url,
-    entity_type: organization.entity_type,
-    viewer_role_data: organization.viewer_role_data || null,
-});
+const buildOrganizationActor = (organization) => {
+    let viewerRoleData = organization.viewer_role_data || null;
+    if (viewerRoleData && Array.isArray(viewerRoleData.permissions)) {
+        viewerRoleData = {
+            ...viewerRoleData,
+            permissions: viewerRoleData.permissions.map(p => String(p).toUpperCase().trim())
+        };
+    }
+
+    return {
+        type: "ORGANIZATION",
+        id: organization.org_id || organization.company_id,
+        slug: organization.slug,
+        name: organization.name,
+        avatar_url: organization.logo_url,
+        entity_type: organization.entity_type,
+        viewer_role_data: viewerRoleData,
+    };
+};
 
 const buildUserActor = (userId) => ({
     type: "USER",

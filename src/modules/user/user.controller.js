@@ -206,6 +206,32 @@ exports.getUserProfile = async (req, res) => {
     const profileId = user.profile_id;
     delete user.profile_id; // Remove from response payload
 
+    // Log audit when viewing another user's profile under Organization actor context
+    if (targetUserId !== currentUserId) {
+      const { resolveActorContextForRequest } = require("../../core/middlewares/actor-context.middleware");
+      const { logAudit } = require("../../core/infrastructure/audit.service");
+      
+      resolveActorContextForRequest(req).then(actor => {
+        if (actor && actor.type === "ORGANIZATION" && actor.orgId) {
+          const handleOrId = user.account_name || targetUserId;
+          logAudit(pool, {
+            entityId: actor.orgId,
+            actorId: currentUserId,
+            actorRole: actor.roleName || null,
+            action: 'VIEW_USER_PROFILE',
+            metadata: {
+              targetId: targetUserId,
+              targetName: user.name,
+              targetHandle: user.account_name,
+              targetType: 'user',
+              linkUrl: `/u/${handleOrId}`,
+              highlightedText: 'profile'
+            }
+          }).catch(err => console.error("Error logging user profile view audit:", err));
+        }
+      }).catch(() => {});
+    }
+
     // 2. Fetch Experiences, Educations & Resume using profileRepo
     const [experiences, educations, resumeRow] = await Promise.all([
       profileId ? profileRepo.getExperiences(profileId) : [],
