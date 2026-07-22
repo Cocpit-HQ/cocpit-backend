@@ -416,9 +416,9 @@ exports.getPublicProfilePosts = async (req, res) => {
     let idx = 2;
     let whereClause = "";
     if (category === 'Comments') {
-      whereClause = `WHERE EXISTS (SELECT 1 FROM post_comments pc_filter WHERE pc_filter.post_id = p.post_id AND pc_filter.author_id = $1) AND p.visibility = 'public' `;
+      whereClause = `WHERE EXISTS (SELECT 1 FROM post_comments pc_filter WHERE pc_filter.post_id = p.post_id AND pc_filter.author_id = $1) AND p.visibility = 'public' AND p.is_active = TRUE AND (p.is_removed IS FALSE OR p.is_removed IS NULL) `;
     } else {
-      whereClause = `WHERE p.author_id = $1 AND p.visibility = 'public' `;
+      whereClause = `WHERE p.author_id = $1 AND p.visibility = 'public' AND p.is_active = TRUE AND (p.is_removed IS FALSE OR p.is_removed IS NULL) `;
     }
 
     // ✅ Category filter (skip "All")
