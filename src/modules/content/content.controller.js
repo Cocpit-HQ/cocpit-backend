@@ -209,11 +209,11 @@ exports.getMyPosts = async (req, res) => {
         let idx = 3;
         let whereClause = "";
         if (filter === 'Comments') {
-            whereClause = `WHERE EXISTS (SELECT 1 FROM post_comments pc_filter WHERE pc_filter.post_id = p.post_id AND ${isOrgActor ? `pc_filter.author_org_id = $${orgParamIdx}::uuid` : `pc_filter.author_id = $${userParamIdx} AND pc_filter.author_org_id IS NULL`})`;
+            whereClause = `WHERE EXISTS (SELECT 1 FROM post_comments pc_filter WHERE pc_filter.post_id = p.post_id AND ${isOrgActor ? `pc_filter.author_org_id = $${orgParamIdx}::uuid` : `pc_filter.author_id = $${userParamIdx} AND pc_filter.author_org_id IS NULL`}) AND p.is_active = TRUE AND (p.is_removed IS FALSE OR p.is_removed IS NULL)`;
         } else {
             whereClause = isOrgActor
-                ? `WHERE p.author_org_id = $${orgParamIdx}::uuid`
-                : `WHERE p.author_id = $${userParamIdx} AND p.author_org_id IS NULL`;
+                ? `WHERE p.author_org_id = $${orgParamIdx}::uuid AND p.is_active = TRUE AND (p.is_removed IS FALSE OR p.is_removed IS NULL)`
+                : `WHERE p.author_id = $${userParamIdx} AND p.author_org_id IS NULL AND p.is_active = TRUE AND (p.is_removed IS FALSE OR p.is_removed IS NULL)`;
         }
 
         // ✅ Category filter (skip if "All")
@@ -379,8 +379,8 @@ exports.getMyCommentedPosts = async (req, res) => {
 
         // Filter: Posts commented by the user, excluding their own posts (per user request)
         let whereClause = isOrgActor
-            ? `WHERE EXISTS (SELECT 1 FROM post_comments pc_me WHERE pc_me.post_id = p.post_id AND pc_me.author_org_id = $${orgParamIdx}) AND p.author_org_id != $${orgParamIdx}`
-            : `WHERE EXISTS (SELECT 1 FROM post_comments pc_me WHERE pc_me.post_id = p.post_id AND pc_me.author_id = $${userParamIdx} AND pc_me.author_org_id IS NULL) AND p.author_id != $${userParamIdx}`;
+            ? `WHERE EXISTS (SELECT 1 FROM post_comments pc_me WHERE pc_me.post_id = p.post_id AND pc_me.author_org_id = $${orgParamIdx}) AND p.author_org_id != $${orgParamIdx} AND p.is_active = TRUE AND (p.is_removed IS FALSE OR p.is_removed IS NULL)`
+            : `WHERE EXISTS (SELECT 1 FROM post_comments pc_me WHERE pc_me.post_id = p.post_id AND pc_me.author_id = $${userParamIdx} AND pc_me.author_org_id IS NULL) AND p.author_id != $${userParamIdx} AND p.is_active = TRUE AND (p.is_removed IS FALSE OR p.is_removed IS NULL)`;
 
         if (search && search.trim() !== "") {
             whereClause += ` AND p.content ILIKE $${idx} `;
@@ -496,8 +496,8 @@ exports.getMyPrivatePosts = async (req, res) => {
         }
 
         let whereClause = isOrgActor
-            ? `WHERE p.author_org_id = $${orgParamIdx} AND p.visibility = 'private'`
-            : `WHERE p.author_id = $${userParamIdx} AND p.author_org_id IS NULL AND p.visibility = 'private'`;
+            ? `WHERE p.author_org_id = $${orgParamIdx} AND p.visibility = 'private' AND p.is_active = TRUE AND (p.is_removed IS FALSE OR p.is_removed IS NULL)`
+            : `WHERE p.author_id = $${userParamIdx} AND p.author_org_id IS NULL AND p.visibility = 'private' AND p.is_active = TRUE AND (p.is_removed IS FALSE OR p.is_removed IS NULL)`;
 
         if (search && search.trim() !== "") {
             whereClause += ` AND p.content ILIKE $${idx} `;
