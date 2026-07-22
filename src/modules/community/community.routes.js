@@ -9,14 +9,14 @@ const { uploadCommunityBanner } = require("../../core/middlewares/upload.middlew
 router.get(
     "/organizations/:orgId/community/status",
     requireAuth,
-    requireOrgPermission("MANAGE_COMPANY_DETAILS"),
+    requireOrgPermission(["CHANNEL", "MANAGE_CHANNEL", "MANAGE_COMPANY_DETAILS"]),
     communityController.getCommunityStatus
 );
 
 router.post(
     "/organizations/:orgId/community",
     requireAuth,
-    requireOrgPermission("MANAGE_COMPANY_DETAILS"),
+    requireOrgPermission(["CHANNEL", "MANAGE_CHANNEL", "MANAGE_COMPANY_DETAILS"]),
     uploadCommunityBanner.single("banner"),
     communityController.createCommunity
 );
@@ -24,7 +24,7 @@ router.post(
 router.put(
     "/organizations/:orgId/community",
     requireAuth,
-    requireOrgPermission("MANAGE_COMPANY_DETAILS"),
+    requireOrgPermission(["CHANNEL", "MANAGE_CHANNEL", "MANAGE_COMPANY_DETAILS"]),
     uploadCommunityBanner.single("banner"),
     communityController.updateCommunity
 );
@@ -32,14 +32,14 @@ router.put(
 router.delete(
     "/organizations/:orgId/community",
     requireAuth,
-    requireOrgPermission("MANAGE_COMPANY"),
+    requireOrgPermission(["CHANNEL", "MANAGE_CHANNEL", "MANAGE_COMPANY", "MANAGE_COMPANY_DETAILS"]),
     communityController.deactivateCommunity
 );
 
 router.get(
     "/organizations/:orgId/community/growth",
     requireAuth,
-    requireOrgPermission("MANAGE_COMPANY_DETAILS"),
+    requireOrgPermission(["CHANNEL", "MANAGE_CHANNEL", "MANAGE_COMPANY_DETAILS"]),
     communityController.getSubscriberGrowth
 );
 
@@ -52,7 +52,7 @@ router.get(
 router.delete(
     "/organizations/:orgId/community/subscribers/:userId",
     requireAuth,
-    requireOrgPermission("MANAGE_COMPANY_DETAILS"),
+    requireOrgPermission(["CHANNEL", "MANAGE_CHANNEL", "MANAGE_COMPANY_DETAILS"]),
     communityController.removeCommunitySubscriber
 );
 

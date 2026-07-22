@@ -241,6 +241,20 @@ exports.acceptTeamsInvite = async (req, res) => {
         await client.query("COMMIT");
         res.json({ message: "Invitation accepted. You are now a member." });
 
+        // Emit member_sync socket event to the organization room
+        try {
+            const socketService = require("../../core/infrastructure/socket.service");
+            socketService.notifyOrg(invite.org_id, "member_sync", {
+                action: "ACCEPT",
+                userId,
+                email: invite.email,
+                orgId: invite.org_id,
+                inviteId: invite.invite_id
+            });
+        } catch (socketErr) {
+            console.error("Failed to emit member_sync on accept:", socketErr);
+        }
+
     } catch (err) {
         await client.query("ROLLBACK");
         console.error("Accept invite error:", err);
@@ -452,9 +466,14 @@ exports.transferOwnership = async (req, res) => {
             newOwnerId = userRes.rows[0].user_id;
         }
 
-        // 1. RBAC (OWNER ONLY)
-        const isOwner = await checkOrgPermission(client, companyId, userId, '*');
-        if (!isOwner) throw new Error("Forbidden: Only OWNER can transfer ownership");
+        // 1. Check if user is the current creator/owner
+        const ownerCheck = await client.query(
+            "SELECT created_by FROM organizations WHERE org_id = $1",
+            [companyId]
+        );
+        if (ownerCheck.rowCount === 0 || ownerCheck.rows[0].created_by !== userId) {
+            throw new AppError("Forbidden: Only the Owner can transfer ownership", 403);
+        }
 
         const { password } = req.body;
         if (!password) {
@@ -468,20 +487,24 @@ exports.transferOwnership = async (req, res) => {
         if (!isValid) throw new AppError("Invalid password", 401);
 
         // 2. Transaction
-        // Get Role IDs
-        const rolesRes = await client.query(`SELECT role_id, name FROM organization_roles WHERE org_id = $1 AND name IN ('Owner', 'Admin')`, [companyId]);
-        const ownerRole = rolesRes.rows.find(r => r.name === 'Owner');
-        const adminRole = rolesRes.rows.find(r => r.name === 'Admin');
-
-        if (!ownerRole || !adminRole) throw new Error("System roles missing");
-
-        // Demote current OWNER to ADMIN
-        await client.query(
-            `UPDATE organization_members SET role_id = $1 WHERE org_id = $2 AND user_id = $3`,
-            [adminRole.role_id, companyId, userId]
+        // Find or create the Admin role
+        let adminRoleId;
+        const adminRoleRes = await client.query(
+            `SELECT role_id FROM organization_roles WHERE org_id = $1 AND name = 'Admin' LIMIT 1`,
+            [companyId]
         );
+        if (adminRoleRes.rowCount > 0) {
+            adminRoleId = adminRoleRes.rows[0].role_id;
+        } else {
+            const adminCreate = await client.query(
+                `INSERT INTO organization_roles (org_id, name, color, permissions, priority, is_system_role)
+                 VALUES ($1, 'Admin', '#FFD700', '["*"]', 100, TRUE) RETURNING role_id`,
+                [companyId]
+            );
+            adminRoleId = adminCreate.rows[0].role_id;
+        }
 
-        // Promote new user to OWNER
+        // Promote new user to Admin role
         const memberCheck = await client.query(
             `SELECT 1 FROM organization_members WHERE org_id = $1 AND user_id = $2`,
             [companyId, newOwnerId]
@@ -489,15 +512,21 @@ exports.transferOwnership = async (req, res) => {
 
         if (memberCheck.rowCount > 0) {
             await client.query(
-                `UPDATE organization_members SET role_id = $1 WHERE org_id = $2 AND user_id = $3`,
-                [ownerRole.role_id, companyId, newOwnerId]
+                `UPDATE organization_members SET role_id = $1, updated_at = NOW() WHERE org_id = $2 AND user_id = $3`,
+                [adminRoleId, companyId, newOwnerId]
             );
         } else {
             await client.query(
                 `INSERT INTO organization_members (org_id, user_id, role_id) VALUES ($1, $2, $3)`,
-                [companyId, newOwnerId, ownerRole.role_id]
+                [companyId, newOwnerId, adminRoleId]
             );
         }
+
+        // Update organizations created_by
+        await client.query(
+            `UPDATE organizations SET created_by = $1, updated_at = NOW() WHERE org_id = $2`,
+            [newOwnerId, companyId]
+        );
 
         await logAudit(client, {
             entityId: companyId,
@@ -647,6 +676,20 @@ exports.declineTeamsInvite = async (req, res, next) => {
 
         await client.query("COMMIT");
         res.json({ message: "Invitation declined successfully" });
+
+        // Emit member_sync socket event to the organization room
+        try {
+            const socketService = require("../../core/infrastructure/socket.service");
+            socketService.notifyOrg(invite.org_id, "member_sync", {
+                action: "DECLINE",
+                userId,
+                email: invite.email,
+                orgId: invite.org_id,
+                inviteId: invite.invite_id
+            });
+        } catch (socketErr) {
+            console.error("Failed to emit member_sync on decline:", socketErr);
+        }
     } catch (err) {
         await client.query("ROLLBACK");
         next(err);

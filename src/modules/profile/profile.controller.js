@@ -17,12 +17,23 @@ const { handleExperienceOrgLink, handleEducationOrgLink, cleanupPreviousCompanyM
  */
 const FAR_FUTURE = new Date('9999-12-31');
 const datesOverlap = (aStart, aEnd, bStart, bEnd) => {
+    // A missing start date (legacy/incomplete data predating current validation) has no
+    // known time range — treat it as "cannot determine an overlap" rather than defaulting
+    // new Date(null) to the 1970 epoch, which would make it appear to span all of history.
+    if (!aStart || !bStart) return false;
     const a1 = new Date(aStart);
     const a2 = aEnd ? new Date(aEnd) : FAR_FUTURE;
     const b1 = new Date(bStart);
     const b2 = bEnd ? new Date(bEnd) : FAR_FUTURE;
     return a1 < b2 && b1 < a2;
 };
+
+/**
+ * Single source of truth for "is this experience currently active".
+ * is_current is a real BOOLEAN column end-to-end (schema + zod) — trust it strictly
+ * rather than inferring activity from a missing end_date.
+ */
+const isActiveExperience = (e) => e.is_current === true;
 
 /**
  * Determines the severity of adding a new is_current role when others already exist.
@@ -445,7 +456,7 @@ exports.addExperience = async (req, res) => {
         let warning = undefined;
         if (is_current) {
             const activeRoles = allExperiences.filter(e =>
-                (e.is_current || !e.end_date) &&
+                isActiveExperience(e) &&
                 !(end_current_role && e.experience_id === end_current_role_id) // exclude role being ended
             );
             if (activeRoles.length > 0) {
@@ -578,7 +589,7 @@ exports.updateExperience = async (req, res) => {
         // Only run this check when transitioning a role from non-current → current.
         let warning = undefined;
         if (resolvedCurrent && !existing.is_current) {
-            const activeRoles = otherExperiences.filter(e => e.is_current || !e.end_date);
+            const activeRoles = otherExperiences.filter(isActiveExperience);
             if (activeRoles.length > 0) {
                 const severity = getMultipleCurrentSeverity(activeRoles, resolvedWType, resolvedWMode);
                 if (severity === 'block') {
@@ -1402,42 +1413,47 @@ exports.batchUpdateExperiences = async (req, res) => {
         let simulatedState = existingExperiences.map(e => ({ ...e }));
         const errors = [];
 
+        // Stable identifier for the operation responsible for a given error (tempId for new
+        // roles, id for existing ones). The frontend maps errors back to the correct form card
+        // by this id rather than by position in `operations`, since that array's order does not
+        // match the frontend's role list order.
+        const entityIdOf = (op) => op.type === 'CREATE' ? op.tempId : (op.type === 'UPDATE' ? op.id : undefined);
+
         // Apply operations to simulated state
         for (let i = 0; i < operations.length; i++) {
             const op = operations[i];
-            const opPathPrefix = `experiences.${i}`;
 
             if (op.type === "DELETE") {
                 simulatedState = simulatedState.filter(e => e.experience_id !== op.id);
             } else if (op.type === "UPDATE") {
                 const idx = simulatedState.findIndex(e => e.experience_id === op.id);
                 if (idx === -1) {
-                    errors.push({ path: opPathPrefix, message: "Experience not found" });
+                    errors.push({ path: 'experiences', entityId: entityIdOf(op), message: "Experience not found" });
                     continue;
                 }
                 simulatedState[idx] = { ...simulatedState[idx], ...op.data };
                 // Basic date validation
                 const { start_date, end_date, is_current } = simulatedState[idx];
                 if (!is_current && !end_date) {
-                    errors.push({ path: `${opPathPrefix}.end_date`, message: "End date is required" });
+                    errors.push({ path: 'experiences.end_date', entityId: entityIdOf(op), message: "End date is required" });
                 }
                 if (end_date && new Date(end_date) < new Date(start_date)) {
-                    errors.push({ path: `${opPathPrefix}.end_date`, message: "End date must be after start date" });
+                    errors.push({ path: 'experiences.end_date', entityId: entityIdOf(op), message: "End date must be after start date" });
                 }
             } else if (op.type === "CREATE") {
-                const newExp = { 
+                const newExp = {
                     experience_id: op.tempId, // temporary ID for simulation
                     ...op.data,
-                    profile_id: profileId 
+                    profile_id: profileId
                 };
                 simulatedState.push(newExp);
                 // Basic date validation
                 const { start_date, end_date, is_current } = newExp;
                 if (!is_current && !end_date) {
-                    errors.push({ path: `${opPathPrefix}.data.end_date`, message: "End date is required" });
+                    errors.push({ path: 'experiences.end_date', entityId: entityIdOf(op), message: "End date is required" });
                 }
                 if (end_date && new Date(end_date) < new Date(start_date)) {
-                    errors.push({ path: `${opPathPrefix}.data.end_date`, message: "End date must be after start date" });
+                    errors.push({ path: 'experiences.end_date', entityId: entityIdOf(op), message: "End date must be after start date" });
                 }
             }
         }
@@ -1446,6 +1462,14 @@ exports.batchUpdateExperiences = async (req, res) => {
             const errorResponse = { message: "Validation failed", errors };
             return res.status(422).json(errorResponse);
         }
+
+        // Experiences actually being written by this batch — CREATE/UPDATE entity ids.
+        // Pairs where NEITHER side is touched by this request are pre-existing state that
+        // predates this write; re-validating (and potentially blocking on) old, untouched
+        // conflicts would mean any account with a single old bad row could never save an
+        // unrelated edit to that company again. Only conflicts involving something this
+        // request is actually creating/changing should be reported.
+        const touchedIds = new Set(operations.map(entityIdOf).filter(id => id !== undefined));
 
         // Cross-experience validation on simulated state
         for (let i = 0; i < simulatedState.length; i++) {
@@ -1459,43 +1483,43 @@ exports.batchUpdateExperiences = async (req, res) => {
                 const companyNormB = (expB.company_name || "").trim().toLowerCase();
                 const endB = expB.is_current ? null : expB.end_date;
 
+                if (!touchedIds.has(expA.experience_id) && !touchedIds.has(expB.experience_id)) continue;
+
                 // align with DB index idx_one_current_role_per_company which is name-based
                 const isSameCompany = (expA.org_id && expB.org_id && expA.org_id === expB.org_id) ||
                                      (companyNormA === companyNormB);
 
                 if (isSameCompany && datesOverlap(expA.start_date, endA, expB.start_date, endB)) {
-                    // Find which operation caused this (if any)
-                    const opIdx = operations.findIndex(op => 
-                        (op.type === "CREATE" && op.tempId === expA.experience_id) ||
-                        (op.type === "UPDATE" && op.id === expA.experience_id) ||
-                        (op.type === "CREATE" && op.tempId === expB.experience_id) ||
-                        (op.type === "UPDATE" && op.id === expB.experience_id)
-                    );
-                    const path = opIdx !== -1 ? `experiences.${opIdx}` : 'global';
-                    errors.push({ 
-                        path, 
-                        message: `Date overlap detected at "${expA.company_name}".` 
-                    });
+                    const message = `Date overlap detected at "${expA.company_name}".`;
+                    // Attribute to whichever side(s) of the conflict correspond to an operation
+                    // in this batch — both, if both were touched, so neither role's form card is
+                    // left without feedback.
+                    const opForA = operations.find(op => entityIdOf(op) === expA.experience_id);
+                    const opForB = operations.find(op => entityIdOf(op) === expB.experience_id);
+                    if (opForA) errors.push({ path: 'experiences', entityId: entityIdOf(opForA), message });
+                    if (opForB) errors.push({ path: 'experiences', entityId: entityIdOf(opForB), message });
                 }
             }
         }
 
-        // Multiple current roles check
-        const activeRoles = simulatedState.filter(e => e.is_current || !e.end_date);
+        // Multiple current roles check — only enforced when the newest active role is
+        // itself part of this batch; a pre-existing multiple-current state that this
+        // request doesn't touch shouldn't block an unrelated save.
+        const activeRoles = simulatedState.filter(isActiveExperience);
         if (activeRoles.length > 1) {
             // Find the newest current role
             const newest = [...activeRoles].sort((a, b) => new Date(b.start_date) - new Date(a.start_date))[0];
-            const severity = getMultipleCurrentSeverity(activeRoles.filter(r => r.experience_id !== newest.experience_id), newest.work_type, newest.work_mode);
-            
-            if (severity === 'block') {
-                const opIdx = operations.findIndex(op => 
-                    (op.type === "CREATE" && op.tempId === newest.experience_id) ||
-                    (op.type === "UPDATE" && op.id === newest.experience_id)
-                );
-                errors.push({ 
-                    path: opIdx !== -1 ? `experiences.${opIdx}.is_current` : 'global',
-                    message: describeConflict(activeRoles.filter(r => r.experience_id !== newest.experience_id), newest.work_type, newest.work_mode, severity)
-                });
+            if (touchedIds.has(newest.experience_id)) {
+                const severity = getMultipleCurrentSeverity(activeRoles.filter(r => r.experience_id !== newest.experience_id), newest.work_type, newest.work_mode);
+
+                if (severity === 'block') {
+                    const opForNewest = operations.find(op => entityIdOf(op) === newest.experience_id);
+                    errors.push({
+                        path: 'experiences.is_current',
+                        entityId: opForNewest ? entityIdOf(opForNewest) : undefined,
+                        message: describeConflict(activeRoles.filter(r => r.experience_id !== newest.experience_id), newest.work_type, newest.work_mode, severity)
+                    });
+                }
             }
         }
 

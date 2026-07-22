@@ -107,17 +107,10 @@ exports.createOrganization = async (req, res) => {
         let roles;
         let ownerRoleName;
 
-        if (entityType === 'INSTITUTION') {
-            ownerRoleName = 'Admin';
-            roles = [
-                { name: 'Admin', color: '#FFD700', permissions: ["*"], priority: 100, is_system: true }
-            ];
-        } else {
-            ownerRoleName = 'Owner';
-            roles = [
-                { name: 'Owner', color: '#FFD700', permissions: ["*"], priority: 100, is_system: true }
-            ];
-        }
+        ownerRoleName = 'Admin';
+        roles = [
+            { name: 'Admin', color: '#FFD700', permissions: ["*"], priority: 100, is_system: true }
+        ];
 
         let ownerRoleId;
 
@@ -1159,24 +1152,10 @@ exports.completeOnboardingFlow = async (req, res) => {
         let roles;
         let ownerRoleName;
 
-        if (org.entity_type === 'INSTITUTION') {
-            ownerRoleName = 'Admin';
-            roles = [
-                { name: 'Admin', color: '#FFD700', permissions: ["*"], priority: 100, is_system: true },
-                { name: 'Faculty', color: '#FF0000', permissions: ["SWITCH_TO_COMPANY", "CREATE_ACADEMIC_CONTENT", "MODERATE_STUDENTS", "VIEW_MEMBERS"], priority: 80, is_system: true },
-                { name: 'Student Moderator', color: '#00FF00', permissions: ["SWITCH_TO_COMPANY", "CREATE_GENERAL_CONTENT", "MODERATE_GENERAL", "VIEW_MEMBERS"], priority: 60, is_system: true },
-                { name: 'Student', color: '#0000FF', permissions: ["SWITCH_TO_COMPANY", "CREATE_GENERAL_CONTENT", "VIEW_MEMBERS"], priority: 10, is_system: true }
-            ];
-        } else {
-            ownerRoleName = 'Owner';
-            roles = [
-                { name: 'Owner', color: '#FFD700', permissions: ["*"], priority: 100, is_system: true },
-                { name: 'Admin', color: '#FF0000', permissions: ["SWITCH_TO_COMPANY", "MANAGE_COMPANY", "MANAGE_COMPANY_DETAILS", "MANAGE_SETTINGS", "MANAGE_ROLES", "MANAGE_MEMBERS", "INVITE_MEMBERS", "REMOVE_MEMBERS", "VIEW_MEMBERS", "POST_JOBS", "VIEW_JOBS", "MANAGE_JOBS", "VIEW_APPLICANTS", "MANAGE_APPLICANTS", "CREATE_CONTENT", "MANAGE_COMMENTS", "VIEW_ANALYTICS"], priority: 90, is_system: true },
-                { name: 'Editor', color: '#00FF00', permissions: ["SWITCH_TO_COMPANY", "CREATE_CONTENT", "VIEW_ANALYTICS", "VIEW_MEMBERS", "MANAGE_COMPANY_DETAILS"], priority: 60, is_system: true },
-                { name: 'Recruiter', color: '#0000FF', permissions: ["SWITCH_TO_COMPANY", "POST_JOBS", "VIEW_JOBS", "VIEW_APPLICANTS", "MANAGE_APPLICANTS", "VIEW_MEMBERS"], priority: 50, is_system: true },
-                { name: 'Analyst', color: '#800080', permissions: ["SWITCH_TO_COMPANY", "VIEW_ANALYTICS", "VIEW_MEMBERS"], priority: 40, is_system: true }
-            ];
-        }
+        ownerRoleName = 'Admin';
+        roles = [
+            { name: 'Admin', color: '#FFD700', permissions: ["*"], priority: 100, is_system: true }
+        ];
 
         let ownerRoleId;
 

@@ -40,9 +40,31 @@ const hasActorPermission = (permissions = [], permission) => {
     const upperPerms = (Array.isArray(permissions) ? permissions : [])
         .map(p => String(p).toUpperCase().trim());
 
-    return upperPerms.includes("*") ||
-        upperPerms.includes(targetPerm) ||
-        (targetPerm.startsWith("VIEW_") && upperPerms.includes(targetPerm.replace("VIEW_", "MANAGE_")));
+    if (upperPerms.includes("*") || upperPerms.includes(targetPerm)) return true;
+
+    // Hierarchy / Parent-child permission mappings
+    if (targetPerm === "VIEW_ANALYTICS" && upperPerms.includes("ANALYTICS")) return true;
+    
+    // JOBS parent implies sub-permissions
+    const jobsSubPerms = ["POST_JOBS", "VIEW_APPLICANTS", "JOBS_CHAT", "JOBS"];
+    if (jobsSubPerms.includes(targetPerm) && upperPerms.includes("JOBS")) return true;
+
+    // TEAMS parent implies sub-permissions
+    const teamsSubPerms = ["VIEW_MEMBERS", "INVITE_MEMBERS", "REMOVE_MEMBERS", "MANAGE_MEMBERS", "MANAGE_ROLES", "TEAMS"];
+    if (teamsSubPerms.includes(targetPerm) && upperPerms.includes("TEAMS")) return true;
+
+    // CHANNEL parent implies channel-related details
+    const channelSubPerms = ["MANAGE_COMPANY_DETAILS", "INVITE_MEMBERS", "CHANNEL", "CHANNELS", "MANAGE_CHANNEL"];
+    const hasChannelPerm = upperPerms.some(p => ["CHANNEL", "CHANNELS", "MANAGE_CHANNEL"].includes(p));
+    if (channelSubPerms.includes(targetPerm) && hasChannelPerm) return true;
+
+    // CHAT parent implies sub-permissions
+    if ((targetPerm === "QUERIES" || targetPerm === "CHAT" || targetPerm === "MESSAGES") && (upperPerms.includes("CHAT") || upperPerms.includes("MESSAGES"))) return true;
+
+    // Hierarchy: MANAGE_X implies VIEW_X
+    if (targetPerm.startsWith("VIEW_") && upperPerms.includes(targetPerm.replace("VIEW_", "MANAGE_"))) return true;
+
+    return false;
 };
 
 async function getOrganizationMembership(orgId, userId, queryable = pool) {
@@ -207,7 +229,10 @@ const requireOrgActorPermission = (permission) => (req, res, next) => {
         );
     }
 
-    if (!hasActorPermission(req.actor.permissions, permission)) {
+    const perms = Array.isArray(permission) ? permission : [permission];
+    const hasPerm = perms.some(p => hasActorPermission(req.actor.permissions, p));
+
+    if (!hasPerm) {
         if (req.actor?.orgId && req.actor?.userId) {
             logAudit(pool, {
                 entityId: req.actor.orgId,
@@ -221,7 +246,7 @@ const requireOrgActorPermission = (permission) => (req, res, next) => {
                 }
             });
         }
-        return next(new AppError(`You do not have permission: ${permission}`, 403));
+        return next(new AppError(`You do not have permission: ${Array.isArray(permission) ? permission.join(" or ") : permission}`, 403));
     }
 
     req.member = {

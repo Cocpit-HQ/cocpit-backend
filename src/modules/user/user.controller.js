@@ -986,34 +986,20 @@ exports.deleteAccount = async (req, res) => {
       return res.status(400).json({ message: "Authentication is required to delete your account" });
     }
 
-    // 3. Block deletion if sole owner of a company
+    // 3. Block deletion if owner of a company
     const ownedCompanies = await client.query(
-      `SELECT cm.org_id, c.name
-       FROM organization_members cm
-       JOIN organizations c ON cm.org_id = c.org_id
-       LEFT JOIN organization_roles cr ON cm.role_id = cr.role_id
-       WHERE cm.user_id = $1
-         AND (cr.name ILIKE 'Owner' OR cm.role = 'OWNER')
+      `SELECT c.org_id, c.name
+       FROM organizations c
+       WHERE c.created_by = $1
          AND c.is_deleted = FALSE`,
       [userId]
     );
 
     for (const company of ownedCompanies.rows) {
-      const otherOwners = await client.query(
-        `SELECT 1
-         FROM organization_members cm
-         LEFT JOIN organization_roles cr ON cm.role_id = cr.role_id
-         WHERE cm.org_id = $1
-           AND (cr.name ILIKE 'Owner' OR cm.role = 'OWNER')
-           AND cm.user_id != $2`,
-        [company.org_id, userId]
+      throw new AppError(
+        `You are the sole owner of "${company.name}". Please transfer ownership or delete the company before deleting your account.`,
+        400
       );
-      if (otherOwners.rowCount === 0) {
-        throw new AppError(
-          `You are the sole owner of "${company.name}". Please transfer ownership or delete the company before deleting your account.`,
-          400
-        );
-      }
     }
 
     // 4. Schedule soft deletion (40 days from now)
