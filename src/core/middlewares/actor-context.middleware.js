@@ -54,11 +54,12 @@ const hasActorPermission = (permissions = [], permission) => {
     if (teamsSubPerms.includes(targetPerm) && upperPerms.includes("TEAMS")) return true;
 
     // CHANNEL parent implies channel-related details
-    const channelSubPerms = ["MANAGE_COMPANY_DETAILS", "INVITE_MEMBERS", "CHANNEL"];
-    if (channelSubPerms.includes(targetPerm) && upperPerms.includes("CHANNEL")) return true;
+    const channelSubPerms = ["MANAGE_COMPANY_DETAILS", "INVITE_MEMBERS", "CHANNEL", "CHANNELS", "MANAGE_CHANNEL"];
+    const hasChannelPerm = upperPerms.some(p => ["CHANNEL", "CHANNELS", "MANAGE_CHANNEL"].includes(p));
+    if (channelSubPerms.includes(targetPerm) && hasChannelPerm) return true;
 
     // CHAT parent implies sub-permissions
-    if (targetPerm === "QUERIES" && upperPerms.includes("CHAT")) return true;
+    if ((targetPerm === "QUERIES" || targetPerm === "CHAT" || targetPerm === "MESSAGES") && (upperPerms.includes("CHAT") || upperPerms.includes("MESSAGES"))) return true;
 
     // Hierarchy: MANAGE_X implies VIEW_X
     if (targetPerm.startsWith("VIEW_") && upperPerms.includes(targetPerm.replace("VIEW_", "MANAGE_"))) return true;
@@ -228,7 +229,10 @@ const requireOrgActorPermission = (permission) => (req, res, next) => {
         );
     }
 
-    if (!hasActorPermission(req.actor.permissions, permission)) {
+    const perms = Array.isArray(permission) ? permission : [permission];
+    const hasPerm = perms.some(p => hasActorPermission(req.actor.permissions, p));
+
+    if (!hasPerm) {
         if (req.actor?.orgId && req.actor?.userId) {
             logAudit(pool, {
                 entityId: req.actor.orgId,
@@ -242,7 +246,7 @@ const requireOrgActorPermission = (permission) => (req, res, next) => {
                 }
             });
         }
-        return next(new AppError(`You do not have permission: ${permission}`, 403));
+        return next(new AppError(`You do not have permission: ${Array.isArray(permission) ? permission.join(" or ") : permission}`, 403));
     }
 
     req.member = {

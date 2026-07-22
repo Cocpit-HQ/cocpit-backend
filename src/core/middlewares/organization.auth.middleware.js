@@ -43,8 +43,10 @@ const requireOrgPermission = (permission) => async (req, res, next) => {
         assertActiveMembership(member);
 
         const permissions = member.permissions || [];
-        if (!hasActorPermission(permissions, permission)) {
-            return next(new AppError(`You do not have registration permission: ${permission} in this organization`, 403));
+        const permsToCheck = Array.isArray(permission) ? permission : [permission];
+        const hasPerm = permsToCheck.some(p => hasActorPermission(permissions, p));
+        if (!hasPerm) {
+            return next(new AppError(`You do not have permission: ${Array.isArray(permission) ? permission.join(" or ") : permission} in this organization`, 403));
         }
 
         req.member = {
