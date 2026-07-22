@@ -228,10 +228,7 @@ exports.updateRole = async (req, res, next) => {
             throw new AppError("System permission keys are not allowed for dynamic roles", 400);
         }
 
-        // Enforce hierarchy for updates: target priority must be less than actor priority (unless actor is Owner)
-        if (role.priority >= actorPriority && actorRole !== 'Owner') {
-            throw new AppError("Cannot modify a role with equal or higher priority than your own", 403);
-        }
+
 
         const updateRes = await client.query(
             `UPDATE organization_roles
@@ -291,9 +288,7 @@ exports.deleteRole = async (req, res, next) => {
             throw new AppError("Cannot delete Owner or Admin roles", 400);
         }
 
-        if (role.priority >= actorPriority && actorRole !== 'Owner') {
-            throw new AppError("Cannot delete a role with equal or higher priority than your own", 403);
-        }
+
 
         // Soft delete members who were in this role by setting status = 'REMOVED' and role_id = NULL
         await client.query(
@@ -551,10 +546,7 @@ exports.updateMemberRole = async (req, res, next) => {
             throw new AppError("Cannot invite or assign directly to the Owner role. Use Transfer Ownership.", 400);
         }
 
-        // Cannot assign a role of equal or higher priority than actor
-        if (targetRole.priority >= actorPriority && actorRole !== 'Owner') {
-            throw new AppError("Cannot assign a role with equal or higher priority than your own", 403);
-        }
+
 
         // Verify user is member and not Owner
         const targetOwner = await isTargetOwner(client, orgId, userId);
@@ -820,9 +812,7 @@ exports.sendInvite = async (req, res, next) => {
             throw new AppError("Cannot invite users to the Owner role", 400);
         }
 
-        if (targetRole.priority >= actorPriority && actorRole !== 'Owner') {
-            throw new AppError("Cannot assign a role with equal or higher priority than your own", 403);
-        }
+
 
         // 2. Verify target user follows the organization
         const followRes = await client.query(
