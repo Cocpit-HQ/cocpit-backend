@@ -1602,7 +1602,7 @@ LEFT JOIN (
     GROUP BY post_id
 ) sp_media ON sp.post_id = sp_media.post_id
 
-WHERE p.post_id = $1;
+WHERE p.post_id = $1 AND p.is_active = TRUE AND (p.is_removed IS FALSE OR p.is_removed IS NULL);
 `
 
         const result = await pool.query(query, [postId, userId, companyId || null]);

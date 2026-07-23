@@ -6,7 +6,6 @@ const express = require("express");
 const app = require("./app");
 const http = require("http");
 const { initSocket } = require("./utils/socket");
-const { startSessionTimeoutWorker } = require("./workers/sessionTimeoutWorker");
 const { processJobExpirations } = require("./workers/jobExpiryWorker");
 const { processEventOutbox } = require("./workers/eventOutboxWorker");
 const { processStoryExpirations } = require("./workers/storyExpiryWorker");
@@ -30,8 +29,6 @@ if (process.env.NEW_RELIC_LICENSE_KEY) {
 // Redundant app.set("trust proxy", true) removed to prevent overwriting app.js settings
 // Initialize Socket.IO (backgrounded to avoid hanging on Redis connect)
 initSocket(server);
-
-startSessionTimeoutWorker();
 
 // Start simple job expiry worker (Every 15 minutes)
 setInterval(() => {

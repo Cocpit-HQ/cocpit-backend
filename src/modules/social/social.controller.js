@@ -4,7 +4,6 @@ const redisClient = require("../../core/db/redis"); // Added for cache invalidat
 const { connected } = require("node:process");
 const { formatDistanceToNow } = require('date-fns');
 const socketService = require("../../core/infrastructure/socket.service");
-const { checkRateLimit } = require("../../core/utils/sessionRateLimiter");
 const { hasActorPermission } = require("../../core/middlewares/actor-context.middleware");
 const { markConversationAsRead } = require("../../services/conversationRead.service");
 const {
@@ -2427,24 +2426,6 @@ exports.sendMessage = async (req, res) => {
                 senderName = orgRes.rows[0].name;
                 senderAvatar = orgRes.rows[0].logo_url;
                 senderSlug = orgRes.rows[0].slug;
-
-                // Session check: if feature enabled, require active session
-                const sessionFeatureEnabled = (() => {
-                    if (process.env.organization_chat_sessions_ENABLED === 'false') return false;
-                    const perCompany = process.env.organization_chat_sessions_COMPANIES || 'all';
-                    if (perCompany === 'all') return true;
-                    return perCompany.split(',').map(s => s.trim()).includes(authorCompanyId);
-                })();
-
-                var activeSession = null;
-                if (sessionFeatureEnabled) {
-                    // Rate limit company messages
-                    const rateCheck = checkRateLimit(`${authorCompanyId}:${senderId}`, 'company:message');
-                    if (!rateCheck.allowed) {
-                        await client.query('ROLLBACK');
-                        return res.status(429).json({ message: 'Too many messages. Please slow down.', retryAfterMs: rateCheck.retryAfterMs });
-                    }
-                }
             } else {
                 const senderRes = await client.query(
                     `SELECT full_name, avatar_url, headline, account_name FROM users WHERE user_id = $1`,
@@ -2506,7 +2487,6 @@ exports.sendMessage = async (req, res) => {
 
             let conversationId;
             let isNewConversation = false;
-            let newSessionHandlerName = null;
 
             if (authorCompanyId) {
                 // Company-to-User: look for a conversation where company is a participant AND target user is a participant
@@ -2633,67 +2613,7 @@ exports.sendMessage = async (req, res) => {
                     ? (images.length > 1 ? `${images.length} attachments` : (images[0].mimetype.startsWith('video/') ? 'Sent a video' : (images[0].mimetype === 'application/pdf' ? 'Sent a document' : 'Sent a photo')))
                     : (shared_post_id ? 'Shared a post' : (shared_profile_id ? 'Shared a profile' : 'Attachment')));
 
-            // Session enforcement for company messages (within transaction for atomicity)
-            let sessionId = null;
-            if (authorCompanyId) {
-                const sessionFeatureEnabled = (() => {
-                    if (process.env.organization_chat_sessions_ENABLED === 'false') return false;
-                    const perCompany = process.env.organization_chat_sessions_COMPANIES || 'all';
-                    if (perCompany === 'all') return true;
-                    return perCompany.split(',').map(s => s.trim()).includes(authorCompanyId);
-                })();
-
-                if (sessionFeatureEnabled) {
-                    const sessionCheck = await client.query(
-                        `SELECT session_id FROM organization_chat_sessions
-                         WHERE conversation_id = $1 AND org_id = $2
-                         AND handler_user_id = $3 AND status = 'ACTIVE'
-                         FOR UPDATE`,
-                        [conversationId, authorCompanyId, senderId]
-                    );
-                    if (sessionCheck.rowCount === 0) {
-                        if (isNewConversation) {
-                            // Auto-claim session for new conversation
-                            // 1. Get member details for snapshot
-                            const memberRes = await client.query(
-                                `SELECT cm.role_id, cr.name as role_name, u.full_name
-                                 FROM organization_members cm
-                                 JOIN active_users u ON cm.user_id = u.user_id
-                                 LEFT JOIN organization_roles cr ON cm.role_id = cr.role_id
-                                 WHERE cm.org_id = $1 AND cm.user_id = $2`,
-                                [authorCompanyId, senderId]
-                            );
-
-                            const memberDetails = memberRes.rows[0];
-                            // Fallback if not found (should be validated by now, but safe guard)
-                            const handlerName = memberDetails?.full_name || 'Unknown';
-                            newSessionHandlerName = handlerName;
-                            const roleId = memberDetails?.role_id || null;
-                            const roleName = memberDetails?.role_name || null;
-
-                            // 2. Create Session
-                            const newSessionRes = await client.query(
-                                `INSERT INTO organization_chat_sessions 
-                                 (conversation_id, org_id, handler_user_id, 
-                                  handler_name_snapshot, handler_role_id_snapshot, handler_role_name_snapshot,
-                                  status)
-                                 VALUES ($1, $2, $3, $4, $5, $6, 'ACTIVE')
-                                 RETURNING session_id`,
-                                [conversationId, authorCompanyId, senderId, handlerName, roleId, roleName]
-                            );
-                            sessionId = newSessionRes.rows[0].session_id;
-
-                            // 3. Notify socket (queued for after commit)
-                            // We'll emit 'session_claimed' below
-                        } else {
-                            await client.query('ROLLBACK');
-                            return res.status(403).json({ message: 'No active session. Claim conversation first.' });
-                        }
-                    } else {
-                        sessionId = sessionCheck.rows[0].session_id;
-                    }
-                }
-            }
+            const sessionId = null;
 
             const msgRes = await client.query(
                 `INSERT INTO messages (conversation_id, sender_id, text_content, shared_post_id, author_org_id, sender_type, session_id, replied_msg_id, shared_profile_id, shared_profile_type, entity_type, entity_id)
@@ -2763,16 +2683,6 @@ exports.sendMessage = async (req, res) => {
                  WHERE conversation_id = $1`,
                 [conversationId, previewText]
             );
-            // Update session activity (within transaction)
-            if (sessionId) {
-                await client.query(
-                    `UPDATE organization_chat_sessions
-                     SET last_activity_at = NOW(), message_count = message_count + 1
-                     WHERE session_id = $1`,
-                    [sessionId]
-                );
-            }
-
             let targetNotificationMuted = false;
             if (targetIsCompany) {
                 const muteState = await getConversationMuteState(client, {
@@ -2791,45 +2701,6 @@ exports.sendMessage = async (req, res) => {
             }
 
             await client.query('COMMIT');
-
-            // Emit session activity event (outside transaction)
-            if (sessionId && authorCompanyId) {
-                try {
-                    const members = await pool.query(
-                        'SELECT user_id FROM organization_members WHERE org_id = $1 AND status = $2',
-                        [authorCompanyId, 'ACTIVE']
-                    );
-                    for (const m of members.rows) {
-                        socketService.notifyUser(m.user_id, 'session_activity', {
-                            conversationId,
-                            sessionId,
-                            lastActivityAt: new Date().toISOString()
-                        });
-                    }
-                } catch (notifyErr) {
-                    console.error('Error emitting session_activity:', notifyErr);
-                }
-            }
-
-            // Emit session_claimed (outside transaction) if auto-claimed
-            if (sessionId && authorCompanyId && isNewConversation && newSessionHandlerName) {
-                try {
-                    const members = await pool.query(
-                        'SELECT user_id FROM organization_members WHERE org_id = $1 AND status = $2',
-                        [authorCompanyId, 'ACTIVE']
-                    );
-                    for (const m of members.rows) {
-                        socketService.notifyUser(m.user_id, 'session_claimed', {
-                            conversationId,
-                            sessionId,
-                            handlerUserId: senderId,
-                            handlerName: newSessionHandlerName
-                        });
-                    }
-                } catch (notifyErr) {
-                    console.error('Error emitting session_claimed:', notifyErr);
-                }
-            }
 
             let replyMessageData = null;
             if (replyMessageId) {
