@@ -883,19 +883,45 @@ exports.sendInvite = async (req, res, next) => {
             metadata: { targetUserId: userId, roleId, roleName: targetRole.name }
         });
 
-        // 8. Fire-and-forget socket notification to the user (if socket/notification service is importable)
+        // 8. Persistent Notification and Real-time push
         try {
+            const orgRes = await client.query(`SELECT name FROM organizations WHERE org_id = $1`, [orgId]);
+            const orgName = orgRes.rows[0]?.name || "Organization";
+            const actorRes = await client.query(`SELECT full_name, avatar_url FROM active_users WHERE user_id = $1`, [actorId]);
+            const actorName = actorRes.rows[0]?.full_name || "Someone";
+            const actorAvatar = actorRes.rows[0]?.avatar_url || null;
+            const notifText = `${actorName} invited you to join ${orgName} as ${targetRole.name}`;
+
+            const notifRes = await client.query(
+                `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata)
+                 VALUES ($1, $2, 'organization_invite', $3, $4, $5) RETURNING notification_id, created_at`,
+                [userId, actorId, notifText, orgId, JSON.stringify({ token, orgId, orgName, role: targetRole.name })]
+            );
+
+            const notifId = notifRes.rows[0]?.notification_id;
+            const notifCreatedAt = notifRes.rows[0]?.created_at ? notifRes.rows[0].created_at.toISOString() : new Date().toISOString();
+
             const socketService = require("../../services/socket.service");
             if (socketService && typeof socketService.notifyUser === 'function') {
-                socketService.notifyUser(userId, {
-                    type: 'ORGANIZATION_INVITE',
-                    orgId,
-                    roleName: targetRole.name,
-                    message: `You have been invited to join organization as ${targetRole.name}`
+                socketService.notifyUser(userId, "notification", {
+                    type: "organization_invite",
+                    text: notifText,
+                    from: actorId,
+                    sender_id: actorId,
+                    senderName: actorName,
+                    senderAvatar: actorAvatar,
+                    actor_name: actorName,
+                    actor_avatar: actorAvatar,
+                    referenceId: orgId,
+                    reference_id: orgId,
+                    metadata: { token, orgId, orgName, role: targetRole.name },
+                    notification_id: notifId,
+                    created_at: notifCreatedAt,
+                    is_read: false
                 });
             }
         } catch (e) {
-            // Ignore notification service import issues
+            console.error("[INVITE] Notification delivery failed:", e.message);
         }
 
         await client.query("COMMIT");

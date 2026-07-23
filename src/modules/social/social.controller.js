@@ -1319,13 +1319,23 @@ exports.getConnectionCounts = async (req, res) => {
                 (SELECT COUNT(*) FROM connection_requests
                  WHERE receiver_id = $1 AND status = 'pending') AS received,
                 (SELECT COUNT(*) FROM connection_requests
-                 WHERE sender_id  = $1 AND status = 'pending') AS sent
+                 WHERE sender_id  = $1 AND status = 'pending') AS sent,
+                (
+                    (SELECT COUNT(*) FROM organization_invites
+                     WHERE (invited_user_id = $1 OR email = (SELECT email FROM users WHERE user_id = $1))
+                       AND status = 'PENDING' AND expires_at > NOW()) +
+                    (SELECT COUNT(*) FROM community_invitations
+                     WHERE invitee_id = $1 AND status = 'pending' AND is_active = TRUE) +
+                    (SELECT COUNT(*) FROM group_invitations
+                     WHERE invitee_id = $1 AND status = 'pending')
+                ) AS invitations
         `, [userId]);
 
         const row = result.rows[0];
         return res.status(200).json({
             received: parseInt(row.received || 0),
             sent: parseInt(row.sent || 0),
+            invitations: parseInt(row.invitations || 0),
         });
     } catch (err) {
         console.error('Get connection counts error:', err);
