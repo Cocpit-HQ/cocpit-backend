@@ -160,6 +160,7 @@ exports.getOrgProfile = async (req, res) => {
                  WHERE p.author_org_id = $1
                    AND p.is_community_article IS NOT TRUE
                    AND (p.is_removed IS FALSE OR p.is_removed IS NULL)
+                   AND p.is_active = TRUE
                  ORDER BY p.created_at DESC
                  LIMIT 3`,
                 [org.org_id, viewerId || null]
