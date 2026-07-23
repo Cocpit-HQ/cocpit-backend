@@ -19,7 +19,7 @@ router.get("/users/me/posts/private", requireAuth, contentController.getMyPrivat
 // Posts (Image, Video, Article, Poll)
 router.post("/post", requireAuth, uploadPostMedia, validate(createPostSchema), contentController.createPost);
 router.get("/post/:id", requireAuth, contentController.getPostById);
-router.put("/post/:id", requireAuth, contentController.updatePostById);
+router.put("/post/:id", requireAuth, uploadPostMedia, contentController.updatePostById);
 router.delete("/post/:id", requireAuth, contentController.deletePost);
 
 // Achievement Images

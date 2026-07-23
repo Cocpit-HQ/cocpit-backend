@@ -231,10 +231,23 @@ exports.getSubscribedCommunities = async (req, res, next) => {
             `SELECT DISTINCT c.community_id, c.name, c.description, c.banner_url, c.org_id,
                     o.name AS company_name, o.slug AS company_slug, o.logo_url,
                     (SELECT COUNT(*) FROM community_subscriptions WHERE community_id = c.community_id AND status = 'SUBSCRIBED')::int AS subscriber_count,
-                    COALESCE(o.created_by = $1, FALSE) AS is_owner
+                    COALESCE(o.created_by = $1, FALSE) AS is_owner,
+                    la.post_id AS latest_article_id,
+                    la.title AS latest_article_title,
+                    la.created_at AS latest_article_created_at
              FROM communities c
              JOIN organizations o ON c.org_id = o.org_id
              LEFT JOIN community_subscriptions cs ON cs.community_id = c.community_id AND cs.user_id = $1 AND cs.status = 'SUBSCRIBED'
+             LEFT JOIN LATERAL (
+                 SELECT p.post_id, p.title, p.created_at
+                 FROM posts p
+                 WHERE p.author_org_id = c.org_id
+                   AND p.post_type = 'article'
+                   AND p.is_active = TRUE
+                   AND p.status = 'published'
+                 ORDER BY p.created_at DESC
+                 LIMIT 1
+             ) la ON TRUE
              WHERE c.is_active = TRUE AND o.is_deleted = FALSE
                AND (
                  cs.status = 'SUBSCRIBED'
@@ -253,7 +266,12 @@ exports.getSubscribedCommunities = async (req, res, next) => {
             companySlug: row.company_slug,
             logoUrl: row.logo_url,
             subscriberCount: row.subscriber_count,
-            isOwner: row.is_owner
+            isOwner: row.is_owner,
+            latestArticle: row.latest_article_id ? {
+                id: row.latest_article_id,
+                title: row.latest_article_title,
+                createdAt: row.latest_article_created_at
+            } : null
         }));
 
         return res.status(200).json({
@@ -971,25 +989,48 @@ exports.getSubscriberGrowth = async (req, res, next) => {
             throw new AppError("Invalid or mismatched organization actor context", 403);
         }
 
-        const result = await pool.query(
-            `SELECT DATE_TRUNC('day', cs.updated_at) AS date, COUNT(*)::int AS subscribers
+        // Get base count of subscribers before current year
+        const baseResult = await pool.query(
+            `SELECT COUNT(*)::int AS count
              FROM community_subscriptions cs
              JOIN communities c ON cs.community_id = c.community_id
-             WHERE c.org_id = $1 AND cs.status = 'SUBSCRIBED'
-             GROUP BY DATE_TRUNC('day', cs.updated_at)
-             ORDER BY DATE_TRUNC('day', cs.updated_at) ASC`,
+             WHERE c.org_id = $1 AND cs.status = 'SUBSCRIBED' AND cs.updated_at < DATE_TRUNC('year', CURRENT_DATE)`,
+            [orgId]
+        );
+        const baseCount = baseResult.rows[0]?.count || 0;
+
+        // Get monthly subscriber counts for current year
+        const monthlyResult = await pool.query(
+            `SELECT DATE_TRUNC('month', cs.updated_at) AS month_date, COUNT(*)::int AS count
+             FROM community_subscriptions cs
+             JOIN communities c ON cs.community_id = c.community_id
+             WHERE c.org_id = $1 AND cs.status = 'SUBSCRIBED' AND cs.updated_at >= DATE_TRUNC('year', CURRENT_DATE)
+             GROUP BY DATE_TRUNC('month', cs.updated_at)
+             ORDER BY DATE_TRUNC('month', cs.updated_at) ASC`,
             [orgId]
         );
 
-        // Map date to string formatted like "Jan 1" or YYYY-MM-DD
-        const mapped = result.rows.map(row => {
-            const d = new Date(row.date);
-            const formattedDate = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-            return {
-                date: formattedDate,
-                subscribers: row.subscribers
-            };
+        // Map monthly counts into a lookup object
+        const monthlyMap = {};
+        monthlyResult.rows.forEach(row => {
+            const dateObj = new Date(row.month_date);
+            monthlyMap[dateObj.getMonth()] = row.count;
         });
+
+        // Generate list of months from January of current year to present month
+        const currentMonth = new Date().getMonth(); // 0-indexed (Jan is 0)
+        const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+        const mapped = [];
+        let runningTotal = baseCount;
+        for (let m = 0; m <= currentMonth; m++) {
+            const monthCount = monthlyMap[m] || 0;
+            runningTotal += monthCount;
+            mapped.push({
+                date: monthNames[m],
+                subscribers: runningTotal
+            });
+        }
 
         return res.status(200).json({
             success: true,

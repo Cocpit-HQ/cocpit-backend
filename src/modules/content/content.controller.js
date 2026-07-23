@@ -65,6 +65,29 @@ const getOptionalContentActorScope = (req, _fallbackOrgId = null) => {
     return getContentActorScope(req);
 };
 
+const broadcastChannelArticlePublished = async (orgId, article) => {
+    try {
+        const subscribers = await pool.query(
+            `SELECT cs.user_id FROM community_subscriptions cs
+             JOIN communities c ON cs.community_id = c.community_id
+             WHERE c.org_id = $1 AND cs.status = 'SUBSCRIBED'`,
+            [orgId]
+        );
+        for (const sub of subscribers.rows) {
+            socketService.notifyUser(sub.user_id, "channel_article_published", {
+                orgId,
+                article: {
+                    id: article.id,
+                    title: article.title,
+                    createdAt: article.createdAt || article.created_at
+                }
+            });
+        }
+    } catch (err) {
+        console.error("Error broadcasting channel article publication:", err);
+    }
+};
+
 const { getPostHydrationSelect, getPostHydrationJoins, getPublicFeedWhere } = require("../../core/queries/postHydration.query.js");
 
 // --- Feed / Posts ---
@@ -756,11 +779,31 @@ exports.createPost = async (req, res) => {
 
     // Map uploaded files to media URLs directly (already streamed by Multer middleware)
     if (uploadedFiles.length > 0) {
-        const urls = uploadedFiles.map(file => (file.path || file.secure_url || '').replace(/\\/g, "/"));
-        if (videoFiles.length > 0) {
-            media_urls = [urls[0]];
-        } else if (imageFiles.length > 0) {
-            media_urls = urls;
+        if (post_type === 'article') {
+            let coverFileUrl = null;
+            uploadedFiles.forEach(file => {
+                const fileUrl = (file.path || file.secure_url || '').replace(/\\/g, "/");
+                const originalName = file.originalname;
+                
+                if (content && content.includes(originalName)) {
+                    const regex = new RegExp(`src="[^"]*${originalName}[^"]*"`, 'g');
+                    content = content.replace(regex, `src="${fileUrl}"`);
+                } else {
+                    coverFileUrl = fileUrl;
+                }
+            });
+            if (coverFileUrl) {
+                media_urls = [coverFileUrl];
+            } else if (!media_urls) {
+                media_urls = [];
+            }
+        } else {
+            const urls = uploadedFiles.map(file => (file.path || file.secure_url || '').replace(/\\/g, "/"));
+            if (videoFiles.length > 0) {
+                media_urls = [urls[0]];
+            } else if (imageFiles.length > 0) {
+                media_urls = urls;
+            }
         }
     }
 
@@ -1129,6 +1172,15 @@ exports.createPost = async (req, res) => {
                 notifyBroadcastToChildOrgs(companyId, postId, content).catch(err => console.error("Broadcast notification error:", err));
             }
 
+            // Real-time channel article update notification for subscribers
+            if (post_type === 'article' && status === 'published') {
+                const newPostCreatedAt = postResult.rows[0].created_at;
+                broadcastChannelArticlePublished(companyId, {
+                    id: postId,
+                    title: title,
+                    createdAt: newPostCreatedAt
+                }).catch(err => console.error("Error in broadcastChannelArticlePublished:", err));
+            }
         }
 
         // Handle Hashtags asynchronously without outbox
@@ -1672,6 +1724,7 @@ WHERE p.post_id = $1;
 exports.updatePostById = async (req, res) => {
     const postId = req.params.id;
     let { content, category, visibility, media_urls, post_type, title, poll_options, location, status } = req.body;
+    const uploadedFiles = req.files || [];
 
     if (status !== undefined && status !== "published" && status !== "draft") {
         return res.status(400).json({ message: "Invalid status. Allowed values: 'published', 'draft'" });
@@ -1716,6 +1769,25 @@ exports.updatePostById = async (req, res) => {
             return res.status(404).json({ message: "Post not found" });
         }
         const { author_id, author_org_id, post_type: currentPostType, shared_post_id, shared_job_id } = postCheck.rows[0];
+
+        const effectivePostType = post_type || currentPostType;
+        if (effectivePostType === 'article' && uploadedFiles.length > 0) {
+            let coverFileUrl = null;
+            uploadedFiles.forEach(file => {
+                const fileUrl = (file.path || file.secure_url || '').replace(/\\/g, "/");
+                const originalName = file.originalname;
+                
+                if (content && content.includes(originalName)) {
+                    const regex = new RegExp(`src="[^"]*${originalName}[^"]*"`, 'g');
+                    content = content.replace(regex, `src="${fileUrl}"`);
+                } else {
+                    coverFileUrl = fileUrl;
+                }
+            });
+            if (coverFileUrl) {
+                media_urls = [coverFileUrl];
+            }
+        }
         let canEdit = false;
 
         if (author_org_id) {
@@ -1922,6 +1994,16 @@ WHERE p.post_id = $1;
         const result = await pool.query(query, [postId]);
 
         const post = result.rows[0];
+
+        // Real-time channel article update notification for subscribers
+        if (post.author_org_id && post.post_type === 'article' && post.status === 'published') {
+            broadcastChannelArticlePublished(post.author_org_id, {
+                id: post.post_id,
+                title: post.title,
+                createdAt: post.created_at
+            }).catch(err => console.error("Error in broadcastChannelArticlePublished:", err));
+        }
+
         const mappedPost = {
             ...post,
             id: post.post_id,
