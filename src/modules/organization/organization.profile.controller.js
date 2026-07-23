@@ -64,7 +64,16 @@ async function getViewerMembership(orgId, userId) {
            AND (cm.expires_at IS NULL OR cm.expires_at > NOW())`,
         [orgId, userId]
     );
-    return result.rows[0] || null;
+    const row = result.rows[0];
+    if (row && row.permissions && typeof row.permissions === 'string') {
+        try {
+            row.permissions = JSON.parse(row.permissions);
+        } catch (e) {
+            console.error("Failed to parse permissions string:", e);
+            row.permissions = [];
+        }
+    }
+    return row || null;
 }
 
 // ---------------------------------------------------------------------------
@@ -558,7 +567,16 @@ async function getViewerMembership(orgId, userId) {
            AND (cm.expires_at IS NULL OR cm.expires_at > NOW())`,
         [orgId, userId]
     );
-    return result.rows[0] || null;
+    const row = result.rows[0];
+    if (row && row.permissions && typeof row.permissions === 'string') {
+        try {
+            row.permissions = JSON.parse(row.permissions);
+        } catch (e) {
+            console.error("Failed to parse permissions string:", e);
+            row.permissions = [];
+        }
+    }
+    return row || null;
 }
 
 /**

@@ -77,7 +77,14 @@ async function getChatActorContext(client, req, orgId, { requiredPermissions = [
     }
 
     const member = memberRes.rows[0];
-    const permissions = member.permissions || [];
+    let permissions = member.permissions || [];
+    if (typeof permissions === 'string') {
+        try {
+            permissions = JSON.parse(permissions);
+        } catch (e) {
+            permissions = [];
+        }
+    }
     if (!hasAnyPermission(permissions, requiredPermissions)) {
         const err = new Error("Missing required organization chat permission");
         err.statusCode = 403;

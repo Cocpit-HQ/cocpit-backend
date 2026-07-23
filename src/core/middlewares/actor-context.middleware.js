@@ -85,7 +85,16 @@ async function getOrganizationMembership(orgId, userId, queryable = pool) {
     );
 
     if (result.rowCount === 0) return null;
-    return result.rows[0];
+    const row = result.rows[0];
+    if (row && row.permissions && typeof row.permissions === 'string') {
+        try {
+            row.permissions = JSON.parse(row.permissions);
+        } catch (e) {
+            console.error("Failed to parse permissions string:", e);
+            row.permissions = [];
+        }
+    }
+    return row;
 }
 
 function assertActiveMembership(member) {
@@ -210,6 +219,18 @@ const requireActorType = (type) => (req, res, next) => {
 const requireOrgActorPermission = (permission) => (req, res, next) => {
     if (!req.actor || req.actor.type !== "ORGANIZATION") {
         return next(new AppError("This action requires organization actor context", 403));
+    }
+
+    if (req.actor.roleName === 'Admin' || req.actor.permissions.includes('*')) {
+        req.member = {
+            role: req.actor.roleName,
+            permissions: req.actor.permissions || [],
+            priority: req.actor.rolePriority || 0,
+        };
+        if (!req.params.orgId && !req.params.companyId) {
+            req.params.orgId = req.actor.orgId;
+        }
+        return next();
     }
 
     const urlOrgId = req.params.orgId || req.params.companyId;
