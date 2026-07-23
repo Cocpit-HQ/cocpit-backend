@@ -29,16 +29,18 @@ exports.getRoles = async (req, res, next) => {
                                 'full_name', u.full_name,
                                 'avatar', u.avatar_url,
                                 'email', u.email,
-                                'status', m.status
+                                'status', m.status,
+                                'is_owner', (o.created_by = u.user_id)
                             )
                         ) FILTER (WHERE u.user_id IS NOT NULL),
                         '[]'::json
                     ) AS members
              FROM organization_roles r
+             JOIN organizations o ON o.org_id = r.org_id
              LEFT JOIN organization_members m ON m.role_id = r.role_id AND m.status = 'ACTIVE'
              LEFT JOIN active_users u ON m.user_id = u.user_id
              WHERE r.org_id = $1 AND r.is_active = TRUE
-             GROUP BY r.role_id
+             GROUP BY r.role_id, o.created_by
              ORDER BY r.priority DESC, r.created_at ASC`,
             [orgId]
         );
@@ -68,12 +70,14 @@ exports.getRoleById = async (req, res, next) => {
                                 'avatar', u.avatar_url,
                                 'email', u.email,
                                 'status', m.status,
-                                'invite_id', oi.invite_id
+                                'invite_id', oi.invite_id,
+                                'is_owner', (o.created_by = u.user_id)
                             )
                         ) FILTER (WHERE u.user_id IS NOT NULL),
                         '[]'::json
                     ) AS members
              FROM organization_roles r
+             JOIN organizations o ON o.org_id = r.org_id
              LEFT JOIN organization_members m ON m.role_id = r.role_id AND m.status IN ('ACTIVE', 'PENDING_INVITE')
              LEFT JOIN active_users u ON m.user_id = u.user_id
              LEFT JOIN organization_invites oi ON (
@@ -82,7 +86,7 @@ exports.getRoleById = async (req, res, next) => {
                  AND oi.status = 'PENDING'
              )
              WHERE r.org_id = $1 AND r.role_id = $2 AND r.is_active = TRUE
-             GROUP BY r.role_id`,
+             GROUP BY r.role_id, o.created_by`,
             [orgId, roleId]
         );
         if (result.rowCount === 0) {
