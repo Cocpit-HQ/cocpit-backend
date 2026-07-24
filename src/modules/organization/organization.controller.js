@@ -187,6 +187,7 @@ exports.getOrganization = async (req, res) => {
         ${userId ? `(
             SELECT json_build_object(
                 'name', cr.name,
+                'description', cr.description,
                 'permissions', cr.permissions,
                 'priority', cr.priority
             )
@@ -433,6 +434,7 @@ exports.getUserOrganizations = async (req, res) => {
             `SELECT c.*, 
              json_build_object(
                 'name', cr.name,
+                'description', cr.description,
                 'permissions', cr.permissions,
                 'priority', cr.priority
              ) as viewer_role_data,
