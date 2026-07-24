@@ -2637,10 +2637,14 @@ exports.sendMessage = async (req, res) => {
             }
 
             // Determine message text for notifications/preview
+            const isDocumentMimetype = (mimetype) => mimetype === 'application/pdf'
+                || mimetype === 'application/msword'
+                || mimetype === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+
             const previewText = trimmedText
                 ? trimmedText
                 : (images && images.length > 0
-                    ? (images.length > 1 ? `${images.length} attachments` : (images[0].mimetype.startsWith('video/') ? 'Sent a video' : (images[0].mimetype === 'application/pdf' ? 'Sent a document' : 'Sent a photo')))
+                    ? (images.length > 1 ? `${images.length} attachments` : (images[0].mimetype.startsWith('video/') ? 'Sent a video' : (isDocumentMimetype(images[0].mimetype) ? 'Sent a document' : 'Sent a photo')))
                     : (shared_post_id ? 'Shared a post' : (shared_profile_id ? 'Shared a profile' : 'Attachment')));
 
             const sessionId = null;
@@ -2672,18 +2676,18 @@ exports.sendMessage = async (req, res) => {
                 const mediaValues = images.map(file => {
                     let type = 'image';
                     if (file.mimetype.startsWith('video/')) type = 'video';
-                    if (file.mimetype === 'application/pdf') type = 'document';
-                    return [newMessage.message_id, file.path, type];
+                    if (isDocumentMimetype(file.mimetype)) type = 'document';
+                    return [newMessage.message_id, file.path, type, file.originalname];
                 });
 
                 // Construct bulk insert parameters
-                const placeholders = mediaValues.map((_, i) => `($${i * 3 + 1}, $${i * 3 + 2}, $${i * 3 + 3})`).join(', ');
+                const placeholders = mediaValues.map((_, i) => `($${i * 4 + 1}, $${i * 4 + 2}, $${i * 4 + 3}, $${i * 4 + 4})`).join(', ');
                 const flatValues = mediaValues.flat();
 
                 const mediaRes = await client.query(
-                    `INSERT INTO message_media (message_id, url, media_type) 
-                     VALUES ${placeholders} 
-                     RETURNING url, media_type`,
+                    `INSERT INTO message_media (message_id, url, media_type, filename)
+                     VALUES ${placeholders}
+                     RETURNING url, media_type, filename`,
                     flatValues
                 );
                 mediaRecords = mediaRes.rows;
@@ -3247,8 +3251,8 @@ exports.getMessages = async (req, res) => {
                 ) AS seen_count,
                 COALESCE(c.name, u.display_name, 'Deleted User') as sender_name,
                 COALESCE(c.logo_url, u.display_avatar, NULL) as sender_avatar,
-                (SELECT json_agg(json_build_object('url', mm.url, 'media_type', mm.media_type)) 
-                 FROM message_media mm 
+                (SELECT json_agg(json_build_object('url', mm.url, 'media_type', mm.media_type, 'filename', mm.filename))
+                 FROM message_media mm
                  WHERE mm.message_id = m.message_id
                 ) as media,
                 CASE 

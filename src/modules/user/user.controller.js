@@ -433,7 +433,16 @@ exports.getPublicProfilePosts = async (req, res) => {
     cursorCreatedAt,
     cursorPostId,
     limit = 10,
+    preview,
   } = req.query;
+
+  // Preview mode (profile page's 3-post strip): always return exactly the
+  // latest 3 posts, preferring image/caption posts over polls/reposts, with
+  // poll/repost only filling remaining slots if fewer than 3 plain posts
+  // exist. This is a distinct request from the normal paginated list (used
+  // e.g. by the Skills section's post-evidence lookup), which keeps its
+  // existing recency-only ordering and default limit untouched.
+  const isPreview = preview === 'true' || preview === true;
 
   // ✅ Validate UUID
   const uuidRegex =
@@ -497,7 +506,7 @@ exports.getPublicProfilePosts = async (req, res) => {
     }
 
     // ✅ LIMIT
-    params.push(limit);
+    params.push(isPreview ? 3 : limit);
 
     // ✅ Strict Block Logic for Shared Posts (dependant on userParamIdx which is derived from params.length + 1)
     // We can't interpolate userParamIdx here because it's calculated afterwards.
@@ -582,11 +591,6 @@ exports.getPublicProfilePosts = async (req, res) => {
                 WHERE pl_sample.post_id = p.post_id
                   AND pl_sample.user_id IS NOT NULL
                   AND pl_sample.user_id != $${userParamIdx}::uuid
-                  AND EXISTS (
-                      SELECT 1 FROM followers f1 
-                      JOIN followers f2 ON f1.follower_id = f2.following_id AND f1.following_id = f2.follower_id 
-                      WHERE f1.follower_id = $${userParamIdx}::uuid AND f1.following_id = pl_sample.user_id
-                  )
                 ORDER BY pl_sample.created_at DESC
                 LIMIT 3
             ) sub
@@ -676,11 +680,6 @@ exports.getPublicProfilePosts = async (req, res) => {
                       WHERE pl_sample.post_id = sp.post_id
                         AND pl_sample.user_id IS NOT NULL
                         AND pl_sample.user_id != $${userParamIdx}::uuid
-                        AND EXISTS (
-                            SELECT 1 FROM followers f1 
-                            JOIN followers f2 ON f1.follower_id = f2.following_id AND f1.following_id = f2.follower_id 
-                            WHERE f1.follower_id = $${userParamIdx}::uuid AND f1.following_id = pl_sample.user_id
-                        )
                       ORDER BY pl_sample.created_at DESC
                       LIMIT 3
                   ) sub
@@ -734,7 +733,29 @@ exports.getPublicProfilePosts = async (req, res) => {
       LEFT JOIN post_categories sp_cat ON sp.category_id = sp_cat.category_id
 
       ${whereClause}
-      
+
+      ${isPreview
+        ? `-- Preview mode: only plain (non-poll, non-repost) posts, UNLESS the
+        -- author has none at all, in which case fall back to any type.
+        AND (
+            NOT EXISTS (
+                SELECT 1 FROM posts p_plain
+                WHERE p_plain.author_id = $1
+                  AND p_plain.author_org_id IS NULL
+                  AND p_plain.visibility = 'public'
+                  AND p_plain.is_active = TRUE
+                  AND (p_plain.is_removed IS FALSE OR p_plain.is_removed IS NULL)
+                  AND p_plain.shared_post_id IS NULL
+                  AND NOT EXISTS (SELECT 1 FROM post_polls pp_plain WHERE pp_plain.post_id = p_plain.post_id)
+            )
+            OR (
+                p.shared_post_id IS NULL
+                AND NOT EXISTS (SELECT 1 FROM post_polls pp_cur WHERE pp_cur.post_id = p.post_id)
+            )
+        )`
+        : ''
+      }
+
       -- Strict Block Logic: Exclude reposts if original author is blocked
       AND (
           p.shared_post_id IS NULL 
@@ -911,11 +932,6 @@ exports.getPublicProfileCommentedPosts = async (req, res) => {
                 WHERE pl_sample.post_id = p.post_id
                   AND pl_sample.user_id IS NOT NULL
                   AND pl_sample.user_id != $${userParamIdx}::uuid
-                  AND EXISTS (
-                      SELECT 1 FROM followers f1 
-                      JOIN followers f2 ON f1.follower_id = f2.following_id AND f1.following_id = f2.follower_id 
-                      WHERE f1.follower_id = $${userParamIdx}::uuid AND f1.following_id = pl_sample.user_id
-                  )
                 ORDER BY pl_sample.created_at DESC
                 LIMIT 3
             ) sub

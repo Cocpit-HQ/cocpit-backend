@@ -1273,6 +1273,36 @@ exports.getPostById = async (req, res) => {
     -- Like Count
     (SELECT COUNT(*) FROM post_likes pl WHERE pl.post_id = p.post_id)::int AS like_count,
 
+    (
+        SELECT COALESCE(comp_like.slug, u_like.account_name)
+        FROM post_likes pl_sample
+        LEFT JOIN active_users u_like ON u_like.user_id = pl_sample.user_id
+        LEFT JOIN organizations comp_like ON comp_like.org_id = pl_sample.org_id
+        WHERE pl_sample.post_id = p.post_id
+        AND NOT (
+            ($3::uuid IS NOT NULL AND pl_sample.org_id = $3::uuid)
+            OR
+            ($3::uuid IS NULL AND pl_sample.user_id = $2 AND pl_sample.org_id IS NULL)
+        )
+        ORDER BY
+            (
+                $2::uuid IS NOT NULL AND
+                (
+                    (pl_sample.user_id IS NOT NULL AND EXISTS (
+                        SELECT 1 FROM followers f
+                        WHERE f.follower_id = $2 AND f.following_id = pl_sample.user_id
+                    ))
+                    OR
+                    (pl_sample.org_id IS NOT NULL AND EXISTS (
+                        SELECT 1 FROM organization_followers ofol
+                        WHERE ofol.user_id = $2 AND ofol.org_id = pl_sample.org_id
+                    ))
+                )
+            ) DESC,
+            pl_sample.created_at DESC
+        LIMIT 1
+    ) AS sample_liker_username,
+
     -- Comment Count
     (SELECT COUNT(*) FROM post_comments pc WHERE pc.post_id = p.post_id)::int AS comment_count,
 
@@ -1330,11 +1360,6 @@ exports.getPostById = async (req, res) => {
                   ($3::uuid IS NOT NULL AND pl_sample.org_id = $3::uuid)
                   OR
                   ($3::uuid IS NULL AND pl_sample.user_id = $2 AND pl_sample.org_id IS NULL)
-              )
-              AND EXISTS (
-                  SELECT 1 FROM followers f1 
-                  JOIN followers f2 ON f1.follower_id = f2.following_id AND f1.following_id = f2.follower_id 
-                  WHERE f1.follower_id = $2 AND f1.following_id = pl_sample.user_id
               )
             ORDER BY pl_sample.created_at DESC
             LIMIT 3
@@ -1512,11 +1537,6 @@ exports.getPostById = async (req, res) => {
                               ($3::uuid IS NOT NULL AND pl_sample.org_id = $3::uuid)
                               OR
                               ($3::uuid IS NULL AND pl_sample.user_id = $2 AND pl_sample.org_id IS NULL)
-                          )
-                          AND EXISTS (
-                              SELECT 1 FROM followers f1 
-                              JOIN followers f2 ON f1.follower_id = f2.following_id AND f1.following_id = f2.follower_id 
-                              WHERE f1.follower_id = $2 AND f1.following_id = pl_sample.user_id
                           )
                         ORDER BY pl_sample.created_at DESC
                         LIMIT 3

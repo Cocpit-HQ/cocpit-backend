@@ -145,6 +145,10 @@ exports.sendMessage = async (req, res) => {
             }
         }
 
+        const isDocumentMimetype = (mimetype) => mimetype === 'application/pdf'
+            || mimetype === 'application/msword'
+            || mimetype === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+
         // Process files to determine type
         let media = [];
         let messageType = 'text';
@@ -153,8 +157,8 @@ exports.sendMessage = async (req, res) => {
             media = files.map(file => {
                 let type = 'image';
                 if (file.mimetype.startsWith('video/')) type = 'video';
-                if (file.mimetype === 'application/pdf') type = 'document';
-                return { url: file.path, type };
+                if (isDocumentMimetype(file.mimetype)) type = 'document';
+                return { url: file.path, type, name: file.originalname };
             });
 
             // If only one file, set message type to that file's type (or text if mixed? usually keep as text/image depending on UI)

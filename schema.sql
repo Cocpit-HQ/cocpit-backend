@@ -1055,6 +1055,7 @@ CREATE TABLE IF NOT EXISTS message_media (
   message_id UUID REFERENCES messages(message_id) ON DELETE CASCADE,
   url TEXT NOT NULL,
   media_type TEXT CHECK (media_type IN ('image', 'video', 'document')) DEFAULT 'image',
+  filename TEXT,
   created_at TIMESTAMPTZ DEFAULT now()
 );
 

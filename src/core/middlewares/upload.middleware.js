@@ -373,11 +373,17 @@ const chatMediaStorage = new CloudinaryStorage({
       folder = "chat_videos";
     } else if (file.mimetype === "application/pdf") {
       resource_type = "raw"; // Cloudinary handles PDFs as 'raw' or 'image' (for thumbnail). 'raw' is safer for delivery.
-      // ACTUALLY: Cloudinary can treat PDF as image for preview. 
+      // ACTUALLY: Cloudinary can treat PDF as image for preview.
       // But for reliable file storage/download, 'raw' or 'auto' is best.
       // Let's use 'auto' to let Cloudinary decide, OR specific.
       // For PDF viewing, often 'image' resource type is used to generate thumbnails.
       // Let's stick to 'auto' for flexibility if possible, but multer-storage-cloudinary needs specific.
+      resource_type = "raw";
+      folder = "chat_documents";
+    } else if (
+      file.mimetype === "application/msword" ||
+      file.mimetype === "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    ) {
       resource_type = "raw";
       folder = "chat_documents";
     }
@@ -398,10 +404,12 @@ const uploadChatMedia = multer({
     const allowed = [
       "image/jpeg", "image/png", "image/webp", "image/jpg",
       "video/mp4", "video/webm", "video/quicktime",
-      "application/pdf"
+      "application/pdf",
+      "application/msword",
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     ];
     if (!allowed.includes(file.mimetype)) {
-      return cb(new Error("Invalid file format. Allowed: JPEG, PNG, WEBP, MP4, WebM, PDF."));
+      return cb(new Error("Invalid file format. Allowed: JPEG, PNG, WEBP, MP4, WebM, PDF, DOC, DOCX."));
     }
     cb(null, true);
   }
