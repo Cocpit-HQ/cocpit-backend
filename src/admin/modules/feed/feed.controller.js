@@ -71,7 +71,7 @@ exports.getFeedPosts = async (req, res) => {
 
     let whereClauses = [];
     if (!userId) {
-      whereClauses.push("p.created_at >= NOW() - INTERVAL '30 days'");
+      // whereClauses.push("p.created_at >= NOW() - INTERVAL '30 days'");
     }
     if (unlistedOnly === 'true') {
       whereClauses.push("p.is_unlisted = true");
@@ -207,6 +207,7 @@ exports.getFeedPosts = async (req, res) => {
       avatar: row.avatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(row.author)}&background=e0e7ff&color=3730a3`,
       content: row.content,
       mediaUrl: row.mediaUrl,
+      created_at: row.created_at,
       metrics: {
         likes: parseInt(row.likes, 10),
         comments: parseInt(row.comments, 10),
