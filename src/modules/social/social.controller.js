@@ -862,8 +862,23 @@ exports.getFollowersCount = async (req, res) => {
     try {
         const result = await pool.query(
             `SELECT 
-                (SELECT COUNT(*) FROM followers WHERE following_id = $1) + 
-                (SELECT COUNT(*) FROM organization_user_follows cf JOIN organizations c ON cf.org_id = c.org_id WHERE cf.user_id = $1 AND c.is_deleted = FALSE) 
+                (
+                    SELECT COUNT(*) 
+                    FROM followers f
+                    JOIN active_users u ON f.follower_id = u.user_id
+                    WHERE f.following_id = $1
+                      AND NOT EXISTS (
+                          SELECT 1 FROM blocks b
+                          WHERE (b.blocker_id = $1 AND b.blocked_id = u.user_id)
+                             OR (b.blocker_id = u.user_id AND b.blocked_id = $1)
+                      )
+                ) + 
+                (
+                    SELECT COUNT(*) 
+                    FROM organization_user_follows ouf 
+                    JOIN organizations o ON ouf.org_id = o.org_id 
+                    WHERE ouf.user_id = $1 AND o.is_deleted = FALSE
+                ) 
              as count`,
             [userId]
         );
@@ -1911,8 +1926,23 @@ exports.getConnectionCount = async (req, res) => {
     try {
         const result = await pool.query(
             `SELECT 
-                (SELECT COUNT(*) FROM connections WHERE user_id = $1) + 
-                (SELECT COUNT(*) FROM organization_connections WHERE user_id = $1) as count`,
+                (
+                    SELECT COUNT(*) 
+                    FROM connections c
+                    JOIN active_users u ON c.connected_user_id = u.user_id
+                    WHERE c.user_id = $1
+                      AND NOT EXISTS (
+                          SELECT 1 FROM blocks b 
+                          WHERE (b.blocker_id = $1 AND b.blocked_id = u.user_id)
+                             OR (b.blocker_id = u.user_id AND b.blocked_id = $1)
+                      )
+                ) + 
+                (
+                    SELECT COUNT(*) 
+                    FROM organization_connections cc 
+                    JOIN organizations c ON cc.org_id = c.org_id 
+                    WHERE cc.user_id = $1 AND c.is_deleted = FALSE
+                ) as count`,
             [userId]
         );
         res.json({ count: parseInt(result.rows[0].count) });
@@ -3982,9 +4012,54 @@ exports.getProfileStats = async (req, res) => {
 
         const result = await pool.query(
             `SELECT 
-                (SELECT COUNT(*) FROM followers WHERE following_id = $1) as followers_count,
-                (SELECT COUNT(*) FROM followers WHERE follower_id = $1) + (SELECT COUNT(*) FROM organization_followers cf JOIN organizations c ON cf.org_id = c.org_id WHERE cf.user_id = $1 AND c.is_deleted = FALSE) as following_count,
-                (SELECT COUNT(*) FROM connections WHERE user_id = $1) + (SELECT COUNT(*) FROM organization_connections cc JOIN organizations c ON cc.org_id = c.org_id WHERE cc.user_id = $1 AND c.is_deleted = FALSE) as connections_count`,
+                (
+                    SELECT COUNT(*) 
+                    FROM followers f
+                    JOIN active_users u ON f.follower_id = u.user_id
+                    WHERE f.following_id = $1
+                      AND NOT EXISTS (
+                          SELECT 1 FROM blocks b
+                          WHERE (b.blocker_id = $1 AND b.blocked_id = u.user_id)
+                             OR (b.blocker_id = u.user_id AND b.blocked_id = $1)
+                      )
+                ) + (
+                    SELECT COUNT(*) 
+                    FROM organization_user_follows ouf
+                    JOIN organizations o ON ouf.org_id = o.org_id
+                    WHERE ouf.user_id = $1 AND o.is_deleted = FALSE
+                ) as followers_count,
+                (
+                    SELECT COUNT(*) 
+                    FROM followers f
+                    JOIN active_users u ON f.following_id = u.user_id
+                    WHERE f.follower_id = $1
+                      AND NOT EXISTS (
+                          SELECT 1 FROM blocks b
+                          WHERE (b.blocker_id = $1 AND b.blocked_id = u.user_id)
+                             OR (b.blocker_id = u.user_id AND b.blocked_id = $1)
+                      )
+                ) + (
+                    SELECT COUNT(*) 
+                    FROM organization_followers cf 
+                    JOIN organizations c ON cf.org_id = c.org_id 
+                    WHERE cf.user_id = $1 AND c.is_deleted = FALSE
+                ) as following_count,
+                (
+                    SELECT COUNT(*) 
+                    FROM connections c
+                    JOIN active_users u ON c.connected_user_id = u.user_id
+                    WHERE c.user_id = $1
+                      AND NOT EXISTS (
+                          SELECT 1 FROM blocks b 
+                          WHERE (b.blocker_id = $1 AND b.blocked_id = u.user_id)
+                             OR (b.blocker_id = u.user_id AND b.blocked_id = $1)
+                      )
+                ) + (
+                    SELECT COUNT(*) 
+                    FROM organization_connections cc 
+                    JOIN organizations c ON cc.org_id = c.org_id 
+                    WHERE cc.user_id = $1 AND c.is_deleted = FALSE
+                ) as connections_count`,
             [userId]
         );
 

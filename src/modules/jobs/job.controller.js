@@ -95,17 +95,15 @@ const assertJobActorAccess = async (req, job, permissions, queryable = pool) => 
       throw err;
     }
 
-    // Admin-level bypass: wildcard or MANAGE_COMPANY can manage all org jobs
-    if (actorPermissions.includes("*") || actorPermissions.includes("MANAGE_COMPANY")) {
-      return;
-    }
-
-    // Creator isolation: non-admin members can only manage jobs they created
+    // Admin-level bypass or permitted org member — can manage all org jobs
+    /*
+    // Creator isolation: non-admin members can only manage jobs they created (commented out per project flow)
     if (job.recruiter_id !== userId) {
       const err = new Error("You can only manage jobs that you created");
       err.statusCode = 403;
       throw err;
     }
+    */
 
     return;
   }
@@ -118,6 +116,7 @@ const assertJobActorAccess = async (req, job, permissions, queryable = pool) => 
     throw err;
   }
 
+  /*
   // DB check passed — determine if admin-level to bypass creator isolation
   const memberRes = await queryable.query(
     `SELECT cr.permissions
@@ -138,6 +137,8 @@ const assertJobActorAccess = async (req, job, permissions, queryable = pool) => 
     err.statusCode = 403;
     throw err;
   }
+  */
+  return;
 };
 
 exports.getAllJobs = async (req, res) => {
