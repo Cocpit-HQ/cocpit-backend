@@ -258,12 +258,26 @@ exports.getUserProfile = async (req, res) => {
     let connectionRequestSender = null;
 
     if (currentUserId && currentUserId !== targetUserId) {
-      // Check Following (Me -> Them)
-      const followCheck = await pool.query(
-        "SELECT 1 FROM followers WHERE follower_id = $1 AND following_id = $2",
-        [currentUserId, targetUserId]
-      );
-      isFollowing = followCheck.rowCount > 0;
+      // Detect if the request is made under an Organization actor context
+      const actorType = (req.headers['x-actor-type'] || '').toUpperCase().trim();
+      const actorOrgId = req.headers['x-actor-id'] || null;
+      const isOrgActor = actorType === 'ORGANIZATION' && !!actorOrgId;
+
+      if (isOrgActor) {
+        // Check if the organization follows this user
+        const followCheck = await pool.query(
+          "SELECT 1 FROM organization_user_follows WHERE org_id = $1 AND user_id = $2",
+          [actorOrgId, targetUserId]
+        );
+        isFollowing = followCheck.rowCount > 0;
+      } else {
+        // Check Following (Me -> Them) for personal user context
+        const followCheck = await pool.query(
+          "SELECT 1 FROM followers WHERE follower_id = $1 AND following_id = $2",
+          [currentUserId, targetUserId]
+        );
+        isFollowing = followCheck.rowCount > 0;
+      }
 
       // Check Followed By (Them -> Me)
       const followedByCheck = await pool.query(
@@ -418,7 +432,7 @@ exports.getPublicProfilePosts = async (req, res) => {
     if (category === 'Comments') {
       whereClause = `WHERE EXISTS (SELECT 1 FROM post_comments pc_filter WHERE pc_filter.post_id = p.post_id AND pc_filter.author_id = $1) AND p.visibility = 'public' AND p.is_active = TRUE AND (p.is_removed IS FALSE OR p.is_removed IS NULL) `;
     } else {
-      whereClause = `WHERE p.author_id = $1 AND p.visibility = 'public' AND p.is_active = TRUE AND (p.is_removed IS FALSE OR p.is_removed IS NULL) `;
+      whereClause = `WHERE p.author_id = $1 AND p.author_org_id IS NULL AND p.visibility = 'public' AND p.is_active = TRUE AND (p.is_removed IS FALSE OR p.is_removed IS NULL) `;
     }
 
     // ✅ Category filter (skip "All")

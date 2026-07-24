@@ -45,7 +45,8 @@ const requireOrgPermission = (permission) => async (req, res, next) => {
         const permissions = member.permissions || [];
         const permsToCheck = Array.isArray(permission) ? permission : [permission];
         const hasPerm = permsToCheck.some(p => hasActorPermission(permissions, p));
-        if (!hasPerm) {
+        const isAdmin = member.role_name === 'Admin' || permissions.includes('*');
+        if (!isAdmin && !hasPerm) {
             return next(new AppError(`You do not have permission: ${Array.isArray(permission) ? permission.join(" or ") : permission} in this organization`, 403));
         }
 

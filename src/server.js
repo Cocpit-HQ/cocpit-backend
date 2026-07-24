@@ -12,7 +12,6 @@ app.get('/health', (req, res) => {
 
 const http = require("http");
 const { initSocket } = require("./utils/socket");
-const { startSessionTimeoutWorker } = require("./workers/sessionTimeoutWorker");
 const { processJobExpirations } = require("./workers/jobExpiryWorker");
 const { processEventOutbox } = require("./workers/eventOutboxWorker");
 const { processStoryExpirations } = require("./workers/storyExpiryWorker");
