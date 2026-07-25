@@ -594,10 +594,13 @@ CREATE TABLE IF NOT EXISTS conversations (
   last_message TEXT,
   last_message_at TIMESTAMPTZ DEFAULT now(),
   is_requesting BOOLEAN DEFAULT FALSE,
+  is_job_chat BOOLEAN DEFAULT FALSE,
   is_active BOOLEAN DEFAULT TRUE,
   created_at TIMESTAMPTZ DEFAULT now(),
   updated_at TIMESTAMPTZ DEFAULT now()
 );
+
+CREATE INDEX IF NOT EXISTS idx_conversations_is_job_chat ON conversations(is_job_chat);
 
 CREATE TABLE conversation_participants (
   participant_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

@@ -1963,12 +1963,16 @@ exports.getConversations = async (req, res) => {
     }
 
     const { userId, orgId: companyId } = actorScope;
+    const tabParam = req.query.tab
+        ? (req.query.tab.toUpperCase() === "JOBS" ? true : req.query.tab.toUpperCase() === "GENERAL" ? false : null)
+        : null;
 
     try {
         const result = await pool.query(
             `
 SELECT 
     c.*,
+    c.is_job_chat AS "isJobChat",
     -- Block Status
     CASE WHEN c.is_group THEN false ELSE EXISTS(SELECT 1 FROM blocks WHERE blocker_id = $1 AND blocked_id = u.user_id) END as is_blocked_by_me,
     CASE WHEN c.is_group THEN false ELSE EXISTS(SELECT 1 FROM blocks WHERE blocker_id = u.user_id AND blocked_id = $1) END as is_blocked_by_other,
@@ -2204,6 +2208,10 @@ WHERE ($2::uuid IS NULL OR NOT EXISTS (
     AND c.is_group = FALSE
 ))
 AND c.is_active = TRUE
+-- Company mode strictly hides group chats
+AND ($2::uuid IS NULL OR c.is_group = FALSE)
+-- Filter by tab (JOBS vs GENERAL) if requested
+AND ($3::boolean IS NULL OR c.is_job_chat = $3)
 AND (cp.deleted_at IS NULL OR COALESCE(
     m.created_at, 
     CASE 
@@ -2221,7 +2229,7 @@ ORDER BY COALESCE(
     END, 
     c.updated_at
 ) DESC NULLS LAST;
-  `, [userId, companyId]
+  `, [userId, companyId, tabParam]
         );
 
         let pendingGroupInvitationRows = [];
@@ -4834,6 +4842,43 @@ exports.getOrganizationFollowing = async (req, res) => {
     } catch (err) {
         console.error("getOrganizationFollowing error:", err);
         res.status(500).json({ message: "Internal server error" });
+    }
+};
+
+// Toggle conversation category between General and Jobs tabs (Context menu action)
+exports.toggleJobChatCategory = async (req, res, next) => {
+    try {
+        const { conversationId } = req.params;
+        const { isJobChat } = req.body;
+
+        if (typeof isJobChat !== "boolean") {
+            return res.status(400).json({ message: "isJobChat boolean parameter required" });
+        }
+
+        const updateRes = await pool.query(
+            `UPDATE conversations SET is_job_chat = $2, updated_at = NOW() WHERE conversation_id = $1 RETURNING *`,
+            [conversationId, isJobChat]
+        );
+
+        if (updateRes.rowCount === 0) {
+            return res.status(404).json({ message: "Conversation not found" });
+        }
+
+        const socketService = require("../../core/infrastructure/socket.service");
+        socketService.notifyParticipants(conversationId, "conversationCategoryUpdated", {
+            conversationId,
+            isJobChat,
+        });
+
+        return res.json({
+            success: true,
+            conversationId,
+            isJobChat,
+            message: `Conversation categorized under ${isJobChat ? "Jobs" : "General"}`
+        });
+    } catch (err) {
+        if (typeof next === "function") return next(err);
+        return res.status(500).json({ message: err.message || "Failed to update conversation category" });
     }
 };
 

@@ -22,10 +22,11 @@ const pool = require("../../core/db/pool");
  * @throws {{ status: number, message: string }} if a rule is violated
  */
 async function validateShareRules({ senderId, entityType, entityId, receiverType, senderOrgId }) {
-    // 1. New Global Rule: Users cannot share ANY content with Company accounts.
-    // Companies (senderOrgId exists) can share with anyone.
-    if (!senderOrgId && receiverType === "company") {
-        throw { status: 400, message: "Users cannot share content with company accounts." };
+    // 1. New Global Rule: Users cannot share ANY content with Organization accounts.
+    // Companies/Organizations (senderOrgId exists) can share with anyone.
+    const isOrgReceiver = receiverType && ["company", "organization", "ORGANIZATION"].includes(receiverType.toString().toLowerCase());
+    if (!senderOrgId && isOrgReceiver) {
+        throw { status: 400, message: "Users cannot share content with organization accounts." };
     }
 
     // 2. Specific Rule: Only USER profiles are blocked from being shared with companies.
