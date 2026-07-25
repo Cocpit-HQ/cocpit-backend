@@ -1998,6 +1998,7 @@ SELECT
     -- Other ID (User or Company)
     COALESCE(u.user_id, comp.org_id) AS other_user_id,
     u.display_headline AS other_user_headline,
+    COALESCE(comp.headline, '') AS org_headline,
     CASE WHEN comp.org_id IS NOT NULL THEN 'COMPANY' ELSE 'USER' END as other_user_type,
     COALESCE(comp.slug, u.display_username) AS other_user_slug,
     
@@ -2451,10 +2452,10 @@ exports.sendMessage = async (req, res) => {
         try {
             await client.query('BEGIN ISOLATION LEVEL SERIALIZABLE');
 
-            let senderName, senderAvatar, senderSlug = null, senderHeadline = null;
+            let senderName, senderAvatar, senderSlug = null, senderHeadline = null, senderOrgHeadline = null;
             if (authorCompanyId) {
                 const orgRes = await client.query(
-                    `SELECT name, logo_url, slug FROM organizations WHERE org_id = $1`,
+                    `SELECT name, logo_url, slug, headline FROM organizations WHERE org_id = $1`,
                     [authorCompanyId]
                 );
                 if (orgRes.rowCount === 0) {
@@ -2464,6 +2465,7 @@ exports.sendMessage = async (req, res) => {
                 senderName = orgRes.rows[0].name;
                 senderAvatar = orgRes.rows[0].logo_url;
                 senderSlug = orgRes.rows[0].slug;
+                senderOrgHeadline = orgRes.rows[0].headline || '';
             } else {
                 const senderRes = await client.query(
                     `SELECT full_name, avatar_url, headline, account_name FROM users WHERE user_id = $1`,
@@ -2485,7 +2487,7 @@ exports.sendMessage = async (req, res) => {
                 [targetUserId]
             );
             const targetCompanyExists = targetUserExists.rowCount === 0
-                ? await client.query(`SELECT org_id, name, logo_url, slug FROM organizations WHERE org_id = $1`, [targetUserId])
+                ? await client.query(`SELECT org_id, name, logo_url, slug, headline FROM organizations WHERE org_id = $1`, [targetUserId])
                 : null;
 
             const targetIsUser = targetUserExists.rowCount > 0;
@@ -2499,6 +2501,7 @@ exports.sendMessage = async (req, res) => {
                 ? targetUserExists.rows[0].avatar_url
                 : (targetIsCompany ? targetCompanyExists.rows[0].logo_url : null);
             const targetHeadline = targetIsUser ? (targetUserExists.rows[0].headline || null) : null;
+            const targetOrgHeadline = targetIsCompany ? (targetCompanyExists.rows[0].headline || '') : null;
             const targetSlug = targetIsUser
                 ? targetUserExists.rows[0].account_name
                 : (targetIsCompany ? targetCompanyExists.rows[0].slug : null);
@@ -2814,6 +2817,8 @@ exports.sendMessage = async (req, res) => {
                 shared_post: sharedPostData,
                 shared_profile: sharedProfileData,
                 sender_name: senderName,
+                sender_member_name: req.user?.full_name || req.user?.display_name || null,
+                org_headline: authorCompanyId ? (senderOrgHeadline || '') : '',
                 sender_avatar: senderAvatar
             };
             // ─── Base conversation shape (mirrors the REST API getConversations response) ───
@@ -2853,6 +2858,7 @@ exports.sendMessage = async (req, res) => {
                 other_user_name: senderName,
                 other_user_avatar: senderAvatar,
                 other_user_headline: senderHeadline,
+                org_headline: authorCompanyId ? (senderOrgHeadline || '') : '',
                 other_user_slug: senderSlug,
                 other_user_type: authorCompanyId ? 'COMPANY' : 'USER',
                 is_deleted_user: false,
@@ -2867,6 +2873,7 @@ exports.sendMessage = async (req, res) => {
                 other_user_name: targetName,
                 other_user_avatar: targetAvatar,
                 other_user_headline: targetHeadline,
+                org_headline: targetOrgHeadline,
                 other_user_slug: targetSlug,
                 other_user_type: targetType,
                 is_deleted_user: false,
@@ -3259,6 +3266,7 @@ exports.getMessages = async (req, res) => {
                 m.action_type,
                 m.target_id,
                 m.author_org_id,
+                m.author_org_id AS author_company_id,
                 m.is_deleted_for_everyone,
                 m.deleted_at,
                 (SELECT COUNT(*)::int FROM conversation_participants cp 
@@ -3281,6 +3289,9 @@ exports.getMessages = async (req, res) => {
                     ), 0
                 ) AS seen_count,
                 COALESCE(c.name, u.display_name, 'Deleted User') as sender_name,
+                u.display_name as sender_member_name,
+                COALESCE(c.headline, '') as sender_org_headline,
+                CASE WHEN m.author_org_id IS NOT NULL THEN COALESCE(c.headline, '') ELSE '' END as org_headline,
                 COALESCE(c.logo_url, u.display_avatar, NULL) as sender_avatar,
                 (SELECT json_agg(json_build_object('url', mm.url, 'media_type', mm.media_type, 'filename', mm.filename))
                  FROM message_media mm
