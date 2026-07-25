@@ -1198,7 +1198,7 @@ exports.getPendingRequests = async (req, res) => {
                 FROM connection_requests cr
                 JOIN active_users u ON cr.receiver_id = u.user_id
                 WHERE cr.sender_id = $1
-                  AND cr.status = 'pending'
+                  AND LOWER(cr.status::text) = 'pending'
                 ORDER BY cr.created_at DESC
                 LIMIT $2 OFFSET $3
             `;
@@ -1240,7 +1240,7 @@ exports.getPendingRequests = async (req, res) => {
                 FROM connection_requests cr
                 JOIN active_users u ON cr.sender_id = u.user_id
                 WHERE cr.receiver_id = $1
-                  AND cr.status = 'pending')
+                  AND LOWER(cr.status::text) = 'pending')
                 UNION ALL
                 (SELECT
                     ccr.request_id    AS id,
@@ -1258,7 +1258,7 @@ exports.getPendingRequests = async (req, res) => {
                 FROM organization_connection_requests ccr
                 JOIN organizations c ON ccr.org_id = c.org_id
                 WHERE ccr.user_id = $1
-                  AND ccr.status = 'pending')
+                  AND LOWER(ccr.status::text) = 'pending')
                 ORDER BY created_at DESC
                 LIMIT $2 OFFSET $3
             `;
@@ -1268,13 +1268,17 @@ exports.getPendingRequests = async (req, res) => {
         // Total count (for pagination metadata)
         let countQuery, countParams;
         if (type === 'sent') {
-            countQuery = `SELECT COUNT(*) FROM connection_requests WHERE sender_id = $1 AND status = 'pending'`;
+            countQuery = `
+                SELECT COUNT(*) FROM connection_requests cr
+                JOIN active_users u ON cr.receiver_id = u.user_id
+                WHERE cr.sender_id = $1 AND LOWER(cr.status::text) = 'pending'
+            `;
             countParams = [userId];
         } else {
             countQuery = `
                 SELECT
-                    (SELECT COUNT(*) FROM connection_requests WHERE receiver_id = $1 AND status = 'pending')
-                  + (SELECT COUNT(*) FROM organization_connection_requests WHERE user_id = $1 AND status = 'pending')
+                    (SELECT COUNT(*) FROM connection_requests cr JOIN active_users u ON cr.sender_id = u.user_id WHERE cr.receiver_id = $1 AND LOWER(cr.status::text) = 'pending')
+                  + (SELECT COUNT(*) FROM organization_connection_requests ocr WHERE ocr.user_id = $1 AND LOWER(ocr.status::text) = 'pending')
                 AS count
             `;
             countParams = [userId];
@@ -1328,28 +1332,50 @@ exports.getPendingRequests = async (req, res) => {
 exports.getConnectionCounts = async (req, res) => {
     const userId = req.user.sub;
     try {
+        const userEmailRes = await pool.query(`SELECT email FROM users WHERE user_id = $1`, [userId]);
+        const userEmail = userEmailRes.rows[0]?.email || '';
+
         const result = await pool.query(`
             SELECT
-                (SELECT COUNT(*) FROM connection_requests
-                 WHERE receiver_id = $1 AND status = 'pending') AS received,
-                (SELECT COUNT(*) FROM connection_requests
-                 WHERE sender_id  = $1 AND status = 'pending') AS sent,
                 (
-                    (SELECT COUNT(*) FROM organization_invites
-                     WHERE (invited_user_id = $1 OR email = (SELECT email FROM users WHERE user_id = $1))
-                       AND status = 'PENDING' AND expires_at > NOW()) +
-                    (SELECT COUNT(*) FROM community_invitations
-                     WHERE invitee_id = $1 AND status = 'pending' AND is_active = TRUE) +
-                    (SELECT COUNT(*) FROM group_invitations
-                     WHERE invitee_id = $1 AND status = 'pending')
-                ) AS invitations
-        `, [userId]);
+                    (SELECT COUNT(*) FROM connection_requests cr
+                     JOIN active_users u ON cr.sender_id = u.user_id
+                     WHERE cr.receiver_id = $1 AND LOWER(cr.status::text) = 'pending') +
+                    (SELECT COUNT(*) FROM organization_connection_requests ccr
+                     JOIN organizations c ON ccr.org_id = c.org_id
+                     WHERE ccr.user_id = $1 AND LOWER(ccr.status::text) = 'pending')
+                ) AS received,
+                (
+                    SELECT COUNT(*) FROM connection_requests cr
+                    JOIN active_users u ON cr.receiver_id = u.user_id
+                    WHERE cr.sender_id = $1 AND LOWER(cr.status::text) = 'pending'
+                ) AS sent,
+                (
+                    SELECT COUNT(*) FROM organization_invites oi
+                    JOIN organizations o ON oi.org_id = o.org_id
+                    WHERE (oi.invited_user_id = $1 OR LOWER(oi.email) = LOWER($2))
+                      AND LOWER(oi.status::text) = 'pending' AND oi.expires_at > NOW()
+                ) AS teams_invitations,
+                (
+                    SELECT COUNT(*) FROM community_invitations ci
+                    JOIN communities c ON ci.community_id = c.community_id
+                    JOIN organizations o ON c.org_id = o.org_id
+                    WHERE ci.invitee_id = $1 AND LOWER(ci.status::text) = 'pending'
+                      AND COALESCE(ci.is_active, TRUE) = TRUE AND COALESCE(c.is_active, TRUE) = TRUE
+                ) AS channels_invitations
+        `, [userId, userEmail]);
 
         const row = result.rows[0];
+        const teamsInvitations = parseInt(row?.teams_invitations || 0);
+        const channelsInvitations = parseInt(row?.channels_invitations || 0);
+        const invitations = teamsInvitations + channelsInvitations;
+
         return res.status(200).json({
-            received: parseInt(row.received || 0),
-            sent: parseInt(row.sent || 0),
-            invitations: parseInt(row.invitations || 0),
+            received: parseInt(row?.received || 0),
+            sent: parseInt(row?.sent || 0),
+            invitations,
+            teamsInvitations,
+            channelsInvitations,
         });
     } catch (err) {
         console.error('Get connection counts error:', err);
