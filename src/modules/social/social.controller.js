@@ -2716,6 +2716,18 @@ exports.sendMessage = async (req, res) => {
                 if (spRes.rowCount > 0) sharedPostData = spRes.rows[0];
             }
 
+            // Check if this message is attached with a job/offer entity context card
+            let autoJobChatSet = false;
+            const isJobEntity = entity_type === 'job' || entity_type === 'offer';
+            if (isJobEntity && entity_id) {
+                // Whenever a job card context is sent with a message, automatically mark conversation as a job chat
+                await client.query(
+                    `UPDATE conversations SET is_job_chat = TRUE WHERE conversation_id = $1`,
+                    [conversationId]
+                );
+                autoJobChatSet = true;
+            }
+
             // Update conversation timestamp and last message
             await client.query(
                 `UPDATE conversations 
@@ -2725,6 +2737,17 @@ exports.sendMessage = async (req, res) => {
                  WHERE conversation_id = $1`,
                 [conversationId, previewText]
             );
+
+            if (autoJobChatSet) {
+                socketService.notifyParticipants(conversationId, "conversation_job_status_changed", {
+                    conversationId,
+                    isJobChat: true,
+                });
+                socketService.notifyParticipants(conversationId, "conversation_updated", {
+                    conversationId,
+                    isJobChat: true,
+                });
+            }
             let targetNotificationMuted = false;
             if (targetIsCompany) {
                 const muteState = await getConversationMuteState(client, {
@@ -4865,10 +4888,10 @@ exports.toggleJobChatCategory = async (req, res, next) => {
         }
 
         const socketService = require("../../core/infrastructure/socket.service");
-        socketService.notifyParticipants(conversationId, "conversationCategoryUpdated", {
-            conversationId,
-            isJobChat,
-        });
+        const socketPayload = { conversationId, isJobChat };
+        socketService.notifyParticipants(conversationId, "conversationCategoryUpdated", socketPayload);
+        socketService.notifyParticipants(conversationId, "conversation_updated", socketPayload);
+        socketService.notifyParticipants(conversationId, "conversation_job_status_changed", socketPayload);
 
         return res.json({
             success: true,

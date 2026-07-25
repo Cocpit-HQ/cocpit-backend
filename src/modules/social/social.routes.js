@@ -81,6 +81,7 @@ router.get("/conversations/:conversationId/mute", requireAuth, socialController.
 router.patch("/conversations/:conversationId/mute", requireAuth, socialController.updateConversationMuteState);
 router.patch("/conversations/:conversationId/unmute", requireAuth, socialController.unmuteConversation);
 router.patch("/conversations/:conversationId/category", requireAuth, socialController.toggleJobChatCategory);
+router.patch("/conversations/:conversationId/job-status", requireAuth, socialController.toggleJobChatCategory);
 
 // Messages
 router.post("/messages", requireAuth, require("../../core/middlewares/upload.middleware").uploadChatMedia.array("images", 10), socialController.sendMessage);
