@@ -19,7 +19,10 @@ exports.searchUsers = async (req, res) => {
   const searchTerm = q.trim().replace(/^['"]|['"]$/g, '');
 
   try {
-    const queryParams = [currentUserId];
+    const isOrgActor = req.actor?.type === "ORGANIZATION";
+    const blockerId = isOrgActor ? (req.actor.orgId || currentUserId) : currentUserId;
+
+    const queryParams = [blockerId]; // $1 = blocker identity (user or org)
     const likeTerm = `%${searchTerm}%`;
     queryParams.push(likeTerm); // $2
 
@@ -37,6 +40,27 @@ exports.searchUsers = async (req, res) => {
           SELECT 1 FROM job_offers jo 
           WHERE jo.job_id = $${queryParams.length} AND jo.user_id = u.user_id
           AND jo.status IN ('pending', 'accepted', 'declined')
+        )
+      `;
+    }
+
+    let blockFilter;
+    if (isOrgActor && req.actor?.orgId) {
+      blockFilter = `
+        AND NOT EXISTS (
+          SELECT 1 FROM blocks b 
+          WHERE b.is_org_block = true 
+            AND b.blocker_id = $1
+            AND b.blocked_id = u.user_id
+        )
+      `;
+    } else {
+      blockFilter = `
+        AND NOT EXISTS (
+          SELECT 1 FROM blocks b 
+          WHERE b.is_org_block = false
+            AND ((b.blocker_id = $1 AND b.blocked_id = u.user_id)
+              OR (b.blocker_id = u.user_id AND b.blocked_id = $1))
         )
       `;
     }
@@ -65,11 +89,7 @@ exports.searchUsers = async (req, res) => {
             AND u.account_name IS NOT NULL AND TRIM(u.account_name) <> ''
           ${userAccountFilter}
           ${excludeJobFilter}
-          AND NOT EXISTS (
-            SELECT 1 FROM blocks b 
-            WHERE (b.blocker_id = $1 AND b.blocked_id = u.user_id)
-               OR (b.blocker_id = u.user_id AND b.blocked_id = $1)
-          )
+          ${blockFilter}
         )
         UNION ALL
         (
@@ -156,7 +176,8 @@ exports.getUserProfile = async (req, res) => {
 
   // --- Block Check Implementation ---
   if (targetUserId !== currentUserId) {
-    const isBlocked = await checkBlockStatus(currentUserId, targetUserId);
+    const { checkActorBlockStatus } = require("../../core/utils/blockCheck");
+    const isBlocked = await checkActorBlockStatus(req, targetUserId);
     if (isBlocked) {
       return res.status(404).json({ message: "User not found" });
     }
@@ -336,8 +357,9 @@ exports.getUserProfile = async (req, res) => {
             WHERE f.following_id = $1
               AND NOT EXISTS (
                   SELECT 1 FROM blocks b
-                  WHERE (b.blocker_id = $1 AND b.blocked_id = u.user_id)
-                     OR (b.blocker_id = u.user_id AND b.blocked_id = $1)
+                  WHERE b.is_org_block = false
+                    AND ((b.blocker_id = $1 AND b.blocked_id = u.user_id)
+                      OR (b.blocker_id = u.user_id AND b.blocked_id = $1))
               )
         ) + (
             SELECT COUNT(*) 
@@ -352,8 +374,9 @@ exports.getUserProfile = async (req, res) => {
             WHERE f.follower_id = $1
               AND NOT EXISTS (
                   SELECT 1 FROM blocks b
-                  WHERE (b.blocker_id = $1 AND b.blocked_id = u.user_id)
-                     OR (b.blocker_id = u.user_id AND b.blocked_id = $1)
+                  WHERE b.is_org_block = false
+                    AND ((b.blocker_id = $1 AND b.blocked_id = u.user_id)
+                      OR (b.blocker_id = u.user_id AND b.blocked_id = $1))
               )
         ) + (
             SELECT COUNT(*) 
@@ -368,8 +391,9 @@ exports.getUserProfile = async (req, res) => {
             WHERE c.user_id = $1
               AND NOT EXISTS (
                   SELECT 1 FROM blocks b 
-                  WHERE (b.blocker_id = $1 AND b.blocked_id = u.user_id)
-                     OR (b.blocker_id = u.user_id AND b.blocked_id = $1)
+                  WHERE b.is_org_block = false
+                    AND ((b.blocker_id = $1 AND b.blocked_id = u.user_id)
+                      OR (b.blocker_id = u.user_id AND b.blocked_id = $1))
               )
         ) + (
             SELECT COUNT(*) 
@@ -470,8 +494,8 @@ exports.getPublicProfilePosts = async (req, res) => {
   // --- Block Check Implementation ---
   const currentUserId = req.user.sub;
   if (targetUserId !== currentUserId) {
-    const { checkBlockStatus } = require("../../core/utils/blockCheck"); // Ensure import scope
-    const isBlocked = await checkBlockStatus(currentUserId, targetUserId);
+    const { checkActorBlockStatus } = require("../../core/utils/blockCheck");
+    const isBlocked = await checkActorBlockStatus(req, targetUserId);
     if (isBlocked) {
       return res.status(404).json({ message: "User not found" });
     }
@@ -761,8 +785,9 @@ exports.getPublicProfilePosts = async (req, res) => {
           p.shared_post_id IS NULL 
           OR NOT EXISTS (
               SELECT 1 FROM blocks b 
-              WHERE (b.blocker_id = $${userParamIdx} AND b.blocked_id = sp.author_id)
-                 OR (b.blocker_id = sp.author_id AND b.blocked_id = $${userParamIdx})
+              WHERE b.is_org_block = false
+                AND ((b.blocker_id = $${userParamIdx} AND b.blocked_id = sp.author_id)
+                  OR (b.blocker_id = sp.author_id AND b.blocked_id = $${userParamIdx}))
           )
       )
 
@@ -850,8 +875,8 @@ exports.getPublicProfileCommentedPosts = async (req, res) => {
   // Block check
   const currentUserId = req.user.sub;
   if (targetUserId !== currentUserId) {
-    const { checkBlockStatus } = require("../../core/utils/blockCheck");
-    const isBlocked = await checkBlockStatus(currentUserId, targetUserId);
+    const { checkActorBlockStatus } = require("../../core/utils/blockCheck");
+    const isBlocked = await checkActorBlockStatus(req, targetUserId);
     if (isBlocked) {
       return res.status(404).json({ message: "User not found" });
     }
@@ -1316,8 +1341,9 @@ exports.getSuggestedUsers = async (req, res) => {
       )
       AND NOT EXISTS (
         SELECT 1 FROM blocks b 
-        WHERE (b.blocker_id = $1 AND b.blocked_id = u.user_id)
-           OR (b.blocker_id = u.user_id AND b.blocked_id = $1)
+        WHERE b.is_org_block = false
+          AND ((b.blocker_id = $1 AND b.blocked_id = u.user_id)
+            OR (b.blocker_id = u.user_id AND b.blocked_id = $1))
       )
       ${excludeJobFilter}
       ORDER BY followers_count DESC, u.created_at DESC

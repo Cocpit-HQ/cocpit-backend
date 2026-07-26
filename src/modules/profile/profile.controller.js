@@ -5,7 +5,7 @@ const { z } = require("zod");
  * Parses request, calls repository, sends response. No SQL. Minimal business logic.
  */
 const profileRepo = require("./profile.repository");
-const { checkBlockStatus } = require("../../core/utils/blockCheck");
+const { checkBlockStatus, checkActorBlockStatus } = require("../../core/utils/blockCheck");
 const pool = require("../../core/db/pool");
 const { handleExperienceOrgLink, handleEducationOrgLink, cleanupPreviousCompanyMemberships } = require("../../utils/orgLinkHelper");
 
@@ -119,7 +119,7 @@ exports.getProfile = async (req, res) => {
     }
 
     if (req.user && userId !== req.user.sub) {
-        const isBlocked = await checkBlockStatus(req.user.sub, userId);
+        const isBlocked = await checkActorBlockStatus(req, userId);
         if (isBlocked) return res.status(404).json({ message: "User not found" });
     }
 

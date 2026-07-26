@@ -1024,14 +1024,16 @@ CREATE TABLE group_invitations (
 
 -- 5/02/2026 Migration: Create blocks table
 CREATE TABLE IF NOT EXISTS blocks (
-    blocker_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
-    blocked_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
+    blocker_id UUID NOT NULL,
+    blocked_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    is_org_block BOOLEAN NOT NULL DEFAULT false,
     created_at TIMESTAMPTZ DEFAULT now(),
-    PRIMARY KEY (blocker_id, blocked_id),
+    PRIMARY KEY (blocker_id, blocked_id, is_org_block),
     CONSTRAINT no_self_block CHECK (blocker_id <> blocked_id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_blocks_blocked_id ON blocks(blocked_id);
+CREATE INDEX IF NOT EXISTS idx_blocks_is_org ON blocks(is_org_block);
 
 -- 8/02/2026 Migration: Create message_reads table for group chat read receipts
 -- (004_add_message_reads.sql)
@@ -1637,10 +1639,11 @@ CREATE INDEX IF NOT EXISTS idx_reports_reporter ON reports(reporter_id);
 -- Missing tables (blocks, post_impressions)
 -- ---------------------------------------------------------
 CREATE TABLE IF NOT EXISTS blocks (
-    blocker_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    blocker_id UUID NOT NULL,
     blocked_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    is_org_block BOOLEAN NOT NULL DEFAULT false,
     created_at TIMESTAMPTZ DEFAULT NOW(),
-    PRIMARY KEY (blocker_id, blocked_id),
+    PRIMARY KEY (blocker_id, blocked_id, is_org_block),
     CHECK (blocker_id <> blocked_id)
 );
 

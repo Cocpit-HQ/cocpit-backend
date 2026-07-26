@@ -753,8 +753,9 @@ exports.getFollowers = async (req, res) => {
         userQuery += ` 
             AND NOT EXISTS (
                 SELECT 1 FROM blocks b 
-                WHERE (b.blocker_id = $2 AND b.blocked_id = u.user_id)
-                   OR (b.blocker_id = u.user_id AND b.blocked_id = $2)
+                WHERE b.is_org_block = false
+                  AND ((b.blocker_id = $2 AND b.blocked_id = u.user_id)
+                    OR (b.blocker_id = u.user_id AND b.blocked_id = $2))
             )
         `;
 
@@ -829,8 +830,9 @@ exports.getFollowing = async (req, res) => {
         userQuery += `
             AND NOT EXISTS (
                 SELECT 1 FROM blocks b 
-                WHERE (b.blocker_id = $${viewerIdx} AND b.blocked_id = u.user_id)
-                   OR (b.blocker_id = u.user_id AND b.blocked_id = $${viewerIdx})
+                WHERE b.is_org_block = false
+                  AND ((b.blocker_id = $${viewerIdx} AND b.blocked_id = u.user_id)
+                    OR (b.blocker_id = u.user_id AND b.blocked_id = $${viewerIdx}))
             )
         `;
 
@@ -1529,8 +1531,9 @@ exports.getConnectionSuggestions = async (req, res) => {
             JOIN active_users u ON u.user_id = r.suggest_id
             WHERE NOT EXISTS (
                 SELECT 1 FROM blocks
-                WHERE (blocker_id = $1 AND blocked_id = u.user_id)
-                   OR (blocker_id = u.user_id AND blocked_id = $1)
+                WHERE is_org_block = false
+                  AND ((blocker_id = $1 AND blocked_id = u.user_id)
+                    OR (blocker_id = u.user_id AND blocked_id = $1))
             )
             ORDER BY r.total_score DESC
             LIMIT $2
@@ -1845,8 +1848,9 @@ exports.getMyConnections = async (req, res) => {
         userQuery += `
             AND NOT EXISTS (
                 SELECT 1 FROM blocks b 
-                WHERE (b.blocker_id = $1 AND b.blocked_id = u.user_id)
-                   OR (b.blocker_id = u.user_id AND b.blocked_id = $1)
+                WHERE b.is_org_block = false
+                  AND ((b.blocker_id = $1 AND b.blocked_id = u.user_id)
+                    OR (b.blocker_id = u.user_id AND b.blocked_id = $1))
             )
         `;
 
@@ -3799,10 +3803,11 @@ exports.deleteNotificationsBulk = async (req, res) => {
    BLOCKING
    ===================================================== */
 exports.blockUser = async (req, res) => {
-    const userId = req.user.sub;
+    const isOrgActor = req.actor?.type === "ORGANIZATION";
+    const blockerId = isOrgActor ? req.actor.orgId : req.user.sub;
     const targetId = req.params.id;
 
-    if (userId === targetId) {
+    if (blockerId === targetId) {
         return res.status(400).json({ message: "Cannot block yourself" });
     }
 
@@ -3811,7 +3816,7 @@ exports.blockUser = async (req, res) => {
         const { checkBlockStatus } = require("../../core/utils/blockCheck");
 
         // Use the model to block
-        await BlockModel.blockUser(userId, targetId);
+        await BlockModel.blockUser(blockerId, targetId, isOrgActor);
 
         // Also remove any existing connections logic?
         // Ideally blocking should unfollow/unconnect. 
@@ -3819,26 +3824,37 @@ exports.blockUser = async (req, res) => {
         const client = await pool.connect();
         try {
             await client.query("BEGIN");
-            // Delete connections (bidirectional)
-            await client.query(
-                "DELETE FROM connections WHERE (user_id = $1 AND connected_user_id = $2) OR (user_id = $2 AND connected_user_id = $1)",
-                [userId, targetId]
-            );
-            // Delete follows (bidirectional)
-            await client.query(
-                "DELETE FROM followers WHERE (follower_id = $1 AND following_id = $2) OR (follower_id = $2 AND following_id = $1)",
-                [userId, targetId]
-            );
-            // Delete pending requests (bidirectional)
-            // Note: blockUser normally handles the block status in connection_requests if implemented there, 
-            // but here we are using a separate BlockModel? 
-            // The previous logic for handleConnectionRequest used 'blocked' status in connection_requests.
-            // If BlockModel is separate, we should probably clear the connection_request or set it to blocked if the schema supports it.
-            // For now, adhering to 'remove connection' logic: delete requests.
-            await client.query(
-                "DELETE FROM connection_requests WHERE (sender_id = $1 AND receiver_id = $2) OR (sender_id = $2 AND receiver_id = $1)",
-                [userId, targetId]
-            );
+            if (isOrgActor) {
+                // Delete org follows / connections with target user
+                await client.query(
+                    "DELETE FROM organization_user_follows WHERE org_id = $1 AND user_id = $2",
+                    [blockerId, targetId]
+                );
+                await client.query(
+                    "DELETE FROM organization_connections WHERE org_id = $1 AND user_id = $2",
+                    [blockerId, targetId]
+                );
+                await client.query(
+                    "DELETE FROM organization_connection_requests WHERE org_id = $1 AND user_id = $2",
+                    [blockerId, targetId]
+                );
+            } else {
+                // Delete connections (bidirectional)
+                await client.query(
+                    "DELETE FROM connections WHERE (user_id = $1 AND connected_user_id = $2) OR (user_id = $2 AND connected_user_id = $1)",
+                    [blockerId, targetId]
+                );
+                // Delete follows (bidirectional)
+                await client.query(
+                    "DELETE FROM followers WHERE (follower_id = $1 AND following_id = $2) OR (follower_id = $2 AND following_id = $1)",
+                    [blockerId, targetId]
+                );
+                // Delete pending requests (bidirectional)
+                await client.query(
+                    "DELETE FROM connection_requests WHERE (sender_id = $1 AND receiver_id = $2) OR (sender_id = $2 AND receiver_id = $1)",
+                    [blockerId, targetId]
+                );
+            }
 
             await client.query("COMMIT");
         } catch (e) {
@@ -3848,10 +3864,9 @@ exports.blockUser = async (req, res) => {
             client.release();
         }
 
-        const blockerRes = await pool.query(
-            `SELECT full_name, avatar_url FROM users WHERE user_id = $1`,
-            [userId]
-        );
+        const blockerRes = isOrgActor
+            ? await pool.query(`SELECT name as full_name, logo_url as avatar_url FROM organizations WHERE org_id = $1`, [blockerId])
+            : await pool.query(`SELECT full_name, avatar_url FROM users WHERE user_id = $1`, [blockerId]);
         const blockerInfo = blockerRes.rows[0] || {};
 
         const convRes = await pool.query(
@@ -3860,23 +3875,24 @@ exports.blockUser = async (req, res) => {
              JOIN conversation_participants cp1 ON c.conversation_id = cp1.conversation_id AND cp1.user_id = $1
              JOIN conversation_participants cp2 ON c.conversation_id = cp2.conversation_id AND cp2.user_id = $2
              WHERE c.is_group = FALSE AND c.is_active = TRUE`,
-            [userId, targetId]
+            [req.user.sub, targetId]
         );
         const conversation_id = convRes.rowCount > 0 ? convRes.rows[0].conversation_id : null;
 
         const payload = {
-            blocked_by_user_id: userId,
+            blocked_by_user_id: blockerId,
             blocked_by_name: blockerInfo.full_name,
-            blocked_by_avatar: blockerInfo.avatar_url
+            blocked_by_avatar: blockerInfo.avatar_url,
+            is_org_block: isOrgActor
         };
         if (conversation_id) {
             payload.conversation_id = conversation_id;
         }
 
         socketService.notifyUser(targetId, "user_blocked", payload);
-        socketService.notifyUser(userId, "block_confirmed", payload);
+        socketService.notifyUser(req.user.sub, "block_confirmed", payload);
 
-        res.json({ message: "User blocked successfully" });
+        res.json({ message: isOrgActor ? "User blocked for organization" : "User blocked successfully" });
     } catch (err) {
         console.error("Block user error:", err);
         res.status(500).json({ message: "Internal server error" });
@@ -4018,17 +4034,17 @@ exports.getRelationshipStatus = async (req, res) => {
 };
 
 exports.unblockUser = async (req, res) => {
-    const userId = req.user.sub;
+    const isOrgActor = req.actor?.type === "ORGANIZATION";
+    const blockerId = isOrgActor ? req.actor.orgId : req.user.sub;
     const targetId = req.params.id;
 
     try {
         const BlockModel = require("../../models/block.model");
-        await BlockModel.unblockUser(userId, targetId);
+        await BlockModel.unblockUser(blockerId, targetId, isOrgActor);
 
-        const unblockerRes = await pool.query(
-            `SELECT full_name, avatar_url FROM users WHERE user_id = $1`,
-            [userId]
-        );
+        const unblockerRes = isOrgActor
+            ? await pool.query(`SELECT name as full_name, logo_url as avatar_url FROM organizations WHERE org_id = $1`, [blockerId])
+            : await pool.query(`SELECT full_name, avatar_url FROM users WHERE user_id = $1`, [blockerId]);
         const unblockerInfo = unblockerRes.rows[0] || {};
 
         const convRes = await pool.query(
@@ -4037,23 +4053,24 @@ exports.unblockUser = async (req, res) => {
              JOIN conversation_participants cp1 ON c.conversation_id = cp1.conversation_id AND cp1.user_id = $1
              JOIN conversation_participants cp2 ON c.conversation_id = cp2.conversation_id AND cp2.user_id = $2
              WHERE c.is_group = FALSE AND c.is_active = TRUE`,
-            [userId, targetId]
+            [req.user.sub, targetId]
         );
         const conversation_id = convRes.rowCount > 0 ? convRes.rows[0].conversation_id : null;
 
         const payload = {
-            unblocked_by_user_id: userId,
+            unblocked_by_user_id: blockerId,
             unblocked_by_name: unblockerInfo.full_name,
-            unblocked_by_avatar: unblockerInfo.avatar_url
+            unblocked_by_avatar: unblockerInfo.avatar_url,
+            is_org_block: isOrgActor
         };
         if (conversation_id) {
             payload.conversation_id = conversation_id;
         }
 
         socketService.notifyUser(targetId, "user_unblocked", payload);
-        socketService.notifyUser(userId, "unblock_confirmed", payload);
+        socketService.notifyUser(req.user.sub, "unblock_confirmed", payload);
 
-        res.json({ message: "User unblocked successfully" });
+        res.json({ message: isOrgActor ? "User unblocked for organization" : "User unblocked successfully" });
     } catch (err) {
         console.error("Unblock user error:", err);
         res.status(500).json({ message: "Internal server error" });
@@ -4061,11 +4078,13 @@ exports.unblockUser = async (req, res) => {
 };
 
 exports.getBlockedUsers = async (req, res) => {
-    const userId = req.user.sub;
+    const isOrgActor = req.actor?.type === "ORGANIZATION";
+    const blockerId = isOrgActor ? req.actor.orgId : req.user.sub;
     try {
         const BlockModel = require("../../models/block.model");
-        // Get list of users *I* have blocked
-        const blockedUsers = await BlockModel.getBlockedUsersDetails(userId);
+        const blockedUsers = isOrgActor
+            ? await BlockModel.getOrgBlockedUsersDetails(blockerId)
+            : await BlockModel.getBlockedUsersDetails(blockerId);
         res.json(blockedUsers);
     } catch (err) {
         console.error("Get blocked users error:", err);
