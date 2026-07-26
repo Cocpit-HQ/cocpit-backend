@@ -234,7 +234,8 @@ exports.getOrgProfile = async (req, res) => {
                     `SELECT
                         EXISTS(SELECT 1 FROM organization_followers WHERE user_id = $1 AND org_id = $2) AS is_following,
                         EXISTS(SELECT 1 FROM community_subscriptions cs JOIN communities c ON cs.community_id = c.community_id WHERE cs.user_id = $1 AND c.org_id = $2 AND cs.status = 'SUBSCRIBED') AS is_subscribed,
-                        EXISTS(SELECT 1 FROM organization_connections WHERE user_id = $1 AND org_id = $2) AS is_connected`,
+                        EXISTS(SELECT 1 FROM organization_connections WHERE user_id = $1 AND org_id = $2) AS is_connected,
+                        EXISTS(SELECT 1 FROM blocks WHERE (blocker_id = $1 AND blocked_id = $2) OR (blocker_id = $2 AND blocked_id = $1)) AS is_blocked`,
                     [viewerId, org.org_id]
                 ),
                 pool.query(
@@ -259,6 +260,7 @@ exports.getOrgProfile = async (req, res) => {
                 is_following: !!relResult.rows[0]?.is_following,
                 is_subscribed: !!relResult.rows[0]?.is_subscribed,
                 is_connected: !!relResult.rows[0]?.is_connected,
+                is_blocked: !!relResult.rows[0]?.is_blocked,
             };
 
             relevance = {
@@ -1604,17 +1606,29 @@ async function calculateEmployeeGrowth(client, orgId) {
               AND start_date >= DATE_TRUNC('year', CURRENT_DATE)
               AND start_date <= CURRENT_DATE
             GROUP BY month_num
+        ),
+        departures AS (
+            SELECT 
+                EXTRACT(MONTH FROM end_date)::int AS month_num,
+                COUNT(DISTINCT profile_id)::int AS departure_count
+            FROM experiences
+            WHERE org_id = $1::uuid
+              AND end_date >= DATE_TRUNC('year', CURRENT_DATE)
+              AND end_date <= CURRENT_DATE
+            GROUP BY month_num
         )
         SELECT 
             (SELECT base_count FROM start_count) AS base_count,
             json_agg(
                 json_build_object(
                     'month_num', m.month_num,
-                    'join_count', COALESCE(j.join_count, 0)
+                    'join_count', COALESCE(j.join_count, 0),
+                    'departure_count', COALESCE(d.departure_count, 0)
                 ) ORDER BY m.month_num
-            ) AS monthly_joins
+            ) AS monthly_stats
         FROM months m
-        LEFT JOIN joins j ON m.month_num = j.month_num;
+        LEFT JOIN joins j ON m.month_num = j.month_num
+        LEFT JOIN departures d ON m.month_num = d.month_num;
     `;
     const res = await client.query(query, [orgId]);
     if (res.rowCount === 0) {
@@ -1622,33 +1636,55 @@ async function calculateEmployeeGrowth(client, orgId) {
             percentage: "0.0%",
             growth_value: 0,
             base_count: 0,
+            current_headcount: 0,
             total_joins: 0,
+            max_y: 5,
+            y_ticks: [5, 0],
+            start_month: "January",
+            current_month: "January",
             trend: []
         };
     }
 
     const baseCount = parseInt(res.rows[0].base_count || 0);
-    const monthlyJoins = res.rows[0].monthly_joins || [];
+    const monthlyStats = res.rows[0].monthly_stats || [];
 
     const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    const fullMonthNames = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 
-    let cumulativeJoins = 0;
-    const trend = monthlyJoins.map(item => {
-        cumulativeJoins += parseInt(item.join_count);
+    let currentHeadcount = baseCount;
+    let maxHeadcount = baseCount;
+    let totalJoins = 0;
+
+    const trend = monthlyStats.map(item => {
+        const joins = parseInt(item.join_count || 0);
+        const departures = parseInt(item.departure_count || 0);
+        totalJoins += joins;
+        currentHeadcount = Math.max(0, currentHeadcount + joins - departures);
+        if (currentHeadcount > maxHeadcount) maxHeadcount = currentHeadcount;
+
         return {
             month_num: item.month_num,
             month: monthNames[item.month_num - 1],
-            joins: parseInt(item.join_count),
-            cumulative_joins: cumulativeJoins
+            full_month: fullMonthNames[item.month_num - 1],
+            joins,
+            departures,
+            headcount: currentHeadcount
         };
     });
+
+    const maxY = Math.max(5, Math.ceil(maxHeadcount / 5) * 5);
+    const yTicks = [];
+    for (let i = maxY; i >= 0; i -= 5) {
+        yTicks.push(i);
+    }
 
     let percentageStr = "0.0%";
     let growthValue = 0;
     if (baseCount > 0) {
-        growthValue = Math.round((cumulativeJoins / baseCount) * 100 * 10) / 10;
+        growthValue = Math.round(((currentHeadcount - baseCount) / baseCount) * 100 * 10) / 10;
         percentageStr = (growthValue >= 0 ? "+" : "") + growthValue + "%";
-    } else if (cumulativeJoins > 0) {
+    } else if (currentHeadcount > 0) {
         growthValue = 100.0;
         percentageStr = "+100.0%";
     }
@@ -1657,7 +1693,12 @@ async function calculateEmployeeGrowth(client, orgId) {
         percentage: percentageStr,
         growth_value: growthValue,
         base_count: baseCount,
-        total_joins: cumulativeJoins,
+        current_headcount: currentHeadcount,
+        total_joins: totalJoins,
+        max_y: maxY,
+        y_ticks: yTicks,
+        start_month: trend.length > 0 ? trend[0].full_month : "January",
+        current_month: trend.length > 0 ? trend[trend.length - 1].full_month : "July",
         trend
     };
 }

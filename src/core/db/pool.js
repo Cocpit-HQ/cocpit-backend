@@ -42,6 +42,12 @@ async function checkDbConnection() {
       console.log("📦 Database:", res.rows[0].current_database);
       console.log("👤 DB User:", res.rows[0].current_user);
       _dbConnected = true;
+
+      // Drop foreign key constraints on blocks table so users can block orgs and orgs can block users
+      pool.query(`
+        ALTER TABLE blocks DROP CONSTRAINT IF EXISTS blocks_blocked_id_fkey;
+        ALTER TABLE blocks DROP CONSTRAINT IF EXISTS blocks_blocker_id_fkey;
+      `).catch(err => console.warn("Blocks schema constraint drop notice:", err.message));
     }
     return true;
   } catch (err) {

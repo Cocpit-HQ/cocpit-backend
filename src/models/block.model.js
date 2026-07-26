@@ -87,14 +87,21 @@ class BlockModel {
     }
 
     /**
-     * Get detailed list of users blocked BY userId (personal)
+     * Get detailed list of users and organizations blocked BY userId (personal)
      * @param {string} userId 
      */
     static async getBlockedUsersDetails(userId) {
         const result = await pool.query(
-            `SELECT u.user_id, u.full_name, u.avatar_url, u.headline, u.account_name 
+            `SELECT 
+                COALESCE(u.user_id, o.org_id) AS user_id,
+                COALESCE(u.full_name, o.name) AS full_name,
+                COALESCE(u.avatar_url, o.logo_url) AS avatar_url,
+                COALESCE(u.headline, o.headline, '') AS headline,
+                COALESCE(u.account_name, o.slug) AS account_name,
+                CASE WHEN o.org_id IS NOT NULL THEN 'COMPANY' ELSE 'USER' END AS entity_type
              FROM blocks b
-             JOIN active_users u ON b.blocked_id = u.user_id
+             LEFT JOIN active_users u ON b.blocked_id = u.user_id
+             LEFT JOIN organizations o ON b.blocked_id = o.org_id
              WHERE b.blocker_id = $1 AND b.is_org_block = false`,
             [userId]
         );
@@ -102,14 +109,21 @@ class BlockModel {
     }
 
     /**
-     * Get detailed list of users blocked BY orgId
+     * Get detailed list of users and organizations blocked BY orgId
      * @param {string} orgId 
      */
     static async getOrgBlockedUsersDetails(orgId) {
         const result = await pool.query(
-            `SELECT u.user_id, u.full_name, u.avatar_url, u.headline, u.account_name 
+            `SELECT 
+                COALESCE(u.user_id, o.org_id) AS user_id,
+                COALESCE(u.full_name, o.name) AS full_name,
+                COALESCE(u.avatar_url, o.logo_url) AS avatar_url,
+                COALESCE(u.headline, o.headline, '') AS headline,
+                COALESCE(u.account_name, o.slug) AS account_name,
+                CASE WHEN o.org_id IS NOT NULL THEN 'COMPANY' ELSE 'USER' END AS entity_type
              FROM blocks b
-             JOIN active_users u ON b.blocked_id = u.user_id
+             LEFT JOIN active_users u ON b.blocked_id = u.user_id
+             LEFT JOIN organizations o ON b.blocked_id = o.org_id
              WHERE b.blocker_id = $1 AND b.is_org_block = true`,
             [orgId]
         );
