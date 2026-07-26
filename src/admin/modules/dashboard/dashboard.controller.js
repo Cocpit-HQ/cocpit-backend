@@ -1953,3 +1953,25 @@ exports.getAiAnalytics = async (req, res) => {
     res.status(500).json({ error: 'Failed to fetch AI analytics' });
   }
 };
+
+exports.getAdminNotifications = async (req, res) => {
+  try {
+    const appealsRes = await pool.query("SELECT COUNT(*) FROM post_appeals WHERE status = 'pending'");
+    const appealsCount = parseInt(appealsRes.rows[0].count, 10);
+
+    const reportsRes = await pool.query("SELECT COUNT(*) FROM reports WHERE status IN ('active', 'escalated')");
+    const reportsCount = parseInt(reportsRes.rows[0].count, 10);
+
+    const orgsRes = await pool.query("SELECT COUNT(*) FROM organizations WHERE verification_status = 'pending' AND is_deleted = false");
+    const orgsCount = parseInt(orgsRes.rows[0].count, 10);
+
+    res.json({
+      appeals: appealsCount,
+      reports: reportsCount,
+      organizations: orgsCount
+    });
+  } catch (error) {
+    console.error('Error fetching admin notifications:', error);
+    res.status(500).json({ error: 'Failed to fetch admin notifications' });
+  }
+};

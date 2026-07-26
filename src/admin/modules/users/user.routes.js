@@ -11,8 +11,10 @@ router.post('/bulk-warn', requireRoles(['Admin', 'Moderator']), userController.b
 router.post('/:id/suspend', requireRoles(['Admin', 'Moderator']), userController.suspendUser);
 router.post('/bulk-suspend', requireRoles(['Admin', 'Moderator']), userController.bulkSuspendUsers);
 router.post('/:id/unsuspend', requireRoles(['Admin', 'Moderator']), userController.unsuspendUser);
+router.post('/bulk-unsuspend', requireRoles(['Admin', 'Moderator']), userController.bulkUnsuspendUsers);
 router.get('/:id/thoughts', requireRoles(['Admin', 'Developer', 'Moderator']), userController.getUserThoughts);
 router.patch('/:id', requireRoles(['Admin']), userController.updateUser);
 router.delete('/:id', requireRoles(['Admin']), userController.deleteUser);
+router.post('/bulk-delete', requireRoles(['Admin']), userController.bulkDeleteUsers);
 
 module.exports = router;

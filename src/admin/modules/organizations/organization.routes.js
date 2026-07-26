@@ -12,5 +12,9 @@ router.post('/verifications/:id/review', requireRoles(['Admin', 'Moderator']), o
 router.post('/:id/warn', requireRoles(['Admin', 'Moderator']), organizationController.warnOrganization);
 router.post('/:id/suspend', requireRoles(['Admin', 'Moderator']), organizationController.suspendOrganization);
 router.post('/:id/unsuspend', requireRoles(['Admin', 'Moderator']), organizationController.unsuspendOrganization);
+router.post('/bulk-warn', requireRoles(['Admin', 'Moderator']), organizationController.bulkWarnOrganizations);
+router.post('/bulk-suspend', requireRoles(['Admin', 'Moderator']), organizationController.bulkSuspendOrganizations);
+router.post('/bulk-unsuspend', requireRoles(['Admin', 'Moderator']), organizationController.bulkUnsuspendOrganizations);
+router.post('/bulk-delete', requireRoles(['Admin']), organizationController.bulkDeleteOrganizations);
 
 module.exports = router;

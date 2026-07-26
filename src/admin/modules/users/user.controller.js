@@ -434,6 +434,44 @@ exports.suspendUser = async (req, res) => {
   }
 };
 
+exports.bulkUnsuspendUsers = async (req, res) => {
+  try {
+    const { userIds } = req.body;
+    if (!Array.isArray(userIds) || userIds.length === 0) {
+      return res.status(400).json({ error: 'No user IDs provided' });
+    }
+
+    const adminId = req.user.userId;
+    const results = [];
+
+    for (const id of userIds) {
+      const updateResult = await pool.query(
+        'UPDATE users SET is_suspended = false, moderation_flags = 0 WHERE user_id = $1 RETURNING full_name',
+        [id]
+      );
+
+      if (updateResult.rows.length === 0) continue;
+
+      const targetName = updateResult.rows[0].full_name || 'user';
+      await pool.query(
+        'INSERT INTO admin_audit_logs (user_id, action_type, description) VALUES ($1, $2, $3)',
+        [adminId, 'USER_UNSUSPENDED', `Unsuspended ${targetName} (Bulk Action).`]
+      );
+
+      // Remove suspension from Redis so main API auth middleware allows login
+      await redis.del(`suspended_user:${id}`);
+      await redis.publish('admin:users', JSON.stringify({ action: 'unsuspended', userId: id }));
+
+      results.push({ id, name: targetName, status: 'Active' });
+    }
+
+    res.json({ success: true, results });
+  } catch (error) {
+    console.error('Error unsuspending users in bulk:', error);
+    res.status(500).json({ error: 'Failed to unsuspend users in bulk' });
+  }
+};
+
 exports.unsuspendUser = async (req, res) => {
   try {
     const { id } = req.params;
@@ -454,6 +492,7 @@ exports.unsuspendUser = async (req, res) => {
 
     // Remove suspension from Redis
     await redis.del(`suspended_user:${id}`);
+    await redis.publish('admin:users', JSON.stringify({ action: 'unsuspended', userId: id }));
 
     res.json({ success: true, message: 'User unsuspended and flags reset to 0' });
   } catch (error) {
@@ -706,6 +745,48 @@ exports.deleteUser = async (req, res) => {
   } catch (error) {
     console.error('Error deleting user:', error);
     res.status(500).json({ error: 'Failed to delete user' });
+  }
+};
+
+exports.bulkDeleteUsers = async (req, res) => {
+  try {
+    const { userIds } = req.body;
+    if (!Array.isArray(userIds) || userIds.length === 0) {
+      return res.status(400).json({ error: 'No user IDs provided' });
+    }
+
+    const adminId = req.user.userId;
+    const results = [];
+
+    for (const id of userIds) {
+      const updateResult = await pool.query(
+        'UPDATE users SET is_deleted = true WHERE user_id = $1 RETURNING full_name',
+        [id]
+      );
+
+      if (updateResult.rows.length === 0) {
+        results.push({ id, status: 'Not Found' });
+        continue;
+      }
+
+      const targetName = updateResult.rows[0].full_name || 'user';
+      await pool.query(
+        'INSERT INTO admin_audit_logs (user_id, action_type, description) VALUES ($1, $2, $3)',
+        [adminId, 'USER_DELETED', `Soft deleted ${targetName} (Bulk Action).`]
+      );
+
+      await pool.query(
+        'INSERT INTO moderation_actions (user_id, action_type, reason, message, created_by) VALUES ($1, $2, $3, $4, $5)',
+        [id, 'BAN', `Bulk manual soft deletion by admin`, `Your account has been deleted.`, adminId]
+      );
+
+      results.push({ id, name: targetName, status: 'Deleted' });
+    }
+
+    res.json({ success: true, results });
+  } catch (error) {
+    console.error('Error deleting users in bulk:', error);
+    res.status(500).json({ error: 'Failed to delete users in bulk' });
   }
 };
 

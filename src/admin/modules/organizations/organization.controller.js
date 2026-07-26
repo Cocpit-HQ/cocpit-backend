@@ -493,3 +493,132 @@ exports.reviewOrganizationVerification = async (req, res) => {
     res.status(500).json({ error: 'Failed to complete organization verification review', details: err.message });
   }
 };
+
+exports.bulkWarnOrganizations = async (req, res) => {
+  try {
+    const { orgIds, reason, message, isSevere } = req.body;
+    if (!Array.isArray(orgIds) || orgIds.length === 0) {
+      return res.status(400).json({ error: 'No organization IDs provided' });
+    }
+
+    const adminId = req.user.userId;
+    const results = [];
+
+    for (const id of orgIds) {
+      const updateResult = await pool.query(
+        'UPDATE organizations SET moderation_flags = COALESCE(moderation_flags, 0) + $1 WHERE org_id = $2 RETURNING name, created_by, moderation_flags',
+        [isSevere ? 1 : 0, id]
+      );
+      if (updateResult.rows.length === 0) continue;
+
+      const { name: targetName, created_by: orgCreatorId, moderation_flags: newFlagsCount } = updateResult.rows[0];
+      let autoSuspended = false;
+
+      if (newFlagsCount >= 7) {
+        await pool.query('UPDATE organizations SET is_suspended = true, suspension_count = COALESCE(suspension_count, 0) + 1, moderation_flags = 0 WHERE org_id = $1', [id]);
+        autoSuspended = true;
+        await pool.query('INSERT INTO admin_audit_logs (user_id, action_type, description) VALUES ($1, $2, $3)', [adminId, 'ORG_SUSPENDED', `Automatically suspended ${targetName} due to flags.`]);
+      }
+
+      await pool.query('INSERT INTO admin_audit_logs (user_id, action_type, description) VALUES ($1, $2, $3)', [adminId, 'ORG_WARNING_SENT', `Sent warning to ${targetName}. Reason: ${reason} (Bulk)`]);
+      results.push({ id, name: targetName, moderation_flags: newFlagsCount, autoSuspended });
+    }
+    res.json({ success: true, results });
+  } catch (error) {
+    console.error('Error warning organizations in bulk:', error);
+    res.status(500).json({ error: 'Failed to warn organizations in bulk' });
+  }
+};
+
+exports.bulkSuspendOrganizations = async (req, res) => {
+  try {
+    const { orgIds } = req.body;
+    if (!Array.isArray(orgIds) || orgIds.length === 0) {
+      return res.status(400).json({ error: 'No organization IDs provided' });
+    }
+
+    const adminId = req.user.userId;
+    const results = [];
+
+    for (const id of orgIds) {
+      const updateResult = await pool.query(
+        'UPDATE organizations SET is_suspended = true, suspension_count = COALESCE(suspension_count, 0) + 1, moderation_flags = 0 WHERE org_id = $1 RETURNING name',
+        [id]
+      );
+      if (updateResult.rows.length === 0) continue;
+
+      const targetName = updateResult.rows[0].name;
+      await pool.query(
+        'INSERT INTO admin_audit_logs (user_id, action_type, description) VALUES ($1, $2, $3)',
+        [adminId, 'ORG_SUSPENDED', `Manually suspended ${targetName} (Bulk)`]
+      );
+      results.push({ id, name: targetName, status: 'Suspended' });
+    }
+    res.json({ success: true, results });
+  } catch (error) {
+    console.error('Error suspending organizations in bulk:', error);
+    res.status(500).json({ error: 'Failed to suspend organizations in bulk' });
+  }
+};
+
+exports.bulkDeleteOrganizations = async (req, res) => {
+  try {
+    const { orgIds } = req.body;
+    if (!Array.isArray(orgIds) || orgIds.length === 0) {
+      return res.status(400).json({ error: 'No organization IDs provided' });
+    }
+
+    const adminId = req.user.userId;
+    const results = [];
+
+    for (const id of orgIds) {
+      const updateResult = await pool.query(
+        'UPDATE organizations SET is_deleted = true WHERE org_id = $1 RETURNING name',
+        [id]
+      );
+      if (updateResult.rows.length === 0) continue;
+
+      const targetName = updateResult.rows[0].name;
+      await pool.query(
+        'INSERT INTO admin_audit_logs (user_id, action_type, description) VALUES ($1, $2, $3)',
+        [adminId, 'ORG_DELETED', `Soft deleted ${targetName} (Bulk)`]
+      );
+      results.push({ id, name: targetName, status: 'Deleted' });
+    }
+    res.json({ success: true, results });
+  } catch (error) {
+    console.error('Error deleting organizations in bulk:', error);
+    res.status(500).json({ error: 'Failed to delete organizations in bulk' });
+  }
+};
+
+exports.bulkUnsuspendOrganizations = async (req, res) => {
+  try {
+    const { orgIds } = req.body;
+    if (!Array.isArray(orgIds) || orgIds.length === 0) {
+      return res.status(400).json({ error: 'No organization IDs provided' });
+    }
+
+    const adminId = req.user.userId;
+    const results = [];
+
+    for (const id of orgIds) {
+      const updateResult = await pool.query(
+        'UPDATE organizations SET is_suspended = false, moderation_flags = 0 WHERE org_id = $1 RETURNING name',
+        [id]
+      );
+      if (updateResult.rows.length === 0) continue;
+
+      const targetName = updateResult.rows[0].name;
+      await pool.query(
+        'INSERT INTO admin_audit_logs (user_id, action_type, description) VALUES ($1, $2, $3)',
+        [adminId, 'ORG_UNSUSPENDED', `Manually unsuspended ${targetName} (Bulk)`]
+      );
+      results.push({ id, name: targetName, status: 'Active' });
+    }
+    res.json({ success: true, results });
+  } catch (error) {
+    console.error('Error unsuspending organizations in bulk:', error);
+    res.status(500).json({ error: 'Failed to unsuspend organizations in bulk' });
+  }
+};
