@@ -1188,9 +1188,9 @@ exports.applyJob = async (req, res) => {
     // 11. COMMIT and return
     await client.query('COMMIT');
     res.status(201).json({ message: "Application submitted successfully", applicationId: appId });
-
     // 🎯 Intent Layer: Log Apply Job
     logIntentActivity({ userId, action: "apply_job", metadata: { jobId: id, applicationId: appId } });
+    logActivity(userId, 'apply_job', 'job', id);
   } catch (err) {
     await client.query("ROLLBACK");
     console.error("Apply job error:", err);

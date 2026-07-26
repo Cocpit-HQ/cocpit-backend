@@ -14,9 +14,14 @@ exports.globalSearch = async (req, res) => {
       return res.status(400).json({ error: 'Query must be at least 2 characters long' });
     }
 
-    const searchQuery = q.trim();
+    let searchQuery = q.trim();
+    if (searchQuery.startsWith('#')) {
+      searchQuery = searchQuery.slice(1);
+    }
+
     let users = [];
     let organizations = [];
+    let jobs = [];
 
     if (isUUID(searchQuery)) {
       // Search by exact UUID
@@ -31,6 +36,12 @@ exports.globalSearch = async (req, res) => {
         [searchQuery]
       );
       organizations = orgResult.rows;
+
+      const jobResult = await pool.query(
+        'SELECT job_id, title, company_name, location, status FROM jobs WHERE job_id = $1',
+        [searchQuery]
+      );
+      jobs = jobResult.rows;
     } else {
       // Search by text (ILIKE)
       const ilikeQuery = `%${searchQuery}%`;
@@ -38,7 +49,7 @@ exports.globalSearch = async (req, res) => {
       const userResult = await pool.query(
         `SELECT user_id, full_name, email, avatar_url, job_title 
          FROM users 
-         WHERE full_name ILIKE $1 OR email ILIKE $1 
+         WHERE full_name ILIKE $1 OR email ILIKE $1 OR user_id::text ILIKE $1
          ORDER BY full_name ASC 
          LIMIT 10`,
         [ilikeQuery]
@@ -48,17 +59,28 @@ exports.globalSearch = async (req, res) => {
       const orgResult = await pool.query(
         `SELECT org_id, name, slug, logo_url, industry, verification_status 
          FROM organizations 
-         WHERE name ILIKE $1 OR slug ILIKE $1 
+         WHERE name ILIKE $1 OR slug ILIKE $1 OR org_id::text ILIKE $1
          ORDER BY name ASC 
          LIMIT 10`,
         [ilikeQuery]
       );
       organizations = orgResult.rows;
+
+      const jobResult = await pool.query(
+        `SELECT job_id, title, company_name, location, status 
+         FROM jobs 
+         WHERE title ILIKE $1 OR company_name ILIKE $1 OR job_id::text ILIKE $1
+         ORDER BY created_at DESC 
+         LIMIT 10`,
+        [ilikeQuery]
+      );
+      jobs = jobResult.rows;
     }
 
     res.json({
       users,
-      organizations
+      organizations,
+      jobs
     });
   } catch (err) {
     console.error('[Admin] Global Search Error:', err);

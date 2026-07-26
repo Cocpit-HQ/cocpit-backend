@@ -458,6 +458,7 @@ exports.getPostComments = async (req, res) => {
         c.comment_id AS id,
         c.content,
         c.created_at,
+        c.parent_id,
         u.full_name AS author,
         u.avatar_url AS avatar,
         u.job_title AS title,
@@ -472,6 +473,7 @@ exports.getPostComments = async (req, res) => {
       id: row.id,
       content: row.content,
       created_at: row.created_at,
+      parent_id: row.parent_id,
       author: row.author,
       title: row.title || 'Professional',
       company: row.company || 'Platform User',
@@ -480,6 +482,225 @@ exports.getPostComments = async (req, res) => {
   } catch (error) {
     console.error('Error fetching post comments:', error);
     res.status(500).json({ error: 'Failed to fetch post comments' });
+  }
+};
+
+// POST /api/admin/feed/posts/:id/comments
+exports.createPostComment = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { content, parent_id } = req.body;
+    const userId = req.user.sub || req.user.id; // Admin user ID from token
+    
+    if (!content || !content.trim()) {
+      return res.status(400).json({ error: 'Content is required' });
+    }
+
+    const insertQuery = `
+      INSERT INTO post_comments (post_id, author_id, content, parent_id)
+      VALUES ($1, $2, $3, $4)
+      RETURNING comment_id AS id, content, created_at, parent_id
+    `;
+    const result = await pool.query(insertQuery, [id, userId, content, parent_id || null]);
+    
+    // Fetch the admin user details to return a complete comment object
+    const userQuery = `SELECT full_name, avatar_url, job_title, company_name FROM users WHERE user_id = $1`;
+    const userResult = await pool.query(userQuery, [userId]);
+    const u = userResult.rows[0] || {};
+    
+    const newComment = {
+      id: result.rows[0].id,
+      content: result.rows[0].content,
+      created_at: result.rows[0].created_at,
+      parent_id: result.rows[0].parent_id,
+      author: u.full_name || 'Admin',
+      avatar: u.avatar_url || `https://ui-avatars.com/api/?name=${encodeURIComponent(u.full_name || 'Admin')}&background=e0e7ff&color=3730a3`,
+      title: u.job_title || 'Admin',
+      company: u.company_name || 'COCPIT'
+    };
+    
+    res.status(201).json(newComment);
+  } catch (error) {
+    console.error('Error creating post comment:', error);
+    res.status(500).json({ error: 'Failed to create post comment' });
+  }
+};
+
+exports.getPostById = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const query = `
+      SELECT 
+        p.post_id AS id,
+        p.content,
+        p.created_at,
+        u.full_name AS author,
+        u.email AS author_email,
+        u.avatar_url AS author_avatar,
+        (SELECT COUNT(*) FROM post_likes l WHERE l.post_id = p.post_id) AS likes_count,
+        (SELECT COUNT(*) FROM post_comments c WHERE c.post_id = p.post_id) AS comments_count,
+        (SELECT COUNT(*) FROM reports r WHERE r.target_type = 'POST' AND r.target_id = p.post_id) AS reports_count
+      FROM posts p
+      JOIN users u ON p.author_id = u.user_id
+      WHERE p.post_id = $1
+    `;
+    const result = await pool.query(query, [id]);
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Post not found' });
+    }
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error('Error fetching post:', error);
+    res.status(500).json({ error: 'Failed to fetch post' });
+  }
+};
+
+// GET /api/admin/feed/channels
+exports.getAllChannels = async (req, res) => {
+  try {
+    const query = `
+      SELECT 
+        c.community_id AS id,
+        c.name,
+        c.description,
+        c.banner_url,
+        c.created_at,
+        c.org_id,
+        u.full_name AS created_by_name,
+        (SELECT COUNT(*) FROM posts WHERE author_org_id = c.org_id AND post_type = 'article') AS article_count
+      FROM communities c
+      LEFT JOIN users u ON c.created_by = u.user_id
+      WHERE c.is_active = TRUE
+      ORDER BY c.created_at DESC
+    `;
+    const result = await pool.query(query);
+    res.json({ channels: result.rows });
+  } catch (error) {
+    console.error('Error fetching channels:', error);
+    res.status(500).json({ error: 'Failed to fetch channels' });
+  }
+};
+
+// GET /api/admin/feed/channels/:id/articles
+exports.getChannelArticles = async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    // Check if the channel (community) exists
+    const channelQuery = `SELECT org_id FROM communities WHERE community_id = $1 AND is_active = TRUE`;
+    const channelResult = await pool.query(channelQuery, [id]);
+    if (channelResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Channel not found' });
+    }
+    
+    const orgId = channelResult.rows[0].org_id;
+
+    // Fetch articles (posts by the organization)
+    const articlesQuery = `
+      SELECT 
+        p.post_id AS id,
+        p.title,
+        p.content,
+        p.created_at AS "publishedat",
+        COALESCE(pm.url, NULL) AS "mediaUrl",
+        (SELECT COUNT(*) FROM post_comments c WHERE c.post_id = p.post_id) AS comments_count
+      FROM posts p
+      LEFT JOIN post_media pm ON p.post_id = pm.post_id
+      WHERE p.author_org_id = $1 AND p.post_type = 'article'
+      ORDER BY p.created_at DESC
+    `;
+    const articlesResult = await pool.query(articlesQuery, [orgId]);
+    
+    // Post process to extract title from content if title is missing
+    const articles = articlesResult.rows.map(row => {
+      let title = row.title;
+      if (!title) {
+        const lines = row.content ? row.content.split('\n') : [];
+        title = lines.length > 0 ? lines[0].substring(0, 50) : 'Untitled Article';
+      }
+      return {
+        id: row.id,
+        title,
+        content: row.content,
+        publishedAt: row.publishedat,
+        mediaUrl: row.mediaUrl,
+        commentsCount: parseInt(row.comments_count, 10)
+      };
+    });
+
+    res.json({ articles });
+  } catch (error) {
+    console.error('Error fetching channel articles:', error);
+    res.status(500).json({ error: 'Failed to fetch channel articles' });
+  }
+};
+
+// GET /api/admin/feed/thoughts
+exports.getAllThoughts = async (req, res) => {
+  try {
+    const { page = 1, limit = 10 } = req.query;
+    const offset = (page - 1) * limit;
+
+    const countRes = await pool.query('SELECT COUNT(*) FROM post_comments');
+    const totalThoughts = parseInt(countRes.rows[0].count, 10);
+
+    const query = `
+      SELECT 
+        c.comment_id AS id,
+        c.content,
+        c.created_at,
+        c.author_id,
+        p.post_id,
+        u.full_name AS author,
+        u.avatar_url AS avatar,
+        p.content AS post_snippet
+      FROM post_comments c
+      JOIN users u ON c.author_id = u.user_id
+      JOIN posts p ON c.post_id = p.post_id
+      ORDER BY c.created_at DESC
+      LIMIT $1 OFFSET $2
+    `;
+    const result = await pool.query(query, [limit, offset]);
+    
+    const thoughts = result.rows.map(row => ({
+      id: row.id,
+      content: row.content,
+      created_at: row.created_at,
+      author: row.author,
+      author_id: row.author_id,
+      post_id: row.post_id,
+      avatar: row.avatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(row.author)}&background=e0e7ff&color=3730a3`,
+      postSnippet: (row.post_snippet && row.post_snippet.length > 50) 
+        ? row.post_snippet.substring(0, 50) + '...' 
+        : row.post_snippet
+    }));
+
+    res.json({
+      thoughts,
+      totalThoughts,
+      currentPage: parseInt(page, 10),
+      totalPages: Math.ceil(totalThoughts / limit)
+    });
+  } catch (error) {
+    console.error('Error fetching all thoughts:', error);
+    res.status(500).json({ error: 'Failed to fetch thoughts' });
+  }
+};
+
+// DELETE /api/admin/feed/thoughts/:id
+exports.deleteThought = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const result = await pool.query('DELETE FROM post_comments WHERE comment_id = $1 RETURNING *', [id]);
+    
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: 'Thought not found' });
+    }
+
+    res.json({ success: true, message: 'Thought deleted successfully' });
+  } catch (error) {
+    console.error('Error deleting thought:', error);
+    res.status(500).json({ error: 'Failed to delete thought' });
   }
 };
 

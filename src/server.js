@@ -40,7 +40,7 @@ initSocket(server);
 require('./core/cache/redisSubscriber');
 require('./modules/config/featureFlags.service').initFlagsFromRedis();
 
-startSessionTimeoutWorker();
+// startSessionTimeoutWorker();
 
 // Start simple job expiry worker (Every 15 minutes)
 setInterval(() => {

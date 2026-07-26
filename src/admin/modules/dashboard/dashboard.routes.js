@@ -20,5 +20,6 @@ router.get('/seat-utilization', requireRoles(['Admin', 'Moderator', 'Developer']
 router.get('/b2b-activity', requireRoles(['Admin', 'Moderator', 'Developer']), dashboardController.getB2BActivity);
 router.get('/organization-growth', requireRoles(['Admin', 'Moderator', 'Developer']), dashboardController.getOrganizationGrowthBreakdown);
 router.get('/jobs-metrics', requireRoles(['Developer', 'Admin', 'Moderator']), dashboardController.getJobsMetrics);
+router.get('/ai-analytics', requireRoles(['Admin', 'Moderator', 'Developer']), dashboardController.getAiAnalytics);
 
 module.exports = router;

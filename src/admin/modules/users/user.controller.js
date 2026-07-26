@@ -24,14 +24,14 @@ exports.getUsers = async (req, res) => {
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 8; // Match frontend's 8 items per page
     const offset = (page - 1) * limit;
-    
+
     const search = req.query.search || '';
     const status = req.query.status || 'All';
     const roleFilter = req.query.role || 'All';
 
     let baseQuery = 'FROM users u LEFT JOIN profiles p ON u.user_id = p.user_id WHERE 1=1';
     let queryParams = [];
-    
+
     // Status Filter
     if (status !== 'All') {
       if (status === 'Active') {
@@ -93,7 +93,7 @@ exports.getUsers = async (req, res) => {
       ORDER BY u.created_at DESC
       LIMIT $${queryParams.length + 1} OFFSET $${queryParams.length + 2}
     `;
-    
+
     const paginatedParams = [...queryParams, limit, offset];
     const { rows } = await pool.query(dataQuery, paginatedParams);
 
@@ -148,7 +148,7 @@ exports.getUsers = async (req, res) => {
 exports.getUserDetails = async (req, res) => {
   try {
     const { id } = req.params;
-    
+
     // 1. Basic User Info
     const userQuery = `
       SELECT user_id, full_name, email, mobile_number, 
@@ -159,7 +159,7 @@ exports.getUserDetails = async (req, res) => {
       FROM users WHERE user_id = $1
     `;
     const userResult = await pool.query(userQuery, [id]);
-    
+
     if (userResult.rows.length === 0) {
       return res.status(404).json({ error: 'User not found' });
     }
@@ -171,23 +171,37 @@ exports.getUserDetails = async (req, res) => {
         (SELECT count(*) FROM posts WHERE author_id = $1) as posts_count,
         (SELECT count(*) FROM followers WHERE following_id = $1) as followers_count,
         (SELECT count(*) FROM followers WHERE follower_id = $1) as following_count,
+        (SELECT count(*) FROM connections WHERE user_id = $1 OR connected_user_id = $1) as connections_count,
         (SELECT count(*) FROM reports WHERE target_id = $1) as flags_count
     `;
     const statsResult = await pool.query(statsQuery, [id]);
     const stats = statsResult.rows[0];
 
     const activityQuery = `
-      SELECT id, action_type, entity_type, created_at 
+      SELECT c.id, c.action_type, c.entity_type, c.created_at, c.entity_id, c.metadata,
+             j.title AS job_title, j.job_id, c.post_content, c.post_media, c.target_user_name, c.target_user_avatar, c.post_created_at
       FROM (
-        SELECT id::text as id, action_type, entity_type, created_at 
-        FROM user_activity_log 
-        WHERE user_id = $1
+        SELECT ual.id::text as id, ual.action_type, ual.entity_type, ual.created_at, ual.entity_id, ual.metadata, 
+               p.content as post_content, 
+               (SELECT json_agg(json_build_object('url', url, 'media_type', media_type)) FROM post_media WHERE post_id = p.post_id) as post_media,
+               u.full_name as target_user_name,
+               u.avatar_url as target_user_avatar,
+               p.created_at as post_created_at
+        FROM user_activity_log ual
+        LEFT JOIN posts p ON ual.entity_type = 'post' AND ual.entity_id::text = p.post_id::text
+        LEFT JOIN users u ON p.author_id = u.user_id
+        WHERE ual.user_id = $1
         UNION ALL
-        SELECT post_id::text as id, 'POST_CREATED' as action_type, 'post' as entity_type, created_at 
+        SELECT post_id::text as id, 'POST_CREATED' as action_type, 'post' as entity_type, created_at, NULL as entity_id, '{}'::jsonb as metadata,
+               content as post_content, (SELECT json_agg(json_build_object('url', url, 'media_type', media_type)) FROM post_media WHERE post_id = posts.post_id) as post_media,
+               (SELECT full_name FROM users WHERE user_id = posts.author_id) as target_user_name,
+               (SELECT avatar_url FROM users WHERE user_id = posts.author_id) as target_user_avatar,
+               created_at as post_created_at
         FROM posts 
         WHERE author_id = $1
-      ) combined_activities
-      ORDER BY created_at DESC 
+      ) c
+      LEFT JOIN jobs j ON c.entity_type = 'job' AND c.entity_id = j.job_id
+      ORDER BY c.created_at DESC 
       LIMIT 15
     `;
     const activityResult = await pool.query(activityQuery, [id]);
@@ -237,6 +251,7 @@ exports.getUserDetails = async (req, res) => {
         posts: parseInt(stats.posts_count),
         followers: parseInt(stats.followers_count),
         following: parseInt(stats.following_count),
+        connections: parseInt(stats.connections_count || 0),
         flags: parseInt(stats.flags_count),
         moderation_flags: parseInt(user.moderation_flags || 0)
       },
@@ -257,17 +272,17 @@ exports.warnUser = async (req, res) => {
   try {
     const { id } = req.params;
     const { reason, message, isSevere } = req.body;
-    
+
     if (!reason || !reason.trim()) {
       return res.status(400).json({ error: 'Warning reason is required.' });
     }
-    
+
     // Increment moderation flags by 1 if severe
     let points = 0;
     if (isSevere) {
       points = 1;
     }
-    
+
     // Insert into user_warnings
     await pool.query(
       'INSERT INTO user_warnings (user_id, reason, message, is_severe) VALUES ($1, $2, $3, $4)',
@@ -287,16 +302,16 @@ exports.warnUser = async (req, res) => {
       RETURNING moderation_flags, full_name
     `;
     const result = await pool.query(updateQuery, [id, points]);
-    
+
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'User not found' });
     }
-    
+
     const newFlagsCount = parseInt(result.rows[0].moderation_flags);
     const targetName = result.rows[0].full_name || 'user';
     const adminId = req.user.userId;
     let autoSuspended = false;
-    
+
     if (newFlagsCount >= 7) {
       // Suspend and reset flags to 0
       await pool.query(
@@ -309,7 +324,7 @@ exports.warnUser = async (req, res) => {
         'INSERT INTO admin_audit_logs (user_id, action_type, description) VALUES ($1, $2, $3)',
         [adminId, 'USER_SUSPENDED', `Automatically suspended ${targetName} due to exceeding 7 moderation flags.`]
       );
-      
+
       await pool.query(
         'INSERT INTO moderation_actions (user_id, action_type, reason, message, duration_days, created_by) VALUES ($1, $2, $3, $4, $5, $6)',
         [id, 'SUSPENSION', `Auto-suspension for exceeding 7 moderation flags`, `Your account has been automatically suspended due to repeated violations.`, 7, adminId]
@@ -319,9 +334,9 @@ exports.warnUser = async (req, res) => {
       await redis.publish('admin:users', JSON.stringify({ action: 'suspended', userId: id }));
       await redis.setex(`suspended_user:${id}`, 7 * 24 * 60 * 60, 'true'); // 7 days TTL
     }
-    
+
     // Log the warning action to audit logs
-    const actionDesc = isSevere 
+    const actionDesc = isSevere
       ? `Issued a SEVERE warning to ${targetName} for: ${reason}`
       : `Issued a warning to ${targetName} for: ${reason}`;
     await pool.query(
@@ -329,13 +344,13 @@ exports.warnUser = async (req, res) => {
       [adminId, 'USER_WARNED', actionDesc]
     );
 
-    res.json({ 
-      success: true, 
-      message: autoSuspended 
+    res.json({
+      success: true,
+      message: autoSuspended
         ? `${targetName} has been warned and automatically suspended (reached ${newFlagsCount} moderation flags).`
         : `Warning sent successfully. Moderation flags: ${newFlagsCount}.`,
       moderation_flags: newFlagsCount,
-      autoSuspended 
+      autoSuspended
     });
   } catch (error) {
     console.error('Error warning user:', error);
@@ -347,7 +362,7 @@ exports.suspendUser = async (req, res) => {
   try {
     const { id } = req.params;
     const { duration } = req.body;
-    
+
     let suspendedUntil = null;
     if (duration === 'Short Temporary (3-7 days)') {
       suspendedUntil = new Date();
@@ -358,7 +373,7 @@ exports.suspendUser = async (req, res) => {
     }
 
     const result = await pool.query(
-      'UPDATE users SET is_suspended = true, suspended_until = $2, suspension_count = COALESCE(suspension_count, 0) + 1 WHERE user_id = $1 RETURNING full_name, email', 
+      'UPDATE users SET is_suspended = true, suspended_until = $2, suspension_count = COALESCE(suspension_count, 0) + 1 WHERE user_id = $1 RETURNING full_name, email',
       [id, suspendedUntil]
     );
     if (result.rows.length === 0) {
@@ -369,7 +384,7 @@ exports.suspendUser = async (req, res) => {
     const userEmail = result.rows[0].email;
     const adminId = req.user.userId;
     const suspensionDuration = duration || 'Indefinite';
-    
+
     let durationDays = null;
     if (duration === 'Short Temporary (3-7 days)') durationDays = 7;
     else if (duration === 'Long Temporary (30 days)') durationDays = 30;
@@ -383,7 +398,7 @@ exports.suspendUser = async (req, res) => {
       'INSERT INTO moderation_actions (user_id, action_type, reason, message, duration_days, created_by) VALUES ($1, $2, $3, $4, $5, $6) RETURNING action_id',
       [id, 'SUSPENSION', `Manual suspension by admin`, `Your account has been suspended. Duration: ${suspensionDuration}.`, durationDays, adminId]
     );
-    
+
     const actionId = actionRes.rows[0].action_id;
     const appealToken = crypto.randomBytes(32).toString('hex');
     const expiresAt = new Date();
@@ -404,12 +419,12 @@ exports.suspendUser = async (req, res) => {
 
     // Notify Main API to kill active sessions and blacklist token
     await redis.publish('admin:users', JSON.stringify({ action: 'suspended', userId: id }));
-    
+
     // Set TTL based on duration
     let ttlSeconds = 7 * 24 * 60 * 60; // default 7 days
     if (duration === 'Long Temporary (30 days)') ttlSeconds = 30 * 24 * 60 * 60;
     else if (duration === 'Indefinite' || !duration) ttlSeconds = 365 * 24 * 60 * 60; // 1 year
-    
+
     await redis.setex(`suspended_user:${id}`, ttlSeconds, 'true');
 
     res.json({ success: true, message: 'User suspended successfully' });
@@ -424,11 +439,11 @@ exports.unsuspendUser = async (req, res) => {
     const { id } = req.params;
     const updateQuery = `UPDATE users SET is_suspended = false, suspended_until = NULL, moderation_flags = 0 WHERE user_id = $1 RETURNING full_name`;
     const result = await pool.query(updateQuery, [id]);
-    
+
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'User not found' });
     }
-    
+
     const targetName = result.rows[0].full_name || 'user';
     const adminId = req.user.userId;
 
@@ -497,7 +512,7 @@ exports.bulkWarnUsers = async (req, res) => {
           'INSERT INTO admin_audit_logs (user_id, action_type, description) VALUES ($1, $2, $3)',
           [adminId, 'USER_SUSPENDED', `Automatically suspended ${targetName} due to exceeding 7 moderation flags.`]
         );
-        
+
         const actionRes = await pool.query(
           'INSERT INTO moderation_actions (user_id, action_type, reason, message, duration_days, created_by) VALUES ($1, $2, $3, $4, $5, $6) RETURNING action_id',
           [id, 'SUSPENSION', `Auto-suspension for exceeding 7 moderation flags`, `Your account has been automatically suspended due to repeated violations.`, 7, adminId]
@@ -527,7 +542,7 @@ exports.bulkWarnUsers = async (req, res) => {
       }
 
       // 4. Log warning
-      const actionDesc = isSevere 
+      const actionDesc = isSevere
         ? `Issued a SEVERE warning to ${targetName} for: ${reason}`
         : `Issued a warning to ${targetName} for: ${reason}`;
       await pool.query(
@@ -644,9 +659,9 @@ exports.updateUser = async (req, res) => {
 
     queryArgs.push(id);
     const updateQuery = `UPDATE users SET ${setStrings.join(', ')} WHERE user_id = $${argCount} RETURNING full_name, user_type`;
-    
+
     const result = await pool.query(updateQuery, queryArgs);
-    
+
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'User not found' });
     }
@@ -691,6 +706,41 @@ exports.deleteUser = async (req, res) => {
   } catch (error) {
     console.error('Error deleting user:', error);
     res.status(500).json({ error: 'Failed to delete user' });
+  }
+};
+
+exports.getUserThoughts = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const query = `
+      SELECT 
+        c.comment_id AS id,
+        c.content,
+        c.created_at,
+        p.post_id,
+        p.content AS post_snippet
+      FROM post_comments c
+      JOIN posts p ON c.post_id = p.post_id
+      WHERE c.author_id = $1
+      ORDER BY c.created_at DESC
+    `;
+    const result = await pool.query(query, [id]);
+
+    const thoughts = result.rows.map(row => ({
+      id: row.id,
+      content: row.content,
+      created_at: row.created_at,
+      post_id: row.post_id,
+      postSnippet: (row.post_snippet && row.post_snippet.length > 50)
+        ? row.post_snippet.substring(0, 50) + '...'
+        : row.post_snippet
+    }));
+
+    res.json(thoughts);
+  } catch (error) {
+    console.error('Error fetching user thoughts:', error);
+    res.status(500).json({ error: 'Failed to fetch user thoughts' });
   }
 };
 

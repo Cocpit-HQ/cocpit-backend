@@ -99,6 +99,13 @@ exports.getDashboardMetrics = async (req, res) => {
     const suspendedUsersRes = await pool.query('SELECT COUNT(*) FROM users WHERE is_suspended = TRUE');
     const suspendedUsers = parseInt(suspendedUsersRes.rows[0].count, 10);
 
+    const suspendedOrgsRes = await pool.query('SELECT COUNT(*) FROM organizations WHERE is_deleted = TRUE');
+    const suspendedOrgs = parseInt(suspendedOrgsRes.rows[0].count, 10);
+
+    // 8. Total Thoughts
+    const totalThoughtsRes = await pool.query('SELECT COUNT(*) FROM post_comments');
+    const totalThoughts = parseInt(totalThoughtsRes.rows[0].count, 10);
+
     const durationDays = intervalMs / (1000 * 60 * 60 * 24);
     let bucketFormat = 'day';
     let intervalString = '1 day';
@@ -171,9 +178,11 @@ exports.getDashboardMetrics = async (req, res) => {
       totalUsers,
       activeUsers,
       suspendedUsers,
+      totalThoughts,
       userGrowth: userGrowth !== null ? parseFloat(userGrowth.toFixed(1)) : 0,
       totalOrgs,
       activeOrgs,
+      suspendedOrgs,
       orgGrowth: orgGrowth !== null ? parseFloat(orgGrowth.toFixed(1)) : 0,
       hasPrevData: prevUsers > 0 || prevOrgs > 0, // Help frontend know if previous period existed
       chartData
@@ -1842,4 +1851,105 @@ exports.processPayouts = async (req, res) => {
 
 exports.bulkRefund = async (req, res) => {
   res.json({ success: true, message: 'Bulk refund initiated' });
+};
+
+exports.getAiAnalytics = async (req, res) => {
+  const INR_RATE = 83.5; // USD to INR conversion rate
+  try {
+    const timeRange = req.query.timeRange || '30d';
+    let dateFilter = "created_at >= NOW() - INTERVAL '30 days'";
+    
+    if (timeRange === '7d') {
+      dateFilter = "created_at >= NOW() - INTERVAL '7 days'";
+    } else if (timeRange === 'this_month') {
+      dateFilter = "DATE_TRUNC('month', created_at AT TIME ZONE 'Asia/Kolkata') = DATE_TRUNC('month', CURRENT_DATE AT TIME ZONE 'Asia/Kolkata')";
+    } else if (timeRange === 'last_month') {
+      dateFilter = "DATE_TRUNC('month', created_at AT TIME ZONE 'Asia/Kolkata') = DATE_TRUNC('month', (CURRENT_DATE - INTERVAL '1 month') AT TIME ZONE 'Asia/Kolkata')";
+    } else if (timeRange === 'overall') {
+      dateFilter = "1=1";
+    }
+
+    const queryParams = [];
+    
+    if (req.query.feature && req.query.feature !== 'all') {
+      queryParams.push(req.query.feature);
+      dateFilter += ` AND feature = $${queryParams.length}`;
+    }
+
+    if (req.query.model && req.query.model !== 'all') {
+      queryParams.push(req.query.model);
+      dateFilter += ` AND model = $${queryParams.length}`;
+    }
+
+    // Query 1: Feature-level aggregation (existing table)
+    const featureQuery = `
+      SELECT 
+        feature, 
+        COUNT(*) as total_api_hits, 
+        SUM(cost_estimate_usd) as total_cost_usd,
+        SUM(total_tokens) as total_tokens,
+        SUM(prompt_tokens) as input_tokens,
+        SUM(completion_tokens) as output_tokens,
+        AVG(latency_ms) as avg_latency
+      FROM ai_usage_log
+      WHERE ${dateFilter}
+      GROUP BY feature
+    `;
+
+    // Query 2: Daily time-series grouped by model
+    const timeSeriesQuery = `
+      SELECT 
+        TO_CHAR(created_at AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD') as date,
+        model,
+        COUNT(*) as total_requests,
+        SUM(prompt_tokens) as input_tokens,
+        SUM(completion_tokens) as output_tokens,
+        SUM(total_tokens) as total_tokens,
+        SUM(cost_estimate_usd) as total_cost_usd
+      FROM ai_usage_log
+      WHERE ${dateFilter}
+      GROUP BY TO_CHAR(created_at AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD'), model
+      ORDER BY date ASC, model
+    `;
+
+    const [featureResult, timeSeriesResult] = await Promise.all([
+      pool.query(featureQuery, queryParams),
+      pool.query(timeSeriesQuery, queryParams)
+    ]);
+
+    const featureData = featureResult.rows.map(row => ({
+      feature: row.feature,
+      totalApiHits: parseInt(row.total_api_hits, 10),
+      totalCostUsd: parseFloat(row.total_cost_usd) || 0,
+      totalCostInr: parseFloat((parseFloat(row.total_cost_usd || 0) * INR_RATE).toFixed(2)),
+      totalTokens: parseInt(row.total_tokens, 10) || 0,
+      inputTokens: parseInt(row.input_tokens, 10) || 0,
+      outputTokens: parseInt(row.output_tokens, 10) || 0,
+      avgLatency: Math.round(parseFloat(row.avg_latency) || 0)
+    }));
+
+    const timeSeriesData = timeSeriesResult.rows.map(row => ({
+      date: row.date,
+      model: row.model || 'unknown',
+      totalRequests: parseInt(row.total_requests, 10) || 0,
+      inputTokens: parseInt(row.input_tokens, 10) || 0,
+      outputTokens: parseInt(row.output_tokens, 10) || 0,
+      totalTokens: parseInt(row.total_tokens, 10) || 0,
+      totalCostUsd: parseFloat(row.total_cost_usd) || 0,
+      totalCostInr: parseFloat((parseFloat(row.total_cost_usd || 0) * INR_RATE).toFixed(4))
+    }));
+
+    // Summary totals
+    const summary = {
+      totalRequests: featureData.reduce((sum, r) => sum + r.totalApiHits, 0),
+      totalTokens: featureData.reduce((sum, r) => sum + r.totalTokens, 0),
+      totalCostUsd: parseFloat(featureData.reduce((sum, r) => sum + r.totalCostUsd, 0).toFixed(6)),
+      totalCostInr: parseFloat(featureData.reduce((sum, r) => sum + r.totalCostInr, 0).toFixed(2)),
+    };
+
+    res.json({ featureData, timeSeriesData, summary });
+  } catch (error) {
+    console.error('Error fetching AI analytics:', error);
+    res.status(500).json({ error: 'Failed to fetch AI analytics' });
+  }
 };
