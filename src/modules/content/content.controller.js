@@ -1,6 +1,7 @@
 const { incrementUserHashtagScore } = require("../../services/recommendation.service");
 const { ur, vi } = require("zod/locales");
 const { sanitizeContent } = require("../../utils/contentSanitizer");
+const { sanitizeArticleContent } = require("../../utils/articleContentSanitizer");
 const pool = require("../../core/db/pool");
 const socketService = require("../../core/infrastructure/socket.service");
 const { checkBlockStatus } = require("../../core/utils/blockCheck");
@@ -810,6 +811,8 @@ exports.createPost = async (req, res) => {
     // Sanitize user-generated content
     if (post_type !== 'article') {
         content = sanitizeContent(content);
+    } else {
+        content = sanitizeArticleContent(content);
     }
     title = sanitizeContent(title);
     if (poll_options && Array.isArray(poll_options)) {
@@ -1753,6 +1756,8 @@ exports.updatePostById = async (req, res) => {
     // Sanitize user-generated content
     if (post_type !== 'article') {
         content = sanitizeContent(content);
+    } else {
+        content = sanitizeArticleContent(content);
     }
     title = sanitizeContent(title);
     if (poll_options && Array.isArray(poll_options)) {

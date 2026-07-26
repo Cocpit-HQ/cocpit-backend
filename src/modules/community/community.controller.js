@@ -9,10 +9,12 @@ exports.getCommunityStatus = async (req, res, next) => {
     const { orgId } = req.params;
     try {
         const result = await pool.query(
-            `SELECT community_id, name, description, banner_url,
-                    (SELECT COUNT(*) FROM community_subscriptions WHERE community_id = communities.community_id AND status = 'SUBSCRIBED')::int AS subscriber_count
-             FROM communities 
-             WHERE org_id = $1 AND is_active = TRUE`,
+            `SELECT c.community_id, c.name, c.description, c.banner_url,
+                    o.name AS company_name, o.slug AS company_slug, o.logo_url,
+                    (SELECT COUNT(*) FROM community_subscriptions WHERE community_id = c.community_id AND status = 'SUBSCRIBED')::int AS subscriber_count
+             FROM communities c
+             JOIN organizations o ON c.org_id = o.org_id
+             WHERE c.org_id = $1 AND c.is_active = TRUE AND o.is_deleted = FALSE`,
             [orgId]
         );
 
@@ -34,7 +36,10 @@ exports.getCommunityStatus = async (req, res, next) => {
                 description: row.description,
                 bannerUrl: row.banner_url,
                 subscriberCount: row.subscriber_count,
-                orgId: orgId
+                orgId: orgId,
+                companyName: row.company_name,
+                companySlug: row.company_slug,
+                logoUrl: row.logo_url
             }
         });
     } catch (err) {
