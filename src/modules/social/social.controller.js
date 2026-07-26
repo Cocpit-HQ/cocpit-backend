@@ -862,8 +862,23 @@ exports.getFollowersCount = async (req, res) => {
     try {
         const result = await pool.query(
             `SELECT 
-                (SELECT COUNT(*) FROM followers WHERE following_id = $1) + 
-                (SELECT COUNT(*) FROM organization_user_follows cf JOIN organizations c ON cf.org_id = c.org_id WHERE cf.user_id = $1 AND c.is_deleted = FALSE) 
+                (
+                    SELECT COUNT(*) 
+                    FROM followers f
+                    JOIN active_users u ON f.follower_id = u.user_id
+                    WHERE f.following_id = $1
+                      AND NOT EXISTS (
+                          SELECT 1 FROM blocks b
+                          WHERE (b.blocker_id = $1 AND b.blocked_id = u.user_id)
+                             OR (b.blocker_id = u.user_id AND b.blocked_id = $1)
+                      )
+                ) + 
+                (
+                    SELECT COUNT(*) 
+                    FROM organization_user_follows ouf 
+                    JOIN organizations o ON ouf.org_id = o.org_id 
+                    WHERE ouf.user_id = $1 AND o.is_deleted = FALSE
+                ) 
              as count`,
             [userId]
         );
@@ -1183,7 +1198,7 @@ exports.getPendingRequests = async (req, res) => {
                 FROM connection_requests cr
                 JOIN active_users u ON cr.receiver_id = u.user_id
                 WHERE cr.sender_id = $1
-                  AND cr.status = 'pending'
+                  AND LOWER(cr.status::text) = 'pending'
                 ORDER BY cr.created_at DESC
                 LIMIT $2 OFFSET $3
             `;
@@ -1225,7 +1240,7 @@ exports.getPendingRequests = async (req, res) => {
                 FROM connection_requests cr
                 JOIN active_users u ON cr.sender_id = u.user_id
                 WHERE cr.receiver_id = $1
-                  AND cr.status = 'pending')
+                  AND LOWER(cr.status::text) = 'pending')
                 UNION ALL
                 (SELECT
                     ccr.request_id    AS id,
@@ -1243,7 +1258,7 @@ exports.getPendingRequests = async (req, res) => {
                 FROM organization_connection_requests ccr
                 JOIN organizations c ON ccr.org_id = c.org_id
                 WHERE ccr.user_id = $1
-                  AND ccr.status = 'pending')
+                  AND LOWER(ccr.status::text) = 'pending')
                 ORDER BY created_at DESC
                 LIMIT $2 OFFSET $3
             `;
@@ -1253,13 +1268,17 @@ exports.getPendingRequests = async (req, res) => {
         // Total count (for pagination metadata)
         let countQuery, countParams;
         if (type === 'sent') {
-            countQuery = `SELECT COUNT(*) FROM connection_requests WHERE sender_id = $1 AND status = 'pending'`;
+            countQuery = `
+                SELECT COUNT(*) FROM connection_requests cr
+                JOIN active_users u ON cr.receiver_id = u.user_id
+                WHERE cr.sender_id = $1 AND LOWER(cr.status::text) = 'pending'
+            `;
             countParams = [userId];
         } else {
             countQuery = `
                 SELECT
-                    (SELECT COUNT(*) FROM connection_requests WHERE receiver_id = $1 AND status = 'pending')
-                  + (SELECT COUNT(*) FROM organization_connection_requests WHERE user_id = $1 AND status = 'pending')
+                    (SELECT COUNT(*) FROM connection_requests cr JOIN active_users u ON cr.sender_id = u.user_id WHERE cr.receiver_id = $1 AND LOWER(cr.status::text) = 'pending')
+                  + (SELECT COUNT(*) FROM organization_connection_requests ocr WHERE ocr.user_id = $1 AND LOWER(ocr.status::text) = 'pending')
                 AS count
             `;
             countParams = [userId];
@@ -1313,28 +1332,50 @@ exports.getPendingRequests = async (req, res) => {
 exports.getConnectionCounts = async (req, res) => {
     const userId = req.user.sub;
     try {
+        const userEmailRes = await pool.query(`SELECT email FROM users WHERE user_id = $1`, [userId]);
+        const userEmail = userEmailRes.rows[0]?.email || '';
+
         const result = await pool.query(`
             SELECT
-                (SELECT COUNT(*) FROM connection_requests
-                 WHERE receiver_id = $1 AND status = 'pending') AS received,
-                (SELECT COUNT(*) FROM connection_requests
-                 WHERE sender_id  = $1 AND status = 'pending') AS sent,
                 (
-                    (SELECT COUNT(*) FROM organization_invites
-                     WHERE (invited_user_id = $1 OR email = (SELECT email FROM users WHERE user_id = $1))
-                       AND status = 'PENDING' AND expires_at > NOW()) +
-                    (SELECT COUNT(*) FROM community_invitations
-                     WHERE invitee_id = $1 AND status = 'pending' AND is_active = TRUE) +
-                    (SELECT COUNT(*) FROM group_invitations
-                     WHERE invitee_id = $1 AND status = 'pending')
-                ) AS invitations
-        `, [userId]);
+                    (SELECT COUNT(*) FROM connection_requests cr
+                     JOIN active_users u ON cr.sender_id = u.user_id
+                     WHERE cr.receiver_id = $1 AND LOWER(cr.status::text) = 'pending') +
+                    (SELECT COUNT(*) FROM organization_connection_requests ccr
+                     JOIN organizations c ON ccr.org_id = c.org_id
+                     WHERE ccr.user_id = $1 AND LOWER(ccr.status::text) = 'pending')
+                ) AS received,
+                (
+                    SELECT COUNT(*) FROM connection_requests cr
+                    JOIN active_users u ON cr.receiver_id = u.user_id
+                    WHERE cr.sender_id = $1 AND LOWER(cr.status::text) = 'pending'
+                ) AS sent,
+                (
+                    SELECT COUNT(*) FROM organization_invites oi
+                    JOIN organizations o ON oi.org_id = o.org_id
+                    WHERE (oi.invited_user_id = $1 OR LOWER(oi.email) = LOWER($2))
+                      AND LOWER(oi.status::text) = 'pending' AND oi.expires_at > NOW()
+                ) AS teams_invitations,
+                (
+                    SELECT COUNT(*) FROM community_invitations ci
+                    JOIN communities c ON ci.community_id = c.community_id
+                    JOIN organizations o ON c.org_id = o.org_id
+                    WHERE ci.invitee_id = $1 AND LOWER(ci.status::text) = 'pending'
+                      AND COALESCE(ci.is_active, TRUE) = TRUE AND COALESCE(c.is_active, TRUE) = TRUE
+                ) AS channels_invitations
+        `, [userId, userEmail]);
 
         const row = result.rows[0];
+        const teamsInvitations = parseInt(row?.teams_invitations || 0);
+        const channelsInvitations = parseInt(row?.channels_invitations || 0);
+        const invitations = teamsInvitations + channelsInvitations;
+
         return res.status(200).json({
-            received: parseInt(row.received || 0),
-            sent: parseInt(row.sent || 0),
-            invitations: parseInt(row.invitations || 0),
+            received: parseInt(row?.received || 0),
+            sent: parseInt(row?.sent || 0),
+            invitations,
+            teamsInvitations,
+            channelsInvitations,
         });
     } catch (err) {
         console.error('Get connection counts error:', err);
@@ -1911,8 +1952,23 @@ exports.getConnectionCount = async (req, res) => {
     try {
         const result = await pool.query(
             `SELECT 
-                (SELECT COUNT(*) FROM connections WHERE user_id = $1) + 
-                (SELECT COUNT(*) FROM organization_connections WHERE user_id = $1) as count`,
+                (
+                    SELECT COUNT(*) 
+                    FROM connections c
+                    JOIN active_users u ON c.connected_user_id = u.user_id
+                    WHERE c.user_id = $1
+                      AND NOT EXISTS (
+                          SELECT 1 FROM blocks b 
+                          WHERE (b.blocker_id = $1 AND b.blocked_id = u.user_id)
+                             OR (b.blocker_id = u.user_id AND b.blocked_id = $1)
+                      )
+                ) + 
+                (
+                    SELECT COUNT(*) 
+                    FROM organization_connections cc 
+                    JOIN organizations c ON cc.org_id = c.org_id 
+                    WHERE cc.user_id = $1 AND c.is_deleted = FALSE
+                ) as count`,
             [userId]
         );
         res.json({ count: parseInt(result.rows[0].count) });
@@ -1933,12 +1989,16 @@ exports.getConversations = async (req, res) => {
     }
 
     const { userId, orgId: companyId } = actorScope;
+    const tabParam = req.query.tab
+        ? (req.query.tab.toUpperCase() === "JOBS" ? true : req.query.tab.toUpperCase() === "GENERAL" ? false : null)
+        : null;
 
     try {
         const result = await pool.query(
             `
 SELECT 
     c.*,
+    c.is_job_chat AS "isJobChat",
     -- Block Status
     CASE WHEN c.is_group THEN false ELSE EXISTS(SELECT 1 FROM blocks WHERE blocker_id = $1 AND blocked_id = u.user_id) END as is_blocked_by_me,
     CASE WHEN c.is_group THEN false ELSE EXISTS(SELECT 1 FROM blocks WHERE blocker_id = u.user_id AND blocked_id = $1) END as is_blocked_by_other,
@@ -1964,6 +2024,7 @@ SELECT
     -- Other ID (User or Company)
     COALESCE(u.user_id, comp.org_id) AS other_user_id,
     u.display_headline AS other_user_headline,
+    COALESCE(comp.headline, '') AS org_headline,
     CASE WHEN comp.org_id IS NOT NULL THEN 'COMPANY' ELSE 'USER' END as other_user_type,
     COALESCE(comp.slug, u.display_username) AS other_user_slug,
     
@@ -2174,6 +2235,10 @@ WHERE ($2::uuid IS NULL OR NOT EXISTS (
     AND c.is_group = FALSE
 ))
 AND c.is_active = TRUE
+-- Company mode strictly hides group chats
+AND ($2::uuid IS NULL OR c.is_group = FALSE)
+-- Filter by tab (JOBS vs GENERAL) if requested
+AND ($3::boolean IS NULL OR c.is_job_chat = $3)
 AND (cp.deleted_at IS NULL OR COALESCE(
     m.created_at, 
     CASE 
@@ -2191,7 +2256,7 @@ ORDER BY COALESCE(
     END, 
     c.updated_at
 ) DESC NULLS LAST;
-  `, [userId, companyId]
+  `, [userId, companyId, tabParam]
         );
 
         let pendingGroupInvitationRows = [];
@@ -2413,10 +2478,10 @@ exports.sendMessage = async (req, res) => {
         try {
             await client.query('BEGIN ISOLATION LEVEL SERIALIZABLE');
 
-            let senderName, senderAvatar, senderSlug = null, senderHeadline = null;
+            let senderName, senderAvatar, senderSlug = null, senderHeadline = null, senderOrgHeadline = null;
             if (authorCompanyId) {
                 const orgRes = await client.query(
-                    `SELECT name, logo_url, slug FROM organizations WHERE org_id = $1`,
+                    `SELECT name, logo_url, slug, headline FROM organizations WHERE org_id = $1`,
                     [authorCompanyId]
                 );
                 if (orgRes.rowCount === 0) {
@@ -2426,6 +2491,7 @@ exports.sendMessage = async (req, res) => {
                 senderName = orgRes.rows[0].name;
                 senderAvatar = orgRes.rows[0].logo_url;
                 senderSlug = orgRes.rows[0].slug;
+                senderOrgHeadline = orgRes.rows[0].headline || '';
             } else {
                 const senderRes = await client.query(
                     `SELECT full_name, avatar_url, headline, account_name FROM users WHERE user_id = $1`,
@@ -2447,7 +2513,7 @@ exports.sendMessage = async (req, res) => {
                 [targetUserId]
             );
             const targetCompanyExists = targetUserExists.rowCount === 0
-                ? await client.query(`SELECT org_id, name, logo_url, slug FROM organizations WHERE org_id = $1`, [targetUserId])
+                ? await client.query(`SELECT org_id, name, logo_url, slug, headline FROM organizations WHERE org_id = $1`, [targetUserId])
                 : null;
 
             const targetIsUser = targetUserExists.rowCount > 0;
@@ -2461,6 +2527,7 @@ exports.sendMessage = async (req, res) => {
                 ? targetUserExists.rows[0].avatar_url
                 : (targetIsCompany ? targetCompanyExists.rows[0].logo_url : null);
             const targetHeadline = targetIsUser ? (targetUserExists.rows[0].headline || null) : null;
+            const targetOrgHeadline = targetIsCompany ? (targetCompanyExists.rows[0].headline || '') : null;
             const targetSlug = targetIsUser
                 ? targetUserExists.rows[0].account_name
                 : (targetIsCompany ? targetCompanyExists.rows[0].slug : null);
@@ -2607,10 +2674,14 @@ exports.sendMessage = async (req, res) => {
             }
 
             // Determine message text for notifications/preview
+            const isDocumentMimetype = (mimetype) => mimetype === 'application/pdf'
+                || mimetype === 'application/msword'
+                || mimetype === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+
             const previewText = trimmedText
                 ? trimmedText
                 : (images && images.length > 0
-                    ? (images.length > 1 ? `${images.length} attachments` : (images[0].mimetype.startsWith('video/') ? 'Sent a video' : (images[0].mimetype === 'application/pdf' ? 'Sent a document' : 'Sent a photo')))
+                    ? (images.length > 1 ? `${images.length} attachments` : (images[0].mimetype.startsWith('video/') ? 'Sent a video' : (isDocumentMimetype(images[0].mimetype) ? 'Sent a document' : 'Sent a photo')))
                     : (shared_post_id ? 'Shared a post' : (shared_profile_id ? 'Shared a profile' : 'Attachment')));
 
             const sessionId = null;
@@ -2642,18 +2713,18 @@ exports.sendMessage = async (req, res) => {
                 const mediaValues = images.map(file => {
                     let type = 'image';
                     if (file.mimetype.startsWith('video/')) type = 'video';
-                    if (file.mimetype === 'application/pdf') type = 'document';
-                    return [newMessage.message_id, file.path, type];
+                    if (isDocumentMimetype(file.mimetype)) type = 'document';
+                    return [newMessage.message_id, file.path, type, file.originalname];
                 });
 
                 // Construct bulk insert parameters
-                const placeholders = mediaValues.map((_, i) => `($${i * 3 + 1}, $${i * 3 + 2}, $${i * 3 + 3})`).join(', ');
+                const placeholders = mediaValues.map((_, i) => `($${i * 4 + 1}, $${i * 4 + 2}, $${i * 4 + 3}, $${i * 4 + 4})`).join(', ');
                 const flatValues = mediaValues.flat();
 
                 const mediaRes = await client.query(
-                    `INSERT INTO message_media (message_id, url, media_type) 
-                     VALUES ${placeholders} 
-                     RETURNING url, media_type`,
+                    `INSERT INTO message_media (message_id, url, media_type, filename)
+                     VALUES ${placeholders}
+                     RETURNING url, media_type, filename`,
                     flatValues
                 );
                 mediaRecords = mediaRes.rows;
@@ -2674,6 +2745,18 @@ exports.sendMessage = async (req, res) => {
                 if (spRes.rowCount > 0) sharedPostData = spRes.rows[0];
             }
 
+            // Check if this message is attached with a job/offer entity context card
+            let autoJobChatSet = false;
+            const isJobEntity = entity_type === 'job' || entity_type === 'offer';
+            if (isJobEntity && entity_id) {
+                // Whenever a job card context is sent with a message, automatically mark conversation as a job chat
+                await client.query(
+                    `UPDATE conversations SET is_job_chat = TRUE WHERE conversation_id = $1`,
+                    [conversationId]
+                );
+                autoJobChatSet = true;
+            }
+
             // Update conversation timestamp and last message
             await client.query(
                 `UPDATE conversations 
@@ -2683,6 +2766,17 @@ exports.sendMessage = async (req, res) => {
                  WHERE conversation_id = $1`,
                 [conversationId, previewText]
             );
+
+            if (autoJobChatSet) {
+                socketService.notifyParticipants(conversationId, "conversation_job_status_changed", {
+                    conversationId,
+                    isJobChat: true,
+                });
+                socketService.notifyParticipants(conversationId, "conversation_updated", {
+                    conversationId,
+                    isJobChat: true,
+                });
+            }
             let targetNotificationMuted = false;
             if (targetIsCompany) {
                 const muteState = await getConversationMuteState(client, {
@@ -2749,6 +2843,8 @@ exports.sendMessage = async (req, res) => {
                 shared_post: sharedPostData,
                 shared_profile: sharedProfileData,
                 sender_name: senderName,
+                sender_member_name: req.user?.full_name || req.user?.display_name || null,
+                org_headline: authorCompanyId ? (senderOrgHeadline || '') : '',
                 sender_avatar: senderAvatar
             };
             // ─── Base conversation shape (mirrors the REST API getConversations response) ───
@@ -2788,6 +2884,7 @@ exports.sendMessage = async (req, res) => {
                 other_user_name: senderName,
                 other_user_avatar: senderAvatar,
                 other_user_headline: senderHeadline,
+                org_headline: authorCompanyId ? (senderOrgHeadline || '') : '',
                 other_user_slug: senderSlug,
                 other_user_type: authorCompanyId ? 'COMPANY' : 'USER',
                 is_deleted_user: false,
@@ -2802,6 +2899,7 @@ exports.sendMessage = async (req, res) => {
                 other_user_name: targetName,
                 other_user_avatar: targetAvatar,
                 other_user_headline: targetHeadline,
+                org_headline: targetOrgHeadline,
                 other_user_slug: targetSlug,
                 other_user_type: targetType,
                 is_deleted_user: false,
@@ -3194,6 +3292,7 @@ exports.getMessages = async (req, res) => {
                 m.action_type,
                 m.target_id,
                 m.author_org_id,
+                m.author_org_id AS author_company_id,
                 m.is_deleted_for_everyone,
                 m.deleted_at,
                 (SELECT COUNT(*)::int FROM conversation_participants cp 
@@ -3216,9 +3315,12 @@ exports.getMessages = async (req, res) => {
                     ), 0
                 ) AS seen_count,
                 COALESCE(c.name, u.display_name, 'Deleted User') as sender_name,
+                u.display_name as sender_member_name,
+                COALESCE(c.headline, '') as sender_org_headline,
+                CASE WHEN m.author_org_id IS NOT NULL THEN COALESCE(c.headline, '') ELSE '' END as org_headline,
                 COALESCE(c.logo_url, u.display_avatar, NULL) as sender_avatar,
-                (SELECT json_agg(json_build_object('url', mm.url, 'media_type', mm.media_type)) 
-                 FROM message_media mm 
+                (SELECT json_agg(json_build_object('url', mm.url, 'media_type', mm.media_type, 'filename', mm.filename))
+                 FROM message_media mm
                  WHERE mm.message_id = m.message_id
                 ) as media,
                 CASE 
@@ -3982,9 +4084,54 @@ exports.getProfileStats = async (req, res) => {
 
         const result = await pool.query(
             `SELECT 
-                (SELECT COUNT(*) FROM followers WHERE following_id = $1) as followers_count,
-                (SELECT COUNT(*) FROM followers WHERE follower_id = $1) + (SELECT COUNT(*) FROM organization_followers cf JOIN organizations c ON cf.org_id = c.org_id WHERE cf.user_id = $1 AND c.is_deleted = FALSE) as following_count,
-                (SELECT COUNT(*) FROM connections WHERE user_id = $1) + (SELECT COUNT(*) FROM organization_connections cc JOIN organizations c ON cc.org_id = c.org_id WHERE cc.user_id = $1 AND c.is_deleted = FALSE) as connections_count`,
+                (
+                    SELECT COUNT(*) 
+                    FROM followers f
+                    JOIN active_users u ON f.follower_id = u.user_id
+                    WHERE f.following_id = $1
+                      AND NOT EXISTS (
+                          SELECT 1 FROM blocks b
+                          WHERE (b.blocker_id = $1 AND b.blocked_id = u.user_id)
+                             OR (b.blocker_id = u.user_id AND b.blocked_id = $1)
+                      )
+                ) + (
+                    SELECT COUNT(*) 
+                    FROM organization_user_follows ouf
+                    JOIN organizations o ON ouf.org_id = o.org_id
+                    WHERE ouf.user_id = $1 AND o.is_deleted = FALSE
+                ) as followers_count,
+                (
+                    SELECT COUNT(*) 
+                    FROM followers f
+                    JOIN active_users u ON f.following_id = u.user_id
+                    WHERE f.follower_id = $1
+                      AND NOT EXISTS (
+                          SELECT 1 FROM blocks b
+                          WHERE (b.blocker_id = $1 AND b.blocked_id = u.user_id)
+                             OR (b.blocker_id = u.user_id AND b.blocked_id = $1)
+                      )
+                ) + (
+                    SELECT COUNT(*) 
+                    FROM organization_followers cf 
+                    JOIN organizations c ON cf.org_id = c.org_id 
+                    WHERE cf.user_id = $1 AND c.is_deleted = FALSE
+                ) as following_count,
+                (
+                    SELECT COUNT(*) 
+                    FROM connections c
+                    JOIN active_users u ON c.connected_user_id = u.user_id
+                    WHERE c.user_id = $1
+                      AND NOT EXISTS (
+                          SELECT 1 FROM blocks b 
+                          WHERE (b.blocker_id = $1 AND b.blocked_id = u.user_id)
+                             OR (b.blocker_id = u.user_id AND b.blocked_id = $1)
+                      )
+                ) + (
+                    SELECT COUNT(*) 
+                    FROM organization_connections cc 
+                    JOIN organizations c ON cc.org_id = c.org_id 
+                    WHERE cc.user_id = $1 AND c.is_deleted = FALSE
+                ) as connections_count`,
             [userId]
         );
 
@@ -4755,6 +4902,43 @@ exports.getOrganizationFollowing = async (req, res) => {
     } catch (err) {
         console.error("getOrganizationFollowing error:", err);
         res.status(500).json({ message: "Internal server error" });
+    }
+};
+
+// Toggle conversation category between General and Jobs tabs (Context menu action)
+exports.toggleJobChatCategory = async (req, res, next) => {
+    try {
+        const { conversationId } = req.params;
+        const { isJobChat } = req.body;
+
+        if (typeof isJobChat !== "boolean") {
+            return res.status(400).json({ message: "isJobChat boolean parameter required" });
+        }
+
+        const updateRes = await pool.query(
+            `UPDATE conversations SET is_job_chat = $2, updated_at = NOW() WHERE conversation_id = $1 RETURNING *`,
+            [conversationId, isJobChat]
+        );
+
+        if (updateRes.rowCount === 0) {
+            return res.status(404).json({ message: "Conversation not found" });
+        }
+
+        const socketService = require("../../core/infrastructure/socket.service");
+        const socketPayload = { conversationId, isJobChat };
+        socketService.notifyParticipants(conversationId, "conversationCategoryUpdated", socketPayload);
+        socketService.notifyParticipants(conversationId, "conversation_updated", socketPayload);
+        socketService.notifyParticipants(conversationId, "conversation_job_status_changed", socketPayload);
+
+        return res.json({
+            success: true,
+            conversationId,
+            isJobChat,
+            message: `Conversation categorized under ${isJobChat ? "Jobs" : "General"}`
+        });
+    } catch (err) {
+        if (typeof next === "function") return next(err);
+        return res.status(500).json({ message: err.message || "Failed to update conversation category" });
     }
 };
 

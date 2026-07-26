@@ -240,14 +240,14 @@ class GroupChatModel {
     static async addMessageMedia(messageId, mediaRecords) {
         if (!mediaRecords || mediaRecords.length === 0) return [];
 
-        const values = mediaRecords.map(m => [messageId, m.url, m.type]);
-        const placeholders = values.map((_, i) => `($${i * 3 + 1}, $${i * 3 + 2}, $${i * 3 + 3})`).join(', ');
+        const values = mediaRecords.map(m => [messageId, m.url, m.type, m.name]);
+        const placeholders = values.map((_, i) => `($${i * 4 + 1}, $${i * 4 + 2}, $${i * 4 + 3}, $${i * 4 + 4})`).join(', ');
         const flatValues = values.flat();
 
         const result = await pool.query(
-            `INSERT INTO message_media (message_id, url, media_type) 
-             VALUES ${placeholders} 
-             RETURNING url, media_type`,
+            `INSERT INTO message_media (message_id, url, media_type, filename)
+             VALUES ${placeholders}
+             RETURNING url, media_type, filename`,
             flatValues
         );
         return result.rows;

@@ -41,26 +41,24 @@ async function assertRecruiterAccess(req, { org_id, recruiter_id }, permissions,
       );
 
       if (hasPermission) {
-        // Admin-level bypass: wildcard or MANAGE_COMPANY can act on all org applicants
-        if (actorPermissions.includes('*') || actorPermissions.includes('MANAGE_COMPANY')) {
-          return;
-        }
-
-        // Creator isolation for write operations:
-        // non-admin members can only manage applicants for jobs they created.
+        // Any permitted org member can view & manage org applicants
+        /*
+        // Creator isolation for write operations (commented out per project flow: members with job permissions can manage applicants for any org job)
         if (creatorOnly) {
           const err = new Error('You can only manage applicants for jobs that you created');
           err.statusCode = 403;
           throw err;
         }
+        */
 
-        return; // Read operations: any permitted org member can view
+        return;
       }
     }
 
     // 3. DB-level RBAC fallback
     const ok = await checkOrgPermission(pool, org_id, userId, permissions);
     if (ok) {
+      /*
       if (creatorOnly) {
         // Determine admin-level via DB to decide creator isolation bypass
         const memberRes = await pool.query(
@@ -78,6 +76,7 @@ async function assertRecruiterAccess(req, { org_id, recruiter_id }, permissions,
         err.statusCode = 403;
         throw err;
       }
+      */
       return;
     }
   }

@@ -180,11 +180,6 @@ exports.getOrganizationPosts = async (req, res) => {
                     WHERE pl_sample.post_id = p.post_id
                       AND pl_sample.user_id IS NOT NULL
                       AND pl_sample.user_id != $${userParamIdx}::uuid
-                      AND EXISTS (
-                          SELECT 1 FROM followers f1 
-                          JOIN followers f2 ON f1.follower_id = f2.following_id AND f1.following_id = f2.follower_id 
-                          WHERE f1.follower_id = $${userParamIdx}::uuid AND f1.following_id = pl_sample.user_id
-                      )
                     ORDER BY pl_sample.created_at DESC
                     LIMIT 3
                 ) sub
@@ -244,11 +239,6 @@ exports.getOrganizationPosts = async (req, res) => {
                                 WHERE pl_sample.post_id = sp.post_id
                                   AND pl_sample.user_id IS NOT NULL
                                   AND pl_sample.user_id != $${userParamIdx}::uuid
-                                  AND EXISTS (
-                                      SELECT 1 FROM followers f1 
-                                      JOIN followers f2 ON f1.follower_id = f2.following_id AND f1.following_id = f2.follower_id 
-                                      WHERE f1.follower_id = $${userParamIdx}::uuid AND f1.following_id = pl_sample.user_id
-                                  )
                                 ORDER BY pl_sample.created_at DESC
                                 LIMIT 3
                             ) sub

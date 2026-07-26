@@ -46,8 +46,9 @@ const hasActorPermission = (permissions = [], permission) => {
     if (targetPerm === "VIEW_ANALYTICS" && upperPerms.includes("ANALYTICS")) return true;
     
     // JOBS parent implies sub-permissions
-    const jobsSubPerms = ["POST_JOBS", "VIEW_APPLICANTS", "JOBS_CHAT", "JOBS"];
-    if (jobsSubPerms.includes(targetPerm) && upperPerms.includes("JOBS")) return true;
+    const jobsSubPerms = ["POST_JOBS", "VIEW_APPLICANTS", "MANAGE_APPLICANTS", "JOBS_CHAT", "JOBS", "MANAGE_JOBS", "VIEW_JOBS"];
+    const hasAnyJobPerm = upperPerms.some(p => ["JOBS", "POST_JOBS", "MANAGE_APPLICANTS", "MANAGE_JOBS"].includes(p));
+    if (jobsSubPerms.includes(targetPerm) && hasAnyJobPerm) return true;
 
     // TEAMS parent implies sub-permissions
     const teamsSubPerms = ["VIEW_MEMBERS", "INVITE_MEMBERS", "REMOVE_MEMBERS", "MANAGE_MEMBERS", "MANAGE_ROLES", "TEAMS"];

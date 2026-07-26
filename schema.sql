@@ -595,10 +595,13 @@ CREATE TABLE IF NOT EXISTS conversations (
   last_message TEXT,
   last_message_at TIMESTAMPTZ DEFAULT now(),
   is_requesting BOOLEAN DEFAULT FALSE,
+  is_job_chat BOOLEAN DEFAULT FALSE,
   is_active BOOLEAN DEFAULT TRUE,
   created_at TIMESTAMPTZ DEFAULT now(),
   updated_at TIMESTAMPTZ DEFAULT now()
 );
+
+CREATE INDEX IF NOT EXISTS idx_conversations_is_job_chat ON conversations(is_job_chat);
 
 CREATE TABLE conversation_participants (
   participant_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -1056,6 +1059,7 @@ CREATE TABLE IF NOT EXISTS message_media (
   message_id UUID REFERENCES messages(message_id) ON DELETE CASCADE,
   url TEXT NOT NULL,
   media_type TEXT CHECK (media_type IN ('image', 'video', 'document')) DEFAULT 'image',
+  filename TEXT,
   created_at TIMESTAMPTZ DEFAULT now()
 );
 

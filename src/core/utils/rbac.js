@@ -55,6 +55,11 @@ const checkOrgPermission = async (queryable, orgId, userId, permissionsToCheck) 
             const legacy = Object.keys(PERMISSION_MAP).find(k => PERMISSION_MAP[k] === p);
             if (legacy && perms.includes(legacy)) return true;
 
+            // JOBS parent implies sub-permissions
+            const jobsSubPerms = ["POST_JOBS", "VIEW_APPLICANTS", "MANAGE_APPLICANTS", "JOBS_CHAT", "JOBS", "MANAGE_JOBS", "VIEW_JOBS"];
+            const hasAnyJobPerm = perms.some(perm => ["JOBS", "POST_JOBS", "MANAGE_APPLICANTS", "MANAGE_JOBS"].includes(perm));
+            if (jobsSubPerms.includes(p) && hasAnyJobPerm) return true;
+
             // Hierarchy: MANAGE_X implies VIEW_X
             if (p.startsWith("VIEW_") && perms.includes(p.replace("VIEW_", "MANAGE_"))) return true;
 
