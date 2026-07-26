@@ -2478,7 +2478,15 @@ exports.sendMessage = async (req, res) => {
         try {
             await client.query('BEGIN ISOLATION LEVEL SERIALIZABLE');
 
-            let senderName, senderAvatar, senderSlug = null, senderHeadline = null, senderOrgHeadline = null;
+            let senderName, senderAvatar, senderSlug = null, senderHeadline = null, senderOrgHeadline = null, senderMemberName = null;
+            const senderUserRes = await client.query(
+                `SELECT full_name FROM users WHERE user_id = $1`,
+                [senderId]
+            );
+            if (senderUserRes.rowCount > 0) {
+                senderMemberName = senderUserRes.rows[0].full_name;
+            }
+
             if (authorCompanyId) {
                 const orgRes = await client.query(
                     `SELECT name, logo_url, slug, headline FROM organizations WHERE org_id = $1`,
@@ -2843,7 +2851,7 @@ exports.sendMessage = async (req, res) => {
                 shared_post: sharedPostData,
                 shared_profile: sharedProfileData,
                 sender_name: senderName,
-                sender_member_name: req.user?.full_name || req.user?.display_name || null,
+                sender_member_name: senderMemberName,
                 org_headline: authorCompanyId ? (senderOrgHeadline || '') : '',
                 sender_avatar: senderAvatar
             };
