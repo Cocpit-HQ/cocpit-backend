@@ -98,26 +98,34 @@ const upload = multer({ storage });
 
 const uploadResume = multer({
   storage: resumeStorage,
-  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB limit
   fileFilter: (req, file, cb) => {
     const allowed = [
       "application/pdf",
       "application/msword",
-      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     ];
-
-    const allowed_img = [
-      "image/png",
-      "image/jpeg",
-      "image/jpg",
-    ];
-    if (!allowed.includes(file.mimetype) && !allowed_img.includes(file.mimetype)) {
-      return cb(new Error("Only PDF/DOC/DOCX or images allowed"));
+    if (!allowed.includes(file.mimetype)) {
+      return cb(new Error("Invalid file format. Allowed: PDF, DOC, DOCX."));
     }
-
     cb(null, true);
-  },
+  }
+});
+
+const uploadResumeMemory = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB limit
+  fileFilter: (req, file, cb) => {
+    const allowed = [
+      "application/pdf",
+      "application/msword",
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    ];
+    if (!allowed.includes(file.mimetype)) {
+      return cb(new Error("Invalid file format. Allowed: PDF, DOC, DOCX."));
+    }
+    cb(null, true);
+  }
 });
 
 const uploadAvatar = multer({
@@ -444,6 +452,7 @@ const uploadPostMedia = multer({
 module.exports = {
   upload,
   uploadResume,
+  uploadResumeMemory,
   uploadAvatar,
   uploadEventBanner,
   uploadCommunityBanner,

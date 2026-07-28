@@ -14,6 +14,7 @@
 const crypto = require("crypto");
 const genAI = require("../config/gemini");
 const { SYSTEM_INSTRUCTION, JD_JSON_SCHEMA, buildPrompt } = require("../prompts/jd-generator.v1");
+const { SYSTEM_INSTRUCTION: RESUME_INSTRUCTION, RESUME_JSON_SCHEMA, buildPrompt: buildResumePrompt } = require("../prompts/resume-parser.v1");
 const redisClient = require("../core/db/redis");
 const pool = require("../core/db/pool");
 
@@ -108,18 +109,21 @@ const recordFailure = () => {
  * Calls the Gemini API with the given prompt and model.
  * Enforces a 15-second timeout.
  *
- * @param {string} promptText - The user-turn prompt (built by buildPrompt())
+ * @param {Array<object>|string} promptParts - The user-turn prompt parts or text
  * @param {string} model      - Model identifier (e.g. "gemini-2.5-flash")
+ * @param {string} systemInstruction - The system instruction prompt
+ * @param {object} responseSchema - JSON schema for structured output
  * @returns {Promise<object>} - Parsed JSON response from Gemini
  */
-const callGemini = async (promptText, model) => {
+const callGemini = async (promptParts, model, systemInstruction, responseSchema) => {
+  const parts = Array.isArray(promptParts) ? promptParts : [{ text: promptParts }];
   const geminiCall = genAI.models.generateContent({
     model,
-    contents: [{ role: "user", parts: [{ text: promptText }] }],
+    contents: [{ role: "user", parts }],
     config: {
-      systemInstruction: SYSTEM_INSTRUCTION,
+      systemInstruction: systemInstruction,
       responseMimeType: "application/json",
-      responseSchema: JD_JSON_SCHEMA,
+      responseSchema: responseSchema,
       temperature: 0.7,
     },
   });
@@ -195,7 +199,7 @@ const emitTelemetry = ({
   const latencyMs = Date.now() - startTime;
 
   const logEntry = {
-    event: "ai_jd_generation",
+    event: `ai_${role}`,
     role_hash: roleHash,
     job_id: jobId,
     company_id: companyId,
@@ -221,7 +225,7 @@ const emitTelemetry = ({
       latency_ms, cache_hit, success, error_message, source_ip
     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
   `, [
-    userId || null, orgId || null, 'jd_generate', jobId || null, model,
+    userId || null, orgId || null, role || 'jd_generate', jobId || null, model,
     tokensIn, tokensOut, totalTokens, costEstimate,
     latencyMs, cached || false, !error, error ? error.message : null, sourceIp || null
   ]).catch(err => {
@@ -399,7 +403,7 @@ const generateJobDescription = async ({
   try {
     const primaryAttempt = await withRetry(async () => {
       retryCount++;
-      return callGemini(promptText, primaryModel);
+      return callGemini(promptText, primaryModel, SYSTEM_INSTRUCTION, JD_JSON_SCHEMA);
     });
     retryCount = retryCount - 1;
 
@@ -420,7 +424,7 @@ const generateJobDescription = async ({
       console.log(`🔄 [AI Service] Falling back to "${fallbackModel}"...`);
       usedModel = fallbackModel;
 
-      const fallbackAttempt = await callGemini(promptText, fallbackModel);
+      const fallbackAttempt = await callGemini(promptText, fallbackModel, SYSTEM_INSTRUCTION, JD_JSON_SCHEMA);
       usageMetadata = fallbackAttempt.usageMetadata;
       recordSuccess();
 
@@ -444,6 +448,82 @@ const generateJobDescription = async ({
 };
 
 /**
+ * Parses a resume file using Gemini.
+ *
+ * @param {object} params
+ * @param {Buffer} params.fileBuffer - File buffer of the resume
+ * @param {string} params.mimeType   - Mime type (e.g., 'application/pdf')
+ * @param {string} params.userId     - User ID
+ * @param {string} params.sourceIp   - Source IP for telemetry
+ * @returns {Promise<object>} Parsed JSON
+ */
+const parseResume = async ({ fileBuffer, mimeType, userId, sourceIp }) => {
+  const primaryModel = process.env.AI_MODEL || "gemini-2.5-flash-lite";
+  const fallbackModel = process.env.AI_FALLBACK_MODEL || "gemini-2.5-flash";
+  const startTime = Date.now();
+  let retryCount = 0;
+  let usageMetadata = {};
+
+  const cbState = getCircuitState();
+  if (cbState === "OPEN") {
+    const err = new Error("AI service circuit breaker is OPEN. Please try again shortly.");
+    err.statusCode = 503;
+    emitTelemetry({ role: "resume_parse", userId, sourceIp, model: primaryModel, startTime, usageMetadata: {}, retryCount: 0, cached: false, circuitState: "OPEN", error: err });
+    throw err;
+  }
+
+  const promptText = buildResumePrompt(""); // empty text since we rely on file content
+  const promptParts = [
+    { inlineData: { data: fileBuffer.toString("base64"), mimeType } },
+    { text: promptText }
+  ];
+
+  try {
+    const attempt = await withRetry(async () => {
+      retryCount++;
+      return callGemini(promptParts, primaryModel, RESUME_INSTRUCTION, RESUME_JSON_SCHEMA);
+    });
+    retryCount = retryCount - 1;
+
+    usageMetadata = attempt.usageMetadata;
+    recordSuccess();
+
+    emitTelemetry({ role: "resume_parse", userId, sourceIp, model: primaryModel, startTime, usageMetadata, retryCount, cached: false, circuitState: "CLOSED" });
+    
+    return attempt.data;
+  } catch (err) {
+    recordFailure();
+    
+    // Attempt fallback logic if primary fails
+    if (fallbackModel && fallbackModel !== primaryModel) {
+      console.warn(`⚠️ [AI Service] Primary model (${primaryModel}) failed for resume parse. Falling back to ${fallbackModel}...`);
+      try {
+        const fallbackAttempt = await withRetry(async () => {
+          retryCount++;
+          return callGemini(promptParts, fallbackModel, RESUME_INSTRUCTION, RESUME_JSON_SCHEMA);
+        });
+        
+        usageMetadata = fallbackAttempt.usageMetadata;
+        recordSuccess();
+        
+        emitTelemetry({ role: "resume_parse", userId, sourceIp, model: fallbackModel, startTime, usageMetadata, retryCount, cached: false, circuitState: "CLOSED" });
+        
+        return fallbackAttempt.data;
+      } catch (fallbackErr) {
+        recordFailure();
+        const cbState = getCircuitState();
+        emitTelemetry({ role: "resume_parse", userId, sourceIp, model: fallbackModel, startTime, usageMetadata, retryCount, cached: false, circuitState: cbState, error: fallbackErr });
+        throw fallbackErr;
+      }
+    } else {
+      const cbState = getCircuitState();
+      emitTelemetry({ role: "resume_parse", userId, sourceIp, model: primaryModel, startTime, usageMetadata, retryCount, cached: false, circuitState: cbState, error: err });
+      throw err;
+    }
+  }
+};
+
+/**
  * Exposed for testing — allows tests to reset the circuit breaker state.
  */
 const resetCircuitBreaker = () => {
@@ -452,4 +532,4 @@ const resetCircuitBreaker = () => {
   circuitBreaker.openedAt = null;
 };
 
-module.exports = { generateJobDescription, resetCircuitBreaker };
+module.exports = { generateJobDescription, parseResume, resetCircuitBreaker };
