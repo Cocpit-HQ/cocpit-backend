@@ -90,6 +90,10 @@ module.exports.initSocket = async (httpServer) => {
       socket.userId = decoded.sub;
       socket.sessionId = decoded.sid;
       socket.roles = decoded.roles || [];
+      socket.actorType = socket.handshake.auth?.actorType || socket.handshake.headers?.["x-actor-type"] || "USER";
+      socket.actorId = socket.handshake.auth?.actorId || socket.handshake.headers?.["x-actor-id"] || null;
+      socket.actorScope = socket.actorType === "ORGANIZATION" && socket.actorId ? `org:${socket.actorId}` : `user:${socket.userId}`;
+      socket._actorRoom = null;
       next();
     } catch (err) {
       next(new Error("Authentication error: Invalid token"));
@@ -104,6 +108,10 @@ module.exports.initSocket = async (httpServer) => {
 
     // Auto-join personal room
     socket.join(getUserRoom(userId));
+
+    if (socket.actorType === "ORGANIZATION" && socket.actorId) {
+      notificationHandler.applyActorContextToRooms(socket, socket.actorType, socket.actorId);
+    }
 
     // Handle Online Status
     statusHandler.handleConnection(socket);
@@ -122,6 +130,15 @@ module.exports.initSocket = async (httpServer) => {
 
     // Auto-join all company rooms for this user
     notificationHandler.autoJoinCompanyRooms(socket);
+
+    socket.on("setActorContext", (payload) => {
+      const actorType = payload?.actorType || "USER";
+      const actorId = payload?.actorId || null;
+      socket.actorType = actorType;
+      socket.actorId = actorId;
+      socket.actorScope = actorType === "ORGANIZATION" && actorId ? `org:${actorId}` : `user:${userId}`;
+      notificationHandler.applyActorContextToRooms(socket, actorType, actorId);
+    });
 
     // Handle Disconnect
     socket.on("disconnect", () => {

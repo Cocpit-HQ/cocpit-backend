@@ -2934,22 +2934,29 @@ exports.sendMessage = async (req, res) => {
                 unread_count: 0, // sender has read their own message
             };
 
+            const senderActorScope = req.actor?.type === "ORGANIZATION" && req.actor?.orgId
+                ? `org:${req.actor.orgId}`
+                : `user:${senderId}`;
+            const targetActorScope = targetIsCompany
+                ? `org:${targetUserId}`
+                : `user:${targetUserId}`;
+
             // Notify via socket
             if (targetIsCompany) {
-                // User→Company: notify all members of the target company
+                // User→Company: notify all members of the target company in the company actor scope only
                 const members = await pool.query(
                     'SELECT user_id FROM organization_members WHERE org_id = $1',
                     [targetUserId]
                 );
                 for (const member of members.rows) {
-                    socketService.notifyUser(member.user_id, "new_message", messageData);
-                    socketService.notifyUser(member.user_id, "conversation_updated", {
+                    socketService.notifyUserScoped(member.user_id, "new_message", messageData, targetActorScope);
+                    socketService.notifyUserScoped(member.user_id, "conversation_updated", {
                         ...receiverConvPayload,
                         target_profile_type: 'COMPANY',
                         target_company_id: targetUserId
-                    });
+                    }, targetActorScope);
                     if (!targetNotificationMuted) {
-                        socketService.notifyUser(member.user_id, "notification", {
+                        socketService.notifyUserScoped(member.user_id, "notification", {
                             type: "message",
                             from: senderId,
                             senderName,
@@ -2958,18 +2965,18 @@ exports.sendMessage = async (req, res) => {
                             text: previewText,
                             targetProfileType: 'COMPANY',
                             targetCompanyId: targetUserId
-                        });
+                        }, targetActorScope);
                     }
                 }
             } else {
-                // User→User or Company→User: notify target user directly
-                socketService.notifyUser(targetUserId, "new_message", messageData);
-                socketService.notifyUser(targetUserId, "conversation_updated", {
+                // User→User or Company→User: notify target user directly in the user actor scope
+                socketService.notifyUserScoped(targetUserId, "new_message", messageData, targetActorScope);
+                socketService.notifyUserScoped(targetUserId, "conversation_updated", {
                     ...receiverConvPayload,
                     target_profile_type: 'USER'
-                });
+                }, targetActorScope);
                 if (!targetNotificationMuted) {
-                    socketService.notifyUser(targetUserId, "notification", {
+                    socketService.notifyUserScoped(targetUserId, "notification", {
                         type: "message",
                         from: senderId,
                         senderName,
@@ -2977,16 +2984,16 @@ exports.sendMessage = async (req, res) => {
                         conversationId,
                         text: previewText,
                         targetProfileType: 'USER'
-                    });
+                    }, targetActorScope);
                 }
             }
-            // Notify sender as well
-            socketService.notifyUser(senderId, "new_message", messageData);
-            socketService.notifyUser(senderId, "conversation_updated", {
+            // Notify sender as well in the sender's active scope
+            socketService.notifyUserScoped(senderId, "new_message", messageData, senderActorScope);
+            socketService.notifyUserScoped(senderId, "conversation_updated", {
                 ...senderConvPayload,
                 target_profile_type: targetIsCompany ? 'COMPANY' : 'USER',
                 target_company_id: targetIsCompany ? targetUserId : null
-            });
+            }, senderActorScope);
 
             res.status(201).json({
                 conversationId,
