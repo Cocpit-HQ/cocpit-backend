@@ -2,7 +2,7 @@ const express = require("express");
 const   router = express.Router();
 const profileController = require("./profile.controller");
 const { requireAuth, requireActiveSession } = require("../../core/middlewares/auth.middleware");
-const { uploadResume, uploadAvatar, uploadCover } = require("../../core/middlewares/upload.middleware");
+const { uploadResume, uploadAvatar, uploadCover, uploadProjectMedia } = require("../../core/middlewares/upload.middleware");
 
 // Profile
 router.get("/me", requireAuth, profileController.getMyProfile);
@@ -51,6 +51,13 @@ router.get("/interests", requireAuth, profileController.getInterests);
 // Reference Lists
 router.get("/educations", requireAuth, profileController.getEducationList);
 router.get("/companies", requireAuth, profileController.getCompanyList);
+
+// Projects
+router.post("/projects/media", requireAuth, requireActiveSession, uploadProjectMedia.single("file"), profileController.uploadProjectMediaFile);
+router.post("/projects", requireAuth, requireActiveSession, profileController.addProject);
+router.put("/projects/:id", requireAuth, requireActiveSession, profileController.updateProject);
+router.patch("/projects/:id", requireAuth, requireActiveSession, profileController.updateProject);
+router.delete("/projects/:id", requireAuth, requireActiveSession, profileController.deleteProject);
 
 router.get("/:id", requireAuth, profileController.getProfile);
 

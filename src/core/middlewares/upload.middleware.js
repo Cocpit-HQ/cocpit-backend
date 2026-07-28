@@ -449,6 +449,55 @@ const uploadPostMedia = multer({
   }
 }).array("media", 10);
 
+// --- Profile Project Media Upload Configuration ---
+createDir(path.join(uploadsDir, 'project_media'));
+
+let projectMediaStorage;
+if (hasCloudinary) {
+  projectMediaStorage = new CloudinaryStorage({
+    cloudinary,
+    params: async (req, file) => {
+      const isDoc = file.mimetype.startsWith("application/") || file.mimetype === "text/plain";
+      const cleanName = file.originalname.replace(/[^a-zA-Z0-9.]/g, '_');
+      return {
+        folder: "project_media",
+        resource_type: isDoc ? "raw" : "image",
+        public_id: `proj-${req.user?.sub || 'usr'}-${Date.now()}-${cleanName}`,
+      };
+    }
+  });
+} else {
+  projectMediaStorage = multer.diskStorage({
+    destination: (req, file, cb) => {
+      cb(null, 'uploads/project_media/');
+    },
+    filename: (req, file, cb) => {
+      const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+      const ext = path.extname(file.originalname);
+      cb(null, 'proj-' + uniqueSuffix + ext);
+    }
+  });
+}
+
+const uploadProjectMedia = multer({
+  storage: projectMediaStorage,
+  limits: { fileSize: 25 * 1024 * 1024 }, // 25MB safety limit
+  fileFilter: (req, file, cb) => {
+    const allowed = [
+      "image/jpeg", "image/png", "image/webp", "image/jpg",
+      "application/pdf", "application/msword",
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "application/vnd.ms-powerpoint",
+      "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+      "text/plain"
+    ];
+    if (!allowed.includes(file.mimetype)) {
+      return cb(new Error("Invalid format. Allowed: Images, PDF, DOC, DOCX, PPT, PPTX, TXT."));
+    }
+    cb(null, true);
+  }
+});
+
 module.exports = {
   upload,
   uploadResume,
@@ -461,5 +510,6 @@ module.exports = {
   uploadApplicationFiles,
   uploadTaskSubmission,
   uploadChatMedia,
-  uploadPostMedia
+  uploadPostMedia,
+  uploadProjectMedia
 };

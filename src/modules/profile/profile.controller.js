@@ -130,7 +130,7 @@ exports.getProfile = async (req, res) => {
         const profileId = u.profile_id;
         userId = u.user_id;
 
-        const [experiences, educations, skills, companyRoles, counts, resumeRow, userRole, interests] = await Promise.all([
+        const [experiences, educations, skills, companyRoles, counts, resumeRow, userRole, interests, projects] = await Promise.all([
             profileId ? profileRepo.getExperiences(profileId) : [],
             profileId ? profileRepo.getEducations(profileId) : [],
             profileId ? profileRepo.getSkills(profileId) : [],
@@ -139,6 +139,7 @@ exports.getProfile = async (req, res) => {
             profileRepo.getLatestResume(userId),
             profileRepo.getUserRole(userId),
             profileRepo.getUserInterests(userId),
+            profileId ? profileRepo.getProjects(profileId) : [],
         ]);
 
         const resume = resumeRow ? { originalName: resumeRow.file_name, url: resumeRow.file_url } : null;
@@ -182,7 +183,7 @@ exports.getProfile = async (req, res) => {
                 skill_names: skills.map(s => s.name),
                 interest_names: interests.map(i => i.name),
             },
-            experiences, educations, skills,
+            experiences, educations, skills, projects,
             organization_roles: companyRoles,
             resume,
         });
@@ -1607,6 +1608,205 @@ exports.batchUpdateExperiences = async (req, res) => {
         }
 
         res.status(500).json({ message: "Internal server error during batch update" });
+    } finally {
+        if (client) client.release();
+    }
+};
+
+// ─── Profile Projects ──────────────────────────────────────────────────────────
+
+exports.uploadProjectMediaFile = async (req, res) => {
+    try {
+        if (!req.file) {
+            return res.status(400).json({ message: "No media file provided" });
+        }
+        const isImage = req.file.mimetype.startsWith("image/");
+        const fileUrl = req.file.path || req.file.url;
+        res.status(201).json({
+            message: "Media uploaded successfully",
+            url: fileUrl,
+            fileUrl: fileUrl,
+            fileName: req.file.originalname,
+            type: isImage ? "image" : "document"
+        });
+    } catch (err) {
+        console.error("Upload project media error:", err);
+        res.status(500).json({ message: "Internal server error during upload" });
+    }
+};
+
+exports.addProject = async (req, res) => {
+    const {
+        title, organization, details, start_month, start_year,
+        end_month, end_year, is_current, role, team_size, role_description,
+        skills, media, org_id
+    } = req.body;
+
+    if (!title || !title.trim()) return res.status(400).json({ message: "Project title is required" });
+    if (!organization || !organization.trim()) return res.status(400).json({ message: "Organization is required" });
+    if (!start_month || !start_year) return res.status(400).json({ message: "Start month and year are required" });
+    if (!is_current && (!end_month || !end_year)) {
+        return res.status(400).json({ message: "End month and year are required when project is not ongoing" });
+    }
+    if (!is_current && end_year && start_year) {
+        const startVal = parseInt(start_year, 10);
+        const endVal = parseInt(end_year, 10);
+        if (endVal < startVal) {
+            return res.status(400).json({ message: "End year cannot be before start year" });
+        }
+    }
+
+    const client = await pool.connect();
+    try {
+        const profileId = await profileRepo.ensureProfileId(req.user.sub);
+        if (!profileId) return res.status(404).json({ message: "Profile not found" });
+
+        await client.query('BEGIN');
+
+        const projectData = {
+            title: title.trim(),
+            organization: organization.trim(),
+            org_id: org_id || null,
+            details: details ? details.trim() : null,
+            start_month: String(start_month),
+            start_year: String(start_year),
+            end_month: is_current ? null : String(end_month),
+            end_year: is_current ? null : String(end_year),
+            is_current: Boolean(is_current),
+            role: role ? role.trim() : null,
+            team_size: team_size ? team_size.trim() : null,
+            role_description: role_description ? role_description.trim() : null
+        };
+
+        const newProject = await profileRepo.addProjectInTx(client, profileId, projectData);
+        await profileRepo.syncProjectSkillsInTx(client, newProject.project_id, skills);
+        await profileRepo.syncProjectMediaInTx(client, newProject.project_id, media);
+        const newVersion = await profileRepo.touchProfileVersionInTx(client, profileId);
+
+        await client.query('COMMIT');
+
+        // Fetch back enriched project
+        const allProjects = await profileRepo.getProjects(profileId);
+        const created = allProjects.find(p => p.project_id === newProject.project_id) || newProject;
+
+        res.status(201).json({
+            message: "Project created successfully",
+            project: created,
+            version: newVersion
+        });
+    } catch (err) {
+        if (client) await client.query('ROLLBACK');
+        console.error("Add project error:", err);
+        res.status(500).json({ message: "Internal server error while adding project" });
+    } finally {
+        if (client) client.release();
+    }
+};
+
+exports.updateProject = async (req, res) => {
+    const { id: projectId } = req.params;
+    const {
+        title, organization, details, start_month, start_year,
+        end_month, end_year, is_current, role, team_size, role_description,
+        skills, media, org_id
+    } = req.body;
+
+    if (end_year && start_year && !is_current) {
+        const startVal = parseInt(start_year, 10);
+        const endVal = parseInt(end_year, 10);
+        if (endVal < startVal) {
+            return res.status(400).json({ message: "End year cannot be before start year" });
+        }
+    }
+
+    const client = await pool.connect();
+    try {
+        const profileId = await profileRepo.ensureProfileId(req.user.sub);
+        if (!profileId) return res.status(404).json({ message: "Profile not found" });
+
+        // Verify ownership
+        const checkRes = await client.query(`SELECT project_id FROM projects WHERE project_id = $1 AND profile_id = $2`, [projectId, profileId]);
+        if (checkRes.rowCount === 0) {
+            return res.status(403).json({ message: "Project not found or not authorized" });
+        }
+
+        await client.query('BEGIN');
+
+        const updateData = {};
+        if (title !== undefined) updateData.title = title ? title.trim() : "";
+        if (organization !== undefined) updateData.organization = organization ? organization.trim() : "";
+        if (org_id !== undefined) updateData.org_id = org_id || null;
+        if (details !== undefined) updateData.details = details ? details.trim() : null;
+        if (start_month !== undefined) updateData.start_month = String(start_month);
+        if (start_year !== undefined) updateData.start_year = String(start_year);
+        if (is_current !== undefined) {
+            updateData.is_current = Boolean(is_current);
+            if (updateData.is_current) {
+                updateData.end_month = null;
+                updateData.end_year = null;
+            }
+        }
+        if (end_month !== undefined && !updateData.is_current) updateData.end_month = String(end_month);
+        if (end_year !== undefined && !updateData.is_current) updateData.end_year = String(end_year);
+        if (role !== undefined) updateData.role = role ? role.trim() : null;
+        if (team_size !== undefined) updateData.team_size = team_size ? team_size.trim() : null;
+        if (role_description !== undefined) updateData.role_description = role_description ? role_description.trim() : null;
+
+        await profileRepo.updateProjectInTx(client, projectId, profileId, updateData);
+
+        if (skills !== undefined) {
+            await profileRepo.syncProjectSkillsInTx(client, projectId, skills);
+        }
+        if (media !== undefined) {
+            await profileRepo.syncProjectMediaInTx(client, projectId, media);
+        }
+        const newVersion = await profileRepo.touchProfileVersionInTx(client, profileId);
+
+        await client.query('COMMIT');
+
+        const allProjects = await profileRepo.getProjects(profileId);
+        const updated = allProjects.find(p => p.project_id === projectId);
+
+        res.status(200).json({
+            message: "Project updated successfully",
+            project: updated,
+            version: newVersion
+        });
+    } catch (err) {
+        if (client) await client.query('ROLLBACK');
+        console.error("Update project error:", err);
+        res.status(500).json({ message: "Internal server error while updating project" });
+    } finally {
+        if (client) client.release();
+    }
+};
+
+exports.deleteProject = async (req, res) => {
+    const { id: projectId } = req.params;
+    const client = await pool.connect();
+    try {
+        const profileId = await profileRepo.ensureProfileId(req.user.sub);
+        if (!profileId) return res.status(404).json({ message: "Profile not found" });
+
+        const checkRes = await client.query(`SELECT project_id FROM projects WHERE project_id = $1 AND profile_id = $2`, [projectId, profileId]);
+        if (checkRes.rowCount === 0) {
+            return res.status(404).json({ message: "Project not found or not authorized" });
+        }
+
+        await client.query('BEGIN');
+        await profileRepo.deleteProjectInTx(client, projectId, profileId);
+        const newVersion = await profileRepo.touchProfileVersionInTx(client, profileId);
+        await client.query('COMMIT');
+
+        res.status(200).json({
+            message: "Project deleted successfully",
+            project_id: projectId,
+            version: newVersion
+        });
+    } catch (err) {
+        if (client) await client.query('ROLLBACK');
+        console.error("Delete project error:", err);
+        res.status(500).json({ message: "Internal server error while deleting project" });
     } finally {
         if (client) client.release();
     }
