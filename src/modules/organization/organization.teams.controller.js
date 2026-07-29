@@ -1001,7 +1001,7 @@ exports.getPendingInvites = async (req, res, next) => {
     try {
         const result = await pool.query(
             `SELECT oi.invite_id, oi.status, oi.expires_at, oi.created_at AS invited_at,
-                    oi.invited_user_id AS user_id, u.full_name, u.avatar_url AS avatar, u.headline,
+                    oi.invited_user_id AS user_id, oi.email, u.full_name, u.avatar_url AS avatar, u.headline,
                     r.role_id, r.name AS role_name, r.color AS role_color
              FROM organization_invites oi
              LEFT JOIN active_users u ON oi.invited_user_id = u.user_id

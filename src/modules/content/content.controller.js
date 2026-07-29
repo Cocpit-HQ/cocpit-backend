@@ -1717,6 +1717,7 @@ WHERE p.post_id = $1 AND p.is_active = TRUE AND (p.is_removed IS FALSE OR p.is_r
             ...post,
             id: post.post_id,
             channelId: post.author_org_id,
+            created_by_user_id: post.author_id,
             coverImage: (post.media && post.media.length > 0) ? post.media[0].url : null,
             publishedAt: post.created_at,
             updatedAt: post.updated_at
@@ -2033,6 +2034,7 @@ WHERE p.post_id = $1;
             ...post,
             id: post.post_id,
             channelId: post.author_org_id,
+            created_by_user_id: post.author_id,
             coverImage: (post.media && post.media.length > 0) ? post.media[0].url : null,
             publishedAt: post.created_at,
             updatedAt: post.updated_at
