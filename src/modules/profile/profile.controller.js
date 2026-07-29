@@ -1679,7 +1679,7 @@ exports.addProject = async (req, res) => {
         };
 
         const newProject = await profileRepo.addProjectInTx(client, profileId, projectData);
-        await profileRepo.syncProjectSkillsInTx(client, newProject.project_id, skills);
+        await profileRepo.syncProjectSkillsInTx(client, profileId, newProject.project_id, skills);
         await profileRepo.syncProjectMediaInTx(client, newProject.project_id, media);
         const newVersion = await profileRepo.touchProfileVersionInTx(client, profileId);
 
@@ -1755,7 +1755,7 @@ exports.updateProject = async (req, res) => {
         await profileRepo.updateProjectInTx(client, projectId, profileId, updateData);
 
         if (skills !== undefined) {
-            await profileRepo.syncProjectSkillsInTx(client, projectId, skills);
+            await profileRepo.syncProjectSkillsInTx(client, profileId, projectId, skills);
         }
         if (media !== undefined) {
             await profileRepo.syncProjectMediaInTx(client, projectId, media);

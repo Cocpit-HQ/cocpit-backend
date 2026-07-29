@@ -253,10 +253,11 @@ exports.getUserProfile = async (req, res) => {
       }).catch(() => {});
     }
 
-    // 2. Fetch Experiences, Educations & Resume using profileRepo
-    const [experiences, educations, resumeRow] = await Promise.all([
+    // 2. Fetch Experiences, Educations, Projects & Resume using profileRepo
+    const [experiences, educations, projects, resumeRow] = await Promise.all([
       profileId ? profileRepo.getExperiences(profileId) : [],
       profileId ? profileRepo.getEducations(profileId) : [],
+      profileId ? profileRepo.getProjects(profileId) : [],
       profileRepo.getLatestResume(targetUserId)
     ]);
 
@@ -438,11 +439,13 @@ exports.getUserProfile = async (req, res) => {
       user: user,
       experiences: experiences,
       educations: educations,
+      projects: projects,
       skills: skillsResult.rows,
       organization_roles: companyRoles.rows,
       resume: resume,
     };
 
+    console.log("SENDING USER PROFILE RESPONSE FOR", targetUserId, "PROJECTS COUNT:", projects ? projects.length : 0);
     return res.status(200).json(responseData);
   } catch (err) {
     console.error("Get user profile error:", err);

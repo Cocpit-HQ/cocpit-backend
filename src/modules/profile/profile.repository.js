@@ -709,7 +709,7 @@ const deleteProjectInTx = async (client, projectId, profileId) => {
     return result.rows[0] || null;
 };
 
-const syncProjectSkillsInTx = async (client, projectId, skillNames) => {
+const syncProjectSkillsInTx = async (client, profileId, projectId, skillNames) => {
     await client.query(`DELETE FROM project_skills WHERE project_id = $1`, [projectId]);
     if (!Array.isArray(skillNames) || skillNames.length === 0) return;
     
@@ -728,10 +728,18 @@ const syncProjectSkillsInTx = async (client, projectId, skillNames) => {
     );
 
     if (skills.length > 0) {
+        // Insert into project_skills
         const values = skills.map((_, i) => `($1, $${i + 2})`).join(",");
         await client.query(
             `INSERT INTO project_skills (project_id, skill_id) VALUES ${values} ON CONFLICT DO NOTHING`,
             [projectId, ...skills.map(s => s.skill_id)]
+        );
+
+        // Sync to user_skills so the profile retains these skills
+        const userValues = skills.map((_, i) => `($1, $${i + 2})`).join(",");
+        await client.query(
+            `INSERT INTO user_skills (profile_id, skill_id) VALUES ${userValues} ON CONFLICT DO NOTHING`,
+            [profileId, ...skills.map(s => s.skill_id)]
         );
     }
 };
