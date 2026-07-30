@@ -5,6 +5,7 @@ const { connected } = require("node:process");
 const { formatDistanceToNow } = require('date-fns');
 const socketService = require("../../core/infrastructure/socket.service");
 const { hasActorPermission } = require("../../core/middlewares/actor-context.middleware");
+const { logAudit } = require("../../core/infrastructure/audit.service");
 const { markConversationAsRead } = require("../../services/conversationRead.service");
 const {
     getConversationMuteState,
@@ -3578,6 +3579,9 @@ exports.editMessage = async (req, res) => {
     }
 
     try {
+        const actorScope = getSocialActorScope(req, req.query.companyId || null);
+        const companyId = actorScope.orgId;
+
         const result = await pool.query(
             `UPDATE messages 
              SET text_content = $1, 
@@ -3603,10 +3607,22 @@ exports.editMessage = async (req, res) => {
             sender_avatar: sender.avatar_url
         };
 
-        // Notify all participants
-        const { conversation_id } = updatedMessage;
+        if (companyId) {
+            await logAudit(pool, {
+                entityId: companyId,
+                actorId: userId,
+                action: "EDIT_MESSAGE",
+                metadata: { messageId: message_id, conversationId: updatedMessage.conversation_id }
+            });
+        }
 
-        socketService.notifyConversation(conversation_id, "new_message", messageData);
+        // Notify all participants that the message was edited
+        const { conversation_id } = updatedMessage;
+        socketService.notifyConversation(conversation_id, "message_edited", {
+            messageId: message_id,
+            conversationId: conversation_id,
+            text_content
+        });
 
         res.json({ message: "Message edited successfully", data: messageData });
     } catch (err) {

@@ -1717,6 +1717,7 @@ WHERE p.post_id = $1 AND p.is_active = TRUE AND (p.is_removed IS FALSE OR p.is_r
             ...post,
             id: post.post_id,
             channelId: post.author_org_id,
+            created_by_user_id: post.author_id,
             coverImage: (post.media && post.media.length > 0) ? post.media[0].url : null,
             publishedAt: post.created_at,
             updatedAt: post.updated_at
@@ -2033,6 +2034,7 @@ WHERE p.post_id = $1;
             ...post,
             id: post.post_id,
             channelId: post.author_org_id,
+            created_by_user_id: post.author_id,
             coverImage: (post.media && post.media.length > 0) ? post.media[0].url : null,
             publishedAt: post.created_at,
             updatedAt: post.updated_at
@@ -2088,7 +2090,15 @@ exports.deletePost = async (req, res) => {
         // 2. Check Permissions
         if (author_org_id) {
             if (orgId && author_org_id === orgId) {
-                canDelete = true;
+                if (author_id === userId) {
+                    canDelete = true;
+                } else {
+                    const { checkOrgPermission } = require("../../core/utils/rbac");
+                    const hasPerm = await checkOrgPermission(client, orgId, userId, ["CREATE_CONTENT", "MANAGE_CONTENT"]);
+                    if (hasPerm) {
+                        canDelete = true;
+                    }
+                }
             }
         } else {
             if (!orgId && author_id === userId) {
@@ -3239,7 +3249,12 @@ exports.getComments = async (req, res) => {
                      WHERE org_id = $1 AND created_by = $2`,
                     [postCompanyId, userId]
                 );
-                if (subscriptionCheck.rowCount === 0 && ownerCheck.rowCount === 0) {
+                const memberCheck = await pool.query(
+                    `SELECT 1 FROM organization_members 
+                     WHERE org_id = $1 AND user_id = $2 AND status = 'ACTIVE'`,
+                    [postCompanyId, userId]
+                );
+                if (subscriptionCheck.rowCount === 0 && ownerCheck.rowCount === 0 && memberCheck.rowCount === 0) {
                     return res.status(200).json([]);
                 }
             }

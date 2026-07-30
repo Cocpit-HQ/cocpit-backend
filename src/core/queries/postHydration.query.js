@@ -12,6 +12,8 @@ const getPostHydrationSelect = (companyParamIdx, userParamIdx) => `
     p.post_type,
 
     COALESCE(p.author_org_id, u.user_id) AS author_id,
+    p.author_org_id AS author_org_id,
+    p.author_id AS created_by_user_id,
     COALESCE(comp.name, u.full_name) AS author_name,
     COALESCE(comp.logo_url, u.avatar_url) AS author_avatar,
     COALESCE(comp.slug, u.account_name) AS author_slug,
@@ -262,6 +264,8 @@ const getPostHydrationSelect = (companyParamIdx, userParamIdx) => `
                 'post_type', sp.post_type,
                 'author', json_build_object(
                     'user_id', COALESCE(sp.author_org_id, sp_u.user_id),
+                    'author_org_id', sp.author_org_id,
+                    'created_by_user_id', sp.author_id,
                     'full_name', COALESCE(sp_comp.name, sp_u.full_name),
                     'avatar_url', COALESCE(sp_comp.logo_url, sp_u.avatar_url),
                     'author_headline', COALESCE(sp_comp.slogan, sp_u.headline),
