@@ -256,7 +256,7 @@ CREATE TABLE organizations (
     email VARCHAR(255),
     industry VARCHAR(100),
     size VARCHAR(50),
-    website VARCHAR(255),
+    website TEXT,
     location VARCHAR(255),
     slogan TEXT,
     logo_url TEXT,
