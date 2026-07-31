@@ -14,13 +14,6 @@ router.get("/users/:id/following", socialController.getFollowing);
 router.delete("/users/followers/:followerId", requireAuth, socialController.removeFollower);
 
 // Company/Organization Follow
-router.post("/companies/:companyId/follow", requireAuth, socialController.followCompany);
-router.delete("/companies/:companyId/unfollow", requireAuth, socialController.unfollowCompany);
-router.get("/companies/:companyId/relationship", requireAuth, socialController.getCompanyRelationship);
-router.get("/companies/:companyId/followers", socialController.getCompanyFollowers);
-router.delete("/companies/:companyId/followers/:followerId", requireAuth, requireCompanyPermission("MANAGE_MEMBERS"), socialController.removeCompanyFollower);
-
-// Organization Follow Aliases
 router.post("/organizations/:orgId/follow", requireAuth, socialController.followCompany);
 router.delete("/organizations/:orgId/unfollow", requireAuth, socialController.unfollowCompany);
 router.get("/organizations/:orgId/relationship", requireAuth, socialController.getCompanyRelationship);

@@ -316,7 +316,12 @@ exports.getUserProfile = async (req, res) => {
       const isConnected = connectionCheck.rowCount > 0;
 
       if (isConnected) {
-        isFollowing = true;
+        // `connections` is a personal, user-to-user relationship — it says nothing
+        // about whether the acting ORGANIZATION follows this person, so don't let
+        // it stomp the org-aware isFollowing computed above when acting as a company.
+        if (!isOrgActor) {
+          isFollowing = true;
+        }
         isFollowedBy = true;
         connectionRequestStatus = 'connected';
       }

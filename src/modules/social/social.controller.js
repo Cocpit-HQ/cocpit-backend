@@ -596,12 +596,29 @@ exports.unsubscribeCompany = async (req, res) => {
 
 // Get company relationship status
 exports.getCompanyRelationship = async (req, res) => {
-    const userId = req.user.sub;
     const companyId = req.params.companyId || req.params.orgId;
 
     try {
+        // When acting as an organization, "is following" must reflect the acting
+        // org's own follow (organization_org_follows), not the human user's
+        // personal follow row — those are tracked independently.
+        if (req.actor?.type === "ORGANIZATION") {
+            const result = await pool.query(
+                `SELECT
+                    (SELECT 1 FROM organization_org_follows WHERE follower_org_id = $1 AND following_org_id = $2) as is_following,
+                    (SELECT COUNT(*) FROM organization_followers WHERE org_id = $2) as follower_count`,
+                [req.actor.orgId, companyId]
+            );
+
+            return res.json({
+                isFollowing: !!result.rows[0]?.is_following,
+                followerCount: parseInt(result.rows[0]?.follower_count || 0)
+            });
+        }
+
+        const userId = req.user.sub;
         const result = await pool.query(
-            `SELECT 
+            `SELECT
                 (SELECT 1 FROM organization_followers WHERE user_id = $1 AND org_id = $2) as is_following,
                 (SELECT COUNT(*) FROM organization_followers WHERE org_id = $2) as follower_count`,
             [userId, companyId]
@@ -623,26 +640,43 @@ exports.getCompanyFollowers = async (req, res) => {
     const { search } = req.query;
 
     try {
-        let query = `
+        let userQuery = `
             SELECT u.user_id, u.full_name, u.headline, u.avatar_url, cf.created_at as followed_at,
                    EXISTS(
                        SELECT 1 FROM organization_user_follows ouf
                        WHERE ouf.org_id = $1 AND ouf.user_id = u.user_id
-                   ) as is_followed_back
+                   ) as is_followed_back,
+                   'user' as type
             FROM organization_followers cf
             JOIN active_users u ON cf.user_id = u.user_id
             WHERE cf.org_id = $1
         `;
+
+        // Organizations follow other organizations via organization_org_follows,
+        // a separate table from the user-level organization_followers — without
+        // this branch, companies that follow an org never show up as followers.
+        let companyQuery = `
+            SELECT c.org_id as user_id, c.name as full_name, c.industry as headline, c.logo_url as avatar_url, cf.created_at as followed_at,
+                   EXISTS(
+                       SELECT 1 FROM organization_org_follows back_f
+                       WHERE back_f.follower_org_id = $1 AND back_f.following_org_id = c.org_id
+                   ) as is_followed_back,
+                   'company' as type
+            FROM organization_org_follows cf
+            JOIN organizations c ON cf.follower_org_id = c.org_id
+            WHERE cf.following_org_id = $1 AND c.is_deleted = FALSE
+        `;
+
         const params = [companyId];
 
         if (search && search.trim()) {
-            query += ` AND (u.full_name ILIKE $2 OR u.headline ILIKE $2)`;
+            userQuery += ` AND (u.full_name ILIKE $2 OR u.headline ILIKE $2)`;
+            companyQuery += ` AND (c.name ILIKE $2 OR c.industry ILIKE $2)`;
             params.push(`%${search.trim()}%`);
         }
 
-        query += ` ORDER BY cf.created_at DESC`;
-
-        const result = await pool.query(query, params);
+        const fullQuery = `(${userQuery}) UNION ALL (${companyQuery}) ORDER BY followed_at DESC`;
+        const result = await pool.query(fullQuery, params);
 
         res.json(result.rows);
     } catch (err) {
