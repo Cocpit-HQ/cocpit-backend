@@ -738,8 +738,12 @@ exports.createPost = async (req, res) => {
 
     status = status || ((post_type === "article" && isCommunityArticle) ? "draft" : "published");
 
-    // Extract uploaded files
-    const uploadedFiles = req.files || [];
+    // Extract uploaded files. "media" holds inline content / post images-videos,
+    // "cover_media" (article posts only) holds the explicitly chosen cover image -
+    // kept on its own field so we never have to guess which upload is the cover.
+    const mediaFiles = (req.files && req.files.media) || [];
+    const coverFiles = (req.files && req.files.cover_media) || [];
+    const uploadedFiles = [...mediaFiles, ...coverFiles];
     const imageFiles = uploadedFiles.filter(f => f.mimetype.startsWith('image/'));
     const videoFiles = uploadedFiles.filter(f => f.mimetype.startsWith('video/'));
 
@@ -779,32 +783,40 @@ exports.createPost = async (req, res) => {
     }
 
     // Map uploaded files to media URLs directly (already streamed by Multer middleware)
-    if (uploadedFiles.length > 0) {
-        if (post_type === 'article') {
-            let coverFileUrl = null;
-            uploadedFiles.forEach(file => {
-                const fileUrl = (file.path || file.secure_url || '').replace(/\\/g, "/");
-                const originalName = file.originalname;
-                
-                if (content && content.includes(originalName)) {
-                    const regex = new RegExp(`src="[^"]*${originalName}[^"]*"`, 'g');
-                    content = content.replace(regex, `src="${fileUrl}"`);
-                } else {
-                    coverFileUrl = fileUrl;
-                }
-            });
-            if (coverFileUrl) {
-                media_urls = [coverFileUrl];
-            } else if (!media_urls) {
-                media_urls = [];
+    if (post_type === 'article') {
+        // Cover comes unambiguously from the dedicated field when the caller sends one
+        // (the Channels article editor always does). Callers that don't (e.g. the
+        // simpler personal "write article" composer, which has no inline content
+        // images and no cover_media field) keep the legacy "unmatched file = cover"
+        // fallback below so their behavior is unchanged.
+        let coverFileUrl = coverFiles.length > 0
+            ? (coverFiles[0].path || coverFiles[0].secure_url || '').replace(/\\/g, "/")
+            : null;
+        // Everything in "media" is an inline content image/video - rewrite its blob
+        // src to the real URL. Match on the basename without extension since blob:
+        // URLs (e.g. "blob:http://host/<uuid>") carry no file extension.
+        mediaFiles.forEach(file => {
+            const fileUrl = (file.path || file.secure_url || '').replace(/\\/g, "/");
+            const baseName = file.originalname.replace(/\.[^/.]+$/, '');
+
+            if (content && baseName && content.includes(baseName)) {
+                const regex = new RegExp(`src="[^"]*${baseName}[^"]*"`, 'g');
+                content = content.replace(regex, `src="${fileUrl}"`);
+            } else if (coverFiles.length === 0) {
+                coverFileUrl = fileUrl;
             }
-        } else {
-            const urls = uploadedFiles.map(file => (file.path || file.secure_url || '').replace(/\\/g, "/"));
-            if (videoFiles.length > 0) {
-                media_urls = [urls[0]];
-            } else if (imageFiles.length > 0) {
-                media_urls = urls;
-            }
+        });
+        if (coverFileUrl) {
+            media_urls = [coverFileUrl];
+        } else if (!media_urls) {
+            media_urls = [];
+        }
+    } else if (uploadedFiles.length > 0) {
+        const urls = uploadedFiles.map(file => (file.path || file.secure_url || '').replace(/\\/g, "/"));
+        if (videoFiles.length > 0) {
+            media_urls = [urls[0]];
+        } else if (imageFiles.length > 0) {
+            media_urls = urls;
         }
     }
 
@@ -1748,7 +1760,10 @@ WHERE p.post_id = $1 AND p.is_active = TRUE AND (p.is_removed IS FALSE OR p.is_r
 exports.updatePostById = async (req, res) => {
     const postId = req.params.id;
     let { content, category, visibility, media_urls, post_type, title, poll_options, location, status } = req.body;
-    const uploadedFiles = req.files || [];
+    // "media" is inline content images/videos; "cover_media" (article posts only) is
+    // the explicitly chosen cover - kept on its own field so we never have to guess.
+    const mediaFiles = (req.files && req.files.media) || [];
+    const coverFiles = (req.files && req.files.cover_media) || [];
 
     if (status !== undefined && status !== "published" && status !== "draft") {
         return res.status(400).json({ message: "Invalid status. Allowed values: 'published', 'draft'" });
@@ -1797,16 +1812,26 @@ exports.updatePostById = async (req, res) => {
         const { author_id, author_org_id, post_type: currentPostType, shared_post_id, shared_job_id } = postCheck.rows[0];
 
         const effectivePostType = post_type || currentPostType;
-        if (effectivePostType === 'article' && uploadedFiles.length > 0) {
-            let coverFileUrl = null;
-            uploadedFiles.forEach(file => {
+        if (effectivePostType === 'article') {
+            // Cover comes unambiguously from the dedicated field when the caller sends
+            // one (the Channels article editor always does) - no more guessing, and no
+            // more accidentally clobbering the media_urls the client already sent.
+            // Callers that don't send cover_media (e.g. the personal "write article"
+            // composer) keep the legacy "unmatched file = cover" fallback below.
+            let coverFileUrl = coverFiles.length > 0
+                ? (coverFiles[0].path || coverFiles[0].secure_url || '').replace(/\\/g, "/")
+                : null;
+            // Everything in "media" is an inline content image/video - rewrite its blob
+            // src to the real URL. Match on the basename without extension since blob:
+            // URLs (e.g. "blob:http://host/<uuid>") carry no file extension.
+            mediaFiles.forEach(file => {
                 const fileUrl = (file.path || file.secure_url || '').replace(/\\/g, "/");
-                const originalName = file.originalname;
-                
-                if (content && content.includes(originalName)) {
-                    const regex = new RegExp(`src="[^"]*${originalName}[^"]*"`, 'g');
+                const baseName = file.originalname.replace(/\.[^/.]+$/, '');
+
+                if (content && baseName && content.includes(baseName)) {
+                    const regex = new RegExp(`src="[^"]*${baseName}[^"]*"`, 'g');
                     content = content.replace(regex, `src="${fileUrl}"`);
-                } else {
+                } else if (coverFiles.length === 0) {
                     coverFileUrl = fileUrl;
                 }
             });

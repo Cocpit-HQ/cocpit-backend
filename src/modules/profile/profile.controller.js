@@ -1223,7 +1223,7 @@ exports.getCompanyList = async (req, res) => {
             companyParams = [`%${company_search}%`];
             companyQuery = `
                 WITH matched_orgs AS (
-                    SELECT name, org_id, logo_url
+                    SELECT name, org_id, logo_url, established_year
                     FROM organizations
                     WHERE name IS NOT NULL AND name != ''
                       AND entity_type = 'COMPANY'
@@ -1231,22 +1231,22 @@ exports.getCompanyList = async (req, res) => {
                       AND LOWER(name) LIKE LOWER($1)
                 ),
                 matched_exps AS (
-                    SELECT DISTINCT ON (LOWER(TRIM(company_name))) 
-                           company_name AS name, 
+                    SELECT DISTINCT ON (LOWER(TRIM(company_name)))
+                           company_name AS name,
                            org_id
                     FROM experiences
                     WHERE company_name IS NOT NULL AND company_name != ''
                       AND LOWER(company_name) LIKE LOWER($1)
                     ORDER BY LOWER(TRIM(company_name))
                 )
-                SELECT company_name, org_id, logo_url
+                SELECT company_name, org_id, logo_url, established_year
                 FROM (
-                    SELECT name AS company_name, org_id, logo_url
+                    SELECT name AS company_name, org_id, logo_url, established_year
                     FROM matched_orgs
                     UNION ALL
-                    SELECT e.name AS company_name, e.org_id, NULL::text AS logo_url
+                    SELECT e.name AS company_name, e.org_id, NULL::text AS logo_url, NULL::integer AS established_year
                     FROM matched_exps e
-                    WHERE e.org_id IS NULL 
+                    WHERE e.org_id IS NULL
                        OR NOT EXISTS (
                            SELECT 1 FROM matched_orgs o WHERE o.org_id = e.org_id
                        )
@@ -1257,28 +1257,28 @@ exports.getCompanyList = async (req, res) => {
             companyParams = [];
             companyQuery = `
                 WITH matched_orgs AS (
-                    SELECT name, org_id, logo_url
+                    SELECT name, org_id, logo_url, established_year
                     FROM organizations
                     WHERE name IS NOT NULL AND name != ''
                       AND entity_type = 'COMPANY'
                       AND is_deleted = FALSE
                 ),
                 matched_exps AS (
-                    SELECT DISTINCT ON (LOWER(TRIM(company_name))) 
-                           company_name AS name, 
+                    SELECT DISTINCT ON (LOWER(TRIM(company_name)))
+                           company_name AS name,
                            org_id
                     FROM experiences
                     WHERE company_name IS NOT NULL AND company_name != ''
                     ORDER BY LOWER(TRIM(company_name))
                 )
-                SELECT company_name, org_id, logo_url
+                SELECT company_name, org_id, logo_url, established_year
                 FROM (
-                    SELECT name AS company_name, org_id, logo_url
+                    SELECT name AS company_name, org_id, logo_url, established_year
                     FROM matched_orgs
                     UNION ALL
-                    SELECT e.name AS company_name, e.org_id, NULL::text AS logo_url
+                    SELECT e.name AS company_name, e.org_id, NULL::text AS logo_url, NULL::integer AS established_year
                     FROM matched_exps e
-                    WHERE e.org_id IS NULL 
+                    WHERE e.org_id IS NULL
                        OR NOT EXISTS (
                            SELECT 1 FROM matched_orgs o WHERE o.org_id = e.org_id
                        )
@@ -1319,7 +1319,8 @@ exports.getCompanyList = async (req, res) => {
             companies: companyResult.rows.map(r => ({
                 name: r.company_name,
                 org_id: r.org_id,
-                logo_url: r.logo_url
+                logo_url: r.logo_url,
+                established_year: r.established_year
             })),
         });
 
@@ -1420,6 +1421,22 @@ exports.batchUpdateExperiences = async (req, res) => {
         // match the frontend's role list order.
         const entityIdOf = (op) => op.type === 'CREATE' ? op.tempId : (op.type === 'UPDATE' ? op.id : undefined);
 
+        // Founding-year lookup for org-linked CREATE/UPDATE operations, so start_date can be
+        // validated against the company's established_year (ID-351).
+        const orgIdsInBatch = [...new Set(
+            operations
+                .filter(op => (op.type === 'CREATE' || op.type === 'UPDATE') && op.data.org_id)
+                .map(op => op.data.org_id)
+        )];
+        const establishedYearByOrgId = new Map();
+        if (orgIdsInBatch.length > 0) {
+            const orgResult = await pool.query(
+                `SELECT org_id, established_year FROM organizations WHERE org_id = ANY($1::uuid[])`,
+                [orgIdsInBatch]
+            );
+            orgResult.rows.forEach(r => establishedYearByOrgId.set(r.org_id, r.established_year));
+        }
+
         // Apply operations to simulated state
         for (let i = 0; i < operations.length; i++) {
             const op = operations[i];
@@ -1434,12 +1451,16 @@ exports.batchUpdateExperiences = async (req, res) => {
                 }
                 simulatedState[idx] = { ...simulatedState[idx], ...op.data };
                 // Basic date validation
-                const { start_date, end_date, is_current } = simulatedState[idx];
+                const { start_date, end_date, is_current, org_id, company_name } = simulatedState[idx];
                 if (!is_current && !end_date) {
                     errors.push({ path: 'experiences.end_date', entityId: entityIdOf(op), message: "End date is required" });
                 }
                 if (end_date && new Date(end_date) < new Date(start_date)) {
                     errors.push({ path: 'experiences.end_date', entityId: entityIdOf(op), message: "End date must be after start date" });
+                }
+                const establishedYear = org_id ? establishedYearByOrgId.get(org_id) : null;
+                if (establishedYear && new Date(start_date).getFullYear() < establishedYear) {
+                    errors.push({ path: 'experiences.start_date', entityId: entityIdOf(op), message: `Start date cannot be before ${company_name}'s founding year (${establishedYear})` });
                 }
             } else if (op.type === "CREATE") {
                 const newExp = {
@@ -1449,12 +1470,16 @@ exports.batchUpdateExperiences = async (req, res) => {
                 };
                 simulatedState.push(newExp);
                 // Basic date validation
-                const { start_date, end_date, is_current } = newExp;
+                const { start_date, end_date, is_current, org_id, company_name } = newExp;
                 if (!is_current && !end_date) {
                     errors.push({ path: 'experiences.end_date', entityId: entityIdOf(op), message: "End date is required" });
                 }
                 if (end_date && new Date(end_date) < new Date(start_date)) {
                     errors.push({ path: 'experiences.end_date', entityId: entityIdOf(op), message: "End date must be after start date" });
+                }
+                const establishedYear = org_id ? establishedYearByOrgId.get(org_id) : null;
+                if (establishedYear && new Date(start_date).getFullYear() < establishedYear) {
+                    errors.push({ path: 'experiences.start_date', entityId: entityIdOf(op), message: `Start date cannot be before ${company_name}'s founding year (${establishedYear})` });
                 }
             }
         }
