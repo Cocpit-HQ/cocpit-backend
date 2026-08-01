@@ -108,6 +108,11 @@ exports.saveDetails = async (req, res) => {
             profileId = await getProfileId(userId);
         }
 
+        // Since this is the onboarding flow, if a user goes back and uploads a new resume,
+        // we must clear out any previously saved educations/experiences to prevent duplication.
+        await client.query(`DELETE FROM educations WHERE profile_id = $1`, [profileId]);
+        await client.query(`DELETE FROM experiences WHERE profile_id = $1`, [profileId]);
+
         // Helper to parse diverse date formats from AI
         const parseDate = (d) => {
             if (!d) return null;
@@ -119,58 +124,76 @@ exports.saveDetails = async (req, res) => {
                 return `${y}-${m}-01`;
             }
             if (d.match(/^\d{4}$/)) return `${d}-01-01`;
-            
+
             // Fallback to JS Date parser for text dates (e.g. "Jan 2024")
             const dateObj = new Date(d);
             if (!isNaN(dateObj.getTime())) {
-                return dateObj.toISOString().split('T')[0];
+                const yyyy = dateObj.getFullYear();
+                const mm = String(dateObj.getMonth() + 1).padStart(2, '0');
+                const dd = String(dateObj.getDate()).padStart(2, '0');
+                return `${yyyy}-${mm}-${dd}`;
             }
             return null;
         };
 
-        if (["student", "fresher", "intern"].includes(role)) {
+        const isStudentRole = ["student", "fresher", "intern"].includes(role);
+        const isEmployedRole = ["self_employed", "employed"].includes(role);
+
+        // ── PRIMARY insert: based on the user's declared role ───────────────
+        if (isStudentRole) {
+            // Student path: save primary education entry
             const eduData = { school_name, school_org_id, degree, field_of_study, location };
             await handleEducationOrgLink(client, userId, eduData);
 
-            // Use dates from the first parsed education item, since that's what populated the primary fields
             let startDate = null;
             let endDate = null;
+            let primaryEduDesc = null;
+            let primaryEduLocation = eduData.location;
             if (Array.isArray(educations) && educations.length > 0) {
                 startDate = parseDate(educations[0].startDate);
                 endDate = parseDate(educations[0].endDate);
+                primaryEduDesc = educations[0].description || null;
+                if (!primaryEduLocation) primaryEduLocation = educations[0].location;
             }
-
             await client.query(
-                `INSERT INTO educations (profile_id, school_name, school_org_id, degree, field_of_study, location, start_date, end_date)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-                [profileId, eduData.school_name, eduData.school_org_id || null, eduData.degree, eduData.field_of_study || null, eduData.location || null, startDate, endDate]
+                `INSERT INTO educations (profile_id, school_name, school_org_id, degree, field_of_study, location, start_date, end_date, description)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+                [profileId, eduData.school_name, eduData.school_org_id || null, eduData.degree, eduData.field_of_study || null, primaryEduLocation || null, startDate, endDate, primaryEduDesc]
             );
-        } else if (["self_employed", "employed"].includes(role)) {
+
+        } else if (isEmployedRole) {
+            // Employed path: save primary experience entry
             const expData = { title, company_name, location, work_type, work_mode, org_id };
             await handleExperienceOrgLink(client, userId, expData);
 
-            // Use dates from the first parsed experience item, since that's what populated the primary fields
             let startDate = null;
             let endDate = null;
+            let primaryExpDesc = null;
+            let primaryExpLocation = expData.location;
             if (Array.isArray(experiences) && experiences.length > 0) {
                 startDate = parseDate(experiences[0].startDate);
                 endDate = parseDate(experiences[0].endDate);
+                primaryExpDesc = experiences[0].description || null;
+                if (!primaryExpLocation) primaryExpLocation = experiences[0].location;
             }
-
             await client.query(
-                `INSERT INTO experiences (profile_id, title, company_name, location, work_type, work_mode, org_id, start_date, end_date)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-                [profileId, expData.title, expData.company_name, expData.location || null, expData.work_type || null, expData.work_mode || null, expData.org_id || null, startDate, endDate]
+                `INSERT INTO experiences (profile_id, title, company_name, location, work_type, work_mode, org_id, start_date, end_date, description)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+                [profileId, expData.title, expData.company_name, primaryExpLocation || null, expData.work_type || null, expData.work_mode || null, expData.org_id || null, startDate, endDate, primaryExpDesc]
             );
         }
+        // unemployed: no primary education or experience is saved
 
-        // Bulk insert additional educations from AI parser (skipping the 1st one since we just inserted it)
-        if (Array.isArray(educations) && educations.length > 1) {
-            const extraEducations = educations.slice(1);
+        // ── BULK insert: additional parsed entries from AI ──────────────────
+
+        // Save all additional educations:
+        //   - For student roles  → skip index 0 (already inserted as primary above)
+        //   - For employed/unemployed roles → save ALL education
+        if (Array.isArray(educations) && educations.length > 0) {
+            const extraEducations = isStudentRole ? educations.slice(1) : educations.slice(0);
             for (const edu of extraEducations) {
-                let startDate = parseDate(edu.startDate);
-                let endDate = parseDate(edu.endDate);
-
+                const startDate = parseDate(edu.startDate);
+                const endDate = parseDate(edu.endDate);
                 await client.query(
                     `INSERT INTO educations (profile_id, school_name, degree, field_of_study, location, start_date, end_date)
                      VALUES ($1, $2, $3, $4, $5, $6, $7)`,
@@ -179,13 +202,14 @@ exports.saveDetails = async (req, res) => {
             }
         }
 
-        // Bulk insert additional experiences from AI parser (skipping the 1st one since we just inserted it)
-        if (Array.isArray(experiences) && experiences.length > 1) {
-            const extraExperiences = experiences.slice(1);
+        // Save all additional experiences:
+        //   - For employed roles → skip index 0 (already inserted as primary above)
+        //   - For student/unemployed roles → save ALL experiences from parsed resume
+        if (Array.isArray(experiences) && experiences.length > 0) {
+            const extraExperiences = isEmployedRole ? experiences.slice(1) : experiences.slice(0);
             for (const exp of extraExperiences) {
-                let startDate = parseDate(exp.startDate);
-                let endDate = parseDate(exp.endDate);
-
+                const startDate = parseDate(exp.startDate);
+                const endDate = parseDate(exp.endDate);
                 await client.query(
                     `INSERT INTO experiences (profile_id, title, company_name, location, description, start_date, end_date)
                      VALUES ($1, $2, $3, $4, $5, $6, $7)`,
@@ -450,8 +474,8 @@ exports.saveSkills = async (req, res) => {
             .filter(Boolean)
     )];
 
-    if (skillList.length < 3 || skillList.length > 14) {
-        return res.status(400).json({ success: false, message: "Please select between 3 and 14 valid unique skills" });
+    if (skillList.length < 3 || skillList.length > 15) {
+        return res.status(400).json({ success: false, message: "Please select between 3 and 15 valid unique skills" });
     }
 
     const client = await getClient();
@@ -716,9 +740,9 @@ exports.parseResumeUpload = async (req, res) => {
         const mimeType = req.file.mimetype;
 
         // Optionally, ensure it's a PDF or DOCX
-        const allowedMimes = ["application/pdf", "application/msword", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"];
+        const allowedMimes = ["application/pdf"];
         if (!allowedMimes.includes(mimeType)) {
-            return res.status(415).json({ success: false, message: "Unsupported file type. Please upload a PDF or DOCX." });
+            return res.status(415).json({ success: false, message: "Unsupported file type. Please upload a PDF." });
         }
 
         if (req.file.size > 5 * 1024 * 1024) {
@@ -731,7 +755,7 @@ exports.parseResumeUpload = async (req, res) => {
         const uploadToCloudinary = () => {
             return new Promise((resolve, reject) => {
                 const stream = cloudinary.uploader.upload_stream(
-                    { folder: "resumes", resource_type: "raw", public_id: `resume_${userId}_${Date.now()}` },
+                    { folder: "resumes", resource_type: "raw", public_id: `resume_${userId}_${Date.now()}.pdf` },
                     (error, result) => {
                         if (error) reject(error);
                         else resolve(result);
@@ -768,14 +792,59 @@ exports.parseResumeUpload = async (req, res) => {
             }
         }
 
-        // Enforce maximum 14 skills to comply with onboarding schema validation
+        // Strip bracketed text and enforce maximum 14 skills to comply with onboarding schema validation
         if (parsedData && Array.isArray(parsedData.skills)) {
-            parsedData.skills = parsedData.skills.slice(0, 14);
+            parsedData.skills = parsedData.skills
+                .map(skill => skill.replace(/\s*[([].*?[)\]]/g, '').trim())
+                .filter(Boolean)
+                .slice(0, 14);
         }
 
-        // Filter out hallucinatory projects/experiences that lack a start date
-        if (parsedData && Array.isArray(parsedData.workExperience)) {
-            parsedData.workExperience = parsedData.workExperience.filter(exp => exp.startDate && exp.startDate.trim() !== "");
+        const cleanIsoDate = (dateStr) => {
+            if (!dateStr || typeof dateStr !== 'string') return null;
+            let date = dateStr.trim();
+            if (date.includes("T") && date.endsWith("Z")) {
+                date = date.split("T")[0];
+            }
+            // Scenario 4: Default bare year to January 1st
+            if (date.match(/^\d{4}$/)) {
+                date = `${date}-01-01`;
+            } else if (date.match(/^\d{4}-\d{2}$/)) {
+                date = `${date}-01`;
+            } else if (date.match(/^\d{2}\/\d{4}$/)) {
+                const [m, y] = date.split('/');
+                date = `${y}-${m}-01`;
+            }
+            return date;
+        };
+
+        const processDates = (item) => {
+            let start = cleanIsoDate(item.startDate);
+            let end = cleanIsoDate(item.endDate);
+
+            // Scenario 2: Move single date to end date
+            if (start && !end) {
+                end = start;
+                start = null;
+            }
+
+            // Truncate description to 1500 characters
+            let description = item.description;
+            if (description && description.length > 1500) {
+                description = description.substring(0, 1497) + "...";
+            }
+
+            return { ...item, startDate: start, endDate: end, description };
+        };
+
+        if (parsedData) {
+            // Scenario 3: Remove .filter() to allow missing dates
+            if (Array.isArray(parsedData.workExperience)) {
+                parsedData.workExperience = parsedData.workExperience.map(processDates);
+            }
+            if (Array.isArray(parsedData.education)) {
+                parsedData.education = parsedData.education.map(processDates);
+            }
         }
 
         return res.status(200).json({

@@ -5,11 +5,12 @@ const SYSTEM_INSTRUCTION = `You are an expert ATS (Applicant Tracking System) pa
 RULES:
 1. ONLY extract Personal Information, Work Experience, Education, and Skills.
 2. DO NOT extract projects or tasks as separate work experiences. Projects listed under a job should be summarized in that job's 'description'. Every work experience must represent a distinct employment period with a company.
-3. DO NOT perform matching, scoring, or recommendations.
+3. DO NOT perform matching, scoring.
 4. DO NOT hallucinate or infer information not explicitly stated in the resume.
 5. If a field is missing in the resume, leave it as null, empty string, or empty array according to the schema.
 6. Extract only what is requested in the JSON schema.
-7. Return purely the JSON object without any markdown formatting, conversational text, or explanations.`;
+7. Return purely the JSON object without any markdown formatting or explanations.
+8. SKILLS EXTRACTION: Extract skills ONLY from dedicated skill sections (e.g., "Skills", "Technical Skills", "Core Competencies", "Areas of Expertise"). DO NOT extract or infer skills from work experience descriptions, project summaries.`;
 
 const RESUME_JSON_SCHEMA = {
   type: "object",
@@ -31,7 +32,7 @@ const RESUME_JSON_SCHEMA = {
           location: { type: "string", description: "Location of the job." },
           startDate: { type: "string", description: "Start date (YYYY-MM-DD or MM/YYYY)." },
           endDate: { type: "string", description: "End date (YYYY-MM-DD or MM/YYYY), or null if current." },
-          description: { type: "string", description: "Brief description of responsibilities." }
+          description: { type: "string", description: "Brief description of responsibilities (maximum 1400 characters)." }
         }
       }
     },
@@ -54,7 +55,7 @@ const RESUME_JSON_SCHEMA = {
       items: {
         type: "string"
       },
-      description: "List of technical and soft skills extracted. Return a maximum of 14 most relevant skills."
+      description: "List of technical and soft skills extracted ONLY from dedicated skill sections (e.g., 'Skills', 'Core Competencies'). DO NOT extract inferred skills from work experience. Return a maximum of 14 most relevant skills."
     }
   },
   required: ["profile", "workExperience", "education", "skills"]

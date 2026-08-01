@@ -117,12 +117,10 @@ const uploadResumeMemory = multer({
   limits: { fileSize: 5 * 1024 * 1024 }, // 5MB limit
   fileFilter: (req, file, cb) => {
     const allowed = [
-      "application/pdf",
-      "application/msword",
-      "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+      "application/pdf"
     ];
     if (!allowed.includes(file.mimetype)) {
-      return cb(new Error("Invalid file format. Allowed: PDF, DOC, DOCX."));
+      return cb(new Error("Invalid file format. Allowed: PDF."));
     }
     cb(null, true);
   }
