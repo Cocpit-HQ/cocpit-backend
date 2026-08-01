@@ -185,6 +185,11 @@ exports.saveDetails = async (req, res) => {
         // unemployed: no primary education or experience is saved
 
         // ── BULK insert: additional parsed entries from AI ──────────────────
+        //
+        // Role-based rules:
+        //   student / fresher / intern  → Education ONLY  (no experience saved)
+        //   employed / self_employed    → Both education AND experience
+        //   unemployed                  → Both education AND experience
 
         // Save all additional educations:
         //   - For student roles  → skip index 0 (already inserted as primary above)
@@ -202,10 +207,10 @@ exports.saveDetails = async (req, res) => {
             }
         }
 
-        // Save all additional experiences:
-        //   - For employed roles → skip index 0 (already inserted as primary above)
-        //   - For student/unemployed roles → save ALL experiences from parsed resume
-        if (Array.isArray(experiences) && experiences.length > 0) {
+        // Save experiences ONLY for employed / self_employed / unemployed roles.
+        // Students, freshers and interns NEVER get experiences saved from the resume,
+        // even if their resume contains past jobs.
+        if (!isStudentRole && Array.isArray(experiences) && experiences.length > 0) {
             const extraExperiences = isEmployedRole ? experiences.slice(1) : experiences.slice(0);
             for (const exp of extraExperiences) {
                 const startDate = parseDate(exp.startDate);
