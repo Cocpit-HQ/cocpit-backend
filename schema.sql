@@ -2073,3 +2073,126 @@ CREATE TABLE IF NOT EXISTS project_media (
 );
 
 CREATE INDEX IF NOT EXISTS idx_project_media_project_id ON project_media(project_id);
+
+-- ============================================================
+-- SETTINGS MODULE SCHEMA ADDITIONS
+-- ============================================================
+
+-- 1. Add settings columns to users
+ALTER TABLE users
+    ADD COLUMN IF NOT EXISTS theme_preference VARCHAR(10) DEFAULT 'system'
+        CHECK (theme_preference IN ('system', 'light', 'dark')),
+    ADD COLUMN IF NOT EXISTS recovery_email TEXT,
+    ADD COLUMN IF NOT EXISTS recovery_email_verified_at TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS profile_show_email BOOLEAN DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS profile_show_phone BOOLEAN DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS tag_permission VARCHAR(20) DEFAULT 'everyone'
+        CHECK (tag_permission IN ('everyone', 'connections_only', 'followers_only', 'no_one'));
+
+-- Re-create active_users view to pick up new columns added to users table
+CREATE OR REPLACE VIEW active_users AS
+SELECT * FROM users
+WHERE deletion_execute_at IS NULL;
+
+-- 2. User notification preferences (1:1 with user)
+CREATE TABLE IF NOT EXISTS user_notification_preferences (
+    user_id UUID PRIMARY KEY REFERENCES users(user_id) ON DELETE CASCADE,
+    all_notifications BOOLEAN DEFAULT TRUE,
+    post_notifications BOOLEAN DEFAULT TRUE,
+    job_alerts BOOLEAN DEFAULT TRUE,
+    message_notifications BOOLEAN DEFAULT TRUE,
+    email_notifications BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 3. Saved folders (referenced by savedPost.controller.js)
+CREATE TABLE IF NOT EXISTS saved_folders (
+    folder_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    org_id UUID REFERENCES organizations(org_id) ON DELETE CASCADE,
+    name VARCHAR(100) NOT NULL,
+    cover_image TEXT,
+    is_default BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE(user_id, org_id, name)
+);
+CREATE INDEX IF NOT EXISTS idx_saved_folders_user_id ON saved_folders(user_id);
+
+-- 4. saved_post: add org_id and folder_id
+ALTER TABLE saved_post
+    ADD COLUMN IF NOT EXISTS org_id UUID REFERENCES organizations(org_id) ON DELETE CASCADE,
+    ADD COLUMN IF NOT EXISTS folder_id UUID REFERENCES saved_folders(folder_id) ON DELETE SET NULL;
+
+-- 5. Support tickets
+CREATE TABLE IF NOT EXISTS support_tickets (
+    ticket_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID REFERENCES users(user_id) ON DELETE SET NULL,
+    email TEXT NOT NULL,
+    description TEXT NOT NULL,
+    attachment_url TEXT,
+    status VARCHAR(20) DEFAULT 'OPEN'
+        CHECK (status IN ('OPEN', 'IN_PROGRESS', 'RESOLVED', 'CLOSED')),
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 6. User feedback (one per user per app version)
+CREATE TABLE IF NOT EXISTS user_feedback (
+    feedback_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID REFERENCES users(user_id) ON DELETE SET NULL,
+    rating SMALLINT NOT NULL CHECK (rating BETWEEN 1 AND 5),
+    comment TEXT,
+    app_version TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_user_feedback_version ON user_feedback(user_id, app_version);
+
+
+-- ==========================================================================
+-- ACCOUNT STATUS FEATURE (Phase 2 — 2026-08-01)
+-- Your Reports + Account Actions tabs in Settings
+-- ==========================================================================
+
+-- 1. Add status tracking to the existing reports table
+ALTER TABLE reports
+  ADD COLUMN IF NOT EXISTS status VARCHAR(30) NOT NULL DEFAULT 'pending'
+    CHECK (status IN ('pending', 'under_review', 'action_taken', 'no_action', 'dismissed'));
+
+-- 2. Moderator review notes — timeline of updates per report
+--    is_system = TRUE: auto-generated on report creation
+--    is_system = FALSE: written by a moderator (via admin panel, Phase 3)
+CREATE TABLE IF NOT EXISTS report_review_notes (
+  id         UUID    PRIMARY KEY DEFAULT gen_random_uuid(),
+  report_id  BIGINT  NOT NULL REFERENCES reports(id) ON DELETE CASCADE,
+  message    TEXT    NOT NULL,
+  is_system  BOOLEAN DEFAULT TRUE,
+  created_by UUID    REFERENCES users(user_id) ON DELETE SET NULL,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_report_review_notes_report ON report_review_notes(report_id);
+
+-- 3. Moderation actions issued against a user (populated by admin panel in Phase 3)
+--    Suspension status is auto-resolved at query time:
+--      expires_at < NOW()  →  status returned as 'completed'
+CREATE TABLE IF NOT EXISTS account_actions (
+  id             UUID    PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id        UUID    NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+  action_type    VARCHAR(30) NOT NULL
+    CHECK (action_type IN ('warning', 'post_removed', 'comment_removed', 'suspension', 'ban')),
+  reason_id      INT     REFERENCES report_reasons(id) ON DELETE SET NULL,
+  custom_reason  TEXT,
+  moderator_note TEXT,
+  affected_type  VARCHAR(20),      -- 'POST', 'COMMENT', etc.
+  affected_id    UUID,
+  affected_title TEXT,             -- snapshot of content title at time of action
+  duration_days  INT,              -- for suspensions (e.g. 7)
+  status         VARCHAR(20) NOT NULL DEFAULT 'active'
+    CHECK (status IN ('active', 'completed', 'appealed', 'overturned')),
+  expires_at     TIMESTAMPTZ,      -- created_at + INTERVAL 'duration_days days'
+  issued_by      UUID    REFERENCES users(user_id) ON DELETE SET NULL,
+  created_at     TIMESTAMPTZ DEFAULT NOW(),
+  updated_at     TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_account_actions_user ON account_actions(user_id, created_at DESC);

@@ -114,6 +114,15 @@ exports.deleteFolder = async (req, res) => {
 
     try {
         const { userId, orgId, isOrgActor } = getSavedPostActorScope(req, companyId || null);
+
+        // Explicitly completely unsave all posts inside this folder
+        await pool.query(
+            `DELETE FROM saved_post WHERE folder_id = $1 AND user_id = $2 AND (
+                ${isOrgActor ? 'org_id = $3::uuid' : 'org_id IS NULL'}
+            )`,
+            isOrgActor ? [folderId, userId, orgId] : [folderId, userId]
+        );
+
         const result = await pool.query(
             `DELETE FROM saved_folders WHERE folder_id = $1 AND user_id = $2 AND (
                 ${isOrgActor ? 'org_id = $3::uuid' : 'org_id IS NULL'}

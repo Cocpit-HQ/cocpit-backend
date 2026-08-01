@@ -65,6 +65,33 @@ exports.searchUsers = async (req, res) => {
       `;
     }
 
+    let tagPrivacyFilter = "";
+    if (req.query.forTagging === "true") {
+      tagPrivacyFilter = `
+        AND u.tag_permission != 'noone'
+        AND u.tag_permission != 'no_one'
+        AND (
+          u.tag_permission = 'everyone'
+          OR u.tag_permission IS NULL
+          OR (
+            u.tag_permission IN ('connections', 'connections_only')
+            AND EXISTS (
+              SELECT 1 FROM connections c 
+              WHERE (c.user_id = $1 AND c.connected_user_id = u.user_id) 
+                 OR (c.user_id = u.user_id AND c.connected_user_id = $1)
+            )
+          )
+          OR (
+            u.tag_permission IN ('followers', 'followers_only')
+            AND EXISTS (
+              SELECT 1 FROM followers f 
+              WHERE f.follower_id = $1 AND f.following_id = u.user_id
+            )
+          )
+        )
+      `;
+    }
+
     // Similarity param (raw term)
     queryParams.push(searchTerm);
     const simParamIdx = queryParams.length;
@@ -90,6 +117,7 @@ exports.searchUsers = async (req, res) => {
           ${userAccountFilter}
           ${excludeJobFilter}
           ${blockFilter}
+          ${tagPrivacyFilter}
         )
         UNION ALL
         (
@@ -1314,11 +1342,12 @@ exports.resendRecoveryEmail = async (req, res) => {
  */
 exports.getSuggestedUsers = async (req, res) => {
   const currentUserId = req.user.sub;
-  const { excludeJobId } = req.query;
+  const { excludeJobId, forTagging } = req.query;
 
   try {
     const params = [currentUserId];
     let excludeJobFilter = '';
+    let taggingPrivacyFilter = '';
 
     if (excludeJobId) {
       params.push(excludeJobId);
@@ -1327,6 +1356,32 @@ exports.getSuggestedUsers = async (req, res) => {
           SELECT 1 FROM job_offers jo 
           WHERE jo.job_id = $2 AND jo.user_id = u.user_id
           AND jo.status IN ('pending', 'accepted', 'declined')
+        )
+      `;
+    }
+
+    if (forTagging === "true" || forTagging === "1") {
+      taggingPrivacyFilter = `
+        AND u.tag_permission != 'noone'
+        AND u.tag_permission != 'no_one'
+        AND (
+          u.tag_permission IS NULL 
+          OR u.tag_permission IN ('everyone')
+          OR (
+            u.tag_permission IN ('connections_only', 'connections')
+            AND EXISTS (
+              SELECT 1 FROM connections c 
+              WHERE (c.user_id = $1 AND c.connected_user_id = u.user_id) 
+                 OR (c.user_id = u.user_id AND c.connected_user_id = $1)
+            )
+          )
+          OR (
+            u.tag_permission IN ('followers_only', 'followers')
+            AND EXISTS (
+              SELECT 1 FROM followers f 
+              WHERE f.follower_id = $1 AND f.following_id = u.user_id
+            )
+          )
         )
       `;
     }
@@ -1354,6 +1409,7 @@ exports.getSuggestedUsers = async (req, res) => {
             OR (b.blocker_id = u.user_id AND b.blocked_id = $1))
       )
       ${excludeJobFilter}
+      ${taggingPrivacyFilter}
       ORDER BY followers_count DESC, u.created_at DESC
       LIMIT 15
     `;

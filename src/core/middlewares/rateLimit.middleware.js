@@ -50,6 +50,10 @@ const createRateLimit = (options) => {
     }, windowMs);
 
     return (req, res, next) => {
+        if (process.env.NODE_ENV !== 'production') {
+            return next();
+        }
+
         const ip = req.ip;
         const now = Date.now();
 

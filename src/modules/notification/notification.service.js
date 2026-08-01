@@ -5,6 +5,29 @@
  */
 const admin = require("../../config/firebase.config");
 const deviceRepo = require("../device/device.repository");
+const pool = require("../../core/db/pool");
+
+const isNotificationAllowed = async (userId, notificationType = "post") => {
+    try {
+        const res = await pool.query(
+            "SELECT all_notifications, post_notifications, job_alerts, message_notifications FROM user_notification_preferences WHERE user_id = $1",
+            [userId]
+        );
+        if (res.rowCount === 0) return true;
+
+        const pref = res.rows[0];
+        if (pref.all_notifications === false) return false;
+
+        if (notificationType === "post" && pref.post_notifications === false) return false;
+        if (notificationType === "job" && pref.job_alerts === false) return false;
+        if (notificationType === "message" && pref.message_notifications === false) return false;
+
+        return true;
+    } catch (err) {
+        console.error("Error checking notification preferences:", err);
+        return true;
+    }
+};
 
 /**
  * Sends a push notification to all active devices of a user.
@@ -15,6 +38,13 @@ const deviceRepo = require("../device/device.repository");
  * @param {Object} data - Optional metadata payload.
  */
 const sendToUser = async (userId, title, body, data = {}) => {
+    // 0. Check recipient notification preferences
+    const allowed = await isNotificationAllowed(userId, data.type || "post");
+    if (!allowed) {
+        console.info(`[Notification] Skipped sending to ${userId}: User disabled ${data.type || "all"} notifications.`);
+        return;
+    }
+
     // 1. Check if Firebase is initialized
     if (!admin.apps.length) {
         console.warn(`[Notification] Skipped sending to ${userId}: Firebase not initialized.`);

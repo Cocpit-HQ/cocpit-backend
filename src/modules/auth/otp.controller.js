@@ -21,10 +21,10 @@ const requestOTP = async (req, res, next) => {
             });
         }
 
-        const validPurposes = ["signup", "password_reset"];
+        const validPurposes = ["signup", "password_reset", "recovery", "email_change"];
         if (!validPurposes.includes(purpose)) {
             return res.status(400).json({
-                message: "Invalid purpose. Must be 'signup' or 'password_reset'."
+                message: "Invalid purpose. Must be 'signup', 'password_reset', 'recovery', or 'email_change'."
             });
         }
 

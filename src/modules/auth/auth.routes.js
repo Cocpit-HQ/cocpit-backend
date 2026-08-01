@@ -56,6 +56,7 @@ router.get("/sessions/count", requireAuth, sessionController.getMySessionCount);
 router.delete("/sessions/:sessionId", requireAuth, requireActiveSession, sessionController.removeSession);
 
 // Password reset
+router.post("/forgot-password", passwordResetLimiter, passwordResetController.forgotPassword);
 router.post("/reset-password", passwordResetLimiter, validate(resetPasswordSchema), passwordResetController.resetPassword);
 
 // Admin

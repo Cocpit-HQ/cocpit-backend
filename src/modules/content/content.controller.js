@@ -1872,8 +1872,14 @@ exports.updatePostById = async (req, res) => {
 
         // title
         if (title !== undefined) {
-            updates.push(`title = $${index++}`);
-            values.push(title);
+            const effectivePostType = post_type || currentPostType;
+            // Prevent wiping out the poll question if title is empty string
+            if (effectivePostType === 'poll' && title.trim() === '') {
+                // Ignore the empty title update for polls to preserve the question
+            } else {
+                updates.push(`title = $${index++}`);
+                values.push(title);
+            }
         }
 
         // content
