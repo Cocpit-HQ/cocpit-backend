@@ -2383,7 +2383,7 @@ WHERE gi.invitee_id = $1
         ($2::uuid IS NOT NULL AND (m.author_org_id != $2 OR m.author_org_id IS NULL))
         OR
         -- If I am User, sender is NOT me (User)
-        ($2::uuid IS NULL AND (m.sender_id != $1 OR m.sender_id IS NULL))
+        ($2::uuid IS NULL AND (m.author_org_id IS NOT NULL OR m.sender_id != $1 OR m.sender_id IS NULL))
     )
     AND (cp.last_read_at IS NULL OR m.created_at > cp.last_read_at)
     AND m.created_at >= cp.joined_at

@@ -398,16 +398,16 @@ const getPublicFeedWhere = (userParamIdx) => `
     AND p.is_community_article IS NOT TRUE
     AND NOT EXISTS (
         SELECT 1 FROM blocks b 
-        WHERE (b.blocker_id = $${userParamIdx} AND b.blocked_id = p.author_id)
-           OR (b.blocker_id = p.author_id AND b.blocked_id = $${userParamIdx})
+        WHERE (b.is_org_block = false AND ((b.blocker_id = $${userParamIdx} AND b.blocked_id = p.author_id) OR (b.blocker_id = p.author_id AND b.blocked_id = $${userParamIdx})))
+           OR (b.is_org_block = true AND p.author_org_id IS NOT NULL AND ((b.blocker_id = p.author_org_id AND b.blocked_id = $${userParamIdx}) OR (b.blocker_id = $${userParamIdx} AND b.blocked_id = p.author_org_id)))
     )
     -- STRICT REPOST BLOCKING: Exclude repost if original author is blocked
     AND (
         p.shared_post_id IS NULL 
         OR NOT EXISTS (
             SELECT 1 FROM blocks b 
-            WHERE (b.blocker_id = $${userParamIdx} AND b.blocked_id = sp.author_id)
-               OR (b.blocker_id = sp.author_id AND b.blocked_id = $${userParamIdx})
+            WHERE (b.is_org_block = false AND ((b.blocker_id = $${userParamIdx} AND b.blocked_id = sp.author_id) OR (b.blocker_id = sp.author_id AND b.blocked_id = $${userParamIdx})))
+               OR (b.is_org_block = true AND sp.author_org_id IS NOT NULL AND ((b.blocker_id = sp.author_org_id AND b.blocked_id = $${userParamIdx}) OR (b.blocker_id = $${userParamIdx} AND b.blocked_id = sp.author_org_id)))
         )
     )
 

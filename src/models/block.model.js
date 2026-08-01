@@ -80,7 +80,8 @@ class BlockModel {
         if (!orgId || !targetUserId) return false;
         const result = await pool.query(
             `SELECT 1 FROM blocks 
-             WHERE blocker_id = $1 AND blocked_id = $2 AND is_org_block = true`,
+             WHERE (blocker_id = $1 AND blocked_id = $2 AND is_org_block = true)
+                OR (blocker_id = $2 AND blocked_id = $1)`,
             [orgId, targetUserId]
         );
         return result.rowCount > 0;

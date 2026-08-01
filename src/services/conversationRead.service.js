@@ -74,7 +74,7 @@ async function markConversationAsRead({ conversationId, userId, companyId = null
       AND (
         ($3::uuid IS NOT NULL AND (m.author_org_id != $3 OR m.author_org_id IS NULL))
         OR
-        ($3::uuid IS NULL AND (m.sender_id != $2 OR m.sender_id IS NULL))
+        ($3::uuid IS NULL AND (m.author_org_id IS NOT NULL OR m.sender_id != $2 OR m.sender_id IS NULL))
       )
       AND NOT EXISTS (
         SELECT 1

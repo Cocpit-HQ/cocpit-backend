@@ -1,4 +1,5 @@
 const pool = require("../../core/db/pool");
+const BlockModel = require("../../models/block.model");
 const { checkOrgPermission } = require("../../core/utils/rbac");
 
 // Is the viewer currently "acting as" the given org (via x-actor-type/x-actor-id headers)?
@@ -83,6 +84,10 @@ exports.getOrganizationPosts = async (req, res) => {
     try {
         let hasPrivateAccess = false;
         if (userId) {
+            const isBlocked = await BlockModel.isOrgBlocked(companyId, userId);
+            if (isBlocked) {
+                return res.json({ posts: [], nextCursor: null });
+            }
             hasPrivateAccess = await checkOrgPermission(pool, companyId, userId, ['MANAGE_COMPANY', 'SWITCH_TO_COMPANY', 'MANAGE_ORGANIZATION', 'SWITCH_TO_ORGANIZATION']);
         }
 

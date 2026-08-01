@@ -5,6 +5,7 @@ const { sanitizeArticleContent } = require("../../utils/articleContentSanitizer"
 const pool = require("../../core/db/pool");
 const socketService = require("../../core/infrastructure/socket.service");
 const { checkBlockStatus } = require("../../core/utils/blockCheck");
+const BlockModel = require("../../models/block.model");
 const { logAudit } = require("../../core/infrastructure/audit.service");
 const cloudinary = require("../../core/infrastructure/cloudinary.client");
 const { checkOrgPermission } = require("../../core/utils/rbac");
@@ -1648,10 +1649,17 @@ WHERE p.post_id = $1 AND p.is_active = TRUE AND (p.is_removed IS FALSE OR p.is_r
 
         // STRICT BLOCK CHECK
         const post = result.rows[0];
-        if (userId && !post.author_org_id && post.author_id !== userId) {
-            const isBlocked = await checkBlockStatus(userId, post.author_id);
-            if (isBlocked) {
-                return res.status(404).json({ message: "Post not found" });
+        if (userId) {
+            if (post.author_org_id) {
+                const isBlocked = await BlockModel.isOrgBlocked(post.author_org_id, userId);
+                if (isBlocked) {
+                    return res.status(404).json({ message: "Post not found" });
+                }
+            } else if (post.author_id && post.author_id !== userId) {
+                const isBlocked = await checkBlockStatus(userId, post.author_id);
+                if (isBlocked) {
+                    return res.status(404).json({ message: "Post not found" });
+                }
             }
         }
 
