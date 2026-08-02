@@ -115,7 +115,8 @@ const updateProfileSchema = z.object({
         invalid_type_error: "Account name must be a string",
       })
       .trim()
-      .min(1, "Account name cannot be empty"),
+      .min(1, "Account name cannot be empty")
+      .regex(/^[a-z0-9_.]{3,20}$/, "Invalid format. Use only lowercase letters, numbers, dots, and underscores."),
 
     full_name: z
       .string({
