@@ -248,6 +248,13 @@ exports.updatePhone = async (req, res) => {
 
         const phoneVal = (phone === "" || phone === null) ? null : phone;
 
+        if (phoneVal !== null) {
+            const digitCount = String(phoneVal).replace(/\D/g, '').length;
+            if (digitCount !== 10) {
+                return res.status(400).json({ success: false, message: "Phone number must be exactly 10 digits" });
+            }
+        }
+
         await pool.query(
             `UPDATE users SET mobile_number = $1, updated_at = NOW() WHERE user_id = $2`,
             [phoneVal, userId]
@@ -663,7 +670,7 @@ exports.getNotificationPreferences = async (req, res) => {
                 posts: true,
                 jobs: true,
                 messages: true,
-                emails: false,
+                emails: true,
             });
         }
 
@@ -674,7 +681,7 @@ exports.getNotificationPreferences = async (req, res) => {
             posts: prefs.post_notifications ?? true,
             jobs: prefs.job_alerts ?? true,
             messages: prefs.message_notifications ?? true,
-            emails: prefs.email_notifications ?? false,
+            emails: prefs.email_notifications ?? true,
         });
     } catch (error) {
         console.error("Get notification preferences error:", error);
@@ -689,7 +696,7 @@ exports.getNotificationPreferences = async (req, res) => {
 exports.updateNotificationPreferences = async (req, res) => {
     try {
         const userId = req.user.sub;
-        const { all = true, posts = true, jobs = true, messages = true, emails = false } = req.body;
+        const { all = true, posts = true, jobs = true, messages = true, emails = true } = req.body;
 
         await pool.query(
             `INSERT INTO user_notification_preferences
