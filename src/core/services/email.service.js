@@ -138,6 +138,144 @@ const sendAccountDeletionEmail = async (email, fullName, restoreToken, deletionD
     }
 };
 
+/**
+ * Sends a password reset link email.
+ * @param {string} email - The user's email address
+ * @param {string} fullName - The user's display name
+ * @param {string} resetToken - Raw reset token
+ */
+const sendPasswordResetLinkEmail = async (email, fullName, resetToken) => {
+    if (!resend) {
+        throw new Error("Email service is not configured (RESEND_API_KEY missing).");
+    }
+
+    const frontendUrl = process.env.FRONTEND_URL || (process.env.NODE_ENV === "staging" ? "https://staging.cocpit.in" : "http://localhost:3000");
+    const resetLink = `${frontendUrl}/reset-password?token=${resetToken}`;
+
+    try {
+        const { data, error } = await resend.emails.send({
+            from: "Cocpit <noreply@cocpit.in>",
+            to: [email],
+            subject: "Reset your Cocpit account password",
+            html: `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Reset Your Password</title>
+</head>
+<body style="margin: 0; padding: 0; background-color: #f4f6f9; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; -webkit-font-smoothing: antialiased;">
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background-color: #f4f6f9; padding: 40px 16px;">
+    <tr>
+      <td align="center">
+        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width: 540px; background-color: #ffffff; border-radius: 16px; overflow: hidden; box-shadow: 0 4px 20px rgba(0, 0, 0, 0.05); border: 1px solid #e5e7eb;">
+          
+          <!-- Header Bar -->
+          <tr>
+            <td style="background-color: #0F172A; padding: 28px 36px; text-align: left;">
+              <table role="presentation" width="100%" cellspacing="0" cellpadding="0">
+                <tr>
+                  <td>
+                    <span style="font-size: 24px; font-weight: 800; color: #6366F1; letter-spacing: -0.5px;">Cocpit</span>
+                  </td>
+                  <td align="right" style="font-size: 12px; color: #94A3B8; font-weight: 500;">
+                    Security Notification
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+
+          <!-- Main Body -->
+          <tr>
+            <td style="padding: 40px 36px;">
+              <h1 style="margin: 0 0 16px 0; font-size: 20px; font-weight: 700; color: #0F172A; line-height: 28px;">
+                Password Reset Request
+              </h1>
+              
+              <p style="margin: 0 0 16px 0; font-size: 15px; color: #475569; line-height: 24px;">
+                Hi ${fullName || "there"},
+              </p>
+              
+              <p style="margin: 0 0 24px 0; font-size: 15px; color: #475569; line-height: 24px;">
+                We received a request to reset the password for your Cocpit account. Click the button below to choose a new password:
+              </p>
+
+              <!-- CTA Button -->
+              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin: 28px 0;">
+                <tr>
+                  <td align="center">
+                    <a href="${resetLink}" 
+                       target="_blank"
+                       style="display: inline-block; background-color: #4F46E5; color: #ffffff; font-size: 15px; font-weight: 600; padding: 14px 36px; text-decoration: none; border-radius: 12px;">
+                      Reset Password
+                    </a>
+                  </td>
+                </tr>
+              </table>
+
+              <!-- Expiry & Notice -->
+              <div style="background-color: #F8FAFC; border-left: 4px solid #6366F1; border-radius: 0 8px 8px 0; padding: 16px 20px; margin: 24px 0 28px 0;">
+                <p style="margin: 0 0 6px 0; font-size: 13px; font-weight: 600; color: #1E293B;">
+                  ⏱️ This link expires in 15 minutes
+                </p>
+                <p style="margin: 0; font-size: 13px; color: #64748B; line-height: 20px;">
+                  For security reasons, this link can only be used once. Resetting your password will log out all active sessions across all your devices.
+                </p>
+              </div>
+
+              <!-- Fallback Link -->
+              <p style="margin: 0 0 8px 0; font-size: 12px; color: #94A3B8; line-height: 18px;">
+                If the button above doesn't work, copy and paste the following URL into your browser:
+              </p>
+              <p style="margin: 0 0 24px 0; font-size: 12px; color: #4F46E5; word-break: break-all; line-height: 18px;">
+                <a href="${resetLink}" style="color: #4F46E5; text-decoration: underline;">${resetLink}</a>
+              </p>
+
+              <!-- Security Advice -->
+              <hr style="border: none; border-top: 1px solid #F1F5F9; margin: 28px 0;">
+              
+              <p style="margin: 0; font-size: 13px; color: #64748B; line-height: 20px;">
+                <strong>Didn't request this change?</strong><br>
+                If you did not request a password reset, you can safely ignore this email. Your current password will remain active and secure.
+              </p>
+            </td>
+          </tr>
+
+          <!-- Footer -->
+          <tr>
+            <td style="background-color: #F8FAFC; padding: 24px 36px; border-top: 1px solid #E2E8F0; text-align: center;">
+              <p style="margin: 0 0 6px 0; font-size: 12px; font-weight: 500; color: #64748B;">
+                Cocpit Inc. &bull; Professional Career Platform
+              </p>
+              <p style="margin: 0; font-size: 11px; color: #94A3B8;">
+                &copy; ${new Date().getFullYear()} Cocpit. All rights reserved.
+              </p>
+            </td>
+          </tr>
+
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
+            `,
+        });
+
+        if (error) {
+            console.error("Resend error (password reset link email):", error);
+            throw new Error(error.message || "Failed to send password reset email");
+        }
+
+        return data;
+    } catch (err) {
+        console.error("Failed to send password reset email to:", email, err);
+        throw err;
+    }
+};
+
 const sendEmailChangeOTP = async (email, otp, isNewEmail = false) => {
     if (!resend) {
         throw new Error("Email service is not configured (RESEND_API_KEY missing).");
@@ -207,6 +345,7 @@ const sendRecoveryEmailOTP = async (email, otp) => {
 module.exports = {
     sendOTPEmail,
     sendAccountDeletionEmail,
+    sendPasswordResetLinkEmail,
     sendEmailChangeOTP,
     sendRecoveryEmailOTP,
 };
