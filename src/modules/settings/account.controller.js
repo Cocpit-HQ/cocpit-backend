@@ -79,7 +79,7 @@ exports.verifyCurrentEmail = async (req, res) => {
         }
 
         const currentEmail = userRes.rows[0].email;
-        const result = await requestOTP(currentEmail, "password_reset");
+        const result = await requestOTP(currentEmail, "email_change");
 
         if (result.error) {
             return res.status(result.error.status).json({ success: false, message: result.error.message });
@@ -156,7 +156,7 @@ exports.submitNewEmail = async (req, res) => {
         }
 
 
-        const otpResult = await requestOTP(normalizedNewEmail, "signup");
+        const otpResult = await requestOTP(normalizedNewEmail, "email_change");
         if (otpResult.error) {
             return res.status(otpResult.error.status).json({ success: false, message: otpResult.error.message });
         }
