@@ -38,7 +38,7 @@ exports.changePassword = async (req, res) => {
 
         const isMatch = await comparePassword(currentPassword, user.password_hash);
         if (!isMatch) {
-            return res.status(401).json({ success: false, message: "Current password is incorrect" });
+            return res.status(400).json({ success: false, message: "Current password is incorrect" });
         }
 
         if (currentPassword === newPassword) {
