@@ -808,6 +808,7 @@ exports.parseResumeUpload = async (req, res) => {
         const cleanIsoDate = (dateStr) => {
             if (!dateStr || typeof dateStr !== 'string') return null;
             let date = dateStr.trim();
+            if (date.toLowerCase() === 'present' || date.toLowerCase() === 'current') return 'Present';
             if (date.includes("T") && date.endsWith("Z")) {
                 date = date.split("T")[0];
             }
@@ -827,11 +828,9 @@ exports.parseResumeUpload = async (req, res) => {
             let start = cleanIsoDate(item.startDate);
             let end = cleanIsoDate(item.endDate);
 
-            // Scenario 2: Move single date to end date
-            if (start && !end) {
-                end = start;
-                start = null;
-            }
+            // AI parser puts single graduation/end years into endDate and leaves startDate null.
+            // If startDate is present but endDate is null, it accurately indicates an ongoing role.
+            // No manual date shifting (old Scenario 2) is needed anymore.
 
             // Truncate description to 1500 characters
             let description = item.description;
