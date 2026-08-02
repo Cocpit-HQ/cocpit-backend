@@ -159,6 +159,7 @@ CREATE TABLE educations (
   education_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   profile_id UUID REFERENCES profiles(profile_id) ON DELETE CASCADE,
   school_name TEXT NOT NULL,
+  school_org_id UUID REFERENCES organizations(org_id) ON DELETE SET NULL,
   degree TEXT,
   field_of_study TEXT,
   location TEXT,

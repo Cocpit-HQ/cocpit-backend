@@ -150,8 +150,15 @@ exports.getProfile = async (req, res) => {
         } : null;
 
         let relationship = { isFollowing: false, isFollowedBy: false, connectionRequestStatus: null, connectionRequestId: null, connectionRequestSender: null };
-        if (req.user && req.user.sub && req.user.sub !== u.user_id) {
-            relationship = await profileRepo.getRelationshipInfo(req.user.sub, u.user_id);
+        if (req.user && req.user.sub) {
+            const activeProfileId = req.headers["x-actor-id"];
+            const activeProfileType = req.headers["x-actor-type"];
+
+            if (activeProfileType === "ORGANIZATION" && activeProfileId) {
+                relationship = await profileRepo.getCompanyRelationshipInfo(activeProfileId, u.user_id);
+            } else if (req.user.sub !== u.user_id) {
+                relationship = await profileRepo.getRelationshipInfo(req.user.sub, u.user_id);
+            }
         }
 
         res.json({

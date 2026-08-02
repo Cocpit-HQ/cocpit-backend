@@ -1281,14 +1281,22 @@ exports.publishNewOrganization = async (req, res) => {
 
         const slug = await generateUniqueSlug(client, name);
         const establishedYearInt = established_year ? parseInt(established_year, 10) : null;
+        const isInstitution = type === 'INSTITUTION';
+
+        // TODO(admin-verification): institutions are auto-marked VERIFIED because the
+        // admin document/domain review flow isn't wired up yet. Once it exists, institutions
+        // should start at UNVERIFIED and go through that flow like the verification_status
+        // check in content.controller.js already expects.
+        const initialVerificationStatus = isInstitution ? 'VERIFIED' : 'UNVERIFIED';
 
         const insertQuery = `
             INSERT INTO organizations (
-                name, slug, entity_type, established_year, industry, 
-                logo_url, email, phone, website, size, country, city, 
-                headline, description, created_by, onboarding_step, onboarding_completed, email_verified, phone_verified
+                name, slug, entity_type, established_year, industry, institution_type,
+                logo_url, email, phone, website, size, country, city,
+                headline, description, created_by, onboarding_step, onboarding_completed, email_verified, phone_verified,
+                verification_status
             ) VALUES (
-                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, 'COMPLETED', TRUE, TRUE, TRUE
+                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, 'COMPLETED', TRUE, TRUE, TRUE, $17
             ) RETURNING *
         `;
 
@@ -1297,7 +1305,8 @@ exports.publishNewOrganization = async (req, res) => {
             slug,
             type || 'COMPANY',
             establishedYearInt,
-            industry || null,
+            isInstitution ? null : (industry || null),
+            isInstitution ? (industry || null) : null,
             logoUrl,
             email ? email.toLowerCase().trim() : null,
             phone ? phone.trim() : null,
@@ -1307,7 +1316,8 @@ exports.publishNewOrganization = async (req, res) => {
             city || null,
             headline || null,
             description || null,
-            userId
+            userId,
+            initialVerificationStatus
         ]);
 
         const newOrg = orgRes.rows[0];

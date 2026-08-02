@@ -603,7 +603,10 @@ async function calculateOrgDemographics(client, orgId, type, search, graduationY
            FROM educations ed
            JOIN profiles p ON ed.profile_id = p.profile_id
            JOIN active_users u ON p.user_id = u.user_id
-           WHERE ed.school_org_id = $1::uuid
+           WHERE (
+               ed.school_org_id = $1::uuid
+               OR (ed.school_org_id IS NULL AND LOWER(TRIM(ed.school_name)) = LOWER(TRIM((SELECT name FROM organizations WHERE org_id = $1::uuid))))
+           )
              AND ($2::text IS NULL OR u.full_name ILIKE $2::text)
              AND ($3::int IS NULL OR EXTRACT(YEAR FROM ed.end_date)::int = $3::int)`;
 
@@ -621,7 +624,7 @@ async function calculateOrgDemographics(client, orgId, type, search, graduationY
             locationDistribution: [],
             topSkills: [],
             roleDistribution: [],
-            educationBreakdown: []
+            ...(type === 'PEOPLE' ? { educationBreakdown: [] } : { currentEmployerBreakdown: [] })
         };
     }
 
@@ -677,19 +680,34 @@ async function calculateOrgDemographics(client, orgId, type, search, graduationY
         ${limitClause}
     `, params);
 
-    // D. Education Breakdown
-    const eduRes = await client.query(`
-        WITH matching_users AS (${cteQuery})
-        SELECT 
-            COALESCE(NULLIF(TRIM(e.school_name), ''), 'Unknown') AS name,
-            COUNT(DISTINCT mu.user_id)::int AS count
-        FROM matching_users mu
-        JOIN profiles p ON mu.user_id = p.user_id
-        JOIN educations e ON p.profile_id = e.profile_id
-        GROUP BY e.school_name
-        ORDER BY count DESC
-        ${limitClause}
-    `, params);
+    // D. Fourth card — Education Breakdown for company People (where employees studied),
+    // Current Employer for institution Alumni (where alumni work now; their school is a given).
+    const fourthRes = type === 'PEOPLE'
+        ? await client.query(`
+            WITH matching_users AS (${cteQuery})
+            SELECT
+                COALESCE(NULLIF(TRIM(e.school_name), ''), 'Unknown') AS name,
+                COUNT(DISTINCT mu.user_id)::int AS count
+            FROM matching_users mu
+            JOIN profiles p ON mu.user_id = p.user_id
+            JOIN educations e ON p.profile_id = e.profile_id
+            GROUP BY e.school_name
+            ORDER BY count DESC
+            ${limitClause}
+        `, params)
+        : await client.query(`
+            WITH matching_users AS (${cteQuery})
+            SELECT
+                COALESCE(NULLIF(TRIM(e.company_name), ''), 'Unknown') AS name,
+                COUNT(DISTINCT mu.user_id)::int AS count
+            FROM matching_users mu
+            JOIN profiles p ON mu.user_id = p.user_id
+            JOIN experiences e ON p.profile_id = e.profile_id
+            WHERE (e.is_current = TRUE OR e.end_date IS NULL)
+            GROUP BY e.company_name
+            ORDER BY count DESC
+            ${limitClause}
+        `, params);
 
     const formatDistribution = (rows) => {
         return rows.map(row => ({
@@ -703,7 +721,9 @@ async function calculateOrgDemographics(client, orgId, type, search, graduationY
         locationDistribution: formatDistribution(locationRes.rows),
         topSkills: formatDistribution(skillsRes.rows),
         roleDistribution: formatDistribution(roleRes.rows),
-        educationBreakdown: formatDistribution(eduRes.rows)
+        ...(type === 'PEOPLE'
+            ? { educationBreakdown: formatDistribution(fourthRes.rows) }
+            : { currentEmployerBreakdown: formatDistribution(fourthRes.rows) })
     };
 }
 
@@ -750,9 +770,9 @@ exports.getOrgPeople = async (req, res) => {
             const pJoinedAt = params.length - 1;
             const pUserId = params.length;
             cursorClause = `AND (
-                (sub.connection_request_status = 'connected') < $${pIsConnected}::boolean
-                OR ((sub.connection_request_status = 'connected') = $${pIsConnected}::boolean AND sub.joined_at < $${pJoinedAt}::date)
-                OR ((sub.connection_request_status = 'connected') = $${pIsConnected}::boolean AND sub.joined_at = $${pJoinedAt}::date AND sub.user_id > $${pUserId}::uuid)
+                COALESCE(sub.connection_request_status = 'connected', false) < $${pIsConnected}::boolean
+                OR (COALESCE(sub.connection_request_status = 'connected', false) = $${pIsConnected}::boolean AND sub.joined_at < $${pJoinedAt}::date)
+                OR (COALESCE(sub.connection_request_status = 'connected', false) = $${pIsConnected}::boolean AND sub.joined_at = $${pJoinedAt}::date AND sub.user_id > $${pUserId}::uuid)
             )`;
         }
 
@@ -812,7 +832,7 @@ exports.getOrgPeople = async (req, res) => {
                  SELECT * FROM enriched sub
                  WHERE 1=1
                    ${cursorClause}
-                 ORDER BY (sub.connection_request_status = 'connected') DESC NULLS LAST, sub.joined_at DESC, sub.user_id ASC
+                 ORDER BY COALESCE(sub.connection_request_status = 'connected', false) DESC, sub.joined_at DESC, sub.user_id ASC
                  LIMIT $2`,
                 params
             ),
@@ -926,9 +946,9 @@ exports.getOrgAlumni = async (req, res) => {
             const pGradYear = params.length - 1;
             const pUserId = params.length;
             cursorClause = `AND (
-                (sub.connection_request_status = 'connected') < $${pIsConnected}::boolean
-                OR ((sub.connection_request_status = 'connected') = $${pIsConnected}::boolean AND sub.graduation_year < $${pGradYear})
-                OR ((sub.connection_request_status = 'connected') = $${pIsConnected}::boolean AND sub.graduation_year = $${pGradYear} AND sub.user_id > $${pUserId}::uuid)
+                COALESCE(sub.connection_request_status = 'connected', false) < $${pIsConnected}::boolean
+                OR (COALESCE(sub.connection_request_status = 'connected', false) = $${pIsConnected}::boolean AND sub.graduation_year < $${pGradYear})
+                OR (COALESCE(sub.connection_request_status = 'connected', false) = $${pIsConnected}::boolean AND sub.graduation_year = $${pGradYear} AND sub.user_id > $${pUserId}::uuid)
             )`;
         }
 
@@ -969,7 +989,10 @@ exports.getOrgAlumni = async (req, res) => {
                      FROM educations ed
                      JOIN profiles p ON ed.profile_id = p.profile_id
                      JOIN active_users u ON p.user_id = u.user_id
-                     WHERE ed.school_org_id = $1::uuid
+                     WHERE (
+                         ed.school_org_id = $1::uuid
+                         OR (ed.school_org_id IS NULL AND LOWER(TRIM(ed.school_name)) = LOWER(TRIM((SELECT name FROM organizations WHERE org_id = $1::uuid))))
+                     )
                        ${whereExtra}
                      ORDER BY p.user_id, ed.end_date DESC
                  ),
@@ -1003,7 +1026,7 @@ exports.getOrgAlumni = async (req, res) => {
                  SELECT * FROM enriched sub
                  WHERE 1=1
                    ${cursorClause}
-                 ORDER BY (sub.connection_request_status = 'connected') DESC NULLS LAST, sub.graduation_year DESC, sub.user_id ASC
+                 ORDER BY COALESCE(sub.connection_request_status = 'connected', false) DESC, sub.graduation_year DESC, sub.user_id ASC
                  LIMIT $2`,
                 params
             ),
@@ -1013,7 +1036,10 @@ exports.getOrgAlumni = async (req, res) => {
                      FROM educations ed
                      JOIN profiles p ON ed.profile_id = p.profile_id
                      JOIN active_users u ON p.user_id = u.user_id
-                     WHERE ed.school_org_id = $1::uuid
+                     WHERE (
+                         ed.school_org_id = $1::uuid
+                         OR (ed.school_org_id IS NULL AND LOWER(TRIM(ed.school_name)) = LOWER(TRIM((SELECT name FROM organizations WHERE org_id = $1::uuid))))
+                     )
                        ${countWhereExtra}
                  )
                  SELECT
@@ -1103,6 +1129,15 @@ exports.updateOrgProfile = async (req, res) => {
             throw Object.assign(new Error('Forbidden: You do not have permission to update organization details'), { statusCode: 403 });
         }
 
+        const entityTypeRes = await client.query(
+            `SELECT entity_type FROM organizations WHERE org_id = $1 AND is_deleted = FALSE`,
+            [orgId]
+        );
+        if (entityTypeRes.rowCount === 0) {
+            throw Object.assign(new Error('Organization not found'), { statusCode: 404 });
+        }
+        const isInstitution = entityTypeRes.rows[0].entity_type === 'INSTITUTION';
+
         // Build dynamic update to only touch fields defined for Step 1 Profile updates
         const updates = [];
         const params = [];
@@ -1115,7 +1150,14 @@ exports.updateOrgProfile = async (req, res) => {
 
         addUpdate('name', name?.trim() || null);
         addUpdate('headline', headline?.trim() || null);
-        addUpdate('industry', industry || null);
+        // `industry` carries the Stage 1 dropdown value for both org types (COMPANY industry
+        // or INSTITUTION type — School/College/...); route it to the right column here so an
+        // edit-profile save can't undo the institution_type written at org-creation time.
+        if (isInstitution) {
+            addUpdate('institution_type', industry || null);
+        } else {
+            addUpdate('industry', industry || null);
+        }
         addUpdate('size', size || null);
         addUpdate('website', website?.trim() || null);
         addUpdate('country', country?.trim() || null);
@@ -1134,14 +1176,14 @@ exports.updateOrgProfile = async (req, res) => {
                 UPDATE organizations
                 SET ${updates.join(', ')}, updated_at = NOW()
                 WHERE org_id = $${params.length} AND is_deleted = FALSE
-                RETURNING org_id, name, headline, industry, size, website,
+                RETURNING org_id, name, headline, industry, institution_type, size, website,
                           country, city, established_year, logo_url, cover_url,
                           entity_type, updated_at
             `;
             result = await client.query(query, params);
         } else {
             result = await client.query(
-                `SELECT org_id, name, headline, industry, size, website,
+                `SELECT org_id, name, headline, industry, institution_type, size, website,
                         country, city, established_year, logo_url, cover_url,
                         entity_type, updated_at
                  FROM organizations WHERE org_id = $1 AND is_deleted = FALSE`,

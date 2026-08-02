@@ -112,6 +112,7 @@ Same auth, same response shape as §1, with differences:
 - Sort/cursor key is `graduation_year` instead of `joined_at`; cursor is `${isConnected ? '1' : '0'}|${graduationYear}|${userId}`.
 - Extra query param: `graduation_year` (number, exact-match filter).
 - 404s with `{ message: 'Alumni tab is only available for institutions' }` if the org's `entity_type !== 'INSTITUTION'`.
+- `insights` swaps its 4th card: alumni get `currentEmployerBreakdown` (grouped by `experiences.company_name` for each alumnus's current role) instead of `educationBreakdown` — showing "where alumni work now" is more useful than "where they studied" when every row is, by definition, an alumnus of this school. Shape is identical: `[{ "name": "Infosys", "percentage": 12 }]`.
 
 Everything in §1's "Field notes" and "Ordering & pagination" applies identically here.
 

@@ -312,7 +312,7 @@ exports.getUserProfile = async (req, res) => {
     let connectionRequestId = null;
     let connectionRequestSender = null;
 
-    if (currentUserId && currentUserId !== targetUserId) {
+    if (currentUserId && (currentUserId !== targetUserId || (req.headers['x-actor-type'] || '').toUpperCase().trim() === 'ORGANIZATION')) {
       // Detect if the request is made under an Organization actor context
       const actorType = (req.headers['x-actor-type'] || '').toUpperCase().trim();
       const actorOrgId = req.headers['x-actor-id'] || null;

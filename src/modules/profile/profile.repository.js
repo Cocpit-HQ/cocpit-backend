@@ -571,6 +571,25 @@ const getRelationshipInfo = async (viewerId, targetId) => {
     return { isFollowing, isFollowedBy, connectionRequestStatus, connectionRequestId, connectionRequestSender };
 };
 
+const getCompanyRelationshipInfo = async (orgId, targetId) => {
+    const followCheck = await pool.query(
+        "SELECT 1 FROM organization_user_follows WHERE org_id = $1 AND user_id = $2",
+        [orgId, targetId]
+    );
+    const followedByCheck = await pool.query(
+        "SELECT 1 FROM organization_followers WHERE org_id = $1 AND user_id = $2",
+        [orgId, targetId]
+    );
+
+    return {
+        isFollowing: followCheck.rowCount > 0,
+        isFollowedBy: followedByCheck.rowCount > 0,
+        connectionRequestStatus: null,
+        connectionRequestId: null,
+        connectionRequestSender: null,
+    };
+};
+
 // ─── Pool (for skills transactions that need client) ────────────────────────────
 
 const getClient = async () => pool.connect();
@@ -789,7 +808,7 @@ module.exports = {
     getEducations, addEducation, updateEducation, deleteEducation,
     addEducationInTx, updateEducationInTx,
     getSkills, deleteSkillMapping,
-    getCompanyRoles, getSocialCounts, getRelationshipInfo,
+    getCompanyRoles, getSocialCounts, getRelationshipInfo, getCompanyRelationshipInfo,
     getUserRole,
     getUserInterests,
     getProjects, addProjectInTx, updateProjectInTx, deleteProjectInTx,
