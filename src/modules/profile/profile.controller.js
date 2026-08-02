@@ -159,6 +159,7 @@ exports.getProfile = async (req, res) => {
                 id: u.user_id, account_name: u.account_name, name: u.full_name, headline: u.headline, avatar: u.avatar_url,
                 cover_image: u.cover_image_url, location: u.location, about: u.about_text, website: u.website,
                 email: (req.user?.sub === u.user_id || u.profile_show_email) ? u.email : null,
+                ...(req.user?.sub === u.user_id ? { recovery_email: u.recovery_email || null } : {}),
                 mobile_number: (req.user?.sub === u.user_id || u.profile_show_phone) ? u.mobile_number : null,
                 account_type: u.account_type,
                 followers_count: parseInt(counts.followers_count), following_count: parseInt(counts.following_count),

@@ -2196,3 +2196,22 @@ CREATE TABLE IF NOT EXISTS account_actions (
   updated_at     TIMESTAMPTZ DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_account_actions_user ON account_actions(user_id, created_at DESC);
+
+-- ==========================================================================
+-- OWNERSHIP TRANSFERS FEATURE (2026-08-02)
+-- Tracks historical organization ownership transfers
+-- ==========================================================================
+
+CREATE TABLE IF NOT EXISTS ownership_transfers (
+    transfer_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    org_id UUID NOT NULL REFERENCES organizations(org_id) ON DELETE CASCADE,
+    transferred_from UUID REFERENCES users(user_id) ON DELETE SET NULL,
+    transferred_to UUID REFERENCES users(user_id) ON DELETE SET NULL,
+    transferred_at TIMESTAMPTZ DEFAULT NOW(),
+    metadata JSONB DEFAULT '{}'::jsonb
+);
+
+CREATE INDEX IF NOT EXISTS idx_ownership_transfers_org ON ownership_transfers(org_id);
+CREATE INDEX IF NOT EXISTS idx_ownership_transfers_from ON ownership_transfers(transferred_from);
+CREATE INDEX IF NOT EXISTS idx_ownership_transfers_to ON ownership_transfers(transferred_to);
+

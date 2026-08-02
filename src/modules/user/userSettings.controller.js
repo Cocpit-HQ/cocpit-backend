@@ -7,6 +7,7 @@ const BlockModel = require("../../models/block.model");
 const { revokeOtherSessions } = require("../settings/account.service");
 const { UAParser } = require("ua-parser-js");
 const geoip = require("geoip-lite");
+const SocketService = require("../../core/infrastructure/socket.service");
 
 // Helper to format date relative or formatted string
 function formatDate(dateStr) {
@@ -45,6 +46,7 @@ exports.getAccountDetails = async (req, res) => {
 
         return res.status(200).json({
             id: user.user_id,
+            email: user.email || "",
             primaryEmail: user.email || "",
             recoveryEmail: user.recovery_email || "",
             phone: user.mobile_number || "",
@@ -529,6 +531,14 @@ exports.updatePrivacySettings = async (req, res) => {
                 userId,
             ]
         );
+
+        if (SocketService.io) {
+            SocketService.io.emit("USER_PRIVACY_UPDATED", {
+                userId,
+                showEmail,
+                showPhone,
+            });
+        }
 
         return res.status(200).json({ success: true });
     } catch (error) {

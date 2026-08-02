@@ -9,7 +9,7 @@ const pool = require("../../core/db/pool");
 const getFullProfile = async (userId) => {
     const result = await pool.query(
         `SELECT u.user_id, u.full_name, u.headline, u.avatar_url, u.cover_image_url,
-                u.location, u.about_text, u.email, u.mobile_number, u.account_name, u.website, u.created_at,
+                u.location, u.about_text, u.email, u.recovery_email, u.mobile_number, u.account_name, u.website, u.created_at,
                 u.onboarding_step, u.profile_show_email, u.profile_show_phone,
                 u.location_formatted, u.location_country, u.location_state, u.location_city,
                 u.location_lat, u.location_lng, u.location_place_id,
