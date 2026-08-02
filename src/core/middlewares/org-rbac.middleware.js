@@ -35,22 +35,67 @@ function checkFeaturePermission(permissions, requiredKey) {
     return false;
 }
 
+const { getOrganizationMembership } = require("./actor-context.middleware");
+
 const requireOrgAccess = (featureKey, isPublicRoute = false) => async (req, res, next) => {
-    // 1. Enforce that the user is acting as an ORGANIZATION actor context (Must set actor as org first)
-    if (!req.actor || req.actor.type !== 'ORGANIZATION') {
-        return next(new AppError("To access teams and RBAC routes, you must act as the organization.", 403));
-    }
-
-    // 2. Ensure actor matches target organization in route
-    const urlOrgId = req.params.orgId || req.params.companyId;
-    if (urlOrgId && req.actor.orgId !== urlOrgId) {
-        return next(new AppError("Active organization actor does not match the target organization", 403));
-    }
-
     try {
         const userId = req.user?.sub;
         if (!userId) {
             return next(new AppError("User context is required.", 401));
+        }
+
+        const urlOrgId = req.params.orgId || req.params.companyId;
+
+        // 1. Auto-resolve organization actor context if user is acting as USER but targeting a valid org where they are a member/owner
+        if (!req.actor || req.actor.type !== 'ORGANIZATION') {
+            if (!urlOrgId) {
+                return next(new AppError("To access teams and RBAC routes, you must act as the organization.", 403));
+            }
+
+            const member = await getOrganizationMembership(urlOrgId, userId, pool);
+            if (member && member.status === 'ACTIVE') {
+                const rawPermissions = member.permissions || [];
+                const permissions = (Array.isArray(rawPermissions) ? rawPermissions : [])
+                    .map(p => String(p).toUpperCase().trim());
+
+                req.actor = {
+                    type: "ORGANIZATION",
+                    id: urlOrgId,
+                    userId,
+                    orgId: urlOrgId,
+                    roleId: member.role_id || null,
+                    permissions,
+                    roleName: member.role_name,
+                    rolePriority: member.priority || 0,
+                    source: "auto_resolved_url_access",
+                };
+            } else {
+                // Check if user is created_by owner in organizations table
+                const ownerRes = await pool.query(
+                    "SELECT created_by FROM organizations WHERE org_id = $1",
+                    [urlOrgId]
+                );
+                if (ownerRes.rowCount > 0 && ownerRes.rows[0].created_by === userId) {
+                    req.actor = {
+                        type: "ORGANIZATION",
+                        id: urlOrgId,
+                        userId,
+                        orgId: urlOrgId,
+                        roleId: null,
+                        permissions: ["*"],
+                        roleName: "Owner",
+                        rolePriority: 100,
+                        source: "auto_resolved_owner_access",
+                    };
+                } else {
+                    return next(new AppError("To access teams and RBAC routes, you must be an active member or owner of the organization.", 403));
+                }
+            }
+        }
+
+        // 2. Ensure actor matches target organization in route
+        if (urlOrgId && req.actor.orgId !== urlOrgId) {
+            return next(new AppError("Active organization actor does not match the target organization", 403));
         }
 
         // 3. Retrieve the owner (created_by) from organizations table

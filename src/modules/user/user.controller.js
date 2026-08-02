@@ -235,6 +235,11 @@ exports.getUserProfile = async (req, res) => {
         u.location,
         u.about_text AS about,
         u.website,
+        u.email,
+        u.recovery_email,
+        u.mobile_number,
+        u.profile_show_email,
+        u.profile_show_phone,
         u.created_at,
         p.account_type,
         p.open_to,
@@ -373,6 +378,18 @@ exports.getUserProfile = async (req, res) => {
         }
       }
     }
+
+    // Privacy gating for email, recovery email, and phone number
+    const isOwner = currentUserId === targetUserId;
+    user.email = (isOwner || user.profile_show_email) ? (user.email || null) : null;
+    user.mobile_number = (isOwner || user.profile_show_phone) ? (user.mobile_number || null) : null;
+    if (isOwner) {
+      user.recovery_email = user.recovery_email || null;
+    } else {
+      delete user.recovery_email;
+    }
+    delete user.profile_show_email;
+    delete user.profile_show_phone;
 
     // Enrich user object with social fields
     user.is_following = isFollowing;

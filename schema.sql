@@ -76,6 +76,18 @@ CREATE TABLE refresh_tokens (
   ip_address INET NOT NULL
 );
 
+CREATE TABLE password_reset_tokens (
+  token_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
+  token_hash TEXT NOT NULL,
+  expires_at TIMESTAMPTZ NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT now(),
+  used BOOLEAN DEFAULT FALSE
+);
+
+CREATE INDEX idx_password_reset_tokens_user_id ON password_reset_tokens(user_id);
+CREATE INDEX idx_password_reset_tokens_hash ON password_reset_tokens(token_hash);
+
 -- Track devices and link them to specific user sessions and FCM tokens
 
 CREATE TABLE profiles (
@@ -2196,3 +2208,22 @@ CREATE TABLE IF NOT EXISTS account_actions (
   updated_at     TIMESTAMPTZ DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_account_actions_user ON account_actions(user_id, created_at DESC);
+
+-- ==========================================================================
+-- OWNERSHIP TRANSFERS FEATURE (2026-08-02)
+-- Tracks historical organization ownership transfers
+-- ==========================================================================
+
+CREATE TABLE IF NOT EXISTS ownership_transfers (
+    transfer_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    org_id UUID NOT NULL REFERENCES organizations(org_id) ON DELETE CASCADE,
+    transferred_from UUID REFERENCES users(user_id) ON DELETE SET NULL,
+    transferred_to UUID REFERENCES users(user_id) ON DELETE SET NULL,
+    transferred_at TIMESTAMPTZ DEFAULT NOW(),
+    metadata JSONB DEFAULT '{}'::jsonb
+);
+
+CREATE INDEX IF NOT EXISTS idx_ownership_transfers_org ON ownership_transfers(org_id);
+CREATE INDEX IF NOT EXISTS idx_ownership_transfers_from ON ownership_transfers(transferred_from);
+CREATE INDEX IF NOT EXISTS idx_ownership_transfers_to ON ownership_transfers(transferred_to);
+

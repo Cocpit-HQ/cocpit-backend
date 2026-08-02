@@ -456,6 +456,39 @@ exports.getUserOrganizations = async (req, res) => {
     }
 };
 
+exports.getOwnedOrganizations = async (req, res) => {
+    const userId = req.user.sub;
+
+    const client = await pool.connect();
+    try {
+        const result = await client.query(
+            `SELECT c.*, 
+             json_build_object(
+                'name', cr.name,
+                'description', cr.description,
+                'permissions', cr.permissions,
+                'priority', cr.priority
+             ) as viewer_role_data,
+             cr.name as role,
+             TRUE as is_owner
+             FROM organizations c
+             JOIN organization_members cm ON c.org_id = cm.org_id
+             LEFT JOIN organization_roles cr ON cm.role_id = cr.role_id
+             WHERE c.created_by = $1 AND c.is_deleted = FALSE AND cm.user_id = $1 AND cm.status = 'ACTIVE'
+             ORDER BY c.created_at DESC`,
+            [userId]
+        );
+
+        res.json(result.rows);
+    } catch (err) {
+        console.error("Get owned organizations error:", err);
+        res.status(500).json({ message: "Internal server error" });
+    } finally {
+        client.release();
+    }
+};
+
+
 exports.searchOrganizations = async (req, res) => {
     const { q, entity_type } = req.query;
     if (!q || q.trim().length === 0) {
