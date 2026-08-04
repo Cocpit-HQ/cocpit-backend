@@ -20,6 +20,7 @@
 const pool = require('../../core/db/pool');
 const { checkOrgPermission } = require('../../core/utils/rbac');
 const { logAudit } = require('../../core/infrastructure/audit.service');
+const { checkActorBlockStatus } = require('../../core/utils/blockCheck');
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -88,6 +89,14 @@ exports.getOrgProfile = async (req, res) => {
         // 1. Resolve org
         const org = await resolveOrg(orgId);
         if (!org) return res.status(404).json({ message: 'Organization not found' });
+
+        // 1.5 Bi-directional Block Check (User <-> Org, Org <-> Org, User <-> User)
+        if (req.user || req.actor) {
+            const isBlocked = await checkActorBlockStatus(req, org.org_id);
+            if (isBlocked) {
+                return res.status(404).json({ message: 'Organization not found' });
+            }
+        }
 
         // 2. Run all queries in parallel
         const [
@@ -458,6 +467,11 @@ exports.getOrgAbout = async (req, res) => {
         const org = await resolveOrg(orgId);
         if (!org) return res.status(404).json({ message: 'Organization not found' });
 
+        if (req.user || req.actor) {
+            const isBlocked = await checkActorBlockStatus(req, org.org_id);
+            if (isBlocked) return res.status(404).json({ message: 'Organization not found' });
+        }
+
         // Viewer membership (to decide if sensitive fields exposed)
         const membership = await getViewerMembership(org.org_id, viewerId);
         const isOwnProfile = !!membership;
@@ -534,6 +548,11 @@ exports.getOrgTeam = async (req, res) => {
     try {
         const org = await resolveOrg(orgId);
         if (!org) return res.status(404).json({ message: 'Organization not found' });
+
+        if (req.user || req.actor) {
+            const isBlocked = await checkActorBlockStatus(req, org.org_id);
+            if (isBlocked) return res.status(404).json({ message: 'Organization not found' });
+        }
 
         const result = await pool.query(
             `SELECT u.user_id, u.full_name, u.avatar_url, u.headline, u.account_name,
@@ -741,6 +760,11 @@ exports.getOrgPeople = async (req, res) => {
         const org = await resolveOrg(orgId);
         if (!org) return res.status(404).json({ message: 'Organization not found' });
 
+        if (req.user || req.actor) {
+            const isBlocked = await checkActorBlockStatus(req, org.org_id);
+            if (isBlocked) return res.status(404).json({ message: 'Organization not found' });
+        }
+
         let cursorIsConnected = null;
         let cursorJoinedAt = null;
         let cursorUserId = null;
@@ -907,6 +931,11 @@ exports.getOrgAlumni = async (req, res) => {
     try {
         const org = await resolveOrg(orgId);
         if (!org) return res.status(404).json({ message: 'Organization not found' });
+
+        if (req.user || req.actor) {
+            const isBlocked = await checkActorBlockStatus(req, org.org_id);
+            if (isBlocked) return res.status(404).json({ message: 'Organization not found' });
+        }
 
         if (org.entity_type !== 'INSTITUTION') {
             return res.status(404).json({ message: 'Alumni tab is only available for institutions' });

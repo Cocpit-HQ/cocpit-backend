@@ -31,21 +31,34 @@ const checkBlockStatus = async (userId, targetId) => {
 
 /**
  * Check block status respecting request actor context (User or Organization).
+ * Handles bi-directional blocking between User<->User, User<->Org, Org<->User, Org<->Org.
  * @param {object} req - Express request object containing req.actor & req.user
- * @param {string} targetId - The ID of the target user
+ * @param {string} targetId - The ID of the target user or organization
  * @returns {Promise<boolean>} True if blocked, false otherwise
  */
 const checkActorBlockStatus = async (req, targetId) => {
     if (!req || !targetId) return false;
-    const isOrgActor = req.actor?.type === "ORGANIZATION";
-    if (isOrgActor && req.actor?.orgId) {
-        return await BlockModel.isOrgBlocked(req.actor.orgId, targetId);
-    }
-    const currentUserId = req.user?.sub;
-    return await checkBlockStatus(currentUserId, targetId);
+    const activeActorId = req.actor?.type === "ORGANIZATION" && req.actor?.orgId
+        ? req.actor.orgId
+        : req.user?.sub;
+    if (!activeActorId || activeActorId === targetId) return false;
+    return await BlockModel.isAnyBlocked(activeActorId, targetId);
+};
+
+/**
+ * Check if ANY block exists between two entity IDs (bi-directional).
+ * @param {string} entityA
+ * @param {string} entityB
+ * @returns {Promise<boolean>}
+ */
+const checkAnyBlockStatus = async (entityA, entityB) => {
+    if (!entityA || !entityB) return false;
+    if (entityA === entityB) return false;
+    return await BlockModel.isAnyBlocked(entityA, entityB);
 };
 
 module.exports = {
     checkBlockStatus,
     checkActorBlockStatus,
+    checkAnyBlockStatus,
 };

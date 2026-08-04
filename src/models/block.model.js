@@ -88,6 +88,23 @@ class BlockModel {
     }
 
     /**
+     * Check if ANY block exists between two entities (bi-directional: User<->User, User<->Org, Org<->User, Org<->Org)
+     * @param {string} entityA 
+     * @param {string} entityB 
+     */
+    static async isAnyBlocked(entityA, entityB) {
+        if (!entityA || !entityB) return false;
+        if (entityA === entityB) return false;
+        const result = await pool.query(
+            `SELECT 1 FROM blocks 
+             WHERE (blocker_id = $1 AND blocked_id = $2)
+                OR (blocker_id = $2 AND blocked_id = $1)`,
+            [entityA, entityB]
+        );
+        return result.rowCount > 0;
+    }
+
+    /**
      * Get detailed list of users and organizations blocked BY userId (personal)
      * @param {string} userId 
      */

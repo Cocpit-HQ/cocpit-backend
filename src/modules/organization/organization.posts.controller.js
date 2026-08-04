@@ -1,6 +1,7 @@
 const pool = require("../../core/db/pool");
 const BlockModel = require("../../models/block.model");
 const { checkOrgPermission } = require("../../core/utils/rbac");
+const { checkActorBlockStatus } = require("../../core/utils/blockCheck");
 
 // Is the viewer currently "acting as" the given org (via x-actor-type/x-actor-id headers)?
 // Needed so that a like/vote/repost made by ANY team member while acting as this company
@@ -83,12 +84,14 @@ exports.getOrganizationPosts = async (req, res) => {
 
     try {
         let hasPrivateAccess = false;
-        if (userId) {
-            const isBlocked = await BlockModel.isOrgBlocked(companyId, userId);
+        if (req.user || req.actor) {
+            const isBlocked = await checkActorBlockStatus(req, companyId);
             if (isBlocked) {
-                return res.json({ posts: [], nextCursor: null });
+                return res.status(404).json({ message: "Organization not found" });
             }
-            hasPrivateAccess = await checkOrgPermission(pool, companyId, userId, ['MANAGE_COMPANY', 'SWITCH_TO_COMPANY', 'MANAGE_ORGANIZATION', 'SWITCH_TO_ORGANIZATION']);
+            if (userId) {
+                hasPrivateAccess = await checkOrgPermission(pool, companyId, userId, ['MANAGE_COMPANY', 'SWITCH_TO_COMPANY', 'MANAGE_ORGANIZATION', 'SWITCH_TO_ORGANIZATION']);
+            }
         }
 
         const params = [companyId];
