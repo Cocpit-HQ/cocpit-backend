@@ -256,20 +256,20 @@ exports.getSavedPosts = async (req, res) => {
                  FROM post_media pm WHERE pm.post_id = p.post_id),
                 '[]'::json
             ) AS media,
-            (SELECT COUNT(*) FROM post_likes pl WHERE pl.post_id = p.post_id)::int AS like_count,
-            (SELECT COUNT(*) FROM post_comments pc WHERE pc.post_id = p.post_id)::int AS comment_count,
+            (SELECT COUNT(*) FROM active_post_likes pl WHERE pl.post_id = p.post_id)::int AS like_count,
+            (SELECT COUNT(*) FROM active_post_comments pc WHERE pc.post_id = p.post_id)::int AS comment_count,
             (SELECT COUNT(*) FROM saved_post sp_cnt WHERE sp_cnt.post_id = p.post_id)::int AS save_count,
 
             -- Identity Aware states
             EXISTS(
-                SELECT 1 FROM post_likes pl_me 
+                SELECT 1 FROM active_post_likes pl_me 
                 WHERE pl_me.post_id = p.post_id 
                 AND (
                     ${isOrgActor ? 'pl_me.org_id = $2::uuid' : 'pl_me.user_id = $1 AND pl_me.org_id IS NULL'}
                 )
             ) AS is_liked,
             EXISTS(
-                SELECT 1 FROM post_comments pc_me 
+                SELECT 1 FROM active_post_comments pc_me 
                 WHERE pc_me.post_id = p.post_id 
                 AND (
                     ${isOrgActor ? 'pc_me.author_org_id = $2::uuid' : 'pc_me.author_id = $1 AND pc_me.author_org_id IS NULL'}

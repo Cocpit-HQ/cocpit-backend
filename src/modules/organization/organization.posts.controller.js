@@ -169,7 +169,7 @@ exports.getOrganizationPosts = async (req, res) => {
             COALESCE(cc.comment_count, 0)::int AS comment_count,
             (
                 SELECT COALESCE(comp_like.slug, u_like.account_name)
-                FROM post_likes pl_sample
+                FROM active_post_likes pl_sample
                 LEFT JOIN active_users u_like ON u_like.user_id = pl_sample.user_id
                 LEFT JOIN organizations comp_like ON comp_like.org_id = pl_sample.org_id
                 WHERE pl_sample.post_id = p.post_id
@@ -178,7 +178,7 @@ exports.getOrganizationPosts = async (req, res) => {
                 LIMIT 1
             ) AS sample_liker_username,
             EXISTS(
-                SELECT 1 FROM post_likes pl WHERE pl.post_id = p.post_id AND (
+                SELECT 1 FROM active_post_likes pl WHERE pl.post_id = p.post_id AND (
                     ($${orgActorParamIdx}::boolean AND pl.org_id = $1)
                     OR (NOT $${orgActorParamIdx}::boolean AND pl.user_id = $${userParamIdx} AND pl.org_id IS NULL)
                 )
@@ -212,7 +212,7 @@ exports.getOrganizationPosts = async (req, res) => {
                 )
                 FROM (
                     SELECT pl_sample.user_id, pl_sample.org_id
-                    FROM post_likes pl_sample
+                    FROM active_post_likes pl_sample
                     WHERE pl_sample.post_id = p.post_id
                       AND pl_sample.user_id IS NOT NULL
                       AND pl_sample.user_id != $${userParamIdx}::uuid
@@ -245,10 +245,10 @@ exports.getOrganizationPosts = async (req, res) => {
                              'is_organization_post', (sp.author_org_id IS NOT NULL)
                         ),
                         'media', COALESCE(sp_media.media, '[]'::json),
-                        'like_count', (SELECT COUNT(*) FROM post_likes pl WHERE pl.post_id = sp.post_id)::int,
-                        'comment_count', (SELECT COUNT(*) FROM post_comments pc WHERE pc.post_id = sp.post_id)::int,
+                        'like_count', (SELECT COUNT(*) FROM active_post_likes pl WHERE pl.post_id = sp.post_id)::int,
+                        'comment_count', (SELECT COUNT(*) FROM active_post_comments pc WHERE pc.post_id = sp.post_id)::int,
                         'is_liked', EXISTS(
-                            SELECT 1 FROM post_likes pl WHERE pl.post_id = sp.post_id AND (
+                            SELECT 1 FROM active_post_likes pl WHERE pl.post_id = sp.post_id AND (
                                 ($${orgActorParamIdx}::boolean AND pl.org_id = $1)
                                 OR (NOT $${orgActorParamIdx}::boolean AND pl.user_id = $${userParamIdx} AND pl.org_id IS NULL)
                             )
@@ -282,7 +282,7 @@ exports.getOrganizationPosts = async (req, res) => {
                             )
                             FROM (
                                 SELECT pl_sample.user_id, pl_sample.org_id
-                                FROM post_likes pl_sample
+                                FROM active_post_likes pl_sample
                                 WHERE pl_sample.post_id = sp.post_id
                                   AND pl_sample.user_id IS NOT NULL
                                   AND pl_sample.user_id != $${userParamIdx}::uuid
@@ -307,12 +307,12 @@ exports.getOrganizationPosts = async (req, res) => {
 
         -- Likes
         LEFT JOIN (
-            SELECT post_id, COUNT(*) AS like_count FROM post_likes GROUP BY post_id
+            SELECT post_id, COUNT(*) AS like_count FROM active_post_likes GROUP BY post_id
         ) lc ON lc.post_id = p.post_id
 
         -- Comments
         LEFT JOIN (
-            SELECT post_id, COUNT(*) AS comment_count FROM post_comments GROUP BY post_id
+            SELECT post_id, COUNT(*) AS comment_count FROM active_post_comments GROUP BY post_id
         ) cc ON cc.post_id = p.post_id
 
         -- Polls

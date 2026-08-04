@@ -383,6 +383,10 @@ exports.deleteOrganization = async (req, res) => {
         const isValid = await comparePassword(password, userRes.rows[0].password_hash);
         if (!isValid) throw new AppError("Invalid password", 401);
 
+        const orgRes = await client.query("SELECT name FROM organizations WHERE org_id = $1", [orgId]);
+        if (orgRes.rowCount === 0) throw new AppError("Organization not found", 404);
+        const orgName = orgRes.rows[0].name;
+
         // 2a. Nullify children's parent reference before soft-deleting
         // Keeps children as independent top-level orgs rather than orphaning them.
         await client.query(
@@ -390,10 +394,31 @@ exports.deleteOrganization = async (req, res) => {
             [orgId]
         );
 
-        // 2b. Soft Delete
+        // 2b. Create Deletion Batch
+        const batchRes = await client.query(
+            `INSERT INTO deletion_batches (created_by, type) VALUES ($1, 'STANDALONE_COMPANY') RETURNING batch_id`,
+            [userId]
+        );
+        const batchId = batchRes.rows[0].batch_id;
+
+        // 2c. Schedule soft deletion
+        const deletionExecuteAt = new Date(Date.now() + 40 * 24 * 60 * 60 * 1000);
         await client.query(
-            `UPDATE organizations SET is_deleted = TRUE, deleted_at = NOW() WHERE org_id = $1`,
-            [orgId]
+            `UPDATE organizations 
+             SET is_deleted = TRUE, deleted_at = NOW(), deletion_scheduled_at = NOW(), deletion_execute_at = $1, deletion_batch_id = $2
+             WHERE org_id = $3`,
+            [deletionExecuteAt, batchId, orgId]
+        );
+
+        // 2d. Generate restoration token
+        const crypto = require("crypto");
+        const rawToken = crypto.randomBytes(32).toString("hex");
+        const tokenHash = crypto.createHash("sha256").update(rawToken).digest("hex");
+
+        await client.query(
+            `INSERT INTO organization_restoration_tokens (org_id, token_hash, expires_at)
+             VALUES ($1, $2, $3)`,
+            [orgId, tokenHash, deletionExecuteAt]
         );
 
         // Lifecycle: End all active sessions for this company
@@ -407,8 +432,21 @@ exports.deleteOrganization = async (req, res) => {
             metadata: {}
         });
 
+        // Send recovery email (non-blocking)
+        const userEmailRes = await client.query("SELECT email FROM users WHERE user_id = $1", [userId]);
+        const emailService = require("../../core/services/email.service");
+        emailService.sendOrganizationDeletionEmail(
+            userEmailRes.rows[0].email,
+            orgName,
+            rawToken,
+            deletionExecuteAt
+        ).catch(err => console.error("[DeleteOrg] Failed to send recovery email:", err));
+
         await client.query("COMMIT");
-        res.json({ message: "Organization deleted successfully" });
+        res.json({ 
+            message: "Organization scheduled for deletion. Check your email for a recovery link.",
+            deletionDate: deletionExecuteAt
+        });
 
     } catch (err) {
         await client.query("ROLLBACK");
@@ -422,6 +460,66 @@ exports.deleteOrganization = async (req, res) => {
         res.status(500).json({ message: "Internal server error" });
     } finally {
         client.release();
+    }
+};
+
+exports.restoreOrganization = async (req, res) => {
+    const { token } = req.body;
+    if (!token) {
+        return res.status(400).json({ message: "Restoration token is required" });
+    }
+
+    const crypto = require("crypto");
+    const tokenHash = crypto.createHash("sha256").update(token).digest("hex");
+
+    const client = await pool.connect();
+    try {
+        await client.query("BEGIN");
+
+        const tokenRes = await client.query(
+            `SELECT id, org_id, expires_at, used_at FROM organization_restoration_tokens WHERE token_hash = $1`,
+            [tokenHash]
+        );
+
+        if (tokenRes.rowCount === 0) {
+            await client.query("ROLLBACK");
+            return res.status(400).json({ message: "Invalid restoration link." });
+        }
+
+        const tokenRow = tokenRes.rows[0];
+
+        if (tokenRow.used_at) {
+            await client.query("ROLLBACK");
+            return res.status(400).json({ message: "This company has already been restored." });
+        }
+
+        if (new Date(tokenRow.expires_at) < new Date()) {
+            await client.query("ROLLBACK");
+            return res.status(400).json({ message: "This restoration link has expired." });
+        }
+
+        // Restore organization and clear batch
+        await client.query(
+            `UPDATE organizations 
+             SET is_deleted = FALSE, deleted_at = NULL, deletion_scheduled_at = NULL, deletion_execute_at = NULL, deletion_batch_id = NULL
+             WHERE org_id = $1`,
+            [tokenRow.org_id]
+        );
+
+        // Mark token as used
+        await client.query(
+            `UPDATE organization_restoration_tokens SET used_at = NOW() WHERE id = $1`,
+            [tokenRow.id]
+        );
+
+        await client.query("COMMIT");
+        return res.status(200).json({ message: "Organization has been restored successfully." });
+    } catch (err) {
+        if (client) await client.query("ROLLBACK");
+        console.error("Restore organization error:", err);
+        return res.status(500).json({ message: "Failed to restore organization." });
+    } finally {
+        if (client) client.release();
     }
 };
 

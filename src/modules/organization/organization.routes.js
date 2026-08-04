@@ -96,6 +96,10 @@ router.post("/companies/:orgId/verify/domain", requireAuth, requireOrgPermission
 
 // --- MANAGEMENT ---
 router.put("/organizations/:orgId", requireAuth, requireOrgPermission("MANAGE_COMPANY_DETAILS"), organizationController.updateOrganization);
+
+// Organization Action Routes
+router.post("/organizations/restore", organizationController.restoreOrganization);
+
 router.delete("/organizations/:orgId", requireAuth, requireOrgPermission("MANAGE_COMPANY"), organizationActionLimiter, organizationController.deleteOrganization);
 
 router.put("/companies/:orgId", requireAuth, requireOrgPermission("MANAGE_COMPANY_DETAILS"), organizationController.updateOrganization);

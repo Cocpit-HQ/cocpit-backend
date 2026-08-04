@@ -2216,7 +2216,7 @@ LEFT JOIN LATERAL (
     LIMIT 1
 ) cp_other ON c.is_group = FALSE
 LEFT JOIN user_display_profiles u ON cp_other.user_id = u.user_id
-LEFT JOIN organizations comp ON cp_other.org_id = comp.org_id -- JOIN organizations for Company participants
+LEFT JOIN organization_display_profiles comp ON cp_other.org_id = comp.org_id -- JOIN organizations for Company participants
 
 -- LATERAL JOIN to find the latest VISIBLE message across ANY period
 LEFT JOIN LATERAL (
@@ -2240,7 +2240,7 @@ LEFT JOIN LATERAL (
                 ) 
                 FROM messages rm 
                 LEFT JOIN user_display_profiles ru ON rm.sender_id = ru.user_id
-                LEFT JOIN organizations rc ON rm.author_org_id = rc.org_id
+                LEFT JOIN organization_display_profiles rc ON rm.author_org_id = rc.org_id
                 WHERE rm.message_id = msg.replied_msg_id)
             ELSE NULL
         END AS reply_message,
@@ -2869,7 +2869,7 @@ exports.sendMessage = async (req, res) => {
                         COALESCE(rc.name, ru.display_name, 'Deleted User') as sender_name
                     FROM messages rm
                     LEFT JOIN user_display_profiles ru ON rm.sender_id = ru.user_id
-                    LEFT JOIN organizations rc ON rm.author_org_id = rc.org_id
+                    LEFT JOIN organization_display_profiles rc ON rm.author_org_id = rc.org_id
                     WHERE rm.message_id = $1
                 `, [replyMessageId]);
                 if (rmRes.rowCount > 0) replyMessageData = rmRes.rows[0];
@@ -3444,7 +3444,7 @@ exports.getMessages = async (req, res) => {
                         ) 
                         FROM messages rm 
                         LEFT JOIN user_display_profiles ru ON rm.sender_id = ru.user_id
-                        LEFT JOIN organizations rc ON rm.author_org_id = rc.org_id
+                        LEFT JOIN organization_display_profiles rc ON rm.author_org_id = rc.org_id
                         WHERE rm.message_id = m.replied_msg_id)
                     ELSE NULL
                 END AS reply_message,
@@ -3466,7 +3466,7 @@ exports.getMessages = async (req, res) => {
                 ) AS reactions
              FROM messages m
              LEFT JOIN user_display_profiles u ON m.sender_id = u.user_id
-             LEFT JOIN organizations c ON m.author_org_id = c.org_id
+             LEFT JOIN organization_display_profiles c ON m.author_org_id = c.org_id
              LEFT JOIN posts sp ON m.shared_post_id = sp.post_id
              LEFT JOIN user_display_profiles au ON sp.author_id = au.user_id
              WHERE m.conversation_id = $1 
@@ -3699,7 +3699,7 @@ exports.getNotifications = async (req, res) => {
                 cr.status as request_status
             FROM notifications n 
             LEFT JOIN user_display_profiles u ON n.sender_id = u.user_id 
-            LEFT JOIN organizations c ON NULLIF(n.metadata->>'org_id', '')::uuid = c.org_id
+            LEFT JOIN organization_display_profiles c ON NULLIF(n.metadata->>'org_id', '')::uuid = c.org_id
             LEFT JOIN connection_requests cr ON n.sender_id = cr.sender_id AND n.user_id = cr.receiver_id AND cr.status = 'pending'
             WHERE 
         `;

@@ -147,20 +147,20 @@ exports.getOrgProfile = async (req, res) => {
                         COALESCE(pm.media, '[]'::json) AS media,
                         (
                             SELECT COALESCE(comp_like.slug, u_like.account_name)
-                            FROM post_likes pl_sample
+                            FROM active_post_likes pl_sample
                             LEFT JOIN active_users u_like ON u_like.user_id = pl_sample.user_id
                             LEFT JOIN organizations comp_like ON comp_like.org_id = pl_sample.org_id
                             WHERE pl_sample.post_id = p.post_id
                             ORDER BY pl_sample.created_at DESC
                             LIMIT 1
                         ) AS sample_liker_username,
-                        EXISTS(SELECT 1 FROM post_likes pl WHERE pl.post_id = p.post_id AND pl.user_id = $2) AS is_liked
+                        EXISTS(SELECT 1 FROM active_post_likes pl WHERE pl.post_id = p.post_id AND pl.user_id = $2) AS is_liked
                  FROM posts p
                  LEFT JOIN (
-                     SELECT post_id, COUNT(*)::int AS like_count FROM post_likes GROUP BY post_id
+                     SELECT post_id, COUNT(*)::int AS like_count FROM active_post_likes GROUP BY post_id
                  ) lc ON lc.post_id = p.post_id
                  LEFT JOIN (
-                     SELECT post_id, COUNT(*)::int AS comment_count FROM post_comments GROUP BY post_id
+                     SELECT post_id, COUNT(*)::int AS comment_count FROM active_post_comments GROUP BY post_id
                  ) cc ON cc.post_id = p.post_id
                  LEFT JOIN (
                      SELECT post_id, json_agg(json_build_object('url', url, 'media_type', media_type)) AS media

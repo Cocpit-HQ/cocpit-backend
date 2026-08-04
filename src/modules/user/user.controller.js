@@ -561,7 +561,7 @@ exports.getPublicProfilePosts = async (req, res) => {
     let idx = 2;
     let whereClause = "";
     if (category === 'Comments') {
-      whereClause = `WHERE EXISTS (SELECT 1 FROM post_comments pc_filter WHERE pc_filter.post_id = p.post_id AND pc_filter.author_id = $1) AND p.visibility = 'public' AND p.is_active = TRUE AND (p.is_removed IS FALSE OR p.is_removed IS NULL) `;
+      whereClause = `WHERE EXISTS (SELECT 1 FROM active_post_comments pc_filter WHERE pc_filter.post_id = p.post_id AND pc_filter.author_id = $1) AND p.visibility = 'public' AND p.is_active = TRUE AND (p.is_removed IS FALSE OR p.is_removed IS NULL) `;
     } else {
       whereClause = `WHERE p.author_id = $1 AND p.author_org_id IS NULL AND p.visibility = 'public' AND p.is_active = TRUE AND (p.is_removed IS FALSE OR p.is_removed IS NULL) `;
     }
@@ -626,11 +626,11 @@ exports.getPublicProfilePosts = async (req, res) => {
           '[]'::json
         ) AS media,
 
-        (SELECT COUNT(*) FROM post_likes pl WHERE pl.post_id = p.post_id)::int AS like_count,
+        (SELECT COUNT(*) FROM active_post_likes pl WHERE pl.post_id = p.post_id)::int AS like_count,
         (SELECT COUNT(*) FROM posts sp_share WHERE sp_share.shared_post_id = p.post_id)::int AS share_count,
         (
             SELECT COALESCE(comp_like.slug, u_like.account_name)
-            FROM post_likes pl_sample
+            FROM active_post_likes pl_sample
             LEFT JOIN active_users u_like ON u_like.user_id = pl_sample.user_id
             LEFT JOIN organizations comp_like ON comp_like.org_id = pl_sample.org_id
             WHERE pl_sample.post_id = p.post_id
@@ -638,9 +638,9 @@ exports.getPublicProfilePosts = async (req, res) => {
             ORDER BY pl_sample.created_at DESC
             LIMIT 1
         ) AS sample_liker_username,
-        (SELECT COUNT(*) FROM post_comments pc WHERE pc.post_id = p.post_id)::int AS comment_count,
+        (SELECT COUNT(*) FROM active_post_comments pc WHERE pc.post_id = p.post_id)::int AS comment_count,
 
-        EXISTS(SELECT 1 FROM post_likes pl WHERE pl.post_id = p.post_id AND pl.user_id = $${userParamIdx}) AS is_liked,
+        EXISTS(SELECT 1 FROM active_post_likes pl WHERE pl.post_id = p.post_id AND pl.user_id = $${userParamIdx}) AS is_liked,
         EXISTS(
             SELECT 1 FROM posts sp_rep
             WHERE sp_rep.shared_post_id = p.post_id 
@@ -664,7 +664,7 @@ exports.getPublicProfilePosts = async (req, res) => {
             )
             FROM (
                 SELECT pl_sample.user_id, pl_sample.org_id
-                FROM post_likes pl_sample
+                FROM active_post_likes pl_sample
                 WHERE pl_sample.post_id = p.post_id
                   AND pl_sample.user_id IS NOT NULL
                   AND pl_sample.user_id != $${userParamIdx}::uuid
@@ -726,10 +726,10 @@ exports.getPublicProfilePosts = async (req, res) => {
                 'is_organization_post', (sp.author_org_id IS NOT NULL)
               ),
               'media', COALESCE((SELECT json_agg(json_build_object('url', pm.url, 'media_type', pm.media_type)) FROM post_media pm WHERE pm.post_id = sp.post_id), '[]'::json),
-              'like_count', (SELECT COUNT(*) FROM post_likes pl WHERE pl.post_id = sp.post_id)::int,
-              'comment_count', (SELECT COUNT(*) FROM post_comments pc WHERE pc.post_id = sp.post_id)::int,
+              'like_count', (SELECT COUNT(*) FROM active_post_likes pl WHERE pl.post_id = sp.post_id)::int,
+              'comment_count', (SELECT COUNT(*) FROM active_post_comments pc WHERE pc.post_id = sp.post_id)::int,
               'share_count', (SELECT COUNT(*) FROM posts sp_share2 WHERE sp_share2.shared_post_id = sp.post_id)::int,
-              'is_liked', EXISTS(SELECT 1 FROM post_likes pl WHERE pl.post_id = sp.post_id AND pl.user_id = $${userParamIdx}),
+              'is_liked', EXISTS(SELECT 1 FROM active_post_likes pl WHERE pl.post_id = sp.post_id AND pl.user_id = $${userParamIdx}),
               'is_reposted', EXISTS(
                   SELECT 1 FROM posts sp_rep
                   WHERE sp_rep.shared_post_id = sp.post_id 
@@ -753,7 +753,7 @@ exports.getPublicProfilePosts = async (req, res) => {
                   )
                   FROM (
                       SELECT pl_sample.user_id, pl_sample.org_id
-                      FROM post_likes pl_sample
+                      FROM active_post_likes pl_sample
                       WHERE pl_sample.post_id = sp.post_id
                         AND pl_sample.user_id IS NOT NULL
                         AND pl_sample.user_id != $${userParamIdx}::uuid
@@ -941,7 +941,7 @@ exports.getPublicProfileCommentedPosts = async (req, res) => {
 
     // Only public posts the target user has commented on (excluding their own posts)
     let whereClause = `WHERE EXISTS (
-      SELECT 1 FROM post_comments pc_filter
+      SELECT 1 FROM active_post_comments pc_filter
       WHERE pc_filter.post_id = p.post_id
         AND pc_filter.author_id = $1
         AND pc_filter.author_org_id IS NULL
@@ -982,7 +982,7 @@ exports.getPublicProfileCommentedPosts = async (req, res) => {
         COALESCE(pm.media, '[]'::json) AS media,
         COALESCE(lc.like_count, 0) AS like_count,
 
-        EXISTS(SELECT 1 FROM post_likes pl_me WHERE pl_me.post_id = p.post_id AND pl_me.user_id = $${userParamIdx} AND pl_me.org_id IS NULL) AS is_liked,
+        EXISTS(SELECT 1 FROM active_post_likes pl_me WHERE pl_me.post_id = p.post_id AND pl_me.user_id = $${userParamIdx} AND pl_me.org_id IS NULL) AS is_liked,
         EXISTS(
             SELECT 1 FROM posts sp_rep
             WHERE sp_rep.shared_post_id = p.post_id 
@@ -1006,7 +1006,7 @@ exports.getPublicProfileCommentedPosts = async (req, res) => {
             )
             FROM (
                 SELECT pl_sample.user_id, pl_sample.org_id
-                FROM post_likes pl_sample
+                FROM active_post_likes pl_sample
                 WHERE pl_sample.post_id = p.post_id
                   AND pl_sample.user_id IS NOT NULL
                   AND pl_sample.user_id != $${userParamIdx}::uuid
@@ -1016,7 +1016,7 @@ exports.getPublicProfileCommentedPosts = async (req, res) => {
             LEFT JOIN active_users u_like ON u_like.user_id = sub.user_id
             LEFT JOIN organizations comp_like ON comp_like.org_id = sub.org_id
         ) AS liked_users,
-        EXISTS(SELECT 1 FROM post_comments pc_me WHERE pc_me.post_id = p.post_id AND pc_me.author_id = $${userParamIdx} AND pc_me.author_org_id IS NULL) AS is_commented,
+        EXISTS(SELECT 1 FROM active_post_comments pc_me WHERE pc_me.post_id = p.post_id AND pc_me.author_id = $${userParamIdx} AND pc_me.author_org_id IS NULL) AS is_commented,
 
         EXISTS(SELECT 1 FROM saved_post sp_me WHERE sp_me.post_id = p.post_id AND sp_me.user_id = $${userParamIdx} AND sp_me.org_id IS NULL) AS is_saved,
         
@@ -1032,11 +1032,11 @@ exports.getPublicProfileCommentedPosts = async (req, res) => {
             'author_name', mc_u.full_name,
             'author_avatar', mc_u.avatar_url,
             'author_title', mc_u.headline,
-            'like_count', (SELECT COUNT(*) FROM comment_likes cl WHERE cl.comment_id = mc.comment_id)::int,
-            'is_liked', EXISTS(SELECT 1 FROM comment_likes cl WHERE cl.comment_id = mc.comment_id AND cl.user_id = $${userParamIdx} AND cl.org_id IS NULL),
-            'reply_count', (SELECT COUNT(*) FROM post_comments rc WHERE rc.parent_id = mc.comment_id)::int
+            'like_count', (SELECT COUNT(*) FROM active_comment_likes cl WHERE cl.comment_id = mc.comment_id)::int,
+            'is_liked', EXISTS(SELECT 1 FROM active_comment_likes cl WHERE cl.comment_id = mc.comment_id AND cl.user_id = $${userParamIdx} AND cl.org_id IS NULL),
+            'reply_count', (SELECT COUNT(*) FROM active_post_comments rc WHERE rc.parent_id = mc.comment_id)::int
           )
-          FROM post_comments mc
+          FROM active_post_comments mc
           JOIN active_users mc_u ON mc_u.user_id = mc.author_id
           WHERE mc.post_id = p.post_id
             AND mc.author_id = $1
@@ -1053,8 +1053,8 @@ exports.getPublicProfileCommentedPosts = async (req, res) => {
           SELECT pm.post_id, json_agg(json_build_object('media_id', pm.media_id, 'url', pm.url, 'media_type', pm.media_type)) AS media
           FROM post_media pm GROUP BY pm.post_id
       ) pm ON pm.post_id = p.post_id
-      LEFT JOIN (SELECT post_id, COUNT(*) AS like_count FROM post_likes GROUP BY post_id) lc ON lc.post_id = p.post_id
-      LEFT JOIN (SELECT post_id, COUNT(*) AS comment_count FROM post_comments GROUP BY post_id) cc ON cc.post_id = p.post_id
+      LEFT JOIN (SELECT post_id, COUNT(*) AS like_count FROM active_post_likes GROUP BY post_id) lc ON lc.post_id = p.post_id
+      LEFT JOIN (SELECT post_id, COUNT(*) AS comment_count FROM active_post_comments GROUP BY post_id) cc ON cc.post_id = p.post_id
       ${whereClause}
       ORDER BY p.created_at DESC, p.post_id DESC
       LIMIT $${limitIdx}
@@ -1081,7 +1081,7 @@ exports.getPublicProfileCommentedPosts = async (req, res) => {
  */
 exports.deleteAccount = async (req, res) => {
   const userId = req.user.sub;
-  const { password, idToken } = req.body;
+  const { password, idToken, companyIdsToDelete = [] } = req.body;
 
   const crypto = require("crypto");
   const redisClient = require("../../core/db/redis");
@@ -1139,7 +1139,8 @@ exports.deleteAccount = async (req, res) => {
       return res.status(400).json({ message: "Authentication is required to delete your account" });
     }
 
-    // 3. Block deletion if owner of a company
+    // 3. Block deletion if owner of a company not selected for deletion
+    console.log(`[DeleteAccount] Checking owned companies against companyIdsToDelete:`, companyIdsToDelete);
     const ownedCompanies = await client.query(
       `SELECT c.org_id, c.name
        FROM organizations c
@@ -1148,21 +1149,41 @@ exports.deleteAccount = async (req, res) => {
       [userId]
     );
 
-    for (const company of ownedCompanies.rows) {
+    const missingDeletions = ownedCompanies.rows.filter(c => !companyIdsToDelete.includes(c.org_id));
+
+    if (missingDeletions.length > 0) {
       throw new AppError(
-        `You are the sole owner of "${company.name}". Please transfer ownership or delete the company before deleting your account.`,
+        `You are the sole owner of "${missingDeletions[0].name}". Please transfer ownership or select it for deletion alongside your account.`,
         400
       );
     }
 
-    // 4. Schedule soft deletion (40 days from now)
+    // 4. Create Deletion Batch
+    const batchType = companyIdsToDelete.length > 0 ? 'USER_AND_COMPANIES' : 'USER';
+    const batchRes = await client.query(
+      `INSERT INTO deletion_batches (created_by, type) VALUES ($1, $2) RETURNING batch_id`,
+      [userId, batchType]
+    );
+    const batchId = batchRes.rows[0].batch_id;
+
+    // 5. Schedule soft deletion for user (40 days from now)
     const deletionExecuteAt = new Date(Date.now() + 40 * 24 * 60 * 60 * 1000);
     await client.query(
       `UPDATE users
-       SET deletion_scheduled_at = NOW(), deletion_execute_at = $1
-       WHERE user_id = $2`,
-      [deletionExecuteAt, userId]
+       SET deletion_scheduled_at = NOW(), deletion_execute_at = $1, deletion_batch_id = $2
+       WHERE user_id = $3`,
+      [deletionExecuteAt, batchId, userId]
     );
+
+    // 6. Soft delete selected companies
+    if (companyIdsToDelete.length > 0) {
+      await client.query(
+        `UPDATE organizations
+         SET is_deleted = TRUE, deleted_at = NOW(), deletion_scheduled_at = NOW(), deletion_execute_at = $1, deletion_batch_id = $2
+         WHERE org_id = ANY($3) AND created_by = $4`,
+        [deletionExecuteAt, batchId, companyIdsToDelete, userId]
+      );
+    }
 
     // 5. Revoke all active sessions from DB and collect session IDs for blacklisting
     const sessionsRes = await client.query(
@@ -1269,11 +1290,28 @@ exports.restoreAccount = async (req, res) => {
       return res.status(400).json({ message: "This restoration link has expired. Please request a new one from the login page." });
     }
 
-    // Clear deletion schedule on the user
-    await client.query(
-      `UPDATE users SET deletion_scheduled_at = NULL, deletion_execute_at = NULL WHERE user_id = $1`,
+    // Get user and their batch ID
+    const userRes = await client.query(
+      `SELECT deletion_batch_id FROM users WHERE user_id = $1`,
       [tokenRow.user_id]
     );
+    const batchId = userRes.rowCount > 0 ? userRes.rows[0].deletion_batch_id : null;
+
+    // Clear deletion schedule on the user
+    await client.query(
+      `UPDATE users SET deletion_scheduled_at = NULL, deletion_execute_at = NULL, deletion_batch_id = NULL WHERE user_id = $1`,
+      [tokenRow.user_id]
+    );
+
+    // Clear deletion schedule on linked companies if a batch exists
+    if (batchId) {
+      await client.query(
+        `UPDATE organizations 
+         SET is_deleted = FALSE, deleted_at = NULL, deletion_scheduled_at = NULL, deletion_execute_at = NULL, deletion_batch_id = NULL 
+         WHERE deletion_batch_id = $1`,
+        [batchId]
+      );
+    }
 
     // Mark token as used
     await client.query(
