@@ -7,7 +7,7 @@ const { validate } = require("../../core/middlewares/validation.middleware");
 const postTagsController = require("./postTags.controller");
 const { syncTagsSchema } = require("./postTags.schema");
 const { commentOperationSchema, updateCommentSchema, hideCommentSchema, createPostSchema } = require("./content.schema");
-const { uploadPostMedia } = require("../../core/middlewares/upload.middleware");
+const { uploadPostMedia, uploadCover } = require("../../core/middlewares/upload.middleware");
 const achievementImageController = require("./achievementImage.controller");
 
 // Feed & Discovery
@@ -39,9 +39,9 @@ router.delete("/organizations/:orgId/posts/:postId/moderate", requireAuth, requi
 router.post("/posts/:postId/save", requireAuth, toggleSavePost);
 
 // Saved Folders CRUD
-router.post("/saved-folders", requireAuth, createFolder);
+router.post("/saved-folders", requireAuth, uploadCover.single("cover_image"), createFolder);
 router.get("/saved-folders", requireAuth, getFolders);
-router.put("/saved-folders/:folderId", requireAuth, renameFolder);
+router.put("/saved-folders/:folderId", requireAuth, uploadCover.single("cover_image"), renameFolder);
 router.delete("/saved-folders/:folderId", requireAuth, deleteFolder);
 
 router.get("/saved-posts", requireAuth, getSavedPosts);

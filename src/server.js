@@ -64,4 +64,4 @@ server.listen(PORT, '0.0.0.0', () => {
   console.log('Server running on port ' + PORT);
 });
 
-console.log("CICD Deployment Successful - Version 1.0.1");
+console.log(`CICD Deployment Successful - Version ${require('../package.json').version}`);

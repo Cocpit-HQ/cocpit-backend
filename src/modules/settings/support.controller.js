@@ -1,4 +1,6 @@
 const pool = require("../../core/db/pool");
+const socketService = require("../../core/infrastructure/socket.service");
+const APP_VERSION = require("../../../package.json").version;
 
 // ─── 1. Support Tickets ────────────────────────────────────────────────────────
 
@@ -55,6 +57,15 @@ exports.submitFeedback = async (req, res) => {
             [userId, rating, comment || null, app_version]
         );
 
+        // Emit real-time event so all connected clients (web, mobile) can hide the feedback UI
+        if (userId) {
+            socketService.notifyUser(userId, "FEEDBACK_SUBMITTED", {
+                userId,
+                app_version,
+                has_submitted_feedback: true,
+            });
+        }
+
         return res.status(200).json({
             success: true,
             message: "Feedback submitted successfully",
@@ -66,15 +77,32 @@ exports.submitFeedback = async (req, res) => {
     }
 };
 
-// ─── 3. Static Support Info (FAQs & Version) ───────────────────────────────────
+exports.getVersion = async (req, res) => {
+    try {
+        const version = `v${APP_VERSION}`;
+        const userId = req.user?.sub || null;
 
-exports.getVersion = (req, res) => {
-    return res.status(200).json({
-        success: true,
-        version: process.env.APP_VERSION || "1.0.0",
-        build: process.env.APP_BUILD || "2026.07.30",
-    });
+        let hasFeedback = false;
+        if (userId) {
+            const fbRes = await pool.query(
+                `SELECT 1 FROM user_feedback WHERE user_id = $1 AND app_version = $2 LIMIT 1`,
+                [userId, version]
+            );
+            hasFeedback = fbRes.rowCount > 0;
+        }
+
+        return res.status(200).json({
+            success: true,
+            version,
+            build: process.env.APP_BUILD || new Date().toISOString().slice(0, 10),
+            has_submitted_feedback: hasFeedback,
+        });
+    } catch (error) {
+        console.error("Get version error:", error);
+        return res.status(500).json({ success: false, message: "Failed to fetch version info" });
+    }
 };
+
 
 exports.getFaqs = (req, res) => {
     const faqs = [

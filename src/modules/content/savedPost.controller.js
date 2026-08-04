@@ -1,5 +1,6 @@
 const pool = require("../../core/db/pool");
 const { logActivity: logIntentActivity } = require("../../utils/activityLogger");
+const cloudinary = require("../../core/infrastructure/cloudinary.client");
 
 const getRequestedOrganizationActorId = (req, fallbackOrgId = null) => {
     const actorOrgId = req.actor?.type === "ORGANIZATION" ? req.actor.orgId : null;
@@ -23,11 +24,37 @@ const getSavedPostActorScope = (req, fallbackOrgId = null) => {
     };
 };
 
+const resolveCoverImage = async (file, rawCoverImage) => {
+    if (file) {
+        return (file.path || file.secure_url || '').replace(/\\/g, "/");
+    }
+    if (typeof rawCoverImage === 'string' && rawCoverImage.trim()) {
+        const val = rawCoverImage.trim();
+        if (val.startsWith('data:')) {
+            try {
+                const uploadRes = await cloudinary.uploader.upload(val, {
+                    folder: "covers",
+                    resource_type: "image"
+                });
+                return (uploadRes.secure_url || uploadRes.url || '').replace(/\\/g, "/");
+            } catch (err) {
+                console.error("[savedPost.controller] Failed to upload base64 image to Cloudinary:", err);
+                return null;
+            }
+        }
+        if (val.startsWith('http')) {
+            return val;
+        }
+    }
+    return null;
+};
+
 // 1️⃣ Create Folder
 exports.createFolder = async (req, res) => {
-    console.log("Create Folder Body:", req.body);
+    console.log("Create Folder Body:", req.body, "File:", req.file);
     const { name, companyId, coverImage: bodyCoverImage, cover_image: bodyCoverImageAlt } = req.body;
-    const coverImage = bodyCoverImage || bodyCoverImageAlt;
+    const raw = bodyCoverImage || bodyCoverImageAlt;
+    const coverImage = await resolveCoverImage(req.file, raw);
 
     if (!name || name.trim() === "") {
         return res.status(400).json({ success: false, message: "Folder name is required" });
@@ -76,7 +103,9 @@ exports.getFolders = async (req, res) => {
 // 3️⃣ Rename Folder
 exports.renameFolder = async (req, res) => {
     const { folderId } = req.params;
-    const { name, companyId, coverImage } = req.body;
+    const { name, companyId, coverImage: bodyCoverImage, cover_image: bodyCoverImageAlt } = req.body;
+    const raw = bodyCoverImage || bodyCoverImageAlt;
+    const newCoverImage = await resolveCoverImage(req.file, raw);
 
     if (!name || name.trim() === "") {
         return res.status(400).json({ success: false, message: "New name is required" });
@@ -90,7 +119,7 @@ exports.renameFolder = async (req, res) => {
              WHERE folder_id = $3 AND user_id = $4 AND (
                  ${isOrgActor ? 'org_id = $5::uuid' : 'org_id IS NULL'}
              ) RETURNING *`,
-            isOrgActor ? [name.trim(), coverImage, folderId, userId, orgId] : [name.trim(), coverImage, folderId, userId]
+            isOrgActor ? [name.trim(), newCoverImage, folderId, userId, orgId] : [name.trim(), newCoverImage, folderId, userId]
         );
 
         if (result.rowCount === 0) {

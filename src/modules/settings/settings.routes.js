@@ -5,7 +5,7 @@ const accountController = require("./account.controller");
 const preferencesController = require("./preferences.controller");
 const supportController = require("./support.controller");
 
-const { requireAuth, requireActiveSession } = require("../../core/middlewares/auth.middleware");
+const { requireAuth, requireActiveSession, optionalAuth } = require("../../core/middlewares/auth.middleware");
 const { validate } = require("../../core/middlewares/validation.middleware");
 const { createRateLimit } = require("../../core/middlewares/rateLimit.middleware");
 const { uploadSupportAttachment } = require("../../core/middlewares/upload.middleware");
@@ -84,7 +84,7 @@ router.get("/reports/:reportId", requireAuth, supportController.getMyReportById)
 
 // ─── 4. Support, Feedback, FAQs, Legal ────────────────────────────────────────
 
-router.get("/support/version", supportController.getVersion);
+router.get("/support/version", optionalAuth, supportController.getVersion);
 router.get("/support/faqs", supportController.getFaqs);
 router.post("/support/tickets", requireAuth, uploadSupportAttachment ? uploadSupportAttachment.single("attachment") : (req, res, next) => next(), validate(supportTicketSchema), supportController.createTicket);
 router.post("/support/feedback", requireAuth, validate(userFeedbackSchema), supportController.submitFeedback);
