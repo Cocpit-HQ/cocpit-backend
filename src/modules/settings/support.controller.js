@@ -132,26 +132,27 @@ exports.getFaqs = (req, res) => {
 // =========================================================================
 // COCPIT OFFICIAL LEGAL DOCUMENTS (CLOUDINARY HOSTED)
 // =========================================================================
-// Public IDs: cocpit_legal/privacy_policy.pdf, terms_of_service.pdf, etc.
-// Replace files on Cloudinary with overwrite=true under same Public ID.
+// Uses process.env.CLOUDINARY_CLOUD_NAME to build official document URLs.
+// Replace files on Cloudinary under Public ID: cocpit_legal/<doc_name>.pdf
 // =========================================================================
 exports.getLegalDocs = (req, res) => {
+    const cloudName = process.env.CLOUDINARY_CLOUD_NAME || "doxkaqqt4";
     const docs = [
         {
             title: "Privacy Policy",
-            url: "https://res.cloudinary.com/doxkaqqt4/raw/upload/v1/cocpit_legal/privacy_policy.pdf"
+            url: `https://res.cloudinary.com/${cloudName}/raw/upload/v1/cocpit_legal/privacy_policy.pdf`
         },
         {
             title: "Terms of Service",
-            url: "https://res.cloudinary.com/doxkaqqt4/raw/upload/v1/cocpit_legal/terms_of_service.pdf"
+            url: `https://res.cloudinary.com/${cloudName}/raw/upload/v1/cocpit_legal/terms_of_service.pdf`
         },
         {
             title: "Community Guidelines",
-            url: "https://res.cloudinary.com/doxkaqqt4/raw/upload/v1/cocpit_legal/community_guidelines.pdf"
+            url: `https://res.cloudinary.com/${cloudName}/raw/upload/v1/cocpit_legal/community_guidelines.pdf`
         },
         {
             title: "Cookie Policy",
-            url: "https://res.cloudinary.com/doxkaqqt4/raw/upload/v1/cocpit_legal/cookie_policy.pdf"
+            url: `https://res.cloudinary.com/${cloudName}/raw/upload/v1/cocpit_legal/cookie_policy.pdf`
         },
     ];
 
