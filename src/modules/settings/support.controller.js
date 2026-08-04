@@ -130,29 +130,32 @@ exports.getFaqs = (req, res) => {
 // ─── 4. Legal & Privacy Links ──────────────────────────────────────────────────
 
 // =========================================================================
-// COCPIT OFFICIAL LEGAL DOCUMENTS (CLOUDINARY HOSTED)
+// COCPIT OFFICIAL LEGAL DOCUMENTS
 // =========================================================================
-// Uses process.env.CLOUDINARY_CLOUD_NAME to build official document URLs.
-// Replace files on Cloudinary under Public ID: cocpit_legal/<doc_name>.pdf
+// Dynamic URL generation for localhost and hosted staging/production servers.
+// Supports process.env.LEGAL_*_URL overrides if custom URLs are specified in .env.
 // =========================================================================
 exports.getLegalDocs = (req, res) => {
-    const cloudName = process.env.CLOUDINARY_CLOUD_NAME || "doxkaqqt4";
+    const protocol = req?.protocol || 'http';
+    const host = req?.get?.('host') || req?.headers?.host || 'localhost:5000';
+    const localBase = `${protocol}://${host}/uploads/legal`;
+
     const docs = [
         {
             title: "Privacy Policy",
-            url: `https://res.cloudinary.com/${cloudName}/raw/upload/v1/cocpit_legal/privacy_policy.pdf`
+            url: process.env.LEGAL_PRIVACY_POLICY_URL || `${localBase}/privacy_policy.html`
         },
         {
             title: "Terms of Service",
-            url: `https://res.cloudinary.com/${cloudName}/raw/upload/v1/cocpit_legal/terms_of_service.pdf`
+            url: process.env.LEGAL_TERMS_OF_SERVICE_URL || `${localBase}/terms_of_service.html`
         },
         {
             title: "Community Guidelines",
-            url: `https://res.cloudinary.com/${cloudName}/raw/upload/v1/cocpit_legal/community_guidelines.pdf`
+            url: process.env.LEGAL_COMMUNITY_GUIDELINES_URL || `${localBase}/community_guidelines.html`
         },
         {
             title: "Cookie Policy",
-            url: `https://res.cloudinary.com/${cloudName}/raw/upload/v1/cocpit_legal/cookie_policy.pdf`
+            url: process.env.LEGAL_COOKIE_POLICY_URL || `${localBase}/cookie_policy.html`
         },
     ];
 

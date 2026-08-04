@@ -71,16 +71,16 @@ const getConfig = (req, res) => {
     env: process.env.NODE_ENV ?? "development",
 
     // =========================================================================
-    // COCPIT OFFICIAL LEGAL DOCUMENTS (CLOUDINARY HOSTED)
+    // COCPIT OFFICIAL LEGAL DOCUMENTS
     // =========================================================================
-    // Uses process.env.CLOUDINARY_CLOUD_NAME to build official document URLs.
-    // Replace files on Cloudinary under Public ID: cocpit_legal/<doc_name>.pdf
+    // Dynamic URL generation for localhost and hosted staging/production servers.
+    // Supports process.env.LEGAL_*_URL overrides if custom URLs are specified in .env.
     // =========================================================================
     legal: {
-      privacy_policy_url: `https://res.cloudinary.com/${process.env.CLOUDINARY_CLOUD_NAME || 'doxkaqqt4'}/raw/upload/v1/cocpit_legal/privacy_policy.pdf`,
-      terms_of_service_url: `https://res.cloudinary.com/${process.env.CLOUDINARY_CLOUD_NAME || 'doxkaqqt4'}/raw/upload/v1/cocpit_legal/terms_of_service.pdf`,
-      community_guidelines_url: `https://res.cloudinary.com/${process.env.CLOUDINARY_CLOUD_NAME || 'doxkaqqt4'}/raw/upload/v1/cocpit_legal/community_guidelines.pdf`,
-      cookie_policy_url: `https://res.cloudinary.com/${process.env.CLOUDINARY_CLOUD_NAME || 'doxkaqqt4'}/raw/upload/v1/cocpit_legal/cookie_policy.pdf`,
+      privacy_policy_url: process.env.LEGAL_PRIVACY_POLICY_URL || `${req?.protocol || 'http'}://${req?.get?.('host') || req?.headers?.host || 'localhost:5000'}/uploads/legal/privacy_policy.html`,
+      terms_of_service_url: process.env.LEGAL_TERMS_OF_SERVICE_URL || `${req?.protocol || 'http'}://${req?.get?.('host') || req?.headers?.host || 'localhost:5000'}/uploads/legal/terms_of_service.html`,
+      community_guidelines_url: process.env.LEGAL_COMMUNITY_GUIDELINES_URL || `${req?.protocol || 'http'}://${req?.get?.('host') || req?.headers?.host || 'localhost:5000'}/uploads/legal/community_guidelines.html`,
+      cookie_policy_url: process.env.LEGAL_COOKIE_POLICY_URL || `${req?.protocol || 'http'}://${req?.get?.('host') || req?.headers?.host || 'localhost:5000'}/uploads/legal/cookie_policy.html`,
     },
   });
 };
