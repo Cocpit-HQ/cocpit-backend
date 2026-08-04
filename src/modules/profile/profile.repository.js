@@ -797,6 +797,27 @@ const touchProfileVersionInTx = async (client, profileId) => {
     return result.rows[0]?.version || null;
 };
 
+const getProfileScoreData = async (userId) => {
+    const u = await getFullProfile(userId);
+    if (!u) return null;
+
+    const profileId = u.profile_id;
+    const [skills, experiences, educations, projects] = await Promise.all([
+        profileId ? getSkills(profileId) : [],
+        profileId ? getExperiencesByProfileId(profileId) : [],
+        profileId ? getEducations(profileId) : [],
+        profileId ? getProjects(profileId) : [],
+    ]);
+
+    return {
+        userProfile: u,
+        skills,
+        experiences,
+        educations,
+        projects,
+    };
+};
+
 module.exports = {
     getFullProfile, updateUserFields, updateAvatarUrl, getAvatarUrl, updateCoverUrl,
     getIdentity, updateIdentity,
@@ -813,6 +834,8 @@ module.exports = {
     getUserInterests,
     getProjects, addProjectInTx, updateProjectInTx, deleteProjectInTx,
     syncProjectSkillsInTx, syncProjectMediaInTx, touchProfileVersionInTx,
+    getProfileScoreData,
     getClient,
 };
+
 

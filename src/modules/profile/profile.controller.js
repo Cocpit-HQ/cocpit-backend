@@ -5,6 +5,7 @@ const { z } = require("zod");
  * Parses request, calls repository, sends response. No SQL. Minimal business logic.
  */
 const profileRepo = require("./profile.repository");
+const profileCalc = require("./profile.calculator");
 const { checkBlockStatus, checkActorBlockStatus } = require("../../core/utils/blockCheck");
 const pool = require("../../core/db/pool");
 const { handleExperienceOrgLink, handleEducationOrgLink, cleanupPreviousCompanyMemberships } = require("../../utils/orgLinkHelper");
@@ -149,6 +150,8 @@ exports.getProfile = async (req, res) => {
             school_logo: educations[0].school_logo || null
         } : null;
 
+        const profileScore = profileCalc.calculateFullProfileScore(u, skills, experiences, projects, educations);
+
         let relationship = { isFollowing: false, isFollowedBy: false, connectionRequestStatus: null, connectionRequestId: null, connectionRequestSender: null };
         if (req.user && req.user.sub) {
             const activeProfileId = req.headers["x-actor-id"];
@@ -196,6 +199,7 @@ exports.getProfile = async (req, res) => {
             experiences, educations, skills, projects,
             organization_roles: companyRoles,
             resume,
+            profile_score: profileScore,
         });
     } catch (err) {
         console.error("Get profile error:", err);
@@ -1854,3 +1858,40 @@ exports.deleteProject = async (req, res) => {
         if (client) client.release();
     }
 };
+
+// ─── Get Profile Score / Completeness ──────────────────────────────────────────
+
+exports.getProfileScore = async (req, res) => {
+    try {
+        let userId = req.params.id === "me" || !req.params.id ? req.user.sub : req.params.id;
+        const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+        if (userId !== "me" && !uuidRegex.test(userId)) {
+            const resolveResult = await pool.query(
+                "SELECT user_id FROM users WHERE LOWER(account_name) = LOWER($1)",
+                [userId]
+            );
+            if (resolveResult.rowCount === 0) {
+                return res.status(404).json({ message: "User not found" });
+            }
+            userId = resolveResult.rows[0].user_id;
+        }
+
+        const data = await profileRepo.getProfileScoreData(userId);
+        if (!data) return res.status(404).json({ message: "User profile not found" });
+
+        const fullScore = profileCalc.calculateFullProfileScore(
+            data.userProfile,
+            data.skills,
+            data.experiences,
+            data.projects,
+            data.educations
+        );
+
+        return res.json(fullScore);
+    } catch (err) {
+        console.error("Get profile score error:", err);
+        return res.status(500).json({ message: "Internal server error" });
+    }
+};
+

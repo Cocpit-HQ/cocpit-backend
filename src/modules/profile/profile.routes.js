@@ -5,8 +5,10 @@ const { requireAuth, requireActiveSession } = require("../../core/middlewares/au
 const { uploadResume, uploadAvatar, uploadCover, uploadProjectMedia } = require("../../core/middlewares/upload.middleware");
 
 // Profile
+router.get("/score", requireAuth, profileController.getProfileScore);
 router.get("/me", requireAuth, profileController.getMyProfile);
 router.put("/me", requireAuth, requireActiveSession, profileController.updateProfile);
+router.get("/:id/score", requireAuth, profileController.getProfileScore);
 
 // Avatar
 router.post("/avatar", requireAuth, requireActiveSession, uploadAvatar.single("avatar"), profileController.uploadOrReplaceAvatar);
