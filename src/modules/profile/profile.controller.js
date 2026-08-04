@@ -1691,6 +1691,10 @@ exports.addProject = async (req, res) => {
         }
     }
 
+    if (Array.isArray(media) && media.length > 3) {
+        return res.status(400).json({ message: "A project can have at most 3 media items" });
+    }
+
     const client = await pool.connect();
     try {
         const profileId = await profileRepo.ensureProfileId(req.user.sub);
@@ -1752,6 +1756,10 @@ exports.updateProject = async (req, res) => {
         if (endVal < startVal) {
             return res.status(400).json({ message: "End year cannot be before start year" });
         }
+    }
+
+    if (Array.isArray(media) && media.length > 3) {
+        return res.status(400).json({ message: "A project can have at most 3 media items" });
     }
 
     const client = await pool.connect();
