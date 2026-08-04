@@ -69,6 +69,19 @@ const getConfig = (req, res) => {
 
     // Current deployment environment for client-side diagnostics/logging.
     env: process.env.NODE_ENV ?? "development",
+
+    // =========================================================================
+    // COCPIT OFFICIAL LEGAL DOCUMENTS (CLOUDINARY HOSTED)
+    // =========================================================================
+    // Public IDs: cocpit_legal/privacy_policy.pdf, terms_of_service.pdf, etc.
+    // Replace files on Cloudinary with overwrite=true under same Public ID.
+    // =========================================================================
+    legal: {
+      privacy_policy_url: "https://res.cloudinary.com/doxkaqqt4/raw/upload/v1/cocpit_legal/privacy_policy.pdf",
+      terms_of_service_url: "https://res.cloudinary.com/doxkaqqt4/raw/upload/v1/cocpit_legal/terms_of_service.pdf",
+      community_guidelines_url: "https://res.cloudinary.com/doxkaqqt4/raw/upload/v1/cocpit_legal/community_guidelines.pdf",
+      cookie_policy_url: "https://res.cloudinary.com/doxkaqqt4/raw/upload/v1/cocpit_legal/cookie_policy.pdf",
+    },
   });
 };
 

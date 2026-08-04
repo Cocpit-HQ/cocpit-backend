@@ -129,12 +129,30 @@ exports.getFaqs = (req, res) => {
 
 // ─── 4. Legal & Privacy Links ──────────────────────────────────────────────────
 
+// =========================================================================
+// COCPIT OFFICIAL LEGAL DOCUMENTS (CLOUDINARY HOSTED)
+// =========================================================================
+// Public IDs: cocpit_legal/privacy_policy.pdf, terms_of_service.pdf, etc.
+// Replace files on Cloudinary with overwrite=true under same Public ID.
+// =========================================================================
 exports.getLegalDocs = (req, res) => {
     const docs = [
-        { title: "Privacy Policy", url: "https://cocpit.in/privacy" },
-        { title: "Terms of Service", url: "https://cocpit.in/terms" },
-        { title: "Community Guidelines", url: "https://cocpit.in/community" },
-        { title: "Cookie Policy", url: "https://cocpit.in/cookies" },
+        {
+            title: "Privacy Policy",
+            url: "https://res.cloudinary.com/doxkaqqt4/raw/upload/v1/cocpit_legal/privacy_policy.pdf"
+        },
+        {
+            title: "Terms of Service",
+            url: "https://res.cloudinary.com/doxkaqqt4/raw/upload/v1/cocpit_legal/terms_of_service.pdf"
+        },
+        {
+            title: "Community Guidelines",
+            url: "https://res.cloudinary.com/doxkaqqt4/raw/upload/v1/cocpit_legal/community_guidelines.pdf"
+        },
+        {
+            title: "Cookie Policy",
+            url: "https://res.cloudinary.com/doxkaqqt4/raw/upload/v1/cocpit_legal/cookie_policy.pdf"
+        },
     ];
 
     return res.status(200).json({ success: true, docs });
