@@ -2404,8 +2404,7 @@ exports.toggleLike = async (req, res) => {
                         senderAvatar = userRes.rows[0].avatar_url;
                     }
 
-                    // Emit real-time
-                    socketService.notifyUser(authorId, "notification", {
+                    const likeNotifPayload = {
                         type: "like",
                         text: `${senderName} liked your post`,
                         from: userId,
@@ -2414,7 +2413,15 @@ exports.toggleLike = async (req, res) => {
                         referenceId: postId,
                         time: "Just now",
                         metadata: { org_id: companyId }
-                    });
+                    };
+
+                    // Emit real-time to the post author (personal)
+                    socketService.notifyUser(authorId, "notification", likeNotifPayload);
+
+                    // Also emit to org room if post belongs to an org (so team members see it)
+                    if (authorCompanyId) {
+                        socketService.notifyOrg(authorCompanyId, "notification", likeNotifPayload);
+                    }
 
                     // Persist notification
                     await pool.query(
@@ -2672,7 +2679,7 @@ exports.addComment = async (req, res) => {
                 [postAuthorId, userId, 'comment', notificationText, postId, JSON.stringify(meta), postCompanyId]
             );
 
-            socketService.notifyUser(postAuthorId, "notification", {
+            const commentNotifPayload = {
                 type: 'comment',
                 text: notificationText,
                 from: userId,
@@ -2681,7 +2688,15 @@ exports.addComment = async (req, res) => {
                 referenceId: postId,
                 metadata: meta,
                 time: "Just now"
-            });
+            };
+
+            // Notify the post author (personal)
+            socketService.notifyUser(postAuthorId, "notification", commentNotifPayload);
+
+            // Also notify org room if the post belongs to an org
+            if (postCompanyId) {
+                socketService.notifyOrg(postCompanyId, "notification", commentNotifPayload);
+            }
         }
 
         if (parent_id) {
@@ -2721,7 +2736,7 @@ exports.addComment = async (req, res) => {
                         [parentAuthorId, userId, 'reply', replyText, postId, JSON.stringify(meta), parentCompanyId]
                     );
 
-                    socketService.notifyUser(parentAuthorId, "notification", {
+                    const replyNotifPayload = {
                         type: 'reply',
                         text: replyText,
                         from: userId,
@@ -2730,8 +2745,16 @@ exports.addComment = async (req, res) => {
                         referenceId: postId,
                         metadata: meta,
                         time: "Just now",
-                        recipient_org_id: parentCompanyId // Helper for frontend if needed
-                    });
+                        recipient_org_id: parentCompanyId
+                    };
+
+                    // Notify the parent comment author (personal)
+                    socketService.notifyUser(parentAuthorId, "notification", replyNotifPayload);
+
+                    // Also notify org room if the parent comment was from an org
+                    if (parentCompanyId) {
+                        socketService.notifyOrg(parentCompanyId, "notification", replyNotifPayload);
+                    }
                 }
             }
         }
@@ -3134,15 +3157,21 @@ exports.toggleCommentLike = async (req, res) => {
                 );
 
                 // Emit real-time
-                socketService.notifyUser(authorId, "notification", {
+                const commentLikePayload = {
                     type: "like",
                     text: `${senderName} liked your comment`,
                     senderName: senderName,
                     senderAvatar: senderAvatar,
-                    referenceId: comment.post_id, // Link to post usually
+                    referenceId: comment.post_id, // Link to post
                     metadata: meta,
                     recipient_org_id: authorCompanyId
-                });
+                };
+                socketService.notifyUser(authorId, "notification", commentLikePayload);
+
+                // Also notify org room if comment was from an org
+                if (authorCompanyId) {
+                    socketService.notifyOrg(authorCompanyId, "notification", commentLikePayload);
+                }
             }
         }
 

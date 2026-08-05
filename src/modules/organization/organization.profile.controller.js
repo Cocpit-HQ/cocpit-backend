@@ -106,6 +106,7 @@ exports.getOrgProfile = async (req, res) => {
             linksResult,
             keyOfferingsResult,
             growthData,
+            privacyResult,
         ] = await Promise.all([
             // Counts (followers, subscribers, members, posts, active jobs)
             pool.query(
@@ -192,12 +193,63 @@ exports.getOrgProfile = async (req, res) => {
             ),
             // Employee growth trend
             calculateEmployeeGrowth(pool, org.org_id),
+            // Privacy settings check
+            pool.query(
+                `SELECT show_email, show_phone, tag_permission, following_visibility, followers_visibility, message_permission FROM organization_privacy_settings WHERE org_id = $1`,
+                [org.org_id]
+            ),
         ]);
 
         const counts = countsResult.rows[0];
         const membership = membershipResult; // null if not a member
-        const isOwnProfile = !!membership;
+        const isOwnOrgActor = req.actor && req.actor.type === "ORGANIZATION" && req.actor.orgId === org.org_id;
         const isOwner = !!(viewerId && org.created_by && viewerId === org.created_by);
+        const isOwnProfile = isOwnOrgActor || isOwner || !!membership;
+
+        const privacy = privacyResult?.rows?.[0] || {
+            show_email: true,
+            show_phone: true,
+            tag_permission: "everyone",
+            following_visibility: "everyone",
+            followers_visibility: "everyone",
+            message_permission: "everyone",
+        };
+
+        let isFollower = false;
+        if (!isOwnOrgActor) {
+            if (req.actor && req.actor.type === "ORGANIZATION" && req.actor.orgId) {
+                const followCheck = await pool.query(
+                    `SELECT 1 FROM organization_org_follows WHERE following_org_id = $1 AND follower_org_id = $2`,
+                    [org.org_id, req.actor.orgId]
+                );
+                isFollower = followCheck.rowCount > 0;
+            } else if (viewerId) {
+                const followCheck = await pool.query(
+                    `SELECT 1 FROM organization_followers WHERE org_id = $1 AND user_id = $2`,
+                    [org.org_id, viewerId]
+                );
+                isFollower = followCheck.rowCount > 0;
+            }
+        }
+
+        const canViewEmail = isOwnOrgActor ? true : (privacy.show_email ?? true);
+        const canViewPhone = isOwnOrgActor ? true : (privacy.show_phone ?? true);
+
+        const showMessage = isOwnOrgActor ? false : (privacy.message_permission === 'everyone' || (privacy.message_permission === 'followers_only' && isFollower));
+        const showFollowersList = isOwnOrgActor ? true : (privacy.followers_visibility === 'everyone' || (privacy.followers_visibility === 'followers_only' && isFollower));
+        const showFollowingList = isOwnOrgActor ? true : (privacy.following_visibility === 'everyone' || (privacy.following_visibility === 'followers_only' && isFollower));
+
+        org.showMessage = showMessage;
+        org.showFollowersList = showFollowersList;
+        org.showFollowingList = showFollowingList;
+        org.tagPermission = privacy.tag_permission || "everyone";
+        org.isEmailShow = canViewEmail;
+        org.isMobileShow = canViewPhone;
+        org.is_email_show = canViewEmail;
+        org.is_mobile_show = canViewPhone;
+
+        if (!canViewEmail) org.email = null;
+        if (!canViewPhone) org.phone = null;
 
         // 3. Core team — always public (visible to all viewers)
         const teamResult = await pool.query(
@@ -429,6 +481,10 @@ exports.getOrgProfile = async (req, res) => {
                 active_jobs_count: counts.active_jobs_count,
                 owner_id: org.created_by,
                 key_offerings: keyOfferingsResult.rows.map(r => ({ id: r.offering_id, icon: r.icon, label: r.label, content: r.content })),
+                isEmailShow: canViewEmail,
+                isMobileShow: canViewPhone,
+                is_email_show: canViewEmail,
+                is_mobile_show: canViewPhone,
             },
             is_own_profile: isOwner,
             viewer_role: membership?.role_name || null,
@@ -472,11 +528,12 @@ exports.getOrgAbout = async (req, res) => {
             if (isBlocked) return res.status(404).json({ message: 'Organization not found' });
         }
 
-        // Viewer membership (to decide if sensitive fields exposed)
-        const membership = await getViewerMembership(org.org_id, viewerId);
-        const isOwnProfile = !!membership;
-
-        const [officesResult, linksResult, specialtiesResult] = await Promise.all([
+        const [membership, privacyRes, officesResult, linksResult, specialtiesResult] = await Promise.all([
+            getViewerMembership(org.org_id, viewerId),
+            pool.query(
+                `SELECT show_email, show_phone FROM organization_privacy_settings WHERE org_id = $1`,
+                [org.org_id]
+            ),
             pool.query(
                 `SELECT office_id, city, country, address, is_headquarters
                  FROM organization_offices 
@@ -500,6 +557,14 @@ exports.getOrgAbout = async (req, res) => {
             ),
         ]);
 
+        const isOwnOrgActor = req.actor && req.actor.type === "ORGANIZATION" && req.actor.orgId === org.org_id;
+        const isOwnProfile = isOwnOrgActor || (org.created_by === viewerId) || !!membership;
+
+        const privacy = privacyRes.rows[0] || { show_email: true, show_phone: true };
+        // If req.actor is org & requesting own profile -> show credentials; else -> show based on privacy permissions
+        const canViewEmail = isOwnOrgActor ? true : (privacy.show_email ?? true);
+        const canViewPhone = isOwnOrgActor ? true : (privacy.show_phone ?? true);
+
         const about = {
             description: org.description,
             slogan: org.slogan,
@@ -514,12 +579,15 @@ exports.getOrgAbout = async (req, res) => {
             institution_type: org.institution_type,
             campus_location: org.campus_location,
             headline: org.headline,
+            email: canViewEmail ? org.email : null,
+            phone: canViewPhone ? org.phone : null,
+            isEmailShow: canViewEmail,
+            isMobileShow: canViewPhone,
+            is_email_show: canViewEmail,
+            is_mobile_show: canViewPhone,
         };
 
-        // Sensitive fields exposed only to members
         if (isOwnProfile) {
-            about.phone = org.phone;
-            about.email = org.email;
             about.phone_verified = org.phone_verified;
             about.email_verified = org.email_verified;
             about.verification_status = org.verification_status;

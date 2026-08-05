@@ -330,7 +330,7 @@ exports.updatePassword = async (req, res) => {
  */
 exports.updatePhone = async (req, res) => {
     try {
-        const userId = req.user.sub;
+        const isOrgActor = req.actor && req.actor.type === "ORGANIZATION";
         const { phone } = req.body;
 
         if (phone === undefined) {
@@ -341,15 +341,24 @@ exports.updatePhone = async (req, res) => {
 
         if (phoneVal !== null) {
             const digitCount = String(phoneVal).replace(/\D/g, '').length;
-            if (digitCount !== 10) {
-                return res.status(400).json({ success: false, message: "Phone number must be exactly 10 digits" });
+            if (digitCount < 10) {
+                return res.status(400).json({ success: false, message: "Phone number must be at least 10 digits" });
             }
         }
 
-        await pool.query(
-            `UPDATE users SET mobile_number = $1, updated_at = NOW() WHERE user_id = $2`,
-            [phoneVal, userId]
-        );
+        if (isOrgActor) {
+            const orgId = req.actor.orgId;
+            await pool.query(
+                `UPDATE organizations SET phone = $1, updated_at = NOW() WHERE org_id = $2`,
+                [phoneVal, orgId]
+            );
+        } else {
+            const userId = req.user.sub;
+            await pool.query(
+                `UPDATE users SET mobile_number = $1, updated_at = NOW() WHERE user_id = $2`,
+                [phoneVal, userId]
+            );
+        }
 
         return res.status(200).json({ success: true });
     } catch (error) {
@@ -364,6 +373,17 @@ exports.updatePhone = async (req, res) => {
  */
 exports.removePhone = async (req, res) => {
     try {
+        const isOrgActor = req.actor && req.actor.type === "ORGANIZATION";
+
+        if (isOrgActor) {
+            const orgId = req.actor.orgId;
+            await pool.query(
+                `UPDATE organizations SET phone = NULL, updated_at = NOW() WHERE org_id = $1`,
+                [orgId]
+            );
+            return res.status(200).json({ success: true, message: "Phone number removed successfully." });
+        }
+
         const userId = req.user.sub;
 
         await pool.query(

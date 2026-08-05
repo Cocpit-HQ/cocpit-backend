@@ -44,7 +44,7 @@ const hasActorPermission = (permissions = [], permission) => {
     if (upperPerms.includes("*") || upperPerms.includes(targetPerm)) return true;
 
     // Settings parent implies sub-permissions & aliases across Company/Institution
-    const settingsPerms = ["SETTINGS", "MANAGE_SETTINGS", "MANAGE_COMPANY", "MANAGE_INSTITUTION", "MANAGE_ORGANIZATION", "MANAGE_COMPANY_DETAILS"];
+    const settingsPerms = ["SETTINGS", "MANAGE_SETTINGS", "PRIVACY", "MANAGE_PRIVACY", "MANAGE_COMPANY", "MANAGE_INSTITUTION", "MANAGE_ORGANIZATION", "MANAGE_COMPANY_DETAILS"];
     if (settingsPerms.includes(targetPerm) && upperPerms.some(p => settingsPerms.includes(p))) return true;
 
     // Hierarchy / Parent-child permission mappings

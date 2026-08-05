@@ -1,7 +1,7 @@
 const pool = require("../../core/db/pool");
 const socketService = require("../../core/infrastructure/socket.service");
 
-async function filterAllowedTaggedUserIds(client, actorUserId, targetUserIds) {
+async function filterAllowedTaggedUserIds(client, actorUserId, actorOrgId, targetUserIds) {
     if (!targetUserIds || targetUserIds.length === 0) return [];
 
     const usersRes = await client.query(
@@ -70,15 +70,24 @@ async function filterAllowedTaggedUserIds(client, actorUserId, targetUserIds) {
             const { org_id, tag_permission } = o;
 
             if (tag_permission === 'no_one') continue;
-            if (tag_permission === 'everyone' || !actorUserId) {
+            if (tag_permission === 'everyone' || (!actorUserId && !actorOrgId)) {
                 allowedUserIds.push(org_id);
                 continue;
             }
+
             if (tag_permission === 'followers_only') {
-                const followRes = await client.query(
-                    `SELECT 1 FROM organization_followers WHERE user_id = $1 AND org_id = $2`,
-                    [actorUserId, org_id]
-                );
+                let followRes;
+                if (actorOrgId) {
+                    followRes = await client.query(
+                        `SELECT 1 FROM organization_org_follows WHERE follower_org_id = $1 AND following_org_id = $2`,
+                        [actorOrgId, org_id]
+                    );
+                } else {
+                    followRes = await client.query(
+                        `SELECT 1 FROM organization_followers WHERE user_id = $1 AND org_id = $2`,
+                        [actorUserId, org_id]
+                    );
+                }
                 if (followRes.rowCount > 0) {
                     allowedUserIds.push(org_id);
                 }
@@ -105,7 +114,7 @@ exports.syncPostTags = async (req, res) => {
         await client.query('BEGIN');
 
         // Filter requested tags based on target users' tag_permission settings
-        const allowedTags = await filterAllowedTaggedUserIds(client, actorUserId, uniqueValidTags);
+        const allowedTags = await filterAllowedTaggedUserIds(client, actorUserId, req.actor?.orgId, uniqueValidTags);
 
         // Capture currently active tags so we only notify for newly tagged users
         const existingTagsRes = await client.query(
@@ -244,7 +253,26 @@ exports.getActivePostTags = async (req, res) => {
             JOIN active_users u ON pt.tagged_user_id = u.user_id
             LEFT JOIN profiles p ON u.user_id = p.user_id
             WHERE pt.post_id = $1 AND pt.is_active_tag = true
-            ORDER BY pt.updated_at DESC
+
+            UNION ALL
+
+            SELECT
+                o.org_id AS id,
+                o.name AS full_name,
+                o.slug AS account_name,
+                o.headline AS headline,
+                o.logo_url AS avatar_url,
+                NULL::text AS account_type,
+                'COMPANY'::text as type,
+                o.slug as slug,
+                o.industry as industry,
+                pt.tag_id,
+                pt.updated_at AS tagged_at
+            FROM post_tags pt
+            JOIN organizations o ON pt.tagged_user_id = o.org_id
+            WHERE pt.post_id = $1 AND pt.is_active_tag = true AND o.is_deleted = FALSE
+
+            ORDER BY tagged_at DESC
         `;
         
         const { rows } = await pool.query(query, [postId]);

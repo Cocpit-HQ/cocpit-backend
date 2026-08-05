@@ -640,6 +640,37 @@ exports.getCompanyFollowers = async (req, res) => {
     const { search } = req.query;
 
     try {
+        const isOwnOrgActor = req.actor && req.actor.type === "ORGANIZATION" && req.actor.orgId === companyId;
+
+        if (!isOwnOrgActor) {
+            const privacyRes = await pool.query(
+                `SELECT followers_visibility FROM organization_privacy_settings WHERE org_id = $1`,
+                [companyId]
+            );
+            const followersVisibility = privacyRes.rows[0]?.followers_visibility || "everyone";
+
+            if (followersVisibility === "no_one") {
+                return res.status(200).json({ success: true, data: [] });
+            } else if (followersVisibility === "followers_only") {
+                let isFollower = false;
+                if (req.actor && req.actor.type === "ORGANIZATION" && req.actor.orgId) {
+                    const check = await pool.query(
+                        `SELECT 1 FROM organization_org_follows WHERE following_org_id = $1 AND follower_org_id = $2`,
+                        [companyId, req.actor.orgId]
+                    );
+                    isFollower = check.rowCount > 0;
+                } else if (req.user?.sub) {
+                    const check = await pool.query(
+                        `SELECT 1 FROM organization_followers WHERE org_id = $1 AND user_id = $2`,
+                        [companyId, req.user.sub]
+                    );
+                    isFollower = check.rowCount > 0;
+                }
+                if (!isFollower) {
+                    return res.status(200).json({ success: true, data: [] });
+                }
+            }
+        }
         let userQuery = `
             SELECT u.user_id, u.full_name, u.headline, u.avatar_url, cf.created_at as followed_at,
                    EXISTS(
@@ -5089,6 +5120,37 @@ exports.getOrganizationFollowing = async (req, res) => {
     const { search } = req.query;
 
     try {
+        const isOwnOrgActor = req.actor && req.actor.type === "ORGANIZATION" && req.actor.orgId === orgId;
+
+        if (!isOwnOrgActor) {
+            const privacyRes = await pool.query(
+                `SELECT following_visibility FROM organization_privacy_settings WHERE org_id = $1`,
+                [orgId]
+            );
+            const followingVisibility = privacyRes.rows[0]?.following_visibility || "everyone";
+
+            if (followingVisibility === "no_one") {
+                return res.status(200).json({ success: true, data: [] });
+            } else if (followingVisibility === "followers_only") {
+                let isFollower = false;
+                if (req.actor && req.actor.type === "ORGANIZATION" && req.actor.orgId) {
+                    const check = await pool.query(
+                        `SELECT 1 FROM organization_org_follows WHERE following_org_id = $1 AND follower_org_id = $2`,
+                        [orgId, req.actor.orgId]
+                    );
+                    isFollower = check.rowCount > 0;
+                } else if (req.user?.sub) {
+                    const check = await pool.query(
+                        `SELECT 1 FROM organization_followers WHERE org_id = $1 AND user_id = $2`,
+                        [orgId, req.user.sub]
+                    );
+                    isFollower = check.rowCount > 0;
+                }
+                if (!isFollower) {
+                    return res.status(200).json({ success: true, data: [] });
+                }
+            }
+        }
         let userQuery = `
             SELECT u.user_id, u.full_name AS name, u.avatar_url AS avatar, u.headline, f.created_at, 'user' as type
             FROM organization_user_follows f

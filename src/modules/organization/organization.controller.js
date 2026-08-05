@@ -288,9 +288,8 @@ exports.getOrganization = async (req, res) => {
             message_permission: "everyone",
         };
 
-        // Check if viewer is active team member/owner or follower
+        // Check if viewer is active team member/owner
         let isTeamMemberOrOwner = false;
-        let isFollower = false;
 
         if (userId) {
             const memberCheck = await pool.query(
@@ -298,26 +297,43 @@ exports.getOrganization = async (req, res) => {
                 [company.org_id, userId]
             );
             isTeamMemberOrOwner = (company.created_by === userId) || (memberCheck.rowCount > 0);
-
-            const followCheck = await pool.query(
-                `SELECT 1 FROM organization_followers WHERE org_id = $1 AND user_id = $2`,
-                [company.org_id, userId]
-            );
-            isFollower = followCheck.rowCount > 0;
         }
 
-        const canViewEmail = isTeamMemberOrOwner || (privacy.show_email ?? true);
-        const canViewPhone = isTeamMemberOrOwner || (privacy.show_phone ?? true);
+        const isOwnOrgActor = req.actor && req.actor.type === "ORGANIZATION" && req.actor.orgId === company.org_id;
 
-        const showMessage = isTeamMemberOrOwner || privacy.message_permission === 'everyone' || (privacy.message_permission === 'followers_only' && isFollower);
-        const showFollowersList = isTeamMemberOrOwner || privacy.followers_visibility === 'everyone' || (privacy.followers_visibility === 'followers_only' && isFollower);
-        const showFollowingList = isTeamMemberOrOwner || privacy.following_visibility === 'everyone' || (privacy.following_visibility === 'followers_only' && isFollower);
+        let isFollower = false;
+        if (!isOwnOrgActor) {
+            if (req.actor && req.actor.type === "ORGANIZATION" && req.actor.orgId) {
+                const followCheck = await pool.query(
+                    `SELECT 1 FROM organization_org_follows WHERE following_org_id = $1 AND follower_org_id = $2`,
+                    [company.org_id, req.actor.orgId]
+                );
+                isFollower = followCheck.rowCount > 0;
+            } else if (userId) {
+                const followCheck = await pool.query(
+                    `SELECT 1 FROM organization_followers WHERE org_id = $1 AND user_id = $2`,
+                    [company.org_id, userId]
+                );
+                isFollower = followCheck.rowCount > 0;
+            }
+        }
+
+        const canViewEmail = isOwnOrgActor ? true : (privacy.show_email ?? true);
+        const canViewPhone = isOwnOrgActor ? true : (privacy.show_phone ?? true);
+
+        const showMessage = isOwnOrgActor ? false : (privacy.message_permission === 'everyone' || (privacy.message_permission === 'followers_only' && isFollower));
+        const showFollowersList = isOwnOrgActor ? true : (privacy.followers_visibility === 'everyone' || (privacy.followers_visibility === 'followers_only' && isFollower));
+        const showFollowingList = isOwnOrgActor ? true : (privacy.following_visibility === 'everyone' || (privacy.following_visibility === 'followers_only' && isFollower));
 
         // Attach boolean keys for UI
         company.showMessage = showMessage;
         company.showFollowersList = showFollowersList;
         company.showFollowingList = showFollowingList;
         company.tagPermission = privacy.tag_permission || "everyone";
+        company.isEmailShow = canViewEmail;
+        company.isMobileShow = canViewPhone;
+        company.is_email_show = canViewEmail;
+        company.is_mobile_show = canViewPhone;
 
         // ZERO NETWORK DATA LEAK PAYLOAD STRIPPING: If permission denied, strip raw sensitive fields
         if (!canViewEmail) company.email = null;

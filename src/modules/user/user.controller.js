@@ -66,6 +66,7 @@ exports.searchUsers = async (req, res) => {
     }
 
     let tagPrivacyFilter = "";
+    let orgTagPrivacyFilter = "";
     if (req.query.forTagging === "true") {
       tagPrivacyFilter = `
         AND u.tag_permission != 'noone'
@@ -90,6 +91,23 @@ exports.searchUsers = async (req, res) => {
           )
         )
       `;
+
+      const orgFollowCheck = isOrgActor
+        ? `EXISTS (SELECT 1 FROM organization_org_follows WHERE follower_org_id = $1 AND following_org_id = c.org_id)`
+        : `EXISTS (SELECT 1 FROM organization_followers WHERE user_id = $1 AND org_id = c.org_id)`;
+
+      orgTagPrivacyFilter = `
+        AND COALESCE(ops.tag_permission, 'everyone') != 'noone'
+        AND COALESCE(ops.tag_permission, 'everyone') != 'no_one'
+        AND (
+          ops.tag_permission = 'everyone'
+          OR ops.tag_permission IS NULL
+          OR (
+            ops.tag_permission = 'followers_only'
+            AND ${orgFollowCheck}
+          )
+        )
+      `;
     }
 
     // Similarity param (raw term)
@@ -108,7 +126,8 @@ exports.searchUsers = async (req, res) => {
             p.account_type,
             'USER'::text as type,
             NULL::text as slug,
-            NULL::text as industry
+            NULL::text as industry,
+            COALESCE(u.tag_permission, 'everyone')::text AS tag_permission
           FROM active_users u
           LEFT JOIN profiles p ON u.user_id = p.user_id
           WHERE (u.full_name ILIKE $2 OR u.account_name ILIKE $2)
@@ -130,10 +149,13 @@ exports.searchUsers = async (req, res) => {
             NULL::text AS account_type,
             'COMPANY'::text as type,
             c.slug as slug,
-            c.industry as industry
+            c.industry as industry,
+            COALESCE(ops.tag_permission, 'everyone')::text AS tag_permission
           FROM organizations c
+          LEFT JOIN organization_privacy_settings ops ON c.org_id = ops.org_id
           WHERE c.is_deleted = FALSE
           AND (c.name ILIKE $2 OR c.slug ILIKE $2)
+          ${orgTagPrivacyFilter}
         )
       ) AS combined_results
       ORDER BY 

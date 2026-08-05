@@ -68,17 +68,34 @@ exports.changePassword = async (req, res) => {
 
 // ─── 2. Primary Email Change (4-Step Flow) ───────────────────────────────────
 
-// Step 1: Request OTP for current email
+// Step 1: Request OTP for current email (User or Organization)
 exports.verifyCurrentEmail = async (req, res) => {
     try {
-        const userId = req.user.sub;
+        const isOrgActor = req.actor && req.actor.type === "ORGANIZATION";
+        const actorId = isOrgActor ? req.actor.orgId : req.user.sub;
+        let currentEmail = "";
 
-        const userRes = await pool.query("SELECT email FROM users WHERE user_id = $1", [userId]);
-        if (userRes.rowCount === 0) {
-            return res.status(404).json({ success: false, message: "User not found" });
+        if (isOrgActor) {
+            const orgRes = await pool.query(
+                "SELECT email FROM organizations WHERE org_id = $1 AND is_deleted = FALSE",
+                [actorId]
+            );
+            if (orgRes.rowCount === 0) {
+                return res.status(404).json({ success: false, message: "Organization not found" });
+            }
+            currentEmail = orgRes.rows[0].email;
+        } else {
+            const userRes = await pool.query("SELECT email FROM users WHERE user_id = $1", [actorId]);
+            if (userRes.rowCount === 0) {
+                return res.status(404).json({ success: false, message: "User not found" });
+            }
+            currentEmail = userRes.rows[0].email;
         }
 
-        const currentEmail = userRes.rows[0].email;
+        if (!currentEmail) {
+            return res.status(400).json({ success: false, message: "No email address registered for this account" });
+        }
+
         const result = await requestOTP(currentEmail, "email_change");
 
         if (result.error) {
@@ -95,22 +112,36 @@ exports.verifyCurrentEmail = async (req, res) => {
     }
 };
 
-// Step 2: Confirm OTP for current email
+// Step 2: Confirm OTP for current email (User or Organization)
 exports.confirmCurrentEmail = async (req, res) => {
     try {
-        const userId = req.user.sub;
+        const isOrgActor = req.actor && req.actor.type === "ORGANIZATION";
+        const actorId = isOrgActor ? req.actor.orgId : req.user.sub;
         const { otp } = req.body;
+        let currentEmail = "";
 
-        const userRes = await pool.query("SELECT email FROM users WHERE user_id = $1", [userId]);
-        const currentEmail = userRes.rows[0].email;
+        if (isOrgActor) {
+            const orgRes = await pool.query("SELECT email FROM organizations WHERE org_id = $1 AND is_deleted = FALSE", [actorId]);
+            if (orgRes.rowCount === 0) {
+                return res.status(404).json({ success: false, message: "Organization not found" });
+            }
+            currentEmail = orgRes.rows[0].email;
+        } else {
+            const userRes = await pool.query("SELECT email FROM users WHERE user_id = $1", [actorId]);
+            if (userRes.rowCount === 0) {
+                return res.status(404).json({ success: false, message: "User not found" });
+            }
+            currentEmail = userRes.rows[0].email;
+        }
 
         const result = await verifyOTP(currentEmail, otp);
         if (result.error) {
             return res.status(result.error.status).json({ success: false, message: result.error.message });
         }
 
+        const authKey = isOrgActor ? `email_change_authorized:org:${actorId}` : `email_change_authorized:${actorId}`;
         if (redisClient.isOpen) {
-            await redisClient.setEx(`email_change_authorized:${userId}`, 600, "1");
+            await redisClient.setEx(authKey, 600, "1");
         }
 
         return res.status(200).json({
@@ -123,15 +154,19 @@ exports.confirmCurrentEmail = async (req, res) => {
     }
 };
 
-// Step 3: Submit new email & send OTP to new email
+// Step 3: Submit new email & send OTP to new email (User or Organization)
 exports.submitNewEmail = async (req, res) => {
     try {
-        const userId = req.user.sub;
+        const isOrgActor = req.actor && req.actor.type === "ORGANIZATION";
+        const actorId = isOrgActor ? req.actor.orgId : req.user.sub;
         const { newEmail } = req.body;
         const normalizedNewEmail = newEmail.toLowerCase().trim();
 
+        const authKey = isOrgActor ? `email_change_authorized:org:${actorId}` : `email_change_authorized:${actorId}`;
+        const pendingKey = isOrgActor ? `pending_email_change:org:${actorId}` : `pending_email_change:${actorId}`;
+
         if (redisClient.isOpen) {
-            const isAuthorized = await redisClient.get(`email_change_authorized:${userId}`);
+            const isAuthorized = await redisClient.get(authKey);
             if (!isAuthorized) {
                 return res.status(403).json({
                     success: false,
@@ -140,21 +175,27 @@ exports.submitNewEmail = async (req, res) => {
             }
         }
 
-        const userRes = await pool.query(
-            "SELECT email, password_hash FROM users WHERE user_id = $1",
-            [userId]
-        );
-        const user = userRes.rows[0];
+        let currentEmail = "";
+        if (isOrgActor) {
+            const orgRes = await pool.query("SELECT email FROM organizations WHERE org_id = $1 AND is_deleted = FALSE", [actorId]);
+            currentEmail = orgRes.rows[0]?.email || "";
+        } else {
+            const userRes = await pool.query("SELECT email FROM users WHERE user_id = $1", [actorId]);
+            currentEmail = userRes.rows[0]?.email || "";
+        }
 
-        if (user.email.toLowerCase() === normalizedNewEmail) {
+        if (currentEmail && currentEmail.toLowerCase() === normalizedNewEmail) {
             return res.status(400).json({ success: false, message: "New email must be different from current email" });
         }
 
-        const emailCheck = await pool.query("SELECT 1 FROM users WHERE email = $1", [normalizedNewEmail]);
-        if (emailCheck.rowCount > 0) {
+        const userCheck = await pool.query("SELECT 1 FROM users WHERE LOWER(email) = $1", [normalizedNewEmail]);
+        const orgCheck = await pool.query(
+            "SELECT 1 FROM organizations WHERE LOWER(email) = $1 AND is_deleted = FALSE AND org_id != $2",
+            [normalizedNewEmail, isOrgActor ? actorId : '00000000-0000-0000-0000-000000000000']
+        );
+        if (userCheck.rowCount > 0 || orgCheck.rowCount > 0) {
             return res.status(409).json({ success: false, message: "An account with this email already exists" });
         }
-
 
         const otpResult = await requestOTP(normalizedNewEmail, "email_change");
         if (otpResult.error) {
@@ -162,7 +203,7 @@ exports.submitNewEmail = async (req, res) => {
         }
 
         if (redisClient.isOpen) {
-            await redisClient.setEx(`pending_email_change:${userId}`, 600, normalizedNewEmail);
+            await redisClient.setEx(pendingKey, 600, normalizedNewEmail);
         }
 
         return res.status(200).json({
@@ -175,16 +216,20 @@ exports.submitNewEmail = async (req, res) => {
     }
 };
 
-// Step 4: Confirm OTP on new email & commit change
+// Step 4: Confirm OTP on new email & commit change (User or Organization)
 exports.confirmNewEmail = async (req, res) => {
     try {
-        const userId = req.user.sub;
+        const isOrgActor = req.actor && req.actor.type === "ORGANIZATION";
+        const actorId = isOrgActor ? req.actor.orgId : req.user.sub;
         const currentSessionId = req.user.sid;
         const { otp } = req.body;
 
+        const authKey = isOrgActor ? `email_change_authorized:org:${actorId}` : `email_change_authorized:${actorId}`;
+        const pendingKey = isOrgActor ? `pending_email_change:org:${actorId}` : `pending_email_change:${actorId}`;
+
         let pendingEmail = null;
         if (redisClient.isOpen) {
-            pendingEmail = await redisClient.get(`pending_email_change:${userId}`);
+            pendingEmail = await redisClient.get(pendingKey);
         }
 
         if (!pendingEmail) {
@@ -199,22 +244,32 @@ exports.confirmNewEmail = async (req, res) => {
             return res.status(result.error.status).json({ success: false, message: result.error.message });
         }
 
-        await pool.query(
-            "UPDATE users SET email = $1, updated_at = NOW() WHERE user_id = $2",
-            [pendingEmail, userId]
-        );
-
-        if (redisClient.isOpen) {
-            await redisClient.del(`pending_email_change:${userId}`);
-            await redisClient.del(`email_change_authorized:${userId}`);
+        if (isOrgActor) {
+            await pool.query(
+                "UPDATE organizations SET email = $1, updated_at = NOW() WHERE org_id = $2",
+                [pendingEmail, actorId]
+            );
+        } else {
+            await pool.query(
+                "UPDATE users SET email = $1, updated_at = NOW() WHERE user_id = $2",
+                [pendingEmail, actorId]
+            );
         }
 
-        // Security Invariant (Section 7.4): Invalidate all OTHER sessions on email change
-        const revokedCount = await revokeOtherSessions(userId, currentSessionId);
+        if (redisClient.isOpen) {
+            await redisClient.del(pendingKey);
+            await redisClient.del(authKey);
+        }
+
+        let revokedCount = 0;
+        if (!isOrgActor) {
+            // Security Invariant: Invalidate all OTHER user sessions on email change
+            revokedCount = await revokeOtherSessions(actorId, currentSessionId);
+        }
 
         return res.status(200).json({
             success: true,
-            message: "Email address updated successfully. Other active sessions have been logged out for security.",
+            message: "Email address updated successfully.",
             new_email: pendingEmail,
             revoked_other_sessions: revokedCount,
         });
@@ -224,15 +279,27 @@ exports.confirmNewEmail = async (req, res) => {
     }
 };
 
-// ─── 3. Recovery Email ───────────────────────────────────────────────────────
+// ─── 3. Recovery Email (User or Organization) ───────────────────────────────
+
+// ─── 3. Recovery Email (Personal User Accounts Only) ─────────────────────────
 
 exports.setRecoveryEmail = async (req, res) => {
     try {
+        if (req.actor && req.actor.type === "ORGANIZATION") {
+            return res.status(400).json({
+                success: false,
+                message: "Recovery email is not supported for Organization accounts.",
+            });
+        }
+
         const userId = req.user.sub;
         const { recoveryEmail } = req.body;
         const normalized = recoveryEmail.toLowerCase().trim();
 
         const userRes = await pool.query("SELECT email FROM users WHERE user_id = $1", [userId]);
+        if (userRes.rows.length === 0) {
+            return res.status(404).json({ success: false, message: "User not found" });
+        }
         if (userRes.rows[0].email.toLowerCase() === normalized) {
             return res.status(400).json({ success: false, message: "Recovery email cannot be the same as primary email" });
         }
@@ -269,6 +336,13 @@ exports.setRecoveryEmail = async (req, res) => {
 
 exports.confirmRecoveryEmail = async (req, res) => {
     try {
+        if (req.actor && req.actor.type === "ORGANIZATION") {
+            return res.status(400).json({
+                success: false,
+                message: "Recovery email is not supported for Organization accounts.",
+            });
+        }
+
         const userId = req.user.sub;
         const { otp } = req.body;
 
@@ -299,6 +373,7 @@ exports.confirmRecoveryEmail = async (req, res) => {
             success: true,
             message: "Recovery email set and verified successfully.",
             recovery_email: pendingRecoveryEmail,
+            recoveryEmail: pendingRecoveryEmail,
         });
     } catch (error) {
         console.error("Confirm recovery email error:", error);
@@ -308,6 +383,13 @@ exports.confirmRecoveryEmail = async (req, res) => {
 
 exports.deleteRecoveryEmail = async (req, res) => {
     try {
+        if (req.actor && req.actor.type === "ORGANIZATION") {
+            return res.status(400).json({
+                success: false,
+                message: "Recovery email is not supported for Organization accounts.",
+            });
+        }
+
         const userId = req.user.sub;
 
         await pool.query(
@@ -326,6 +408,8 @@ exports.deleteRecoveryEmail = async (req, res) => {
 
 exports.setPhone = async (req, res) => {
     try {
+        const isOrgActor = req.actor && req.actor.type === "ORGANIZATION";
+        const actorKey = isOrgActor ? `org:${req.actor.orgId}` : `user:${req.user.sub}`;
         const userId = req.user.sub;
         const { phone } = req.body;
 
@@ -333,7 +417,10 @@ exports.setPhone = async (req, res) => {
         await sendSMSOTP(phone, generatedOtp);
 
         if (redisClient.isOpen) {
-            await redisClient.setEx(`pending_phone:${userId}`, 600, JSON.stringify({ phone, otp: generatedOtp }));
+            await redisClient.setEx(`pending_phone:${actorKey}`, 600, JSON.stringify({ phone, otp: generatedOtp }));
+            if (!isOrgActor) {
+                await redisClient.setEx(`pending_phone:${userId}`, 600, JSON.stringify({ phone, otp: generatedOtp }));
+            }
         }
 
         return res.status(200).json({
@@ -348,12 +435,17 @@ exports.setPhone = async (req, res) => {
 
 exports.confirmPhone = async (req, res) => {
     try {
+        const isOrgActor = req.actor && req.actor.type === "ORGANIZATION";
+        const actorKey = isOrgActor ? `org:${req.actor.orgId}` : `user:${req.user.sub}`;
         const userId = req.user.sub;
         const { otp } = req.body;
 
         let pendingData = null;
         if (redisClient.isOpen) {
-            const raw = await redisClient.get(`pending_phone:${userId}`);
+            let raw = await redisClient.get(`pending_phone:${actorKey}`);
+            if (!raw && !isOrgActor) {
+                raw = await redisClient.get(`pending_phone:${userId}`);
+            }
             if (raw) pendingData = JSON.parse(raw);
         }
 
@@ -366,13 +458,23 @@ exports.confirmPhone = async (req, res) => {
             return res.status(400).json({ success: false, message: "Invalid verification code" });
         }
 
-        await pool.query(
-            "UPDATE users SET mobile_number = $1, updated_at = NOW() WHERE user_id = $2",
-            [pendingData.phone, userId]
-        );
+        if (isOrgActor) {
+            await pool.query(
+                "UPDATE organizations SET phone = $1, updated_at = NOW() WHERE org_id = $2",
+                [pendingData.phone, req.actor.orgId]
+            );
+        } else {
+            await pool.query(
+                "UPDATE users SET mobile_number = $1, updated_at = NOW() WHERE user_id = $2",
+                [pendingData.phone, userId]
+            );
+        }
 
         if (redisClient.isOpen) {
-            await redisClient.del(`pending_phone:${userId}`);
+            await redisClient.del(`pending_phone:${actorKey}`);
+            if (!isOrgActor) {
+                await redisClient.del(`pending_phone:${userId}`);
+            }
         }
 
         return res.status(200).json({
