@@ -69,8 +69,8 @@ async function _fetchGlobalTrending(pool) {
       'post'      AS type,
       p.author_id,
       p.created_at,
-      (SELECT COUNT(*) FROM post_likes    pl WHERE pl.post_id = p.post_id)::float AS like_count,
-      (SELECT COUNT(*) FROM post_comments pc WHERE pc.post_id = p.post_id)::float AS comment_count,
+      (SELECT COUNT(*) FROM active_post_likes    pl WHERE pl.post_id = p.post_id)::float AS like_count,
+      (SELECT COUNT(*) FROM active_post_comments pc WHERE pc.post_id = p.post_id)::float AS comment_count,
       (SELECT COUNT(*) FROM posts         rp WHERE rp.shared_post_id = p.post_id)::float AS share_count
     FROM posts p
     WHERE p.created_at  > NOW() - INTERVAL '7 days'
@@ -78,8 +78,8 @@ async function _fetchGlobalTrending(pool) {
       AND (p.is_removed IS FALSE OR p.is_removed IS NULL)
       AND (p.author_org_id IS NULL)
     ORDER BY (
-      (SELECT COUNT(*) FROM post_likes    pl WHERE pl.post_id = p.post_id) * 0.6 +
-      (SELECT COUNT(*) FROM post_comments pc WHERE pc.post_id = p.post_id) * 1.2 +
+      (SELECT COUNT(*) FROM active_post_likes    pl WHERE pl.post_id = p.post_id) * 0.6 +
+      (SELECT COUNT(*) FROM active_post_comments pc WHERE pc.post_id = p.post_id) * 1.2 +
       (SELECT COUNT(*) FROM posts         rp WHERE rp.shared_post_id = p.post_id) * 1.5
     ) DESC
     LIMIT 100
@@ -113,8 +113,8 @@ async function _fetchNewCreatorContent(pool) {
       'post'      AS type,
       p.author_id,
       p.created_at,
-      (SELECT COUNT(*) FROM post_likes    pl WHERE pl.post_id = p.post_id)::float AS like_count,
-      (SELECT COUNT(*) FROM post_comments pc WHERE pc.post_id = p.post_id)::float AS comment_count,
+      (SELECT COUNT(*) FROM active_post_likes    pl WHERE pl.post_id = p.post_id)::float AS like_count,
+      (SELECT COUNT(*) FROM active_post_comments pc WHERE pc.post_id = p.post_id)::float AS comment_count,
       (SELECT COUNT(*) FROM posts         rp WHERE rp.shared_post_id = p.post_id)::float AS share_count
     FROM posts p
     JOIN active_users u ON u.user_id = p.author_id

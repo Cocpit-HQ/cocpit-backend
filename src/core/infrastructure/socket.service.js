@@ -151,6 +151,27 @@ class SocketService {
     this.io.to(room).emit(event, payload);
   }
 
+  notifyUserScoped(userId, event, payload, actorScope = null) {
+    if (!this.io) {
+      this._warnUninitialized();
+      return;
+    }
+
+    const room = getUserRoom(userId);
+    const sockets = this.io.sockets.adapter.rooms.get(room) || new Set();
+
+    for (const socketId of sockets) {
+      const socket = this.io.sockets.sockets.get(socketId);
+      if (!socket) continue;
+
+      if (actorScope && socket.actorScope && socket.actorScope !== actorScope) {
+        continue;
+      }
+
+      socket.emit(event, payload);
+    }
+  }
+
   /**
    * Disconnect sockets belonging to a specific user session.
    * @param {string} userId
@@ -234,6 +255,27 @@ class SocketService {
     }
     const room = getConversationRoom(conversationId);
     this.io.to(room).emit(event, payload);
+  }
+
+  notifyConversationScoped(conversationId, event, payload, actorScope = null) {
+    if (!this.io) {
+      this._warnUninitialized();
+      return;
+    }
+
+    const room = getConversationRoom(conversationId);
+    const sockets = this.io.sockets.adapter.rooms.get(room) || new Set();
+
+    for (const socketId of sockets) {
+      const socket = this.io.sockets.sockets.get(socketId);
+      if (!socket) continue;
+
+      if (actorScope && socket.actorScope && socket.actorScope !== actorScope) {
+        continue;
+      }
+
+      socket.emit(event, payload);
+    }
   }
 
   /**

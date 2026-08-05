@@ -116,13 +116,27 @@ exports.createReport = async (req, res) => {
     }
 
     // 4. Save Report
-    await pool.query(
+    const insertRes = await pool.query(
       `INSERT INTO reports (reporter_id, target_type, target_id, reason_id, custom_reason)
-       VALUES ($1::uuid, $2, $3::uuid, $4, $5)`,
+       VALUES ($1::uuid, $2, $3::uuid, $4, $5)
+       RETURNING id`,
       [reporterId, targetType, targetId, reasonId || null, customReason || null]
     );
 
+    const newReportId = insertRes.rows[0].id;
+
+    // 5. Auto-insert system review note so reporter sees immediate feedback
+    await pool.query(
+      `INSERT INTO report_review_notes (report_id, message, is_system)
+       VALUES ($1, $2, TRUE)`,
+      [
+        newReportId,
+        "We have received your report. Our moderation team will review it as soon as possible. We'll update you if any action is taken.",
+      ]
+    );
+
     res.status(201).json({ message: "Report submitted successfully" });
+
 
   } catch (err) {
     // Handle unique constraint manually just in case

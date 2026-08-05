@@ -259,7 +259,8 @@ exports.getCompanyOfferRecipients = async (req, res) => {
                 u.avatar_url,
                 u.headline,
                 u.company_name AS candidate_company_name,
-                sender.full_name AS sent_by_name
+                sender.full_name AS sent_by_name,
+                sender.headline AS sent_by_headline
             FROM job_offers jo
             JOIN active_users u ON jo.user_id = u.user_id
             LEFT JOIN active_users sender ON jo.sent_by = sender.user_id

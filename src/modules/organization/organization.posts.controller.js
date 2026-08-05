@@ -1,5 +1,17 @@
 const pool = require("../../core/db/pool");
+const BlockModel = require("../../models/block.model");
 const { checkOrgPermission } = require("../../core/utils/rbac");
+const { checkActorBlockStatus } = require("../../core/utils/blockCheck");
+
+// Is the viewer currently "acting as" the given org (via x-actor-type/x-actor-id headers)?
+// Needed so that a like/vote/repost made by ANY team member while acting as this company
+// is reflected as "mine" for every other team member also currently acting as it.
+const isActingAsOrg = (req, orgId) => {
+    const rawType = req.headers["x-actor-type"];
+    const type = typeof rawType === "string" ? rawType.trim().toUpperCase() : null;
+    const isOrgType = type === "ORGANIZATION" || type === "COMPANY" || type === "ORG";
+    return isOrgType && req.headers["x-actor-id"] === orgId;
+};
 
 // Helper for Audit Logging
 const logAudit = async (client, { entityId, actorId, action, metadata = {} }) => {
@@ -72,8 +84,14 @@ exports.getOrganizationPosts = async (req, res) => {
 
     try {
         let hasPrivateAccess = false;
-        if (userId) {
-            hasPrivateAccess = await checkOrgPermission(pool, companyId, userId, ['MANAGE_COMPANY', 'SWITCH_TO_COMPANY', 'MANAGE_ORGANIZATION', 'SWITCH_TO_ORGANIZATION']);
+        if (req.user || req.actor) {
+            const isBlocked = await checkActorBlockStatus(req, companyId);
+            if (isBlocked) {
+                return res.status(404).json({ message: "Organization not found" });
+            }
+            if (userId) {
+                hasPrivateAccess = await checkOrgPermission(pool, companyId, userId, ['MANAGE_COMPANY', 'SWITCH_TO_COMPANY', 'MANAGE_ORGANIZATION', 'SWITCH_TO_ORGANIZATION']);
+            }
         }
 
         const params = [companyId];
@@ -109,6 +127,12 @@ exports.getOrganizationPosts = async (req, res) => {
         }
         const userParamIdx = 2; // Fixed index for user_id in this specific query construction
 
+        // Is the viewer currently acting as THIS company? If so, "my" likes/votes/reposts
+        // should reflect the company's shared identity, not just this individual's clicks.
+        params.push(isActingAsOrg(req, companyId)); // $3
+        const orgActorParamIdx = idx;
+        idx++;
+
         // 1. Cursor handling
         if (cursorCreatedAt && cursorPostId) {
             whereClause += ` AND (p.created_at, p.post_id) < ($${idx}, $${idx + 1})`;
@@ -130,6 +154,7 @@ exports.getOrganizationPosts = async (req, res) => {
 
             -- Author is always the company here
             comp.org_id AS author_id, -- Mapped to author_id for frontend compatibility
+            p.author_id AS created_by_user_id, -- Real team member who created this post
             comp.name AS author_name,
             comp.logo_url AS author_avatar,
             comp.slug AS author_slug,
@@ -144,7 +169,7 @@ exports.getOrganizationPosts = async (req, res) => {
             COALESCE(cc.comment_count, 0)::int AS comment_count,
             (
                 SELECT COALESCE(comp_like.slug, u_like.account_name)
-                FROM post_likes pl_sample
+                FROM active_post_likes pl_sample
                 LEFT JOIN active_users u_like ON u_like.user_id = pl_sample.user_id
                 LEFT JOIN organizations comp_like ON comp_like.org_id = pl_sample.org_id
                 WHERE pl_sample.post_id = p.post_id
@@ -152,17 +177,28 @@ exports.getOrganizationPosts = async (req, res) => {
                 ORDER BY pl_sample.created_at DESC
                 LIMIT 1
             ) AS sample_liker_username,
-            EXISTS(SELECT 1 FROM post_likes pl WHERE pl.post_id = p.post_id AND pl.user_id = $${userParamIdx}) AS is_liked,
+            EXISTS(
+                SELECT 1 FROM active_post_likes pl WHERE pl.post_id = p.post_id AND (
+                    ($${orgActorParamIdx}::boolean AND pl.org_id = $1)
+                    OR (NOT $${orgActorParamIdx}::boolean AND pl.user_id = $${userParamIdx} AND pl.org_id IS NULL)
+                )
+            ) AS is_liked,
             EXISTS(
                 SELECT 1 FROM posts sp_rep
-                WHERE sp_rep.shared_post_id = p.post_id 
-                AND sp_rep.author_id = $${userParamIdx} AND sp_rep.author_org_id IS NULL
+                WHERE sp_rep.shared_post_id = p.post_id
+                AND (
+                    ($${orgActorParamIdx}::boolean AND sp_rep.author_org_id = $1)
+                    OR (NOT $${orgActorParamIdx}::boolean AND sp_rep.author_id = $${userParamIdx} AND sp_rep.author_org_id IS NULL)
+                )
                 AND (sp_rep.is_removed IS FALSE OR sp_rep.is_removed IS NULL)
             ) AS is_reposted,
             (
                 SELECT sp_rep.post_id FROM posts sp_rep
-                WHERE sp_rep.shared_post_id = p.post_id 
-                AND sp_rep.author_id = $${userParamIdx} AND sp_rep.author_org_id IS NULL
+                WHERE sp_rep.shared_post_id = p.post_id
+                AND (
+                    ($${orgActorParamIdx}::boolean AND sp_rep.author_org_id = $1)
+                    OR (NOT $${orgActorParamIdx}::boolean AND sp_rep.author_id = $${userParamIdx} AND sp_rep.author_org_id IS NULL)
+                )
                 AND (sp_rep.is_removed IS FALSE OR sp_rep.is_removed IS NULL)
                 LIMIT 1
             ) AS repost_id,
@@ -176,7 +212,7 @@ exports.getOrganizationPosts = async (req, res) => {
                 )
                 FROM (
                     SELECT pl_sample.user_id, pl_sample.org_id
-                    FROM post_likes pl_sample
+                    FROM active_post_likes pl_sample
                     WHERE pl_sample.post_id = p.post_id
                       AND pl_sample.user_id IS NOT NULL
                       AND pl_sample.user_id != $${userParamIdx}::uuid
@@ -209,19 +245,30 @@ exports.getOrganizationPosts = async (req, res) => {
                              'is_organization_post', (sp.author_org_id IS NOT NULL)
                         ),
                         'media', COALESCE(sp_media.media, '[]'::json),
-                        'like_count', (SELECT COUNT(*) FROM post_likes pl WHERE pl.post_id = sp.post_id)::int,
-                        'comment_count', (SELECT COUNT(*) FROM post_comments pc WHERE pc.post_id = sp.post_id)::int,
-                        'is_liked', EXISTS(SELECT 1 FROM post_likes pl WHERE pl.post_id = sp.post_id AND pl.user_id = $${userParamIdx}),
+                        'like_count', (SELECT COUNT(*) FROM active_post_likes pl WHERE pl.post_id = sp.post_id)::int,
+                        'comment_count', (SELECT COUNT(*) FROM active_post_comments pc WHERE pc.post_id = sp.post_id)::int,
+                        'is_liked', EXISTS(
+                            SELECT 1 FROM active_post_likes pl WHERE pl.post_id = sp.post_id AND (
+                                ($${orgActorParamIdx}::boolean AND pl.org_id = $1)
+                                OR (NOT $${orgActorParamIdx}::boolean AND pl.user_id = $${userParamIdx} AND pl.org_id IS NULL)
+                            )
+                        ),
                         'is_reposted', EXISTS(
                             SELECT 1 FROM posts sp_rep
-                            WHERE sp_rep.shared_post_id = sp.post_id 
-                            AND sp_rep.author_id = $${userParamIdx} AND sp_rep.author_org_id IS NULL
+                            WHERE sp_rep.shared_post_id = sp.post_id
+                            AND (
+                                ($${orgActorParamIdx}::boolean AND sp_rep.author_org_id = $1)
+                                OR (NOT $${orgActorParamIdx}::boolean AND sp_rep.author_id = $${userParamIdx} AND sp_rep.author_org_id IS NULL)
+                            )
                             AND (sp_rep.is_removed IS FALSE OR sp_rep.is_removed IS NULL)
                         ),
                         'repost_id', (
                             SELECT sp_rep.post_id FROM posts sp_rep
-                            WHERE sp_rep.shared_post_id = sp.post_id 
-                            AND sp_rep.author_id = $${userParamIdx} AND sp_rep.author_org_id IS NULL
+                            WHERE sp_rep.shared_post_id = sp.post_id
+                            AND (
+                                ($${orgActorParamIdx}::boolean AND sp_rep.author_org_id = $1)
+                                OR (NOT $${orgActorParamIdx}::boolean AND sp_rep.author_id = $${userParamIdx} AND sp_rep.author_org_id IS NULL)
+                            )
                             AND (sp_rep.is_removed IS FALSE OR sp_rep.is_removed IS NULL)
                             LIMIT 1
                         ),
@@ -235,7 +282,7 @@ exports.getOrganizationPosts = async (req, res) => {
                             )
                             FROM (
                                 SELECT pl_sample.user_id, pl_sample.org_id
-                                FROM post_likes pl_sample
+                                FROM active_post_likes pl_sample
                                 WHERE pl_sample.post_id = sp.post_id
                                   AND pl_sample.user_id IS NOT NULL
                                   AND pl_sample.user_id != $${userParamIdx}::uuid
@@ -260,12 +307,12 @@ exports.getOrganizationPosts = async (req, res) => {
 
         -- Likes
         LEFT JOIN (
-            SELECT post_id, COUNT(*) AS like_count FROM post_likes GROUP BY post_id
+            SELECT post_id, COUNT(*) AS like_count FROM active_post_likes GROUP BY post_id
         ) lc ON lc.post_id = p.post_id
 
         -- Comments
         LEFT JOIN (
-            SELECT post_id, COUNT(*) AS comment_count FROM post_comments GROUP BY post_id
+            SELECT post_id, COUNT(*) AS comment_count FROM active_post_comments GROUP BY post_id
         ) cc ON cc.post_id = p.post_id
 
         -- Polls
@@ -274,7 +321,12 @@ exports.getOrganizationPosts = async (req, res) => {
                 'poll_id', pp.poll_id,
                 'duration', COALESCE(pp.duration, '1 day'),
                 'total_votes', COALESCE(pv.total_votes, 0),
-                'user_vote', (SELECT pv_u.option_id FROM poll_votes pv_u WHERE pv_u.poll_id = pp.poll_id AND pv_u.voter_id = $${userParamIdx} LIMIT 1),
+                'user_vote', (
+                    SELECT pv_u.option_id FROM poll_votes pv_u WHERE pv_u.poll_id = pp.poll_id AND (
+                        ($${orgActorParamIdx}::boolean AND pv_u.org_id = $1)
+                        OR (NOT $${orgActorParamIdx}::boolean AND pv_u.voter_id = $${userParamIdx} AND pv_u.org_id IS NULL)
+                    ) LIMIT 1
+                ),
                 'options', COALESCE(po.options, '[]'::json),
                 'is_active', (pp.created_at + COALESCE(pp.duration, '1 day')::interval > NOW())
              ) AS poll

@@ -9,8 +9,8 @@ const pool = require("../../core/db/pool");
 const getFullProfile = async (userId) => {
     const result = await pool.query(
         `SELECT u.user_id, u.full_name, u.headline, u.avatar_url, u.cover_image_url,
-                u.location, u.about_text, u.email, u.mobile_number, u.account_name, u.website, u.created_at,
-                u.onboarding_step,
+                u.location, u.about_text, u.email, u.recovery_email, u.mobile_number, u.account_name, u.website, u.created_at,
+                u.onboarding_step, u.profile_show_email, u.profile_show_phone,
                 u.location_formatted, u.location_country, u.location_state, u.location_city,
                 u.location_lat, u.location_lng, u.location_place_id,
                 p.profile_id, p.account_type, p.open_to, p.availability, p.work_preference,
@@ -571,6 +571,25 @@ const getRelationshipInfo = async (viewerId, targetId) => {
     return { isFollowing, isFollowedBy, connectionRequestStatus, connectionRequestId, connectionRequestSender };
 };
 
+const getCompanyRelationshipInfo = async (orgId, targetId) => {
+    const followCheck = await pool.query(
+        "SELECT 1 FROM organization_user_follows WHERE org_id = $1 AND user_id = $2",
+        [orgId, targetId]
+    );
+    const followedByCheck = await pool.query(
+        "SELECT 1 FROM organization_followers WHERE org_id = $1 AND user_id = $2",
+        [orgId, targetId]
+    );
+
+    return {
+        isFollowing: followCheck.rowCount > 0,
+        isFollowedBy: followedByCheck.rowCount > 0,
+        connectionRequestStatus: null,
+        connectionRequestId: null,
+        connectionRequestSender: null,
+    };
+};
+
 // ─── Pool (for skills transactions that need client) ────────────────────────────
 
 const getClient = async () => pool.connect();
@@ -596,6 +615,209 @@ const getUserInterests = async (userId) => {
     return result.rows;
 };
 
+// ─── Profile Projects ──────────────────────────────────────────────────────────
+
+const getProjects = async (profileId) => {
+    const projectsRes = await pool.query(
+        `SELECT project_id, profile_id, title, organization, org_id, details,
+                start_month, start_year, end_month, end_year, is_current,
+                role, team_size, role_description, created_at, updated_at
+         FROM projects
+         WHERE profile_id = $1
+         ORDER BY is_current DESC, CAST(start_year AS INTEGER) DESC, start_month DESC, created_at DESC`,
+        [profileId]
+    );
+
+    if (projectsRes.rows.length === 0) return [];
+    const projects = projectsRes.rows;
+    const projectIds = projects.map(p => p.project_id);
+    const placeholders = projectIds.map((_, i) => `$${i + 1}`).join(',');
+
+    const skillsRes = await pool.query(
+        `SELECT ps.project_id, s.name
+         FROM project_skills ps
+         JOIN skills s ON ps.skill_id = s.skill_id
+         WHERE ps.project_id IN (${placeholders})`,
+        projectIds
+    );
+
+    const mediaRes = await pool.query(
+        `SELECT media_id AS id, project_id, media_type AS type, title, url, file_url AS "fileUrl", file_name AS "fileName", display_order
+         FROM project_media
+         WHERE project_id IN (${placeholders})
+         ORDER BY display_order ASC, created_at ASC`,
+        projectIds
+    );
+
+    const skillMap = {};
+    skillsRes.rows.forEach(row => {
+        if (!skillMap[row.project_id]) skillMap[row.project_id] = [];
+        skillMap[row.project_id].push(row.name);
+    });
+
+    const mediaMap = {};
+    mediaRes.rows.forEach(row => {
+        if (!mediaMap[row.project_id]) mediaMap[row.project_id] = [];
+        const { project_id, display_order, ...mediaItem } = row;
+        mediaMap[project_id].push(mediaItem);
+    });
+
+    return projects.map(p => ({
+        ...p,
+        skills: skillMap[p.project_id] || [],
+        media: mediaMap[p.project_id] || []
+    }));
+};
+
+const addProjectInTx = async (client, profileId, data) => {
+    const {
+        title, organization, org_id, details, start_month, start_year,
+        end_month, end_year, is_current, role, team_size, role_description
+    } = data;
+    const result = await client.query(
+        `INSERT INTO projects (
+            profile_id, title, organization, org_id, details,
+            start_month, start_year, end_month, end_year, is_current,
+            role, team_size, role_description
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+         RETURNING *`,
+        [
+            profileId, title, organization, org_id ?? null, details ?? null,
+            start_month, start_year, is_current ? null : (end_month ?? null),
+            is_current ? null : (end_year ?? null), is_current ?? false,
+            role ?? null, team_size ?? null, role_description ?? null
+        ]
+    );
+    return result.rows[0];
+};
+
+const ALLOWED_PROJECT_COLUMNS = new Set([
+    'title', 'organization', 'org_id', 'details',
+    'start_month', 'start_year', 'end_month', 'end_year',
+    'is_current', 'role', 'team_size', 'role_description'
+]);
+
+const updateProjectInTx = async (client, projectId, profileId, data) => {
+    const fields = [];
+    const values = [];
+    let idx = 1;
+    for (const [key, val] of Object.entries(data)) {
+        if (!ALLOWED_PROJECT_COLUMNS.has(key)) continue;
+        if (val !== undefined) {
+            fields.push(`${key} = $${idx++}`);
+            values.push(val);
+        }
+    }
+    if (fields.length === 0) return null;
+    fields.push(`updated_at = now()`);
+    values.push(projectId, profileId);
+    const result = await client.query(
+        `UPDATE projects SET ${fields.join(", ")}
+         WHERE project_id = $${idx++} AND profile_id = $${idx}
+         RETURNING *`,
+        values
+    );
+    return result.rows[0] || null;
+};
+
+const deleteProjectInTx = async (client, projectId, profileId) => {
+    const result = await client.query(
+        `DELETE FROM projects WHERE project_id = $1 AND profile_id = $2 RETURNING *`,
+        [projectId, profileId]
+    );
+    return result.rows[0] || null;
+};
+
+const syncProjectSkillsInTx = async (client, profileId, projectId, skillNames) => {
+    await client.query(`DELETE FROM project_skills WHERE project_id = $1`, [projectId]);
+    if (!Array.isArray(skillNames) || skillNames.length === 0) return;
+    
+    const validNames = [...new Set(skillNames.map(s => (typeof s === 'string' ? s.trim() : '')).filter(Boolean))];
+    if (validNames.length === 0) return;
+
+    await client.query(
+        `INSERT INTO skills (name)
+         SELECT UNNEST($1::text[]) ON CONFLICT (lower(name)) DO NOTHING`,
+        [validNames]
+    );
+
+    const { rows: skills } = await client.query(
+        `SELECT skill_id FROM skills WHERE lower(name) IN (SELECT lower(s) FROM UNNEST($1::text[]) AS s)`,
+        [validNames]
+    );
+
+    if (skills.length > 0) {
+        // Insert into project_skills
+        const values = skills.map((_, i) => `($1, $${i + 2})`).join(",");
+        await client.query(
+            `INSERT INTO project_skills (project_id, skill_id) VALUES ${values} ON CONFLICT DO NOTHING`,
+            [projectId, ...skills.map(s => s.skill_id)]
+        );
+
+        // Sync to user_skills so the profile retains these skills
+        const userValues = skills.map((_, i) => `($1, $${i + 2})`).join(",");
+        await client.query(
+            `INSERT INTO user_skills (profile_id, skill_id) VALUES ${userValues} ON CONFLICT DO NOTHING`,
+            [profileId, ...skills.map(s => s.skill_id)]
+        );
+    }
+};
+
+const syncProjectMediaInTx = async (client, projectId, mediaList) => {
+    await client.query(`DELETE FROM project_media WHERE project_id = $1`, [projectId]);
+    if (!Array.isArray(mediaList) || mediaList.length === 0) return;
+
+    for (let i = 0; i < mediaList.length; i++) {
+        const m = mediaList[i];
+        if (!m || !m.title) continue;
+        const type = ['link', 'image', 'document'].includes(m.type) ? m.type : 'link';
+        await client.query(
+            `INSERT INTO project_media (project_id, media_type, title, url, file_url, file_name, display_order)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+            [
+                projectId,
+                type,
+                m.title.trim(),
+                m.url ?? null,
+                m.fileUrl ?? m.file_url ?? null,
+                m.fileName ?? m.file_name ?? null,
+                i
+            ]
+        );
+    }
+};
+
+const touchProfileVersionInTx = async (client, profileId) => {
+    const result = await client.query(
+        `UPDATE profiles SET version = COALESCE(version, 0) + 1, updated_at = now() 
+         WHERE profile_id = $1 
+         RETURNING version`,
+        [profileId]
+    );
+    return result.rows[0]?.version || null;
+};
+
+const getProfileScoreData = async (userId) => {
+    const u = await getFullProfile(userId);
+    if (!u) return null;
+
+    const profileId = u.profile_id;
+    const [skills, experiences, educations, projects] = await Promise.all([
+        profileId ? getSkills(profileId) : [],
+        profileId ? getExperiencesByProfileId(profileId) : [],
+        profileId ? getEducations(profileId) : [],
+        profileId ? getProjects(profileId) : [],
+    ]);
+
+    return {
+        userProfile: u,
+        skills,
+        experiences,
+        educations,
+        projects,
+    };
+};
+
 module.exports = {
     getFullProfile, updateUserFields, updateAvatarUrl, getAvatarUrl, updateCoverUrl,
     getIdentity, updateIdentity,
@@ -607,8 +829,13 @@ module.exports = {
     getEducations, addEducation, updateEducation, deleteEducation,
     addEducationInTx, updateEducationInTx,
     getSkills, deleteSkillMapping,
-    getCompanyRoles, getSocialCounts, getRelationshipInfo,
+    getCompanyRoles, getSocialCounts, getRelationshipInfo, getCompanyRelationshipInfo,
     getUserRole,
     getUserInterests,
+    getProjects, addProjectInTx, updateProjectInTx, deleteProjectInTx,
+    syncProjectSkillsInTx, syncProjectMediaInTx, touchProfileVersionInTx,
+    getProfileScoreData,
     getClient,
 };
+
+

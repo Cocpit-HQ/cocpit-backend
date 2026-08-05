@@ -8,23 +8,22 @@ class BlockModel {
      * Block a user
      * @param {string} blockerId 
      * @param {string} blockedId 
+     * @param {boolean} isOrgBlock
      */
-    static async blockUser(blockerId, blockedId) {
+    static async blockUser(blockerId, blockedId, isOrgBlock = false) {
         if (blockerId === blockedId) {
             throw new Error("Cannot block yourself");
         }
 
         const result = await pool.query(
-            `INSERT INTO blocks (blocker_id, blocked_id) 
-             VALUES ($1, $2) 
-             ON CONFLICT (blocker_id, blocked_id) DO NOTHING 
+            `INSERT INTO blocks (blocker_id, blocked_id, is_org_block) 
+             VALUES ($1, $2, $3) 
+             ON CONFLICT (blocker_id, blocked_id, is_org_block) DO NOTHING 
              RETURNING *`,
-            [blockerId, blockedId]
+            [blockerId, blockedId, isOrgBlock]
         );
 
         // INVALIDATE CACHE (Both users need update)
-        // user:blocks:{blockerId} now includes blockedId
-        // user:blocks:{blockedId} now includes blockerId (reciprocal visibility check)
         await this.invalidateCache(blockerId);
         await this.invalidateCache(blockedId);
 
@@ -35,11 +34,12 @@ class BlockModel {
      * Unblock a user
      * @param {string} blockerId 
      * @param {string} blockedId 
+     * @param {boolean} isOrgBlock
      */
-    static async unblockUser(blockerId, blockedId) {
+    static async unblockUser(blockerId, blockedId, isOrgBlock = false) {
         await pool.query(
-            `DELETE FROM blocks WHERE blocker_id = $1 AND blocked_id = $2`,
-            [blockerId, blockedId]
+            `DELETE FROM blocks WHERE blocker_id = $1 AND blocked_id = $2 AND is_org_block = $3`,
+            [blockerId, blockedId, isOrgBlock]
         );
 
         // INVALIDATE CACHE
@@ -48,15 +48,16 @@ class BlockModel {
     }
 
     /**
-     * Check if a block exists between two users
+     * Check if a personal block exists between two users
      * @param {string} userA 
      * @param {string} userB 
      */
     static async isBlocked(userA, userB) {
         const result = await pool.query(
             `SELECT 1 FROM blocks 
-             WHERE (blocker_id = $1 AND blocked_id = $2) 
-                OR (blocker_id = $2 AND blocked_id = $1)`,
+             WHERE is_org_block = false
+               AND ((blocker_id = $1 AND blocked_id = $2) 
+                 OR (blocker_id = $2 AND blocked_id = $1))`,
             [userA, userB]
         );
         return result.rowCount > 0;
@@ -64,34 +65,96 @@ class BlockModel {
 
     static async getBlockedIdsForUser(userId) {
         const result = await pool.query(
-            `SELECT blocked_id FROM blocks WHERE blocker_id = $1`,
+            `SELECT blocked_id FROM blocks WHERE blocker_id = $1 AND is_org_block = false`,
             [userId]
         );
         return result.rows.map(row => row.blocked_id);
     }
 
     /**
-     * Get detailed list of users blocked BY userId
+     * Check if an org block exists between orgId and targetUserId
+     * @param {string} orgId 
+     * @param {string} targetUserId 
+     */
+    static async isOrgBlocked(orgId, targetUserId) {
+        if (!orgId || !targetUserId) return false;
+        const result = await pool.query(
+            `SELECT 1 FROM blocks 
+             WHERE (blocker_id = $1 AND blocked_id = $2 AND is_org_block = true)
+                OR (blocker_id = $2 AND blocked_id = $1)`,
+            [orgId, targetUserId]
+        );
+        return result.rowCount > 0;
+    }
+
+    /**
+     * Check if ANY block exists between two entities (bi-directional: User<->User, User<->Org, Org<->User, Org<->Org)
+     * @param {string} entityA 
+     * @param {string} entityB 
+     */
+    static async isAnyBlocked(entityA, entityB) {
+        if (!entityA || !entityB) return false;
+        if (entityA === entityB) return false;
+        const result = await pool.query(
+            `SELECT 1 FROM blocks 
+             WHERE (blocker_id = $1 AND blocked_id = $2)
+                OR (blocker_id = $2 AND blocked_id = $1)`,
+            [entityA, entityB]
+        );
+        return result.rowCount > 0;
+    }
+
+    /**
+     * Get detailed list of users and organizations blocked BY userId (personal)
      * @param {string} userId 
      */
     static async getBlockedUsersDetails(userId) {
         const result = await pool.query(
-            `SELECT u.user_id, u.full_name, u.avatar_url, u.headline, u.account_name 
+            `SELECT 
+                COALESCE(u.user_id, o.org_id) AS user_id,
+                COALESCE(u.full_name, o.name) AS full_name,
+                COALESCE(u.avatar_url, o.logo_url) AS avatar_url,
+                COALESCE(u.headline, o.headline, '') AS headline,
+                COALESCE(u.account_name, o.slug) AS account_name,
+                CASE WHEN o.org_id IS NOT NULL THEN 'COMPANY' ELSE 'USER' END AS entity_type
              FROM blocks b
-             JOIN active_users u ON b.blocked_id = u.user_id
-             WHERE b.blocker_id = $1`,
+             LEFT JOIN active_users u ON b.blocked_id = u.user_id
+             LEFT JOIN organizations o ON b.blocked_id = o.org_id
+             WHERE b.blocker_id = $1 AND b.is_org_block = false`,
             [userId]
         );
         return result.rows;
     }
 
     /**
-     * Get list of users who blocked userId
+     * Get detailed list of users and organizations blocked BY orgId
+     * @param {string} orgId 
+     */
+    static async getOrgBlockedUsersDetails(orgId) {
+        const result = await pool.query(
+            `SELECT 
+                COALESCE(u.user_id, o.org_id) AS user_id,
+                COALESCE(u.full_name, o.name) AS full_name,
+                COALESCE(u.avatar_url, o.logo_url) AS avatar_url,
+                COALESCE(u.headline, o.headline, '') AS headline,
+                COALESCE(u.account_name, o.slug) AS account_name,
+                CASE WHEN o.org_id IS NOT NULL THEN 'COMPANY' ELSE 'USER' END AS entity_type
+             FROM blocks b
+             LEFT JOIN active_users u ON b.blocked_id = u.user_id
+             LEFT JOIN organizations o ON b.blocked_id = o.org_id
+             WHERE b.blocker_id = $1 AND b.is_org_block = true`,
+            [orgId]
+        );
+        return result.rows;
+    }
+
+    /**
+     * Get list of users who blocked userId (personal)
      * @param {string} userId 
      */
     static async getBlockerIdsForUser(userId) {
         const result = await pool.query(
-            `SELECT blocker_id FROM blocks WHERE blocked_id = $1`,
+            `SELECT blocker_id FROM blocks WHERE blocked_id = $1 AND is_org_block = false`,
             [userId]
         );
         return result.rows.map(row => row.blocker_id);
@@ -117,18 +180,18 @@ class BlockModel {
 
     /**
      * Populate cache for a user.
-     * Stores ALL users that share a block relationship (blocked by me OR blocked me).
+     * Stores ALL users that share a personal block relationship (blocked by me OR blocked me).
      * This allows checkBlockStatus(me, other) to work by checking if 'other' is in my set.
      */
     static async cacheBlocks(userId) {
         try {
             if (!redisClient.isOpen) return;
 
-            // Fetch ALL related blocks
+            // Fetch ALL related personal blocks
             const result = await pool.query(
-                `SELECT blocked_id AS related_id FROM blocks WHERE blocker_id = $1
+                `SELECT blocked_id AS related_id FROM blocks WHERE blocker_id = $1 AND is_org_block = false
                  UNION
-                 SELECT blocker_id AS related_id FROM blocks WHERE blocked_id = $1`,
+                 SELECT blocker_id AS related_id FROM blocks WHERE blocked_id = $1 AND is_org_block = false`,
                 [userId]
             );
 

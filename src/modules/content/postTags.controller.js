@@ -1,6 +1,61 @@
 const pool = require("../../core/db/pool");
 const socketService = require("../../core/infrastructure/socket.service");
 
+async function filterAllowedTaggedUserIds(client, actorUserId, targetUserIds) {
+    if (!targetUserIds || targetUserIds.length === 0) return [];
+
+    const usersRes = await client.query(
+        `SELECT user_id, COALESCE(tag_permission, 'everyone') AS tag_permission
+         FROM users
+         WHERE user_id = ANY($1::uuid[])`,
+        [targetUserIds]
+    );
+
+    const allowedUserIds = [];
+
+    for (const u of usersRes.rows) {
+        const { user_id, tag_permission } = u;
+
+        if (tag_permission === 'no_one') {
+            continue;
+        }
+
+        if (tag_permission === 'everyone' || !actorUserId) {
+            allowedUserIds.push(user_id);
+            continue;
+        }
+
+        if (tag_permission === 'connections_only') {
+            const connRes = await client.query(
+                `SELECT 1 FROM connections
+                 WHERE (user_id = $1 AND connected_user_id = $2)
+                    OR (user_id = $2 AND connected_user_id = $1)`,
+                [actorUserId, user_id]
+            );
+            if (connRes.rowCount > 0) {
+                allowedUserIds.push(user_id);
+            }
+            continue;
+        }
+
+        if (tag_permission === 'followers_only') {
+            const followRes = await client.query(
+                `SELECT 1 FROM followers
+                 WHERE follower_id = $1 AND following_id = $2`,
+                [actorUserId, user_id]
+            );
+            if (followRes.rowCount > 0) {
+                allowedUserIds.push(user_id);
+            }
+            continue;
+        }
+
+        allowedUserIds.push(user_id);
+    }
+
+    return allowedUserIds;
+}
+
 exports.syncPostTags = async (req, res) => {
     const { postId, tags, companyId } = req.body;
     const actorUserId = req.user?.sub || req.user?.user_id;
@@ -14,6 +69,9 @@ exports.syncPostTags = async (req, res) => {
     try {
         await client.query('BEGIN');
 
+        // Filter requested tags based on target users' tag_permission settings
+        const allowedTags = await filterAllowedTaggedUserIds(client, actorUserId, uniqueValidTags);
+
         // Capture currently active tags so we only notify for newly tagged users
         const existingTagsRes = await client.query(
             `SELECT tagged_user_id FROM post_tags WHERE post_id = $1 AND is_active_tag = true`,
@@ -21,13 +79,13 @@ exports.syncPostTags = async (req, res) => {
         );
         const existingActiveTagSet = new Set(existingTagsRes.rows.map(row => row.tagged_user_id));
 
-        // Step 1: Soft-delete (deactivate) tags that are NOT in the new list
-        if (uniqueValidTags.length > 0) {
+        // Step 1: Soft-delete (deactivate) tags that are NOT in the new allowed list
+        if (allowedTags.length > 0) {
             await client.query(`
                 UPDATE post_tags 
                 SET is_active_tag = false, updated_at = NOW() 
                 WHERE post_id = $1 AND tagged_user_id != ALL($2::uuid[])
-            `, [postId, uniqueValidTags]);
+            `, [postId, allowedTags]);
         } else {
             // If the array is completely empty, deactivate ALL tags for this post
             await client.query(`
@@ -37,10 +95,8 @@ exports.syncPostTags = async (req, res) => {
             `, [postId]);
         }
 
-        // Step 2: Upsert (Insert or Reactivate) the new tags
-        if (uniqueValidTags.length > 0) {
-            // We use UNNEST($2::uuid[]) to efficiently batch insert multiple rows
-            // ON CONFLICT handles if the user was tagged previously
+        // Step 2: Upsert (Insert or Reactivate) the allowed tags
+        if (allowedTags.length > 0) {
             await client.query(`
                 INSERT INTO post_tags (post_id, tagged_user_id, is_active_tag, updated_at)
                 SELECT $1, unnest($2::uuid[]), true, NOW()
@@ -48,11 +104,11 @@ exports.syncPostTags = async (req, res) => {
                 DO UPDATE SET 
                     is_active_tag = true,
                     updated_at = NOW()
-            `, [postId, uniqueValidTags]);
+            `, [postId, allowedTags]);
         }
 
         // Step 3: Notify only newly tagged users (new active tags not previously active)
-        const newlyTaggedUserIds = uniqueValidTags.filter(taggedUserId => !existingActiveTagSet.has(taggedUserId));
+        const newlyTaggedUserIds = allowedTags.filter(taggedUserId => !existingActiveTagSet.has(taggedUserId));
         const filteredNewlyTaggedUserIds = newlyTaggedUserIds.filter(taggedUserId => taggedUserId !== actorUserId);
 
         if (filteredNewlyTaggedUserIds.length > 0 && actorUserId) {

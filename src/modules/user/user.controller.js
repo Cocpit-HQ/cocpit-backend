@@ -19,7 +19,10 @@ exports.searchUsers = async (req, res) => {
   const searchTerm = q.trim().replace(/^['"]|['"]$/g, '');
 
   try {
-    const queryParams = [currentUserId];
+    const isOrgActor = req.actor?.type === "ORGANIZATION";
+    const blockerId = isOrgActor ? (req.actor.orgId || currentUserId) : currentUserId;
+
+    const queryParams = [blockerId]; // $1 = blocker identity (user or org)
     const likeTerm = `%${searchTerm}%`;
     queryParams.push(likeTerm); // $2
 
@@ -37,6 +40,54 @@ exports.searchUsers = async (req, res) => {
           SELECT 1 FROM job_offers jo 
           WHERE jo.job_id = $${queryParams.length} AND jo.user_id = u.user_id
           AND jo.status IN ('pending', 'accepted', 'declined')
+        )
+      `;
+    }
+
+    let blockFilter;
+    if (isOrgActor && req.actor?.orgId) {
+      blockFilter = `
+        AND NOT EXISTS (
+          SELECT 1 FROM blocks b 
+          WHERE b.is_org_block = true 
+            AND b.blocker_id = $1
+            AND b.blocked_id = u.user_id
+        )
+      `;
+    } else {
+      blockFilter = `
+        AND NOT EXISTS (
+          SELECT 1 FROM blocks b 
+          WHERE b.is_org_block = false
+            AND ((b.blocker_id = $1 AND b.blocked_id = u.user_id)
+              OR (b.blocker_id = u.user_id AND b.blocked_id = $1))
+        )
+      `;
+    }
+
+    let tagPrivacyFilter = "";
+    if (req.query.forTagging === "true") {
+      tagPrivacyFilter = `
+        AND u.tag_permission != 'noone'
+        AND u.tag_permission != 'no_one'
+        AND (
+          u.tag_permission = 'everyone'
+          OR u.tag_permission IS NULL
+          OR (
+            u.tag_permission IN ('connections', 'connections_only')
+            AND EXISTS (
+              SELECT 1 FROM connections c 
+              WHERE (c.user_id = $1 AND c.connected_user_id = u.user_id) 
+                 OR (c.user_id = u.user_id AND c.connected_user_id = $1)
+            )
+          )
+          OR (
+            u.tag_permission IN ('followers', 'followers_only')
+            AND EXISTS (
+              SELECT 1 FROM followers f 
+              WHERE f.follower_id = $1 AND f.following_id = u.user_id
+            )
+          )
         )
       `;
     }
@@ -65,11 +116,8 @@ exports.searchUsers = async (req, res) => {
             AND u.account_name IS NOT NULL AND TRIM(u.account_name) <> ''
           ${userAccountFilter}
           ${excludeJobFilter}
-          AND NOT EXISTS (
-            SELECT 1 FROM blocks b 
-            WHERE (b.blocker_id = $1 AND b.blocked_id = u.user_id)
-               OR (b.blocker_id = u.user_id AND b.blocked_id = $1)
-          )
+          ${blockFilter}
+          ${tagPrivacyFilter}
         )
         UNION ALL
         (
@@ -156,7 +204,8 @@ exports.getUserProfile = async (req, res) => {
 
   // --- Block Check Implementation ---
   if (targetUserId !== currentUserId) {
-    const isBlocked = await checkBlockStatus(currentUserId, targetUserId);
+    const { checkActorBlockStatus } = require("../../core/utils/blockCheck");
+    const isBlocked = await checkActorBlockStatus(req, targetUserId);
     if (isBlocked) {
       return res.status(404).json({ message: "User not found" });
     }
@@ -186,6 +235,11 @@ exports.getUserProfile = async (req, res) => {
         u.location,
         u.about_text AS about,
         u.website,
+        u.email,
+        u.recovery_email,
+        u.mobile_number,
+        u.profile_show_email,
+        u.profile_show_phone,
         u.created_at,
         p.account_type,
         p.open_to,
@@ -232,10 +286,11 @@ exports.getUserProfile = async (req, res) => {
       }).catch(() => {});
     }
 
-    // 2. Fetch Experiences, Educations & Resume using profileRepo
-    const [experiences, educations, resumeRow] = await Promise.all([
+    // 2. Fetch Experiences, Educations, Projects & Resume using profileRepo
+    const [experiences, educations, projects, resumeRow] = await Promise.all([
       profileId ? profileRepo.getExperiences(profileId) : [],
       profileId ? profileRepo.getEducations(profileId) : [],
+      profileId ? profileRepo.getProjects(profileId) : [],
       profileRepo.getLatestResume(targetUserId)
     ]);
 
@@ -257,7 +312,7 @@ exports.getUserProfile = async (req, res) => {
     let connectionRequestId = null;
     let connectionRequestSender = null;
 
-    if (currentUserId && currentUserId !== targetUserId) {
+    if (currentUserId && (currentUserId !== targetUserId || (req.headers['x-actor-type'] || '').toUpperCase().trim() === 'ORGANIZATION')) {
       // Detect if the request is made under an Organization actor context
       const actorType = (req.headers['x-actor-type'] || '').toUpperCase().trim();
       const actorOrgId = req.headers['x-actor-id'] || null;
@@ -294,7 +349,12 @@ exports.getUserProfile = async (req, res) => {
       const isConnected = connectionCheck.rowCount > 0;
 
       if (isConnected) {
-        isFollowing = true;
+        // `connections` is a personal, user-to-user relationship — it says nothing
+        // about whether the acting ORGANIZATION follows this person, so don't let
+        // it stomp the org-aware isFollowing computed above when acting as a company.
+        if (!isOrgActor) {
+          isFollowing = true;
+        }
         isFollowedBy = true;
         connectionRequestStatus = 'connected';
       }
@@ -319,6 +379,18 @@ exports.getUserProfile = async (req, res) => {
       }
     }
 
+    // Privacy gating for email, recovery email, and phone number
+    const isOwner = currentUserId === targetUserId;
+    user.email = (isOwner || user.profile_show_email) ? (user.email || null) : null;
+    user.mobile_number = (isOwner || user.profile_show_phone) ? (user.mobile_number || null) : null;
+    if (isOwner) {
+      user.recovery_email = user.recovery_email || null;
+    } else {
+      delete user.recovery_email;
+    }
+    delete user.profile_show_email;
+    delete user.profile_show_phone;
+
     // Enrich user object with social fields
     user.is_following = isFollowing;
     user.is_followed_by = isFollowedBy;
@@ -336,8 +408,9 @@ exports.getUserProfile = async (req, res) => {
             WHERE f.following_id = $1
               AND NOT EXISTS (
                   SELECT 1 FROM blocks b
-                  WHERE (b.blocker_id = $1 AND b.blocked_id = u.user_id)
-                     OR (b.blocker_id = u.user_id AND b.blocked_id = $1)
+                  WHERE b.is_org_block = false
+                    AND ((b.blocker_id = $1 AND b.blocked_id = u.user_id)
+                      OR (b.blocker_id = u.user_id AND b.blocked_id = $1))
               )
         ) + (
             SELECT COUNT(*) 
@@ -352,8 +425,9 @@ exports.getUserProfile = async (req, res) => {
             WHERE f.follower_id = $1
               AND NOT EXISTS (
                   SELECT 1 FROM blocks b
-                  WHERE (b.blocker_id = $1 AND b.blocked_id = u.user_id)
-                     OR (b.blocker_id = u.user_id AND b.blocked_id = $1)
+                  WHERE b.is_org_block = false
+                    AND ((b.blocker_id = $1 AND b.blocked_id = u.user_id)
+                      OR (b.blocker_id = u.user_id AND b.blocked_id = $1))
               )
         ) + (
             SELECT COUNT(*) 
@@ -368,8 +442,9 @@ exports.getUserProfile = async (req, res) => {
             WHERE c.user_id = $1
               AND NOT EXISTS (
                   SELECT 1 FROM blocks b 
-                  WHERE (b.blocker_id = $1 AND b.blocked_id = u.user_id)
-                     OR (b.blocker_id = u.user_id AND b.blocked_id = $1)
+                  WHERE b.is_org_block = false
+                    AND ((b.blocker_id = $1 AND b.blocked_id = u.user_id)
+                      OR (b.blocker_id = u.user_id AND b.blocked_id = $1))
               )
         ) + (
             SELECT COUNT(*) 
@@ -414,11 +489,13 @@ exports.getUserProfile = async (req, res) => {
       user: user,
       experiences: experiences,
       educations: educations,
+      projects: projects,
       skills: skillsResult.rows,
       organization_roles: companyRoles.rows,
       resume: resume,
     };
 
+    console.log("SENDING USER PROFILE RESPONSE FOR", targetUserId, "PROJECTS COUNT:", projects ? projects.length : 0);
     return res.status(200).json(responseData);
   } catch (err) {
     console.error("Get user profile error:", err);
@@ -470,8 +547,8 @@ exports.getPublicProfilePosts = async (req, res) => {
   // --- Block Check Implementation ---
   const currentUserId = req.user.sub;
   if (targetUserId !== currentUserId) {
-    const { checkBlockStatus } = require("../../core/utils/blockCheck"); // Ensure import scope
-    const isBlocked = await checkBlockStatus(currentUserId, targetUserId);
+    const { checkActorBlockStatus } = require("../../core/utils/blockCheck");
+    const isBlocked = await checkActorBlockStatus(req, targetUserId);
     if (isBlocked) {
       return res.status(404).json({ message: "User not found" });
     }
@@ -484,7 +561,7 @@ exports.getPublicProfilePosts = async (req, res) => {
     let idx = 2;
     let whereClause = "";
     if (category === 'Comments') {
-      whereClause = `WHERE EXISTS (SELECT 1 FROM post_comments pc_filter WHERE pc_filter.post_id = p.post_id AND pc_filter.author_id = $1) AND p.visibility = 'public' AND p.is_active = TRUE AND (p.is_removed IS FALSE OR p.is_removed IS NULL) `;
+      whereClause = `WHERE EXISTS (SELECT 1 FROM active_post_comments pc_filter WHERE pc_filter.post_id = p.post_id AND pc_filter.author_id = $1) AND p.visibility = 'public' AND p.is_active = TRUE AND (p.is_removed IS FALSE OR p.is_removed IS NULL) `;
     } else {
       whereClause = `WHERE p.author_id = $1 AND p.author_org_id IS NULL AND p.visibility = 'public' AND p.is_active = TRUE AND (p.is_removed IS FALSE OR p.is_removed IS NULL) `;
     }
@@ -549,11 +626,11 @@ exports.getPublicProfilePosts = async (req, res) => {
           '[]'::json
         ) AS media,
 
-        (SELECT COUNT(*) FROM post_likes pl WHERE pl.post_id = p.post_id)::int AS like_count,
+        (SELECT COUNT(*) FROM active_post_likes pl WHERE pl.post_id = p.post_id)::int AS like_count,
         (SELECT COUNT(*) FROM posts sp_share WHERE sp_share.shared_post_id = p.post_id)::int AS share_count,
         (
             SELECT COALESCE(comp_like.slug, u_like.account_name)
-            FROM post_likes pl_sample
+            FROM active_post_likes pl_sample
             LEFT JOIN active_users u_like ON u_like.user_id = pl_sample.user_id
             LEFT JOIN organizations comp_like ON comp_like.org_id = pl_sample.org_id
             WHERE pl_sample.post_id = p.post_id
@@ -561,9 +638,9 @@ exports.getPublicProfilePosts = async (req, res) => {
             ORDER BY pl_sample.created_at DESC
             LIMIT 1
         ) AS sample_liker_username,
-        (SELECT COUNT(*) FROM post_comments pc WHERE pc.post_id = p.post_id)::int AS comment_count,
+        (SELECT COUNT(*) FROM active_post_comments pc WHERE pc.post_id = p.post_id)::int AS comment_count,
 
-        EXISTS(SELECT 1 FROM post_likes pl WHERE pl.post_id = p.post_id AND pl.user_id = $${userParamIdx}) AS is_liked,
+        EXISTS(SELECT 1 FROM active_post_likes pl WHERE pl.post_id = p.post_id AND pl.user_id = $${userParamIdx}) AS is_liked,
         EXISTS(
             SELECT 1 FROM posts sp_rep
             WHERE sp_rep.shared_post_id = p.post_id 
@@ -587,7 +664,7 @@ exports.getPublicProfilePosts = async (req, res) => {
             )
             FROM (
                 SELECT pl_sample.user_id, pl_sample.org_id
-                FROM post_likes pl_sample
+                FROM active_post_likes pl_sample
                 WHERE pl_sample.post_id = p.post_id
                   AND pl_sample.user_id IS NOT NULL
                   AND pl_sample.user_id != $${userParamIdx}::uuid
@@ -649,10 +726,10 @@ exports.getPublicProfilePosts = async (req, res) => {
                 'is_organization_post', (sp.author_org_id IS NOT NULL)
               ),
               'media', COALESCE((SELECT json_agg(json_build_object('url', pm.url, 'media_type', pm.media_type)) FROM post_media pm WHERE pm.post_id = sp.post_id), '[]'::json),
-              'like_count', (SELECT COUNT(*) FROM post_likes pl WHERE pl.post_id = sp.post_id)::int,
-              'comment_count', (SELECT COUNT(*) FROM post_comments pc WHERE pc.post_id = sp.post_id)::int,
+              'like_count', (SELECT COUNT(*) FROM active_post_likes pl WHERE pl.post_id = sp.post_id)::int,
+              'comment_count', (SELECT COUNT(*) FROM active_post_comments pc WHERE pc.post_id = sp.post_id)::int,
               'share_count', (SELECT COUNT(*) FROM posts sp_share2 WHERE sp_share2.shared_post_id = sp.post_id)::int,
-              'is_liked', EXISTS(SELECT 1 FROM post_likes pl WHERE pl.post_id = sp.post_id AND pl.user_id = $${userParamIdx}),
+              'is_liked', EXISTS(SELECT 1 FROM active_post_likes pl WHERE pl.post_id = sp.post_id AND pl.user_id = $${userParamIdx}),
               'is_reposted', EXISTS(
                   SELECT 1 FROM posts sp_rep
                   WHERE sp_rep.shared_post_id = sp.post_id 
@@ -676,7 +753,7 @@ exports.getPublicProfilePosts = async (req, res) => {
                   )
                   FROM (
                       SELECT pl_sample.user_id, pl_sample.org_id
-                      FROM post_likes pl_sample
+                      FROM active_post_likes pl_sample
                       WHERE pl_sample.post_id = sp.post_id
                         AND pl_sample.user_id IS NOT NULL
                         AND pl_sample.user_id != $${userParamIdx}::uuid
@@ -761,8 +838,9 @@ exports.getPublicProfilePosts = async (req, res) => {
           p.shared_post_id IS NULL 
           OR NOT EXISTS (
               SELECT 1 FROM blocks b 
-              WHERE (b.blocker_id = $${userParamIdx} AND b.blocked_id = sp.author_id)
-                 OR (b.blocker_id = sp.author_id AND b.blocked_id = $${userParamIdx})
+              WHERE b.is_org_block = false
+                AND ((b.blocker_id = $${userParamIdx} AND b.blocked_id = sp.author_id)
+                  OR (b.blocker_id = sp.author_id AND b.blocked_id = $${userParamIdx}))
           )
       )
 
@@ -850,8 +928,8 @@ exports.getPublicProfileCommentedPosts = async (req, res) => {
   // Block check
   const currentUserId = req.user.sub;
   if (targetUserId !== currentUserId) {
-    const { checkBlockStatus } = require("../../core/utils/blockCheck");
-    const isBlocked = await checkBlockStatus(currentUserId, targetUserId);
+    const { checkActorBlockStatus } = require("../../core/utils/blockCheck");
+    const isBlocked = await checkActorBlockStatus(req, targetUserId);
     if (isBlocked) {
       return res.status(404).json({ message: "User not found" });
     }
@@ -863,7 +941,7 @@ exports.getPublicProfileCommentedPosts = async (req, res) => {
 
     // Only public posts the target user has commented on (excluding their own posts)
     let whereClause = `WHERE EXISTS (
-      SELECT 1 FROM post_comments pc_filter
+      SELECT 1 FROM active_post_comments pc_filter
       WHERE pc_filter.post_id = p.post_id
         AND pc_filter.author_id = $1
         AND pc_filter.author_org_id IS NULL
@@ -904,7 +982,7 @@ exports.getPublicProfileCommentedPosts = async (req, res) => {
         COALESCE(pm.media, '[]'::json) AS media,
         COALESCE(lc.like_count, 0) AS like_count,
 
-        EXISTS(SELECT 1 FROM post_likes pl_me WHERE pl_me.post_id = p.post_id AND pl_me.user_id = $${userParamIdx} AND pl_me.org_id IS NULL) AS is_liked,
+        EXISTS(SELECT 1 FROM active_post_likes pl_me WHERE pl_me.post_id = p.post_id AND pl_me.user_id = $${userParamIdx} AND pl_me.org_id IS NULL) AS is_liked,
         EXISTS(
             SELECT 1 FROM posts sp_rep
             WHERE sp_rep.shared_post_id = p.post_id 
@@ -928,7 +1006,7 @@ exports.getPublicProfileCommentedPosts = async (req, res) => {
             )
             FROM (
                 SELECT pl_sample.user_id, pl_sample.org_id
-                FROM post_likes pl_sample
+                FROM active_post_likes pl_sample
                 WHERE pl_sample.post_id = p.post_id
                   AND pl_sample.user_id IS NOT NULL
                   AND pl_sample.user_id != $${userParamIdx}::uuid
@@ -938,7 +1016,7 @@ exports.getPublicProfileCommentedPosts = async (req, res) => {
             LEFT JOIN active_users u_like ON u_like.user_id = sub.user_id
             LEFT JOIN organizations comp_like ON comp_like.org_id = sub.org_id
         ) AS liked_users,
-        EXISTS(SELECT 1 FROM post_comments pc_me WHERE pc_me.post_id = p.post_id AND pc_me.author_id = $${userParamIdx} AND pc_me.author_org_id IS NULL) AS is_commented,
+        EXISTS(SELECT 1 FROM active_post_comments pc_me WHERE pc_me.post_id = p.post_id AND pc_me.author_id = $${userParamIdx} AND pc_me.author_org_id IS NULL) AS is_commented,
 
         EXISTS(SELECT 1 FROM saved_post sp_me WHERE sp_me.post_id = p.post_id AND sp_me.user_id = $${userParamIdx} AND sp_me.org_id IS NULL) AS is_saved,
         
@@ -954,11 +1032,11 @@ exports.getPublicProfileCommentedPosts = async (req, res) => {
             'author_name', mc_u.full_name,
             'author_avatar', mc_u.avatar_url,
             'author_title', mc_u.headline,
-            'like_count', (SELECT COUNT(*) FROM comment_likes cl WHERE cl.comment_id = mc.comment_id)::int,
-            'is_liked', EXISTS(SELECT 1 FROM comment_likes cl WHERE cl.comment_id = mc.comment_id AND cl.user_id = $${userParamIdx} AND cl.org_id IS NULL),
-            'reply_count', (SELECT COUNT(*) FROM post_comments rc WHERE rc.parent_id = mc.comment_id)::int
+            'like_count', (SELECT COUNT(*) FROM active_comment_likes cl WHERE cl.comment_id = mc.comment_id)::int,
+            'is_liked', EXISTS(SELECT 1 FROM active_comment_likes cl WHERE cl.comment_id = mc.comment_id AND cl.user_id = $${userParamIdx} AND cl.org_id IS NULL),
+            'reply_count', (SELECT COUNT(*) FROM active_post_comments rc WHERE rc.parent_id = mc.comment_id)::int
           )
-          FROM post_comments mc
+          FROM active_post_comments mc
           JOIN active_users mc_u ON mc_u.user_id = mc.author_id
           WHERE mc.post_id = p.post_id
             AND mc.author_id = $1
@@ -975,8 +1053,8 @@ exports.getPublicProfileCommentedPosts = async (req, res) => {
           SELECT pm.post_id, json_agg(json_build_object('media_id', pm.media_id, 'url', pm.url, 'media_type', pm.media_type)) AS media
           FROM post_media pm GROUP BY pm.post_id
       ) pm ON pm.post_id = p.post_id
-      LEFT JOIN (SELECT post_id, COUNT(*) AS like_count FROM post_likes GROUP BY post_id) lc ON lc.post_id = p.post_id
-      LEFT JOIN (SELECT post_id, COUNT(*) AS comment_count FROM post_comments GROUP BY post_id) cc ON cc.post_id = p.post_id
+      LEFT JOIN (SELECT post_id, COUNT(*) AS like_count FROM active_post_likes GROUP BY post_id) lc ON lc.post_id = p.post_id
+      LEFT JOIN (SELECT post_id, COUNT(*) AS comment_count FROM active_post_comments GROUP BY post_id) cc ON cc.post_id = p.post_id
       ${whereClause}
       ORDER BY p.created_at DESC, p.post_id DESC
       LIMIT $${limitIdx}
@@ -1003,7 +1081,7 @@ exports.getPublicProfileCommentedPosts = async (req, res) => {
  */
 exports.deleteAccount = async (req, res) => {
   const userId = req.user.sub;
-  const { password, idToken } = req.body;
+  const { password, idToken, companyIdsToDelete = [] } = req.body;
 
   const crypto = require("crypto");
   const redisClient = require("../../core/db/redis");
@@ -1061,7 +1139,8 @@ exports.deleteAccount = async (req, res) => {
       return res.status(400).json({ message: "Authentication is required to delete your account" });
     }
 
-    // 3. Block deletion if owner of a company
+    // 3. Block deletion if owner of a company not selected for deletion
+    console.log(`[DeleteAccount] Checking owned companies against companyIdsToDelete:`, companyIdsToDelete);
     const ownedCompanies = await client.query(
       `SELECT c.org_id, c.name
        FROM organizations c
@@ -1070,21 +1149,41 @@ exports.deleteAccount = async (req, res) => {
       [userId]
     );
 
-    for (const company of ownedCompanies.rows) {
+    const missingDeletions = ownedCompanies.rows.filter(c => !companyIdsToDelete.includes(c.org_id));
+
+    if (missingDeletions.length > 0) {
       throw new AppError(
-        `You are the sole owner of "${company.name}". Please transfer ownership or delete the company before deleting your account.`,
+        `You are the sole owner of "${missingDeletions[0].name}". Please transfer ownership or select it for deletion alongside your account.`,
         400
       );
     }
 
-    // 4. Schedule soft deletion (40 days from now)
+    // 4. Create Deletion Batch
+    const batchType = companyIdsToDelete.length > 0 ? 'USER_AND_COMPANIES' : 'USER';
+    const batchRes = await client.query(
+      `INSERT INTO deletion_batches (created_by, type) VALUES ($1, $2) RETURNING batch_id`,
+      [userId, batchType]
+    );
+    const batchId = batchRes.rows[0].batch_id;
+
+    // 5. Schedule soft deletion for user (40 days from now)
     const deletionExecuteAt = new Date(Date.now() + 40 * 24 * 60 * 60 * 1000);
     await client.query(
       `UPDATE users
-       SET deletion_scheduled_at = NOW(), deletion_execute_at = $1
-       WHERE user_id = $2`,
-      [deletionExecuteAt, userId]
+       SET deletion_scheduled_at = NOW(), deletion_execute_at = $1, deletion_batch_id = $2
+       WHERE user_id = $3`,
+      [deletionExecuteAt, batchId, userId]
     );
+
+    // 6. Soft delete selected companies
+    if (companyIdsToDelete.length > 0) {
+      await client.query(
+        `UPDATE organizations
+         SET is_deleted = TRUE, deleted_at = NOW(), deletion_scheduled_at = NOW(), deletion_execute_at = $1, deletion_batch_id = $2
+         WHERE org_id = ANY($3) AND created_by = $4`,
+        [deletionExecuteAt, batchId, companyIdsToDelete, userId]
+      );
+    }
 
     // 5. Revoke all active sessions from DB and collect session IDs for blacklisting
     const sessionsRes = await client.query(
@@ -1191,11 +1290,28 @@ exports.restoreAccount = async (req, res) => {
       return res.status(400).json({ message: "This restoration link has expired. Please request a new one from the login page." });
     }
 
-    // Clear deletion schedule on the user
-    await client.query(
-      `UPDATE users SET deletion_scheduled_at = NULL, deletion_execute_at = NULL WHERE user_id = $1`,
+    // Get user and their batch ID
+    const userRes = await client.query(
+      `SELECT deletion_batch_id FROM users WHERE user_id = $1`,
       [tokenRow.user_id]
     );
+    const batchId = userRes.rowCount > 0 ? userRes.rows[0].deletion_batch_id : null;
+
+    // Clear deletion schedule on the user
+    await client.query(
+      `UPDATE users SET deletion_scheduled_at = NULL, deletion_execute_at = NULL, deletion_batch_id = NULL WHERE user_id = $1`,
+      [tokenRow.user_id]
+    );
+
+    // Clear deletion schedule on linked companies if a batch exists
+    if (batchId) {
+      await client.query(
+        `UPDATE organizations 
+         SET is_deleted = FALSE, deleted_at = NULL, deletion_scheduled_at = NULL, deletion_execute_at = NULL, deletion_batch_id = NULL 
+         WHERE deletion_batch_id = $1`,
+        [batchId]
+      );
+    }
 
     // Mark token as used
     await client.query(
@@ -1281,11 +1397,12 @@ exports.resendRecoveryEmail = async (req, res) => {
  */
 exports.getSuggestedUsers = async (req, res) => {
   const currentUserId = req.user.sub;
-  const { excludeJobId } = req.query;
+  const { excludeJobId, forTagging } = req.query;
 
   try {
     const params = [currentUserId];
     let excludeJobFilter = '';
+    let taggingPrivacyFilter = '';
 
     if (excludeJobId) {
       params.push(excludeJobId);
@@ -1294,6 +1411,32 @@ exports.getSuggestedUsers = async (req, res) => {
           SELECT 1 FROM job_offers jo 
           WHERE jo.job_id = $2 AND jo.user_id = u.user_id
           AND jo.status IN ('pending', 'accepted', 'declined')
+        )
+      `;
+    }
+
+    if (forTagging === "true" || forTagging === "1") {
+      taggingPrivacyFilter = `
+        AND u.tag_permission != 'noone'
+        AND u.tag_permission != 'no_one'
+        AND (
+          u.tag_permission IS NULL 
+          OR u.tag_permission IN ('everyone')
+          OR (
+            u.tag_permission IN ('connections_only', 'connections')
+            AND EXISTS (
+              SELECT 1 FROM connections c 
+              WHERE (c.user_id = $1 AND c.connected_user_id = u.user_id) 
+                 OR (c.user_id = u.user_id AND c.connected_user_id = $1)
+            )
+          )
+          OR (
+            u.tag_permission IN ('followers_only', 'followers')
+            AND EXISTS (
+              SELECT 1 FROM followers f 
+              WHERE f.follower_id = $1 AND f.following_id = u.user_id
+            )
+          )
         )
       `;
     }
@@ -1316,10 +1459,12 @@ exports.getSuggestedUsers = async (req, res) => {
       )
       AND NOT EXISTS (
         SELECT 1 FROM blocks b 
-        WHERE (b.blocker_id = $1 AND b.blocked_id = u.user_id)
-           OR (b.blocker_id = u.user_id AND b.blocked_id = $1)
+        WHERE b.is_org_block = false
+          AND ((b.blocker_id = $1 AND b.blocked_id = u.user_id)
+            OR (b.blocker_id = u.user_id AND b.blocked_id = $1))
       )
       ${excludeJobFilter}
+      ${taggingPrivacyFilter}
       ORDER BY followers_count DESC, u.created_at DESC
       LIMIT 15
     `;

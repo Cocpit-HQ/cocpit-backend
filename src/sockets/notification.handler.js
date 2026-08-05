@@ -1,6 +1,34 @@
 const pool = require("../core/db/pool");
 const { getOrgRoom } = require("../core/utils/socketRooms");
 
+const getActorRoomKey = (actorType, actorId) => {
+    if (actorType === "ORGANIZATION" && actorId) {
+        return getOrgRoom(actorId);
+    }
+    return null;
+};
+
+const applyActorContextToRooms = (socket, actorType, actorId) => {
+    if (!socket || typeof socket.join !== "function" || typeof socket.leave !== "function") {
+        return;
+    }
+
+    const previousActorRoom = socket._actorRoom;
+    const nextActorRoom = getActorRoomKey(actorType, actorId);
+
+    if (previousActorRoom && previousActorRoom !== nextActorRoom) {
+        socket.leave(previousActorRoom);
+    }
+
+    if (nextActorRoom && nextActorRoom !== previousActorRoom) {
+        socket.join(nextActorRoom);
+    }
+
+    socket._actorRoom = nextActorRoom || null;
+};
+
+module.exports.applyActorContextToRooms = applyActorContextToRooms;
+
 module.exports.registerNotificationHandlers = (io, socket) => {
     const userId = socket.userId;
 
@@ -37,12 +65,10 @@ module.exports.registerNotificationHandlers = (io, socket) => {
 
     // Backward compatibility alias
     socket.on("joinCompanyRoom", (payload) => {
-        // We can't easily "redirect" because joinOrgRoom is async and this is a listener
-        // But we can call the same logic or just trigger it
         const orgId = typeof payload === "string" ? payload : payload?.companyId;
         if (orgId) {
             socket.emit("info", { message: "joinCompanyRoom is deprecated, use joinOrgRoom" });
-            // We can manually call join if we want or just let the user switch
+            applyActorContextToRooms(socket, "ORGANIZATION", orgId);
         }
     });
 
@@ -63,6 +89,9 @@ module.exports.registerNotificationHandlers = (io, socket) => {
         const orgId = typeof payload === "string" ? payload : payload?.companyId;
         if (orgId) {
             socket.leave(getOrgRoom(orgId));
+            if (socket._actorRoom === getOrgRoom(orgId)) {
+                socket._actorRoom = null;
+            }
         }
     });
 };

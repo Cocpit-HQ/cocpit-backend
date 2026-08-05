@@ -70,6 +70,9 @@ const requestOTP = async (email, purpose = "signup") => {
         const diffSeconds = (now - created) / 1000;
 
         if (diffSeconds < 60) {
+            if (diffSeconds < 5) {
+                return { error: { status: 429, message: "A verification code was just requested. Please wait a few seconds before trying again." } };
+            }
             if (record.request_count >= 3) {
                 // Return a structured error that the controller can handle
                 return { error: { status: 429, message: "Too many OTP requests. Please wait a minute before trying again." } };
@@ -102,9 +105,19 @@ const requestOTP = async (email, purpose = "signup") => {
     // Store in database
     await pool.query(query, [normalizedEmail, otpHash, expiresAt, shouldUpdateCreatedAt, requestCount]);
 
-    // Send email using Resend
-    await emailService.sendOTPEmail(normalizedEmail, otp);
-    return { success: true };
+    // Send email using Resend with purpose
+    try {
+        await emailService.sendOTPEmail(normalizedEmail, otp, purpose);
+        return { success: true };
+    } catch (emailErr) {
+        console.error("Failed to send OTP email via provider:", emailErr);
+        return {
+            error: {
+                status: 500,
+                message: "Failed to send verification email: " + (emailErr.message || "Email provider error"),
+            },
+        };
+    }
 };
 
 /**

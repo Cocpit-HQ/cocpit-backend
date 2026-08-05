@@ -113,14 +113,14 @@ exports.getEngagement = async (req, res) => {
         // 1. Total Likes & Comments on Company Posts
         const statsRes = await client.query(
             `SELECT 
-                (SELECT COUNT(*) FROM post_likes WHERE org_id = $1) as company_likes_given, 
-                (SELECT COUNT(*) FROM post_comments WHERE author_org_id = $1) as company_comments_given,
+                (SELECT COUNT(*) FROM active_post_likes WHERE org_id = $1) as company_likes_given, 
+                (SELECT COUNT(*) FROM active_post_comments WHERE author_org_id = $1) as company_comments_given,
                 -- Received Engagement (on posts authored by company)
                 -- We look for posts where author_org_id = companyId
-                (SELECT COUNT(*) FROM post_likes pl 
+                (SELECT COUNT(*) FROM active_post_likes pl 
                  JOIN posts p ON pl.post_id = p.post_id 
                  WHERE p.author_org_id = $1) as likes_received,
-                (SELECT COUNT(*) FROM post_comments pc
+                (SELECT COUNT(*) FROM active_post_comments pc
                  JOIN posts p ON pc.post_id = p.post_id
                  WHERE p.author_org_id = $1) as comments_received
             `,
@@ -130,13 +130,13 @@ exports.getEngagement = async (req, res) => {
         // 2. Top Performing Posts
         const topPostsRes = await client.query(
             `SELECT p.post_id, p.content, p.created_at,
-                (SELECT COUNT(*) FROM post_likes pl WHERE pl.post_id = p.post_id) as like_count,
-                (SELECT COUNT(*) FROM post_comments pc WHERE pc.post_id = p.post_id) as comment_count
+                (SELECT COUNT(*) FROM active_post_likes pl WHERE pl.post_id = p.post_id) as like_count,
+                (SELECT COUNT(*) FROM active_post_comments pc WHERE pc.post_id = p.post_id) as comment_count
              FROM posts p
              WHERE p.author_org_id = $1
              ORDER BY (
-                (SELECT COUNT(*) FROM post_likes pl2 WHERE pl2.post_id = p.post_id) +
-                (SELECT COUNT(*) FROM post_comments pc2 WHERE pc2.post_id = p.post_id)
+                (SELECT COUNT(*) FROM active_post_likes pl2 WHERE pl2.post_id = p.post_id) +
+                (SELECT COUNT(*) FROM active_post_comments pc2 WHERE pc2.post_id = p.post_id)
              ) DESC
              LIMIT 5`,
             [companyId]

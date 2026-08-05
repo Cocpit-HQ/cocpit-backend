@@ -42,6 +42,23 @@ async function checkDbConnection() {
       console.log("📦 Database:", res.rows[0].current_database);
       console.log("👤 DB User:", res.rows[0].current_user);
       _dbConnected = true;
+
+      // Drop foreign key constraints on blocks table and ensure password_reset_tokens table exists
+      pool.query(`
+        ALTER TABLE blocks DROP CONSTRAINT IF EXISTS blocks_blocked_id_fkey;
+        ALTER TABLE blocks DROP CONSTRAINT IF EXISTS blocks_blocker_id_fkey;
+
+        CREATE TABLE IF NOT EXISTS password_reset_tokens (
+          token_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+          user_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
+          token_hash TEXT NOT NULL,
+          expires_at TIMESTAMPTZ NOT NULL,
+          created_at TIMESTAMPTZ DEFAULT now(),
+          used BOOLEAN DEFAULT FALSE
+        );
+        CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_user_id ON password_reset_tokens(user_id);
+        CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_hash ON password_reset_tokens(token_hash);
+      `).catch(err => console.warn("Blocks schema constraint drop notice:", err.message));
     }
     return true;
   } catch (err) {

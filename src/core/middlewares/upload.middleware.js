@@ -98,26 +98,32 @@ const upload = multer({ storage });
 
 const uploadResume = multer({
   storage: resumeStorage,
-  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB limit
   fileFilter: (req, file, cb) => {
     const allowed = [
       "application/pdf",
       "application/msword",
-      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     ];
-
-    const allowed_img = [
-      "image/png",
-      "image/jpeg",
-      "image/jpg",
-    ];
-    if (!allowed.includes(file.mimetype) && !allowed_img.includes(file.mimetype)) {
-      return cb(new Error("Only PDF/DOC/DOCX or images allowed"));
+    if (!allowed.includes(file.mimetype)) {
+      return cb(new Error("Invalid file format. Allowed: PDF, DOC, DOCX."));
     }
-
     cb(null, true);
-  },
+  }
+});
+
+const uploadResumeMemory = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB limit
+  fileFilter: (req, file, cb) => {
+    const allowed = [
+      "application/pdf"
+    ];
+    if (!allowed.includes(file.mimetype)) {
+      return cb(new Error("Invalid file format. Allowed: PDF."));
+    }
+    cb(null, true);
+  }
 });
 
 const uploadAvatar = multer({
@@ -439,11 +445,99 @@ const uploadPostMedia = multer({
     }
     cb(null, true);
   }
-}).array("media", 10);
+}).fields([{ name: "media", maxCount: 10 }, { name: "cover_media", maxCount: 1 }]);
+
+// --- Profile Project Media Upload Configuration ---
+createDir(path.join(uploadsDir, 'project_media'));
+
+let projectMediaStorage;
+if (hasCloudinary) {
+  projectMediaStorage = new CloudinaryStorage({
+    cloudinary,
+    params: async (req, file) => {
+      const isDoc = file.mimetype.startsWith("application/") || file.mimetype === "text/plain";
+      const cleanName = file.originalname.replace(/[^a-zA-Z0-9.]/g, '_');
+      return {
+        folder: "project_media",
+        resource_type: isDoc ? "raw" : "image",
+        public_id: `proj-${req.user?.sub || 'usr'}-${Date.now()}-${cleanName}`,
+      };
+    }
+  });
+} else {
+  projectMediaStorage = multer.diskStorage({
+    destination: (req, file, cb) => {
+      cb(null, 'uploads/project_media/');
+    },
+    filename: (req, file, cb) => {
+      const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+      const ext = path.extname(file.originalname);
+      cb(null, 'proj-' + uniqueSuffix + ext);
+    }
+  });
+}
+
+const uploadProjectMedia = multer({
+  storage: projectMediaStorage,
+  limits: { fileSize: 25 * 1024 * 1024 }, // 25MB safety limit
+  fileFilter: (req, file, cb) => {
+    const allowed = [
+      "image/jpeg", "image/png", "image/webp", "image/jpg",
+      "application/pdf", "application/msword",
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "application/vnd.ms-powerpoint",
+      "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+      "text/plain"
+    ];
+    if (!allowed.includes(file.mimetype)) {
+      return cb(new Error("Invalid format. Allowed: Images, PDF, DOC, DOCX, PPT, PPTX, TXT."));
+    }
+    cb(null, true);
+  }
+});
+
+// --- Support Ticket Attachment Upload ---
+createDir(path.join(uploadsDir, 'support'));
+
+let supportStorage;
+if (hasCloudinary) {
+  supportStorage = new CloudinaryStorage({
+    cloudinary,
+    params: {
+      folder: "support",
+      resource_type: "image",
+      public_id: (req, file) => `ticket-${req.user?.sub || 'user'}-${Date.now()}`,
+    },
+  });
+} else {
+  supportStorage = multer.diskStorage({
+    destination: (req, file, cb) => {
+      cb(null, 'uploads/support/');
+    },
+    filename: (req, file, cb) => {
+      const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+      const ext = path.extname(file.originalname);
+      cb(null, 'ticket-' + uniqueSuffix + ext);
+    }
+  });
+}
+
+const uploadSupportAttachment = multer({
+  storage: supportStorage,
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    const allowed = ["image/jpeg", "image/jpg", "image/png", "image/webp"];
+    if (!allowed.includes(file.mimetype)) {
+      return cb(new Error("Invalid format. Allowed formats: JPG, PNG, WEBP."));
+    }
+    cb(null, true);
+  },
+});
 
 module.exports = {
   upload,
   uploadResume,
+  uploadResumeMemory,
   uploadAvatar,
   uploadEventBanner,
   uploadCommunityBanner,
@@ -452,5 +546,7 @@ module.exports = {
   uploadApplicationFiles,
   uploadTaskSubmission,
   uploadChatMedia,
-  uploadPostMedia
+  uploadPostMedia,
+  uploadProjectMedia,
+  uploadSupportAttachment
 };

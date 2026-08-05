@@ -5,6 +5,9 @@
  * GET  /api/entity/preview/:entityType/:entityId — Preview metadata API
  */
 
+const pool = require("../../core/db/pool");
+const BlockModel = require("../../models/block.model");
+const { checkBlockStatus } = require("../../core/utils/blockCheck");
 const { shareEntity } = require("./share.service");
 const { resolveEntity, resolveBatch } = require("./entityResolver");
 const { validateShareRules } = require("./shareRules");
@@ -70,6 +73,7 @@ exports.share = async (req, res) => {
  */
 exports.getPreview = async (req, res) => {
     const { entityType, entityId } = req.params;
+    const viewerId = req.user?.sub || req.user?.user_id;
 
     if (!entityType || !entityId) {
         return res.status(400).json({ message: "entityType and entityId are required" });
@@ -81,6 +85,41 @@ exports.getPreview = async (req, res) => {
     }
 
     try {
+        if (viewerId) {
+            if (entityType === "post") {
+                const postRes = await pool.query(
+                    `SELECT author_id, author_org_id FROM posts WHERE post_id = $1`,
+                    [entityId]
+                );
+                if (postRes.rowCount > 0) {
+                    const post = postRes.rows[0];
+                    if (post.author_org_id) {
+                        const isBlocked = await BlockModel.isOrgBlocked(post.author_org_id, viewerId);
+                        if (isBlocked) {
+                            return res.status(404).json({ message: "Content unavailable due to blocking" });
+                        }
+                    } else if (post.author_id && post.author_id !== viewerId) {
+                        const isBlocked = await checkBlockStatus(viewerId, post.author_id);
+                        if (isBlocked) {
+                            return res.status(404).json({ message: "Content unavailable due to blocking" });
+                        }
+                    }
+                }
+            } else if (entityType === "company") {
+                const isBlocked = await BlockModel.isOrgBlocked(entityId, viewerId);
+                if (isBlocked) {
+                    return res.status(404).json({ message: "Profile unavailable due to blocking" });
+                }
+            } else if (entityType === "profile") {
+                if (entityId !== viewerId) {
+                    const isBlocked = await checkBlockStatus(viewerId, entityId);
+                    if (isBlocked) {
+                        return res.status(404).json({ message: "Profile unavailable due to blocking" });
+                    }
+                }
+            }
+        }
+
         const preview = await resolveEntity(entityType, entityId);
 
         if (!preview) {
@@ -862,11 +901,13 @@ exports.getShareUsers = async (req, res) => {
 
         // Build query parameters
         const values = [userId];
-        let nameFilter = "";
+        let userNameFilter = "";
+        let orgNameFilter = "";
         if (searchTerm) {
             values.push(`%${searchTerm}%`);
             const likeTermIdx = values.length;
-            nameFilter = `AND (u.full_name ILIKE $${likeTermIdx} OR u.account_name ILIKE $${likeTermIdx})`;
+            userNameFilter = `AND (u.full_name ILIKE $${likeTermIdx} OR u.account_name ILIKE $${likeTermIdx})`;
+            orgNameFilter = `AND (org.name ILIKE $${likeTermIdx} OR org.slug ILIKE $${likeTermIdx})`;
         }
 
         let cursorClause = "";
@@ -908,8 +949,9 @@ exports.getShareUsers = async (req, res) => {
             SELECT * FROM (
                 SELECT DISTINCT ON (user_id)
                     user_id, full_name, account_name, headline, avatar_url, conversation_id,
-                    priority, sort_ts
+                    priority, sort_ts, type, slug
                 FROM (
+                    -- User accounts
                     SELECT
                         u.user_id,
                         u.full_name,
@@ -928,7 +970,9 @@ exports.getShareUsers = async (req, res) => {
                             WHEN EXISTS (SELECT 1 FROM followers f WHERE f.following_id = $1 AND f.follower_id = u.user_id) THEN 4
                             ELSE 5
                         END AS priority,
-                        COALESCE(chat.last_message_at, u.created_at) AS sort_ts
+                        COALESCE(chat.last_message_at, u.created_at) AS sort_ts,
+                        'USER' AS type,
+                        u.account_name AS slug
                     FROM users u
                     LEFT JOIN LATERAL (
                         SELECT conv.conversation_id, conv.last_message_at
@@ -947,11 +991,55 @@ exports.getShareUsers = async (req, res) => {
                     WHERE u.user_id != $1
                       AND u.full_name IS NOT NULL AND TRIM(u.full_name) <> ''
                       AND u.account_name IS NOT NULL AND TRIM(u.account_name) <> ''
-                      ${nameFilter}
+                      ${userNameFilter}
                       AND NOT EXISTS (
                           SELECT 1 FROM blocks b
                           WHERE (b.blocker_id = $1 AND b.blocked_id = u.user_id)
                              OR (b.blocker_id = u.user_id AND b.blocked_id = $1)
+                      )
+
+                    UNION ALL
+
+                    -- Company / Organization accounts
+                    SELECT
+                        org.org_id AS user_id,
+                        org.name AS full_name,
+                        org.slug AS account_name,
+                        COALESCE(org.headline, org.industry, '') AS headline,
+                        org.logo_url AS avatar_url,
+                        org_chat.conversation_id,
+                        CASE
+                            -- 1. Recent Chat Companies
+                            WHEN org_chat.conversation_id IS NOT NULL THEN 1
+                            -- 2. Followed Companies
+                            WHEN EXISTS (SELECT 1 FROM organization_followers ofw WHERE ofw.org_id = org.org_id AND ofw.user_id = $1) THEN 3
+                            ELSE 5
+                        END AS priority,
+                        COALESCE(org_chat.last_message_at, org.created_at) AS sort_ts,
+                        'COMPANY' AS type,
+                        org.slug AS slug
+                    FROM organizations org
+                    LEFT JOIN LATERAL (
+                        SELECT conv.conversation_id, conv.last_message_at
+                        FROM conversation_participants cp1
+                        JOIN conversation_participants cp2 ON cp1.conversation_id = cp2.conversation_id
+                        JOIN conversations conv ON conv.conversation_id = cp1.conversation_id
+                        WHERE cp1.user_id = $1
+                          AND cp2.org_id = org.org_id
+                          AND conv.is_group = FALSE
+                          AND conv.is_active = TRUE
+                          AND cp1.left_at IS NULL
+                          AND cp2.left_at IS NULL
+                        ORDER BY conv.last_message_at DESC NULLS LAST
+                        LIMIT 1
+                    ) org_chat ON TRUE
+                    WHERE org.is_deleted = FALSE
+                      AND org.name IS NOT NULL AND TRIM(org.name) <> ''
+                      ${orgNameFilter}
+                      AND NOT EXISTS (
+                          SELECT 1 FROM blocks b
+                          WHERE (b.blocker_id = org.org_id AND b.blocked_id = $1)
+                             OR (b.blocker_id = $1 AND b.blocked_id = org.org_id)
                       )
                 ) AS unsorted_results
                 ORDER BY user_id, priority ASC

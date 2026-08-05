@@ -5,6 +5,7 @@ const { connected } = require("node:process");
 const { formatDistanceToNow } = require('date-fns');
 const socketService = require("../../core/infrastructure/socket.service");
 const { hasActorPermission } = require("../../core/middlewares/actor-context.middleware");
+const { logAudit } = require("../../core/infrastructure/audit.service");
 const { markConversationAsRead } = require("../../services/conversationRead.service");
 const {
     getConversationMuteState,
@@ -595,12 +596,29 @@ exports.unsubscribeCompany = async (req, res) => {
 
 // Get company relationship status
 exports.getCompanyRelationship = async (req, res) => {
-    const userId = req.user.sub;
     const companyId = req.params.companyId || req.params.orgId;
 
     try {
+        // When acting as an organization, "is following" must reflect the acting
+        // org's own follow (organization_org_follows), not the human user's
+        // personal follow row — those are tracked independently.
+        if (req.actor?.type === "ORGANIZATION") {
+            const result = await pool.query(
+                `SELECT
+                    (SELECT 1 FROM organization_org_follows WHERE follower_org_id = $1 AND following_org_id = $2) as is_following,
+                    (SELECT COUNT(*) FROM organization_followers WHERE org_id = $2) as follower_count`,
+                [req.actor.orgId, companyId]
+            );
+
+            return res.json({
+                isFollowing: !!result.rows[0]?.is_following,
+                followerCount: parseInt(result.rows[0]?.follower_count || 0)
+            });
+        }
+
+        const userId = req.user.sub;
         const result = await pool.query(
-            `SELECT 
+            `SELECT
                 (SELECT 1 FROM organization_followers WHERE user_id = $1 AND org_id = $2) as is_following,
                 (SELECT COUNT(*) FROM organization_followers WHERE org_id = $2) as follower_count`,
             [userId, companyId]
@@ -622,26 +640,43 @@ exports.getCompanyFollowers = async (req, res) => {
     const { search } = req.query;
 
     try {
-        let query = `
+        let userQuery = `
             SELECT u.user_id, u.full_name, u.headline, u.avatar_url, cf.created_at as followed_at,
                    EXISTS(
                        SELECT 1 FROM organization_user_follows ouf
                        WHERE ouf.org_id = $1 AND ouf.user_id = u.user_id
-                   ) as is_followed_back
+                   ) as is_followed_back,
+                   'user' as type
             FROM organization_followers cf
             JOIN active_users u ON cf.user_id = u.user_id
             WHERE cf.org_id = $1
         `;
+
+        // Organizations follow other organizations via organization_org_follows,
+        // a separate table from the user-level organization_followers — without
+        // this branch, companies that follow an org never show up as followers.
+        let companyQuery = `
+            SELECT c.org_id as user_id, c.name as full_name, c.industry as headline, c.logo_url as avatar_url, cf.created_at as followed_at,
+                   EXISTS(
+                       SELECT 1 FROM organization_org_follows back_f
+                       WHERE back_f.follower_org_id = $1 AND back_f.following_org_id = c.org_id
+                   ) as is_followed_back,
+                   'company' as type
+            FROM organization_org_follows cf
+            JOIN organizations c ON cf.follower_org_id = c.org_id
+            WHERE cf.following_org_id = $1 AND c.is_deleted = FALSE
+        `;
+
         const params = [companyId];
 
         if (search && search.trim()) {
-            query += ` AND (u.full_name ILIKE $2 OR u.headline ILIKE $2)`;
+            userQuery += ` AND (u.full_name ILIKE $2 OR u.headline ILIKE $2)`;
+            companyQuery += ` AND (c.name ILIKE $2 OR c.industry ILIKE $2)`;
             params.push(`%${search.trim()}%`);
         }
 
-        query += ` ORDER BY cf.created_at DESC`;
-
-        const result = await pool.query(query, params);
+        const fullQuery = `(${userQuery}) UNION ALL (${companyQuery}) ORDER BY followed_at DESC`;
+        const result = await pool.query(fullQuery, params);
 
         res.json(result.rows);
     } catch (err) {
@@ -753,8 +788,9 @@ exports.getFollowers = async (req, res) => {
         userQuery += ` 
             AND NOT EXISTS (
                 SELECT 1 FROM blocks b 
-                WHERE (b.blocker_id = $2 AND b.blocked_id = u.user_id)
-                   OR (b.blocker_id = u.user_id AND b.blocked_id = $2)
+                WHERE b.is_org_block = false
+                  AND ((b.blocker_id = $2 AND b.blocked_id = u.user_id)
+                    OR (b.blocker_id = u.user_id AND b.blocked_id = $2))
             )
         `;
 
@@ -829,8 +865,9 @@ exports.getFollowing = async (req, res) => {
         userQuery += `
             AND NOT EXISTS (
                 SELECT 1 FROM blocks b 
-                WHERE (b.blocker_id = $${viewerIdx} AND b.blocked_id = u.user_id)
-                   OR (b.blocker_id = u.user_id AND b.blocked_id = $${viewerIdx})
+                WHERE b.is_org_block = false
+                  AND ((b.blocker_id = $${viewerIdx} AND b.blocked_id = u.user_id)
+                    OR (b.blocker_id = u.user_id AND b.blocked_id = $${viewerIdx}))
             )
         `;
 
@@ -1529,8 +1566,9 @@ exports.getConnectionSuggestions = async (req, res) => {
             JOIN active_users u ON u.user_id = r.suggest_id
             WHERE NOT EXISTS (
                 SELECT 1 FROM blocks
-                WHERE (blocker_id = $1 AND blocked_id = u.user_id)
-                   OR (blocker_id = u.user_id AND blocked_id = $1)
+                WHERE is_org_block = false
+                  AND ((blocker_id = $1 AND blocked_id = u.user_id)
+                    OR (blocker_id = u.user_id AND blocked_id = $1))
             )
             ORDER BY r.total_score DESC
             LIMIT $2
@@ -1845,8 +1883,9 @@ exports.getMyConnections = async (req, res) => {
         userQuery += `
             AND NOT EXISTS (
                 SELECT 1 FROM blocks b 
-                WHERE (b.blocker_id = $1 AND b.blocked_id = u.user_id)
-                   OR (b.blocker_id = u.user_id AND b.blocked_id = $1)
+                WHERE b.is_org_block = false
+                  AND ((b.blocker_id = $1 AND b.blocked_id = u.user_id)
+                    OR (b.blocker_id = u.user_id AND b.blocked_id = $1))
             )
         `;
 
@@ -2000,8 +2039,26 @@ SELECT
     c.*,
     c.is_job_chat AS "isJobChat",
     -- Block Status
-    CASE WHEN c.is_group THEN false ELSE EXISTS(SELECT 1 FROM blocks WHERE blocker_id = $1 AND blocked_id = u.user_id) END as is_blocked_by_me,
-    CASE WHEN c.is_group THEN false ELSE EXISTS(SELECT 1 FROM blocks WHERE blocker_id = u.user_id AND blocked_id = $1) END as is_blocked_by_other,
+    CASE WHEN c.is_group THEN false ELSE EXISTS (
+        SELECT 1 FROM blocks b 
+        JOIN conversation_participants cp_b ON cp_b.conversation_id = c.conversation_id 
+        WHERE b.blocker_id = COALESCE($2, $1) 
+          AND (
+            (cp_b.user_id IS NOT NULL AND cp_b.user_id != $1 AND b.blocked_id = cp_b.user_id)
+            OR
+            (cp_b.org_id IS NOT NULL AND ($2::uuid IS NULL OR cp_b.org_id != $2) AND b.blocked_id = cp_b.org_id)
+          )
+    ) END as is_blocked_by_me,
+    CASE WHEN c.is_group THEN false ELSE EXISTS (
+        SELECT 1 FROM blocks b 
+        JOIN conversation_participants cp_b ON cp_b.conversation_id = c.conversation_id 
+        WHERE b.blocked_id = COALESCE($2, $1) 
+          AND (
+            (cp_b.user_id IS NOT NULL AND cp_b.user_id != $1 AND b.blocker_id = cp_b.user_id)
+            OR
+            (cp_b.org_id IS NOT NULL AND ($2::uuid IS NULL OR cp_b.org_id != $2) AND b.blocker_id = cp_b.org_id)
+          )
+    ) END as is_blocked_by_other,
 
     -- Name logic: Use group name if group, else other participant's name (User or Company)
     CASE 
@@ -2159,7 +2216,7 @@ LEFT JOIN LATERAL (
     LIMIT 1
 ) cp_other ON c.is_group = FALSE
 LEFT JOIN user_display_profiles u ON cp_other.user_id = u.user_id
-LEFT JOIN organizations comp ON cp_other.org_id = comp.org_id -- JOIN organizations for Company participants
+LEFT JOIN organization_display_profiles comp ON cp_other.org_id = comp.org_id -- JOIN organizations for Company participants
 
 -- LATERAL JOIN to find the latest VISIBLE message across ANY period
 LEFT JOIN LATERAL (
@@ -2183,7 +2240,7 @@ LEFT JOIN LATERAL (
                 ) 
                 FROM messages rm 
                 LEFT JOIN user_display_profiles ru ON rm.sender_id = ru.user_id
-                LEFT JOIN organizations rc ON rm.author_org_id = rc.org_id
+                LEFT JOIN organization_display_profiles rc ON rm.author_org_id = rc.org_id
                 WHERE rm.message_id = msg.replied_msg_id)
             ELSE NULL
         END AS reply_message,
@@ -2326,7 +2383,7 @@ WHERE gi.invitee_id = $1
         ($2::uuid IS NOT NULL AND (m.author_org_id != $2 OR m.author_org_id IS NULL))
         OR
         -- If I am User, sender is NOT me (User)
-        ($2::uuid IS NULL AND (m.sender_id != $1 OR m.sender_id IS NULL))
+        ($2::uuid IS NULL AND (m.author_org_id IS NOT NULL OR m.sender_id != $1 OR m.sender_id IS NULL))
     )
     AND (cp.last_read_at IS NULL OR m.created_at > cp.last_read_at)
     AND m.created_at >= cp.joined_at
@@ -2478,7 +2535,15 @@ exports.sendMessage = async (req, res) => {
         try {
             await client.query('BEGIN ISOLATION LEVEL SERIALIZABLE');
 
-            let senderName, senderAvatar, senderSlug = null, senderHeadline = null, senderOrgHeadline = null;
+            let senderName, senderAvatar, senderSlug = null, senderHeadline = null, senderOrgHeadline = null, senderMemberName = null;
+            const senderUserRes = await client.query(
+                `SELECT full_name FROM users WHERE user_id = $1`,
+                [senderId]
+            );
+            if (senderUserRes.rowCount > 0) {
+                senderMemberName = senderUserRes.rows[0].full_name;
+            }
+
             if (authorCompanyId) {
                 const orgRes = await client.query(
                     `SELECT name, logo_url, slug, headline FROM organizations WHERE org_id = $1`,
@@ -2538,18 +2603,16 @@ exports.sendMessage = async (req, res) => {
                 return res.status(400).json({ message: "Target not found." });
             }
 
-            // Block check: only applies to user targets (companies are not blockable)
-            if (targetIsUser) {
-                try {
-                    const { checkBlockStatus } = require("../../core/utils/blockCheck");
-                    const isBlocked = await checkBlockStatus(senderId, targetUserId);
-                    if (isBlocked) {
-                        await client.query('ROLLBACK');
-                        return res.status(404).json({ message: "User not found" });
-                    }
-                } catch (e) {
-                    console.error("Block check failed", e);
+            // Block check: applies to both user and organization targets
+            try {
+                const { checkActorBlockStatus } = require("../../core/utils/blockCheck");
+                const isBlocked = await checkActorBlockStatus(req, targetUserId);
+                if (isBlocked) {
+                    await client.query('ROLLBACK');
+                    return res.status(403).json({ message: "Cannot send message. You or the recipient have blocked each other." });
                 }
+            } catch (e) {
+                console.error("Block check failed", e);
             }
 
             let conversationId;
@@ -2806,7 +2869,7 @@ exports.sendMessage = async (req, res) => {
                         COALESCE(rc.name, ru.display_name, 'Deleted User') as sender_name
                     FROM messages rm
                     LEFT JOIN user_display_profiles ru ON rm.sender_id = ru.user_id
-                    LEFT JOIN organizations rc ON rm.author_org_id = rc.org_id
+                    LEFT JOIN organization_display_profiles rc ON rm.author_org_id = rc.org_id
                     WHERE rm.message_id = $1
                 `, [replyMessageId]);
                 if (rmRes.rowCount > 0) replyMessageData = rmRes.rows[0];
@@ -2843,7 +2906,7 @@ exports.sendMessage = async (req, res) => {
                 shared_post: sharedPostData,
                 shared_profile: sharedProfileData,
                 sender_name: senderName,
-                sender_member_name: req.user?.full_name || req.user?.display_name || null,
+                sender_member_name: senderMemberName,
                 org_headline: authorCompanyId ? (senderOrgHeadline || '') : '',
                 sender_avatar: senderAvatar
             };
@@ -2906,22 +2969,29 @@ exports.sendMessage = async (req, res) => {
                 unread_count: 0, // sender has read their own message
             };
 
+            const senderActorScope = req.actor?.type === "ORGANIZATION" && req.actor?.orgId
+                ? `org:${req.actor.orgId}`
+                : `user:${senderId}`;
+            const targetActorScope = targetIsCompany
+                ? `org:${targetUserId}`
+                : `user:${targetUserId}`;
+
             // Notify via socket
             if (targetIsCompany) {
-                // User→Company: notify all members of the target company
+                // User→Company: notify all members of the target company in the company actor scope only
                 const members = await pool.query(
                     'SELECT user_id FROM organization_members WHERE org_id = $1',
                     [targetUserId]
                 );
                 for (const member of members.rows) {
-                    socketService.notifyUser(member.user_id, "new_message", messageData);
-                    socketService.notifyUser(member.user_id, "conversation_updated", {
+                    socketService.notifyUserScoped(member.user_id, "new_message", messageData, targetActorScope);
+                    socketService.notifyUserScoped(member.user_id, "conversation_updated", {
                         ...receiverConvPayload,
                         target_profile_type: 'COMPANY',
                         target_company_id: targetUserId
-                    });
+                    }, targetActorScope);
                     if (!targetNotificationMuted) {
-                        socketService.notifyUser(member.user_id, "notification", {
+                        socketService.notifyUserScoped(member.user_id, "notification", {
                             type: "message",
                             from: senderId,
                             senderName,
@@ -2930,18 +3000,18 @@ exports.sendMessage = async (req, res) => {
                             text: previewText,
                             targetProfileType: 'COMPANY',
                             targetCompanyId: targetUserId
-                        });
+                        }, targetActorScope);
                     }
                 }
             } else {
-                // User→User or Company→User: notify target user directly
-                socketService.notifyUser(targetUserId, "new_message", messageData);
-                socketService.notifyUser(targetUserId, "conversation_updated", {
+                // User→User or Company→User: notify target user directly in the user actor scope
+                socketService.notifyUserScoped(targetUserId, "new_message", messageData, targetActorScope);
+                socketService.notifyUserScoped(targetUserId, "conversation_updated", {
                     ...receiverConvPayload,
                     target_profile_type: 'USER'
-                });
+                }, targetActorScope);
                 if (!targetNotificationMuted) {
-                    socketService.notifyUser(targetUserId, "notification", {
+                    socketService.notifyUserScoped(targetUserId, "notification", {
                         type: "message",
                         from: senderId,
                         senderName,
@@ -2949,16 +3019,16 @@ exports.sendMessage = async (req, res) => {
                         conversationId,
                         text: previewText,
                         targetProfileType: 'USER'
-                    });
+                    }, targetActorScope);
                 }
             }
-            // Notify sender as well
-            socketService.notifyUser(senderId, "new_message", messageData);
-            socketService.notifyUser(senderId, "conversation_updated", {
+            // Notify sender as well in the sender's active scope
+            socketService.notifyUserScoped(senderId, "new_message", messageData, senderActorScope);
+            socketService.notifyUserScoped(senderId, "conversation_updated", {
                 ...senderConvPayload,
                 target_profile_type: targetIsCompany ? 'COMPANY' : 'USER',
                 target_company_id: targetIsCompany ? targetUserId : null
-            });
+            }, senderActorScope);
 
             res.status(201).json({
                 conversationId,
@@ -3374,7 +3444,7 @@ exports.getMessages = async (req, res) => {
                         ) 
                         FROM messages rm 
                         LEFT JOIN user_display_profiles ru ON rm.sender_id = ru.user_id
-                        LEFT JOIN organizations rc ON rm.author_org_id = rc.org_id
+                        LEFT JOIN organization_display_profiles rc ON rm.author_org_id = rc.org_id
                         WHERE rm.message_id = m.replied_msg_id)
                     ELSE NULL
                 END AS reply_message,
@@ -3396,7 +3466,7 @@ exports.getMessages = async (req, res) => {
                 ) AS reactions
              FROM messages m
              LEFT JOIN user_display_profiles u ON m.sender_id = u.user_id
-             LEFT JOIN organizations c ON m.author_org_id = c.org_id
+             LEFT JOIN organization_display_profiles c ON m.author_org_id = c.org_id
              LEFT JOIN posts sp ON m.shared_post_id = sp.post_id
              LEFT JOIN user_display_profiles au ON sp.author_id = au.user_id
              WHERE m.conversation_id = $1 
@@ -3543,6 +3613,9 @@ exports.editMessage = async (req, res) => {
     }
 
     try {
+        const actorScope = getSocialActorScope(req, req.query.companyId || null);
+        const companyId = actorScope.orgId;
+
         const result = await pool.query(
             `UPDATE messages 
              SET text_content = $1, 
@@ -3568,10 +3641,22 @@ exports.editMessage = async (req, res) => {
             sender_avatar: sender.avatar_url
         };
 
-        // Notify all participants
-        const { conversation_id } = updatedMessage;
+        if (companyId) {
+            await logAudit(pool, {
+                entityId: companyId,
+                actorId: userId,
+                action: "EDIT_MESSAGE",
+                metadata: { messageId: message_id, conversationId: updatedMessage.conversation_id }
+            });
+        }
 
-        socketService.notifyConversation(conversation_id, "new_message", messageData);
+        // Notify all participants that the message was edited
+        const { conversation_id } = updatedMessage;
+        socketService.notifyConversation(conversation_id, "message_edited", {
+            messageId: message_id,
+            conversationId: conversation_id,
+            text_content
+        });
 
         res.json({ message: "Message edited successfully", data: messageData });
     } catch (err) {
@@ -3614,7 +3699,7 @@ exports.getNotifications = async (req, res) => {
                 cr.status as request_status
             FROM notifications n 
             LEFT JOIN user_display_profiles u ON n.sender_id = u.user_id 
-            LEFT JOIN organizations c ON NULLIF(n.metadata->>'org_id', '')::uuid = c.org_id
+            LEFT JOIN organization_display_profiles c ON NULLIF(n.metadata->>'org_id', '')::uuid = c.org_id
             LEFT JOIN connection_requests cr ON n.sender_id = cr.sender_id AND n.user_id = cr.receiver_id AND cr.status = 'pending'
             WHERE 
         `;
@@ -3791,46 +3876,109 @@ exports.deleteNotificationsBulk = async (req, res) => {
    BLOCKING
    ===================================================== */
 exports.blockUser = async (req, res) => {
-    const userId = req.user.sub;
+    const isOrgActor = req.actor?.type === "ORGANIZATION";
+    const blockerId = isOrgActor ? req.actor.orgId : req.user?.sub;
     const targetId = req.params.id;
 
-    if (userId === targetId) {
-        return res.status(400).json({ message: "Cannot block yourself" });
+    if (!blockerId || !targetId) {
+        return res.status(400).json({ message: "Invalid request parameters" });
+    }
+
+    if (blockerId === targetId) {
+        return res.status(400).json({ message: isOrgActor ? "An organization cannot block itself" : "Cannot block yourself" });
     }
 
     try {
+        // Actor & Ownership Validation
+        if (!isOrgActor) {
+            // User is blocking target. Verify target is not an organization created/managed by this user
+            const orgCheck = await pool.query(
+                `SELECT org_id, created_by FROM organizations WHERE org_id = $1`,
+                [targetId]
+            );
+            if (orgCheck.rowCount > 0) {
+                const org = orgCheck.rows[0];
+                if (org.created_by === blockerId) {
+                    return res.status(400).json({ message: "You cannot block an organization that you own or manage" });
+                }
+                const memberCheck = await pool.query(
+                    `SELECT 1 FROM organization_members WHERE org_id = $1 AND user_id = $2 AND status = 'ACTIVE'`,
+                    [targetId, blockerId]
+                );
+                if (memberCheck.rowCount > 0) {
+                    return res.status(400).json({ message: "You cannot block an organization that you own or manage" });
+                }
+            }
+        } else {
+            // Organization is blocking target. Verify target is not the creator or active member of this organization
+            const memberCheck = await pool.query(
+                `SELECT 1 FROM organization_members WHERE org_id = $1 AND user_id = $2 AND status = 'ACTIVE'
+                 UNION
+                 SELECT 1 FROM organizations WHERE org_id = $1 AND created_by = $2`,
+                [blockerId, targetId]
+            );
+            if (memberCheck.rowCount > 0) {
+                return res.status(400).json({ message: "An organization cannot block its own owner or active members" });
+            }
+        }
+
         const BlockModel = require("../../models/block.model");
-        const { checkBlockStatus } = require("../../core/utils/blockCheck");
 
-        // Use the model to block
-        await BlockModel.blockUser(userId, targetId);
+        // Use model to record block (foreign key is safe)
+        await BlockModel.blockUser(blockerId, targetId, isOrgActor);
 
-        // Also remove any existing connections logic?
-        // Ideally blocking should unfollow/unconnect. 
-        // Let's do that for consistency.
+        // Remove any existing relationships (follows, connections, requests, subscriptions)
         const client = await pool.connect();
         try {
             await client.query("BEGIN");
-            // Delete connections (bidirectional)
-            await client.query(
-                "DELETE FROM connections WHERE (user_id = $1 AND connected_user_id = $2) OR (user_id = $2 AND connected_user_id = $1)",
-                [userId, targetId]
-            );
-            // Delete follows (bidirectional)
-            await client.query(
-                "DELETE FROM followers WHERE (follower_id = $1 AND following_id = $2) OR (follower_id = $2 AND following_id = $1)",
-                [userId, targetId]
-            );
-            // Delete pending requests (bidirectional)
-            // Note: blockUser normally handles the block status in connection_requests if implemented there, 
-            // but here we are using a separate BlockModel? 
-            // The previous logic for handleConnectionRequest used 'blocked' status in connection_requests.
-            // If BlockModel is separate, we should probably clear the connection_request or set it to blocked if the schema supports it.
-            // For now, adhering to 'remove connection' logic: delete requests.
-            await client.query(
-                "DELETE FROM connection_requests WHERE (sender_id = $1 AND receiver_id = $2) OR (sender_id = $2 AND receiver_id = $1)",
-                [userId, targetId]
-            );
+            if (isOrgActor) {
+                // Delete org follows / connections with target user
+                await client.query(
+                    "DELETE FROM organization_user_follows WHERE org_id = $1 AND user_id = $2",
+                    [blockerId, targetId]
+                );
+                await client.query(
+                    "DELETE FROM organization_connections WHERE org_id = $1 AND user_id = $2",
+                    [blockerId, targetId]
+                );
+                await client.query(
+                    "DELETE FROM organization_connection_requests WHERE org_id = $1 AND user_id = $2",
+                    [blockerId, targetId]
+                );
+            } else {
+                // Delete user connections (bidirectional)
+                await client.query(
+                    "DELETE FROM connections WHERE (user_id = $1 AND connected_user_id = $2) OR (user_id = $2 AND connected_user_id = $1)",
+                    [blockerId, targetId]
+                );
+                // Delete follows (bidirectional)
+                await client.query(
+                    "DELETE FROM followers WHERE (follower_id = $1 AND following_id = $2) OR (follower_id = $2 AND following_id = $1)",
+                    [blockerId, targetId]
+                );
+                // Delete pending requests (bidirectional)
+                await client.query(
+                    "DELETE FROM connection_requests WHERE (sender_id = $1 AND receiver_id = $2) OR (sender_id = $2 AND receiver_id = $1)",
+                    [blockerId, targetId]
+                );
+                // Delete org follows / connections if targetId is an org
+                await client.query(
+                    "DELETE FROM organization_user_follows WHERE user_id = $1 AND org_id = $2",
+                    [blockerId, targetId]
+                );
+                await client.query(
+                    "DELETE FROM organization_connections WHERE user_id = $1 AND org_id = $2",
+                    [blockerId, targetId]
+                );
+                await client.query(
+                    "DELETE FROM organization_connection_requests WHERE user_id = $1 AND org_id = $2",
+                    [blockerId, targetId]
+                );
+                await client.query(
+                    "DELETE FROM community_subscriptions WHERE user_id = $1 AND community_id IN (SELECT community_id FROM communities WHERE org_id = $2)",
+                    [blockerId, targetId]
+                );
+            }
 
             await client.query("COMMIT");
         } catch (e) {
@@ -3840,10 +3988,9 @@ exports.blockUser = async (req, res) => {
             client.release();
         }
 
-        const blockerRes = await pool.query(
-            `SELECT full_name, avatar_url FROM users WHERE user_id = $1`,
-            [userId]
-        );
+        const blockerRes = isOrgActor
+            ? await pool.query(`SELECT name as full_name, logo_url as avatar_url FROM organizations WHERE org_id = $1`, [blockerId])
+            : await pool.query(`SELECT full_name, avatar_url FROM users WHERE user_id = $1`, [blockerId]);
         const blockerInfo = blockerRes.rows[0] || {};
 
         const convRes = await pool.query(
@@ -3852,23 +3999,24 @@ exports.blockUser = async (req, res) => {
              JOIN conversation_participants cp1 ON c.conversation_id = cp1.conversation_id AND cp1.user_id = $1
              JOIN conversation_participants cp2 ON c.conversation_id = cp2.conversation_id AND cp2.user_id = $2
              WHERE c.is_group = FALSE AND c.is_active = TRUE`,
-            [userId, targetId]
+            [req.user.sub, targetId]
         );
         const conversation_id = convRes.rowCount > 0 ? convRes.rows[0].conversation_id : null;
 
         const payload = {
-            blocked_by_user_id: userId,
+            blocked_by_user_id: blockerId,
             blocked_by_name: blockerInfo.full_name,
-            blocked_by_avatar: blockerInfo.avatar_url
+            blocked_by_avatar: blockerInfo.avatar_url,
+            is_org_block: isOrgActor
         };
         if (conversation_id) {
             payload.conversation_id = conversation_id;
         }
 
         socketService.notifyUser(targetId, "user_blocked", payload);
-        socketService.notifyUser(userId, "block_confirmed", payload);
+        socketService.notifyUser(req.user.sub, "block_confirmed", payload);
 
-        res.json({ message: "User blocked successfully" });
+        res.json({ message: isOrgActor ? "User blocked for organization" : "User blocked successfully" });
     } catch (err) {
         console.error("Block user error:", err);
         res.status(500).json({ message: "Internal server error" });
@@ -4010,17 +4158,17 @@ exports.getRelationshipStatus = async (req, res) => {
 };
 
 exports.unblockUser = async (req, res) => {
-    const userId = req.user.sub;
+    const isOrgActor = req.actor?.type === "ORGANIZATION";
+    const blockerId = isOrgActor ? req.actor.orgId : req.user.sub;
     const targetId = req.params.id;
 
     try {
         const BlockModel = require("../../models/block.model");
-        await BlockModel.unblockUser(userId, targetId);
+        await BlockModel.unblockUser(blockerId, targetId, isOrgActor);
 
-        const unblockerRes = await pool.query(
-            `SELECT full_name, avatar_url FROM users WHERE user_id = $1`,
-            [userId]
-        );
+        const unblockerRes = isOrgActor
+            ? await pool.query(`SELECT name as full_name, logo_url as avatar_url FROM organizations WHERE org_id = $1`, [blockerId])
+            : await pool.query(`SELECT full_name, avatar_url FROM users WHERE user_id = $1`, [blockerId]);
         const unblockerInfo = unblockerRes.rows[0] || {};
 
         const convRes = await pool.query(
@@ -4029,23 +4177,24 @@ exports.unblockUser = async (req, res) => {
              JOIN conversation_participants cp1 ON c.conversation_id = cp1.conversation_id AND cp1.user_id = $1
              JOIN conversation_participants cp2 ON c.conversation_id = cp2.conversation_id AND cp2.user_id = $2
              WHERE c.is_group = FALSE AND c.is_active = TRUE`,
-            [userId, targetId]
+            [req.user.sub, targetId]
         );
         const conversation_id = convRes.rowCount > 0 ? convRes.rows[0].conversation_id : null;
 
         const payload = {
-            unblocked_by_user_id: userId,
+            unblocked_by_user_id: blockerId,
             unblocked_by_name: unblockerInfo.full_name,
-            unblocked_by_avatar: unblockerInfo.avatar_url
+            unblocked_by_avatar: unblockerInfo.avatar_url,
+            is_org_block: isOrgActor
         };
         if (conversation_id) {
             payload.conversation_id = conversation_id;
         }
 
         socketService.notifyUser(targetId, "user_unblocked", payload);
-        socketService.notifyUser(userId, "unblock_confirmed", payload);
+        socketService.notifyUser(req.user.sub, "unblock_confirmed", payload);
 
-        res.json({ message: "User unblocked successfully" });
+        res.json({ message: isOrgActor ? "User unblocked for organization" : "User unblocked successfully" });
     } catch (err) {
         console.error("Unblock user error:", err);
         res.status(500).json({ message: "Internal server error" });
@@ -4053,11 +4202,13 @@ exports.unblockUser = async (req, res) => {
 };
 
 exports.getBlockedUsers = async (req, res) => {
-    const userId = req.user.sub;
+    const isOrgActor = req.actor?.type === "ORGANIZATION";
+    const blockerId = isOrgActor ? req.actor.orgId : req.user.sub;
     try {
         const BlockModel = require("../../models/block.model");
-        // Get list of users *I* have blocked
-        const blockedUsers = await BlockModel.getBlockedUsersDetails(userId);
+        const blockedUsers = isOrgActor
+            ? await BlockModel.getOrgBlockedUsersDetails(blockerId)
+            : await BlockModel.getBlockedUsersDetails(blockerId);
         res.json(blockedUsers);
     } catch (err) {
         console.error("Get blocked users error:", err);

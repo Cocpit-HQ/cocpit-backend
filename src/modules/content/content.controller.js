@@ -1,9 +1,11 @@
 const { incrementUserHashtagScore } = require("../../services/recommendation.service");
 const { ur, vi } = require("zod/locales");
 const { sanitizeContent } = require("../../utils/contentSanitizer");
+const { sanitizeArticleContent } = require("../../utils/articleContentSanitizer");
 const pool = require("../../core/db/pool");
 const socketService = require("../../core/infrastructure/socket.service");
 const { checkBlockStatus } = require("../../core/utils/blockCheck");
+const BlockModel = require("../../models/block.model");
 const { logAudit } = require("../../core/infrastructure/audit.service");
 const cloudinary = require("../../core/infrastructure/cloudinary.client");
 const { checkOrgPermission } = require("../../core/utils/rbac");
@@ -232,7 +234,7 @@ exports.getMyPosts = async (req, res) => {
         let idx = 3;
         let whereClause = "";
         if (filter === 'Comments') {
-            whereClause = `WHERE EXISTS (SELECT 1 FROM post_comments pc_filter WHERE pc_filter.post_id = p.post_id AND ${isOrgActor ? `pc_filter.author_org_id = $${orgParamIdx}::uuid` : `pc_filter.author_id = $${userParamIdx} AND pc_filter.author_org_id IS NULL`}) AND p.is_active = TRUE AND (p.is_removed IS FALSE OR p.is_removed IS NULL)`;
+            whereClause = `WHERE EXISTS (SELECT 1 FROM active_post_comments pc_filter WHERE pc_filter.post_id = p.post_id AND ${isOrgActor ? `pc_filter.author_org_id = $${orgParamIdx}::uuid` : `pc_filter.author_id = $${userParamIdx} AND pc_filter.author_org_id IS NULL`}) AND p.is_active = TRUE AND (p.is_removed IS FALSE OR p.is_removed IS NULL)`;
         } else {
             whereClause = isOrgActor
                 ? `WHERE p.author_org_id = $${orgParamIdx}::uuid AND p.is_active = TRUE AND (p.is_removed IS FALSE OR p.is_removed IS NULL)`
@@ -402,8 +404,8 @@ exports.getMyCommentedPosts = async (req, res) => {
 
         // Filter: Posts commented by the user, excluding their own posts (per user request)
         let whereClause = isOrgActor
-            ? `WHERE EXISTS (SELECT 1 FROM post_comments pc_me WHERE pc_me.post_id = p.post_id AND pc_me.author_org_id = $${orgParamIdx}) AND p.author_org_id != $${orgParamIdx} AND p.is_active = TRUE AND (p.is_removed IS FALSE OR p.is_removed IS NULL)`
-            : `WHERE EXISTS (SELECT 1 FROM post_comments pc_me WHERE pc_me.post_id = p.post_id AND pc_me.author_id = $${userParamIdx} AND pc_me.author_org_id IS NULL) AND p.author_id != $${userParamIdx} AND p.is_active = TRUE AND (p.is_removed IS FALSE OR p.is_removed IS NULL)`;
+            ? `WHERE EXISTS (SELECT 1 FROM active_post_comments pc_me WHERE pc_me.post_id = p.post_id AND pc_me.author_org_id = $${orgParamIdx}) AND p.author_org_id != $${orgParamIdx} AND p.is_active = TRUE AND (p.is_removed IS FALSE OR p.is_removed IS NULL)`
+            : `WHERE EXISTS (SELECT 1 FROM active_post_comments pc_me WHERE pc_me.post_id = p.post_id AND pc_me.author_id = $${userParamIdx} AND pc_me.author_org_id IS NULL) AND p.author_id != $${userParamIdx} AND p.is_active = TRUE AND (p.is_removed IS FALSE OR p.is_removed IS NULL)`;
 
         if (search && search.trim() !== "") {
             whereClause += ` AND p.content ILIKE $${idx} `;
@@ -436,7 +438,7 @@ exports.getMyCommentedPosts = async (req, res) => {
             p.location,
             COALESCE(pm.media, '[]'::json) AS media,
             COALESCE(lc.like_count, 0) AS like_count,
-            EXISTS(SELECT 1 FROM post_likes pl_me WHERE pl_me.post_id = p.post_id AND (
+            EXISTS(SELECT 1 FROM active_post_likes pl_me WHERE pl_me.post_id = p.post_id AND (
                 ${isOrgActor ? `pl_me.org_id = $${orgParamIdx}::uuid` : `pl_me.user_id = $${userParamIdx} AND pl_me.org_id IS NULL`}
             )) AS is_liked,
             true AS is_commented,
@@ -453,13 +455,13 @@ exports.getMyCommentedPosts = async (req, res) => {
                     'author_name', COALESCE(mc_comp.name, mc_u.full_name),
                     'author_avatar', COALESCE(mc_comp.logo_url, mc_u.avatar_url),
                     'author_title', mc_u.headline,
-                    'like_count', (SELECT COUNT(*) FROM comment_likes cl WHERE cl.comment_id = mc.comment_id)::int,
-                    'is_liked', EXISTS(SELECT 1 FROM comment_likes cl WHERE cl.comment_id = mc.comment_id AND (
+                    'like_count', (SELECT COUNT(*) FROM active_comment_likes cl WHERE cl.comment_id = mc.comment_id)::int,
+                    'is_liked', EXISTS(SELECT 1 FROM active_comment_likes cl WHERE cl.comment_id = mc.comment_id AND (
                         ${isOrgActor ? `cl.org_id = $${orgParamIdx}::uuid` : `cl.user_id = $${userParamIdx} AND cl.org_id IS NULL`}
                     )),
-                    'reply_count', (SELECT COUNT(*) FROM post_comments rc WHERE rc.parent_id = mc.comment_id)::int
+                    'reply_count', (SELECT COUNT(*) FROM active_post_comments rc WHERE rc.parent_id = mc.comment_id)::int
                 )
-                FROM post_comments mc
+                FROM active_post_comments mc
                 JOIN active_users mc_u ON mc_u.user_id = mc.author_id
                 LEFT JOIN organizations mc_comp ON mc_comp.org_id = mc.author_org_id
                 WHERE mc.post_id = p.post_id
@@ -475,8 +477,8 @@ exports.getMyCommentedPosts = async (req, res) => {
             SELECT pm.post_id, json_agg(json_build_object('media_id', pm.media_id, 'url', pm.url, 'media_type', pm.media_type)) AS media
             FROM post_media pm GROUP BY pm.post_id
         ) pm ON pm.post_id = p.post_id
-        LEFT JOIN (SELECT post_id, COUNT(*) AS like_count FROM post_likes GROUP BY post_id) lc ON lc.post_id = p.post_id
-        LEFT JOIN (SELECT post_id, COUNT(*) AS comment_count FROM post_comments GROUP BY post_id) cc ON cc.post_id = p.post_id
+        LEFT JOIN (SELECT post_id, COUNT(*) AS like_count FROM active_post_likes GROUP BY post_id) lc ON lc.post_id = p.post_id
+        LEFT JOIN (SELECT post_id, COUNT(*) AS comment_count FROM active_post_comments GROUP BY post_id) cc ON cc.post_id = p.post_id
         ${whereClause}
         ORDER BY p.created_at DESC, p.post_id DESC
         LIMIT $${limitIdx}
@@ -554,10 +556,10 @@ exports.getMyPrivatePosts = async (req, res) => {
             p.location,
             COALESCE(pm.media, '[]'::json) AS media,
             COALESCE(lc.like_count, 0) AS like_count,
-            EXISTS(SELECT 1 FROM post_likes pl_me WHERE pl_me.post_id = p.post_id AND (
+            EXISTS(SELECT 1 FROM active_post_likes pl_me WHERE pl_me.post_id = p.post_id AND (
                 ${isOrgActor ? `pl_me.org_id = $${orgParamIdx}::uuid` : `pl_me.user_id = $${userParamIdx} AND pl_me.org_id IS NULL`}
             )) AS is_liked,
-            EXISTS(SELECT 1 FROM post_comments pc_me WHERE pc_me.post_id = p.post_id AND (
+            EXISTS(SELECT 1 FROM active_post_comments pc_me WHERE pc_me.post_id = p.post_id AND (
                 ${isOrgActor ? `pc_me.author_org_id = $${orgParamIdx}::uuid` : `pc_me.author_id = $${userParamIdx} AND pc_me.author_org_id IS NULL`}
             )) AS is_commented,
             EXISTS(SELECT 1 FROM saved_post sp_me WHERE sp_me.post_id = p.post_id AND sp_me.user_id = $${userParamIdx} AND (
@@ -572,8 +574,8 @@ exports.getMyPrivatePosts = async (req, res) => {
             SELECT pm.post_id, json_agg(json_build_object('media_id', pm.media_id, 'url', pm.url, 'media_type', pm.media_type)) AS media
             FROM post_media pm GROUP BY pm.post_id
         ) pm ON pm.post_id = p.post_id
-        LEFT JOIN (SELECT post_id, COUNT(*) AS like_count FROM post_likes GROUP BY post_id) lc ON lc.post_id = p.post_id
-        LEFT JOIN (SELECT post_id, COUNT(*) AS comment_count FROM post_comments GROUP BY post_id) cc ON cc.post_id = p.post_id
+        LEFT JOIN (SELECT post_id, COUNT(*) AS like_count FROM active_post_likes GROUP BY post_id) lc ON lc.post_id = p.post_id
+        LEFT JOIN (SELECT post_id, COUNT(*) AS comment_count FROM active_post_comments GROUP BY post_id) cc ON cc.post_id = p.post_id
         ${whereClause}
         ORDER BY p.created_at DESC, p.post_id DESC
         LIMIT $${limitIdx}
@@ -632,13 +634,13 @@ exports.getMyPrivatePosts = async (req, res) => {
 
 //       LEFT JOIN (
 //         SELECT post_id, COUNT(*) AS like_count
-//         FROM post_likes
+//         FROM active_post_likes
 //         GROUP BY post_id
 //       ) lc ON lc.post_id = p.post_id
 
 //       LEFT JOIN (
 //         SELECT post_id, COUNT(*) AS comment_count
-//         FROM post_comments
+//         FROM active_post_comments
 //         GROUP BY post_id
 //       ) cc ON cc.post_id = p.post_id
 
@@ -737,8 +739,12 @@ exports.createPost = async (req, res) => {
 
     status = status || ((post_type === "article" && isCommunityArticle) ? "draft" : "published");
 
-    // Extract uploaded files
-    const uploadedFiles = req.files || [];
+    // Extract uploaded files. "media" holds inline content / post images-videos,
+    // "cover_media" (article posts only) holds the explicitly chosen cover image -
+    // kept on its own field so we never have to guess which upload is the cover.
+    const mediaFiles = (req.files && req.files.media) || [];
+    const coverFiles = (req.files && req.files.cover_media) || [];
+    const uploadedFiles = [...mediaFiles, ...coverFiles];
     const imageFiles = uploadedFiles.filter(f => f.mimetype.startsWith('image/'));
     const videoFiles = uploadedFiles.filter(f => f.mimetype.startsWith('video/'));
 
@@ -778,38 +784,48 @@ exports.createPost = async (req, res) => {
     }
 
     // Map uploaded files to media URLs directly (already streamed by Multer middleware)
-    if (uploadedFiles.length > 0) {
-        if (post_type === 'article') {
-            let coverFileUrl = null;
-            uploadedFiles.forEach(file => {
-                const fileUrl = (file.path || file.secure_url || '').replace(/\\/g, "/");
-                const originalName = file.originalname;
-                
-                if (content && content.includes(originalName)) {
-                    const regex = new RegExp(`src="[^"]*${originalName}[^"]*"`, 'g');
-                    content = content.replace(regex, `src="${fileUrl}"`);
-                } else {
-                    coverFileUrl = fileUrl;
-                }
-            });
-            if (coverFileUrl) {
-                media_urls = [coverFileUrl];
-            } else if (!media_urls) {
-                media_urls = [];
+    if (post_type === 'article') {
+        // Cover comes unambiguously from the dedicated field when the caller sends one
+        // (the Channels article editor always does). Callers that don't (e.g. the
+        // simpler personal "write article" composer, which has no inline content
+        // images and no cover_media field) keep the legacy "unmatched file = cover"
+        // fallback below so their behavior is unchanged.
+        let coverFileUrl = coverFiles.length > 0
+            ? (coverFiles[0].path || coverFiles[0].secure_url || '').replace(/\\/g, "/")
+            : null;
+        // Everything in "media" is an inline content image/video - rewrite its blob
+        // src to the real URL. Match on the basename without extension since blob:
+        // URLs (e.g. "blob:http://host/<uuid>") carry no file extension.
+        mediaFiles.forEach(file => {
+            const fileUrl = (file.path || file.secure_url || '').replace(/\\/g, "/");
+            const baseName = file.originalname.replace(/\.[^/.]+$/, '');
+
+            if (content && baseName && content.includes(baseName)) {
+                const regex = new RegExp(`src="[^"]*${baseName}[^"]*"`, 'g');
+                content = content.replace(regex, `src="${fileUrl}"`);
+            } else if (coverFiles.length === 0) {
+                coverFileUrl = fileUrl;
             }
-        } else {
-            const urls = uploadedFiles.map(file => (file.path || file.secure_url || '').replace(/\\/g, "/"));
-            if (videoFiles.length > 0) {
-                media_urls = [urls[0]];
-            } else if (imageFiles.length > 0) {
-                media_urls = urls;
-            }
+        });
+        if (coverFileUrl) {
+            media_urls = [coverFileUrl];
+        } else if (!media_urls) {
+            media_urls = [];
+        }
+    } else if (uploadedFiles.length > 0) {
+        const urls = uploadedFiles.map(file => (file.path || file.secure_url || '').replace(/\\/g, "/"));
+        if (videoFiles.length > 0) {
+            media_urls = [urls[0]];
+        } else if (imageFiles.length > 0) {
+            media_urls = urls;
         }
     }
 
     // Sanitize user-generated content
     if (post_type !== 'article') {
         content = sanitizeContent(content);
+    } else {
+        content = sanitizeArticleContent(content);
     }
     title = sanitizeContent(title);
     if (poll_options && Array.isArray(poll_options)) {
@@ -1271,11 +1287,11 @@ exports.getPostById = async (req, res) => {
     ) AS tags,
 
     -- Like Count
-    (SELECT COUNT(*) FROM post_likes pl WHERE pl.post_id = p.post_id)::int AS like_count,
+    (SELECT COUNT(*) FROM active_post_likes pl WHERE pl.post_id = p.post_id)::int AS like_count,
 
     (
         SELECT COALESCE(comp_like.slug, u_like.account_name)
-        FROM post_likes pl_sample
+        FROM active_post_likes pl_sample
         LEFT JOIN active_users u_like ON u_like.user_id = pl_sample.user_id
         LEFT JOIN organizations comp_like ON comp_like.org_id = pl_sample.org_id
         WHERE pl_sample.post_id = p.post_id
@@ -1304,14 +1320,14 @@ exports.getPostById = async (req, res) => {
     ) AS sample_liker_username,
 
     -- Comment Count
-    (SELECT COUNT(*) FROM post_comments pc WHERE pc.post_id = p.post_id)::int AS comment_count,
+    (SELECT COUNT(*) FROM active_post_comments pc WHERE pc.post_id = p.post_id)::int AS comment_count,
 
     -- Share Count
     (SELECT COUNT(*) FROM posts sp_share WHERE sp_share.shared_post_id = p.post_id)::int AS share_count,
 
     -- Is Liked (Identity Aware)
     EXISTS(
-        SELECT 1 FROM post_likes pl 
+        SELECT 1 FROM active_post_likes pl 
         WHERE pl.post_id = p.post_id 
         AND (
             ($3::uuid IS NOT NULL AND pl.org_id = $3::uuid)
@@ -1353,7 +1369,7 @@ exports.getPostById = async (req, res) => {
         )
         FROM (
             SELECT pl_sample.user_id, pl_sample.org_id
-            FROM post_likes pl_sample
+            FROM active_post_likes pl_sample
             WHERE pl_sample.post_id = p.post_id
               AND pl_sample.user_id IS NOT NULL
               AND NOT (
@@ -1369,7 +1385,7 @@ exports.getPostById = async (req, res) => {
     ) AS liked_users,
 
     EXISTS(
-        SELECT 1 FROM post_comments pc_me 
+        SELECT 1 FROM active_post_comments pc_me 
         WHERE pc_me.post_id = p.post_id 
         AND (
             ($3::uuid IS NOT NULL AND pc_me.author_org_id = $3::uuid)
@@ -1487,11 +1503,11 @@ exports.getPostById = async (req, res) => {
                     'is_organization_post', (sp.author_org_id IS NOT NULL)
                 ),
                 'media', COALESCE(sp_media.media, '[]'::json),
-                'like_count', (SELECT COUNT(*) FROM post_likes pl WHERE pl.post_id = sp.post_id)::int,
-                'comment_count', (SELECT COUNT(*) FROM post_comments pc WHERE pc.post_id = sp.post_id)::int,
+                'like_count', (SELECT COUNT(*) FROM active_post_likes pl WHERE pl.post_id = sp.post_id)::int,
+                'comment_count', (SELECT COUNT(*) FROM active_post_comments pc WHERE pc.post_id = sp.post_id)::int,
                 'share_count', (SELECT COUNT(*) FROM posts sp_share2 WHERE sp_share2.shared_post_id = sp.post_id)::int,
                 'is_liked', EXISTS(
-                    SELECT 1 FROM post_likes pl 
+                    SELECT 1 FROM active_post_likes pl 
                     WHERE pl.post_id = sp.post_id 
                     AND (
                         ($3::uuid IS NOT NULL AND pl.org_id = $3::uuid)
@@ -1530,7 +1546,7 @@ exports.getPostById = async (req, res) => {
                     )
                     FROM (
                         SELECT pl_sample.user_id, pl_sample.org_id
-                        FROM post_likes pl_sample
+                        FROM active_post_likes pl_sample
                         WHERE pl_sample.post_id = sp.post_id
                           AND pl_sample.user_id IS NOT NULL
                           AND NOT (
@@ -1633,10 +1649,17 @@ WHERE p.post_id = $1 AND p.is_active = TRUE AND (p.is_removed IS FALSE OR p.is_r
 
         // STRICT BLOCK CHECK
         const post = result.rows[0];
-        if (userId && !post.author_org_id && post.author_id !== userId) {
-            const isBlocked = await checkBlockStatus(userId, post.author_id);
-            if (isBlocked) {
-                return res.status(404).json({ message: "Post not found" });
+        if (userId) {
+            if (post.author_org_id) {
+                const isBlocked = await BlockModel.isOrgBlocked(post.author_org_id, userId);
+                if (isBlocked) {
+                    return res.status(404).json({ message: "Post not found" });
+                }
+            } else if (post.author_id && post.author_id !== userId) {
+                const isBlocked = await checkBlockStatus(userId, post.author_id);
+                if (isBlocked) {
+                    return res.status(404).json({ message: "Post not found" });
+                }
             }
         }
 
@@ -1714,6 +1737,7 @@ WHERE p.post_id = $1 AND p.is_active = TRUE AND (p.is_removed IS FALSE OR p.is_r
             ...post,
             id: post.post_id,
             channelId: post.author_org_id,
+            created_by_user_id: post.author_id,
             coverImage: (post.media && post.media.length > 0) ? post.media[0].url : null,
             publishedAt: post.created_at,
             updatedAt: post.updated_at
@@ -1744,7 +1768,10 @@ WHERE p.post_id = $1 AND p.is_active = TRUE AND (p.is_removed IS FALSE OR p.is_r
 exports.updatePostById = async (req, res) => {
     const postId = req.params.id;
     let { content, category, visibility, media_urls, post_type, title, poll_options, location, status } = req.body;
-    const uploadedFiles = req.files || [];
+    // "media" is inline content images/videos; "cover_media" (article posts only) is
+    // the explicitly chosen cover - kept on its own field so we never have to guess.
+    const mediaFiles = (req.files && req.files.media) || [];
+    const coverFiles = (req.files && req.files.cover_media) || [];
 
     if (status !== undefined && status !== "published" && status !== "draft") {
         return res.status(400).json({ message: "Invalid status. Allowed values: 'published', 'draft'" });
@@ -1753,6 +1780,8 @@ exports.updatePostById = async (req, res) => {
     // Sanitize user-generated content
     if (post_type !== 'article') {
         content = sanitizeContent(content);
+    } else {
+        content = sanitizeArticleContent(content);
     }
     title = sanitizeContent(title);
     if (poll_options && Array.isArray(poll_options)) {
@@ -1791,16 +1820,26 @@ exports.updatePostById = async (req, res) => {
         const { author_id, author_org_id, post_type: currentPostType, shared_post_id, shared_job_id, is_removed, is_deleted, is_unlisted } = postCheck.rows[0];
 
         const effectivePostType = post_type || currentPostType;
-        if (effectivePostType === 'article' && uploadedFiles.length > 0) {
-            let coverFileUrl = null;
-            uploadedFiles.forEach(file => {
+        if (effectivePostType === 'article') {
+            // Cover comes unambiguously from the dedicated field when the caller sends
+            // one (the Channels article editor always does) - no more guessing, and no
+            // more accidentally clobbering the media_urls the client already sent.
+            // Callers that don't send cover_media (e.g. the personal "write article"
+            // composer) keep the legacy "unmatched file = cover" fallback below.
+            let coverFileUrl = coverFiles.length > 0
+                ? (coverFiles[0].path || coverFiles[0].secure_url || '').replace(/\\/g, "/")
+                : null;
+            // Everything in "media" is an inline content image/video - rewrite its blob
+            // src to the real URL. Match on the basename without extension since blob:
+            // URLs (e.g. "blob:http://host/<uuid>") carry no file extension.
+            mediaFiles.forEach(file => {
                 const fileUrl = (file.path || file.secure_url || '').replace(/\\/g, "/");
-                const originalName = file.originalname;
-                
-                if (content && content.includes(originalName)) {
-                    const regex = new RegExp(`src="[^"]*${originalName}[^"]*"`, 'g');
+                const baseName = file.originalname.replace(/\.[^/.]+$/, '');
+
+                if (content && baseName && content.includes(baseName)) {
+                    const regex = new RegExp(`src="[^"]*${baseName}[^"]*"`, 'g');
                     content = content.replace(regex, `src="${fileUrl}"`);
-                } else {
+                } else if (coverFiles.length === 0) {
                     coverFileUrl = fileUrl;
                 }
             });
@@ -1839,8 +1878,14 @@ exports.updatePostById = async (req, res) => {
 
         // title
         if (title !== undefined) {
-            updates.push(`title = $${index++}`);
-            values.push(title);
+            const effectivePostType = post_type || currentPostType;
+            // Prevent wiping out the poll question if title is empty string
+            if (effectivePostType === 'poll' && title.trim() === '') {
+                // Ignore the empty title update for polls to preserve the question
+            } else {
+                updates.push(`title = $${index++}`);
+                values.push(title);
+            }
         }
 
         // content
@@ -2034,6 +2079,7 @@ WHERE p.post_id = $1;
             ...post,
             id: post.post_id,
             channelId: post.author_org_id,
+            created_by_user_id: post.author_id,
             coverImage: (post.media && post.media.length > 0) ? post.media[0].url : null,
             publishedAt: post.created_at,
             updatedAt: post.updated_at
@@ -2089,7 +2135,15 @@ exports.deletePost = async (req, res) => {
         // 2. Check Permissions
         if (author_org_id) {
             if (orgId && author_org_id === orgId) {
-                canDelete = true;
+                if (author_id === userId) {
+                    canDelete = true;
+                } else {
+                    const { checkOrgPermission } = require("../../core/utils/rbac");
+                    const hasPerm = await checkOrgPermission(client, orgId, userId, ["CREATE_CONTENT", "MANAGE_CONTENT"]);
+                    if (hasPerm) {
+                        canDelete = true;
+                    }
+                }
             }
         } else {
             if (!orgId && author_id === userId) {
@@ -2350,12 +2404,12 @@ exports.toggleLike = async (req, res) => {
         let alreadyLiked;
         if (companyId) {
             alreadyLiked = await pool.query(
-                "SELECT 1 FROM post_likes WHERE post_id = $1 AND org_id = $2",
+                "SELECT 1 FROM active_post_likes WHERE post_id = $1 AND org_id = $2",
                 [postId, companyId]
             );
         } else {
             alreadyLiked = await pool.query(
-                "SELECT 1 FROM post_likes WHERE post_id = $1 AND user_id = $2 AND org_id IS NULL",
+                "SELECT 1 FROM active_post_likes WHERE post_id = $1 AND user_id = $2 AND org_id IS NULL",
                 [postId, userId]
             );
         }
@@ -2458,7 +2512,7 @@ exports.toggleLike = async (req, res) => {
 
         // 4️⃣ Get UPDATED count and actor's username
         const countResult = await pool.query(
-            "SELECT COUNT(*) FROM post_likes WHERE post_id = $1",
+            "SELECT COUNT(*) FROM active_post_likes WHERE post_id = $1",
             [postId]
         );
 
@@ -2603,7 +2657,7 @@ exports.addComment = async (req, res) => {
         // Validate parent_id if provided
         if (parent_id) {
             const parentComment = await pool.query(
-                `SELECT comment_id, post_id, parent_id FROM post_comments WHERE comment_id = $1`,
+                `SELECT comment_id, post_id, parent_id FROM active_post_comments WHERE comment_id = $1`,
                 [parent_id]
             );
 
@@ -2616,7 +2670,7 @@ exports.addComment = async (req, res) => {
             }
 
             // Block Check: Parent Comment Author
-            const parentAuthorRes = await pool.query(`SELECT author_id FROM post_comments WHERE comment_id = $1`, [parent_id]);
+            const parentAuthorRes = await pool.query(`SELECT author_id FROM active_post_comments WHERE comment_id = $1`, [parent_id]);
             if (parentAuthorRes.rowCount > 0) {
                 const parentAuthorId = parentAuthorRes.rows[0].author_id;
 
@@ -2713,7 +2767,7 @@ exports.addComment = async (req, res) => {
         if (parent_id) {
             // Get parent comment author AND company
             const parentAuthorRes = await pool.query(
-                `SELECT author_id, author_org_id FROM post_comments WHERE comment_id = $1`,
+                `SELECT author_id, author_org_id FROM active_post_comments WHERE comment_id = $1`,
                 [parent_id]
             );
 
@@ -2851,7 +2905,7 @@ exports.addComment = async (req, res) => {
         c.author_org_id,
         0 AS like_count,
         false AS is_liked
-      FROM post_comments c
+      FROM active_post_comments c
       JOIN user_display_profiles u ON c.author_id = u.user_id
       LEFT JOIN organizations comp ON c.author_org_id = comp.org_id
       WHERE c.comment_id = $1
@@ -2982,7 +3036,7 @@ exports.deleteComment = async (req, res) => {
     }
 
     try {
-        const commentCheck = await pool.query(`SELECT * FROM post_comments WHERE comment_id = $1`, [commentId]);
+        const commentCheck = await pool.query(`SELECT * FROM active_post_comments WHERE comment_id = $1`, [commentId]);
         if (commentCheck.rowCount === 0) {
             return res.status(404).json({ message: "Comment not found" });
         }
@@ -3070,7 +3124,7 @@ exports.toggleCommentLike = async (req, res) => {
     try {
         // Check if comment exists
         const commentCheck = await pool.query(
-            `SELECT comment_id, author_id, author_org_id, post_id FROM post_comments WHERE comment_id = $1`,
+            `SELECT comment_id, author_id, author_org_id, post_id FROM active_post_comments WHERE comment_id = $1`,
             [commentId]
         );
 
@@ -3084,12 +3138,12 @@ exports.toggleCommentLike = async (req, res) => {
         let existingLike;
         if (companyId) {
             existingLike = await pool.query(
-                `SELECT * FROM comment_likes WHERE org_id = $1 AND comment_id = $2`,
+                `SELECT * FROM active_comment_likes WHERE org_id = $1 AND comment_id = $2`,
                 [companyId, commentId]
             );
         } else {
             existingLike = await pool.query(
-                `SELECT * FROM comment_likes WHERE user_id = $1 AND comment_id = $2 AND org_id IS NULL`,
+                `SELECT * FROM active_comment_likes WHERE user_id = $1 AND comment_id = $2 AND org_id IS NULL`,
                 [userId, commentId]
             );
         }
@@ -3174,7 +3228,7 @@ exports.toggleCommentLike = async (req, res) => {
 
         // Get updated like count
         const likeCountResult = await pool.query(
-            `SELECT COUNT(*)::int as like_count FROM comment_likes WHERE comment_id = $1`,
+            `SELECT COUNT(*)::int as like_count FROM active_comment_likes WHERE comment_id = $1`,
             [commentId]
         );
 
@@ -3222,7 +3276,7 @@ exports.toggleCommentPin = async (req, res) => {
         // Get comment and verify it exists
         const commentResult = await pool.query(
             `SELECT c.comment_id, c.post_id, c.is_pinned, p.author_id as post_author_id, p.author_org_id as post_author_org_id
-             FROM post_comments c
+             FROM active_post_comments c
              JOIN posts p ON c.post_id = p.post_id
              WHERE c.comment_id = $1`,
             [commentId]
@@ -3315,7 +3369,12 @@ exports.getComments = async (req, res) => {
                      WHERE org_id = $1 AND created_by = $2`,
                     [postCompanyId, userId]
                 );
-                if (subscriptionCheck.rowCount === 0 && ownerCheck.rowCount === 0) {
+                const memberCheck = await pool.query(
+                    `SELECT 1 FROM organization_members 
+                     WHERE org_id = $1 AND user_id = $2 AND status = 'ACTIVE'`,
+                    [postCompanyId, userId]
+                );
+                if (subscriptionCheck.rowCount === 0 && ownerCheck.rowCount === 0 && memberCheck.rowCount === 0) {
                     return res.status(200).json([]);
                 }
             }
@@ -3324,7 +3383,7 @@ exports.getComments = async (req, res) => {
             `
       WITH target_root AS (
         SELECT COALESCE(parent_id, comment_id) as root_id 
-        FROM post_comments 
+        FROM active_post_comments 
         WHERE comment_id = $4
       )
       SELECT 
@@ -3361,15 +3420,15 @@ exports.getComments = async (req, res) => {
         c.author_org_id,
 
         COALESCE(
-          (SELECT COUNT(*)::int FROM comment_likes cl WHERE cl.comment_id = c.comment_id),
+          (SELECT COUNT(*)::int FROM active_comment_likes cl WHERE cl.comment_id = c.comment_id),
           0
         ) AS like_count,
         COALESCE(
-          (SELECT COUNT(*)::int FROM post_comments pc WHERE pc.parent_id = c.comment_id),
+          (SELECT COUNT(*)::int FROM active_post_comments pc WHERE pc.parent_id = c.comment_id),
           0
         ) AS reply_count,
         COALESCE(
-          (SELECT EXISTS(SELECT 1 FROM comment_likes cl 
+          (SELECT EXISTS(SELECT 1 FROM active_comment_likes cl 
            WHERE cl.comment_id = c.comment_id 
            AND (
                ($3::uuid IS NOT NULL AND cl.org_id = $3::uuid) 
@@ -3379,10 +3438,12 @@ exports.getComments = async (req, res) => {
           )),
           false
         ) AS is_liked
-      FROM post_comments c
+      FROM active_post_comments c
+      JOIN active_users au ON c.author_id = au.user_id
       JOIN user_display_profiles u ON c.author_id = u.user_id
-      LEFT JOIN organizations comp ON c.author_org_id = comp.org_id
+      LEFT JOIN active_organizations comp ON c.author_org_id = comp.org_id
       WHERE c.post_id = $1
+      AND (c.author_org_id IS NULL OR comp.org_id IS NOT NULL)
       -- 1. Exclude blocked users
       AND NOT EXISTS (
         SELECT 1 FROM blocks b 
@@ -3518,7 +3579,7 @@ exports.getHiddenComments = async (req, res) => {
                 c.created_at,
                 u.display_name as author_name,
                 u.display_avatar as author_avatar
-            FROM post_comments c
+            FROM active_post_comments c
             JOIN hidden_comments hc ON c.comment_id = hc.comment_id
             JOIN user_display_profiles u ON c.author_id = u.user_id
             WHERE 
@@ -4980,10 +5041,14 @@ exports.getPostLikes = async (req, res) => {
                 COALESCE(comp.slug, u.account_name) AS username,
                 COALESCE(comp.name, u.full_name) AS full_name,
                 COALESCE(comp.logo_url, u.avatar_url) AS avatar
-            FROM post_likes pl
+            FROM active_post_likes pl
             LEFT JOIN active_users u ON u.user_id = pl.user_id
-            LEFT JOIN organizations comp ON comp.org_id = pl.org_id
+            LEFT JOIN active_organizations comp ON comp.org_id = pl.org_id
             WHERE pl.post_id = $1
+            AND (
+                (pl.org_id IS NULL AND u.user_id IS NOT NULL) OR 
+                (pl.org_id IS NOT NULL AND comp.org_id IS NOT NULL)
+            )
             ORDER BY pl.created_at DESC`,
             [postId]
         );

@@ -42,6 +42,8 @@ const saveDetailsSchema = z.object({
     location: z.string().nullable().optional(),
     work_type: z.string().nullable().optional(),
     work_mode: z.string().nullable().optional(),
+    educations: z.array(z.any()).optional(),
+    experiences: z.array(z.any()).optional(),
   }).superRefine((data, ctx) => {
     if (["student", "fresher", "intern"].includes(data.role)) {
       if (!data.school_name || data.school_name.trim() === "") {
@@ -113,7 +115,8 @@ const updateProfileSchema = z.object({
         invalid_type_error: "Account name must be a string",
       })
       .trim()
-      .min(1, "Account name cannot be empty"),
+      .min(1, "Account name cannot be empty")
+      .regex(/^[a-z0-9_.]{3,20}$/, "Invalid format. Use only lowercase letters, numbers, dots, and underscores."),
 
     full_name: z
       .string({

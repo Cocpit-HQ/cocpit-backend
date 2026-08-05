@@ -60,6 +60,19 @@ const getConfig = (req, res) => {
 
     // Current deployment environment for client-side diagnostics/logging.
     env: process.env.NODE_ENV ?? "development",
+
+    // =========================================================================
+    // COCPIT OFFICIAL LEGAL DOCUMENTS
+    // =========================================================================
+    // Dynamic URL generation for localhost and hosted staging/production servers.
+    // Supports process.env.LEGAL_*_URL overrides if custom URLs are specified in .env.
+    // =========================================================================
+    legal: {
+      privacy_policy_url: process.env.LEGAL_PRIVACY_POLICY_URL || `${req?.protocol || 'http'}://${req?.get?.('host') || req?.headers?.host || 'localhost:5000'}/uploads/legal/privacy_policy.html`,
+      terms_of_service_url: process.env.LEGAL_TERMS_OF_SERVICE_URL || `${req?.protocol || 'http'}://${req?.get?.('host') || req?.headers?.host || 'localhost:5000'}/uploads/legal/terms_of_service.html`,
+      community_guidelines_url: process.env.LEGAL_COMMUNITY_GUIDELINES_URL || `${req?.protocol || 'http'}://${req?.get?.('host') || req?.headers?.host || 'localhost:5000'}/uploads/legal/community_guidelines.html`,
+      cookie_policy_url: process.env.LEGAL_COOKIE_POLICY_URL || `${req?.protocol || 'http'}://${req?.get?.('host') || req?.headers?.host || 'localhost:5000'}/uploads/legal/cookie_policy.html`,
+    },
   });
 };
 

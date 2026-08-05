@@ -25,6 +25,7 @@ const {
 } = require("./organization.validation");
 const institutionController = require("./institution.controller");
 const hierarchyController = require("./organization.hierarchy.controller");
+const teamsCtrl = require("./organization.teams.controller");
 
 // --- COMPANY ONBOARDING WIZARD ---
 router.get("/organizations/countries", requireAuth, organizationController.getCountriesList);
@@ -54,6 +55,10 @@ router.get("/companies/check-slug", optionalAuth, organizationController.checkSl
 
 router.get("/organizations/mine", requireAuth, organizationController.getUserOrganizations);
 router.get("/companies/mine", requireAuth, organizationController.getUserOrganizations);
+
+router.get("/organizations/owned", requireAuth, organizationController.getOwnedOrganizations);
+
+router.post("/organizations/:orgId/transfer-ownership", requireAuth, teamsCtrl.transferOwnership);
 
 router.get("/organizations/search", optionalAuth, organizationController.searchOrganizations);
 router.get("/companies/search", optionalAuth, organizationController.searchOrganizations);
@@ -91,6 +96,10 @@ router.post("/companies/:orgId/verify/domain", requireAuth, requireOrgPermission
 
 // --- MANAGEMENT ---
 router.put("/organizations/:orgId", requireAuth, requireOrgPermission("MANAGE_COMPANY_DETAILS"), organizationController.updateOrganization);
+
+// Organization Action Routes
+router.post("/organizations/restore", organizationController.restoreOrganization);
+
 router.delete("/organizations/:orgId", requireAuth, requireOrgPermission("MANAGE_COMPANY"), organizationActionLimiter, organizationController.deleteOrganization);
 
 router.put("/companies/:orgId", requireAuth, requireOrgPermission("MANAGE_COMPANY_DETAILS"), organizationController.updateOrganization);

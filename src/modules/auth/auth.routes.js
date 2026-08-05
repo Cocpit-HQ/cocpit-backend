@@ -56,7 +56,12 @@ router.get("/sessions/count", requireAuth, sessionController.getMySessionCount);
 router.delete("/sessions/:sessionId", requireAuth, requireActiveSession, sessionController.removeSession);
 
 // Password reset
+router.post("/forgot-password", passwordResetLimiter, passwordResetController.forgotPassword);
 router.post("/reset-password", passwordResetLimiter, validate(resetPasswordSchema), passwordResetController.resetPassword);
+router.post("/forgot-password-link", requireAuth, passwordResetLimiter, passwordResetController.requestPasswordResetLink);
+router.get("/reset-link-status", requireAuth, passwordResetController.getResetLinkStatus);
+router.get("/verify-reset-token", passwordResetController.verifyResetToken);
+router.post("/reset-password-token", passwordResetLimiter, passwordResetController.resetPasswordWithToken);
 
 // Admin
 router.get("/admin", requireAuth, requireRoles(['Admin']), async (req, res) => {

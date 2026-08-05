@@ -1,5 +1,6 @@
 const pool = require("../../core/db/pool");
 const { logActivity: logIntentActivity } = require("../../utils/activityLogger");
+const cloudinary = require("../../core/infrastructure/cloudinary.client");
 
 const getRequestedOrganizationActorId = (req, fallbackOrgId = null) => {
     const actorOrgId = req.actor?.type === "ORGANIZATION" ? req.actor.orgId : null;
@@ -23,11 +24,37 @@ const getSavedPostActorScope = (req, fallbackOrgId = null) => {
     };
 };
 
+const resolveCoverImage = async (file, rawCoverImage) => {
+    if (file) {
+        return (file.path || file.secure_url || '').replace(/\\/g, "/");
+    }
+    if (typeof rawCoverImage === 'string' && rawCoverImage.trim()) {
+        const val = rawCoverImage.trim();
+        if (val.startsWith('data:')) {
+            try {
+                const uploadRes = await cloudinary.uploader.upload(val, {
+                    folder: "covers",
+                    resource_type: "image"
+                });
+                return (uploadRes.secure_url || uploadRes.url || '').replace(/\\/g, "/");
+            } catch (err) {
+                console.error("[savedPost.controller] Failed to upload base64 image to Cloudinary:", err);
+                return null;
+            }
+        }
+        if (val.startsWith('http')) {
+            return val;
+        }
+    }
+    return null;
+};
+
 // 1️⃣ Create Folder
 exports.createFolder = async (req, res) => {
-    console.log("Create Folder Body:", req.body);
+    console.log("Create Folder Body:", req.body, "File:", req.file);
     const { name, companyId, coverImage: bodyCoverImage, cover_image: bodyCoverImageAlt } = req.body;
-    const coverImage = bodyCoverImage || bodyCoverImageAlt;
+    const raw = bodyCoverImage || bodyCoverImageAlt;
+    const coverImage = await resolveCoverImage(req.file, raw);
 
     if (!name || name.trim() === "") {
         return res.status(400).json({ success: false, message: "Folder name is required" });
@@ -76,7 +103,9 @@ exports.getFolders = async (req, res) => {
 // 3️⃣ Rename Folder
 exports.renameFolder = async (req, res) => {
     const { folderId } = req.params;
-    const { name, companyId, coverImage } = req.body;
+    const { name, companyId, coverImage: bodyCoverImage, cover_image: bodyCoverImageAlt } = req.body;
+    const raw = bodyCoverImage || bodyCoverImageAlt;
+    const newCoverImage = await resolveCoverImage(req.file, raw);
 
     if (!name || name.trim() === "") {
         return res.status(400).json({ success: false, message: "New name is required" });
@@ -90,7 +119,7 @@ exports.renameFolder = async (req, res) => {
              WHERE folder_id = $3 AND user_id = $4 AND (
                  ${isOrgActor ? 'org_id = $5::uuid' : 'org_id IS NULL'}
              ) RETURNING *`,
-            isOrgActor ? [name.trim(), coverImage, folderId, userId, orgId] : [name.trim(), coverImage, folderId, userId]
+            isOrgActor ? [name.trim(), newCoverImage, folderId, userId, orgId] : [name.trim(), newCoverImage, folderId, userId]
         );
 
         if (result.rowCount === 0) {
@@ -114,6 +143,15 @@ exports.deleteFolder = async (req, res) => {
 
     try {
         const { userId, orgId, isOrgActor } = getSavedPostActorScope(req, companyId || null);
+
+        // Explicitly completely unsave all posts inside this folder
+        await pool.query(
+            `DELETE FROM saved_post WHERE folder_id = $1 AND user_id = $2 AND (
+                ${isOrgActor ? 'org_id = $3::uuid' : 'org_id IS NULL'}
+            )`,
+            isOrgActor ? [folderId, userId, orgId] : [folderId, userId]
+        );
+
         const result = await pool.query(
             `DELETE FROM saved_folders WHERE folder_id = $1 AND user_id = $2 AND (
                 ${isOrgActor ? 'org_id = $3::uuid' : 'org_id IS NULL'}
@@ -218,20 +256,20 @@ exports.getSavedPosts = async (req, res) => {
                  FROM post_media pm WHERE pm.post_id = p.post_id),
                 '[]'::json
             ) AS media,
-            (SELECT COUNT(*) FROM post_likes pl WHERE pl.post_id = p.post_id)::int AS like_count,
-            (SELECT COUNT(*) FROM post_comments pc WHERE pc.post_id = p.post_id)::int AS comment_count,
+            (SELECT COUNT(*) FROM active_post_likes pl WHERE pl.post_id = p.post_id)::int AS like_count,
+            (SELECT COUNT(*) FROM active_post_comments pc WHERE pc.post_id = p.post_id)::int AS comment_count,
             (SELECT COUNT(*) FROM saved_post sp_cnt WHERE sp_cnt.post_id = p.post_id)::int AS save_count,
 
             -- Identity Aware states
             EXISTS(
-                SELECT 1 FROM post_likes pl_me 
+                SELECT 1 FROM active_post_likes pl_me 
                 WHERE pl_me.post_id = p.post_id 
                 AND (
                     ${isOrgActor ? 'pl_me.org_id = $2::uuid' : 'pl_me.user_id = $1 AND pl_me.org_id IS NULL'}
                 )
             ) AS is_liked,
             EXISTS(
-                SELECT 1 FROM post_comments pc_me 
+                SELECT 1 FROM active_post_comments pc_me 
                 WHERE pc_me.post_id = p.post_id 
                 AND (
                     ${isOrgActor ? 'pc_me.author_org_id = $2::uuid' : 'pc_me.author_id = $1 AND pc_me.author_org_id IS NULL'}

@@ -77,6 +77,18 @@ CREATE TABLE refresh_tokens (
   ip_address INET NOT NULL
 );
 
+CREATE TABLE password_reset_tokens (
+  token_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
+  token_hash TEXT NOT NULL,
+  expires_at TIMESTAMPTZ NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT now(),
+  used BOOLEAN DEFAULT FALSE
+);
+
+CREATE INDEX idx_password_reset_tokens_user_id ON password_reset_tokens(user_id);
+CREATE INDEX idx_password_reset_tokens_hash ON password_reset_tokens(token_hash);
+
 -- Track devices and link them to specific user sessions and FCM tokens
 
 CREATE TABLE profiles (
@@ -148,6 +160,7 @@ CREATE TABLE educations (
   education_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   profile_id UUID REFERENCES profiles(profile_id) ON DELETE CASCADE,
   school_name TEXT NOT NULL,
+  school_org_id UUID REFERENCES organizations(org_id) ON DELETE SET NULL,
   degree TEXT,
   field_of_study TEXT,
   location TEXT,
@@ -257,7 +270,7 @@ CREATE TABLE organizations (
     email VARCHAR(255),
     industry VARCHAR(100),
     size VARCHAR(50),
-    website VARCHAR(255),
+    website TEXT,
     location VARCHAR(255),
     slogan TEXT,
     logo_url TEXT,
@@ -1025,14 +1038,16 @@ CREATE TABLE group_invitations (
 
 -- 5/02/2026 Migration: Create blocks table
 CREATE TABLE IF NOT EXISTS blocks (
-    blocker_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
-    blocked_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
+    blocker_id UUID NOT NULL,
+    blocked_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    is_org_block BOOLEAN NOT NULL DEFAULT false,
     created_at TIMESTAMPTZ DEFAULT now(),
-    PRIMARY KEY (blocker_id, blocked_id),
+    PRIMARY KEY (blocker_id, blocked_id, is_org_block),
     CONSTRAINT no_self_block CHECK (blocker_id <> blocked_id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_blocks_blocked_id ON blocks(blocked_id);
+CREATE INDEX IF NOT EXISTS idx_blocks_is_org ON blocks(is_org_block);
 
 -- 8/02/2026 Migration: Create message_reads table for group chat read receipts
 -- (004_add_message_reads.sql)
@@ -1639,10 +1654,11 @@ CREATE INDEX IF NOT EXISTS idx_reports_reporter ON reports(reporter_id);
 -- Missing tables (blocks, post_impressions)
 -- ---------------------------------------------------------
 CREATE TABLE IF NOT EXISTS blocks (
-    blocker_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    blocker_id UUID NOT NULL,
     blocked_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    is_org_block BOOLEAN NOT NULL DEFAULT false,
     created_at TIMESTAMPTZ DEFAULT NOW(),
-    PRIMARY KEY (blocker_id, blocked_id),
+    PRIMARY KEY (blocker_id, blocked_id, is_org_block),
     CHECK (blocker_id <> blocked_id)
 );
 
@@ -2022,4 +2038,248 @@ CREATE INDEX IF NOT EXISTS idx_org_key_offerings_active ON organization_key_offe
 -- 07/16/2026 Migration: Community Article Indicator and Post Status
 ALTER TABLE posts ADD COLUMN IF NOT EXISTS is_community_article BOOLEAN DEFAULT FALSE;
 ALTER TABLE posts ADD COLUMN IF NOT EXISTS status VARCHAR(50) DEFAULT 'published';
+
+-- ==========================================================================
+-- PROFILE PROJECTS FEATURE (2026-07-28)
+-- Supports user portfolio projects with associated skill tags and media attachments.
+-- ==========================================================================
+CREATE TABLE IF NOT EXISTS projects (
+    project_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    profile_id UUID NOT NULL REFERENCES profiles(profile_id) ON DELETE CASCADE,
+    org_id UUID REFERENCES organizations(org_id) ON DELETE SET NULL,
+    title VARCHAR(255) NOT NULL,
+    organization VARCHAR(255) NOT NULL,
+    details TEXT,
+    start_month VARCHAR(20) NOT NULL,
+    start_year VARCHAR(10) NOT NULL,
+    end_month VARCHAR(20),
+    end_year VARCHAR(10),
+    is_current BOOLEAN DEFAULT FALSE,
+    role VARCHAR(100),
+    team_size VARCHAR(50),
+    role_description TEXT,
+    created_at TIMESTAMPTZ DEFAULT now(),
+    updated_at TIMESTAMPTZ DEFAULT now(),
+    CONSTRAINT chk_projects_date_range CHECK (
+        is_current = true OR (end_year IS NOT NULL AND end_month IS NOT NULL)
+    )
+);
+
+CREATE INDEX IF NOT EXISTS idx_projects_profile_id ON projects(profile_id);
+CREATE INDEX IF NOT EXISTS idx_projects_org_id ON projects(org_id);
+
+CREATE TABLE IF NOT EXISTS project_skills (
+    project_id UUID REFERENCES projects(project_id) ON DELETE CASCADE,
+    skill_id UUID REFERENCES skills(skill_id) ON DELETE CASCADE,
+    PRIMARY KEY (project_id, skill_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_project_skills_project_id ON project_skills(project_id);
+
+CREATE TABLE IF NOT EXISTS project_media (
+    media_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    project_id UUID NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
+    media_type VARCHAR(20) NOT NULL CHECK (media_type IN ('link', 'image', 'document')),
+    title VARCHAR(255) NOT NULL,
+    url TEXT,
+    file_url TEXT,
+    file_name VARCHAR(255),
+    display_order INTEGER DEFAULT 0,
+    created_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_project_media_project_id ON project_media(project_id);
+
+-- ============================================================
+-- SETTINGS MODULE SCHEMA ADDITIONS
+-- ============================================================
+
+-- 1. Add settings columns to users
+ALTER TABLE users
+    ADD COLUMN IF NOT EXISTS theme_preference VARCHAR(10) DEFAULT 'system'
+        CHECK (theme_preference IN ('system', 'light', 'dark')),
+    ADD COLUMN IF NOT EXISTS recovery_email TEXT,
+    ADD COLUMN IF NOT EXISTS recovery_email_verified_at TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS profile_show_email BOOLEAN DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS profile_show_phone BOOLEAN DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS tag_permission VARCHAR(20) DEFAULT 'everyone'
+        CHECK (tag_permission IN ('everyone', 'connections_only', 'followers_only', 'no_one'));
+
+-- Re-create active_users view to pick up new columns added to users table
+CREATE OR REPLACE VIEW active_users AS
+SELECT * FROM users
+WHERE deletion_execute_at IS NULL;
+
+-- 2. User notification preferences (1:1 with user)
+CREATE TABLE IF NOT EXISTS user_notification_preferences (
+    user_id UUID PRIMARY KEY REFERENCES users(user_id) ON DELETE CASCADE,
+    all_notifications BOOLEAN DEFAULT TRUE,
+    post_notifications BOOLEAN DEFAULT TRUE,
+    job_alerts BOOLEAN DEFAULT TRUE,
+    message_notifications BOOLEAN DEFAULT TRUE,
+    email_notifications BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 3. Saved folders (referenced by savedPost.controller.js)
+CREATE TABLE IF NOT EXISTS saved_folders (
+    folder_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    org_id UUID REFERENCES organizations(org_id) ON DELETE CASCADE,
+    name VARCHAR(100) NOT NULL,
+    cover_image TEXT,
+    is_default BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE(user_id, org_id, name)
+);
+CREATE INDEX IF NOT EXISTS idx_saved_folders_user_id ON saved_folders(user_id);
+
+-- 4. saved_post: add org_id and folder_id
+ALTER TABLE saved_post
+    ADD COLUMN IF NOT EXISTS org_id UUID REFERENCES organizations(org_id) ON DELETE CASCADE,
+    ADD COLUMN IF NOT EXISTS folder_id UUID REFERENCES saved_folders(folder_id) ON DELETE SET NULL;
+
+-- 5. Support tickets
+CREATE TABLE IF NOT EXISTS support_tickets (
+    ticket_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID REFERENCES users(user_id) ON DELETE SET NULL,
+    email TEXT NOT NULL,
+    description TEXT NOT NULL,
+    attachment_url TEXT,
+    status VARCHAR(20) DEFAULT 'OPEN'
+        CHECK (status IN ('OPEN', 'IN_PROGRESS', 'RESOLVED', 'CLOSED')),
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 6. User feedback (one per user per app version)
+CREATE TABLE IF NOT EXISTS user_feedback (
+    feedback_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID REFERENCES users(user_id) ON DELETE SET NULL,
+    rating SMALLINT NOT NULL CHECK (rating BETWEEN 1 AND 5),
+    comment TEXT,
+    app_version TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_user_feedback_version ON user_feedback(user_id, app_version);
+
+
+-- ==========================================================================
+-- ACCOUNT STATUS FEATURE (Phase 2 — 2026-08-01)
+-- Your Reports + Account Actions tabs in Settings
+-- ==========================================================================
+
+-- 1. Add status tracking to the existing reports table
+ALTER TABLE reports
+  ADD COLUMN IF NOT EXISTS status VARCHAR(30) NOT NULL DEFAULT 'pending'
+    CHECK (status IN ('pending', 'under_review', 'action_taken', 'no_action', 'dismissed'));
+
+-- 2. Moderator review notes — timeline of updates per report
+--    is_system = TRUE: auto-generated on report creation
+--    is_system = FALSE: written by a moderator (via admin panel, Phase 3)
+CREATE TABLE IF NOT EXISTS report_review_notes (
+  id         UUID    PRIMARY KEY DEFAULT gen_random_uuid(),
+  report_id  BIGINT  NOT NULL REFERENCES reports(id) ON DELETE CASCADE,
+  message    TEXT    NOT NULL,
+  is_system  BOOLEAN DEFAULT TRUE,
+  created_by UUID    REFERENCES users(user_id) ON DELETE SET NULL,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_report_review_notes_report ON report_review_notes(report_id);
+
+-- 3. Moderation actions issued against a user (populated by admin panel in Phase 3)
+--    Suspension status is auto-resolved at query time:
+--      expires_at < NOW()  →  status returned as 'completed'
+CREATE TABLE IF NOT EXISTS account_actions (
+  id             UUID    PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id        UUID    NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+  action_type    VARCHAR(30) NOT NULL
+    CHECK (action_type IN ('warning', 'post_removed', 'comment_removed', 'suspension', 'ban')),
+  reason_id      INT     REFERENCES report_reasons(id) ON DELETE SET NULL,
+  custom_reason  TEXT,
+  moderator_note TEXT,
+  affected_type  VARCHAR(20),      -- 'POST', 'COMMENT', etc.
+  affected_id    UUID,
+  affected_title TEXT,             -- snapshot of content title at time of action
+  duration_days  INT,              -- for suspensions (e.g. 7)
+  status         VARCHAR(20) NOT NULL DEFAULT 'active'
+    CHECK (status IN ('active', 'completed', 'appealed', 'overturned')),
+  expires_at     TIMESTAMPTZ,      -- created_at + INTERVAL 'duration_days days'
+  issued_by      UUID    REFERENCES users(user_id) ON DELETE SET NULL,
+  created_at     TIMESTAMPTZ DEFAULT NOW(),
+  updated_at     TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_account_actions_user ON account_actions(user_id, created_at DESC);
+
+-- ==========================================================================
+-- OWNERSHIP TRANSFERS FEATURE (2026-08-02)
+-- Tracks historical organization ownership transfers
+-- ==========================================================================
+
+CREATE TABLE IF NOT EXISTS ownership_transfers (
+    transfer_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    org_id UUID NOT NULL REFERENCES organizations(org_id) ON DELETE CASCADE,
+    transferred_from UUID REFERENCES users(user_id) ON DELETE SET NULL,
+    transferred_to UUID REFERENCES users(user_id) ON DELETE SET NULL,
+    transferred_at TIMESTAMPTZ DEFAULT NOW(),
+    metadata JSONB DEFAULT '{}'::jsonb
+);
+
+CREATE INDEX IF NOT EXISTS idx_ownership_transfers_org ON ownership_transfers(org_id);
+CREATE INDEX IF NOT EXISTS idx_ownership_transfers_from ON ownership_transfers(transferred_from);
+CREATE INDEX IF NOT EXISTS idx_ownership_transfers_to ON ownership_transfers(transferred_to);
+
+-- =========================================================================
+-- ACTIVE VIEWS FOR LIKES AND COMMENTS (Excluding Soft-Deleted Entities)
+-- =========================================================================
+
+CREATE OR REPLACE VIEW active_post_likes AS
+SELECT pl.* 
+FROM post_likes pl
+LEFT JOIN active_users au ON au.user_id = pl.user_id
+LEFT JOIN active_organizations ao ON ao.org_id = pl.org_id
+WHERE (pl.org_id IS NULL AND au.user_id IS NOT NULL)
+   OR (pl.org_id IS NOT NULL AND ao.org_id IS NOT NULL);
+
+CREATE OR REPLACE VIEW active_post_comments AS
+SELECT pc.*
+FROM post_comments pc
+LEFT JOIN active_users au ON au.user_id = pc.author_id
+LEFT JOIN active_organizations ao ON ao.org_id = pc.author_org_id
+WHERE (pc.author_org_id IS NULL AND au.user_id IS NOT NULL)
+   OR (pc.author_org_id IS NOT NULL AND ao.org_id IS NOT NULL);
+
+CREATE OR REPLACE VIEW active_comment_likes AS
+SELECT cl.*
+FROM comment_likes cl
+LEFT JOIN active_users au ON au.user_id = cl.user_id
+LEFT JOIN active_organizations ao ON ao.org_id = cl.org_id
+WHERE (cl.org_id IS NULL AND au.user_id IS NOT NULL)
+   OR (cl.org_id IS NOT NULL AND ao.org_id IS NOT NULL);
+
+
+
+CREATE OR REPLACE VIEW organization_display_profiles AS
+SELECT 
+    org_id,
+    CASE 
+        WHEN deletion_execute_at IS NULL AND is_deleted = FALSE THEN name 
+        ELSE 'Deleted Page' 
+    END AS name,
+    CASE 
+        WHEN deletion_execute_at IS NULL AND is_deleted = FALSE THEN slug 
+        ELSE 'deleted_page' 
+    END AS slug,
+    CASE 
+        WHEN deletion_execute_at IS NULL AND is_deleted = FALSE THEN logo_url 
+        ELSE NULL 
+    END AS logo_url,
+    CASE 
+        WHEN deletion_execute_at IS NULL AND is_deleted = FALSE THEN headline 
+        ELSE 'This page has been deactivated' 
+    END AS headline,
+    entity_type
+FROM organizations;
 

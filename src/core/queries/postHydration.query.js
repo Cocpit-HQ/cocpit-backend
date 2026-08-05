@@ -14,6 +14,8 @@ const getPostHydrationSelect = (companyParamIdx, userParamIdx) => `
     (SELECT status FROM post_appeals pa WHERE pa.post_id = p.post_id ORDER BY created_at DESC LIMIT 1) AS appeal_status,
 
     COALESCE(p.author_org_id, u.user_id) AS author_id,
+    p.author_org_id AS author_org_id,
+    p.author_id AS created_by_user_id,
     COALESCE(comp.name, u.full_name) AS author_name,
     COALESCE(comp.logo_url, u.avatar_url) AS author_avatar,
     COALESCE(comp.slug, u.account_name) AS author_slug,
@@ -65,10 +67,10 @@ const getPostHydrationSelect = (companyParamIdx, userParamIdx) => `
         '[]'::json
     ) AS media,
 
-    (SELECT COUNT(*) FROM post_likes pl WHERE pl.post_id = p.post_id)::int AS like_count,
+    (SELECT COUNT(*) FROM active_post_likes pl WHERE pl.post_id = p.post_id)::int AS like_count,
     (
         SELECT COALESCE(comp_like.slug, u_like.account_name)
-        FROM post_likes pl_sample
+        FROM active_post_likes pl_sample
          LEFT JOIN active_users u_like ON u_like.user_id = pl_sample.user_id
         LEFT JOIN organizations comp_like ON comp_like.org_id = pl_sample.org_id
         WHERE pl_sample.post_id = p.post_id
@@ -95,13 +97,13 @@ const getPostHydrationSelect = (companyParamIdx, userParamIdx) => `
             pl_sample.created_at DESC
         LIMIT 1
     ) AS sample_liker_username,
-    (SELECT COUNT(*) FROM post_comments pc WHERE pc.post_id = p.post_id)::int AS comment_count,
+    (SELECT COUNT(*) FROM active_post_comments pc WHERE pc.post_id = p.post_id)::int AS comment_count,
     (SELECT COUNT(*) FROM saved_post sp_cnt WHERE sp_cnt.post_id = p.post_id)::int AS save_count,
     (SELECT COUNT(*) FROM posts sp_share WHERE sp_share.shared_post_id = p.post_id)::int AS share_count,
 
     (
         EXISTS(
-            SELECT 1 FROM post_likes pl 
+            SELECT 1 FROM active_post_likes pl 
             WHERE pl.post_id = p.post_id 
             AND (
                 ($${companyParamIdx}::uuid IS NOT NULL AND pl.org_id = $${companyParamIdx}::uuid)
@@ -146,7 +148,7 @@ const getPostHydrationSelect = (companyParamIdx, userParamIdx) => `
         )
         FROM (
             SELECT pl_sample.user_id, pl_sample.org_id
-            FROM post_likes pl_sample
+            FROM active_post_likes pl_sample
             WHERE pl_sample.post_id = p.post_id
               AND pl_sample.user_id IS NOT NULL
               AND NOT (
@@ -163,7 +165,7 @@ const getPostHydrationSelect = (companyParamIdx, userParamIdx) => `
 
     (
         EXISTS(
-            SELECT 1 FROM post_comments pc_me 
+            SELECT 1 FROM active_post_comments pc_me 
             WHERE pc_me.post_id = p.post_id 
             AND (
                 ($${companyParamIdx}::uuid IS NOT NULL AND pc_me.author_org_id = $${companyParamIdx}::uuid)
@@ -208,7 +210,7 @@ const getPostHydrationSelect = (companyParamIdx, userParamIdx) => `
             'author_avatar', COALESCE(comp_first.logo_url, u_first.avatar_url),
             'author_title', u_first.headline
         )
-        FROM post_comments pc_first
+        FROM active_post_comments pc_first
          JOIN active_users u_first ON u_first.user_id = pc_first.author_id
         LEFT JOIN organizations comp_first ON comp_first.org_id = pc_first.author_org_id
         WHERE pc_first.post_id = p.post_id AND pc_first.parent_id IS NULL
@@ -264,6 +266,8 @@ const getPostHydrationSelect = (companyParamIdx, userParamIdx) => `
                 'post_type', sp.post_type,
                 'author', json_build_object(
                     'user_id', COALESCE(sp.author_org_id, sp_u.user_id),
+                    'author_org_id', sp.author_org_id,
+                    'created_by_user_id', sp.author_id,
                     'full_name', COALESCE(sp_comp.name, sp_u.full_name),
                     'avatar_url', COALESCE(sp_comp.logo_url, sp_u.avatar_url),
                     'author_headline', COALESCE(sp_comp.slogan, sp_u.headline),
@@ -272,11 +276,11 @@ const getPostHydrationSelect = (companyParamIdx, userParamIdx) => `
                 ),
                  'media', COALESCE((SELECT json_agg(json_build_object('url', pm.url, 'media_type', pm.media_type)) FROM post_media pm WHERE pm.post_id = sp.post_id), '[]'::json),
                  'achievement_image_url', sp_ai.cloudinary_url,
-                 'like_count', (SELECT COUNT(*) FROM post_likes pl WHERE pl.post_id = sp.post_id)::int,
-                 'comment_count', (SELECT COUNT(*) FROM post_comments pc WHERE pc.post_id = sp.post_id)::int,
+                 'like_count', (SELECT COUNT(*) FROM active_post_likes pl WHERE pl.post_id = sp.post_id)::int,
+                 'comment_count', (SELECT COUNT(*) FROM active_post_comments pc WHERE pc.post_id = sp.post_id)::int,
                  'share_count', (SELECT COUNT(*) FROM posts sp_share2 WHERE sp_share2.shared_post_id = sp.post_id)::int,
                  'is_liked', EXISTS(
-                     SELECT 1 FROM post_likes pl 
+                     SELECT 1 FROM active_post_likes pl 
                      WHERE pl.post_id = sp.post_id 
                      AND (
                          ($${companyParamIdx}::uuid IS NOT NULL AND pl.org_id = $${companyParamIdx}::uuid)
@@ -285,7 +289,7 @@ const getPostHydrationSelect = (companyParamIdx, userParamIdx) => `
                      )
                  ),
                  'is_commented', EXISTS(
-                     SELECT 1 FROM post_comments pc_c 
+                     SELECT 1 FROM active_post_comments pc_c 
                      WHERE pc_c.post_id = sp.post_id 
                      AND (
                          ($${companyParamIdx}::uuid IS NOT NULL AND pc_c.author_org_id = $${companyParamIdx}::uuid)
@@ -398,16 +402,16 @@ const getPublicFeedWhere = (userParamIdx) => `
     AND (p.is_unlisted IS FALSE OR p.is_unlisted IS NULL)
     AND NOT EXISTS (
         SELECT 1 FROM blocks b 
-        WHERE (b.blocker_id = $${userParamIdx} AND b.blocked_id = p.author_id)
-           OR (b.blocker_id = p.author_id AND b.blocked_id = $${userParamIdx})
+        WHERE (b.is_org_block = false AND ((b.blocker_id = $${userParamIdx} AND b.blocked_id = p.author_id) OR (b.blocker_id = p.author_id AND b.blocked_id = $${userParamIdx})))
+           OR (b.is_org_block = true AND p.author_org_id IS NOT NULL AND ((b.blocker_id = p.author_org_id AND b.blocked_id = $${userParamIdx}) OR (b.blocker_id = $${userParamIdx} AND b.blocked_id = p.author_org_id)))
     )
     -- STRICT REPOST BLOCKING: Exclude repost if original author is blocked
     AND (
         p.shared_post_id IS NULL 
         OR NOT EXISTS (
             SELECT 1 FROM blocks b 
-            WHERE (b.blocker_id = $${userParamIdx} AND b.blocked_id = sp.author_id)
-               OR (b.blocker_id = sp.author_id AND b.blocked_id = $${userParamIdx})
+            WHERE (b.is_org_block = false AND ((b.blocker_id = $${userParamIdx} AND b.blocked_id = sp.author_id) OR (b.blocker_id = sp.author_id AND b.blocked_id = $${userParamIdx})))
+               OR (b.is_org_block = true AND sp.author_org_id IS NOT NULL AND ((b.blocker_id = sp.author_org_id AND b.blocked_id = $${userParamIdx}) OR (b.blocker_id = $${userParamIdx} AND b.blocked_id = sp.author_org_id)))
         )
     )
 

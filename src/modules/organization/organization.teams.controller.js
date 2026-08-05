@@ -3,6 +3,7 @@
 const pool = require("../../core/db/pool");
 const AppError = require("../../core/errors/AppError");
 const { logAudit } = require("../../core/infrastructure/audit.service");
+const socketService = require("../../core/infrastructure/socket.service");
 
 // Helper to check target is Owner (creator of the organization)
 async function isTargetOwner(client, orgId, userId) {
@@ -421,21 +422,28 @@ exports.getPermissionKeys = async (req, res, next) => {
 // 8. Get all members in organization
 exports.getMembers = async (req, res, next) => {
     const orgId = req.params.orgId;
-    const { page = 1, limit = 20, search = '', status = 'ACTIVE' } = req.query;
+    const { page = 1, limit = 20, search = '', status = 'ACTIVE', exclude_owner, excludeOwner } = req.query;
+    const shouldExcludeOwner = exclude_owner === 'true' || exclude_owner === true || excludeOwner === 'true' || excludeOwner === true;
     const offset = (page - 1) * limit;
 
     try {
         let query = `
             SELECT u.user_id, u.full_name, u.avatar_url AS avatar, u.headline, u.email,
                    om.joined_at, om.status, om.expires_at, om.is_core_team,
-                   r.role_id, r.name AS role_name, r.color AS role_color, r.priority AS role_priority
+                   r.role_id, r.name AS role_name, r.color AS role_color, r.priority AS role_priority,
+                   (o.created_by = u.user_id) AS is_owner
             FROM organization_members om
             JOIN active_users u ON om.user_id = u.user_id
+            JOIN organizations o ON o.org_id = om.org_id
             LEFT JOIN organization_roles r ON om.role_id = r.role_id
             WHERE om.org_id = $1
         `;
         const params = [orgId];
         let paramIndex = 2;
+
+        if (shouldExcludeOwner) {
+            query += ` AND om.user_id != o.created_by`;
+        }
 
         if (status && status !== 'all') {
             query += ` AND om.status = $${paramIndex}`;
@@ -444,7 +452,7 @@ exports.getMembers = async (req, res, next) => {
         }
 
         if (search) {
-            query += ` AND (u.full_name ILIKE $${paramIndex} OR u.headline ILIKE $${paramIndex})`;
+            query += ` AND (u.full_name ILIKE $${paramIndex} OR u.headline ILIKE $${paramIndex} OR u.email ILIKE $${paramIndex})`;
             params.push(`%${search}%`);
             paramIndex++;
         }
@@ -457,10 +465,15 @@ exports.getMembers = async (req, res, next) => {
         let countQuery = `
             SELECT COUNT(*)::int FROM organization_members om
             JOIN active_users u ON om.user_id = u.user_id
+            JOIN organizations o ON o.org_id = om.org_id
             WHERE om.org_id = $1
         `;
         const countParams = [orgId];
         let countParamIdx = 2;
+
+        if (shouldExcludeOwner) {
+            countQuery += ` AND om.user_id != o.created_by`;
+        }
 
         if (status && status !== 'all') {
             countQuery += ` AND om.status = $${countParamIdx}`;
@@ -469,7 +482,7 @@ exports.getMembers = async (req, res, next) => {
         }
 
         if (search) {
-            countQuery += ` AND (u.full_name ILIKE $${countParamIdx} OR u.headline ILIKE $${countParamIdx})`;
+            countQuery += ` AND (u.full_name ILIKE $${countParamIdx} OR u.headline ILIKE $${countParamIdx} OR u.email ILIKE $${countParamIdx})`;
             countParams.push(`%${search}%`);
             countParamIdx++;
         }
@@ -647,8 +660,8 @@ exports.removeMember = async (req, res, next) => {
 // 12. Transfer Ownership
 exports.transferOwnership = async (req, res, next) => {
     const orgId = req.params.orgId;
-    const actorId = req.actor.userId;
-    const actorRole = req.actor.roleName;
+    const actorId = req.actor?.userId || req.user?.sub;
+    const actorRole = req.actor?.roleName || 'Owner';
     const { newOwnerId } = req.body;
 
     if (!newOwnerId) {
@@ -669,7 +682,7 @@ exports.transferOwnership = async (req, res, next) => {
             throw new AppError("Only the Owner can transfer organization ownership", 403);
         }
 
-        // 2. Check target member exists
+        // 2. Check target member exists and is active
         const targetRes = await client.query(
             `SELECT 1 FROM organization_members WHERE org_id = $1 AND user_id = $2 AND status = 'ACTIVE'`,
             [orgId, newOwnerId]
@@ -678,7 +691,7 @@ exports.transferOwnership = async (req, res, next) => {
             throw new AppError("Target user is not an active member of this organization", 400);
         }
 
-        // 3. Find/Get the Admin role (create if not exists)
+        // 3. Find or Create the Admin role for this org
         let adminRoleId;
         const adminRoleRes = await client.query(
             `SELECT role_id FROM organization_roles WHERE org_id = $1 AND name = 'Admin' LIMIT 1`,
@@ -695,19 +708,32 @@ exports.transferOwnership = async (req, res, next) => {
             adminRoleId = adminCreate.rows[0].role_id;
         }
 
-        // 4. Update new owner to Admin role in organization_members
+        // 4. Update new owner role to Admin role in organization_members
         await client.query(
             `UPDATE organization_members SET role_id = $3, updated_at = NOW() WHERE org_id = $1 AND user_id = $2`,
             [orgId, newOwnerId, adminRoleId]
         );
 
-        // 5. Update organizations created_by
+        // 5. Update old owner role to Admin role in organization_members (demoting old owner to Admin)
+        await client.query(
+            `UPDATE organization_members SET role_id = $3, updated_at = NOW() WHERE org_id = $1 AND user_id = $2`,
+            [orgId, actorId, adminRoleId]
+        );
+
+        // 6. Update organizations created_by to new owner
         await client.query(
             `UPDATE organizations SET created_by = $2, updated_at = NOW() WHERE org_id = $1`,
             [orgId, newOwnerId]
         );
 
-        // 6. Audit Log
+        // 7. Insert record into ownership_transfers table (Option C)
+        await client.query(
+            `INSERT INTO ownership_transfers (org_id, transferred_from, transferred_to, metadata)
+             VALUES ($1, $2, $3, $4)`,
+            [orgId, actorId, newOwnerId, JSON.stringify({ transferred_by: actorId })]
+        );
+
+        // 8. Audit Log (Option C)
         await logAudit(client, {
             entityId: orgId,
             actorId,
@@ -717,6 +743,20 @@ exports.transferOwnership = async (req, res, next) => {
         });
 
         await client.query("COMMIT");
+
+        // 9. Emit Real-time Socket Events
+        const socketPayload = {
+            orgId,
+            previousOwnerId: actorId,
+            newOwnerId,
+            timestamp: new Date().toISOString()
+        };
+        socketService.notifyUser(actorId, 'org_ownership_transferred', socketPayload);
+        socketService.notifyUser(newOwnerId, 'org_ownership_transferred', socketPayload);
+
+        socketService.notifyUser(actorId, 'org_list_updated', { orgId, action: 'demoted_to_admin' });
+        socketService.notifyUser(newOwnerId, 'org_list_updated', { orgId, action: 'promoted_to_owner' });
+
         res.json({ message: "Ownership transferred successfully" });
     } catch (err) {
         await client.query("ROLLBACK");
@@ -1001,7 +1041,7 @@ exports.getPendingInvites = async (req, res, next) => {
     try {
         const result = await pool.query(
             `SELECT oi.invite_id, oi.status, oi.expires_at, oi.created_at AS invited_at,
-                    oi.invited_user_id AS user_id, u.full_name, u.avatar_url AS avatar, u.headline,
+                    oi.invited_user_id AS user_id, oi.email, u.full_name, u.avatar_url AS avatar, u.headline,
                     r.role_id, r.name AS role_name, r.color AS role_color
              FROM organization_invites oi
              LEFT JOIN active_users u ON oi.invited_user_id = u.user_id

@@ -44,8 +44,8 @@ async function _fetchTrendingFromDb(pool) {
       'post'      AS type,
       p.author_id,
       p.created_at,
-      (SELECT COUNT(*) FROM post_likes    pl WHERE pl.post_id = p.post_id)::float AS like_count,
-      (SELECT COUNT(*) FROM post_comments pc WHERE pc.post_id = p.post_id)::float AS comment_count,
+      (SELECT COUNT(*) FROM active_post_likes    pl WHERE pl.post_id = p.post_id)::float AS like_count,
+      (SELECT COUNT(*) FROM active_post_comments pc WHERE pc.post_id = p.post_id)::float AS comment_count,
       (SELECT COUNT(*) FROM posts         rp WHERE rp.shared_post_id = p.post_id)::float AS share_count,
       (SELECT COUNT(*) FROM reports       r  WHERE r.target_type = 'POST' AND r.target_id = p.post_id AND r.created_at > NOW() - INTERVAL '24 hours')::float AS report_count
     FROM posts p
@@ -54,8 +54,8 @@ async function _fetchTrendingFromDb(pool) {
       AND (p.is_removed IS FALSE OR p.is_removed IS NULL)
       AND p.is_community_article IS NOT TRUE
     ORDER BY (
-      (SELECT COUNT(*) FROM post_likes    pl WHERE pl.post_id = p.post_id) * 0.6 +
-      (SELECT COUNT(*) FROM post_comments pc WHERE pc.post_id = p.post_id) * 1.2 +
+      (SELECT COUNT(*) FROM active_post_likes    pl WHERE pl.post_id = p.post_id) * 0.6 +
+      (SELECT COUNT(*) FROM active_post_comments pc WHERE pc.post_id = p.post_id) * 1.2 +
       (SELECT COUNT(*) FROM posts         rp WHERE rp.shared_post_id = p.post_id) * 1.5
     ) DESC
     LIMIT 50

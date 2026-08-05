@@ -5,7 +5,8 @@ const { z } = require("zod");
  * Parses request, calls repository, sends response. No SQL. Minimal business logic.
  */
 const profileRepo = require("./profile.repository");
-const { checkBlockStatus } = require("../../core/utils/blockCheck");
+const profileCalc = require("./profile.calculator");
+const { checkBlockStatus, checkActorBlockStatus } = require("../../core/utils/blockCheck");
 const pool = require("../../core/db/pool");
 const { handleExperienceOrgLink, handleEducationOrgLink, cleanupPreviousCompanyMemberships } = require("../../utils/orgLinkHelper");
 
@@ -119,7 +120,7 @@ exports.getProfile = async (req, res) => {
     }
 
     if (req.user && userId !== req.user.sub) {
-        const isBlocked = await checkBlockStatus(req.user.sub, userId);
+        const isBlocked = await checkActorBlockStatus(req, userId);
         if (isBlocked) return res.status(404).json({ message: "User not found" });
     }
 
@@ -130,7 +131,7 @@ exports.getProfile = async (req, res) => {
         const profileId = u.profile_id;
         userId = u.user_id;
 
-        const [experiences, educations, skills, companyRoles, counts, resumeRow, userRole, interests] = await Promise.all([
+        const [experiences, educations, skills, companyRoles, counts, resumeRow, userRole, interests, projects] = await Promise.all([
             profileId ? profileRepo.getExperiences(profileId) : [],
             profileId ? profileRepo.getEducations(profileId) : [],
             profileId ? profileRepo.getSkills(profileId) : [],
@@ -139,6 +140,7 @@ exports.getProfile = async (req, res) => {
             profileRepo.getLatestResume(userId),
             profileRepo.getUserRole(userId),
             profileRepo.getUserInterests(userId),
+            profileId ? profileRepo.getProjects(profileId) : [],
         ]);
 
         const resume = resumeRow ? { originalName: resumeRow.file_name, url: resumeRow.file_url } : null;
@@ -148,16 +150,28 @@ exports.getProfile = async (req, res) => {
             school_logo: educations[0].school_logo || null
         } : null;
 
+        const profileScore = profileCalc.calculateFullProfileScore(u, skills, experiences, projects, educations);
+
         let relationship = { isFollowing: false, isFollowedBy: false, connectionRequestStatus: null, connectionRequestId: null, connectionRequestSender: null };
-        if (req.user && req.user.sub && req.user.sub !== u.user_id) {
-            relationship = await profileRepo.getRelationshipInfo(req.user.sub, u.user_id);
+        if (req.user && req.user.sub) {
+            const activeProfileId = req.headers["x-actor-id"];
+            const activeProfileType = req.headers["x-actor-type"];
+
+            if (activeProfileType === "ORGANIZATION" && activeProfileId) {
+                relationship = await profileRepo.getCompanyRelationshipInfo(activeProfileId, u.user_id);
+            } else if (req.user.sub !== u.user_id) {
+                relationship = await profileRepo.getRelationshipInfo(req.user.sub, u.user_id);
+            }
         }
 
         res.json({
             user: {
                 id: u.user_id, account_name: u.account_name, name: u.full_name, headline: u.headline, avatar: u.avatar_url,
                 cover_image: u.cover_image_url, location: u.location, about: u.about_text, website: u.website,
-                email: u.email, mobile_number: u.mobile_number, account_type: u.account_type,
+                email: (req.user?.sub === u.user_id || u.profile_show_email) ? u.email : null,
+                ...(req.user?.sub === u.user_id ? { recovery_email: u.recovery_email || null } : {}),
+                mobile_number: (req.user?.sub === u.user_id || u.profile_show_phone) ? u.mobile_number : null,
+                account_type: u.account_type,
                 followers_count: parseInt(counts.followers_count), following_count: parseInt(counts.following_count),
                 connections_count: parseInt(counts.connections_count),
                 open_to: u.open_to, availability: u.availability, work_preference: u.work_preference,
@@ -182,9 +196,10 @@ exports.getProfile = async (req, res) => {
                 skill_names: skills.map(s => s.name),
                 interest_names: interests.map(i => i.name),
             },
-            experiences, educations, skills,
+            experiences, educations, skills, projects,
             organization_roles: companyRoles,
             resume,
+            profile_score: profileScore,
         });
     } catch (err) {
         console.error("Get profile error:", err);
@@ -1222,7 +1237,7 @@ exports.getCompanyList = async (req, res) => {
             companyParams = [`%${company_search}%`];
             companyQuery = `
                 WITH matched_orgs AS (
-                    SELECT name, org_id, logo_url
+                    SELECT name, org_id, logo_url, established_year
                     FROM organizations
                     WHERE name IS NOT NULL AND name != ''
                       AND entity_type = 'COMPANY'
@@ -1230,22 +1245,22 @@ exports.getCompanyList = async (req, res) => {
                       AND LOWER(name) LIKE LOWER($1)
                 ),
                 matched_exps AS (
-                    SELECT DISTINCT ON (LOWER(TRIM(company_name))) 
-                           company_name AS name, 
+                    SELECT DISTINCT ON (LOWER(TRIM(company_name)))
+                           company_name AS name,
                            org_id
                     FROM experiences
                     WHERE company_name IS NOT NULL AND company_name != ''
                       AND LOWER(company_name) LIKE LOWER($1)
                     ORDER BY LOWER(TRIM(company_name))
                 )
-                SELECT company_name, org_id, logo_url
+                SELECT company_name, org_id, logo_url, established_year
                 FROM (
-                    SELECT name AS company_name, org_id, logo_url
+                    SELECT name AS company_name, org_id, logo_url, established_year
                     FROM matched_orgs
                     UNION ALL
-                    SELECT e.name AS company_name, e.org_id, NULL::text AS logo_url
+                    SELECT e.name AS company_name, e.org_id, NULL::text AS logo_url, NULL::integer AS established_year
                     FROM matched_exps e
-                    WHERE e.org_id IS NULL 
+                    WHERE e.org_id IS NULL
                        OR NOT EXISTS (
                            SELECT 1 FROM matched_orgs o WHERE o.org_id = e.org_id
                        )
@@ -1256,28 +1271,28 @@ exports.getCompanyList = async (req, res) => {
             companyParams = [];
             companyQuery = `
                 WITH matched_orgs AS (
-                    SELECT name, org_id, logo_url
+                    SELECT name, org_id, logo_url, established_year
                     FROM organizations
                     WHERE name IS NOT NULL AND name != ''
                       AND entity_type = 'COMPANY'
                       AND is_deleted = FALSE
                 ),
                 matched_exps AS (
-                    SELECT DISTINCT ON (LOWER(TRIM(company_name))) 
-                           company_name AS name, 
+                    SELECT DISTINCT ON (LOWER(TRIM(company_name)))
+                           company_name AS name,
                            org_id
                     FROM experiences
                     WHERE company_name IS NOT NULL AND company_name != ''
                     ORDER BY LOWER(TRIM(company_name))
                 )
-                SELECT company_name, org_id, logo_url
+                SELECT company_name, org_id, logo_url, established_year
                 FROM (
-                    SELECT name AS company_name, org_id, logo_url
+                    SELECT name AS company_name, org_id, logo_url, established_year
                     FROM matched_orgs
                     UNION ALL
-                    SELECT e.name AS company_name, e.org_id, NULL::text AS logo_url
+                    SELECT e.name AS company_name, e.org_id, NULL::text AS logo_url, NULL::integer AS established_year
                     FROM matched_exps e
-                    WHERE e.org_id IS NULL 
+                    WHERE e.org_id IS NULL
                        OR NOT EXISTS (
                            SELECT 1 FROM matched_orgs o WHERE o.org_id = e.org_id
                        )
@@ -1318,7 +1333,8 @@ exports.getCompanyList = async (req, res) => {
             companies: companyResult.rows.map(r => ({
                 name: r.company_name,
                 org_id: r.org_id,
-                logo_url: r.logo_url
+                logo_url: r.logo_url,
+                established_year: r.established_year
             })),
         });
 
@@ -1419,6 +1435,22 @@ exports.batchUpdateExperiences = async (req, res) => {
         // match the frontend's role list order.
         const entityIdOf = (op) => op.type === 'CREATE' ? op.tempId : (op.type === 'UPDATE' ? op.id : undefined);
 
+        // Founding-year lookup for org-linked CREATE/UPDATE operations, so start_date can be
+        // validated against the company's established_year (ID-351).
+        const orgIdsInBatch = [...new Set(
+            operations
+                .filter(op => (op.type === 'CREATE' || op.type === 'UPDATE') && op.data.org_id)
+                .map(op => op.data.org_id)
+        )];
+        const establishedYearByOrgId = new Map();
+        if (orgIdsInBatch.length > 0) {
+            const orgResult = await pool.query(
+                `SELECT org_id, established_year FROM organizations WHERE org_id = ANY($1::uuid[])`,
+                [orgIdsInBatch]
+            );
+            orgResult.rows.forEach(r => establishedYearByOrgId.set(r.org_id, r.established_year));
+        }
+
         // Apply operations to simulated state
         for (let i = 0; i < operations.length; i++) {
             const op = operations[i];
@@ -1433,12 +1465,16 @@ exports.batchUpdateExperiences = async (req, res) => {
                 }
                 simulatedState[idx] = { ...simulatedState[idx], ...op.data };
                 // Basic date validation
-                const { start_date, end_date, is_current } = simulatedState[idx];
+                const { start_date, end_date, is_current, org_id, company_name } = simulatedState[idx];
                 if (!is_current && !end_date) {
                     errors.push({ path: 'experiences.end_date', entityId: entityIdOf(op), message: "End date is required" });
                 }
                 if (end_date && new Date(end_date) < new Date(start_date)) {
                     errors.push({ path: 'experiences.end_date', entityId: entityIdOf(op), message: "End date must be after start date" });
+                }
+                const establishedYear = org_id ? establishedYearByOrgId.get(org_id) : null;
+                if (establishedYear && new Date(start_date).getFullYear() < establishedYear) {
+                    errors.push({ path: 'experiences.start_date', entityId: entityIdOf(op), message: `Start date cannot be before ${company_name}'s founding year (${establishedYear})` });
                 }
             } else if (op.type === "CREATE") {
                 const newExp = {
@@ -1448,12 +1484,16 @@ exports.batchUpdateExperiences = async (req, res) => {
                 };
                 simulatedState.push(newExp);
                 // Basic date validation
-                const { start_date, end_date, is_current } = newExp;
+                const { start_date, end_date, is_current, org_id, company_name } = newExp;
                 if (!is_current && !end_date) {
                     errors.push({ path: 'experiences.end_date', entityId: entityIdOf(op), message: "End date is required" });
                 }
                 if (end_date && new Date(end_date) < new Date(start_date)) {
                     errors.push({ path: 'experiences.end_date', entityId: entityIdOf(op), message: "End date must be after start date" });
+                }
+                const establishedYear = org_id ? establishedYearByOrgId.get(org_id) : null;
+                if (establishedYear && new Date(start_date).getFullYear() < establishedYear) {
+                    errors.push({ path: 'experiences.start_date', entityId: entityIdOf(op), message: `Start date cannot be before ${company_name}'s founding year (${establishedYear})` });
                 }
             }
         }
@@ -1611,3 +1651,247 @@ exports.batchUpdateExperiences = async (req, res) => {
         if (client) client.release();
     }
 };
+
+// ─── Profile Projects ──────────────────────────────────────────────────────────
+
+exports.uploadProjectMediaFile = async (req, res) => {
+    try {
+        if (!req.file) {
+            return res.status(400).json({ message: "No media file provided" });
+        }
+        const isImage = req.file.mimetype.startsWith("image/");
+        const fileUrl = req.file.path || req.file.url;
+        res.status(201).json({
+            message: "Media uploaded successfully",
+            url: fileUrl,
+            fileUrl: fileUrl,
+            fileName: req.file.originalname,
+            type: isImage ? "image" : "document"
+        });
+    } catch (err) {
+        console.error("Upload project media error:", err);
+        res.status(500).json({ message: "Internal server error during upload" });
+    }
+};
+
+exports.addProject = async (req, res) => {
+    const {
+        title, organization, details, start_month, start_year,
+        end_month, end_year, is_current, role, team_size, role_description,
+        skills, media, org_id
+    } = req.body;
+
+    if (!title || !title.trim()) return res.status(400).json({ message: "Project title is required" });
+    if (!organization || !organization.trim()) return res.status(400).json({ message: "Organization is required" });
+    if (!start_month || !start_year) return res.status(400).json({ message: "Start month and year are required" });
+    if (!is_current && (!end_month || !end_year)) {
+        return res.status(400).json({ message: "End month and year are required when project is not ongoing" });
+    }
+    if (!is_current && end_year && start_year) {
+        const startVal = parseInt(start_year, 10);
+        const endVal = parseInt(end_year, 10);
+        if (endVal < startVal) {
+            return res.status(400).json({ message: "End year cannot be before start year" });
+        }
+    }
+
+    if (Array.isArray(media) && media.length > 3) {
+        return res.status(400).json({ message: "A project can have at most 3 media items" });
+    }
+
+    const client = await pool.connect();
+    try {
+        const profileId = await profileRepo.ensureProfileId(req.user.sub);
+        if (!profileId) return res.status(404).json({ message: "Profile not found" });
+
+        await client.query('BEGIN');
+
+        const projectData = {
+            title: title.trim(),
+            organization: organization.trim(),
+            org_id: org_id || null,
+            details: details ? details.trim() : null,
+            start_month: String(start_month),
+            start_year: String(start_year),
+            end_month: is_current ? null : String(end_month),
+            end_year: is_current ? null : String(end_year),
+            is_current: Boolean(is_current),
+            role: role ? role.trim() : null,
+            team_size: team_size ? team_size.trim() : null,
+            role_description: role_description ? role_description.trim() : null
+        };
+
+        const newProject = await profileRepo.addProjectInTx(client, profileId, projectData);
+        await profileRepo.syncProjectSkillsInTx(client, profileId, newProject.project_id, skills);
+        await profileRepo.syncProjectMediaInTx(client, newProject.project_id, media);
+        const newVersion = await profileRepo.touchProfileVersionInTx(client, profileId);
+
+        await client.query('COMMIT');
+
+        // Fetch back enriched project
+        const allProjects = await profileRepo.getProjects(profileId);
+        const created = allProjects.find(p => p.project_id === newProject.project_id) || newProject;
+
+        res.status(201).json({
+            message: "Project created successfully",
+            project: created,
+            version: newVersion
+        });
+    } catch (err) {
+        if (client) await client.query('ROLLBACK');
+        console.error("Add project error:", err);
+        res.status(500).json({ message: "Internal server error while adding project" });
+    } finally {
+        if (client) client.release();
+    }
+};
+
+exports.updateProject = async (req, res) => {
+    const { id: projectId } = req.params;
+    const {
+        title, organization, details, start_month, start_year,
+        end_month, end_year, is_current, role, team_size, role_description,
+        skills, media, org_id
+    } = req.body;
+
+    if (end_year && start_year && !is_current) {
+        const startVal = parseInt(start_year, 10);
+        const endVal = parseInt(end_year, 10);
+        if (endVal < startVal) {
+            return res.status(400).json({ message: "End year cannot be before start year" });
+        }
+    }
+
+    if (Array.isArray(media) && media.length > 3) {
+        return res.status(400).json({ message: "A project can have at most 3 media items" });
+    }
+
+    const client = await pool.connect();
+    try {
+        const profileId = await profileRepo.ensureProfileId(req.user.sub);
+        if (!profileId) return res.status(404).json({ message: "Profile not found" });
+
+        // Verify ownership
+        const checkRes = await client.query(`SELECT project_id FROM projects WHERE project_id = $1 AND profile_id = $2`, [projectId, profileId]);
+        if (checkRes.rowCount === 0) {
+            return res.status(403).json({ message: "Project not found or not authorized" });
+        }
+
+        await client.query('BEGIN');
+
+        const updateData = {};
+        if (title !== undefined) updateData.title = title ? title.trim() : "";
+        if (organization !== undefined) updateData.organization = organization ? organization.trim() : "";
+        if (org_id !== undefined) updateData.org_id = org_id || null;
+        if (details !== undefined) updateData.details = details ? details.trim() : null;
+        if (start_month !== undefined) updateData.start_month = String(start_month);
+        if (start_year !== undefined) updateData.start_year = String(start_year);
+        if (is_current !== undefined) {
+            updateData.is_current = Boolean(is_current);
+            if (updateData.is_current) {
+                updateData.end_month = null;
+                updateData.end_year = null;
+            }
+        }
+        if (end_month !== undefined && !updateData.is_current) updateData.end_month = String(end_month);
+        if (end_year !== undefined && !updateData.is_current) updateData.end_year = String(end_year);
+        if (role !== undefined) updateData.role = role ? role.trim() : null;
+        if (team_size !== undefined) updateData.team_size = team_size ? team_size.trim() : null;
+        if (role_description !== undefined) updateData.role_description = role_description ? role_description.trim() : null;
+
+        await profileRepo.updateProjectInTx(client, projectId, profileId, updateData);
+
+        if (skills !== undefined) {
+            await profileRepo.syncProjectSkillsInTx(client, profileId, projectId, skills);
+        }
+        if (media !== undefined) {
+            await profileRepo.syncProjectMediaInTx(client, projectId, media);
+        }
+        const newVersion = await profileRepo.touchProfileVersionInTx(client, profileId);
+
+        await client.query('COMMIT');
+
+        const allProjects = await profileRepo.getProjects(profileId);
+        const updated = allProjects.find(p => p.project_id === projectId);
+
+        res.status(200).json({
+            message: "Project updated successfully",
+            project: updated,
+            version: newVersion
+        });
+    } catch (err) {
+        if (client) await client.query('ROLLBACK');
+        console.error("Update project error:", err);
+        res.status(500).json({ message: "Internal server error while updating project" });
+    } finally {
+        if (client) client.release();
+    }
+};
+
+exports.deleteProject = async (req, res) => {
+    const { id: projectId } = req.params;
+    const client = await pool.connect();
+    try {
+        const profileId = await profileRepo.ensureProfileId(req.user.sub);
+        if (!profileId) return res.status(404).json({ message: "Profile not found" });
+
+        const checkRes = await client.query(`SELECT project_id FROM projects WHERE project_id = $1 AND profile_id = $2`, [projectId, profileId]);
+        if (checkRes.rowCount === 0) {
+            return res.status(404).json({ message: "Project not found or not authorized" });
+        }
+
+        await client.query('BEGIN');
+        await profileRepo.deleteProjectInTx(client, projectId, profileId);
+        const newVersion = await profileRepo.touchProfileVersionInTx(client, profileId);
+        await client.query('COMMIT');
+
+        res.status(200).json({
+            message: "Project deleted successfully",
+            project_id: projectId,
+            version: newVersion
+        });
+    } catch (err) {
+        if (client) await client.query('ROLLBACK');
+        console.error("Delete project error:", err);
+        res.status(500).json({ message: "Internal server error while deleting project" });
+    } finally {
+        if (client) client.release();
+    }
+};
+
+// ─── Get Profile Score / Completeness ──────────────────────────────────────────
+
+exports.getProfileScore = async (req, res) => {
+    try {
+        let userId = req.params.id === "me" || !req.params.id ? req.user.sub : req.params.id;
+        const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+        if (userId !== "me" && !uuidRegex.test(userId)) {
+            const resolveResult = await pool.query(
+                "SELECT user_id FROM users WHERE LOWER(account_name) = LOWER($1)",
+                [userId]
+            );
+            if (resolveResult.rowCount === 0) {
+                return res.status(404).json({ message: "User not found" });
+            }
+            userId = resolveResult.rows[0].user_id;
+        }
+
+        const data = await profileRepo.getProfileScoreData(userId);
+        if (!data) return res.status(404).json({ message: "User profile not found" });
+
+        const fullScore = profileCalc.calculateFullProfileScore(
+            data.userProfile,
+            data.skills,
+            data.experiences,
+            data.projects,
+            data.educations
+        );
+
+        return res.json(fullScore);
+    } catch (err) {
+        console.error("Get profile score error:", err);
+        return res.status(500).json({ message: "Internal server error" });
+    }
+};
+

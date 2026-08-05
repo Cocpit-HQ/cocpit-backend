@@ -98,6 +98,14 @@ exports.getOrgProfile = async (req, res) => {
         const org = await resolveOrg(orgId);
         if (!org) return res.status(404).json({ message: 'Organization not found' });
 
+        // 1.5 Bi-directional Block Check (User <-> Org, Org <-> Org, User <-> User)
+        if (req.user || req.actor) {
+            const isBlocked = await checkActorBlockStatus(req, org.org_id);
+            if (isBlocked) {
+                return res.status(404).json({ message: 'Organization not found' });
+            }
+        }
+
         // 2. Run all queries in parallel
         const [
             countsResult,
@@ -147,20 +155,20 @@ exports.getOrgProfile = async (req, res) => {
                         COALESCE(pm.media, '[]'::json) AS media,
                         (
                             SELECT COALESCE(comp_like.slug, u_like.account_name)
-                            FROM post_likes pl_sample
+                            FROM active_post_likes pl_sample
                             LEFT JOIN active_users u_like ON u_like.user_id = pl_sample.user_id
                             LEFT JOIN organizations comp_like ON comp_like.org_id = pl_sample.org_id
                             WHERE pl_sample.post_id = p.post_id
                             ORDER BY pl_sample.created_at DESC
                             LIMIT 1
                         ) AS sample_liker_username,
-                        EXISTS(SELECT 1 FROM post_likes pl WHERE pl.post_id = p.post_id AND pl.user_id = $2) AS is_liked
+                        EXISTS(SELECT 1 FROM active_post_likes pl WHERE pl.post_id = p.post_id AND pl.user_id = $2) AS is_liked
                  FROM posts p
                  LEFT JOIN (
-                     SELECT post_id, COUNT(*)::int AS like_count FROM post_likes GROUP BY post_id
+                     SELECT post_id, COUNT(*)::int AS like_count FROM active_post_likes GROUP BY post_id
                  ) lc ON lc.post_id = p.post_id
                  LEFT JOIN (
-                     SELECT post_id, COUNT(*)::int AS comment_count FROM post_comments GROUP BY post_id
+                     SELECT post_id, COUNT(*)::int AS comment_count FROM active_post_comments GROUP BY post_id
                  ) cc ON cc.post_id = p.post_id
                  LEFT JOIN (
                      SELECT post_id, json_agg(json_build_object('url', url, 'media_type', media_type)) AS media
@@ -243,7 +251,8 @@ exports.getOrgProfile = async (req, res) => {
                     `SELECT
                         EXISTS(SELECT 1 FROM organization_followers WHERE user_id = $1 AND org_id = $2) AS is_following,
                         EXISTS(SELECT 1 FROM community_subscriptions cs JOIN communities c ON cs.community_id = c.community_id WHERE cs.user_id = $1 AND c.org_id = $2 AND cs.status = 'SUBSCRIBED') AS is_subscribed,
-                        EXISTS(SELECT 1 FROM organization_connections WHERE user_id = $1 AND org_id = $2) AS is_connected`,
+                        EXISTS(SELECT 1 FROM organization_connections WHERE user_id = $1 AND org_id = $2) AS is_connected,
+                        EXISTS(SELECT 1 FROM blocks WHERE (blocker_id = $1 AND blocked_id = $2) OR (blocker_id = $2 AND blocked_id = $1)) AS is_blocked`,
                     [viewerId, org.org_id]
                 ),
                 pool.query(
@@ -268,6 +277,7 @@ exports.getOrgProfile = async (req, res) => {
                 is_following: !!relResult.rows[0]?.is_following,
                 is_subscribed: !!relResult.rows[0]?.is_subscribed,
                 is_connected: !!relResult.rows[0]?.is_connected,
+                is_blocked: !!relResult.rows[0]?.is_blocked,
             };
 
             relevance = {
@@ -465,6 +475,11 @@ exports.getOrgAbout = async (req, res) => {
         const org = await resolveOrg(orgId);
         if (!org) return res.status(404).json({ message: 'Organization not found' });
 
+        if (req.user || req.actor) {
+            const isBlocked = await checkActorBlockStatus(req, org.org_id);
+            if (isBlocked) return res.status(404).json({ message: 'Organization not found' });
+        }
+
         // Viewer membership (to decide if sensitive fields exposed)
         const membership = await getViewerMembership(org.org_id, viewerId);
         const isOwnProfile = !!membership;
@@ -542,6 +557,11 @@ exports.getOrgTeam = async (req, res) => {
         const org = await resolveOrg(orgId);
         if (!org) return res.status(404).json({ message: 'Organization not found' });
 
+        if (req.user || req.actor) {
+            const isBlocked = await checkActorBlockStatus(req, org.org_id);
+            if (isBlocked) return res.status(404).json({ message: 'Organization not found' });
+        }
+
         const result = await pool.query(
             `SELECT u.user_id, u.full_name, u.avatar_url, u.headline, u.account_name,
                     cm.title, cm.description AS member_description,
@@ -610,7 +630,10 @@ async function calculateOrgDemographics(client, orgId, type, search, graduationY
            FROM educations ed
            JOIN profiles p ON ed.profile_id = p.profile_id
            JOIN active_users u ON p.user_id = u.user_id
-           WHERE ed.school_org_id = $1::uuid
+           WHERE (
+               ed.school_org_id = $1::uuid
+               OR (ed.school_org_id IS NULL AND LOWER(TRIM(ed.school_name)) = LOWER(TRIM((SELECT name FROM organizations WHERE org_id = $1::uuid))))
+           )
              AND ($2::text IS NULL OR u.full_name ILIKE $2::text)
              AND ($3::int IS NULL OR EXTRACT(YEAR FROM ed.end_date)::int = $3::int)`;
 
@@ -619,7 +642,7 @@ async function calculateOrgDemographics(client, orgId, type, search, graduationY
         WITH matching_users AS (${cteQuery})
         SELECT COUNT(*)::int AS count FROM matching_users
     `, params);
-    
+
     const totalAssociates = countRes.rows[0]?.count || 0;
 
     if (totalAssociates === 0) {
@@ -628,7 +651,7 @@ async function calculateOrgDemographics(client, orgId, type, search, graduationY
             locationDistribution: [],
             topSkills: [],
             roleDistribution: [],
-            educationBreakdown: []
+            ...(type === 'PEOPLE' ? { educationBreakdown: [] } : { currentEmployerBreakdown: [] })
         };
     }
 
@@ -684,19 +707,34 @@ async function calculateOrgDemographics(client, orgId, type, search, graduationY
         ${limitClause}
     `, params);
 
-    // D. Education Breakdown
-    const eduRes = await client.query(`
-        WITH matching_users AS (${cteQuery})
-        SELECT 
-            COALESCE(NULLIF(TRIM(e.school_name), ''), 'Unknown') AS name,
-            COUNT(DISTINCT mu.user_id)::int AS count
-        FROM matching_users mu
-        JOIN profiles p ON mu.user_id = p.user_id
-        JOIN educations e ON p.profile_id = e.profile_id
-        GROUP BY e.school_name
-        ORDER BY count DESC
-        ${limitClause}
-    `, params);
+    // D. Fourth card — Education Breakdown for company People (where employees studied),
+    // Current Employer for institution Alumni (where alumni work now; their school is a given).
+    const fourthRes = type === 'PEOPLE'
+        ? await client.query(`
+            WITH matching_users AS (${cteQuery})
+            SELECT
+                COALESCE(NULLIF(TRIM(e.school_name), ''), 'Unknown') AS name,
+                COUNT(DISTINCT mu.user_id)::int AS count
+            FROM matching_users mu
+            JOIN profiles p ON mu.user_id = p.user_id
+            JOIN educations e ON p.profile_id = e.profile_id
+            GROUP BY e.school_name
+            ORDER BY count DESC
+            ${limitClause}
+        `, params)
+        : await client.query(`
+            WITH matching_users AS (${cteQuery})
+            SELECT
+                COALESCE(NULLIF(TRIM(e.company_name), ''), 'Unknown') AS name,
+                COUNT(DISTINCT mu.user_id)::int AS count
+            FROM matching_users mu
+            JOIN profiles p ON mu.user_id = p.user_id
+            JOIN experiences e ON p.profile_id = e.profile_id
+            WHERE (e.is_current = TRUE OR e.end_date IS NULL)
+            GROUP BY e.company_name
+            ORDER BY count DESC
+            ${limitClause}
+        `, params);
 
     const formatDistribution = (rows) => {
         return rows.map(row => ({
@@ -710,7 +748,9 @@ async function calculateOrgDemographics(client, orgId, type, search, graduationY
         locationDistribution: formatDistribution(locationRes.rows),
         topSkills: formatDistribution(skillsRes.rows),
         roleDistribution: formatDistribution(roleRes.rows),
-        educationBreakdown: formatDistribution(eduRes.rows)
+        ...(type === 'PEOPLE'
+            ? { educationBreakdown: formatDistribution(fourthRes.rows) }
+            : { currentEmployerBreakdown: formatDistribution(fourthRes.rows) })
     };
 }
 
@@ -727,6 +767,11 @@ exports.getOrgPeople = async (req, res) => {
     try {
         const org = await resolveOrg(orgId);
         if (!org) return res.status(404).json({ message: 'Organization not found' });
+
+        if (req.user || req.actor) {
+            const isBlocked = await checkActorBlockStatus(req, org.org_id);
+            if (isBlocked) return res.status(404).json({ message: 'Organization not found' });
+        }
 
         let cursorIsConnected = null;
         let cursorJoinedAt = null;
@@ -757,9 +802,9 @@ exports.getOrgPeople = async (req, res) => {
             const pJoinedAt = params.length - 1;
             const pUserId = params.length;
             cursorClause = `AND (
-                (sub.connection_request_status = 'connected') < $${pIsConnected}::boolean
-                OR ((sub.connection_request_status = 'connected') = $${pIsConnected}::boolean AND sub.joined_at < $${pJoinedAt}::date)
-                OR ((sub.connection_request_status = 'connected') = $${pIsConnected}::boolean AND sub.joined_at = $${pJoinedAt}::date AND sub.user_id > $${pUserId}::uuid)
+                COALESCE(sub.connection_request_status = 'connected', false) < $${pIsConnected}::boolean
+                OR (COALESCE(sub.connection_request_status = 'connected', false) = $${pIsConnected}::boolean AND sub.joined_at < $${pJoinedAt}::date)
+                OR (COALESCE(sub.connection_request_status = 'connected', false) = $${pIsConnected}::boolean AND sub.joined_at = $${pJoinedAt}::date AND sub.user_id > $${pUserId}::uuid)
             )`;
         }
 
@@ -819,7 +864,7 @@ exports.getOrgPeople = async (req, res) => {
                  SELECT * FROM enriched sub
                  WHERE 1=1
                    ${cursorClause}
-                 ORDER BY (sub.connection_request_status = 'connected') DESC NULLS LAST, sub.joined_at DESC, sub.user_id ASC
+                 ORDER BY COALESCE(sub.connection_request_status = 'connected', false) DESC, sub.joined_at DESC, sub.user_id ASC
                  LIMIT $2`,
                 params
             ),
@@ -895,6 +940,11 @@ exports.getOrgAlumni = async (req, res) => {
         const org = await resolveOrg(orgId);
         if (!org) return res.status(404).json({ message: 'Organization not found' });
 
+        if (req.user || req.actor) {
+            const isBlocked = await checkActorBlockStatus(req, org.org_id);
+            if (isBlocked) return res.status(404).json({ message: 'Organization not found' });
+        }
+
         if (org.entity_type !== 'INSTITUTION') {
             return res.status(404).json({ message: 'Alumni tab is only available for institutions' });
         }
@@ -933,9 +983,9 @@ exports.getOrgAlumni = async (req, res) => {
             const pGradYear = params.length - 1;
             const pUserId = params.length;
             cursorClause = `AND (
-                (sub.connection_request_status = 'connected') < $${pIsConnected}::boolean
-                OR ((sub.connection_request_status = 'connected') = $${pIsConnected}::boolean AND sub.graduation_year < $${pGradYear})
-                OR ((sub.connection_request_status = 'connected') = $${pIsConnected}::boolean AND sub.graduation_year = $${pGradYear} AND sub.user_id > $${pUserId}::uuid)
+                COALESCE(sub.connection_request_status = 'connected', false) < $${pIsConnected}::boolean
+                OR (COALESCE(sub.connection_request_status = 'connected', false) = $${pIsConnected}::boolean AND sub.graduation_year < $${pGradYear})
+                OR (COALESCE(sub.connection_request_status = 'connected', false) = $${pIsConnected}::boolean AND sub.graduation_year = $${pGradYear} AND sub.user_id > $${pUserId}::uuid)
             )`;
         }
 
@@ -976,7 +1026,10 @@ exports.getOrgAlumni = async (req, res) => {
                      FROM educations ed
                      JOIN profiles p ON ed.profile_id = p.profile_id
                      JOIN active_users u ON p.user_id = u.user_id
-                     WHERE ed.school_org_id = $1::uuid
+                     WHERE (
+                         ed.school_org_id = $1::uuid
+                         OR (ed.school_org_id IS NULL AND LOWER(TRIM(ed.school_name)) = LOWER(TRIM((SELECT name FROM organizations WHERE org_id = $1::uuid))))
+                     )
                        ${whereExtra}
                      ORDER BY p.user_id, ed.end_date DESC
                  ),
@@ -1010,7 +1063,7 @@ exports.getOrgAlumni = async (req, res) => {
                  SELECT * FROM enriched sub
                  WHERE 1=1
                    ${cursorClause}
-                 ORDER BY (sub.connection_request_status = 'connected') DESC NULLS LAST, sub.graduation_year DESC, sub.user_id ASC
+                 ORDER BY COALESCE(sub.connection_request_status = 'connected', false) DESC, sub.graduation_year DESC, sub.user_id ASC
                  LIMIT $2`,
                 params
             ),
@@ -1020,7 +1073,10 @@ exports.getOrgAlumni = async (req, res) => {
                      FROM educations ed
                      JOIN profiles p ON ed.profile_id = p.profile_id
                      JOIN active_users u ON p.user_id = u.user_id
-                     WHERE ed.school_org_id = $1::uuid
+                     WHERE (
+                         ed.school_org_id = $1::uuid
+                         OR (ed.school_org_id IS NULL AND LOWER(TRIM(ed.school_name)) = LOWER(TRIM((SELECT name FROM organizations WHERE org_id = $1::uuid))))
+                     )
                        ${countWhereExtra}
                  )
                  SELECT
@@ -1110,6 +1166,15 @@ exports.updateOrgProfile = async (req, res) => {
             throw Object.assign(new Error('Forbidden: You do not have permission to update organization details'), { statusCode: 403 });
         }
 
+        const entityTypeRes = await client.query(
+            `SELECT entity_type FROM organizations WHERE org_id = $1 AND is_deleted = FALSE`,
+            [orgId]
+        );
+        if (entityTypeRes.rowCount === 0) {
+            throw Object.assign(new Error('Organization not found'), { statusCode: 404 });
+        }
+        const isInstitution = entityTypeRes.rows[0].entity_type === 'INSTITUTION';
+
         // Build dynamic update to only touch fields defined for Step 1 Profile updates
         const updates = [];
         const params = [];
@@ -1122,7 +1187,14 @@ exports.updateOrgProfile = async (req, res) => {
 
         addUpdate('name', name?.trim() || null);
         addUpdate('headline', headline?.trim() || null);
-        addUpdate('industry', industry || null);
+        // `industry` carries the Stage 1 dropdown value for both org types (COMPANY industry
+        // or INSTITUTION type — School/College/...); route it to the right column here so an
+        // edit-profile save can't undo the institution_type written at org-creation time.
+        if (isInstitution) {
+            addUpdate('institution_type', industry || null);
+        } else {
+            addUpdate('industry', industry || null);
+        }
         addUpdate('size', size || null);
         addUpdate('website', website?.trim() || null);
         addUpdate('country', country?.trim() || null);
@@ -1141,14 +1213,14 @@ exports.updateOrgProfile = async (req, res) => {
                 UPDATE organizations
                 SET ${updates.join(', ')}, updated_at = NOW()
                 WHERE org_id = $${params.length} AND is_deleted = FALSE
-                RETURNING org_id, name, headline, industry, size, website,
+                RETURNING org_id, name, headline, industry, institution_type, size, website,
                           country, city, established_year, logo_url, cover_url,
                           entity_type, updated_at
             `;
             result = await client.query(query, params);
         } else {
             result = await client.query(
-                `SELECT org_id, name, headline, industry, size, website,
+                `SELECT org_id, name, headline, industry, institution_type, size, website,
                         country, city, established_year, logo_url, cover_url,
                         entity_type, updated_at
                  FROM organizations WHERE org_id = $1 AND is_deleted = FALSE`,
@@ -1183,12 +1255,12 @@ exports.updateOrgProfile = async (req, res) => {
 
                 const icon = (off.icon || '').trim();
                 const label = (off.label || '').trim();
-                
+
                 if (!KEY_OFFERING_ICONS_MAP[icon]) {
                     await client.query('ROLLBACK');
                     return res.status(400).json({ message: `Invalid icon '${icon}' provided for Key Offerings.` });
                 }
-                
+
                 if (KEY_OFFERING_ICONS_MAP[icon] !== label) {
                     await client.query('ROLLBACK');
                     return res.status(400).json({ message: `Invalid label '${label}' for icon '${icon}'. Expected label is '${KEY_OFFERING_ICONS_MAP[icon]}'.` });
@@ -1325,7 +1397,7 @@ exports.updateOrgAbout = async (req, res) => {
             for (const office of offices) {
                 if (!office.city || !office.country) continue;
                 const cleanAddress = office.address ? office.address.trim() : '';
-                
+
                 if (office.office_id && existingOfficeIds.has(office.office_id)) {
                     // Update existing active office
                     await client.query(
@@ -1613,17 +1685,29 @@ async function calculateEmployeeGrowth(client, orgId) {
               AND start_date >= DATE_TRUNC('year', CURRENT_DATE)
               AND start_date <= CURRENT_DATE
             GROUP BY month_num
+        ),
+        departures AS (
+            SELECT 
+                EXTRACT(MONTH FROM end_date)::int AS month_num,
+                COUNT(DISTINCT profile_id)::int AS departure_count
+            FROM experiences
+            WHERE org_id = $1::uuid
+              AND end_date >= DATE_TRUNC('year', CURRENT_DATE)
+              AND end_date <= CURRENT_DATE
+            GROUP BY month_num
         )
         SELECT 
             (SELECT base_count FROM start_count) AS base_count,
             json_agg(
                 json_build_object(
                     'month_num', m.month_num,
-                    'join_count', COALESCE(j.join_count, 0)
+                    'join_count', COALESCE(j.join_count, 0),
+                    'departure_count', COALESCE(d.departure_count, 0)
                 ) ORDER BY m.month_num
-            ) AS monthly_joins
+            ) AS monthly_stats
         FROM months m
-        LEFT JOIN joins j ON m.month_num = j.month_num;
+        LEFT JOIN joins j ON m.month_num = j.month_num
+        LEFT JOIN departures d ON m.month_num = d.month_num;
     `;
     const res = await client.query(query, [orgId]);
     if (res.rowCount === 0) {
@@ -1631,33 +1715,55 @@ async function calculateEmployeeGrowth(client, orgId) {
             percentage: "0.0%",
             growth_value: 0,
             base_count: 0,
+            current_headcount: 0,
             total_joins: 0,
+            max_y: 5,
+            y_ticks: [5, 0],
+            start_month: "January",
+            current_month: "January",
             trend: []
         };
     }
 
     const baseCount = parseInt(res.rows[0].base_count || 0);
-    const monthlyJoins = res.rows[0].monthly_joins || [];
+    const monthlyStats = res.rows[0].monthly_stats || [];
 
     const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    const fullMonthNames = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 
-    let cumulativeJoins = 0;
-    const trend = monthlyJoins.map(item => {
-        cumulativeJoins += parseInt(item.join_count);
+    let currentHeadcount = baseCount;
+    let maxHeadcount = baseCount;
+    let totalJoins = 0;
+
+    const trend = monthlyStats.map(item => {
+        const joins = parseInt(item.join_count || 0);
+        const departures = parseInt(item.departure_count || 0);
+        totalJoins += joins;
+        currentHeadcount = Math.max(0, currentHeadcount + joins - departures);
+        if (currentHeadcount > maxHeadcount) maxHeadcount = currentHeadcount;
+
         return {
             month_num: item.month_num,
             month: monthNames[item.month_num - 1],
-            joins: parseInt(item.join_count),
-            cumulative_joins: cumulativeJoins
+            full_month: fullMonthNames[item.month_num - 1],
+            joins,
+            departures,
+            headcount: currentHeadcount
         };
     });
+
+    const maxY = Math.max(5, Math.ceil(maxHeadcount / 5) * 5);
+    const yTicks = [];
+    for (let i = maxY; i >= 0; i -= 5) {
+        yTicks.push(i);
+    }
 
     let percentageStr = "0.0%";
     let growthValue = 0;
     if (baseCount > 0) {
-        growthValue = Math.round((cumulativeJoins / baseCount) * 100 * 10) / 10;
+        growthValue = Math.round(((currentHeadcount - baseCount) / baseCount) * 100 * 10) / 10;
         percentageStr = (growthValue >= 0 ? "+" : "") + growthValue + "%";
-    } else if (cumulativeJoins > 0) {
+    } else if (currentHeadcount > 0) {
         growthValue = 100.0;
         percentageStr = "+100.0%";
     }
@@ -1666,7 +1772,12 @@ async function calculateEmployeeGrowth(client, orgId) {
         percentage: percentageStr,
         growth_value: growthValue,
         base_count: baseCount,
-        total_joins: cumulativeJoins,
+        current_headcount: currentHeadcount,
+        total_joins: totalJoins,
+        max_y: maxY,
+        y_ticks: yTicks,
+        start_month: trend.length > 0 ? trend[0].full_month : "January",
+        current_month: trend.length > 0 ? trend[trend.length - 1].full_month : "July",
         trend
     };
 }

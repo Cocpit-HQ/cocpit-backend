@@ -9,10 +9,12 @@ exports.getCommunityStatus = async (req, res, next) => {
     const { orgId } = req.params;
     try {
         const result = await pool.query(
-            `SELECT community_id, name, description, banner_url,
-                    (SELECT COUNT(*) FROM community_subscriptions WHERE community_id = communities.community_id AND status = 'SUBSCRIBED')::int AS subscriber_count
-             FROM communities 
-             WHERE org_id = $1 AND is_active = TRUE`,
+            `SELECT c.community_id, c.name, c.description, c.banner_url,
+                    o.name AS company_name, o.slug AS company_slug, o.logo_url,
+                    (SELECT COUNT(*) FROM community_subscriptions WHERE community_id = c.community_id AND status = 'SUBSCRIBED')::int AS subscriber_count
+             FROM communities c
+             JOIN organizations o ON c.org_id = o.org_id
+             WHERE c.org_id = $1 AND c.is_active = TRUE AND o.is_deleted = FALSE`,
             [orgId]
         );
 
@@ -34,7 +36,10 @@ exports.getCommunityStatus = async (req, res, next) => {
                 description: row.description,
                 bannerUrl: row.banner_url,
                 subscriberCount: row.subscriber_count,
-                orgId: orgId
+                orgId: orgId,
+                companyName: row.company_name,
+                companySlug: row.company_slug,
+                logoUrl: row.logo_url
             }
         });
     } catch (err) {
@@ -946,7 +951,8 @@ exports.searchCommunities = async (req, res, next) => {
                             WHERE cs.community_id = c.community_id AND cs.user_id = $1 AND cs.status = 'SUBSCRIBED'
                         ) OR (o.created_by = $1), FALSE
                     ) AS is_subscribed,
-                    COALESCE(o.created_by = $1, FALSE) AS is_owner
+                    COALESCE(o.created_by = $1, FALSE) AS is_owner,
+                    COUNT(*) OVER() AS total_count
              FROM communities c
              JOIN organizations o ON c.org_id = o.org_id
              WHERE c.is_active = TRUE AND o.is_deleted = FALSE
@@ -968,9 +974,12 @@ exports.searchCommunities = async (req, res, next) => {
             isOwner: row.is_owner
         }));
 
+        const totalCount = result.rows.length > 0 ? parseInt(result.rows[0].total_count, 10) : 0;
+
         return res.status(200).json({
             success: true,
             data: mappedRows,
+            total: totalCount,
             page,
             limit
         });
@@ -1249,3 +1258,80 @@ exports.requestEditAccess = async (req, res, next) => {
     }
 };
 
+// --- Search Articles across all active Channels ---
+/**
+ * GET /api/communities/articles/search?q=&page=&limit=
+ * Search published channel articles by title or content across all active communities.
+ */
+exports.searchArticles = async (req, res, next) => {
+    const search = req.query.q || "";
+    const page = Math.max(1, parseInt(req.query.page || "1"));
+    const limit = Math.min(50, Math.max(1, parseInt(req.query.limit || "10")));
+    const offset = (page - 1) * limit;
+
+    try {
+        const result = await pool.query(
+            `SELECT
+                p.post_id,
+                p.title,
+                LEFT(p.content, 1000) AS content_snippet,
+                p.created_at,
+                p.updated_at,
+                p.author_org_id,
+                o.name AS company_name,
+                o.logo_url,
+                c.community_id,
+                c.name AS channel_name,
+                (SELECT pm.url FROM post_media pm WHERE pm.post_id = p.post_id LIMIT 1) AS cover_image,
+                COUNT(*) OVER() AS total_count
+             FROM posts p
+             JOIN organizations o ON p.author_org_id = o.org_id
+             JOIN communities c ON c.org_id = o.org_id
+             WHERE p.post_type = 'article'
+               AND p.status = 'published'
+               AND p.is_active = TRUE
+               AND c.is_active = TRUE
+               AND o.is_deleted = FALSE
+               AND (
+                   p.title ILIKE $1
+                   OR p.content ILIKE $1
+               )
+             ORDER BY p.created_at DESC
+             LIMIT $2 OFFSET $3`,
+            [`%${search}%`, limit, offset]
+        );
+
+        const extractExcerpt = (content, maxLen = 140) => {
+            if (!content) return '';
+            const cleaned = content.replace(/<[^>]+>/g, ' ').replace(/[#*`~>_]/g, '').replace(/\s+/g, ' ').trim();
+            return cleaned.length <= maxLen ? cleaned : cleaned.substring(0, maxLen) + '...';
+        };
+
+        const mappedRows = result.rows.map(row => ({
+            id: row.post_id,
+            title: row.title,
+            excerpt: extractExcerpt(row.content_snippet),
+            coverImage: row.cover_image || null,
+            publishedAt: row.created_at,
+            updatedAt: row.updated_at,
+            channelId: row.community_id,
+            channelName: row.channel_name,
+            orgId: row.author_org_id,
+            companyName: row.company_name,
+            logoUrl: row.logo_url,
+        }));
+
+        const totalCount = result.rows.length > 0 ? parseInt(result.rows[0].total_count, 10) : 0;
+
+        return res.status(200).json({
+            success: true,
+            data: mappedRows,
+            total: totalCount,
+            page,
+            limit
+        });
+    } catch (err) {
+        console.error("[CommunityController] searchArticles error:", err);
+        return next(err);
+    }
+};

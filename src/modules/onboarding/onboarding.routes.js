@@ -13,7 +13,7 @@ const {
     updateProfileSchema,
     updateLocationSchema
 } = require("./onboarding.schema");
-const { uploadAvatar } = require("../../core/middlewares/upload.middleware");
+const { uploadAvatar, uploadResumeMemory } = require("../../core/middlewares/upload.middleware");
 const { createRateLimit } = require("../../core/middlewares/rateLimit.middleware");
 
 // Rate limiter for onboarding steps to prevent spamming
@@ -40,5 +40,8 @@ router.patch("/location", requireAuth, validate(updateLocationSchema), onboardin
 router.post("/complete", requireAuth, onboardingController.completeOnboarding);
 
 router.patch("/details", requireAuth, validate(saveDetailsSchema), onboardingController.saveDetails);
+
+// Resume parsing route
+router.post("/resume/parse", requireAuth, uploadResumeMemory.single("resume"), onboardingController.parseResumeUpload);
 
 module.exports = router;
