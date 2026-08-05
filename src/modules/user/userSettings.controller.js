@@ -104,7 +104,7 @@ exports.updateEmail = async (req, res) => {
                 }
                 const isMatch = await comparePassword(password, user.password_hash);
                 if (!isMatch) {
-                    return res.status(401).json({ success: false, message: "Invalid password" });
+                    return res.status(400).json({ success: false, message: "Invalid password" });
                 }
             }
 
@@ -297,11 +297,68 @@ exports.deleteAccount = async (req, res) => {
     const client = await pool.connect();
     try {
         const userId = req.user.sub;
+        const { password, idToken } = req.body;
+
+        const { comparePassword } = require("../../core/utils/password");
+        const { verifyGoogleToken } = require("../auth/googleAuth.service");
+
+        await client.query("BEGIN");
+
+        const userFetch = await client.query(
+            "SELECT user_id, email, recovery_email, full_name, password_hash, google_id FROM users WHERE user_id = $1",
+            [userId]
+        );
+
+        if (userFetch.rowCount === 0) {
+            await client.query("ROLLBACK");
+            return res.status(404).json({ success: false, message: "User not found" });
+        }
+
+        const userObj = userFetch.rows[0];
+
+        // Identity verification — Password user OR Google user
+        let isAuthenticated = false;
+
+        if (userObj.password_hash) {
+            if (!password) {
+                await client.query("ROLLBACK");
+                return res.status(400).json({ success: false, message: "Password is required to delete your account" });
+            }
+            const isValid = await comparePassword(password, userObj.password_hash);
+            if (isValid) {
+                isAuthenticated = true;
+            } else {
+                await client.query("ROLLBACK");
+                return res.status(400).json({ success: false, message: "Invalid password" });
+            }
+        } else if (userObj.google_id) {
+            if (!idToken) {
+                await client.query("ROLLBACK");
+                return res.status(400).json({ success: false, message: "Google re-authentication is required to delete your account." });
+            }
+            try {
+                const googlePayload = await verifyGoogleToken(idToken);
+                if (googlePayload.googleId === userObj.google_id) {
+                    isAuthenticated = true;
+                } else {
+                    await client.query("ROLLBACK");
+                    return res.status(400).json({ success: false, message: "Google account does not match this account." });
+                }
+            } catch {
+                await client.query("ROLLBACK");
+                return res.status(400).json({ success: false, message: "Invalid Google token. Please re-authenticate and try again." });
+            }
+        } else {
+            isAuthenticated = true;
+        }
+
+        if (!isAuthenticated) {
+            await client.query("ROLLBACK");
+            return res.status(400).json({ success: false, message: "Password or authentication is required to delete your account" });
+        }
 
         const deletionDate = new Date();
         deletionDate.setDate(deletionDate.getDate() + 40);
-
-        await client.query("BEGIN");
 
         await client.query(
             `UPDATE users SET deletion_execute_at = $1, updated_at = NOW() WHERE user_id = $2`,
@@ -317,9 +374,20 @@ exports.deleteAccount = async (req, res) => {
 
         res.clearCookie("refreshToken");
 
+        if (userObj) {
+            const recipientEmails = Array.from(
+                new Set([userObj.recovery_email, userObj.email].filter((e) => Boolean(e) && typeof e === "string" && e.trim() !== ""))
+            );
+            const { sendAccountDeletionEmail } = require("../../core/services/email.service");
+            for (const recipientEmail of recipientEmails) {
+                sendAccountDeletionEmail(recipientEmail, userObj.full_name, null, deletionDate)
+                    .catch((err) => console.error(`[userSettings.deleteAccount] Failed to send recovery email to ${recipientEmail}:`, err));
+            }
+        }
+
         return res.status(200).json({
             success: true,
-            message: "Account deleted successfully.",
+            message: "Account scheduled for deletion. Check your email for recovery instructions.",
         });
     } catch (error) {
         await client.query("ROLLBACK");

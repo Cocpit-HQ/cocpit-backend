@@ -1096,7 +1096,7 @@ exports.deleteAccount = async (req, res) => {
 
     // 1. Fetch user record
     const userRes = await client.query(
-      "SELECT user_id, email, full_name, password_hash, google_id FROM users WHERE user_id = $1",
+      "SELECT user_id, email, recovery_email, full_name, password_hash, google_id FROM users WHERE user_id = $1",
       [userId]
     );
 
@@ -1110,28 +1110,37 @@ exports.deleteAccount = async (req, res) => {
     // 2. Identity verification — password user OR Google user
     let isAuthenticated = false;
 
-    if (password && user.password_hash) {
+    if (user.password_hash) {
+      if (!password) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({ message: "Password is required to delete your account" });
+      }
       const isValid = await comparePassword(password, user.password_hash);
       if (isValid) {
         isAuthenticated = true;
       } else {
         await client.query("ROLLBACK");
-        return res.status(401).json({ message: "Invalid password" });
+        return res.status(400).json({ message: "Invalid password" });
       }
-    } else if (idToken && user.google_id) {
-      let googlePayload;
+    } else if (user.google_id) {
+      if (!idToken) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({ message: "Google re-authentication is required to delete your account." });
+      }
       try {
-        googlePayload = await verifyGoogleToken(idToken);
+        const googlePayload = await verifyGoogleToken(idToken);
         if (googlePayload.googleId === user.google_id) {
           isAuthenticated = true;
         } else {
           await client.query("ROLLBACK");
-          return res.status(401).json({ message: "Google account does not match this account." });
+          return res.status(400).json({ message: "Google account does not match this account." });
         }
       } catch {
         await client.query("ROLLBACK");
-        return res.status(401).json({ message: "Invalid Google token. Please re-authenticate and try again." });
+        return res.status(400).json({ message: "Invalid Google token. Please re-authenticate and try again." });
       }
+    } else {
+      isAuthenticated = true;
     }
 
     if (!isAuthenticated) {
@@ -1218,10 +1227,16 @@ exports.deleteAccount = async (req, res) => {
       ).catch((err) => console.error("[deleteAccount] Socket disconnect failed:", err));
     }
 
-    // 9. Send recovery email (non-blocking — do not fail the request if email fails)
-    sendAccountDeletionEmail(user.email, user.full_name, rawToken, deletionExecuteAt).catch((err) =>
-      console.error("[deleteAccount] Failed to send recovery email:", err)
+    // 9. Send recovery email to recovery_email and/or primary email (non-blocking)
+    const recipientEmails = Array.from(
+      new Set([user.recovery_email, user.email].filter((e) => Boolean(e) && typeof e === "string" && e.trim() !== ""))
     );
+
+    for (const recipientEmail of recipientEmails) {
+      sendAccountDeletionEmail(recipientEmail, user.full_name, rawToken, deletionExecuteAt).catch((err) => {
+        console.error(`[deleteAccount] Failed to send recovery email to ${recipientEmail}:`, err.message || err);
+      });
+    }
 
     // 10. Clear cookies
     res.clearCookie("refreshToken", {
@@ -1355,12 +1370,15 @@ exports.resendRecoveryEmail = async (req, res) => {
       const { sendAccountDeletionEmail } = require("../../core/services/email.service");
 
       const userRes = await pool.query(
-        `SELECT user_id, email, full_name, deletion_execute_at
-         FROM users WHERE email = $1 AND deletion_execute_at IS NOT NULL`,
+        `SELECT user_id, email, recovery_email, full_name, deletion_execute_at
+         FROM users WHERE (LOWER(email) = $1 OR LOWER(recovery_email) = $1) AND deletion_execute_at IS NOT NULL`,
         [email.toLowerCase()]
       );
 
-      if (userRes.rowCount === 0) return; // Email not found or not pending deletion — silently exit
+      if (userRes.rowCount === 0) {
+        console.log(`[resendRecoveryEmail] No account pending deletion found for email: ${email}`);
+        return;
+      }
 
       const user = userRes.rows[0];
 
@@ -1381,7 +1399,15 @@ exports.resendRecoveryEmail = async (req, res) => {
         [user.user_id, tokenHash, user.deletion_execute_at]
       );
 
-      await sendAccountDeletionEmail(user.email, user.full_name, rawToken, user.deletion_execute_at);
+      const recipientEmails = Array.from(
+        new Set([user.recovery_email, user.email].filter((e) => Boolean(e) && typeof e === "string" && e.trim() !== ""))
+      );
+
+      for (const recipientEmail of recipientEmails) {
+        await sendAccountDeletionEmail(recipientEmail, user.full_name, rawToken, user.deletion_execute_at).catch((err) => {
+          console.error(`[resendRecoveryEmail] Failed to send recovery email to ${recipientEmail}:`, err.message || err);
+        });
+      }
     } catch (err) {
       console.error("[resendRecoveryEmail] Background processing error:", err);
     }

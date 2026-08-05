@@ -87,7 +87,7 @@ exports.logoutAllOtherSessions = async (req, res) => {
 
         const isValid = await authService.verifyPasswordForAction(userId, password);
         if (!isValid) {
-            return res.status(401).json({ message: "Invalid password" });
+            return res.status(400).json({ message: "Invalid password" });
         }
 
         const deletedSessions = await authRepo.deleteAllOtherSessions(userId, currentSessionId);
@@ -136,7 +136,7 @@ exports.removeSession = async (req, res) => {
 
         const isValid = await authService.verifyPasswordForAction(userId, password);
         if (!isValid) {
-            return res.status(401).json({ message: "Invalid password" });
+            return res.status(400).json({ message: "Invalid password" });
         }
 
         const result = await authRepo.deleteSessionForUser(userId, sessionId);
