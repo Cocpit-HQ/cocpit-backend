@@ -12,9 +12,11 @@ async function filterAllowedTaggedUserIds(client, actorUserId, targetUserIds) {
     );
 
     const allowedUserIds = [];
+    const foundUserIds = new Set();
 
     for (const u of usersRes.rows) {
         const { user_id, tag_permission } = u;
+        foundUserIds.add(user_id);
 
         if (tag_permission === 'no_one') {
             continue;
@@ -51,6 +53,39 @@ async function filterAllowedTaggedUserIds(client, actorUserId, targetUserIds) {
         }
 
         allowedUserIds.push(user_id);
+    }
+
+    // Check Organization tag permissions for any IDs not found in users table
+    const remainingOrgIds = targetUserIds.filter(id => !foundUserIds.has(id));
+    if (remainingOrgIds.length > 0) {
+        const orgsRes = await client.query(
+            `SELECT o.org_id, COALESCE(ops.tag_permission, 'everyone') AS tag_permission
+             FROM organizations o
+             LEFT JOIN organization_privacy_settings ops ON o.org_id = ops.org_id
+             WHERE o.org_id = ANY($1::uuid[]) AND o.is_deleted = FALSE`,
+            [remainingOrgIds]
+        );
+
+        for (const o of orgsRes.rows) {
+            const { org_id, tag_permission } = o;
+
+            if (tag_permission === 'no_one') continue;
+            if (tag_permission === 'everyone' || !actorUserId) {
+                allowedUserIds.push(org_id);
+                continue;
+            }
+            if (tag_permission === 'followers_only') {
+                const followRes = await client.query(
+                    `SELECT 1 FROM organization_followers WHERE user_id = $1 AND org_id = $2`,
+                    [actorUserId, org_id]
+                );
+                if (followRes.rowCount > 0) {
+                    allowedUserIds.push(org_id);
+                }
+                continue;
+            }
+            allowedUserIds.push(org_id);
+        }
     }
 
     return allowedUserIds;

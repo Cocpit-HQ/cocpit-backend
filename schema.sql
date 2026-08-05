@@ -2280,3 +2280,47 @@ SELECT
     entity_type
 FROM organizations;
 
+-- ==========================================
+-- SETTINGS ACTOR CONTEXT SCHEMA EXTENSIONS
+-- ==========================================
+
+CREATE TABLE IF NOT EXISTS organization_privacy_settings (
+    org_id UUID PRIMARY KEY REFERENCES organizations(org_id) ON DELETE CASCADE,
+    show_email BOOLEAN NOT NULL DEFAULT true,
+    show_phone BOOLEAN NOT NULL DEFAULT true,
+    tag_permission VARCHAR(20) NOT NULL DEFAULT 'everyone'
+        CHECK (tag_permission IN ('everyone', 'followers_only', 'no_one')),
+    following_visibility VARCHAR(20) NOT NULL DEFAULT 'everyone'
+        CHECK (following_visibility IN ('everyone', 'followers_only', 'no_one')),
+    followers_visibility VARCHAR(20) NOT NULL DEFAULT 'everyone'
+        CHECK (followers_visibility IN ('everyone', 'followers_only', 'no_one')),
+    message_permission VARCHAR(20) NOT NULL DEFAULT 'everyone'
+        CHECK (message_permission IN ('everyone', 'followers_only', 'no_one')),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_org_privacy_org_id ON organization_privacy_settings(org_id);
+
+ALTER TABLE organization_notification_preferences
+    ADD COLUMN IF NOT EXISTS messages_enabled BOOLEAN NOT NULL DEFAULT true,
+    ADD COLUMN IF NOT EXISTS messages_chat_enabled BOOLEAN NOT NULL DEFAULT true,
+    ADD COLUMN IF NOT EXISTS messages_jobs_enabled BOOLEAN NOT NULL DEFAULT true,
+    ADD COLUMN IF NOT EXISTS email_enabled BOOLEAN NOT NULL DEFAULT true;
+
+ALTER TABLE organizations
+    ADD COLUMN IF NOT EXISTS is_deactivated BOOLEAN NOT NULL DEFAULT false,
+    ADD COLUMN IF NOT EXISTS deactivated_at TIMESTAMPTZ;
+
+CREATE TABLE IF NOT EXISTS organization_blocked_accounts (
+    block_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    org_id UUID NOT NULL REFERENCES organizations(org_id) ON DELETE CASCADE,
+    blocked_type VARCHAR(20) NOT NULL CHECK (blocked_type IN ('user', 'company')),
+    blocked_id UUID NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (org_id, blocked_type, blocked_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_org_blocked_org ON organization_blocked_accounts(org_id);
+
+

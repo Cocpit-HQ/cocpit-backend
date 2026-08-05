@@ -12,9 +12,10 @@ const normalizeActorType = (rawType) => {
     if (!rawType || typeof rawType !== "string") return null;
 
     const normalized = rawType.trim().toUpperCase();
-    if (normalized === "COMPANY") return "ORGANIZATION";
-    if (normalized === "ORG") return "ORGANIZATION";
-    if (normalized === "ORGANIZATION" || normalized === "USER") return normalized;
+    if (["COMPANY", "ORG", "ORGANIZATION", "INSTITUTION", "INSTITUTE"].includes(normalized)) {
+        return "ORGANIZATION";
+    }
+    if (normalized === "USER") return "USER";
     return null;
 };
 
@@ -41,6 +42,10 @@ const hasActorPermission = (permissions = [], permission) => {
         .map(p => String(p).toUpperCase().trim());
 
     if (upperPerms.includes("*") || upperPerms.includes(targetPerm)) return true;
+
+    // Settings parent implies sub-permissions & aliases across Company/Institution
+    const settingsPerms = ["SETTINGS", "MANAGE_SETTINGS", "MANAGE_COMPANY", "MANAGE_INSTITUTION", "MANAGE_ORGANIZATION", "MANAGE_COMPANY_DETAILS"];
+    if (settingsPerms.includes(targetPerm) && upperPerms.some(p => settingsPerms.includes(p))) return true;
 
     // Hierarchy / Parent-child permission mappings
     if (targetPerm === "VIEW_ANALYTICS" && upperPerms.includes("ANALYTICS")) return true;
@@ -287,6 +292,7 @@ const requireOrgActorPermission = (permission) => (req, res, next) => {
 
 
 module.exports = {
+    normalizeActorType,
     getRequestedActorInput,
     getOrganizationMembership,
     hasActorPermission,

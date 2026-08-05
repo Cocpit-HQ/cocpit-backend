@@ -144,6 +144,11 @@ router.delete("/organizations/:orgId/logo", requireAuth, requireOrgPermission("M
 router.post("/organizations/:orgId/cover", requireAuth, requireOrgPermission("MANAGE_SETTINGS"), uploadCover.single("cover"), settingsController.uploadCover);
 router.delete("/organizations/:orgId/cover", requireAuth, requireOrgPermission("MANAGE_SETTINGS"), settingsController.deleteCover);
 
+// --- ACCOUNT SETTINGS & LIFECYCLE ---
+router.get("/organizations/:orgId/account-settings", requireAuth, requireOrgPermission("MANAGE_SETTINGS"), settingsController.getAccountSettings);
+router.patch("/organizations/:orgId/deactivate", requireAuth, settingsController.deactivateOrganization);
+router.patch("/organizations/:orgId/reactivate", requireAuth, settingsController.reactivateOrganization);
+
 // --- NOTIFICATIONS ---
 router.get("/organizations/:orgId/notification-preferences", requireAuth, settingsController.getNotificationPreferences);
 router.put("/organizations/:orgId/notification-preferences", requireAuth, settingsController.updateNotificationPreferences);

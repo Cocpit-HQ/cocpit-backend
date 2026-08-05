@@ -347,3 +347,135 @@ exports.updateNotificationPreferences = async (req, res) => {
         res.status(500).json({ message: "Internal server error" });
     }
 };
+
+// --- Account Settings & Lifecycle (Owner Restricted) ---
+
+exports.getAccountSettings = async (req, res) => {
+    const orgId = req.params.orgId || req.params.companyId;
+    try {
+        const result = await pool.query(
+            `SELECT o.org_id, o.email, o.phone, o.is_deactivated, o.deactivated_at,
+                    o.entity_type, o.name, o.created_by, u.full_name AS owner_name
+             FROM organizations o
+             LEFT JOIN users u ON o.created_by = u.user_id
+             WHERE o.org_id = $1 AND o.is_deleted = FALSE`,
+            [orgId]
+        );
+
+        if (result.rowCount === 0) {
+            return res.status(404).json({ message: "Organization not found" });
+        }
+
+        const org = result.rows[0];
+        res.json({
+            id: org.org_id,
+            email: org.email || "",
+            phone: org.phone || "",
+            isDeactivated: org.is_deactivated || false,
+            deactivatedAt: org.deactivated_at || null,
+            entityType: org.entity_type || "COMPANY",
+            companyName: org.name,
+            ownerUserId: org.created_by,
+            ownerName: org.owner_name || "",
+            hasCompanyAccount: true,
+        });
+    } catch (err) {
+        console.error("Get org account settings error:", err);
+        res.status(500).json({ message: "Internal server error" });
+    }
+};
+
+exports.deactivateOrganization = async (req, res) => {
+    const orgId = req.params.orgId || req.params.companyId;
+    const userId = req.user.sub;
+
+    const client = await pool.connect();
+    try {
+        await client.query("BEGIN");
+
+        // Strict Owner Check
+        const orgRes = await client.query(
+            `SELECT created_by FROM organizations WHERE org_id = $1 AND is_deleted = FALSE`,
+            [orgId]
+        );
+        if (orgRes.rowCount === 0) {
+            await client.query("ROLLBACK");
+            return res.status(404).json({ message: "Organization not found" });
+        }
+
+        const isOwner = orgRes.rows[0].created_by === userId || (req.actor && req.actor.roleName === 'Owner');
+        if (!isOwner) {
+            await client.query("ROLLBACK");
+            return res.status(403).json({ message: "Only the organization owner can deactivate the organization page" });
+        }
+
+        await client.query(
+            `UPDATE organizations SET is_deactivated = true, deactivated_at = NOW() WHERE org_id = $1`,
+            [orgId]
+        );
+
+        await logAudit(client, {
+            entityId: orgId,
+            entityType: 'ORGANIZATION',
+            actorId: userId,
+            action: 'ORGANIZATION_DEACTIVATED',
+            metadata: {}
+        });
+
+        await client.query("COMMIT");
+        res.json({ success: true, message: "Organization page deactivated" });
+    } catch (err) {
+        await client.query("ROLLBACK");
+        console.error("Deactivate organization error:", err);
+        res.status(500).json({ message: "Internal server error" });
+    } finally {
+        client.release();
+    }
+};
+
+exports.reactivateOrganization = async (req, res) => {
+    const orgId = req.params.orgId || req.params.companyId;
+    const userId = req.user.sub;
+
+    const client = await pool.connect();
+    try {
+        await client.query("BEGIN");
+
+        // Strict Owner Check
+        const orgRes = await client.query(
+            `SELECT created_by FROM organizations WHERE org_id = $1 AND is_deleted = FALSE`,
+            [orgId]
+        );
+        if (orgRes.rowCount === 0) {
+            await client.query("ROLLBACK");
+            return res.status(404).json({ message: "Organization not found" });
+        }
+
+        if (orgRes.rows[0].created_by !== userId) {
+            await client.query("ROLLBACK");
+            return res.status(403).json({ message: "Only the organization owner can reactivate the organization page" });
+        }
+
+        await client.query(
+            `UPDATE organizations SET is_deactivated = false, deactivated_at = NULL WHERE org_id = $1`,
+            [orgId]
+        );
+
+        await logAudit(client, {
+            entityId: orgId,
+            entityType: 'ORGANIZATION',
+            actorId: userId,
+            action: 'ORGANIZATION_REACTIVATED',
+            metadata: {}
+        });
+
+        await client.query("COMMIT");
+        res.json({ success: true, message: "Organization page reactivated" });
+    } catch (err) {
+        await client.query("ROLLBACK");
+        console.error("Reactivate organization error:", err);
+        res.status(500).json({ message: "Internal server error" });
+    } finally {
+        client.release();
+    }
+};

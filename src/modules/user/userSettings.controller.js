@@ -24,6 +24,39 @@ function formatDate(dateStr) {
  */
 exports.getAccountDetails = async (req, res) => {
     try {
+        // Organization Context Branching
+        if (req.actor && req.actor.type === "ORGANIZATION") {
+            const orgId = req.actor.orgId;
+            const orgRes = await pool.query(
+                `SELECT o.org_id, o.email, o.phone, o.is_deactivated, o.deactivated_at,
+                        o.entity_type, o.name, o.created_by, u.full_name AS owner_name
+                 FROM organizations o
+                 LEFT JOIN users u ON o.created_by = u.user_id
+                 WHERE o.org_id = $1 AND o.is_deleted = FALSE`,
+                [orgId]
+            );
+
+            if (orgRes.rowCount === 0) {
+                return res.status(404).json({ success: false, message: "Organization not found" });
+            }
+
+            const org = orgRes.rows[0];
+            return res.status(200).json({
+                id: org.org_id,
+                email: org.email || "",
+                primaryEmail: org.email || "",
+                phone: org.phone || "",
+                isDeactivated: org.is_deactivated || false,
+                deactivatedAt: org.deactivated_at || null,
+                entityType: org.entity_type || "COMPANY",
+                companyName: org.name,
+                ownerUserId: org.created_by,
+                ownerName: org.owner_name || "",
+                hasCompanyAccount: true,
+            });
+        }
+
+        // Personal User Context Branching
         const userId = req.user.sub;
 
         const userRes = await pool.query(
@@ -55,6 +88,61 @@ exports.getAccountDetails = async (req, res) => {
     } catch (error) {
         console.error("Get account details error:", error);
         return res.status(500).json({ success: false, message: "Failed to fetch account details" });
+    }
+};
+
+/**
+ * 1.1b Request Deletion OTP (User or Organization)
+ * POST /api/user/account/delete-otp
+ */
+exports.requestDeleteOTP = async (req, res) => {
+    try {
+        let targetEmail = "";
+        let purpose = "account_deletion";
+
+        if (req.actor && req.actor.type === "ORGANIZATION") {
+            const orgId = req.actor.orgId;
+            // Verify Owner permission
+            const orgRes = await pool.query(
+                `SELECT created_by FROM organizations WHERE org_id = $1 AND is_deleted = FALSE`,
+                [orgId]
+            );
+            if (orgRes.rowCount === 0) {
+                return res.status(404).json({ success: false, message: "Organization not found" });
+            }
+            if (orgRes.rows[0].created_by !== req.user.sub && req.actor.roleName !== 'Owner') {
+                return res.status(403).json({ success: false, message: "Only the organization owner can request deletion OTP" });
+            }
+
+            // Get Owner registered primary email
+            const ownerRes = await pool.query(`SELECT email FROM users WHERE user_id = $1`, [req.user.sub]);
+            if (ownerRes.rowCount === 0 || !ownerRes.rows[0].email) {
+                return res.status(400).json({ success: false, message: "Owner registered primary email not found" });
+            }
+            targetEmail = ownerRes.rows[0].email;
+            purpose = `org_deletion_${orgId}`;
+        } else {
+            const userId = req.user.sub;
+            const userRes = await pool.query(`SELECT email FROM users WHERE user_id = $1`, [userId]);
+            if (userRes.rowCount === 0 || !userRes.rows[0].email) {
+                return res.status(400).json({ success: false, message: "Registered primary email not found" });
+            }
+            targetEmail = userRes.rows[0].email;
+            purpose = `user_deletion_${userId}`;
+        }
+
+        const otpResult = await requestOTP(targetEmail, purpose);
+        if (otpResult.error) {
+            return res.status(otpResult.error.status).json({ success: false, message: otpResult.error.message });
+        }
+
+        return res.status(200).json({
+            success: true,
+            message: "Deletion OTP sent to registered primary email.",
+        });
+    } catch (error) {
+        console.error("Request delete OTP error:", error);
+        return res.status(500).json({ success: false, message: "Failed to request deletion OTP" });
     }
 };
 
@@ -297,68 +385,81 @@ exports.deleteAccount = async (req, res) => {
     const client = await pool.connect();
     try {
         const userId = req.user.sub;
-        const { password, idToken } = req.body;
+        const { otp } = req.body;
 
-        const { comparePassword } = require("../../core/utils/password");
-        const { verifyGoogleToken } = require("../auth/googleAuth.service");
+        if (!otp) {
+            return res.status(400).json({ success: false, message: "OTP is required to confirm deletion" });
+        }
 
-        await client.query("BEGIN");
+        // Organization Deletion Branching
+        if (req.actor && req.actor.type === "ORGANIZATION") {
+            const orgId = req.actor.orgId;
+            const orgRes = await pool.query(
+                `SELECT created_by FROM organizations WHERE org_id = $1 AND is_deleted = FALSE`,
+                [orgId]
+            );
 
+            if (orgRes.rowCount === 0) {
+                return res.status(404).json({ success: false, message: "Organization not found" });
+            }
+
+            if (orgRes.rows[0].created_by !== userId && req.actor.roleName !== 'Owner') {
+                return res.status(403).json({ success: false, message: "Only the organization owner can delete the organization page" });
+            }
+
+            const ownerRes = await pool.query(`SELECT email FROM users WHERE user_id = $1`, [userId]);
+            if (ownerRes.rowCount === 0 || !ownerRes.rows[0].email) {
+                return res.status(400).json({ success: false, message: "Owner registered primary email not found" });
+            }
+
+            const verifyResult = await verifyOTP(ownerRes.rows[0].email, otp, `org_deletion_${orgId}`);
+            if (verifyResult.error) {
+                return res.status(verifyResult.error.status).json({ success: false, message: verifyResult.error.message });
+            }
+
+            const deletionDate = new Date();
+            deletionDate.setDate(deletionDate.getDate() + 40);
+
+            await client.query("BEGIN");
+            await client.query(
+                `UPDATE organizations SET is_deleted = TRUE, deletion_scheduled_at = $1, updated_at = NOW() WHERE org_id = $2`,
+                [deletionDate, orgId]
+            );
+            await logAudit(client, {
+                entityId: orgId,
+                entityType: 'ORGANIZATION',
+                actorId: userId,
+                action: 'ORGANIZATION_SCHEDULED_FOR_DELETION',
+                metadata: { scheduledAt: deletionDate }
+            });
+            await client.query("COMMIT");
+
+            return res.status(200).json({
+                success: true,
+                message: "Organization scheduled for deletion (40-day grace period).",
+            });
+        }
+
+        // Personal User Account Deletion Branching
         const userFetch = await client.query(
-            "SELECT user_id, email, recovery_email, full_name, password_hash, google_id FROM users WHERE user_id = $1",
+            "SELECT user_id, email, recovery_email FROM users WHERE user_id = $1",
             [userId]
         );
 
         if (userFetch.rowCount === 0) {
-            await client.query("ROLLBACK");
             return res.status(404).json({ success: false, message: "User not found" });
         }
 
         const userObj = userFetch.rows[0];
-
-        // Identity verification — Password user OR Google user
-        let isAuthenticated = false;
-
-        if (userObj.password_hash) {
-            if (!password) {
-                await client.query("ROLLBACK");
-                return res.status(400).json({ success: false, message: "Password is required to delete your account" });
-            }
-            const isValid = await comparePassword(password, userObj.password_hash);
-            if (isValid) {
-                isAuthenticated = true;
-            } else {
-                await client.query("ROLLBACK");
-                return res.status(400).json({ success: false, message: "Invalid password" });
-            }
-        } else if (userObj.google_id) {
-            if (!idToken) {
-                await client.query("ROLLBACK");
-                return res.status(400).json({ success: false, message: "Google re-authentication is required to delete your account." });
-            }
-            try {
-                const googlePayload = await verifyGoogleToken(idToken);
-                if (googlePayload.googleId === userObj.google_id) {
-                    isAuthenticated = true;
-                } else {
-                    await client.query("ROLLBACK");
-                    return res.status(400).json({ success: false, message: "Google account does not match this account." });
-                }
-            } catch {
-                await client.query("ROLLBACK");
-                return res.status(400).json({ success: false, message: "Invalid Google token. Please re-authenticate and try again." });
-            }
-        } else {
-            isAuthenticated = true;
-        }
-
-        if (!isAuthenticated) {
-            await client.query("ROLLBACK");
-            return res.status(400).json({ success: false, message: "Password or authentication is required to delete your account" });
+        const verifyResult = await verifyOTP(userObj.email, otp, `user_deletion_${userId}`);
+        if (verifyResult.error) {
+            return res.status(verifyResult.error.status).json({ success: false, message: verifyResult.error.message });
         }
 
         const deletionDate = new Date();
         deletionDate.setDate(deletionDate.getDate() + 40);
+
+        await client.query("BEGIN");
 
         await client.query(
             `UPDATE users SET deletion_execute_at = $1, updated_at = NOW() WHERE user_id = $2`,
@@ -371,6 +472,8 @@ exports.deleteAccount = async (req, res) => {
         );
 
         await client.query("COMMIT");
+
+        res.clearCookie("refreshToken");
 
         res.clearCookie("refreshToken");
 
@@ -387,7 +490,7 @@ exports.deleteAccount = async (req, res) => {
 
         return res.status(200).json({
             success: true,
-            message: "Account scheduled for deletion. Check your email for recovery instructions.",
+            message: "Account scheduled for deletion (40-day grace period).",
         });
     } catch (error) {
         await client.query("ROLLBACK");
@@ -805,12 +908,40 @@ exports.updateNotificationPreferences = async (req, res) => {
  */
 exports.getBlockedUsers = async (req, res) => {
     try {
+        // Organization Context Branching
+        if (req.actor && req.actor.type === "ORGANIZATION") {
+            const orgId = req.actor.orgId;
+            const result = await pool.query(
+                `SELECT oba.block_id, oba.blocked_type, oba.blocked_id, oba.created_at,
+                        COALESCE(u.full_name, u.account_name, o.name, 'Blocked Account') AS name,
+                        COALESCE(u.avatar_url, o.logo_url, '') AS avatar
+                 FROM organization_blocked_accounts oba
+                 LEFT JOIN users u ON oba.blocked_type = 'user' AND oba.blocked_id = u.user_id
+                 LEFT JOIN organizations o ON oba.blocked_type = 'company' AND oba.blocked_id = o.org_id
+                 WHERE oba.org_id = $1
+                 ORDER BY oba.created_at DESC`,
+                [orgId]
+            );
+
+            const formatted = result.rows.map((row) => ({
+                id: row.blocked_id,
+                type: row.blocked_type,
+                name: row.name,
+                date: row.created_at ? new Date(row.created_at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) : "Blocked recently",
+                avatar: row.avatar,
+            }));
+
+            return res.status(200).json(formatted);
+        }
+
+        // Personal User Context Branching
         const userId = req.user.sub;
 
         const blockedList = await BlockModel.getBlockedUsersDetails(userId);
 
         const formatted = blockedList.map((item) => ({
             id: item.user_id,
+            type: "user",
             name: item.full_name || item.account_name || "User",
             date: "Blocked recently",
             avatar: item.avatar_url || "",
@@ -824,20 +955,51 @@ exports.getBlockedUsers = async (req, res) => {
 };
 
 /**
- * 5.2 Unblock User
+ * 5.2 Unblock User / Organization
  * DELETE /api/user/blocked/{id}
  */
 exports.unblockUser = async (req, res) => {
     try {
-        const userId = req.user.sub;
         const { id } = req.params;
+
+        // Organization Context Branching
+        if (req.actor && req.actor.type === "ORGANIZATION") {
+            const orgId = req.actor.orgId;
+            const userId = req.user.sub;
+
+            // Check permissions
+            const isOwner = req.actor.roleName === 'Owner' || req.actor.permissions.includes('*');
+            const hasSettingsPerm = req.actor.permissions.some(p => ['SETTINGS', 'MANAGE_SETTINGS', 'MANAGE_COMPANY', 'MANAGE_INSTITUTION'].includes(p.toUpperCase()));
+
+            if (!isOwner && !hasSettingsPerm) {
+                return res.status(403).json({ success: false, message: "You do not have permission to manage organization blocked accounts" });
+            }
+
+            await pool.query(
+                `DELETE FROM organization_blocked_accounts WHERE org_id = $1 AND blocked_id = $2`,
+                [orgId, id]
+            );
+
+            await logAudit(pool, {
+                entityId: orgId,
+                entityType: 'ORGANIZATION',
+                actorId: userId,
+                action: 'ORGANIZATION_BLOCK_REMOVED',
+                metadata: { blockedId: id }
+            });
+
+            return res.status(200).json({ success: true });
+        }
+
+        // Personal User Context Branching
+        const userId = req.user.sub;
 
         await BlockModel.unblockUser(userId, id, false);
 
         return res.status(200).json({ success: true });
     } catch (error) {
         console.error("Unblock user error:", error);
-        return res.status(500).json({ success: false, message: "Failed to unblock user" });
+        return res.status(500).json({ success: false, message: "Failed to unblock account" });
     }
 };
 

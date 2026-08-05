@@ -6,6 +6,7 @@ const preferencesController = require("./preferences.controller");
 const supportController = require("./support.controller");
 
 const { requireAuth, requireActiveSession, optionalAuth } = require("../../core/middlewares/auth.middleware");
+const { resolveActorContext } = require("../../core/middlewares/actor-context.middleware");
 const { validate } = require("../../core/middlewares/validation.middleware");
 const { createRateLimit } = require("../../core/middlewares/rateLimit.middleware");
 const { uploadSupportAttachment } = require("../../core/middlewares/upload.middleware");
@@ -33,6 +34,9 @@ const sensitiveActionLimiter = createRateLimit({
     max: process.env.NODE_ENV === "production" ? 10 : 100,
     message: "Too many requests. Please try again later.",
 });
+
+// Resolve active actor context (USER vs ORGANIZATION / INSTITUTION) for all settings endpoints
+router.use(resolveActorContext);
 
 // ─── 1. Account Settings ───────────────────────────────────────────────────────
 

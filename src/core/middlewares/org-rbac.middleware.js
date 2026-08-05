@@ -7,7 +7,11 @@ function checkFeaturePermission(permissions, requiredKey) {
     const upperPerms = permissions.map(p => String(p).toUpperCase().trim());
     const targetKey = String(requiredKey).toUpperCase().trim();
 
-    if (upperPerms.includes('*') || upperPerms.includes('MANAGE_COMPANY') || upperPerms.includes(targetKey)) return true;
+    if (upperPerms.includes('*') || upperPerms.includes('MANAGE_COMPANY') || upperPerms.includes('MANAGE_SETTINGS') || upperPerms.includes('SETTINGS') || upperPerms.includes(targetKey)) return true;
+
+    // Settings fallback across Company & Institution
+    const settingsPerms = ["SETTINGS", "MANAGE_SETTINGS", "MANAGE_COMPANY", "MANAGE_INSTITUTION", "MANAGE_ORGANIZATION", "MANAGE_COMPANY_DETAILS"];
+    if (settingsPerms.includes(targetKey) && upperPerms.some(p => settingsPerms.includes(p))) return true;
 
     // Channel fallback
     if (targetKey === 'CHANNELS' && upperPerms.includes('CHANNEL')) return true;
