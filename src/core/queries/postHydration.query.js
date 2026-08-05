@@ -260,6 +260,7 @@ const getPostHydrationSelect = (companyParamIdx, userParamIdx) => `
                 'post_id', sp.post_id,
                 'title', CASE WHEN sp.post_type IN ('article', 'poll') THEN sp.title ELSE NULL END,
                 'content', sp.content,
+                'location', sp.location,
                 'created_at', sp.created_at,
                 'post_type', sp.post_type,
                 'author', json_build_object(

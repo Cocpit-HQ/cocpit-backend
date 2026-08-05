@@ -235,6 +235,7 @@ exports.getOrganizationPosts = async (req, res) => {
                         'is_accessible', true,
                         'post_id', sp.post_id,
                         'content', sp.content,
+                        'location', sp.location,
                         'created_at', sp.created_at,
                         'author', json_build_object(
                              'user_id', COALESCE(sp.author_org_id, sp_u.user_id),
