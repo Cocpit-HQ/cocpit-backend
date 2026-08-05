@@ -458,7 +458,57 @@ exports.initiateAccountDeletion = async (req, res) => {
     const client = await pool.connect();
     try {
         const userId = req.user.sub;
-        const { companyResolutions = [] } = req.body;
+        const { password, idToken, companyResolutions = [] } = req.body;
+
+        const { comparePassword } = require("../../core/utils/password");
+        const { verifyGoogleToken } = require("../auth/googleAuth.service");
+
+        // 1. Fetch user record for identity verification
+        const userRes = await client.query(
+            "SELECT user_id, email, password_hash, google_id FROM users WHERE user_id = $1",
+            [userId]
+        );
+
+        if (userRes.rowCount === 0) {
+            return res.status(404).json({ success: false, message: "User not found" });
+        }
+
+        const userObj = userRes.rows[0];
+
+        // 2. Identity verification — Password user OR Google user
+        let isAuthenticated = false;
+
+        if (userObj.password_hash) {
+            if (!password) {
+                return res.status(400).json({ success: false, message: "Password is required to delete your account" });
+            }
+            const isValid = await comparePassword(password, userObj.password_hash);
+            if (isValid) {
+                isAuthenticated = true;
+            } else {
+                return res.status(400).json({ success: false, message: "Invalid password" });
+            }
+        } else if (userObj.google_id) {
+            if (!idToken) {
+                return res.status(400).json({ success: false, message: "Google re-authentication is required to delete your account." });
+            }
+            try {
+                const googlePayload = await verifyGoogleToken(idToken);
+                if (googlePayload.googleId === userObj.google_id) {
+                    isAuthenticated = true;
+                } else {
+                    return res.status(400).json({ success: false, message: "Google account does not match this account." });
+                }
+            } catch {
+                return res.status(400).json({ success: false, message: "Invalid Google token. Please re-authenticate and try again." });
+            }
+        } else {
+            isAuthenticated = true;
+        }
+
+        if (!isAuthenticated) {
+            return res.status(400).json({ success: false, message: "Password or authentication is required to delete your account" });
+        }
 
         // Fetch owned active companies
         const orgRes = await client.query(
@@ -533,9 +583,16 @@ exports.initiateAccountDeletion = async (req, res) => {
         }
 
         // Send restoration email
-        const userFetch = await pool.query("SELECT email FROM users WHERE user_id = $1", [userId]);
+        const userFetch = await pool.query("SELECT email, recovery_email, full_name FROM users WHERE user_id = $1", [userId]);
         if (userFetch.rowCount > 0) {
-            emailService.sendAccountDeletionEmail(userFetch.rows[0].email, deletionDate).catch(console.error);
+            const userObj = userFetch.rows[0];
+            const recipientEmails = Array.from(
+                new Set([userObj.recovery_email, userObj.email].filter((e) => Boolean(e) && typeof e === "string" && e.trim() !== ""))
+            );
+            for (const recipientEmail of recipientEmails) {
+                emailService.sendAccountDeletionEmail(recipientEmail, userObj.full_name, null, deletionDate)
+                    .catch((err) => console.error(`[initiateAccountDeletion] Failed to send recovery email to ${recipientEmail}:`, err));
+            }
         }
 
         return res.status(200).json({

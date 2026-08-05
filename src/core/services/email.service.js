@@ -91,7 +91,7 @@ const sendAccountDeletionEmail = async (email, fullName, restoreToken, deletionD
     }
 
     const frontendUrl = process.env.FRONTEND_URL || (process.env.NODE_ENV === "staging" ? "https://staging.cocpit.in" : "http://localhost:3000");
-    const restoreLink = `${frontendUrl}/restore-account?token=${restoreToken}`;
+    const restoreLink = restoreToken ? `${frontendUrl}/restore-account?token=${restoreToken}` : `${frontendUrl}/restore-account`;
     const deletionDateStr = new Date(deletionDate).toLocaleDateString("en-US", {
         year: "numeric", month: "long", day: "numeric",
     });
