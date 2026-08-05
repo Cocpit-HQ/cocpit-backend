@@ -67,7 +67,10 @@ exports.getReports = async (req, res) => {
         reporter_id as "reporterId",
         '100%' as "repScore", -- Mock rep score for now
         target_user_id as "targetUserId",
-        target_user_name as "targetUserName"
+        target_user_name as "targetUserName",
+        (SELECT url FROM post_media pm WHERE pm.post_id = target_id LIMIT 1) AS "postImageUrl",
+        (SELECT media_type FROM post_media pm WHERE pm.post_id = target_id LIMIT 1) AS "postMediaType",
+        (SELECT json_agg(po.option_text) FROM post_polls pp JOIN poll_options po ON pp.poll_id = po.poll_id WHERE pp.post_id = target_id) AS "pollOptions"
       FROM admin_reports_view
       ${whereClause}
       ORDER BY created_at DESC

@@ -2,6 +2,7 @@ const pool = require('../../../core/db/pool');
 const redis = require('../../../core/cache/redis');
 const crypto = require('crypto');
 const { sendSuspensionAppealEmail } = require('../../../core/services/email.service');
+const socketService = require('../../../core/infrastructure/socket.service');
 
 exports.getUserRoles = async (req, res) => {
   try {
@@ -344,6 +345,24 @@ exports.warnUser = async (req, res) => {
       [adminId, 'USER_WARNED', actionDesc]
     );
 
+    // Notify the user via in-app notification database record and socket message
+    const notificationText = isSevere 
+      ? `Your account has been issued a severe warning for ${reason.toLowerCase()}.`
+      : `Your account has been issued a warning for ${reason.toLowerCase()}.`;
+
+    await pool.query(`
+      INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata)
+      VALUES ($1, $2, $3, $4, $5, $6)
+    `, [id, adminId, 'user_warning', notificationText, id, JSON.stringify({ reason, message, isSevere, autoSuspended })]);
+
+    socketService.notifyUser(id, "notification", {
+      user_id: id,
+      type: 'user_warning',
+      text: notificationText,
+      reference_id: id,
+      created_at: new Date()
+    });
+
     res.json({
       success: true,
       message: autoSuspended
@@ -588,6 +607,24 @@ exports.bulkWarnUsers = async (req, res) => {
         'INSERT INTO admin_audit_logs (user_id, action_type, description) VALUES ($1, $2, $3)',
         [adminId, 'USER_WARNED', actionDesc]
       );
+
+      // Notify the user via in-app notification database record and socket message
+      const notificationText = isSevere 
+        ? `Your account has been issued a severe warning for ${reason.toLowerCase()}.`
+        : `Your account has been issued a warning for ${reason.toLowerCase()}.`;
+
+      await pool.query(`
+        INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata)
+        VALUES ($1, $2, $3, $4, $5, $6)
+      `, [id, adminId, 'user_warning', notificationText, id, JSON.stringify({ reason, message, isSevere, autoSuspended })]);
+
+      socketService.notifyUser(id, "notification", {
+        user_id: id,
+        type: 'user_warning',
+        text: notificationText,
+        reference_id: id,
+        created_at: new Date()
+      });
 
       results.push({ id, name: targetName, moderation_flags: newFlagsCount, autoSuspended });
     }
