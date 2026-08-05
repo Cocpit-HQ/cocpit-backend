@@ -4,6 +4,7 @@ const { comparePassword, hashPassword } = require("../../core/utils/password");
 const { requestOTP, verifyOTP } = require("../auth/otp.service");
 const emailService = require("../../core/services/email.service");
 const BlockModel = require("../../models/block.model");
+const { logAudit } = require("../../services/audit.service");
 const { revokeOtherSessions } = require("../settings/account.service");
 const { UAParser } = require("ua-parser-js");
 const geoip = require("geoip-lite");
@@ -907,12 +908,18 @@ exports.updateNotificationPreferences = async (req, res) => {
  * GET /api/user/blocked
  */
 exports.getBlockedUsers = async (req, res) => {
+    res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
     try {
         // Organization Context Branching
         if (req.actor && req.actor.type === "ORGANIZATION") {
             const orgId = req.actor.orgId;
-            const result = await pool.query(
-                `SELECT oba.block_id, oba.blocked_type, oba.blocked_id, oba.created_at,
+            
+            // 1. Fetch org blocks from primary blocks table
+            const orgBlockedList = await BlockModel.getOrgBlockedUsersDetails(orgId);
+
+            // 2. Fetch org blocks from organization_blocked_accounts fallback table
+            const obaResult = await pool.query(
+                `SELECT oba.blocked_id, oba.blocked_type, oba.created_at,
                         COALESCE(u.full_name, u.account_name, o.name, 'Blocked Account') AS name,
                         COALESCE(u.avatar_url, o.logo_url, '') AS avatar
                  FROM organization_blocked_accounts oba
@@ -923,15 +930,29 @@ exports.getBlockedUsers = async (req, res) => {
                 [orgId]
             );
 
-            const formatted = result.rows.map((row) => ({
-                id: row.blocked_id,
-                type: row.blocked_type,
-                name: row.name,
-                date: row.created_at ? new Date(row.created_at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) : "Blocked recently",
-                avatar: row.avatar,
-            }));
+            const map = new Map();
+            for (const item of orgBlockedList) {
+                map.set(item.user_id, {
+                    id: item.user_id,
+                    type: item.entity_type === 'COMPANY' ? 'company' : 'user',
+                    name: item.full_name || item.account_name || "Blocked Account",
+                    date: "Blocked recently",
+                    avatar: item.avatar_url || "",
+                });
+            }
+            for (const row of obaResult.rows) {
+                if (!map.has(row.blocked_id)) {
+                    map.set(row.blocked_id, {
+                        id: row.blocked_id,
+                        type: row.blocked_type,
+                        name: row.name,
+                        date: row.created_at ? new Date(row.created_at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) : "Blocked recently",
+                        avatar: row.avatar,
+                    });
+                }
+            }
 
-            return res.status(200).json(formatted);
+            return res.status(200).json(Array.from(map.values()));
         }
 
         // Personal User Context Branching
@@ -975,6 +996,7 @@ exports.unblockUser = async (req, res) => {
                 return res.status(403).json({ success: false, message: "You do not have permission to manage organization blocked accounts" });
             }
 
+            await BlockModel.unblockUser(orgId, id, true);
             await pool.query(
                 `DELETE FROM organization_blocked_accounts WHERE org_id = $1 AND blocked_id = $2`,
                 [orgId, id]
@@ -988,6 +1010,15 @@ exports.unblockUser = async (req, res) => {
                 metadata: { blockedId: id }
             });
 
+            // Dispatch real-time socket events for chat UI & conversation state
+            await dispatchBlockSocketEvents({
+                blockerId: orgId,
+                targetId: id,
+                isOrgActor: true,
+                isBlocked: false,
+                actorUserId: userId,
+            });
+
             return res.status(200).json({ success: true });
         }
 
@@ -996,12 +1027,92 @@ exports.unblockUser = async (req, res) => {
 
         await BlockModel.unblockUser(userId, id, false);
 
+        // Dispatch real-time socket events for chat UI & conversation state
+        await dispatchBlockSocketEvents({
+            blockerId: userId,
+            targetId: id,
+            isOrgActor: false,
+            isBlocked: false,
+            actorUserId: userId,
+        });
+
         return res.status(200).json({ success: true });
     } catch (error) {
         console.error("Unblock user error:", error);
         return res.status(500).json({ success: false, message: "Failed to unblock account" });
     }
 };
+
+async function dispatchBlockSocketEvents({ blockerId, targetId, isOrgActor, isBlocked, actorUserId }) {
+    try {
+        const socketService = require("../../core/infrastructure/socket.service");
+
+        // Find active 1-on-1 conversation between blocker & target if exists
+        const convRes = await pool.query(
+            `SELECT c.conversation_id
+             FROM conversations c
+             JOIN conversation_participants cp1 ON c.conversation_id = cp1.conversation_id AND (cp1.user_id = $1 OR cp1.org_id = $1)
+             JOIN conversation_participants cp2 ON c.conversation_id = cp2.conversation_id AND (cp2.user_id = $2 OR cp2.org_id = $2)
+             WHERE c.is_group = FALSE AND c.is_active = TRUE`,
+            [blockerId, targetId]
+        );
+
+        const conversationId = convRes.rowCount > 0 ? convRes.rows[0].conversation_id : null;
+
+        const payload = {
+            blocker_id: blockerId,
+            target_id: targetId,
+            user_id: targetId,
+            is_blocked: isBlocked,
+            is_blocked_by_me: isBlocked,
+            is_blocked_by_other: false,
+            isBlocked: isBlocked,
+            blocked: isBlocked,
+            is_org_block: isOrgActor,
+            status: isBlocked ? "blocked" : "none",
+            conversation_id: conversationId,
+            conversationId: conversationId,
+        };
+
+        const eventName = isBlocked ? "user_blocked" : "user_unblocked";
+        const confirmEvent = isBlocked ? "block_confirmed" : "unblock_confirmed";
+
+        // Notify Target User & Blocker User
+        socketService.notifyUser(targetId, eventName, payload);
+        socketService.notifyUser(targetId, "relationshipUpdated", payload);
+        if (actorUserId) {
+            socketService.notifyUser(actorUserId, confirmEvent, payload);
+            socketService.notifyUser(actorUserId, "relationshipUpdated", payload);
+            socketService.notifyUser(actorUserId, "conversation_updated", payload);
+        }
+
+        // Notify Organization Room if Org Actor
+        if (isOrgActor && socketService.io) {
+            const orgEvent = isBlocked ? "ORGANIZATION_USER_BLOCKED" : "ORGANIZATION_USER_UNBLOCKED";
+            socketService.io.to(`org_${blockerId}`).emit(orgEvent, payload);
+            socketService.io.to(`org_${blockerId}`).emit("ORGANIZATION_BLOCK_UPDATED", payload);
+            socketService.io.to(`org_${blockerId}`).emit("conversation_updated", payload);
+        }
+
+        // Notify Conversation Room and all participants if conversation exists
+        if (conversationId) {
+            await socketService.notifyParticipants(conversationId, eventName, payload);
+            await socketService.notifyParticipants(conversationId, "relationshipUpdated", payload);
+            await socketService.notifyParticipants(conversationId, "conversation_updated", payload);
+            await socketService.notifyParticipants(conversationId, "block_updated", payload);
+
+            if (socketService.io) {
+                const convRoom = `conversation_${conversationId}`;
+                socketService.io.to(convRoom).emit(eventName, payload);
+                socketService.io.to(convRoom).emit("relationshipUpdated", payload);
+                socketService.io.to(convRoom).emit("block_updated", payload);
+                socketService.io.to(convRoom).emit("conversation_updated", payload);
+            }
+        }
+    } catch (err) {
+        console.error("Error dispatching block socket events:", err);
+    }
+}
 
 // ─── 6. Reports ────────────────────────────────────────────────────────────────
 

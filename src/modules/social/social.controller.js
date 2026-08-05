@@ -2019,6 +2019,7 @@ exports.getConnectionCount = async (req, res) => {
 
 // Get all conversations of logged-in user
 exports.getConversations = async (req, res) => {
+    res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
     let actorScope;
 
     try {
@@ -4005,16 +4006,48 @@ exports.blockUser = async (req, res) => {
 
         const payload = {
             blocked_by_user_id: blockerId,
+            blocker_id: blockerId,
+            target_id: targetId,
+            user_id: targetId,
             blocked_by_name: blockerInfo.full_name,
             blocked_by_avatar: blockerInfo.avatar_url,
-            is_org_block: isOrgActor
+            is_org_block: isOrgActor,
+            is_blocked: true,
+            status: "blocked",
+            conversation_id
         };
-        if (conversation_id) {
-            payload.conversation_id = conversation_id;
-        }
 
         socketService.notifyUser(targetId, "user_blocked", payload);
+        socketService.notifyUser(targetId, "relationshipUpdated", payload);
         socketService.notifyUser(req.user.sub, "block_confirmed", payload);
+        socketService.notifyUser(req.user.sub, "relationshipUpdated", payload);
+
+        if (conversation_id && socketService.io) {
+            const convRoom = `conversation_${conversation_id}`;
+            socketService.io.to(convRoom).emit("user_blocked", payload);
+            socketService.io.to(convRoom).emit("relationshipUpdated", payload);
+            socketService.io.to(convRoom).emit("conversation_updated", {
+                conversation_id,
+                is_blocked: true,
+                blocked_by: blockerId,
+            });
+        }
+
+        if (isOrgActor) {
+            const { logAudit } = require("../../services/audit.service");
+            logAudit(pool, {
+                entityId: blockerId,
+                entityType: 'ORGANIZATION',
+                actorId: req.user.sub,
+                action: 'ORGANIZATION_BLOCK_ADDED',
+                metadata: { targetId }
+            }).catch(e => console.error("Audit log error:", e));
+
+            if (socketService.io) {
+                socketService.io.to(`org_${blockerId}`).emit("ORGANIZATION_USER_BLOCKED", payload);
+                socketService.io.to(`org_${blockerId}`).emit("ORGANIZATION_BLOCK_UPDATED", payload);
+            }
+        }
 
         res.json({ message: isOrgActor ? "User blocked for organization" : "User blocked successfully" });
     } catch (err) {
@@ -4183,16 +4216,48 @@ exports.unblockUser = async (req, res) => {
 
         const payload = {
             unblocked_by_user_id: blockerId,
+            blocker_id: blockerId,
+            target_id: targetId,
+            user_id: targetId,
             unblocked_by_name: unblockerInfo.full_name,
             unblocked_by_avatar: unblockerInfo.avatar_url,
-            is_org_block: isOrgActor
+            is_org_block: isOrgActor,
+            is_blocked: false,
+            status: "none",
+            conversation_id
         };
-        if (conversation_id) {
-            payload.conversation_id = conversation_id;
-        }
 
         socketService.notifyUser(targetId, "user_unblocked", payload);
+        socketService.notifyUser(targetId, "relationshipUpdated", payload);
         socketService.notifyUser(req.user.sub, "unblock_confirmed", payload);
+        socketService.notifyUser(req.user.sub, "relationshipUpdated", payload);
+
+        if (conversation_id && socketService.io) {
+            const convRoom = `conversation_${conversation_id}`;
+            socketService.io.to(convRoom).emit("user_unblocked", payload);
+            socketService.io.to(convRoom).emit("relationshipUpdated", payload);
+            socketService.io.to(convRoom).emit("conversation_updated", {
+                conversation_id,
+                is_blocked: false,
+                blocked_by: null,
+            });
+        }
+
+        if (isOrgActor) {
+            const { logAudit } = require("../../services/audit.service");
+            logAudit(pool, {
+                entityId: blockerId,
+                entityType: 'ORGANIZATION',
+                actorId: req.user.sub,
+                action: 'ORGANIZATION_BLOCK_REMOVED',
+                metadata: { targetId }
+            }).catch(e => console.error("Audit log error:", e));
+
+            if (socketService.io) {
+                socketService.io.to(`org_${blockerId}`).emit("ORGANIZATION_USER_UNBLOCKED", payload);
+                socketService.io.to(`org_${blockerId}`).emit("ORGANIZATION_BLOCK_UPDATED", payload);
+            }
+        }
 
         res.json({ message: isOrgActor ? "User unblocked for organization" : "User unblocked successfully" });
     } catch (err) {
