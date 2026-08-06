@@ -433,9 +433,125 @@ exports.deactivateOrganization = async (req, res) => {
     }
 };
 
+const maskEmailHelper = (email) => {
+    if (!email || typeof email !== 'string' || !email.includes('@')) return '';
+    const [name, domain] = email.split('@');
+    if (name.length <= 2) return `${name.charAt(0)}***@${domain}`;
+    return `${name.charAt(0)}***${name.charAt(name.length - 1)}@${domain}`;
+};
+
+exports.sendReactivateOrgOTP = async (req, res) => {
+    const orgId = req.params.orgId || req.params.companyId;
+    const userId = req.user.sub;
+
+    const client = await pool.connect();
+    try {
+        const orgRes = await client.query(
+            "SELECT name, email, created_by, is_deactivated FROM organizations WHERE org_id = $1 AND is_deleted = FALSE",
+            [orgId]
+        );
+        if (orgRes.rowCount === 0) {
+            return res.status(404).json({ message: "Organization not found" });
+        }
+        const org = orgRes.rows[0];
+
+        if (org.created_by !== userId) {
+            return res.status(403).json({ message: "Only the organization owner can request reactivation code" });
+        }
+
+        const ownerRes = await client.query(
+            "SELECT email FROM users WHERE user_id = $1",
+            [org.created_by]
+        );
+        const ownerEmail = ownerRes.rows[0]?.email;
+        const orgEmail = org.email;
+
+        const recipientSet = new Set();
+        if (orgEmail && orgEmail.trim()) recipientSet.add(orgEmail.toLowerCase().trim());
+        if (ownerEmail && ownerEmail.trim()) recipientSet.add(ownerEmail.toLowerCase().trim());
+
+        const recipients = Array.from(recipientSet);
+        if (recipients.length === 0) {
+            return res.status(400).json({ message: "No registered email address found for this organization owner" });
+        }
+
+        const primaryEmail = recipients[0];
+
+        // Rate Limit & Cooldown Check
+        const existing = await client.query(
+            `SELECT created_at, request_count FROM email_otps WHERE email = $1`,
+            [primaryEmail]
+        );
+
+        if (existing.rowCount > 0) {
+            const record = existing.rows[0];
+            const diffSeconds = (new Date() - new Date(record.created_at)) / 1000;
+            if (diffSeconds < 5) {
+                return res.status(429).json({ message: "A verification code was just requested. Please wait a few seconds." });
+            }
+            if (diffSeconds < 60 && record.request_count >= 3) {
+                return res.status(429).json({ message: "Too many OTP requests. Please wait a minute before trying again." });
+            }
+        }
+
+        const { generateSecureOTP } = require("../auth/otp.service");
+        const bcrypt = require("bcrypt");
+        const otp = generateSecureOTP();
+        const otpHash = await bcrypt.hash(otp, 10);
+        const OTP_EXPIRY_MINUTES = parseInt(process.env.OTP_EXPIRY_MINUTES) || 5;
+        const expiresAt = new Date(Date.now() + OTP_EXPIRY_MINUTES * 60000);
+
+        await client.query(
+            `INSERT INTO email_otps (email, otp_hash, expires_at, attempts, created_at, request_count)
+             VALUES ($1, $2, $3, 0, NOW(), 1)
+             ON CONFLICT (email)
+             DO UPDATE SET
+                 otp_hash = EXCLUDED.otp_hash,
+                 expires_at = EXCLUDED.expires_at,
+                 attempts = 0,
+                 created_at = NOW(),
+                 request_count = email_otps.request_count + 1`,
+            [primaryEmail, otpHash, expiresAt]
+        );
+
+        if (recipients.length > 1) {
+            await client.query(
+                `INSERT INTO email_otps (email, otp_hash, expires_at, attempts, created_at, request_count)
+                 VALUES ($1, $2, $3, 0, NOW(), 1)
+                 ON CONFLICT (email)
+                 DO UPDATE SET
+                     otp_hash = EXCLUDED.otp_hash,
+                     expires_at = EXCLUDED.expires_at,
+                     attempts = 0,
+                     created_at = NOW(),
+                     request_count = email_otps.request_count + 1`,
+                [recipients[1], otpHash, expiresAt]
+            );
+        }
+
+        const emailService = require("../../core/services/email.service");
+        await emailService.sendOrgReactivateOTPEmail(recipients, otp, org.name);
+
+        const maskedDisplay = recipients.map(maskEmailHelper).join(", ");
+        res.json({
+            success: true,
+            message: "Verification code sent to owner email",
+            email_masked: maskedDisplay,
+            expires_in_seconds: OTP_EXPIRY_MINUTES * 60,
+            cooldown_seconds: 30
+        });
+    } catch (err) {
+        console.error("Send reactivate org OTP error:", err);
+        res.status(500).json({ message: err.message || "Failed to send verification code" });
+    } finally {
+        client.release();
+    }
+};
+
 exports.reactivateOrganization = async (req, res) => {
     const orgId = req.params.orgId || req.params.companyId;
     const userId = req.user.sub;
+    const { otp } = req.body;
 
     const client = await pool.connect();
     try {
@@ -443,7 +559,7 @@ exports.reactivateOrganization = async (req, res) => {
 
         // Strict Owner Check
         const orgRes = await client.query(
-            `SELECT created_by FROM organizations WHERE org_id = $1 AND is_deleted = FALSE`,
+            `SELECT name, email, created_by FROM organizations WHERE org_id = $1 AND is_deleted = FALSE`,
             [orgId]
         );
         if (orgRes.rowCount === 0) {
@@ -451,9 +567,46 @@ exports.reactivateOrganization = async (req, res) => {
             return res.status(404).json({ message: "Organization not found" });
         }
 
-        if (orgRes.rows[0].created_by !== userId) {
+        const org = orgRes.rows[0];
+        if (org.created_by !== userId) {
             await client.query("ROLLBACK");
             return res.status(403).json({ message: "Only the organization owner can reactivate the organization page" });
+        }
+
+        // If OTP is passed, verify it
+        if (otp) {
+            if (String(otp).trim().length !== 6) {
+                await client.query("ROLLBACK");
+                return res.status(400).json({ message: "6-digit verification code is required" });
+            }
+
+            const ownerRes = await client.query(
+                "SELECT email FROM users WHERE user_id = $1",
+                [org.created_by]
+            );
+            const ownerEmail = ownerRes.rows[0]?.email;
+            const orgEmail = org.email;
+
+            const recipientSet = new Set();
+            if (orgEmail && orgEmail.trim()) recipientSet.add(orgEmail.toLowerCase().trim());
+            if (ownerEmail && ownerEmail.trim()) recipientSet.add(ownerEmail.toLowerCase().trim());
+
+            const recipients = Array.from(recipientSet);
+            if (recipients.length === 0) {
+                await client.query("ROLLBACK");
+                return res.status(400).json({ message: "No registered email address found for this organization owner" });
+            }
+
+            const { verifyOTP } = require("../auth/otp.service");
+            let otpResult = await verifyOTP(recipients[0], otp, true);
+            if (otpResult.error && otpResult.error.message.includes("No active OTP found") && recipients.length > 1) {
+                otpResult = await verifyOTP(recipients[1], otp, true);
+            }
+
+            if (otpResult.error) {
+                await client.query("ROLLBACK");
+                return res.status(otpResult.error.status || 400).json({ message: otpResult.error.message });
+            }
         }
 
         await client.query(
@@ -470,7 +623,23 @@ exports.reactivateOrganization = async (req, res) => {
         });
 
         await client.query("COMMIT");
-        res.json({ success: true, message: "Organization page reactivated" });
+
+        // Broadcast real-time socket event to all organization members
+        try {
+            const socketService = require("../../core/infrastructure/socket.service");
+            const membersRes = await pool.query(`SELECT user_id FROM organization_members WHERE org_id = $1`, [orgId]);
+            for (const m of membersRes.rows) {
+                socketService.notifyUser(m.user_id, 'org_status_changed', { orgId, status: 'active', action: 'reactivated' });
+            }
+        } catch (sErr) {
+            console.error("[ReactivateOrg] Socket notification error:", sErr);
+        }
+
+        res.json({
+            success: true,
+            message: "Organization page reactivated",
+            data: { id: orgId, pageStatus: "active" }
+        });
     } catch (err) {
         await client.query("ROLLBACK");
         console.error("Reactivate organization error:", err);
@@ -479,3 +648,5 @@ exports.reactivateOrganization = async (req, res) => {
         client.release();
     }
 };
+
+

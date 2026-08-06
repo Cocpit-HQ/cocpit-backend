@@ -76,9 +76,46 @@ router.post("/organizations/teams/invites/decline", requireAuth, membersControll
 
 // --- MEMBERSHIP ---
 router.post("/organizations/:orgId/leave", requireAuth, membersController.leaveOrganization);
+router.delete("/organizations/:orgId/leave", requireAuth, membersController.leaveOrganization);
 
 // Legacy Member Aliases
 router.post("/companies/:orgId/leave", requireAuth, membersController.leaveOrganization);
+router.delete("/companies/:orgId/leave", requireAuth, membersController.leaveOrganization);
+
+// --- CONTEXT SWITCH ---
+router.post("/organizations/:orgId/switch-context", requireAuth, async (req, res, next) => {
+    const actorContextService = require("../auth/actorContext.service");
+    try {
+        const result = await actorContextService.setActorContext(req.user.sub, { type: "ORGANIZATION", id: req.params.orgId });
+        if (result.cookieValue) {
+            res.cookie(
+                actorContextService.ACTOR_CONTEXT_COOKIE_NAME,
+                result.cookieValue,
+                actorContextService.ACTOR_CONTEXT_COOKIE_OPTIONS
+            );
+        }
+        return res.json({
+            success: true,
+            data: result
+        });
+    } catch (err) {
+        next(err);
+    }
+});
+
+// --- ACCOUNT SETTINGS & LIFECYCLE ---
+router.get("/organizations/:orgId/account-settings", requireAuth, requireOrgPermission("MANAGE_SETTINGS"), settingsController.getAccountSettings);
+router.patch("/organizations/:orgId/deactivate", requireAuth, settingsController.deactivateOrganization);
+router.patch("/organizations/:orgId/reactivate", requireAuth, settingsController.reactivateOrganization);
+
+router.post("/organizations/:orgId/reactivate/send-otp", requireAuth, otpGenerationLimiter, settingsController.sendReactivateOrgOTP);
+router.post("/organizations/:orgId/reactivate/verify-otp", requireAuth, organizationActionLimiter, settingsController.reactivateOrganization);
+router.post("/organizations/:orgId/reactivate", requireAuth, settingsController.reactivateOrganization);
+
+router.post("/organizations/:orgId/recover/send-otp", requireAuth, otpGenerationLimiter, organizationController.sendRecoverOrgOTP);
+router.post("/organizations/:orgId/recover/verify-otp", requireAuth, organizationActionLimiter, organizationController.verifyOTPAndRecoverOrganization);
+router.post("/organizations/:orgId/recover", requireAuth, organizationController.verifyOTPAndRecoverOrganization);
+
 
 // --- INSTITUTION ENROLLMENT ---
 router.post("/organizations/:orgId/enroll", requireAuth, institutionController.requestEnrollment);

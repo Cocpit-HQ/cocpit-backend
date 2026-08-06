@@ -8,7 +8,10 @@ const { resolveActorContext } = require("../../core/middlewares/actor-context.mi
 router.use(requireAuth);
 router.use(resolveActorContext);
 
+const organizationController = require("../organization/organization.controller");
+
 // ─── 1. Account Settings ───────────────────────────────────────────────────────
+router.get("/organizations", organizationController.getUserOrganizationsSettings);
 router.get("/account", userSettingsController.getAccountDetails);
 router.post("/account/delete-otp", userSettingsController.requestDeleteOTP);
 router.put("/email", userSettingsController.updateEmail);

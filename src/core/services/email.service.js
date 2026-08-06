@@ -452,6 +452,106 @@ const sendOrgDeleteOTPEmail = async (recipients, otp, orgName) => {
     }
 };
 
+/**
+ * Sends an organization reactivation verification OTP.
+ * @param {string[]} recipients - Array of recipient email addresses
+ * @param {string} otp - 6-digit OTP code
+ * @param {string} orgName - Name of the organization
+ */
+const sendOrgReactivateOTPEmail = async (recipients, otp, orgName) => {
+    if (!resend) {
+        throw new Error("Email service is not configured (RESEND_API_KEY missing).");
+    }
+
+    const recipientList = Array.isArray(recipients) ? recipients : [recipients];
+    const subject = `Action Required: Verification Code to Reactivate "${orgName || 'Organization'}"`;
+
+    try {
+        const { data, error } = await resend.emails.send({
+            from: "Cocpit <noreply@cocpit.in>",
+            to: recipientList,
+            subject,
+            html: `
+                <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 560px; margin: 0 auto;">
+                    <div style="background: #0a0f1e; padding: 24px 32px; border-radius: 8px 8px 0 0;">
+                        <h2 style="color: #ffffff; margin: 0; font-size: 22px;">Cocpit</h2>
+                    </div>
+                    <div style="background: #ffffff; padding: 32px; border-radius: 0 0 8px 8px; border: 1px solid #e0e0e0;">
+                        <h3 style="margin-top: 0; color: #111;">Organization Reactivation Request</h3>
+                        <p>We received a request to reactivate your company page: <strong>${orgName || "your organization"}</strong>.</p>
+                        <p>To confirm reactivation and make your page visible to visitors again, enter the following 6-digit verification code:</p>
+                        <div style="text-align: center; margin: 24px 0;">
+                            <span style="font-size: 32px; font-weight: bold; letter-spacing: 6px; color: #4f46e5; background: #eef2ff; padding: 12px 24px; border-radius: 8px; border: 1px solid #c7d2fe; display: inline-block;">${otp}</span>
+                        </div>
+                        <p style="font-size: 13px; color: #666;">This verification code will expire in 5 minutes.</p>
+                        <p style="font-size: 13px; color: #888;">If you did not request this reactivation, please ignore this email or check your account security settings.</p>
+                    </div>
+                </div>
+            `,
+        });
+
+        if (error) {
+            console.error("Resend error (org reactivate OTP):", error);
+            throw new Error(error.message || "Failed to send organization reactivate OTP email");
+        }
+
+        return data;
+    } catch (err) {
+        console.error("Failed to send org reactivate OTP email to:", recipientList, err);
+        throw err;
+    }
+};
+
+/**
+ * Sends an organization recovery verification OTP.
+ * @param {string[]} recipients - Array of recipient email addresses
+ * @param {string} otp - 6-digit OTP code
+ * @param {string} orgName - Name of the organization
+ */
+const sendOrgRecoverOTPEmail = async (recipients, otp, orgName) => {
+    if (!resend) {
+        throw new Error("Email service is not configured (RESEND_API_KEY missing).");
+    }
+
+    const recipientList = Array.isArray(recipients) ? recipients : [recipients];
+    const subject = `Action Required: Verification Code to Recover "${orgName || 'Organization'}"`;
+
+    try {
+        const { data, error } = await resend.emails.send({
+            from: "Cocpit <noreply@cocpit.in>",
+            to: recipientList,
+            subject,
+            html: `
+                <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 560px; margin: 0 auto;">
+                    <div style="background: #0a0f1e; padding: 24px 32px; border-radius: 8px 8px 0 0;">
+                        <h2 style="color: #ffffff; margin: 0; font-size: 22px;">Cocpit</h2>
+                    </div>
+                    <div style="background: #ffffff; padding: 32px; border-radius: 0 0 8px 8px; border: 1px solid #e0e0e0;">
+                        <h3 style="margin-top: 0; color: #111;">Organization Page Recovery</h3>
+                        <p>We received a request to recover and cancel scheduled deletion for: <strong>${orgName || "your organization"}</strong>.</p>
+                        <p>To restore your page immediately and preserve all content, enter the following 6-digit verification code:</p>
+                        <div style="text-align: center; margin: 24px 0;">
+                            <span style="font-size: 32px; font-weight: bold; letter-spacing: 6px; color: #2563eb; background: #eff6ff; padding: 12px 24px; border-radius: 8px; border: 1px solid #bfdbfe; display: inline-block;">${otp}</span>
+                        </div>
+                        <p style="font-size: 13px; color: #666;">This verification code will expire in 5 minutes.</p>
+                        <p style="font-size: 13px; color: #888;">If you did not request this recovery, please check your account security settings.</p>
+                    </div>
+                </div>
+            `,
+        });
+
+        if (error) {
+            console.error("Resend error (org recover OTP):", error);
+            throw new Error(error.message || "Failed to send organization recover OTP email");
+        }
+
+        return data;
+    } catch (err) {
+        console.error("Failed to send org recover OTP email to:", recipientList, err);
+        throw err;
+    }
+};
+
 module.exports = {
     sendOTPEmail,
     sendAccountDeletionEmail,
@@ -460,4 +560,7 @@ module.exports = {
     sendEmailChangeOTP,
     sendRecoveryEmailOTP,
     sendOrgDeleteOTPEmail,
+    sendOrgReactivateOTPEmail,
+    sendOrgRecoverOTPEmail,
 };
+
