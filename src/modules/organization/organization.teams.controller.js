@@ -422,8 +422,10 @@ exports.getPermissionKeys = async (req, res, next) => {
 // 8. Get all members in organization
 exports.getMembers = async (req, res, next) => {
     const orgId = req.params.orgId;
-    const { page = 1, limit = 20, search = '', status = 'ACTIVE', exclude_owner, excludeOwner } = req.query;
+    const { page = 1, limit = 20, search = '', status = 'ACTIVE', exclude_owner, excludeOwner, exclude_self, excludeSelf } = req.query;
     const shouldExcludeOwner = exclude_owner === 'true' || exclude_owner === true || excludeOwner === 'true' || excludeOwner === true;
+    const shouldExcludeSelf = exclude_self === 'true' || exclude_self === true || excludeSelf === 'true' || excludeSelf === true;
+    const requesterId = req.actor?.userId || req.user?.sub;
     const offset = (page - 1) * limit;
 
     try {
@@ -443,6 +445,12 @@ exports.getMembers = async (req, res, next) => {
 
         if (shouldExcludeOwner) {
             query += ` AND om.user_id != o.created_by`;
+        }
+
+        if (shouldExcludeSelf && requesterId) {
+            query += ` AND om.user_id != $${paramIndex}`;
+            params.push(requesterId);
+            paramIndex++;
         }
 
         if (status && status !== 'all') {
@@ -473,6 +481,12 @@ exports.getMembers = async (req, res, next) => {
 
         if (shouldExcludeOwner) {
             countQuery += ` AND om.user_id != o.created_by`;
+        }
+
+        if (shouldExcludeSelf && requesterId) {
+            countQuery += ` AND om.user_id != $${countParamIdx}`;
+            countParams.push(requesterId);
+            countParamIdx++;
         }
 
         if (status && status !== 'all') {

@@ -58,7 +58,8 @@ async function getOrganizationsForUser(userId) {
                     'name', cr.name,
                     'description', cr.description,
                     'permissions', cr.permissions,
-                    'priority', cr.priority
+                    'priority', cr.priority,
+                    'is_owner', (c.created_by = $1)
                 ) as viewer_role_data,
                 cr.name as role
          FROM organizations c

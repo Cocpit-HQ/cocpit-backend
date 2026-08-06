@@ -530,6 +530,260 @@ exports.deleteOrganization = async (req, res) => {
     }
 };
 
+const maskEmail = (email) => {
+    if (!email || !email.includes('@')) return '';
+    const [name, domain] = email.split('@');
+    if (name.length <= 2) return `${name.charAt(0)}***@${domain}`;
+    return `${name.charAt(0)}***${name.charAt(name.length - 1)}@${domain}`;
+};
+
+exports.sendDeleteOrgOTP = async (req, res) => {
+    const { orgId } = req.params;
+    const userId = req.user.sub;
+
+    const client = await pool.connect();
+    try {
+        // 1. Check Owner/Admin Permission
+        const isOwner = await checkOrgPermission(client, orgId, userId, '*');
+        if (!isOwner) {
+            throw new AppError("Forbidden: Only authorized administrators (Owner/Admin) can delete this organization", 403);
+        }
+
+        // 2. Fetch Organization Details
+        const orgRes = await client.query(
+            "SELECT name, email, created_by FROM organizations WHERE org_id = $1 AND is_deleted = FALSE",
+            [orgId]
+        );
+        if (orgRes.rowCount === 0) {
+            throw new AppError("Organization not found", 404);
+        }
+        const org = orgRes.rows[0];
+
+        // 3. Fetch Owner User Details
+        const ownerRes = await client.query(
+            "SELECT email FROM users WHERE user_id = $1",
+            [org.created_by || userId]
+        );
+        const ownerEmail = ownerRes.rows[0]?.email;
+        const orgEmail = org.email;
+
+        // Collect all target email addresses (org email + owner email)
+        const recipientSet = new Set();
+        if (orgEmail && orgEmail.trim()) recipientSet.add(orgEmail.toLowerCase().trim());
+        if (ownerEmail && ownerEmail.trim()) recipientSet.add(ownerEmail.toLowerCase().trim());
+
+        const recipients = Array.from(recipientSet);
+        if (recipients.length === 0) {
+            throw new AppError("No registered email address found for this organization or owner", 400);
+        }
+
+        const primaryEmail = recipients[0];
+
+        // 4. Rate Limit & Cooldown Check (from email_otps table)
+        const existing = await client.query(
+            `SELECT created_at, request_count FROM email_otps WHERE email = $1`,
+            [primaryEmail]
+        );
+
+        if (existing.rowCount > 0) {
+            const record = existing.rows[0];
+            const diffSeconds = (new Date() - new Date(record.created_at)) / 1000;
+            if (diffSeconds < 5) {
+                throw new AppError("A verification code was just requested. Please wait a few seconds before trying again.", 429);
+            }
+            if (diffSeconds < 60 && record.request_count >= 3) {
+                throw new AppError("Too many OTP requests. Please wait a minute before trying again.", 429);
+            }
+        }
+
+        // 5. Generate & Store OTP
+        const { generateSecureOTP } = require("../auth/otp.service");
+        const bcrypt = require("bcrypt");
+        const otp = generateSecureOTP();
+        const otpHash = await bcrypt.hash(otp, 10);
+        const OTP_EXPIRY_MINUTES = parseInt(process.env.OTP_EXPIRY_MINUTES) || 5;
+        const expiresAt = new Date(Date.now() + OTP_EXPIRY_MINUTES * 60000);
+
+        await client.query(
+            `INSERT INTO email_otps (email, otp_hash, expires_at, attempts, created_at, request_count)
+             VALUES ($1, $2, $3, 0, NOW(), 1)
+             ON CONFLICT (email)
+             DO UPDATE SET
+                 otp_hash = EXCLUDED.otp_hash,
+                 expires_at = EXCLUDED.expires_at,
+                 attempts = 0,
+                 created_at = NOW(),
+                 request_count = email_otps.request_count + 1`,
+            [primaryEmail, otpHash, expiresAt]
+        );
+
+        if (recipients.length > 1) {
+            await client.query(
+                `INSERT INTO email_otps (email, otp_hash, expires_at, attempts, created_at, request_count)
+                 VALUES ($1, $2, $3, 0, NOW(), 1)
+                 ON CONFLICT (email)
+                 DO UPDATE SET
+                     otp_hash = EXCLUDED.otp_hash,
+                     expires_at = EXCLUDED.expires_at,
+                     attempts = 0,
+                     created_at = NOW(),
+                     request_count = email_otps.request_count + 1`,
+                [recipients[1], otpHash, expiresAt]
+            );
+        }
+
+        // 6. Send Email to Recipients
+        const emailService = require("../../core/services/email.service");
+        await emailService.sendOrgDeleteOTPEmail(recipients, otp, org.name);
+
+        const maskedDisplay = recipients.map(maskEmail).join(", ");
+        res.json({
+            success: true,
+            message: "Verification code sent to organization email",
+            email_masked: maskedDisplay,
+            expires_in_seconds: OTP_EXPIRY_MINUTES * 60,
+            cooldown_seconds: 30
+        });
+    } catch (err) {
+        console.error("Send delete org OTP error:", err);
+        if (err.statusCode) {
+            return res.status(err.statusCode).json({ message: err.message });
+        }
+        res.status(500).json({ message: err.message || "Failed to send verification code" });
+    } finally {
+        client.release();
+    }
+};
+
+exports.verifyOTPAndDeleteOrganization = async (req, res) => {
+    const { orgId } = req.params;
+    const userId = req.user.sub;
+    const { otp } = req.body;
+
+    if (!otp || String(otp).trim().length !== 6) {
+        return res.status(400).json({ message: "6-digit verification code is required" });
+    }
+
+    const client = await pool.connect();
+    try {
+        await client.query("BEGIN");
+
+        // 1. Check Owner/Admin Permission
+        const isOwner = await checkOrgPermission(client, orgId, userId, '*');
+        if (!isOwner) {
+            throw new AppError("Forbidden: Only authorized administrators (Owner/Admin) can delete this organization", 403);
+        }
+
+        // 2. Fetch Org & Email Target
+        const orgRes = await client.query(
+            "SELECT name, email, created_by FROM organizations WHERE org_id = $1 AND is_deleted = FALSE",
+            [orgId]
+        );
+        if (orgRes.rowCount === 0) {
+            throw new AppError("Organization not found or already deleted", 404);
+        }
+        const org = orgRes.rows[0];
+
+        const ownerRes = await client.query(
+            "SELECT email FROM users WHERE user_id = $1",
+            [org.created_by || userId]
+        );
+        const ownerEmail = ownerRes.rows[0]?.email;
+        const orgEmail = org.email;
+
+        const recipientSet = new Set();
+        if (orgEmail && orgEmail.trim()) recipientSet.add(orgEmail.toLowerCase().trim());
+        if (ownerEmail && ownerEmail.trim()) recipientSet.add(ownerEmail.toLowerCase().trim());
+
+        const recipients = Array.from(recipientSet);
+        if (recipients.length === 0) {
+            throw new AppError("No registered email address found for this organization or owner", 400);
+        }
+
+        // 3. Verify OTP via otpService
+        const { verifyOTP } = require("../auth/otp.service");
+        let otpResult = await verifyOTP(recipients[0], otp, true);
+        if (otpResult.error && otpResult.error.message.includes("No active OTP found") && recipients.length > 1) {
+            otpResult = await verifyOTP(recipients[1], otp, true);
+        }
+
+        if (otpResult.error) {
+            await client.query("ROLLBACK");
+            return res.status(otpResult.error.status || 400).json({ message: otpResult.error.message });
+        }
+
+        // 4. Soft Delete Execution & Restoration Setup
+        // Nullify children's parent reference
+        await client.query(
+            `UPDATE organizations SET parent_org_id = NULL, updated_at = NOW() WHERE parent_org_id = $1`,
+            [orgId]
+        );
+
+        // Deletion Batch
+        const batchRes = await client.query(
+            `INSERT INTO deletion_batches (created_by, type) VALUES ($1, 'STANDALONE_COMPANY') RETURNING batch_id`,
+            [userId]
+        );
+        const batchId = batchRes.rows[0].batch_id;
+
+        // Schedule soft deletion (40 days grace period)
+        const deletionExecuteAt = new Date(Date.now() + 40 * 24 * 60 * 60 * 1000);
+        await client.query(
+            `UPDATE organizations 
+             SET is_deleted = TRUE, deleted_at = NOW(), deletion_scheduled_at = NOW(), deletion_execute_at = $1, deletion_batch_id = $2
+             WHERE org_id = $3`,
+            [deletionExecuteAt, batchId, orgId]
+        );
+
+        // Generate restoration token
+        const crypto = require("crypto");
+        const rawToken = crypto.randomBytes(32).toString("hex");
+        const tokenHash = crypto.createHash("sha256").update(rawToken).digest("hex");
+
+        await client.query(
+            `INSERT INTO organization_restoration_tokens (org_id, token_hash, expires_at)
+             VALUES ($1, $2, $3)`,
+            [orgId, tokenHash, deletionExecuteAt]
+        );
+
+        // End active chat/messaging sessions for org
+        const chatSessionCtrl = require("../messaging/chatSession.controller");
+        await chatSessionCtrl.endAllSessionsForOrganization(client, orgId, userId);
+
+        await logAudit(client, {
+            entityId: orgId,
+            actorId: userId,
+            action: 'DELETE',
+            metadata: { method: 'OTP_VERIFIED' }
+        });
+
+        await client.query("COMMIT");
+
+        // Broadcast real-time socket event `org_deleted`
+        try {
+            const socketService = require("../../core/infrastructure/socket.service");
+            socketService.notifyOrg(orgId, 'org_deleted', { orgId, deletedBy: userId });
+        } catch (sErr) {
+            console.error("[DeleteOrg] Socket notification warning:", sErr);
+        }
+
+        res.json({
+            success: true,
+            message: "Organization scheduled for deletion",
+            deletionDate: deletionExecuteAt
+        });
+    } catch (err) {
+        await client.query("ROLLBACK");
+        console.error("Verify OTP and delete org error:", err);
+        if (err.statusCode) {
+            return res.status(err.statusCode).json({ message: err.message });
+        }
+        res.status(500).json({ message: err.message || "Internal server error" });
+    } finally {
+        client.release();
+    }
+};
+
 exports.restoreOrganization = async (req, res) => {
     const { token } = req.body;
     if (!token) {

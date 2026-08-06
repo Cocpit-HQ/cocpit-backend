@@ -402,6 +402,56 @@ const sendRecoveryEmailOTP = async (email, otp) => {
     }
 };
 
+/**
+ * Sends an organization deletion verification OTP to one or more recipient emails.
+ * @param {string[]} recipients - Array of recipient email addresses
+ * @param {string} otp - 6-digit OTP code
+ * @param {string} orgName - Name of the organization
+ */
+const sendOrgDeleteOTPEmail = async (recipients, otp, orgName) => {
+    if (!resend) {
+        throw new Error("Email service is not configured (RESEND_API_KEY missing).");
+    }
+
+    const recipientList = Array.isArray(recipients) ? recipients : [recipients];
+    const subject = `Action Required: Organization Deletion Code for "${orgName || 'Organization'}"`;
+
+    try {
+        const { data, error } = await resend.emails.send({
+            from: "Cocpit <noreply@cocpit.in>",
+            to: recipientList,
+            subject,
+            html: `
+                <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 560px; margin: 0 auto;">
+                    <div style="background: #0a0f1e; padding: 24px 32px; border-radius: 8px 8px 0 0;">
+                        <h2 style="color: #ffffff; margin: 0; font-size: 22px;">Cocpit</h2>
+                    </div>
+                    <div style="background: #ffffff; padding: 32px; border-radius: 0 0 8px 8px; border: 1px solid #e0e0e0;">
+                        <h3 style="margin-top: 0; color: #111;">Organization Deletion Request</h3>
+                        <p>We received a request to delete the organization <strong>${orgName || "your organization"}</strong>.</p>
+                        <p>To confirm this action, please enter the following 6-digit verification code:</p>
+                        <div style="text-align: center; margin: 24px 0;">
+                            <span style="font-size: 32px; font-weight: bold; letter-spacing: 6px; color: #ef4444; background: #fef2f2; padding: 12px 24px; border-radius: 8px; border: 1px solid #fca5a5; display: inline-block;">${otp}</span>
+                        </div>
+                        <p style="font-size: 13px; color: #666;">This code will expire in 5 minutes.</p>
+                        <p style="font-size: 13px; color: #dc2626; font-weight: bold;">⚠️ Warning: Deleting an organization removes its profile, associated posts, and settings. If you did not request this deletion, please secure your account immediately.</p>
+                    </div>
+                </div>
+            `,
+        });
+
+        if (error) {
+            console.error("Resend error (org delete OTP):", error);
+            throw new Error(error.message || "Failed to send organization delete OTP email");
+        }
+
+        return data;
+    } catch (err) {
+        console.error("Failed to send org delete OTP email to:", recipientList, err);
+        throw err;
+    }
+};
+
 module.exports = {
     sendOTPEmail,
     sendAccountDeletionEmail,
@@ -409,4 +459,5 @@ module.exports = {
     sendPasswordResetLinkEmail,
     sendEmailChangeOTP,
     sendRecoveryEmailOTP,
+    sendOrgDeleteOTPEmail,
 };
