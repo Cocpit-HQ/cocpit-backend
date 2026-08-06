@@ -34,9 +34,34 @@ exports.createTicket = async (req, res) => {
 
 // ─── 2. User Feedback ─────────────────────────────────────────────────────────
 
+async function ensureUserFeedbackSchema() {
+    try {
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS user_feedback (
+                feedback_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                user_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
+                actor_type VARCHAR(32) DEFAULT 'USER',
+                actor_id VARCHAR(255),
+                rating INT NOT NULL CHECK (rating >= 1 AND rating <= 5),
+                comment TEXT,
+                app_version VARCHAR(50) NOT NULL,
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            );
+            ALTER TABLE user_feedback ADD COLUMN IF NOT EXISTS actor_type VARCHAR(32) DEFAULT 'USER';
+            ALTER TABLE user_feedback ADD COLUMN IF NOT EXISTS actor_id VARCHAR(255);
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_user_feedback_actor_version ON user_feedback (actor_type, actor_id, app_version);
+        `);
+    } catch (err) {
+        console.error("User feedback schema check warning:", err);
+    }
+}
+ensureUserFeedbackSchema();
+
 exports.submitFeedback = async (req, res) => {
     try {
         const userId = req.user?.sub || null;
+        const actorType = req.actor?.type || 'USER';
+        const actorId = req.actor?.id || userId;
         const { rating, comment, app_version } = req.body;
 
         if (!rating || rating < 1 || rating > 5) {
@@ -47,20 +72,23 @@ exports.submitFeedback = async (req, res) => {
         }
 
         const result = await pool.query(
-            `INSERT INTO user_feedback (user_id, rating, comment, app_version)
-             VALUES ($1, $2, $3, $4)
-             ON CONFLICT (user_id, app_version) DO UPDATE SET
+            `INSERT INTO user_feedback (user_id, actor_type, actor_id, rating, comment, app_version)
+             VALUES ($1::uuid, $2, $3, $4, $5, $6)
+             ON CONFLICT (actor_type, actor_id, app_version) DO UPDATE SET
+                user_id = EXCLUDED.user_id,
                 rating = EXCLUDED.rating,
                 comment = EXCLUDED.comment,
                 created_at = NOW()
              RETURNING feedback_id, rating, comment, app_version`,
-            [userId, rating, comment || null, app_version]
+            [userId, actorType, String(actorId), rating, comment || null, app_version]
         );
 
         // Emit real-time event so all connected clients (web, mobile) can hide the feedback UI
         if (userId) {
             socketService.notifyUser(userId, "FEEDBACK_SUBMITTED", {
                 userId,
+                actor_type: actorType,
+                actor_id: String(actorId),
                 app_version,
                 has_submitted_feedback: true,
             });
@@ -81,14 +109,31 @@ exports.getVersion = async (req, res) => {
     try {
         const version = `v${APP_VERSION}`;
         const userId = req.user?.sub || null;
+        const actorType = req.actor?.type || 'USER';
+        const actorId = req.actor?.id || userId;
 
         let hasFeedback = false;
-        if (userId) {
-            const fbRes = await pool.query(
-                `SELECT 1 FROM user_feedback WHERE user_id = $1 AND app_version = $2 LIMIT 1`,
-                [userId, version]
-            );
-            hasFeedback = fbRes.rowCount > 0;
+        if (userId && actorId) {
+            if (actorType === 'ORGANIZATION') {
+                // When acting as an ORGANIZATION, ONLY check feedback submitted for THIS organization ID
+                const fbRes = await pool.query(
+                    `SELECT 1 FROM user_feedback 
+                     WHERE actor_type = 'ORGANIZATION' AND actor_id = $1 AND app_version = $2 
+                     LIMIT 1`,
+                    [String(actorId), version]
+                );
+                hasFeedback = fbRes.rowCount > 0;
+            } else {
+                // When acting as a USER, ONLY check feedback submitted for THIS user ID
+                const fbRes = await pool.query(
+                    `SELECT 1 FROM user_feedback 
+                     WHERE (actor_type = 'USER' AND (actor_id = $1 OR (actor_id IS NULL AND user_id = $1::uuid)))
+                       AND app_version = $2 
+                     LIMIT 1`,
+                    [String(userId), version]
+                );
+                hasFeedback = fbRes.rowCount > 0;
+            }
         }
 
         return res.status(200).json({
@@ -96,12 +141,15 @@ exports.getVersion = async (req, res) => {
             version,
             build: process.env.APP_BUILD || new Date().toISOString().slice(0, 10),
             has_submitted_feedback: hasFeedback,
+            actor_type: actorType,
+            actor_id: actorId,
         });
     } catch (error) {
         console.error("Get version error:", error);
         return res.status(500).json({ success: false, message: "Failed to fetch version info" });
     }
 };
+
 
 
 exports.getFaqs = (req, res) => {

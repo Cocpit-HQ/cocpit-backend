@@ -88,10 +88,10 @@ router.get("/reports/:reportId", requireAuth, supportController.getMyReportById)
 
 // ─── 4. Support, Feedback, FAQs, Legal ────────────────────────────────────────
 
-router.get("/support/version", optionalAuth, supportController.getVersion);
+router.get("/support/version", optionalAuth, resolveActorContext, supportController.getVersion);
 router.get("/support/faqs", supportController.getFaqs);
-router.post("/support/tickets", requireAuth, uploadSupportAttachment ? uploadSupportAttachment.single("attachment") : (req, res, next) => next(), validate(supportTicketSchema), supportController.createTicket);
-router.post("/support/feedback", requireAuth, validate(userFeedbackSchema), supportController.submitFeedback);
+router.post("/support/tickets", requireAuth, resolveActorContext, uploadSupportAttachment ? uploadSupportAttachment.single("attachment") : (req, res, next) => next(), validate(supportTicketSchema), supportController.createTicket);
+router.post("/support/feedback", requireAuth, resolveActorContext, validate(userFeedbackSchema), supportController.submitFeedback);
 router.get("/legal", supportController.getLegalDocs);
 
 module.exports = router;

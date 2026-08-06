@@ -19,6 +19,15 @@ const normalizeActorType = (rawType) => {
     return null;
 };
 
+const parseCookieString = (cookieStr) => {
+    if (!cookieStr || typeof cookieStr !== "string") return {};
+    return cookieStr.split(";").reduce((acc, curr) => {
+        const [key, ...v] = curr.trim().split("=");
+        if (key) acc[key] = decodeURIComponent(v.join("="));
+        return acc;
+    }, {});
+};
+
 const getRequestedActorInput = (req) => {
     const canonicalType = normalizeActorType(req.headers["x-actor-type"]);
     const canonicalId = req.headers["x-actor-id"];
@@ -30,6 +39,20 @@ const getRequestedActorInput = (req) => {
             source: "canonical_header",
             explicit: true,
         };
+    }
+
+    const cookieVal = req.cookies?.activeActor || (req.headers?.cookie ? parseCookieString(req.headers.cookie).activeActor : null);
+    if (cookieVal && typeof cookieVal === "string" && cookieVal.includes(":")) {
+        const [cType, cId] = cookieVal.split(":");
+        const normType = normalizeActorType(cType);
+        if (normType) {
+            return {
+                type: normType,
+                id: cId || null,
+                source: "cookie",
+                explicit: true,
+            };
+        }
     }
 
     return null;
