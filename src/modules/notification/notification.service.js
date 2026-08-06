@@ -18,7 +18,7 @@ const isNotificationAllowed = async (userId, notificationType = "post") => {
         const pref = res.rows[0];
         if (pref.all_notifications === false) return false;
 
-        if (notificationType === "post" && pref.post_notifications === false) return false;
+        if (["post", "like", "comment", "reply", "mention"].includes(notificationType) && pref.post_notifications === false) return false;
         if (notificationType === "job" && pref.job_alerts === false) return false;
         if (notificationType === "message" && pref.message_notifications === false) return false;
 
@@ -60,15 +60,18 @@ const sendToUser = async (userId, title, body, data = {}) => {
     }
 
     // 3. Prepare the multicast message
+    // FCM requires all data payload values to be strings — coerce and filter nulls
+    const safeData = Object.fromEntries(
+        Object.entries({ ...data, click_action: "FLUTTER_NOTIFICATION_CLICK" })
+              .filter(([, v]) => v != null)
+              .map(([k, v]) => [k, String(v)])
+    );
     const message = {
         notification: {
             title,
             body,
         },
-        data: {
-            ...data,
-            click_action: "FLUTTER_NOTIFICATION_CLICK", // Or platform specific key
-        },
+        data: safeData,
         tokens: tokens, // Array of strings
     };
 

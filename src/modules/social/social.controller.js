@@ -11,6 +11,7 @@ const {
     getConversationMuteState,
     updateConversationMuteState: persistConversationMuteState,
 } = require("../../services/conversationMute.service");
+const { sendToUser: sendPush } = require("../notification/notification.service");
 
 // Helper function for timeAgo
 const timeAgo = (date) => {
@@ -179,6 +180,8 @@ exports.followUser = async (req, res) => {
             notification_id: followNotifRes.rows[0].notification_id,
             created_at: followNotifRes.rows[0].created_at.toISOString()
         });
+        // Push notification for offline devices
+        sendPush(followingId, followNotifData.senderName, followNotifData.text, { type: 'follow', userId: followerId }).catch(() => {});
 
         // Logic for Connection Notification (if mutual)
         if (isConnected) {
@@ -1220,6 +1223,8 @@ exports.sendConnectionRequest = async (req, res) => {
                 avatar: sender.avatar_url
             }
         });
+        // Push notification for offline devices
+        sendPush(receiverId, sender.full_name, completeNotification.text, { type: 'connection_request', userId: senderId }).catch(() => {});
 
         // Emit relationship update to receiver (they now have a pending request from me)
         socketService.notifyUser(receiverId, "relationshipUpdated", { userId: senderId, status: 'pending_received' });
@@ -1822,6 +1827,15 @@ exports.handleConnectionRequest = async (req, res) => {
 
             // Notify Sender via Socket
             socketService.notifyUser(sender_id, "notification", senderNotification);
+            // Push notification for offline devices
+            // Note: senderNotification.senderName comes from req.user.full_name which is not in the JWT.
+            // The accepter's name must be fetched from the DB. We query it here for the push title.
+            pool.query(`SELECT full_name FROM users WHERE user_id = $1`, [receiver_id])
+                .then(r => {
+                    const accepterName = r.rows[0]?.full_name || "Someone";
+                    sendPush(sender_id, accepterName, senderNotification.text, { type: 'connection_accepted', userId: receiver_id }).catch(() => {});
+                })
+                .catch(() => {});
 
             // Emit relationship update to both
             socketService.notifyUser(sender_id, "relationshipUpdated", { userId: receiver_id, status: 'connected' });
@@ -3052,6 +3066,8 @@ exports.sendMessage = async (req, res) => {
                         text: previewText,
                         targetProfileType: 'USER'
                     }, targetActorScope);
+                    // Push notification for offline devices
+                    sendPush(targetUserId, senderName, previewText, { type: 'message', conversationId, senderId }).catch(() => {});
                 }
             }
             // Notify sender as well in the sender's active scope

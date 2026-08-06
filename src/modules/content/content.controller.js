@@ -12,6 +12,7 @@ const { checkOrgPermission } = require("../../core/utils/rbac");
 const { notifyOrgFollowers, notifyBroadcastToChildOrgs } = require("../../services/notification.service");
 const { logActivity, removeActivity } = require("../../core/services/activityLogger");
 const { logActivity: logIntentActivity } = require("../../utils/activityLogger");
+const { sendToUser: sendPush } = require("../notification/notification.service");
 
 
 
@@ -2417,6 +2418,8 @@ exports.toggleLike = async (req, res) => {
 
                     // Emit real-time to the post author (personal)
                     socketService.notifyUser(authorId, "notification", likeNotifPayload);
+                    // Push notification for offline devices
+                    sendPush(authorId, senderName, likeNotifPayload.text, { type: 'like', postId }).catch(() => {});
 
                     // Also emit to org room if post belongs to an org (so team members see it)
                     if (authorCompanyId) {
@@ -2692,6 +2695,8 @@ exports.addComment = async (req, res) => {
 
             // Notify the post author (personal)
             socketService.notifyUser(postAuthorId, "notification", commentNotifPayload);
+            // Push notification for offline devices
+            sendPush(postAuthorId, actorName, commentNotifPayload.text, { type: 'comment', postId }).catch(() => {});
 
             // Also notify org room if the post belongs to an org
             if (postCompanyId) {
@@ -2750,6 +2755,8 @@ exports.addComment = async (req, res) => {
 
                     // Notify the parent comment author (personal)
                     socketService.notifyUser(parentAuthorId, "notification", replyNotifPayload);
+                    // Push notification for offline devices
+                    sendPush(parentAuthorId, actorName, replyNotifPayload.text, { type: 'reply', postId }).catch(() => {});
 
                     // Also notify org room if the parent comment was from an org
                     if (parentCompanyId) {
@@ -2797,6 +2804,8 @@ exports.addComment = async (req, res) => {
                             metadata: meta,
                             time: "Just now"
                         });
+                        // Push notification for offline devices
+                        sendPush(mentionedUserId, actorName, notifText, { type: 'mention', postId }).catch(() => {});
                     }
                 }
             }
@@ -4787,6 +4796,8 @@ exports.addStoryComment = async (req, res) => {
                 time: "Just now",
                 metadata: { org_id: authorCompanyId }
             });
+            // Push notification for offline devices
+            sendPush(authorId, commenterName, `${commenterName} commented on your story`, { type: 'story_comment', storyId }).catch(() => {});
 
             await pool.query(
                 `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata) 
