@@ -2262,19 +2262,19 @@ CREATE OR REPLACE VIEW organization_display_profiles AS
 SELECT 
     org_id,
     CASE 
-        WHEN deletion_execute_at IS NULL AND is_deleted = FALSE THEN name 
+        WHEN deletion_execute_at IS NULL AND is_deleted = FALSE AND is_deactivated = FALSE THEN name 
         ELSE 'Deleted Page' 
     END AS name,
     CASE 
-        WHEN deletion_execute_at IS NULL AND is_deleted = FALSE THEN slug 
+        WHEN deletion_execute_at IS NULL AND is_deleted = FALSE AND is_deactivated = FALSE THEN slug 
         ELSE 'deleted_page' 
     END AS slug,
     CASE 
-        WHEN deletion_execute_at IS NULL AND is_deleted = FALSE THEN logo_url 
+        WHEN deletion_execute_at IS NULL AND is_deleted = FALSE AND is_deactivated = FALSE THEN logo_url 
         ELSE NULL 
     END AS logo_url,
     CASE 
-        WHEN deletion_execute_at IS NULL AND is_deleted = FALSE THEN headline 
+        WHEN deletion_execute_at IS NULL AND is_deleted = FALSE AND is_deactivated = FALSE THEN headline 
         ELSE 'This page has been deactivated' 
     END AS headline,
     entity_type

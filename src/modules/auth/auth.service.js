@@ -256,6 +256,13 @@ const loginUser = async ({ email, password, userAgent, ipAddress }) => {
         };
     }
 
+    // 3.5 Auto-reactivate if deactivated
+    if (user.is_deactivated) {
+        const pool = require("../../core/db/pool");
+        await pool.query(`UPDATE users SET is_deactivated = FALSE, deactivated_at = NULL WHERE user_id = $1`, [user.user_id]);
+        await pool.query(`UPDATE organizations SET is_deactivated = FALSE, deactivated_at = NULL WHERE created_by = $1 AND is_deleted = FALSE`, [user.user_id]);
+    }
+
     // 4. Initialize session (Shared logic)
     return initializeUserSession(user, userAgent, ipAddress);
 };
@@ -463,6 +470,13 @@ const socialLogin = async ({ provider, idToken, accountType, userAgent, ipAddres
                 email: user.email,
             },
         };
+    }
+
+    // ── Step 3.5: Auto-reactivate if deactivated ──
+    if (user.is_deactivated) {
+        const pool = require("../../core/db/pool");
+        await pool.query(`UPDATE users SET is_deactivated = FALSE, deactivated_at = NULL WHERE user_id = $1`, [user.user_id]);
+        await pool.query(`UPDATE organizations SET is_deactivated = FALSE, deactivated_at = NULL WHERE created_by = $1 AND is_deleted = FALSE`, [user.user_id]);
     }
 
     // ── Step 4: Generate platform tokens (reuses existing JWT pipeline) ──

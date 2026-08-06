@@ -172,7 +172,8 @@ exports.getAllJobs = async (req, res) => {
     const limitClause = `LIMIT $${paramCount}`;
     params.push(Number(limit));
 
-    const whereClause = conditions.length > 0 ? `WHERE j.is_active = TRUE AND j.status = 'ACTIVE' AND ${conditions.join(" AND ")}` : `WHERE j.is_active = TRUE AND j.status = 'ACTIVE'`;
+    const baseWhere = `j.is_active = TRUE AND j.status = 'ACTIVE' AND u.user_id IS NOT NULL AND (j.org_id IS NULL OR (c.is_deleted = FALSE AND c.is_deactivated = FALSE))`;
+    const whereClause = conditions.length > 0 ? `WHERE ${baseWhere} AND ${conditions.join(" AND ")}` : `WHERE ${baseWhere}`;
 
     const query = `
       SELECT 
@@ -247,7 +248,7 @@ exports.getRecommendations = async (req, res) => {
       ${userId ? "LEFT JOIN job_saves js ON js.job_id = j.job_id AND js.user_id = $1" : ""}
       ${userId ? "LEFT JOIN job_applications ja ON ja.job_id = j.job_id AND ja.applicant_id = $1" : ""}
       ${userId ? "LEFT JOIN job_offers jo ON jo.job_id = j.job_id AND jo.user_id = $1" : ""}
-      WHERE j.is_active = TRUE AND j.status = 'ACTIVE'
+      WHERE j.is_active = TRUE AND j.status = 'ACTIVE' AND u.user_id IS NOT NULL AND (j.org_id IS NULL OR (c.is_deleted = FALSE AND c.is_deactivated = FALSE))
       ${userId ? "AND j.recruiter_id != $1" : ""}
       ${userId ? "AND (ja.application_id IS NULL OR ja.current_status = 'Withdrawn')" : ""}
       ${userId ? "AND jo.offer_id IS NULL" : ""}
@@ -356,6 +357,8 @@ exports.getJobById = async (req, res) => {
       ${userId ? 'LEFT JOIN followers uf ON uf.following_id = j.recruiter_id AND uf.follower_id = $2' : ''}
       ${userId ? 'LEFT JOIN job_offers jo ON jo.job_id = j.job_id AND jo.user_id = $2' : ''}
       WHERE j.job_id = $1
+      AND u.user_id IS NOT NULL 
+      AND (j.org_id IS NULL OR (c.is_deleted = FALSE AND c.is_deactivated = FALSE))
       `,
       userId ? [resolvedJobId, userId] : [resolvedJobId]
     );
@@ -1379,7 +1382,7 @@ exports.getMySavedJobs = async (req, res) => {
       LEFT JOIN organizations c ON j.org_id = c.org_id
       LEFT JOIN job_applications ja ON ja.job_id = j.job_id AND ja.applicant_id = $1
       LEFT JOIN job_offers jo ON jo.job_id = j.job_id AND jo.user_id = $1
-      WHERE js.user_id = $1 AND j.is_active = TRUE
+      WHERE js.user_id = $1 AND j.is_active = TRUE AND u.user_id IS NOT NULL AND (j.org_id IS NULL OR (c.is_deleted = FALSE AND c.is_deactivated = FALSE))
       `;
 
     if (conditions.length > 0) {

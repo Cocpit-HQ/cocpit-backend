@@ -153,7 +153,7 @@ exports.searchUsers = async (req, res) => {
             COALESCE(ops.tag_permission, 'everyone')::text AS tag_permission
           FROM organizations c
           LEFT JOIN organization_privacy_settings ops ON c.org_id = ops.org_id
-          WHERE c.is_deleted = FALSE
+          WHERE c.is_deleted = FALSE AND c.is_deactivated = FALSE
           AND (c.name ILIKE $2 OR c.slug ILIKE $2)
           ${orgTagPrivacyFilter}
         )
@@ -499,7 +499,7 @@ exports.getUserProfile = async (req, res) => {
       LEFT JOIN organization_roles cr ON cm.role_id = cr.role_id
       WHERE cm.user_id = $1 
       AND cm.is_role_visible = TRUE
-      AND c.is_deleted = FALSE
+      AND c.is_deleted = FALSE AND c.is_deactivated = FALSE
       ORDER BY cm.is_primary_display DESC, COALESCE(cr.priority, 0) DESC, c.name ASC
       `,
       [targetUserId]

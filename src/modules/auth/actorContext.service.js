@@ -65,7 +65,7 @@ async function getOrganizationsForUser(userId) {
          FROM organizations c
          JOIN organization_members cm ON c.org_id = cm.org_id
          LEFT JOIN organization_roles cr ON cm.role_id = cr.role_id
-         WHERE cm.user_id = $1 AND c.is_deleted = FALSE AND cm.status = 'ACTIVE'
+         WHERE cm.user_id = $1 AND c.is_deleted = FALSE AND c.is_deactivated = FALSE AND cm.status = 'ACTIVE'
          ORDER BY c.created_at DESC`,
         [userId]
     );

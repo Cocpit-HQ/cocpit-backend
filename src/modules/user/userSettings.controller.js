@@ -61,7 +61,7 @@ exports.getAccountDetails = async (req, res) => {
         const userId = req.user.sub;
 
         const userRes = await pool.query(
-            `SELECT user_id, email, recovery_email, mobile_number
+            `SELECT user_id, email, recovery_email, mobile_number, is_deactivated
              FROM users WHERE user_id = $1`,
             [userId]
         );
@@ -85,6 +85,7 @@ exports.getAccountDetails = async (req, res) => {
             recoveryEmail: user.recovery_email || "",
             phone: user.mobile_number || "",
             hasCompanyAccount: hasCompanyAccount,
+            isDeactivated: user.is_deactivated || false,
         });
     } catch (error) {
         console.error("Get account details error:", error);
@@ -521,6 +522,101 @@ exports.deleteAccount = async (req, res) => {
         client.release();
     }
 };
+
+/**
+ * 1.9 Deactivate Account
+ * PATCH /api/user/account/deactivate
+ */
+exports.deactivateAccount = async (req, res) => {
+    const client = await pool.connect();
+    try {
+        const userId = req.user.sub;
+        const { password } = req.body;
+
+        if (!password) {
+            return res.status(400).json({ success: false, message: "Password is required to confirm deactivation" });
+        }
+
+        // Verify user exists and password is correct
+        const userFetch = await client.query(
+            "SELECT user_id, password_hash FROM users WHERE user_id = $1",
+            [userId]
+        );
+
+        if (userFetch.rowCount === 0) {
+            return res.status(404).json({ success: false, message: "User not found" });
+        }
+
+        const userObj = userFetch.rows[0];
+        const isMatch = await comparePassword(password, userObj.password_hash);
+        if (!isMatch) {
+            return res.status(401).json({ success: false, message: "Invalid password" });
+        }
+
+        await client.query("BEGIN");
+
+        // 1. Deactivate user account
+        await client.query(
+            `UPDATE users SET is_deactivated = TRUE, deactivated_at = NOW(), updated_at = NOW() WHERE user_id = $1`,
+            [userId]
+        );
+
+        // 2. Deactivate all owned company accounts that aren't deleted
+        const orgsRes = await client.query(
+            `UPDATE organizations SET is_deactivated = TRUE, deactivated_at = NOW(), updated_at = NOW() WHERE created_by = $1 AND is_deleted = FALSE RETURNING org_id`,
+            [userId]
+        );
+        const deactivatedOrgIds = orgsRes.rows.map((r) => r.org_id);
+
+        // 3. Delete refresh tokens
+        const sessionsRes = await client.query(
+            "DELETE FROM refresh_tokens WHERE user_id = $1 RETURNING session_id",
+            [userId]
+        );
+        const sessionIds = sessionsRes.rows.map((r) => r.session_id);
+
+        await client.query("COMMIT");
+
+        // 4. Blacklist in Redis
+        if (redisClient.isOpen && sessionIds.length > 0) {
+            await Promise.allSettled(
+                sessionIds.map((sid) => redisClient.setEx(`revoked_session:${sid}`, 900, "1"))
+            );
+        }
+
+        // 5. Disconnect sockets
+        if (sessionIds.length > 0) {
+            Promise.allSettled(
+                sessionIds.map((sid) => SocketService.disconnectUserSession(userId, sid))
+            ).catch((err) => console.error("[deactivateAccount] Socket disconnect failed:", err));
+        }
+
+        // 6. Clear cookies
+        res.clearCookie("refreshToken", {
+            httpOnly: true,
+            secure: true,
+            sameSite: "None",
+            path: "/",
+        });
+
+        // 7. Notify organization members to switch back to personal profile
+        deactivatedOrgIds.forEach((orgId) => {
+            SocketService.notifyOrg(orgId, 'ORGANIZATION_DEACTIVATED', { orgId });
+        });
+
+        return res.status(200).json({
+            success: true,
+            message: "Account deactivated successfully.",
+        });
+    } catch (error) {
+        if (client) await client.query("ROLLBACK");
+        console.error("Deactivate account error:", error);
+        return res.status(500).json({ success: false, message: "Failed to deactivate account" });
+    } finally {
+        if (client) client.release();
+    }
+};
+
 
 // ─── 2. Activity Settings ───────────────────────────────────────────────────────
 

@@ -33,7 +33,8 @@ jobs:
         shell: powershell
         run: |
           $destPath = "${{ env.DEST }}"
-          robocopy . "$destPath" /MIR /XF .env /XD .git node_modules _work
+          # Added firebase-service-account.json to the /XF list so robocopy doesn't delete it
+          robocopy . "$destPath" /MIR /XF .env firebase-service-account.json /XD .git node_modules _work
           # robocopy exit codes 0-7 are success/warning states, not errors
           if ($LASTEXITCODE -le 7) { $LASTEXITCODE = 0 }
 

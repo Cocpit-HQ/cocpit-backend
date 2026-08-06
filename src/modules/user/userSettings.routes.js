@@ -20,6 +20,7 @@ router.put("/password", userSettingsController.updatePassword);
 router.put("/phone", userSettingsController.updatePhone);
 router.delete("/phone", userSettingsController.removePhone);
 router.delete("/account", userSettingsController.deleteAccount);
+router.patch("/account/deactivate", userSettingsController.deactivateAccount);
 
 // ─── 2. Activity Settings ───────────────────────────────────────────────────────
 router.get("/activity", userSettingsController.getActivityLogs);

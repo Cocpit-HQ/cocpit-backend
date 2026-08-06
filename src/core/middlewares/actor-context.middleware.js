@@ -83,9 +83,12 @@ async function getOrganizationMembership(orgId, userId, queryable = pool) {
             cm.expires_at,
             cr.name AS role_name,
             cr.permissions,
-            cr.priority
+            cr.priority,
+            o.is_deactivated,
+            o.is_deleted
          FROM organization_members cm
          LEFT JOIN organization_roles cr ON cm.role_id = cr.role_id
+         JOIN organizations o ON cm.org_id = o.org_id
          WHERE cm.org_id = $1 AND cm.user_id = $2`,
         [orgId, userId]
     );
@@ -106,6 +109,10 @@ async function getOrganizationMembership(orgId, userId, queryable = pool) {
 function assertActiveMembership(member) {
     if (!member) {
         throw new AppError("You are not a member of this organization", 403);
+    }
+
+    if (member.is_deactivated || member.is_deleted) {
+        throw new AppError("This organization is currently unavailable.", 403);
     }
 
     if (member.status !== MEMBER_STATUS.ACTIVE) {

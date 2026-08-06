@@ -396,6 +396,7 @@ const getPublicFeedWhere = (userParamIdx) => `
     )
     AND (p.is_removed IS FALSE OR p.is_removed IS NULL)
     AND p.is_active = TRUE
+    AND (p.author_org_id IS NULL OR (comp.is_deleted = FALSE AND comp.is_deactivated = FALSE))
     AND p.is_community_article IS NOT TRUE
     AND NOT EXISTS (
         SELECT 1 FROM blocks b 
@@ -410,6 +411,10 @@ const getPublicFeedWhere = (userParamIdx) => `
             WHERE (b.is_org_block = false AND ((b.blocker_id = $${userParamIdx} AND b.blocked_id = sp.author_id) OR (b.blocker_id = sp.author_id AND b.blocked_id = $${userParamIdx})))
                OR (b.is_org_block = true AND sp.author_org_id IS NOT NULL AND ((b.blocker_id = sp.author_org_id AND b.blocked_id = $${userParamIdx}) OR (b.blocker_id = $${userParamIdx} AND b.blocked_id = sp.author_org_id)))
         )
+    )
+    AND (
+        p.shared_post_id IS NULL 
+        OR (sp.author_org_id IS NULL OR (sp_comp.is_deleted = FALSE AND sp_comp.is_deactivated = FALSE))
     )
 
     -- Privacy Escalation: Hide reposts if original post's privacy tightened
