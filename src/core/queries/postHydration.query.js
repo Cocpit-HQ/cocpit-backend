@@ -97,7 +97,7 @@ const getPostHydrationSelect = (companyParamIdx, userParamIdx) => `
     ) AS sample_liker_username,
     (SELECT COUNT(*) FROM active_post_comments pc WHERE pc.post_id = p.post_id)::int AS comment_count,
     (SELECT COUNT(*) FROM saved_post sp_cnt WHERE sp_cnt.post_id = p.post_id)::int AS save_count,
-    (SELECT COUNT(*) FROM posts sp_share WHERE sp_share.shared_post_id = p.post_id)::int AS share_count,
+    (SELECT COUNT(*) FROM posts sp_share WHERE sp_share.shared_post_id = p.post_id AND sp_share.is_active = TRUE AND (sp_share.is_removed IS FALSE OR sp_share.is_removed IS NULL))::int AS share_count,
 
     (
         EXISTS(
@@ -120,6 +120,7 @@ const getPostHydrationSelect = (companyParamIdx, userParamIdx) => `
                 OR
                 ($${companyParamIdx}::uuid IS NULL AND sp_rep.author_id = $${userParamIdx} AND sp_rep.author_org_id IS NULL)
             )
+            AND sp_rep.is_active = TRUE
             AND (sp_rep.is_removed IS FALSE OR sp_rep.is_removed IS NULL)
         )
     ) AS is_reposted,
@@ -132,6 +133,7 @@ const getPostHydrationSelect = (companyParamIdx, userParamIdx) => `
             OR
             ($${companyParamIdx}::uuid IS NULL AND sp_rep.author_id = $${userParamIdx} AND sp_rep.author_org_id IS NULL)
         )
+        AND sp_rep.is_active = TRUE
         AND (sp_rep.is_removed IS FALSE OR sp_rep.is_removed IS NULL)
         LIMIT 1
     ) AS repost_id,
@@ -277,7 +279,7 @@ const getPostHydrationSelect = (companyParamIdx, userParamIdx) => `
                  'achievement_image_url', sp_ai.cloudinary_url,
                  'like_count', (SELECT COUNT(*) FROM active_post_likes pl WHERE pl.post_id = sp.post_id)::int,
                  'comment_count', (SELECT COUNT(*) FROM active_post_comments pc WHERE pc.post_id = sp.post_id)::int,
-                 'share_count', (SELECT COUNT(*) FROM posts sp_share2 WHERE sp_share2.shared_post_id = sp.post_id)::int,
+                 'share_count', (SELECT COUNT(*) FROM posts sp_share2 WHERE sp_share2.shared_post_id = sp.post_id AND sp_share2.is_active = TRUE AND (sp_share2.is_removed IS FALSE OR sp_share2.is_removed IS NULL))::int,
                  'is_liked', EXISTS(
                      SELECT 1 FROM active_post_likes pl 
                      WHERE pl.post_id = sp.post_id 

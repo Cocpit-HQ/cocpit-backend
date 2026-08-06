@@ -23,9 +23,13 @@ function calculateBasicInfoScore(userProfile) {
     const totalCount = fields.length;
     const missingFields = fields.filter(f => !f.value || String(f.value).trim() === "").map(f => f.key);
 
+    // Linear scale: each field is worth 30/8 = 3.75 pts, rounded cleanly
+    // Tiers: 4/8 filled → 15 pts, 8/8 filled → 30 pts
     let score = 0;
-    if (filledCount >= 4) {
-        score = 15 + Math.round(((filledCount - 4) / 4) * 15);
+    if (filledCount === totalCount) {
+        score = 30; // all filled: full 30 pts
+    } else if (filledCount >= 4) {
+        score = 15 + Math.round(((filledCount - 4) / (totalCount - 4)) * 15);
     } else {
         score = Math.round((filledCount / 4) * 15);
     }
@@ -130,10 +134,14 @@ function calculateProjectsScore(projects) {
 
     for (const proj of projects) {
         const hasTitle = proj.title && String(proj.title).trim() !== "";
+        // "details" is the DB column name for project description
         const hasDetails = proj.details && String(proj.details).trim() !== "";
         const hasMedia = Array.isArray(proj.media) && proj.media.length > 0;
-        const hasRole = proj.role && String(proj.role).trim() !== "";
-        const hasTeam = proj.team_size && String(proj.team_size).trim() !== "";
+        // role OR role_description field; check both for compatibility
+        const hasRole = (proj.role && String(proj.role).trim() !== "") ||
+                        (proj.role_description && String(proj.role_description).trim() !== "");
+        // team_size can be 0 (a valid number), so use != null instead of truthy check
+        const hasTeam = proj.team_size != null && String(proj.team_size).trim() !== "";
 
         let projectScore = 0;
         if (hasTitle && hasDetails) {

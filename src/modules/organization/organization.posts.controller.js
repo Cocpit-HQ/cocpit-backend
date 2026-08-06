@@ -190,6 +190,7 @@ exports.getOrganizationPosts = async (req, res) => {
                     ($${orgActorParamIdx}::boolean AND sp_rep.author_org_id = $1)
                     OR (NOT $${orgActorParamIdx}::boolean AND sp_rep.author_id = $${userParamIdx} AND sp_rep.author_org_id IS NULL)
                 )
+                AND sp_rep.is_active = TRUE
                 AND (sp_rep.is_removed IS FALSE OR sp_rep.is_removed IS NULL)
             ) AS is_reposted,
             (
@@ -199,6 +200,7 @@ exports.getOrganizationPosts = async (req, res) => {
                     ($${orgActorParamIdx}::boolean AND sp_rep.author_org_id = $1)
                     OR (NOT $${orgActorParamIdx}::boolean AND sp_rep.author_id = $${userParamIdx} AND sp_rep.author_org_id IS NULL)
                 )
+                AND sp_rep.is_active = TRUE
                 AND (sp_rep.is_removed IS FALSE OR sp_rep.is_removed IS NULL)
                 LIMIT 1
             ) AS repost_id,
@@ -261,6 +263,7 @@ exports.getOrganizationPosts = async (req, res) => {
                                 ($${orgActorParamIdx}::boolean AND sp_rep.author_org_id = $1)
                                 OR (NOT $${orgActorParamIdx}::boolean AND sp_rep.author_id = $${userParamIdx} AND sp_rep.author_org_id IS NULL)
                             )
+                            AND sp_rep.is_active = TRUE
                             AND (sp_rep.is_removed IS FALSE OR sp_rep.is_removed IS NULL)
                         ),
                         'repost_id', (
@@ -270,6 +273,7 @@ exports.getOrganizationPosts = async (req, res) => {
                                 ($${orgActorParamIdx}::boolean AND sp_rep.author_org_id = $1)
                                 OR (NOT $${orgActorParamIdx}::boolean AND sp_rep.author_id = $${userParamIdx} AND sp_rep.author_org_id IS NULL)
                             )
+                            AND sp_rep.is_active = TRUE
                             AND (sp_rep.is_removed IS FALSE OR sp_rep.is_removed IS NULL)
                             LIMIT 1
                         ),

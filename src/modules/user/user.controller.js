@@ -649,7 +649,7 @@ exports.getPublicProfilePosts = async (req, res) => {
         ) AS media,
 
         (SELECT COUNT(*) FROM active_post_likes pl WHERE pl.post_id = p.post_id)::int AS like_count,
-        (SELECT COUNT(*) FROM posts sp_share WHERE sp_share.shared_post_id = p.post_id)::int AS share_count,
+        (SELECT COUNT(*) FROM posts sp_share WHERE sp_share.shared_post_id = p.post_id AND sp_share.is_active = TRUE AND (sp_share.is_removed IS FALSE OR sp_share.is_removed IS NULL))::int AS share_count,
         (
             SELECT COALESCE(comp_like.slug, u_like.account_name)
             FROM active_post_likes pl_sample
@@ -667,12 +667,14 @@ exports.getPublicProfilePosts = async (req, res) => {
             SELECT 1 FROM posts sp_rep
             WHERE sp_rep.shared_post_id = p.post_id 
             AND sp_rep.author_id = $${userParamIdx} AND sp_rep.author_org_id IS NULL
+            AND sp_rep.is_active = TRUE
             AND (sp_rep.is_removed IS FALSE OR sp_rep.is_removed IS NULL)
         ) AS is_reposted,
         (
             SELECT sp_rep.post_id FROM posts sp_rep
             WHERE sp_rep.shared_post_id = p.post_id 
             AND sp_rep.author_id = $${userParamIdx} AND sp_rep.author_org_id IS NULL
+            AND sp_rep.is_active = TRUE
             AND (sp_rep.is_removed IS FALSE OR sp_rep.is_removed IS NULL)
             LIMIT 1
         ) AS repost_id,
@@ -751,18 +753,20 @@ exports.getPublicProfilePosts = async (req, res) => {
               'media', COALESCE((SELECT json_agg(json_build_object('url', pm.url, 'media_type', pm.media_type)) FROM post_media pm WHERE pm.post_id = sp.post_id), '[]'::json),
               'like_count', (SELECT COUNT(*) FROM active_post_likes pl WHERE pl.post_id = sp.post_id)::int,
               'comment_count', (SELECT COUNT(*) FROM active_post_comments pc WHERE pc.post_id = sp.post_id)::int,
-              'share_count', (SELECT COUNT(*) FROM posts sp_share2 WHERE sp_share2.shared_post_id = sp.post_id)::int,
+              'share_count', (SELECT COUNT(*) FROM posts sp_share2 WHERE sp_share2.shared_post_id = sp.post_id AND sp_share2.is_active = TRUE AND (sp_share2.is_removed IS FALSE OR sp_share2.is_removed IS NULL))::int,
               'is_liked', EXISTS(SELECT 1 FROM active_post_likes pl WHERE pl.post_id = sp.post_id AND pl.user_id = $${userParamIdx}),
               'is_reposted', EXISTS(
                   SELECT 1 FROM posts sp_rep
                   WHERE sp_rep.shared_post_id = sp.post_id 
                   AND sp_rep.author_id = $${userParamIdx} AND sp_rep.author_org_id IS NULL
+                  AND sp_rep.is_active = TRUE
                   AND (sp_rep.is_removed IS FALSE OR sp_rep.is_removed IS NULL)
               ),
               'repost_id', (
                   SELECT sp_rep.post_id FROM posts sp_rep
                   WHERE sp_rep.shared_post_id = sp.post_id 
                   AND sp_rep.author_id = $${userParamIdx} AND sp_rep.author_org_id IS NULL
+                  AND sp_rep.is_active = TRUE
                   AND (sp_rep.is_removed IS FALSE OR sp_rep.is_removed IS NULL)
                   LIMIT 1
               ),
@@ -1010,12 +1014,14 @@ exports.getPublicProfileCommentedPosts = async (req, res) => {
             SELECT 1 FROM posts sp_rep
             WHERE sp_rep.shared_post_id = p.post_id 
             AND sp_rep.author_id = $${userParamIdx} AND sp_rep.author_org_id IS NULL
+            AND sp_rep.is_active = TRUE
             AND (sp_rep.is_removed IS FALSE OR sp_rep.is_removed IS NULL)
         ) AS is_reposted,
         (
             SELECT sp_rep.post_id FROM posts sp_rep
             WHERE sp_rep.shared_post_id = p.post_id 
             AND sp_rep.author_id = $${userParamIdx} AND sp_rep.author_org_id IS NULL
+            AND sp_rep.is_active = TRUE
             AND (sp_rep.is_removed IS FALSE OR sp_rep.is_removed IS NULL)
             LIMIT 1
         ) AS repost_id,

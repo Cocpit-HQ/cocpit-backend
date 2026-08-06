@@ -131,7 +131,7 @@ exports.getProfile = async (req, res) => {
         const profileId = u.profile_id;
         userId = u.user_id;
 
-        const [experiences, educations, skills, companyRoles, counts, resumeRow, userRole, interests, projects] = await Promise.all([
+        const [experiences, educations, skills, companyRoles, counts, resumeRow, userRole, interests, projects, flatExperiencesForScore] = await Promise.all([
             profileId ? profileRepo.getExperiences(profileId) : [],
             profileId ? profileRepo.getEducations(profileId) : [],
             profileId ? profileRepo.getSkills(profileId) : [],
@@ -141,6 +141,10 @@ exports.getProfile = async (req, res) => {
             profileRepo.getUserRole(userId),
             profileRepo.getUserInterests(userId),
             profileId ? profileRepo.getProjects(profileId) : [],
+            // Flat (ungrouped) rows needed for score calculation — the grouped format returned by
+            // getExperiences() nests title/start_date/description inside group.experiences[], so
+            // calculateExperienceScore() cannot find them on the top-level group object.
+            profileId ? profileRepo.getExperiencesByProfileId(profileId) : [],
         ]);
 
         const resume = resumeRow ? { originalName: resumeRow.file_name, url: resumeRow.file_url } : null;
@@ -150,7 +154,7 @@ exports.getProfile = async (req, res) => {
             school_logo: educations[0].school_logo || null
         } : null;
 
-        const profileScore = profileCalc.calculateFullProfileScore(u, skills, experiences, projects, educations);
+        const profileScore = profileCalc.calculateFullProfileScore(u, skills, flatExperiencesForScore, projects, educations);
 
         let relationship = { isFollowing: false, isFollowedBy: false, connectionRequestStatus: null, connectionRequestId: null, connectionRequestSender: null };
         if (req.user && req.user.sub) {
@@ -1695,6 +1699,15 @@ exports.addProject = async (req, res) => {
         }
     }
 
+    // Team size must be a positive integer if provided
+    let parsedTeamSize = null;
+    if (team_size !== undefined && team_size !== null && String(team_size).trim() !== "") {
+        parsedTeamSize = parseInt(String(team_size).trim(), 10);
+        if (isNaN(parsedTeamSize) || parsedTeamSize < 1 || parsedTeamSize > 9999 || String(parsedTeamSize) !== String(team_size).trim()) {
+            return res.status(400).json({ message: "Team size must be a positive whole number between 1 and 9999" });
+        }
+    }
+
     if (Array.isArray(media) && media.length > 3) {
         return res.status(400).json({ message: "A project can have at most 3 media items" });
     }
@@ -1717,7 +1730,7 @@ exports.addProject = async (req, res) => {
             end_year: is_current ? null : String(end_year),
             is_current: Boolean(is_current),
             role: role ? role.trim() : null,
-            team_size: team_size ? team_size.trim() : null,
+            team_size: parsedTeamSize,
             role_description: role_description ? role_description.trim() : null
         };
 
@@ -1796,7 +1809,18 @@ exports.updateProject = async (req, res) => {
         if (end_month !== undefined && !updateData.is_current) updateData.end_month = String(end_month);
         if (end_year !== undefined && !updateData.is_current) updateData.end_year = String(end_year);
         if (role !== undefined) updateData.role = role ? role.trim() : null;
-        if (team_size !== undefined) updateData.team_size = team_size ? team_size.trim() : null;
+        if (team_size !== undefined) {
+            // Validate team_size if provided and non-empty
+            if (team_size !== null && String(team_size).trim() !== "") {
+                const parsedTeamSize = parseInt(String(team_size).trim(), 10);
+                if (isNaN(parsedTeamSize) || parsedTeamSize < 1 || parsedTeamSize > 9999 || String(parsedTeamSize) !== String(team_size).trim()) {
+                    return res.status(400).json({ message: "Team size must be a positive whole number between 1 and 9999" });
+                }
+                updateData.team_size = parsedTeamSize;
+            } else {
+                updateData.team_size = null;
+            }
+        }
         if (role_description !== undefined) updateData.role_description = role_description ? role_description.trim() : null;
 
         await profileRepo.updateProjectInTx(client, projectId, profileId, updateData);
