@@ -3047,6 +3047,8 @@ exports.sendMessage = async (req, res) => {
                             targetProfileType: 'COMPANY',
                             targetCompanyId: targetUserId
                         }, targetActorScope);
+                        // Push notification for offline devices
+                        sendPush(member.user_id, senderName, previewText, { type: 'message', conversationId, senderId }).catch(() => {});
                     }
                 }
             } else {

@@ -2,6 +2,7 @@ const GroupChatModel = require("../models/groupChat.model");
 const socketService = require("../core/infrastructure/socket.service"); // Assuming existing socket service
 const pool = require("../core/db/pool"); // For specific queries if model isn't enough or for transactions
 const { listConversationMuteStates } = require("./conversationMute.service");
+const { sendToUser: sendPush } = require("../modules/notification/notification.service");
 const fs = require("fs");
 const path = require("path");
 
@@ -749,6 +750,9 @@ class GroupChatService {
 
                 // If the user was mentioned, override default message notification with a mention one
                 const isMentioned = mentionedGroupMembers.some(m => m.user_id === member.user_id);
+                const notifText = isMentioned
+                    ? `${sender.full_name} mentioned you in a group chat`
+                    : (previewText || content);
                 
                 socketService.notifyUser(member.user_id, 'notification', {
                     type: isMentioned ? 'mention' : 'message',
@@ -757,8 +761,16 @@ class GroupChatService {
                     senderAvatar: sender.avatar_url,
                     conversationId: groupId,
                     isGroup: true,
-                    text: isMentioned ? `${sender.full_name} mentioned you in a group chat` : (previewText || content) // Use previewText if available
+                    text: notifText
                 });
+
+                // Push notification for offline devices (respects mute, same as socket above)
+                sendPush(
+                    member.user_id,
+                    sender.full_name,
+                    notifText,
+                    { type: isMentioned ? 'mention' : 'message', conversationId: groupId, senderId }
+                ).catch(() => {});
             }
         });
 
