@@ -1284,6 +1284,7 @@ exports.getUserReports = async (req, res) => {
                     WHEN 'POST'    THEN CONCAT('Report about content posted by ', COALESCE(po.name, CONCAT('@', pu.account_name), 'unknown'))
                     WHEN 'USER'    THEN CONCAT('Reported profile: @', COALESCE(u.account_name, 'unknown'))
                     WHEN 'COMMENT' THEN CONCAT('Report about a comment by @', COALESCE(cu.account_name, 'unknown'))
+                    WHEN 'THOUGHT' THEN CONCAT('Report about a thought by @', COALESCE(cu.account_name, 'unknown'))
                     WHEN 'COMPANY' THEN CONCAT('Reported company: ', COALESCE(o.name, 'unknown'))
                     ELSE 'Reported content'
                 END AS title,
@@ -1294,7 +1295,7 @@ exports.getUserReports = async (req, res) => {
             LEFT JOIN posts p           ON r.target_type = 'POST'    AND r.target_id = p.post_id
             LEFT JOIN users pu          ON p.author_id = pu.user_id
             LEFT JOIN organizations po  ON p.author_org_id = po.org_id
-            LEFT JOIN post_comments pc  ON r.target_type = 'COMMENT' AND r.target_id = pc.comment_id
+            LEFT JOIN post_comments pc  ON r.target_type IN ('COMMENT', 'THOUGHT') AND r.target_id = pc.comment_id
             LEFT JOIN users cu          ON pc.author_id = cu.user_id
             LEFT JOIN organizations o   ON r.target_type = 'COMPANY' AND r.target_id = o.org_id
             WHERE r.reporter_id = $1
@@ -1354,6 +1355,7 @@ exports.getUserReportById = async (req, res) => {
                     WHEN 'POST'    THEN CONCAT('Report about content posted by ', COALESCE(po.name, CONCAT('@', pu.account_name), 'unknown'))
                     WHEN 'USER'    THEN CONCAT('Reported profile: @', COALESCE(u.account_name, 'unknown'))
                     WHEN 'COMMENT' THEN CONCAT('Report about a comment by @', COALESCE(cu.account_name, 'unknown'))
+                    WHEN 'THOUGHT' THEN CONCAT('Report about a thought by @', COALESCE(cu.account_name, 'unknown'))
                     WHEN 'COMPANY' THEN CONCAT('Reported company: ', COALESCE(o.name, 'unknown'))
                     ELSE 'Reported content'
                 END AS title,
@@ -1364,7 +1366,7 @@ exports.getUserReportById = async (req, res) => {
             LEFT JOIN posts p           ON r.target_type = 'POST'    AND r.target_id = p.post_id
             LEFT JOIN users pu          ON p.author_id = pu.user_id
             LEFT JOIN organizations po  ON p.author_org_id = po.org_id
-            LEFT JOIN post_comments pc  ON r.target_type = 'COMMENT' AND r.target_id = pc.comment_id
+            LEFT JOIN post_comments pc  ON r.target_type IN ('COMMENT', 'THOUGHT') AND r.target_id = pc.comment_id
             LEFT JOIN users cu          ON pc.author_id = cu.user_id
             LEFT JOIN organizations o   ON r.target_type = 'COMPANY' AND r.target_id = o.org_id
             WHERE r.id = $1 AND r.reporter_id = $2`,

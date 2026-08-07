@@ -52,7 +52,7 @@ exports.getNotificationPreferences = async (req, res) => {
             const userId = req.user.sub;
             const result = await pool.query(
                 `SELECT events_enabled, jobs_enabled, posts_enabled,
-                        messages_enabled, messages_chat_enabled, messages_jobs_enabled, email_enabled
+                        messages_enabled, messages_chat_enabled, messages_jobs_enabled, email_enabled, push_enabled
                  FROM organization_notification_preferences WHERE user_id = $1 AND org_id = $2`,
                 [userId, orgId]
             );
@@ -68,6 +68,7 @@ exports.getNotificationPreferences = async (req, res) => {
                         messages_chat_enabled: true,
                         messages_jobs_enabled: true,
                         email_notifications: true,
+                        push_notifications: true,
                     },
                 });
             }
@@ -78,7 +79,8 @@ exports.getNotificationPreferences = async (req, res) => {
                 (row.posts_enabled ?? true) &&
                 (row.jobs_enabled ?? true) &&
                 (row.messages_enabled ?? true) &&
-                (row.email_enabled ?? true);
+                (row.email_enabled ?? true) &&
+                (row.push_enabled ?? true);
 
             return res.status(200).json({
                 success: true,
@@ -90,6 +92,7 @@ exports.getNotificationPreferences = async (req, res) => {
                     messages_chat_enabled: row.messages_chat_enabled ?? true,
                     messages_jobs_enabled: row.messages_jobs_enabled ?? true,
                     email_notifications: row.email_enabled ?? true,
+                    push_notifications: row.push_enabled ?? true,
                 },
             });
         }
@@ -97,7 +100,7 @@ exports.getNotificationPreferences = async (req, res) => {
         // Default: Personal User Actor
         const userId = req.user.sub;
         const result = await pool.query(
-            `SELECT all_notifications, post_notifications, job_alerts, message_notifications, email_notifications
+            `SELECT all_notifications, post_notifications, job_alerts, message_notifications, email_notifications, push_notifications
              FROM user_notification_preferences WHERE user_id = $1`,
             [userId]
         );
@@ -111,6 +114,7 @@ exports.getNotificationPreferences = async (req, res) => {
                     job_alerts: true,
                     message_notifications: true,
                     email_notifications: true,
+                    push_notifications: true,
                 },
             });
         }
@@ -148,13 +152,14 @@ exports.updateNotificationPreferences = async (req, res) => {
                 messages_chat_enabled = true,
                 messages_jobs_enabled = true,
                 email_notifications = true,
+                push_notifications = true,
             } = req.body;
 
             // Fix ON CONFLICT error (42P10): Table has primary key (user_id, org_id)
             await pool.query(
                 `INSERT INTO organization_notification_preferences
-                    (user_id, org_id, events_enabled, jobs_enabled, posts_enabled, messages_enabled, messages_chat_enabled, messages_jobs_enabled, email_enabled, updated_at)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
+                    (user_id, org_id, events_enabled, jobs_enabled, posts_enabled, messages_enabled, messages_chat_enabled, messages_jobs_enabled, email_enabled, push_enabled, updated_at)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())
                  ON CONFLICT (user_id, org_id) DO UPDATE SET
                     events_enabled = EXCLUDED.events_enabled,
                     jobs_enabled = EXCLUDED.jobs_enabled,
@@ -163,8 +168,9 @@ exports.updateNotificationPreferences = async (req, res) => {
                     messages_chat_enabled = EXCLUDED.messages_chat_enabled,
                     messages_jobs_enabled = EXCLUDED.messages_jobs_enabled,
                     email_enabled = EXCLUDED.email_enabled,
+                    push_enabled = EXCLUDED.push_enabled,
                     updated_at = NOW()`,
-                [userId, orgId, all_notifications, job_alerts, post_notifications, message_notifications, messages_chat_enabled, messages_jobs_enabled, email_notifications]
+                [userId, orgId, all_notifications, job_alerts, post_notifications, message_notifications, messages_chat_enabled, messages_jobs_enabled, email_notifications, push_notifications]
             );
 
             // Log Audit Entry
@@ -173,14 +179,14 @@ exports.updateNotificationPreferences = async (req, res) => {
                 entityType: 'ORGANIZATION',
                 actorId: userId,
                 action: 'ORGANIZATION_NOTIFICATIONS_UPDATED',
-                metadata: { all_notifications, post_notifications, job_alerts, message_notifications, messages_chat_enabled, messages_jobs_enabled, email_notifications }
+                metadata: { all_notifications, post_notifications, job_alerts, message_notifications, messages_chat_enabled, messages_jobs_enabled, email_notifications, push_notifications }
             });
 
             // Emit Real-time Socket Event
             if (socketService.io) {
                 socketService.io.to(`org_${orgId}`).emit("ORGANIZATION_NOTIFICATIONS_UPDATED", {
                     orgId,
-                    preferences: { all_notifications, post_notifications, job_alerts, message_notifications, messages_chat_enabled, messages_jobs_enabled, email_notifications }
+                    preferences: { all_notifications, post_notifications, job_alerts, message_notifications, messages_chat_enabled, messages_jobs_enabled, email_notifications, push_notifications }
                 });
             }
 
@@ -199,21 +205,23 @@ exports.updateNotificationPreferences = async (req, res) => {
             job_alerts = true,
             message_notifications = true,
             email_notifications = true,
+            push_notifications = true,
         } = req.body;
 
         const result = await pool.query(
             `INSERT INTO user_notification_preferences
-                (user_id, all_notifications, post_notifications, job_alerts, message_notifications, email_notifications, updated_at)
-             VALUES ($1, $2, $3, $4, $5, $6, NOW())
+                (user_id, all_notifications, post_notifications, job_alerts, message_notifications, email_notifications, push_notifications, updated_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
              ON CONFLICT (user_id) DO UPDATE SET
                 all_notifications = EXCLUDED.all_notifications,
                 post_notifications = EXCLUDED.post_notifications,
                 job_alerts = EXCLUDED.job_alerts,
                 message_notifications = EXCLUDED.message_notifications,
                 email_notifications = EXCLUDED.email_notifications,
+                push_notifications = EXCLUDED.push_notifications,
                 updated_at = NOW()
-             RETURNING all_notifications, post_notifications, job_alerts, message_notifications, email_notifications`,
-            [userId, all_notifications, post_notifications, job_alerts, message_notifications, email_notifications]
+             RETURNING all_notifications, post_notifications, job_alerts, message_notifications, email_notifications, push_notifications`,
+            [userId, all_notifications, post_notifications, job_alerts, message_notifications, email_notifications, push_notifications]
         );
 
         const savedPrefs = result.rows[0];

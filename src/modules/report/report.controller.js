@@ -33,7 +33,7 @@ exports.createReport = async (req, res) => {
     return res.status(400).json({ message: "Provide either a reasonId or a customReason" });
   }
 
-  const validTypes = ["POST", "USER", "COMMENT", "COMPANY"];
+  const validTypes = ["POST", "USER", "COMMENT", "COMPANY", "THOUGHT"];
   if (!validTypes.includes(targetType)) {
     console.warn("[Report] Validation failed: Invalid targetType", { targetType });
     return res.status(400).json({ message: `Invalid targetType: ${targetType}` });
@@ -56,9 +56,9 @@ exports.createReport = async (req, res) => {
         query = "SELECT author_id FROM posts WHERE post_id = $1::uuid";
         break;
       case "USER":
-        // For users, the targetId IS the authorId
         query = "SELECT user_id FROM users WHERE user_id = $1::uuid";
         break;
+      case "THOUGHT":
       case "COMMENT":
         query = "SELECT author_id FROM post_comments WHERE comment_id = $1::uuid";
         break;

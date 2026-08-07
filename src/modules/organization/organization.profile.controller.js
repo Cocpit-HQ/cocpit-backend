@@ -115,7 +115,10 @@ exports.getOrgProfile = async (req, res) => {
                         (SELECT COUNT(*) FROM organization_user_follows WHERE org_id = $1) +
                         (SELECT COUNT(*) FROM organization_org_follows WHERE follower_org_id = $1)
                     )::int AS following_count,
-                    (SELECT COUNT(*) FROM organization_followers WHERE org_id = $1)::int AS followers_count,
+                    (
+                        (SELECT COUNT(*) FROM organization_followers WHERE org_id = $1) +
+                        (SELECT COUNT(*) FROM organization_org_follows WHERE following_org_id = $1)
+                    )::int AS followers_count,
                     (
                         SELECT COUNT(DISTINCT cs.user_id) 
                         FROM community_subscriptions cs
@@ -283,13 +286,7 @@ exports.getOrgProfile = async (req, res) => {
             total_followers: counts.followers_count
         };
 
-        if (isOwner) {
-            relationship = {
-                is_following: true,
-                is_subscribed: true,
-                is_connected: true,
-            };
-        } else if (viewerId) {
+        if (viewerId) {
             const [relResult, relevanceResult, mutualCountResult] = await Promise.all([
                 pool.query(
                     `SELECT

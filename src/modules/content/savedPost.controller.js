@@ -246,7 +246,7 @@ exports.getSavedPosts = async (req, res) => {
         let queryParams = [userId];
         let queryText = `SELECT 
             p.*, 
-            COALESCE(NULLIF(p.content, ''), orig_p.content, '') AS content,
+            p.content AS content,
             sp.saved_at,
             COALESCE(comp_auth.name, u_auth.full_name) AS author_name, 
             COALESCE(comp_auth.logo_url, u_auth.avatar_url) AS author_avatar,
@@ -254,12 +254,31 @@ exports.getSavedPosts = async (req, res) => {
             COALESCE(comp_auth.slogan, u_auth.headline) AS author_headline,
             COALESCE(
                 (SELECT json_agg(json_build_object('url', pm.url, 'media_type', pm.media_type)) 
-                 FROM post_media pm WHERE pm.post_id = COALESCE(p.shared_post_id, p.post_id)),
+                 FROM post_media pm WHERE pm.post_id = p.post_id),
                 '[]'::json
             ) AS media,
-            (SELECT pm.url FROM post_media pm WHERE pm.post_id = COALESCE(p.shared_post_id, p.post_id) AND pm.media_type = 'image' LIMIT 1) AS image_url,
-            (SELECT pm.url FROM post_media pm WHERE pm.post_id = COALESCE(p.shared_post_id, p.post_id) LIMIT 1) AS post_url,
-            ARRAY(SELECT pm.url FROM post_media pm WHERE pm.post_id = COALESCE(p.shared_post_id, p.post_id) AND pm.media_type = 'image') AS images,
+            (SELECT pm.url FROM post_media pm WHERE pm.post_id = p.post_id AND pm.media_type = 'image' LIMIT 1) AS image_url,
+            (SELECT pm.url FROM post_media pm WHERE pm.post_id = p.post_id LIMIT 1) AS post_url,
+            ARRAY(SELECT pm.url FROM post_media pm WHERE pm.post_id = p.post_id AND pm.media_type = 'image') AS images,
+            CASE 
+                WHEN p.shared_post_id IS NOT NULL THEN
+                    json_build_object(
+                        'is_accessible', true,
+                        'post_id', orig_p.post_id,
+                        'content', orig_p.content,
+                        'author', json_build_object(
+                            'user_id', COALESCE(orig_p.author_org_id, u_orig.user_id),
+                            'full_name', COALESCE(comp_orig.name, u_orig.full_name),
+                            'avatar_url', COALESCE(comp_orig.logo_url, u_orig.avatar_url)
+                        ),
+                        'media', COALESCE(
+                            (SELECT json_agg(json_build_object('url', pm.url, 'media_type', pm.media_type)) 
+                             FROM post_media pm WHERE pm.post_id = orig_p.post_id),
+                            '[]'::json
+                        )
+                    )
+                ELSE NULL
+            END AS shared_post,
             (SELECT COUNT(*) FROM active_post_likes pl WHERE pl.post_id = p.post_id)::int AS like_count,
             (SELECT COUNT(*) FROM active_post_comments pc WHERE pc.post_id = p.post_id)::int AS comment_count,
             (SELECT COUNT(*) FROM saved_post sp_cnt WHERE sp_cnt.post_id = p.post_id)::int AS save_count,
@@ -283,8 +302,10 @@ exports.getSavedPosts = async (req, res) => {
          FROM saved_post sp
          JOIN posts p ON p.post_id = sp.post_id
          LEFT JOIN posts orig_p ON orig_p.post_id = p.shared_post_id
-         JOIN active_users u_auth ON u_auth.user_id = COALESCE(orig_p.author_id, p.author_id)
-         LEFT JOIN organizations comp_auth ON comp_auth.org_id = COALESCE(orig_p.author_org_id, p.author_org_id)
+         JOIN active_users u_auth ON u_auth.user_id = p.author_id
+         LEFT JOIN organizations comp_auth ON comp_auth.org_id = p.author_org_id
+         LEFT JOIN active_users u_orig ON u_orig.user_id = orig_p.author_id
+         LEFT JOIN organizations comp_orig ON comp_orig.org_id = orig_p.author_org_id
          WHERE sp.user_id = $1 AND (
              ${isOrgActor ? 'sp.org_id = $2::uuid' : 'sp.org_id IS NULL'}
         )`;

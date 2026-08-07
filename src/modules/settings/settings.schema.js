@@ -102,6 +102,7 @@ const notificationPreferencesSchema = z.object({
     messages_chat_enabled: z.boolean().optional(),
     messages_jobs_enabled: z.boolean().optional(),
     email_notifications: z.boolean().optional(),
+    push_notifications: z.boolean().optional(),
   }),
 });
 

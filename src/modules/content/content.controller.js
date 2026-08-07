@@ -924,7 +924,7 @@ exports.createPost = async (req, res) => {
             // --- CONTEXT-AWARE CATEGORY VALIDATION ---
             const userAllowed = ['Personal', 'Professional', 'Achievement'];
             const companyAllowed = ['Update', 'Hiring', 'Milestone', 'Insight', 'Professional', 'Article'];
-            const institutionAllowed = ['Announcement', 'Academic', 'Admission', 'Campus Life', 'Research', 'Club Activity', 'General'];
+            const institutionAllowed = ['Professional', 'Announcement', 'Academic', 'Admission', 'Campus Life', 'Research', 'Club Activity', 'General'];
 
             if (companyId) {
                 // Determine if it's a COMPANY or INSTITUTION
@@ -960,7 +960,7 @@ exports.createPost = async (req, res) => {
                     };
 
                     const requiredPerm = categoryPermissionMap[category];
-                    const canPost = await checkOrgPermission(client, companyId, userId, [requiredPerm, 'MANAGE_COMPANY', 'CREATE_CONTENT']);
+                    const canPost = await checkOrgPermission(client, companyId, userId, [requiredPerm, 'MANAGE_COMPANY', 'CREATE_CONTENT', 'CREATE_POST']);
 
                     if (!canPost) {
                         // Allow Students to post in General freely
@@ -2104,7 +2104,7 @@ exports.deletePost = async (req, res) => {
     let actorScope;
 
     try {
-        actorScope = getContentActorScope(req, req.body?.companyId || null);
+        actorScope = getContentActorScope(req, req.body?.companyId || req.query?.companyId || null);
     } catch (err) {
         return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
     }
@@ -2135,19 +2135,38 @@ exports.deletePost = async (req, res) => {
 
         // 2. Check Permissions
         if (author_org_id) {
+            // Case A: The request is made in the context of the org that owns the post.
+            // Any member with CREATE_CONTENT or MANAGE_CONTENT can delete; the original author always can.
             if (orgId && author_org_id === orgId) {
                 if (author_id === userId) {
                     canDelete = true;
                 } else {
                     const { checkOrgPermission } = require("../../core/utils/rbac");
-                    const hasPerm = await checkOrgPermission(client, orgId, userId, ["CREATE_CONTENT", "MANAGE_CONTENT"]);
+                    const hasPerm = await checkOrgPermission(client, orgId, userId, ["CREATE_CONTENT", "CREATE_POST", "MANAGE_CONTENT"]);
                     if (hasPerm) {
                         canDelete = true;
                     }
                 }
             }
+            // Case B: The request is NOT in the org context (e.g. user is browsing as personal,
+            // or is on the company profile page without the org actor header set).
+            // The human who originally authored the post can still delete it —
+            // they just aren't currently "acting as" the company.
+            else if (author_id === userId) {
+                // Verify the user really is a member (or owner) of that org so we don't let
+                // an outsider delete a post simply because their user_id happens to match.
+                const memberCheck = await client.query(
+                    `SELECT 1 FROM organization_members WHERE org_id = $1 AND user_id = $2 AND status = 'ACTIVE'
+                     UNION ALL
+                     SELECT 1 FROM organizations WHERE org_id = $1 AND created_by = $2`,
+                    [author_org_id, userId]
+                );
+                if (memberCheck.rowCount > 0) {
+                    canDelete = true;
+                }
+            }
         } else {
-            if (!orgId && author_id === userId) {
+            if (author_id === userId) {
                 canDelete = true;
             }
         }

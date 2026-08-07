@@ -2115,6 +2115,7 @@ CREATE TABLE IF NOT EXISTS user_notification_preferences (
     job_alerts BOOLEAN DEFAULT TRUE,
     message_notifications BOOLEAN DEFAULT TRUE,
     email_notifications BOOLEAN DEFAULT TRUE,
+    push_notifications BOOLEAN DEFAULT TRUE,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
@@ -2306,7 +2307,8 @@ ALTER TABLE organization_notification_preferences
     ADD COLUMN IF NOT EXISTS messages_enabled BOOLEAN NOT NULL DEFAULT true,
     ADD COLUMN IF NOT EXISTS messages_chat_enabled BOOLEAN NOT NULL DEFAULT true,
     ADD COLUMN IF NOT EXISTS messages_jobs_enabled BOOLEAN NOT NULL DEFAULT true,
-    ADD COLUMN IF NOT EXISTS email_enabled BOOLEAN NOT NULL DEFAULT true;
+    ADD COLUMN IF NOT EXISTS email_enabled BOOLEAN NOT NULL DEFAULT true,
+    ADD COLUMN IF NOT EXISTS push_enabled BOOLEAN NOT NULL DEFAULT true;
 
 ALTER TABLE organizations
     ADD COLUMN IF NOT EXISTS is_deactivated BOOLEAN NOT NULL DEFAULT false,

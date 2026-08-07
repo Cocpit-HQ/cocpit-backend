@@ -2442,6 +2442,7 @@ WHERE gi.invitee_id = $1
             // Determine online status for direct (non-group) conversations
             onlineStatus: (function () {
                 if (c.is_group) return 'offline'; // groups don't have a single status
+                if (c.is_blocked_by_me || c.is_blocked_by_other) return 'offline';
                 const otherId = c.other_user_id;
                 // Prioritize typing status
                 if (socketService.isUserTyping(otherId, c.conversation_id)) return 'typing';

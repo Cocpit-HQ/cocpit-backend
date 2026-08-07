@@ -119,6 +119,12 @@ exports.createOrganization = async (req, res) => {
             [company.org_id, userId, ownerRoleId]
         );
 
+        // Add creator as a follower automatically
+        await client.query(
+            `INSERT INTO organization_followers (org_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+            [company.org_id, userId]
+        );
+
         // 6. Audit Log
         await logAudit(client, {
             entityId: company.org_id,
@@ -2010,6 +2016,12 @@ exports.completeOnboardingFlow = async (req, res) => {
                 [orgId, userId, ownerRoleId]
             );
         }
+
+        // Add creator as a follower automatically
+        await client.query(
+            `INSERT INTO organization_followers (org_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+            [orgId, userId]
+        );
 
         await logAudit(client, {
             entityId: orgId,
