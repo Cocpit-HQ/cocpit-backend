@@ -3755,8 +3755,8 @@ exports.getNotifications = async (req, res) => {
                 AND NOT EXISTS (
                     SELECT 1
                     FROM blocks b
-                    WHERE b.blocker_id = $1
-                    AND b.blocked_id = n.sender_id
+                    WHERE (b.blocker_id = $1 AND ((n.sender_id IS NOT NULL AND b.blocked_id = n.sender_id) OR (NULLIF(n.metadata->>'org_id', '')::uuid IS NOT NULL AND b.blocked_id = (n.metadata->>'org_id')::uuid)))
+                       OR (b.blocked_id = $1 AND ((n.sender_id IS NOT NULL AND b.blocker_id = n.sender_id) OR (NULLIF(n.metadata->>'org_id', '')::uuid IS NOT NULL AND b.blocker_id = (n.metadata->>'org_id')::uuid)))
                 )
             `;
         } else {
@@ -3766,8 +3766,8 @@ exports.getNotifications = async (req, res) => {
                 AND NOT EXISTS (
                     SELECT 1
                     FROM blocks b
-                    WHERE b.blocker_id = $1
-                    AND b.blocked_id = n.sender_id
+                    WHERE (b.blocker_id = $1 AND ((n.sender_id IS NOT NULL AND b.blocked_id = n.sender_id) OR (NULLIF(n.metadata->>'org_id', '')::uuid IS NOT NULL AND b.blocked_id = (n.metadata->>'org_id')::uuid)))
+                       OR (b.blocked_id = $1 AND ((n.sender_id IS NOT NULL AND b.blocker_id = n.sender_id) OR (NULLIF(n.metadata->>'org_id', '')::uuid IS NOT NULL AND b.blocker_id = (n.metadata->>'org_id')::uuid)))
                 )
             `;
         }
@@ -4029,6 +4029,13 @@ exports.blockUser = async (req, res) => {
                     "DELETE FROM organization_connection_requests WHERE (org_id = $1 AND user_id = $2) OR (org_id = $2 AND user_id = $1)",
                     [blockerId, targetId]
                 );
+                // Delete notifications between org blocker and target user
+                await client.query(
+                    `DELETE FROM notifications 
+                     WHERE (user_id = $2 AND (sender_id = $1 OR NULLIF(metadata->>'org_id', '')::uuid = $1))
+                        OR (recipient_org_id = $1 AND sender_id = $2)`,
+                    [blockerId, targetId]
+                );
             } else {
                 // Delete user connections (bidirectional)
                 await client.query(
@@ -4060,6 +4067,13 @@ exports.blockUser = async (req, res) => {
                 );
                 await client.query(
                     "DELETE FROM community_subscriptions WHERE user_id = $1 AND community_id IN (SELECT community_id FROM communities WHERE org_id = $2)",
+                    [blockerId, targetId]
+                );
+                // Delete notifications between user blocker and target
+                await client.query(
+                    `DELETE FROM notifications 
+                     WHERE (user_id = $1 AND (sender_id = $2 OR NULLIF(metadata->>'org_id', '')::uuid = $2))
+                        OR (user_id = $2 AND (sender_id = $1 OR NULLIF(metadata->>'org_id', '')::uuid = $1))`,
                     [blockerId, targetId]
                 );
             }

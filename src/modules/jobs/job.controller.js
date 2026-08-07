@@ -152,6 +152,11 @@ exports.getAllJobs = async (req, res) => {
       conditions.push(`j.recruiter_id != $1`);
       conditions.push(`(ja.application_id IS NULL OR ja.current_status = 'Withdrawn')`);
       conditions.push(`jo.offer_id IS NULL`);
+      conditions.push(`NOT EXISTS (
+        SELECT 1 FROM blocks b
+        WHERE (j.org_id IS NOT NULL AND ((b.blocker_id = $1 AND b.blocked_id = j.org_id) OR (b.blocker_id = j.org_id AND b.blocked_id = $1)))
+           OR (j.recruiter_id IS NOT NULL AND ((b.blocker_id = $1 AND b.blocked_id = j.recruiter_id) OR (b.blocker_id = j.recruiter_id AND b.blocked_id = $1)))
+      )`);
     }
 
     // Base params
@@ -252,6 +257,11 @@ exports.getRecommendations = async (req, res) => {
       ${userId ? "AND j.recruiter_id != $1" : ""}
       ${userId ? "AND (ja.application_id IS NULL OR ja.current_status = 'Withdrawn')" : ""}
       ${userId ? "AND jo.offer_id IS NULL" : ""}
+      ${userId ? `AND NOT EXISTS (
+        SELECT 1 FROM blocks b
+        WHERE (j.org_id IS NOT NULL AND ((b.blocker_id = $1 AND b.blocked_id = j.org_id) OR (b.blocker_id = j.org_id AND b.blocked_id = $1)))
+           OR (j.recruiter_id IS NOT NULL AND ((b.blocker_id = $1 AND b.blocked_id = j.recruiter_id) OR (b.blocker_id = j.recruiter_id AND b.blocked_id = $1)))
+      )` : ""}
       ORDER BY j.created_at DESC
       LIMIT 3
     `;
@@ -368,6 +378,15 @@ exports.getJobById = async (req, res) => {
     }
 
     const job = result.rows[0];
+
+    if (userId) {
+      const BlockModel = require("../../models/block.model");
+      const isOrgBlocked = job.org_id ? await BlockModel.isAnyBlocked(userId, job.org_id) : false;
+      const isRecruiterBlocked = job.recruiter_id ? await BlockModel.isAnyBlocked(userId, job.recruiter_id) : false;
+      if (isOrgBlocked || isRecruiterBlocked) {
+        return res.status(404).json({ message: "Job not found" });
+      }
+    }
 
     // Calculate recruiter/company analytics
     let responseRate = null;
@@ -1383,6 +1402,11 @@ exports.getMySavedJobs = async (req, res) => {
       LEFT JOIN job_applications ja ON ja.job_id = j.job_id AND ja.applicant_id = $1
       LEFT JOIN job_offers jo ON jo.job_id = j.job_id AND jo.user_id = $1
       WHERE js.user_id = $1 AND j.is_active = TRUE AND u.user_id IS NOT NULL AND (j.org_id IS NULL OR (c.is_deleted = FALSE AND c.is_deactivated = FALSE))
+        AND NOT EXISTS (
+          SELECT 1 FROM blocks b
+          WHERE (j.org_id IS NOT NULL AND ((b.blocker_id = $1 AND b.blocked_id = j.org_id) OR (b.blocker_id = j.org_id AND b.blocked_id = $1)))
+             OR (j.recruiter_id IS NOT NULL AND ((b.blocker_id = $1 AND b.blocked_id = j.recruiter_id) OR (b.blocker_id = j.recruiter_id AND b.blocked_id = $1)))
+        )
       `;
 
     if (conditions.length > 0) {

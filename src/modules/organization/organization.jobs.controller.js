@@ -173,6 +173,14 @@ exports.getOrganizationJobs = async (req, res) => {
                 return res.status(403).json({ message: "Organization is suspended" });
             }
 
+            if (req.user?.sub) {
+                const BlockModel = require("../../models/block.model");
+                const isBlocked = await BlockModel.isAnyBlocked(companyId, req.user.sub);
+                if (isBlocked) {
+                    return res.status(200).json([]);
+                }
+            }
+
             conditions.push("j.status = 'ACTIVE'");
             conditions.push("(j.expires_at IS NULL OR j.expires_at > NOW())");
         } else if (scope === 'internal') {
