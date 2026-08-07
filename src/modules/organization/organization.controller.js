@@ -667,6 +667,68 @@ exports.sendDeleteOrgOTP = async (req, res) => {
         client.release();
     }
 };
+exports.validateOTPForOrganizationDeletion = async (req, res) => {
+    const { orgId } = req.params;
+    const userId = req.user.sub;
+    const { otp } = req.body;
+
+    if (!otp || String(otp).trim().length !== 6) {
+        return res.status(400).json({ message: "6-digit verification code is required" });
+    }
+
+    const client = await pool.connect();
+    try {
+        // 1. Check Owner/Admin Permission
+        const isOwner = await checkOrgPermission(client, orgId, userId, '*');
+        if (!isOwner) {
+            throw new AppError("Forbidden: Only authorized administrators (Owner/Admin) can delete this organization", 403);
+        }
+
+        // 2. Fetch Org & Email Target
+        const orgRes = await client.query(
+            "SELECT name, email, created_by FROM organizations WHERE org_id = $1 AND is_deleted = FALSE",
+            [orgId]
+        );
+        if (orgRes.rowCount === 0) {
+            throw new AppError("Organization not found or already deleted", 404);
+        }
+        const org = orgRes.rows[0];
+
+        const ownerRes = await client.query(
+            "SELECT email FROM users WHERE user_id = $1",
+            [org.created_by || userId]
+        );
+        const ownerEmail = ownerRes.rows[0]?.email;
+        const orgEmail = org.email;
+
+        const recipientSet = new Set();
+        if (orgEmail && orgEmail.trim()) recipientSet.add(orgEmail.toLowerCase().trim());
+        if (ownerEmail && ownerEmail.trim()) recipientSet.add(ownerEmail.toLowerCase().trim());
+
+        const recipients = Array.from(recipientSet);
+        if (recipients.length === 0) {
+            throw new AppError("No registered email address found for this organization or owner", 400);
+        }
+
+        // 3. Verify OTP via otpService (consume = false)
+        const { verifyOTP } = require("../auth/otp.service");
+        let otpResult = await verifyOTP(recipients[0], otp, false);
+        if (otpResult.error && otpResult.error.message.includes("No active OTP found") && recipients.length > 1) {
+            otpResult = await verifyOTP(recipients[1], otp, false);
+        }
+
+        if (otpResult.error) {
+            return res.status(otpResult.error.status || 400).json({ message: otpResult.error.message });
+        }
+
+        return res.status(200).json({ success: true, message: "OTP verified successfully" });
+    } catch (error) {
+        console.error("Error validating OTP for organization deletion:", error);
+        res.status(error.status || 500).json({ message: error.message || "Failed to validate OTP" });
+    } finally {
+        client.release();
+    }
+};
 
 exports.verifyOTPAndDeleteOrganization = async (req, res) => {
     const { orgId } = req.params;

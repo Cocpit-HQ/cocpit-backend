@@ -16,6 +16,7 @@ const pool = require('../../../core/db/pool');
 const { compareExperience, getLatestEducation, calculateTotalExperienceYears } = require('./application.utils');
 const { generateLocalSystemFallback, analyzeCandidate } = require('../../../services/candidateAnalysis.service');
 const { redisClient } = require('../../../core/db/redis');
+const socketService = require('../../../core/infrastructure/socket.service');
 
 // ─── Shared auth helper ───────────────────────────────────────────────────────
 // Asserts that the requesting user is either the direct recruiter or an org
@@ -357,6 +358,54 @@ exports.updateApplicationStatus = async (req, res) => {
        VALUES ($1, $2)`,
       [applicationId, status]
     );
+
+    // Send notification to candidate if they are shortlisted or get an offer
+    if (status === 'Shortlisted' || status === 'Offer') {
+      const appDetailsRes = await pool.query(`
+        SELECT ja.applicant_id, j.title, j.job_id, o.name as company_name, o.org_id, o.logo_url as company_avatar
+        FROM job_applications ja
+        JOIN jobs j ON ja.job_id = j.job_id
+        LEFT JOIN organizations o ON j.org_id = o.org_id
+        WHERE ja.application_id = $1
+      `, [applicationId]);
+
+      if (appDetailsRes.rowCount > 0) {
+        const { applicant_id, title, job_id, company_name, org_id, company_avatar } = appDetailsRes.rows[0];
+        const senderId = req.user.sub;
+        
+        const recruiterRes = await pool.query(`SELECT full_name, avatar_url FROM users WHERE user_id = $1`, [senderId]);
+        const recruiter = recruiterRes.rows[0];
+        
+        const senderName = company_name || recruiter?.full_name || 'Someone';
+        const senderAvatar = company_avatar || recruiter?.avatar_url || null;
+        
+        const notificationType = status === 'Shortlisted' ? 'application_shortlisted' : 'job_offer';
+        const notificationText = status === 'Shortlisted' 
+            ? `has shortlisted you for ${title}`
+            : `has sent you a job offer for ${title}`;
+        
+        await pool.query(`
+          INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata)
+          VALUES ($1, $2, $3, $4, $5, $6)
+        `, [
+          applicant_id,
+          senderId,
+          notificationType,
+          notificationText,
+          job_id,
+          JSON.stringify({ job_id, application_id: applicationId, org_id })
+        ]);
+        
+        socketService.notifyUser(applicant_id, "notification", {
+          type: notificationType,
+          text: notificationText,
+          senderName: senderName,
+          senderAvatar: senderAvatar,
+          referenceId: job_id,
+          metadata: { job_id, application_id: applicationId, org_id }
+        });
+      }
+    }
 
     res.json({ message: 'Status updated', status });
 

@@ -138,6 +138,7 @@ router.put("/organizations/:orgId", requireAuth, requireOrgPermission("MANAGE_CO
 router.post("/organizations/restore", organizationController.restoreOrganization);
 
 router.post("/organizations/:orgId/delete/send-otp", requireAuth, requireOrgPermission("MANAGE_COMPANY"), otpGenerationLimiter, organizationController.sendDeleteOrgOTP);
+router.post("/organizations/:orgId/delete/validate-otp", requireAuth, requireOrgPermission("MANAGE_COMPANY"), organizationActionLimiter, organizationController.validateOTPForOrganizationDeletion);
 router.post("/organizations/:orgId/delete/verify-otp", requireAuth, requireOrgPermission("MANAGE_COMPANY"), organizationActionLimiter, organizationController.verifyOTPAndDeleteOrganization);
 
 router.delete("/organizations/:orgId", requireAuth, requireOrgPermission("MANAGE_COMPANY"), organizationActionLimiter, organizationController.deleteOrganization);

@@ -2111,6 +2111,7 @@ SELECT
         WHEN c.is_group THEN COALESCE(cp.left_group_name, c.conversation_name, 'Group Chat')
         -- WHEN EXISTS(SELECT 1 FROM blocks WHERE blocker_id = u.user_id AND blocked_id = $1) THEN 'User not found' -- Update for Company?
         WHEN comp.org_id IS NOT NULL THEN comp.name
+        WHEN raw_u.is_deactivated THEN 'Unknown User'
         WHEN u.display_name IS NULL AND comp.org_id IS NULL THEN COALESCE(c.conversation_name, 'Deleted User')
         ELSE u.display_name 
     END AS other_user_name,
@@ -2126,7 +2127,7 @@ SELECT
     
     -- Other ID (User or Company)
     COALESCE(u.user_id, comp.org_id) AS other_user_id,
-    u.display_headline AS other_user_headline,
+    CASE WHEN raw_u.is_deactivated THEN 'This user has gone offline - for a while.' ELSE u.display_headline END AS other_user_headline,
     COALESCE(comp.headline, '') AS org_headline,
     CASE WHEN comp.org_id IS NOT NULL THEN 'COMPANY' ELSE 'USER' END as other_user_type,
     COALESCE(comp.slug, u.display_username) AS other_user_slug,
@@ -2262,6 +2263,7 @@ LEFT JOIN LATERAL (
     LIMIT 1
 ) cp_other ON c.is_group = FALSE
 LEFT JOIN user_display_profiles u ON cp_other.user_id = u.user_id
+LEFT JOIN users raw_u ON cp_other.user_id = raw_u.user_id
 LEFT JOIN organization_display_profiles comp ON cp_other.org_id = comp.org_id -- JOIN organizations for Company participants
 
 -- LATERAL JOIN to find the latest VISIBLE message across ANY period
@@ -3426,8 +3428,8 @@ exports.getMessages = async (req, res) => {
                        AND (m.sender_id IS NULL OR cp.user_id != m.sender_id)
                     ), 0
                 ) AS seen_count,
-                COALESCE(c.name, u.display_name, 'Deleted User') as sender_name,
-                u.display_name as sender_member_name,
+                CASE WHEN raw_u_msg.is_deactivated THEN 'Unknown User' ELSE COALESCE(c.name, u.display_name, 'Deleted User') END as sender_name,
+                CASE WHEN raw_u_msg.is_deactivated THEN 'Unknown User' ELSE u.display_name END as sender_member_name,
                 COALESCE(c.headline, '') as sender_org_headline,
                 CASE WHEN m.author_org_id IS NOT NULL THEN COALESCE(c.headline, '') ELSE '' END as org_headline,
                 COALESCE(c.logo_url, u.display_avatar, NULL) as sender_avatar,
@@ -3508,6 +3510,7 @@ exports.getMessages = async (req, res) => {
                 ) AS reactions
              FROM messages m
              LEFT JOIN user_display_profiles u ON m.sender_id = u.user_id
+             LEFT JOIN users raw_u_msg ON m.sender_id = raw_u_msg.user_id
              LEFT JOIN organization_display_profiles c ON m.author_org_id = c.org_id
              LEFT JOIN posts sp ON m.shared_post_id = sp.post_id
              LEFT JOIN user_display_profiles au ON sp.author_id = au.user_id
