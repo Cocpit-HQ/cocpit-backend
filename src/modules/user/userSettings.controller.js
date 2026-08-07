@@ -1104,12 +1104,12 @@ exports.unblockUser = async (req, res) => {
             const orgId = req.actor.orgId;
             const userId = req.user.sub;
 
-            // Check permissions
-            const isOwner = req.actor.roleName === 'Owner' || req.actor.permissions.includes('*');
-            const hasSettingsPerm = req.actor.permissions.some(p => ['SETTINGS', 'MANAGE_SETTINGS', 'MANAGE_COMPANY', 'MANAGE_INSTITUTION'].includes(p.toUpperCase()));
+            // Check permissions: Only Owner or Admin can manage organization blocked accounts
+            const isOwner = req.actor.roleName === 'Owner' || (req.actor.permissions && req.actor.permissions.includes('*'));
+            const isAdmin = (req.actor.roleName || '').toUpperCase() === 'ADMIN' || isOwner;
 
-            if (!isOwner && !hasSettingsPerm) {
-                return res.status(403).json({ success: false, message: "You do not have permission to manage organization blocked accounts" });
+            if (!isOwner && !isAdmin) {
+                return res.status(403).json({ success: false, message: "Only organization owners or administrators can manage organization blocked accounts" });
             }
 
             await BlockModel.unblockUser(orgId, id, true);

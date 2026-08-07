@@ -98,7 +98,7 @@ async function _fetchChronologicalFeed(userId, cursor, limit, pool, orgActorId) 
     cursorTs = cursor.slice(3);
   }
 
-  // Fetch chronological posts, filtering blocked users directly in SQL
+  // Fetch chronological posts, filtering blocked users and blocked organizations directly in SQL
   const query = `
     SELECT p.post_id AS id, 'post' AS type, 'organic' AS slot_type, p.created_at
     FROM posts p
@@ -111,10 +111,15 @@ async function _fetchChronologicalFeed(userId, cursor, limit, pool, orgActorId) 
         WHERE (b.blocker_id = $2 AND b.blocked_id = p.author_id)
            OR (b.blocker_id = p.author_id AND b.blocked_id = $2)
       )
+      AND NOT EXISTS (
+        SELECT 1 FROM organization_blocked_accounts oba
+        WHERE (oba.org_id = $4 AND (oba.blocked_id = p.author_id OR (p.author_org_id IS NOT NULL AND oba.blocked_id = p.author_org_id)))
+           OR (oba.blocked_id = $2 AND (p.author_org_id IS NOT NULL AND oba.org_id = p.author_org_id))
+      )
     ORDER BY p.created_at DESC
     LIMIT $3
   `;
-  const result = await pool.query(query, [cursorTs, userId, limit]);
+  const result = await pool.query(query, [cursorTs, userId, limit, orgActorId || null]);
   let items = result.rows;
 
   // Filter explicitly hidden posts

@@ -2090,7 +2090,7 @@ SELECT
         JOIN conversation_participants cp_b ON cp_b.conversation_id = c.conversation_id 
         WHERE b.blocker_id = COALESCE($2, $1) 
           AND (
-            (cp_b.user_id IS NOT NULL AND cp_b.user_id != $1 AND b.blocked_id = cp_b.user_id)
+            (cp_b.user_id IS NOT NULL AND ($2::uuid IS NOT NULL OR cp_b.user_id != $1) AND ($2::uuid IS NULL OR cp_b.org_id IS NULL OR cp_b.org_id != $2) AND b.blocked_id = cp_b.user_id)
             OR
             (cp_b.org_id IS NOT NULL AND ($2::uuid IS NULL OR cp_b.org_id != $2) AND b.blocked_id = cp_b.org_id)
           )
@@ -2100,7 +2100,7 @@ SELECT
         JOIN conversation_participants cp_b ON cp_b.conversation_id = c.conversation_id 
         WHERE b.blocked_id = COALESCE($2, $1) 
           AND (
-            (cp_b.user_id IS NOT NULL AND cp_b.user_id != $1 AND b.blocker_id = cp_b.user_id)
+            (cp_b.user_id IS NOT NULL AND ($2::uuid IS NOT NULL OR cp_b.user_id != $1) AND ($2::uuid IS NULL OR cp_b.org_id IS NULL OR cp_b.org_id != $2) AND b.blocker_id = cp_b.user_id)
             OR
             (cp_b.org_id IS NOT NULL AND ($2::uuid IS NULL OR cp_b.org_id != $2) AND b.blocker_id = cp_b.org_id)
           )
@@ -2255,9 +2255,9 @@ LEFT JOIN LATERAL (
     WHERE cp_o.conversation_id = c.conversation_id
       AND c.is_group = FALSE
       AND (
-          ($2::uuid IS NOT NULL AND (cp_o.org_id != $2 OR cp_o.org_id IS NULL))
+          ($2::uuid IS NOT NULL AND (cp_o.org_id IS NULL OR cp_o.org_id != $2))
           OR
-          ($2::uuid IS NULL AND (cp_o.user_id != $1 OR cp_o.user_id IS NULL))
+          ($2::uuid IS NULL AND (cp_o.user_id IS NULL OR cp_o.user_id != $1))
       )
     LIMIT 1
 ) cp_other ON c.is_group = FALSE
@@ -2329,15 +2329,7 @@ LEFT JOIN LATERAL (
 ) m ON true
 
 
--- Self-message guard: in company mode, exclude conversations where current user is also a direct participant
-WHERE ($2::uuid IS NULL OR NOT EXISTS (
-    SELECT 1 FROM conversation_participants cp_self_guard
-    WHERE cp_self_guard.conversation_id = c.conversation_id
-    AND cp_self_guard.user_id = $1
-    AND cp_self_guard.left_at IS NULL
-    AND c.is_group = FALSE
-))
-AND c.is_active = TRUE
+WHERE c.is_active = TRUE
 -- Company mode strictly hides group chats
 AND ($2::uuid IS NULL OR c.is_group = FALSE)
 -- Filter by tab (JOBS vs GENERAL) if requested
@@ -3960,15 +3952,34 @@ exports.blockUser = async (req, res) => {
                 }
             }
         } else {
-            // Organization is blocking target. Verify target is not the creator or active member of this organization
-            const memberCheck = await pool.query(
-                `SELECT 1 FROM organization_members WHERE org_id = $1 AND user_id = $2 AND status = 'ACTIVE'
-                 UNION
-                 SELECT 1 FROM organizations WHERE org_id = $1 AND created_by = $2`,
+            // Check if acting user on behalf of organization is Owner or Admin
+            const isOwner = req.actor.roleName === 'Owner' || (req.actor.permissions && req.actor.permissions.includes('*'));
+            const isAdmin = (req.actor.roleName || '').toUpperCase() === 'ADMIN' || isOwner;
+
+            if (!isOwner && !isAdmin) {
+                return res.status(403).json({ success: false, message: "Only organization owners or administrators can block accounts" });
+            }
+
+            // Organization is blocking target. Verify target is not an Owner or Admin of this organization.
+            const targetRoleCheck = await pool.query(
+                `SELECT om.role_id, r.name AS role_name, r.permissions, o.created_by
+                 FROM organizations o
+                 LEFT JOIN organization_members om ON om.org_id = o.org_id AND om.user_id = $2 AND om.status = 'ACTIVE'
+                 LEFT JOIN organization_roles r ON om.role_id = r.role_id
+                 WHERE o.org_id = $1`,
                 [blockerId, targetId]
             );
-            if (memberCheck.rowCount > 0) {
-                return res.status(400).json({ message: "An organization cannot block its own owner or active members" });
+
+            if (targetRoleCheck.rowCount > 0) {
+                const row = targetRoleCheck.rows[0];
+                const isCreator = row.created_by === targetId;
+                const roleName = (row.role_name || '').toUpperCase();
+                const isTargetOwner = isCreator || roleName === 'OWNER' || (row.permissions && Array.isArray(row.permissions) && row.permissions.includes('*'));
+                const isTargetAdmin = roleName === 'ADMIN' || isTargetOwner;
+
+                if (isTargetAdmin) {
+                    return res.status(400).json({ success: false, message: "An organization cannot block its own owner or administrator." });
+                }
             }
         }
 
@@ -3977,22 +3988,42 @@ exports.blockUser = async (req, res) => {
         // Use model to record block (foreign key is safe)
         await BlockModel.blockUser(blockerId, targetId, isOrgActor);
 
-        // Remove any existing relationships (follows, connections, requests, subscriptions)
+        // Remove any existing relationships (membership, followers, following, connections, requests)
         const client = await pool.connect();
         try {
             await client.query("BEGIN");
             if (isOrgActor) {
-                // Delete org follows / connections with target user
+                // Delete membership if target was a non-admin member
+                await client.query(
+                    "DELETE FROM organization_members WHERE org_id = $1 AND user_id = $2",
+                    [blockerId, targetId]
+                );
+
+                // Delete followers (target user following org)
+                await client.query(
+                    "DELETE FROM organization_followers WHERE org_id = $1 AND user_id = $2",
+                    [blockerId, targetId]
+                );
+
+                // Delete org follows (org following target user)
                 await client.query(
                     "DELETE FROM organization_user_follows WHERE org_id = $1 AND user_id = $2",
                     [blockerId, targetId]
                 );
+
+                // Delete org-to-org follows (bidirectional)
                 await client.query(
-                    "DELETE FROM organization_connections WHERE org_id = $1 AND user_id = $2",
+                    "DELETE FROM organization_org_follows WHERE (follower_org_id = $1 AND following_org_id = $2) OR (follower_org_id = $2 AND following_org_id = $1)",
+                    [blockerId, targetId]
+                );
+
+                // Delete org connections & connection requests
+                await client.query(
+                    "DELETE FROM organization_connections WHERE (org_id = $1 AND user_id = $2) OR (org_id = $2 AND user_id = $1)",
                     [blockerId, targetId]
                 );
                 await client.query(
-                    "DELETE FROM organization_connection_requests WHERE org_id = $1 AND user_id = $2",
+                    "DELETE FROM organization_connection_requests WHERE (org_id = $1 AND user_id = $2) OR (org_id = $2 AND user_id = $1)",
                     [blockerId, targetId]
                 );
             } else {
@@ -4243,6 +4274,15 @@ exports.unblockUser = async (req, res) => {
     const isOrgActor = req.actor?.type === "ORGANIZATION";
     const blockerId = isOrgActor ? req.actor.orgId : req.user.sub;
     const targetId = req.params.id;
+
+    if (isOrgActor) {
+        const isOwner = req.actor.roleName === 'Owner' || (req.actor.permissions && req.actor.permissions.includes('*'));
+        const isAdmin = (req.actor.roleName || '').toUpperCase() === 'ADMIN' || isOwner;
+
+        if (!isOwner && !isAdmin) {
+            return res.status(403).json({ success: false, message: "Only organization owners or administrators can unblock accounts" });
+        }
+    }
 
     try {
         const BlockModel = require("../../models/block.model");

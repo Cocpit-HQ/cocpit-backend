@@ -45,7 +45,11 @@ async function notifyOrgFollowers(orgId, category, notificationData) {
        FROM organization_followers cf
        INNER JOIN organization_notification_preferences cnp
          ON cf.user_id = cnp.user_id AND cf.org_id = cnp.org_id
-       WHERE cf.org_id = $1 AND cnp.${column} = TRUE`,
+       WHERE cf.org_id = $1 AND cnp.${column} = TRUE
+         AND NOT EXISTS (
+           SELECT 1 FROM organization_blocked_accounts oba
+           WHERE oba.org_id = $1 AND oba.blocked_id = cf.user_id
+         )`,
             [orgId]
         );
 
