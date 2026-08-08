@@ -222,7 +222,7 @@ exports.getMyProfile = async (req, res) => {
 exports.updateProfile = async (req, res) => {
     const userId = req.user.sub;
     const { full_name, headline, job_title, company_name, school, degree, location, about_text, mobile_number,
-        account_name, website } = req.body;
+        account_name, website, industry } = req.body;
 
     if (full_name && full_name.trim().length < 3) return res.status(400).json({ message: "Full name must be at least 3 characters" });
     if (headline && headline.length > 120) return res.status(400).json({ message: "Headline cannot exceed 120 characters" });
@@ -252,6 +252,9 @@ exports.updateProfile = async (req, res) => {
 
     try {
         await profileRepo.updateUserFields(userId, req.body);
+        if (industry !== undefined) {
+            await profileRepo.updateProfileIndustry(userId, industry);
+        }
         res.json({ message: "Profile updated successfully" });
     } catch (err) {
         console.error("Update profile error:", err);

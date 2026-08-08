@@ -14,6 +14,7 @@ const getFullProfile = async (userId) => {
                 u.location_formatted, u.location_country, u.location_state, u.location_city,
                 u.location_lat, u.location_lng, u.location_place_id, u.is_identity_verified,
                 p.profile_id, p.account_type, p.open_to, p.availability, p.work_preference,
+                p.working_industry AS industry,
                 p.profile_views_count, p.search_appearances_count, p.version
          FROM active_users u
          LEFT JOIN profiles p ON u.user_id = p.user_id
@@ -43,6 +44,14 @@ const updateAvatarUrl = async (userId, url) => {
     await pool.query("UPDATE users SET avatar_url = $1 WHERE user_id = $2", [url, userId]);
 };
 
+const updateProfileIndustry = async (userId, industry) => {
+    await ensureProfileId(userId);
+    await pool.query(
+        "UPDATE profiles SET working_industry = $1, updated_at = now() WHERE user_id = $2",
+        [industry, userId]
+    );
+};
+
 const getAvatarUrl = async (userId) => {
     const result = await pool.query("SELECT avatar_url FROM users WHERE user_id = $1", [userId]);
     return result.rows[0]?.avatar_url || null;
@@ -63,6 +72,7 @@ const getIdentity = async (userId) => {
 };
 
 const updateIdentity = async (userId, { open_to, availability, work_preference, account_type }) => {
+    await ensureProfileId(userId, account_type || "Student");
     let query = `UPDATE profiles SET open_to = $1, availability = $2, work_preference = $3`;
     let params = [open_to, availability, work_preference];
     let idx = 4;
@@ -118,9 +128,9 @@ const ensureProfileId = async (userId, accountType = "Student") => {
     let profileId = await getProfileId(userId);
     if (!profileId) {
         const result = await pool.query(
-            `INSERT INTO profiles (user_id, open_to, availability, work_preference) 
-             VALUES ($1, $2, $3, $4) RETURNING profile_id`,
-            [userId, accountType === "Employer" ? "Full-time" : "Freelance", "Immediate", "Remote"]
+            `INSERT INTO profiles (user_id, open_to, availability, work_preference, account_type) 
+             VALUES ($1, $2, $3, $4, $5) RETURNING profile_id`,
+            [userId, accountType === "Employer" ? "Full-time" : "Freelance", "Immediately", "Remote", accountType]
         );
         profileId = result.rows[0].profile_id;
     }
@@ -819,7 +829,7 @@ const getProfileScoreData = async (userId) => {
 };
 
 module.exports = {
-    getFullProfile, updateUserFields, updateAvatarUrl, getAvatarUrl, updateCoverUrl,
+    getFullProfile, updateUserFields, updateAvatarUrl, getAvatarUrl, updateCoverUrl, updateProfileIndustry,
     getIdentity, updateIdentity,
     getResume, getLatestResume, replaceResume, deleteResume,
     getProfileId, ensureProfileId, getProfileVersion, incrementProfileVersion,

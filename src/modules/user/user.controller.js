@@ -266,7 +266,8 @@ exports.getUserProfile = async (req, res) => {
         p.account_type,
         p.open_to,
         p.availability,
-        p.work_preference
+        p.work_preference,
+        p.working_industry AS industry
        
       FROM active_users u
       LEFT JOIN profiles p ON u.user_id = p.user_id

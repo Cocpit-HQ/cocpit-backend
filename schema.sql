@@ -38,6 +38,7 @@ CREATE TABLE users (
   updated_at TIMESTAMPTZ DEFAULT now(),
   deletion_scheduled_at TIMESTAMPTZ,
   deletion_execute_at TIMESTAMPTZ,
+  is_deactivated BOOLEAN DEFAULT false,
   CONSTRAINT mobile_format CHECK (mobile_number ~ '^[0-9]{10}$')
 );
 
@@ -1869,8 +1870,8 @@ SELECT
     END AS location
 FROM users;
 
--- 1. Add preferred_industry
-ALTER TABLE profiles ADD COLUMN IF NOT EXISTS preferred_industry TEXT;
+-- 1. Add working_industry
+ALTER TABLE profiles ADD COLUMN IF NOT EXISTS working_industry TEXT;
  
 -- 2. Add work_mode as a new column
 ALTER TABLE profiles ADD COLUMN IF NOT EXISTS work_mode job_work_mode;
