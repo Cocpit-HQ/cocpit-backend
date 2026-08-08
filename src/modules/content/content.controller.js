@@ -5059,8 +5059,11 @@ exports.getPostLikes = async (req, res) => {
 // --- Enhance with AI (General Text Generator) ---
 exports.generateAIContent = async (req, res) => {
     try {
-        const { prompt, tone, context } = req.body;
-        const userId = req.user?.sub || req.user?.user_id;
+        const { prompt, tone, context, companyId } = req.body;
+        
+        const actorScope = getContentActorScope(req, companyId || null);
+        const userId = actorScope.userId;
+        const orgId = actorScope.orgId;
 
         if (!prompt || typeof prompt !== "string" || prompt.trim().length === 0) {
             return res.status(400).json({ success: false, message: "Prompt is required" });
@@ -5072,7 +5075,7 @@ exports.generateAIContent = async (req, res) => {
 
         const sourceIp = req.headers["x-forwarded-for"] || req.socket.remoteAddress;
 
-        const generatedText = await contentGenerationService.generateGeneralText(prompt, tone, context, userId, sourceIp);
+        const generatedText = await contentGenerationService.generateGeneralText(prompt, tone, context, userId, sourceIp, orgId);
 
         return res.status(200).json({ success: true, text: generatedText });
     } catch (err) {
@@ -5083,14 +5086,18 @@ exports.generateAIContent = async (req, res) => {
 
 exports.getAIUsage = async (req, res) => {
     try {
-        const userId = req.user?.sub || req.user?.user_id;
-        if (!userId) {
+        const companyId = req.query.companyId;
+        const actorScope = getContentActorScope(req, companyId || null);
+        const userId = actorScope.userId;
+        const orgId = actorScope.orgId;
+
+        if (!userId && !orgId) {
             return res.status(401).json({ success: false, message: "Unauthorized" });
         }
-        const stats = await contentGenerationService.getAIUsageStats(userId);
+        const stats = await contentGenerationService.getAIUsageStats(userId, orgId);
         return res.status(200).json({ success: true, remainingMonthly: Math.max(0, 45 - stats.monthlyCount) });
     } catch (err) {
         console.error("Get AI Usage Error:", err);
-        return res.status(500).json({ success: false, message: "Failed to get AI usage" });
+        return res.status(err.statusCode || 500).json({ success: false, message: err.message || "Failed to get AI usage" });
     }
 };

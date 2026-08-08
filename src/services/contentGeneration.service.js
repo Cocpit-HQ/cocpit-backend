@@ -11,10 +11,16 @@ const TIMEOUT_MS = 15000;
 /**
  * Enforces the daily and monthly AI limits for content generation.
  */
-const getAIUsageStats = async (userId) => {
-  if (!userId) return { monthlyCount: 0, dailyCount: 0, cycleStart: new Date() };
+const getAIUsageStats = async (userId, orgId) => {
+  if (!userId && !orgId) return { monthlyCount: 0, dailyCount: 0, cycleStart: new Date() };
 
-  const userRes = await pool.query("SELECT created_at FROM users WHERE user_id = $1", [userId]);
+  let userRes;
+  if (orgId) {
+    userRes = await pool.query("SELECT created_at FROM organizations WHERE org_id = $1", [orgId]);
+  } else {
+    userRes = await pool.query("SELECT created_at FROM users WHERE user_id = $1", [userId]);
+  }
+
   if (userRes.rows.length === 0) return { monthlyCount: 0, dailyCount: 0, cycleStart: new Date() };
   const joinDate = new Date(userRes.rows[0].created_at);
 
@@ -27,15 +33,30 @@ const getAIUsageStats = async (userId) => {
 
   const todayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
 
-  const usageQuery = `
-    SELECT 
-      COUNT(*) FILTER (WHERE created_at >= $2) AS monthly_count,
-      COUNT(*) FILTER (WHERE created_at >= $3) AS daily_count
-    FROM ai_usage_log 
-    WHERE user_id = $1 AND feature = 'generate_text' AND success = true
-  `;
+  let usageQuery;
+  let queryParams;
+
+  if (orgId) {
+    usageQuery = `
+      SELECT 
+        COUNT(*) FILTER (WHERE created_at >= $2) AS monthly_count,
+        COUNT(*) FILTER (WHERE created_at >= $3) AS daily_count
+      FROM ai_usage_log 
+      WHERE org_id = $1 AND feature = 'generate_text' AND success = true
+    `;
+    queryParams = [orgId, cycleStart.toISOString(), todayStart.toISOString()];
+  } else {
+    usageQuery = `
+      SELECT 
+        COUNT(*) FILTER (WHERE created_at >= $2) AS monthly_count,
+        COUNT(*) FILTER (WHERE created_at >= $3) AS daily_count
+      FROM ai_usage_log 
+      WHERE user_id = $1 AND org_id IS NULL AND feature = 'generate_text' AND success = true
+    `;
+    queryParams = [userId, cycleStart.toISOString(), todayStart.toISOString()];
+  }
   
-  const usageRes = await pool.query(usageQuery, [userId, cycleStart.toISOString(), todayStart.toISOString()]);
+  const usageRes = await pool.query(usageQuery, queryParams);
   const stats = usageRes.rows[0];
   const monthlyCount = parseInt(stats.monthly_count || 0, 10);
   const dailyCount = parseInt(stats.daily_count || 0, 10);
@@ -43,9 +64,9 @@ const getAIUsageStats = async (userId) => {
   return { monthlyCount, dailyCount, cycleStart };
 };
 
-const enforceAILimits = async (userId) => {
-  if (!userId) return;
-  const { monthlyCount, dailyCount, cycleStart } = await getAIUsageStats(userId);
+const enforceAILimits = async (userId, orgId) => {
+  if (!userId && !orgId) return;
+  const { monthlyCount, dailyCount, cycleStart } = await getAIUsageStats(userId, orgId);
 
   // Temporarily disabled for testing
   
@@ -54,11 +75,13 @@ const enforceAILimits = async (userId) => {
     err.statusCode = 429;
     throw err;
   }
+ 
 
   if (monthlyCount >= 45) {
     const nextCycle = new Date(cycleStart);
     nextCycle.setUTCMonth(nextCycle.getUTCMonth() + 1);
-    const err = new Error(`Monthly AI limit of 45 requests reached. Resets on ${nextCycle.toLocaleDateString()}.`);
+    const entity = orgId ? "Organization" : "Monthly";
+    const err = new Error(`${entity} AI limit of 45 requests reached. Resets on ${nextCycle.toLocaleDateString()}.`);
     err.statusCode = 429;
     throw err;
   }
@@ -72,14 +95,15 @@ const enforceAILimits = async (userId) => {
  * @param {string} context - The existing editor context to modify/append to
  * @param {string} userId - User ID for telemetry
  * @param {string} sourceIp - IP for telemetry
+ * @param {string} orgId - Org ID for telemetry
  * @returns {Promise<string>} The generated plain text
  */
-const generateGeneralText = async (prompt, tone, context, userId, sourceIp) => {
+const generateGeneralText = async (prompt, tone, context, userId, sourceIp, orgId) => {
   if (!prompt || typeof prompt !== "string" || prompt.trim().length === 0) {
     throw new Error("A prompt is required.");
   }
 
-  await enforceAILimits(userId);
+  await enforceAILimits(userId, orgId);
 
   const primaryModel = process.env.AI_MODEL || "gemini-2.5-flash";
   const fallbackModel = process.env.AI_FALLBACK_MODEL || "gemini-2.5-pro";
@@ -202,12 +226,12 @@ const generateGeneralText = async (prompt, tone, context, userId, sourceIp) => {
 
   pool.query(`
     INSERT INTO ai_usage_log (
-      user_id, feature, model,
+      user_id, org_id, feature, model,
       prompt_tokens, completion_tokens, total_tokens, cost_estimate_usd,
       latency_ms, cache_hit, success, error_message, source_ip
-    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
   `, [
-    userId || null, 'generate_text', usedModel,
+    userId || null, orgId || null, 'generate_text', usedModel,
     tokensIn, tokensOut, totalTokens, costEstimate,
     latencyMs, false, !geminiError, geminiError ? geminiError.message : null, sourceIp || null
   ]).catch(err => {
