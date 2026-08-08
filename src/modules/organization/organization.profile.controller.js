@@ -680,7 +680,10 @@ async function calculateOrgDemographics(client, orgId, type, search, graduationY
            FROM experiences e
            JOIN profiles p ON e.profile_id = p.profile_id
            JOIN active_users u ON p.user_id = u.user_id
-           WHERE e.org_id = $1::uuid
+           WHERE (
+               e.org_id = $1::uuid
+               OR (e.org_id IS NULL AND LOWER(TRIM(e.company_name)) = LOWER(TRIM((SELECT name FROM organizations WHERE org_id = $1::uuid))))
+           )
              AND (e.is_current = TRUE OR e.end_date IS NULL)
              AND ($2::text IS NULL OR (u.full_name ILIKE $2::text OR e.title ILIKE $2::text))`
         : `SELECT DISTINCT ON (p.user_id) p.user_id
@@ -886,7 +889,10 @@ exports.getOrgPeople = async (req, res) => {
                      FROM experiences e
                      JOIN profiles p ON e.profile_id = p.profile_id
                      JOIN active_users u ON p.user_id = u.user_id
-                     WHERE e.org_id = $1::uuid
+                     WHERE (
+                         e.org_id = $1::uuid
+                         OR (e.org_id IS NULL AND LOWER(TRIM(e.company_name)) = LOWER(TRIM((SELECT name FROM organizations WHERE org_id = $1::uuid))))
+                     )
                        AND (e.is_current = TRUE OR e.end_date IS NULL)
                        ${searchClause}
                      ORDER BY p.user_id, e.start_date DESC
@@ -931,7 +937,10 @@ exports.getOrgPeople = async (req, res) => {
                      FROM experiences e
                      JOIN profiles p ON e.profile_id = p.profile_id
                      JOIN active_users u ON p.user_id = u.user_id
-                     WHERE e.org_id = $1::uuid
+                     WHERE (
+                         e.org_id = $1::uuid
+                         OR (e.org_id IS NULL AND LOWER(TRIM(e.company_name)) = LOWER(TRIM((SELECT name FROM organizations WHERE org_id = $1::uuid))))
+                     )
                        AND (e.is_current = TRUE OR e.end_date IS NULL)
                        ${countSearchClause}
                  )
