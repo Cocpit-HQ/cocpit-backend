@@ -13,8 +13,7 @@ const { notifyOrgFollowers, notifyBroadcastToChildOrgs } = require("../../servic
 const { logActivity, removeActivity } = require("../../core/services/activityLogger");
 const { logActivity: logIntentActivity } = require("../../utils/activityLogger");
 const { sendToUser: sendPush } = require("../notification/notification.service");
-
-
+const contentGenerationService = require("../../services/contentGeneration.service");
 
 const getRequestedOrganizationActorId = (req, fallbackOrgId = null) => {
     // 1. Prefer Explicit Actor Header Context
@@ -5057,3 +5056,41 @@ exports.getPostLikes = async (req, res) => {
     }
 };
 
+// --- Enhance with AI (General Text Generator) ---
+exports.generateAIContent = async (req, res) => {
+    try {
+        const { prompt, tone, context } = req.body;
+        const userId = req.user?.sub || req.user?.user_id;
+
+        if (!prompt || typeof prompt !== "string" || prompt.trim().length === 0) {
+            return res.status(400).json({ success: false, message: "Prompt is required" });
+        }
+        
+        if (prompt.length > 500) {
+            return res.status(400).json({ success: false, message: "Prompt must be under 500 characters." });
+        }
+
+        const sourceIp = req.headers["x-forwarded-for"] || req.socket.remoteAddress;
+
+        const generatedText = await contentGenerationService.generateGeneralText(prompt, tone, context, userId, sourceIp);
+
+        return res.status(200).json({ success: true, text: generatedText });
+    } catch (err) {
+        console.error("Generate AI Content Error:", err);
+        return res.status(err.statusCode || 500).json({ success: false, message: err.message || "Failed to generate AI content" });
+    }
+};
+
+exports.getAIUsage = async (req, res) => {
+    try {
+        const userId = req.user?.sub || req.user?.user_id;
+        if (!userId) {
+            return res.status(401).json({ success: false, message: "Unauthorized" });
+        }
+        const stats = await contentGenerationService.getAIUsageStats(userId);
+        return res.status(200).json({ success: true, remainingMonthly: Math.max(0, 45 - stats.monthlyCount) });
+    } catch (err) {
+        console.error("Get AI Usage Error:", err);
+        return res.status(500).json({ success: false, message: "Failed to get AI usage" });
+    }
+};

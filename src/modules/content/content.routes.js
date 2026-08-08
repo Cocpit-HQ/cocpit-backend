@@ -94,5 +94,8 @@ router.get("/debug-db", async (req, res) => {
         res.status(500).json({ error: err.message });
     }
 });
+// AI Enhancement
+router.get("/ai/usage", requireAuth, contentController.getAIUsage);
+router.post("/ai/generate", requireAuth, contentController.generateAIContent);
 
 module.exports = router;
