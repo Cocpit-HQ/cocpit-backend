@@ -442,8 +442,8 @@ exports.getMyCommentedPosts = async (req, res) => {
                 ${isOrgActor ? `pl_me.org_id = $${orgParamIdx}::uuid` : `pl_me.user_id = $${userParamIdx} AND pl_me.org_id IS NULL`}
             )) AS is_liked,
             true AS is_commented,
-            EXISTS(SELECT 1 FROM saved_post sp_me WHERE sp_me.post_id = p.post_id AND sp_me.user_id = $${userParamIdx} AND (
-                ${isOrgActor ? `sp_me.org_id = $${orgParamIdx}::uuid` : 'sp_me.org_id IS NULL'}
+            EXISTS(SELECT 1 FROM saved_post sp_me WHERE sp_me.post_id = p.post_id AND (
+                ${isOrgActor ? `sp_me.org_id = $${orgParamIdx}::uuid` : `sp_me.user_id = $${userParamIdx} AND sp_me.org_id IS NULL`}
             )) AS is_saved,
             COALESCE(cc.comment_count, 0) AS comment_count,
             (
@@ -562,8 +562,8 @@ exports.getMyPrivatePosts = async (req, res) => {
             EXISTS(SELECT 1 FROM active_post_comments pc_me WHERE pc_me.post_id = p.post_id AND (
                 ${isOrgActor ? `pc_me.author_org_id = $${orgParamIdx}::uuid` : `pc_me.author_id = $${userParamIdx} AND pc_me.author_org_id IS NULL`}
             )) AS is_commented,
-            EXISTS(SELECT 1 FROM saved_post sp_me WHERE sp_me.post_id = p.post_id AND sp_me.user_id = $${userParamIdx} AND (
-                ${isOrgActor ? `sp_me.org_id = $${orgParamIdx}::uuid` : 'sp_me.org_id IS NULL'}
+            EXISTS(SELECT 1 FROM saved_post sp_me WHERE sp_me.post_id = p.post_id AND (
+                ${isOrgActor ? `sp_me.org_id = $${orgParamIdx}::uuid` : `sp_me.user_id = $${userParamIdx} AND sp_me.org_id IS NULL`}
             )) AS is_saved,
             COALESCE(cc.comment_count, 0) AS comment_count
         FROM posts p
@@ -1397,7 +1397,15 @@ exports.getPostById = async (req, res) => {
         )
     ) AS is_commented,
 
-    EXISTS(SELECT 1 FROM saved_post sp_me WHERE sp_me.post_id = p.post_id AND sp_me.user_id = $2) AS is_saved,
+    EXISTS(
+        SELECT 1 FROM saved_post sp_me 
+        WHERE sp_me.post_id = p.post_id 
+        AND (
+            ($3::uuid IS NOT NULL AND sp_me.org_id = $3::uuid)
+            OR
+            ($3::uuid IS NULL AND sp_me.user_id = $2 AND sp_me.org_id IS NULL)
+        )
+    ) AS is_saved,
 
     -- Media (array)
     COALESCE(

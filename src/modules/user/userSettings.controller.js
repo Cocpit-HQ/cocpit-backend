@@ -626,50 +626,81 @@ exports.deactivateAccount = async (req, res) => {
  */
 exports.getActivityLogs = async (req, res) => {
     try {
-        const userId = req.user.sub;
+        const actorOrgId = req.actor?.type === "ORGANIZATION" ? req.actor.orgId : (req.headers["x-actor-id"] || req.query.companyId || null);
+        const isOrgActor = !!actorOrgId;
+        const targetId = isOrgActor ? actorOrgId : req.user.sub;
         const { type } = req.query;
 
         if (type === "comments") {
-            const result = await pool.query(
-                `SELECT 
+            const query = isOrgActor
+                ? `SELECT 
                     pc.comment_id AS id,
                     pc.post_id AS "postId",
-                    post_author.full_name AS "postAuthor",
-                    post_author.avatar_url AS "postAuthorAvatar",
-                    COALESCE(post_author.headline, 'Member') AS "postAuthorRole",
+                    COALESCE(post_comp.name, post_author.full_name) AS "postAuthor",
+                    COALESCE(post_comp.logo_url, post_author.avatar_url) AS "postAuthorAvatar",
+                    COALESCE(post_comp.slogan, post_author.headline, 'Member') AS "postAuthorRole",
                     CASE WHEN p.post_type = 'poll' THEN COALESCE(NULLIF(p.title, ''), p.content) ELSE p.content END AS "postTitle",
-                    commenter.full_name AS commenter,
-                    commenter.avatar_url AS "commenterAvatar",
-                    COALESCE(commenter.headline, 'Member') AS "commenterRole",
+                    COALESCE(commenter_comp.name, commenter.full_name) AS commenter,
+                    COALESCE(commenter_comp.logo_url, commenter.avatar_url) AS "commenterAvatar",
+                    COALESCE(commenter_comp.slogan, commenter.headline, 'Member') AS "commenterRole",
                     pc.content AS comment,
-                    (SELECT COUNT(*) FROM comment_likes cl WHERE cl.comment_id = pc.comment_id) AS likes,
-                    (SELECT COUNT(*) FROM post_comments sub_c WHERE sub_c.parent_id = pc.comment_id) AS replies,
+                    (SELECT COUNT(*) FROM active_comment_likes cl WHERE cl.comment_id = pc.comment_id) AS likes,
+                    (SELECT COUNT(*) FROM active_post_comments sub_c WHERE sub_c.parent_id = pc.comment_id) AS replies,
                     (SELECT pm.url FROM post_media pm WHERE pm.post_id = p.post_id LIMIT 1) AS "mediaUrl",
                     CASE WHEN p.post_type IS NOT NULL THEN p.post_type::text ELSE 'text' END AS type,
                     (SELECT COUNT(*) FROM poll_votes pv WHERE pv.poll_id = (SELECT poll_id FROM post_polls pp WHERE pp.post_id = p.post_id LIMIT 1)) AS votes,
                     (SELECT (pp.created_at + COALESCE(pp.duration, '1 day')::interval > NOW()) FROM post_polls pp WHERE pp.post_id = p.post_id LIMIT 1) AS "isPollActive",
-                    
                     (p.post_id IS NULL) AS "isDeleted",
                     (p.post_id IS NULL) AS is_deleted
-                 FROM post_comments pc
+                 FROM active_post_comments pc
                  LEFT JOIN posts p ON pc.post_id = p.post_id
                  LEFT JOIN active_users post_author ON p.author_id = post_author.user_id
+                 LEFT JOIN organizations post_comp ON p.author_org_id = post_comp.org_id
                  LEFT JOIN active_users commenter ON pc.author_id = commenter.user_id
-                 WHERE pc.author_id = $1
+                 LEFT JOIN organizations commenter_comp ON pc.author_org_id = commenter_comp.org_id
+                 WHERE pc.author_org_id = $1::uuid
                  ORDER BY pc.created_at DESC
-                 LIMIT 50`,
-                [userId]
-            );
+                 LIMIT 50`
+                : `SELECT 
+                    pc.comment_id AS id,
+                    pc.post_id AS "postId",
+                    COALESCE(post_comp.name, post_author.full_name) AS "postAuthor",
+                    COALESCE(post_comp.logo_url, post_author.avatar_url) AS "postAuthorAvatar",
+                    COALESCE(post_comp.slogan, post_author.headline, 'Member') AS "postAuthorRole",
+                    CASE WHEN p.post_type = 'poll' THEN COALESCE(NULLIF(p.title, ''), p.content) ELSE p.content END AS "postTitle",
+                    COALESCE(commenter_comp.name, commenter.full_name) AS commenter,
+                    COALESCE(commenter_comp.logo_url, commenter.avatar_url) AS "commenterAvatar",
+                    COALESCE(commenter_comp.slogan, commenter.headline, 'Member') AS "commenterRole",
+                    pc.content AS comment,
+                    (SELECT COUNT(*) FROM active_comment_likes cl WHERE cl.comment_id = pc.comment_id) AS likes,
+                    (SELECT COUNT(*) FROM active_post_comments sub_c WHERE sub_c.parent_id = pc.comment_id) AS replies,
+                    (SELECT pm.url FROM post_media pm WHERE pm.post_id = p.post_id LIMIT 1) AS "mediaUrl",
+                    CASE WHEN p.post_type IS NOT NULL THEN p.post_type::text ELSE 'text' END AS type,
+                    (SELECT COUNT(*) FROM poll_votes pv WHERE pv.poll_id = (SELECT poll_id FROM post_polls pp WHERE pp.post_id = p.post_id LIMIT 1)) AS votes,
+                    (SELECT (pp.created_at + COALESCE(pp.duration, '1 day')::interval > NOW()) FROM post_polls pp WHERE pp.post_id = p.post_id LIMIT 1) AS "isPollActive",
+                    (p.post_id IS NULL) AS "isDeleted",
+                    (p.post_id IS NULL) AS is_deleted
+                 FROM active_post_comments pc
+                 LEFT JOIN posts p ON pc.post_id = p.post_id
+                 LEFT JOIN active_users post_author ON p.author_id = post_author.user_id
+                 LEFT JOIN organizations post_comp ON p.author_org_id = post_comp.org_id
+                 LEFT JOIN active_users commenter ON pc.author_id = commenter.user_id
+                 LEFT JOIN organizations commenter_comp ON pc.author_org_id = commenter_comp.org_id
+                 WHERE pc.author_id = $1 AND pc.author_org_id IS NULL
+                 ORDER BY pc.created_at DESC
+                 LIMIT 50`;
 
+            const result = await pool.query(query, [targetId]);
             return res.status(200).json(result.rows);
+
         } else if (type === "tags") {
-            const result = await pool.query(
-                `SELECT 
+            const query = isOrgActor
+                ? `SELECT 
                     pt.tag_id AS id,
                     p.post_id AS "postId",
-                    u.full_name AS user,
-                    u.avatar_url AS "avatarUrl",
-                    COALESCE(u.headline, 'Member') AS role,
+                    COALESCE(o.name, u.full_name) AS user,
+                    COALESCE(o.logo_url, u.avatar_url) AS "avatarUrl",
+                    COALESCE(o.slogan, u.headline, 'Member') AS role,
                     CASE WHEN p.post_type IS NOT NULL THEN p.post_type::text ELSE 'text' END AS type,
                     p.content AS content,
                     CASE WHEN p.post_type = 'poll' THEN COALESCE(NULLIF(p.title, ''), p.content) ELSE p.title END AS "postTitle",
@@ -681,21 +712,43 @@ exports.getActivityLogs = async (req, res) => {
                  FROM post_tags pt
                  LEFT JOIN posts p ON pt.post_id = p.post_id
                  LEFT JOIN active_users u ON p.author_id = u.user_id
+                 LEFT JOIN organizations o ON p.author_org_id = o.org_id
+                 WHERE pt.tagged_user_id = $1::uuid AND pt.is_active_tag = true
+                 ORDER BY pt.updated_at DESC
+                 LIMIT 50`
+                : `SELECT 
+                    pt.tag_id AS id,
+                    p.post_id AS "postId",
+                    COALESCE(o.name, u.full_name) AS user,
+                    COALESCE(o.logo_url, u.avatar_url) AS "avatarUrl",
+                    COALESCE(o.slogan, u.headline, 'Member') AS role,
+                    CASE WHEN p.post_type IS NOT NULL THEN p.post_type::text ELSE 'text' END AS type,
+                    p.content AS content,
+                    CASE WHEN p.post_type = 'poll' THEN COALESCE(NULLIF(p.title, ''), p.content) ELSE p.title END AS "postTitle",
+                    (SELECT pm.url FROM post_media pm WHERE pm.post_id = p.post_id LIMIT 1) AS "mediaUrl",
+                    (SELECT COUNT(*) FROM poll_votes pv WHERE pv.poll_id = (SELECT poll_id FROM post_polls pp WHERE pp.post_id = p.post_id LIMIT 1)) AS votes,
+                    (SELECT (pp.created_at + COALESCE(pp.duration, '1 day')::interval > NOW()) FROM post_polls pp WHERE pp.post_id = p.post_id LIMIT 1) AS "isPollActive",
+                    (p.post_id IS NULL) AS "isDeleted",
+                    (p.post_id IS NULL) AS is_deleted
+                 FROM post_tags pt
+                 LEFT JOIN posts p ON pt.post_id = p.post_id
+                 LEFT JOIN active_users u ON p.author_id = u.user_id
+                 LEFT JOIN organizations o ON p.author_org_id = o.org_id
                  WHERE pt.tagged_user_id = $1 AND pt.is_active_tag = true
                  ORDER BY pt.updated_at DESC
-                 LIMIT 50`,
-                [userId]
-            );
+                 LIMIT 50`;
 
+            const result = await pool.query(query, [targetId]);
             return res.status(200).json(result.rows);
+
         } else {
             // Default: likes or fallback
-            const result = await pool.query(
-                `SELECT 
+            const query = isOrgActor
+                ? `SELECT 
                     pl.post_id AS id,
-                    u.full_name AS user,
-                    u.avatar_url AS "avatarUrl",
-                    COALESCE(u.headline, 'Member') AS role,
+                    COALESCE(comp.name, u.full_name) AS user,
+                    COALESCE(comp.logo_url, u.avatar_url) AS "avatarUrl",
+                    COALESCE(comp.slogan, u.headline, 'Member') AS role,
                     CASE WHEN p.post_type IS NOT NULL THEN p.post_type::text ELSE 'text' END AS type,
                     p.content AS content,
                     CASE WHEN p.post_type = 'poll' THEN COALESCE(NULLIF(p.title, ''), p.content) ELSE p.title END AS "postTitle",
@@ -706,17 +759,41 @@ exports.getActivityLogs = async (req, res) => {
                     (p.post_id IS NULL) AS is_deleted
                  FROM (
                      SELECT post_id, MAX(created_at) as created_at
-                     FROM post_likes
-                     WHERE user_id = $1
+                     FROM active_post_likes
+                     WHERE org_id = $1::uuid
                      GROUP BY post_id
                  ) pl
                  LEFT JOIN posts p ON pl.post_id = p.post_id
                  LEFT JOIN active_users u ON p.author_id = u.user_id
+                 LEFT JOIN organizations comp ON p.author_org_id = comp.org_id
                  ORDER BY pl.created_at DESC
-                 LIMIT 50`,
-                [userId]
-            );
+                 LIMIT 50`
+                : `SELECT 
+                    pl.post_id AS id,
+                    COALESCE(comp.name, u.full_name) AS user,
+                    COALESCE(comp.logo_url, u.avatar_url) AS "avatarUrl",
+                    COALESCE(comp.slogan, u.headline, 'Member') AS role,
+                    CASE WHEN p.post_type IS NOT NULL THEN p.post_type::text ELSE 'text' END AS type,
+                    p.content AS content,
+                    CASE WHEN p.post_type = 'poll' THEN COALESCE(NULLIF(p.title, ''), p.content) ELSE p.title END AS "postTitle",
+                    (SELECT pm.url FROM post_media pm WHERE pm.post_id = p.post_id LIMIT 1) AS "mediaUrl",
+                    (SELECT COUNT(*) FROM poll_votes pv WHERE pv.poll_id = (SELECT poll_id FROM post_polls pp WHERE pp.post_id = p.post_id LIMIT 1)) AS votes,
+                    (SELECT (pp.created_at + COALESCE(pp.duration, '1 day')::interval > NOW()) FROM post_polls pp WHERE pp.post_id = p.post_id LIMIT 1) AS "isPollActive",
+                    (p.post_id IS NULL) AS "isDeleted",
+                    (p.post_id IS NULL) AS is_deleted
+                 FROM (
+                     SELECT post_id, MAX(created_at) as created_at
+                     FROM active_post_likes
+                     WHERE user_id = $1 AND org_id IS NULL
+                     GROUP BY post_id
+                 ) pl
+                 LEFT JOIN posts p ON pl.post_id = p.post_id
+                 LEFT JOIN active_users u ON p.author_id = u.user_id
+                 LEFT JOIN organizations comp ON p.author_org_id = comp.org_id
+                 ORDER BY pl.created_at DESC
+                 LIMIT 50`;
 
+            const result = await pool.query(query, [targetId]);
             return res.status(200).json(result.rows);
         }
     } catch (error) {
@@ -731,20 +808,37 @@ exports.getActivityLogs = async (req, res) => {
  */
 exports.removeActivity = async (req, res) => {
     try {
-        const userId = req.user.sub;
+        const actorOrgId = req.actor?.type === "ORGANIZATION" ? req.actor.orgId : (req.headers["x-actor-id"] || req.query.companyId || null);
+        const isOrgActor = !!actorOrgId;
+        const targetId = isOrgActor ? actorOrgId : req.user.sub;
         const { type, id } = req.params;
 
         if (type === "like") {
-            await pool.query(
-                `DELETE FROM post_likes WHERE post_id = $1 AND user_id = $2`,
-                [id, userId]
-            );
+            if (isOrgActor) {
+                await pool.query(
+                    `DELETE FROM active_post_likes WHERE post_id = $1 AND org_id = $2::uuid`,
+                    [id, targetId]
+                );
+            } else {
+                await pool.query(
+                    `DELETE FROM active_post_likes WHERE post_id = $1 AND user_id = $2 AND org_id IS NULL`,
+                    [id, targetId]
+                );
+            }
         } else if (type === "tag") {
-            await pool.query(
-                `UPDATE post_tags SET is_active_tag = false, updated_at = NOW()
-                 WHERE (post_id::text = $1 OR tag_id::text = $1) AND tagged_user_id = $2`,
-                [id, userId]
-            );
+            if (isOrgActor) {
+                await pool.query(
+                    `UPDATE post_tags SET is_active_tag = false, updated_at = NOW()
+                     WHERE (post_id::text = $1 OR tag_id::text = $1) AND tagged_user_id = $2::uuid`,
+                    [id, targetId]
+                );
+            } else {
+                await pool.query(
+                    `UPDATE post_tags SET is_active_tag = false, updated_at = NOW()
+                     WHERE (post_id::text = $1 OR tag_id::text = $1) AND tagged_user_id = $2`,
+                    [id, targetId]
+                );
+            }
         }
 
         return res.status(200).json({ success: true });

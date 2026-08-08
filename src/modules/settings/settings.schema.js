@@ -37,7 +37,7 @@ const submitNewEmailSchema = z.object({
   body: z.object({
     newEmail: z.string({
       required_error: "New email is required",
-    }).email({ message: "Invalid email address" }),
+    }).email({ message: "Please enter a valid email address." }),
   }),
 });
 
@@ -55,7 +55,7 @@ const setRecoveryEmailSchema = z.object({
   body: z.object({
     recoveryEmail: z.string({
       required_error: "Recovery email is required",
-    }).email({ message: "Invalid email address" }),
+    }).email({ message: "Please enter a valid email address." }),
   }),
 });
 

@@ -160,6 +160,10 @@ exports.submitNewEmail = async (req, res) => {
         const isOrgActor = req.actor && req.actor.type === "ORGANIZATION";
         const actorId = isOrgActor ? req.actor.orgId : req.user.sub;
         const { newEmail } = req.body;
+        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+        if (!newEmail || typeof newEmail !== "string" || !emailRegex.test(newEmail.trim())) {
+            return res.status(400).json({ success: false, message: "Please enter a valid email address." });
+        }
         const normalizedNewEmail = newEmail.toLowerCase().trim();
 
         const authKey = isOrgActor ? `email_change_authorized:org:${actorId}` : `email_change_authorized:${actorId}`;
@@ -294,6 +298,10 @@ exports.setRecoveryEmail = async (req, res) => {
 
         const userId = req.user.sub;
         const { recoveryEmail } = req.body;
+        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+        if (!recoveryEmail || typeof recoveryEmail !== "string" || !emailRegex.test(recoveryEmail.trim())) {
+            return res.status(400).json({ success: false, message: "Please enter a valid email address." });
+        }
         const normalized = recoveryEmail.toLowerCase().trim();
 
         const userRes = await pool.query("SELECT email FROM users WHERE user_id = $1", [userId]);

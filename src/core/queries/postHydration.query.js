@@ -175,7 +175,17 @@ const getPostHydrationSelect = (companyParamIdx, userParamIdx) => `
         )
     ) AS is_commented,
 
-    EXISTS(SELECT 1 FROM saved_post sp_me WHERE sp_me.post_id = p.post_id AND sp_me.user_id = $${userParamIdx}) AS is_saved,
+    (
+        EXISTS(
+            SELECT 1 FROM saved_post sp_me 
+            WHERE sp_me.post_id = p.post_id 
+            AND (
+                ($${companyParamIdx}::uuid IS NOT NULL AND sp_me.org_id = $${companyParamIdx}::uuid)
+                OR
+                ($${companyParamIdx}::uuid IS NULL AND sp_me.user_id = $${userParamIdx} AND sp_me.org_id IS NULL)
+            )
+        )
+    ) AS is_saved,
 
     (
         SELECT json_build_object(
@@ -298,7 +308,15 @@ const getPostHydrationSelect = (companyParamIdx, userParamIdx) => `
                          ($${companyParamIdx}::uuid IS NULL AND pc_c.author_id = $${userParamIdx} AND pc_c.author_org_id IS NULL)
                      )
                  ),
-                 'is_saved', EXISTS(SELECT 1 FROM saved_post sp_s WHERE sp_s.post_id = sp.post_id AND sp_s.user_id = $${userParamIdx}),
+                 'is_saved', EXISTS(
+                     SELECT 1 FROM saved_post sp_s 
+                     WHERE sp_s.post_id = sp.post_id 
+                     AND (
+                         ($${companyParamIdx}::uuid IS NOT NULL AND sp_s.org_id = $${companyParamIdx}::uuid)
+                         OR
+                         ($${companyParamIdx}::uuid IS NULL AND sp_s.user_id = $${userParamIdx} AND sp_s.org_id IS NULL)
+                     )
+                 ),
                 'poll', (
                     SELECT json_build_object(
                         'poll_id', pp.poll_id,

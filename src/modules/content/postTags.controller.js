@@ -1,6 +1,11 @@
 const pool = require("../../core/db/pool");
 const socketService = require("../../core/infrastructure/socket.service");
 
+// Ensure post_tags.tagged_user_id can store both user_id and org_id without strict FK restriction to users table
+pool.query(`ALTER TABLE post_tags DROP CONSTRAINT IF EXISTS post_tags_tagged_user_id_fkey;`).catch(err => {
+    console.error("[postTags] Migration: Error dropping post_tags FK constraint:", err?.message || err);
+});
+
 async function filterAllowedTaggedUserIds(client, actorUserId, actorOrgId, targetUserIds) {
     if (!targetUserIds || targetUserIds.length === 0) return [];
 
@@ -184,34 +189,92 @@ exports.syncPostTags = async (req, res) => {
             for (const taggedUserId of filteredNewlyTaggedUserIds) {
                 const metadata = { post_id: postId, org_id: companyId || null };
 
-                const notifRes = await client.query(
-                    `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata)
-                     VALUES ($1, $2, $3, $4, $5, $6)
-                     RETURNING notification_id`,
-                    [taggedUserId, actorUserId, "post_tag", notificationText, postId, JSON.stringify(metadata)]
-                );
+                // Check if target is an individual user or an organization
+                const userCheck = await client.query(`SELECT 1 FROM users WHERE user_id = $1`, [taggedUserId]);
 
-                notificationsToEmit.push({
-                    taggedUserId,
-                    payload: {
-                        notification_id: notifRes.rows[0].notification_id,
-                        type: "post_tag",
-                        text: notificationText,
-                        from: actorUserId,
-                        senderName,
-                        senderAvatar,
-                        referenceId: postId,
-                        metadata,
-                        time: "Just now"
+                if (userCheck.rowCount > 0) {
+                    const notifRes = await client.query(
+                        `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata)
+                         VALUES ($1, $2, $3, $4, $5, $6)
+                         RETURNING notification_id`,
+                        [taggedUserId, actorUserId, "post_tag", notificationText, postId, JSON.stringify(metadata)]
+                    );
+
+                    notificationsToEmit.push({
+                        targetId: taggedUserId,
+                        isOrg: false,
+                        payload: {
+                            notification_id: notifRes.rows[0].notification_id,
+                            type: "post_tag",
+                            text: notificationText,
+                            from: actorUserId,
+                            senderName,
+                            senderAvatar,
+                            referenceId: postId,
+                            metadata,
+                            time: "Just now"
+                        }
+                    });
+                } else {
+                    // Target is an Organization: create notifications for its active team members
+                    const membersRes = await client.query(
+                        `SELECT user_id FROM organization_members WHERE org_id = $1 AND status = 'ACTIVE'`,
+                        [taggedUserId]
+                    );
+
+                    for (const m of membersRes.rows) {
+                        const notifRes = await client.query(
+                            `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata)
+                             VALUES ($1, $2, $3, $4, $5, $6)
+                             RETURNING notification_id`,
+                            [m.user_id, actorUserId, "post_tag", notificationText, postId, JSON.stringify(metadata)]
+                        );
+
+                        notificationsToEmit.push({
+                            targetId: m.user_id,
+                            isOrg: false,
+                            payload: {
+                                notification_id: notifRes.rows[0].notification_id,
+                                type: "post_tag",
+                                text: notificationText,
+                                from: actorUserId,
+                                senderName,
+                                senderAvatar,
+                                referenceId: postId,
+                                metadata,
+                                time: "Just now"
+                            }
+                        });
                     }
-                });
+
+                    notificationsToEmit.push({
+                        targetId: taggedUserId,
+                        isOrg: true,
+                        payload: {
+                            type: "post_tag",
+                            text: notificationText,
+                            from: actorUserId,
+                            senderName,
+                            senderAvatar,
+                            referenceId: postId,
+                            metadata,
+                            time: "Just now"
+                        }
+                    });
+                }
             }
         }
 
         await client.query('COMMIT');
 
         for (const item of notificationsToEmit) {
-            socketService.notifyUser(item.taggedUserId, "notification", item.payload);
+            if (item.isOrg) {
+                socketService.notifyOrg(item.targetId, "notification", item.payload);
+                socketService.notifyOrg(item.targetId, "activity_updated", { type: "tags" });
+            } else {
+                socketService.notifyUser(item.targetId, "notification", item.payload);
+                socketService.notifyUser(item.targetId, "activity_updated", { type: "tags" });
+            }
         }
 
         return res.status(200).json({
