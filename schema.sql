@@ -2326,3 +2326,17 @@ CREATE TABLE IF NOT EXISTS organization_blocked_accounts (
 CREATE INDEX IF NOT EXISTS idx_org_blocked_org ON organization_blocked_accounts(org_id);
 
 
+
+
+-- Added for user identity verification
+CREATE TABLE user_verifications (
+  verification_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+  verification_type VARCHAR(50) DEFAULT 'IDENTITY',
+  front_image_url TEXT NOT NULL,
+  back_image_url TEXT,
+  is_verified BOOLEAN DEFAULT FALSE,
+  status VARCHAR(20) DEFAULT 'VERIFIED',
+  created_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ DEFAULT now()
+);

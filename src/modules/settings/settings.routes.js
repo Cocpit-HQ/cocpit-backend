@@ -43,6 +43,14 @@ router.use(resolveActorContext);
 // Password Change
 router.post("/account/password/change", requireAuth, requireActiveSession, sensitiveActionLimiter, validate(changePasswordSchema), accountController.changePassword);
 
+// Account Verification (Mock)
+router.post(
+    "/account/verify-identity",
+    requireAuth,
+    uploadSupportAttachment ? uploadSupportAttachment.fields([{ name: 'frontImage', maxCount: 1 }, { name: 'backImage', maxCount: 1 }]) : (req, res, next) => next(),
+    accountController.verifyIdentity
+);
+
 // Primary Email Change (4-Step OTP Flow)
 router.post("/account/email/verify-current", requireAuth, sensitiveActionLimiter, accountController.verifyCurrentEmail);
 router.post("/account/email/verify-current/confirm", requireAuth, sensitiveActionLimiter, validate(verifyCurrentEmailSchema), accountController.confirmCurrentEmail);

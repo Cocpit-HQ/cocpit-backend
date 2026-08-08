@@ -40,6 +40,7 @@ const buildOrganizationActor = (organization) => {
         avatar_url: organization.logo_url,
         entity_type: organization.entity_type,
         viewer_role_data: viewerRoleData,
+        verification_status: organization.verification_status,
     };
 };
 

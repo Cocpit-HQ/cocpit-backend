@@ -710,3 +710,55 @@ exports.initiateAccountDeletion = async (req, res) => {
         client.release();
     }
 };
+
+
+// ─── 6. Verify Identity (Mock) ────────────────────────────────────────────────
+
+exports.verifyIdentity = async (req, res) => {
+    try {
+        const isOrgActor = req.actor && req.actor.type === 'ORGANIZATION';
+        const actorId = isOrgActor ? req.actor.orgId : req.user.sub;
+        
+        const documentType = req.body.documentType || 'ID';
+
+        const frontImage = req.files && req.files.frontImage ? req.files.frontImage[0] : null;
+        const backImage = req.files && req.files.backImage ? req.files.backImage[0] : null;
+
+        if (!frontImage) {
+            return res.status(400).json({ success: false, message: 'Front image is required' });
+        }
+
+        const frontImageUrl = frontImage.path || frontImage.url || frontImage.secure_url;
+        const backImageUrl = backImage ? (backImage.path || backImage.url || backImage.secure_url) : null;
+
+        const pool = require('../../core/db/pool');
+
+        if (isOrgActor) {
+             const { legalName, incorporationDay, incorporationMonth, incorporationYear } = req.body;
+             let incorporationDate = null;
+             if (incorporationDay && incorporationMonth && incorporationYear) {
+                 const monthMap = { Jan: '01', Feb: '02', Mar: '03', Apr: '04', May: '05', Jun: '06', Jul: '07', Aug: '08', Sep: '09', Oct: '10', Nov: '11', Dec: '12' };
+                 const mm = monthMap[incorporationMonth] || '01';
+                 const dd = String(incorporationDay).padStart(2, '0');
+                 incorporationDate = `${incorporationYear}-${mm}-${dd}`;
+             }
+
+             await pool.query(
+                 'INSERT INTO organization_verifications (org_id, verification_type, document_type, document_urls, is_verified, legal_name, incorporation_date) VALUES ($1, $2, $3, $4, $5, $6, $7)',
+                 [actorId, 'IDENTITY', documentType, JSON.stringify([frontImageUrl, backImageUrl].filter(Boolean)), true, legalName || null, incorporationDate]
+             );
+             await pool.query('UPDATE organizations SET verification_status = $1 WHERE org_id = $2', ['VERIFIED', actorId]);
+        } else {
+             await pool.query(
+                 'INSERT INTO user_verifications (user_id, verification_type, document_type, front_image_url, back_image_url, is_verified, status) VALUES ($1, $2, $3, $4, $5, $6, $7)',
+                 [actorId, 'IDENTITY', documentType, frontImageUrl, backImageUrl, true, 'VERIFIED']
+             );
+             await pool.query('UPDATE users SET is_identity_verified = true WHERE user_id = $1', [actorId]);
+        }
+
+        return res.status(200).json({ success: true, message: 'Identity verified successfully' });
+    } catch (error) {
+        console.error('Verify identity error:', error);
+        return res.status(500).json({ success: false, message: 'Failed to verify identity' });
+    }
+};
