@@ -783,6 +783,7 @@ exports.sendChatContext = async (req, res) => {
         socketService.notifyUser(targetUserId, "newMessage", socketPayload);
         socketService.notifyUser(targetUserId, "notification", {
             type: "message",
+            isJobChat: true,
             from: userId,
             senderName: candidateName,
             senderAvatar: candidateAvatar,

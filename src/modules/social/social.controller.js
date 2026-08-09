@@ -2764,10 +2764,11 @@ exports.sendMessage = async (req, res) => {
 
             // Fetch conversation metadata needed for socket payload
             const convMeta = await client.query(
-                `SELECT is_requesting, created_at, created_by FROM conversations WHERE conversation_id = $1`,
+                `SELECT is_requesting, created_at, created_by, is_job_chat FROM conversations WHERE conversation_id = $1`,
                 [conversationId]
             );
             const convIsRequesting = convMeta.rows[0]?.is_requesting ?? false;
+            const convIsJobChat = convMeta.rows[0]?.is_job_chat || false;
             const convCreatedAt = convMeta.rows[0]?.created_at ?? null;
             const convCreatedBy = convMeta.rows[0]?.created_by || null;
 
@@ -2860,6 +2861,8 @@ exports.sendMessage = async (req, res) => {
                 );
                 autoJobChatSet = true;
             }
+
+            const finalIsJobChat = convIsJobChat || autoJobChatSet;
 
             // Update conversation timestamp and last message
             await client.query(
@@ -3034,6 +3037,7 @@ exports.sendMessage = async (req, res) => {
                     if (!targetNotificationMuted) {
                         socketService.notifyUserScoped(member.user_id, "notification", {
                             type: "message",
+                            isJobChat: finalIsJobChat,
                             from: senderId,
                             senderName,
                             senderAvatar,
@@ -3056,6 +3060,7 @@ exports.sendMessage = async (req, res) => {
                 if (!targetNotificationMuted) {
                     socketService.notifyUserScoped(targetUserId, "notification", {
                         type: "message",
+                        isJobChat: finalIsJobChat,
                         from: senderId,
                         senderName,
                         senderAvatar,
@@ -3732,20 +3737,20 @@ exports.getNotifications = async (req, res) => {
             SELECT n.*, 
                 n.recipient_org_id as recipient_company_id,
                 CASE 
-                    WHEN (n.metadata->>'org_id') IS NOT NULL THEN c.name 
+                    WHEN COALESCE(NULLIF(n.metadata->>'org_id', ''), NULLIF(n.metadata->>'orgId', '')) IS NOT NULL THEN c.name 
                     ELSE u.display_name 
                 END as actor_name, 
                 CASE 
-                    WHEN (n.metadata->>'org_id') IS NOT NULL THEN c.logo_url 
+                    WHEN COALESCE(NULLIF(n.metadata->>'org_id', ''), NULLIF(n.metadata->>'orgId', '')) IS NOT NULL THEN c.logo_url 
                     ELSE u.display_avatar 
                 END as actor_avatar,
                 COALESCE(c.slug, u.display_username) as actor_slug,
-                ((n.metadata->>'org_id') IS NOT NULL) as is_company_actor,
+                (COALESCE(NULLIF(n.metadata->>'org_id', ''), NULLIF(n.metadata->>'orgId', '')) IS NOT NULL) as is_company_actor,
                 cr.request_id as request_id, 
                 cr.status as request_status
             FROM notifications n 
             LEFT JOIN user_display_profiles u ON n.sender_id = u.user_id 
-            LEFT JOIN organization_display_profiles c ON NULLIF(n.metadata->>'org_id', '')::uuid = c.org_id
+            LEFT JOIN organization_display_profiles c ON COALESCE(NULLIF(n.metadata->>'org_id', ''), NULLIF(n.metadata->>'orgId', ''))::uuid = c.org_id
             LEFT JOIN connection_requests cr ON n.sender_id = cr.sender_id AND n.user_id = cr.receiver_id AND cr.status = 'pending'
             WHERE 
         `;

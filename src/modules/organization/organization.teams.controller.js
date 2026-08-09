@@ -939,12 +939,12 @@ exports.sendInvite = async (req, res, next) => {
 
         // 8. Persistent Notification and Real-time push
         try {
-            const orgRes = await client.query(`SELECT name FROM organizations WHERE org_id = $1`, [orgId]);
+            const orgRes = await client.query(`SELECT name, logo_url FROM organizations WHERE org_id = $1`, [orgId]);
             const orgName = orgRes.rows[0]?.name || "Organization";
+            const orgLogo = orgRes.rows[0]?.logo_url || null;
             const actorRes = await client.query(`SELECT full_name, avatar_url FROM active_users WHERE user_id = $1`, [actorId]);
             const actorName = actorRes.rows[0]?.full_name || "Someone";
-            const actorAvatar = actorRes.rows[0]?.avatar_url || null;
-            const notifText = `${actorName} invited you to join ${orgName} as ${targetRole.name}`;
+            const notifText = `${orgName} invited you to join as ${targetRole.name}`;
 
             const notifRes = await client.query(
                 `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata)
@@ -960,12 +960,12 @@ exports.sendInvite = async (req, res, next) => {
                 socketService.notifyUser(userId, "notification", {
                     type: "organization_invite",
                     text: notifText,
-                    from: actorId,
-                    sender_id: actorId,
-                    senderName: actorName,
-                    senderAvatar: actorAvatar,
-                    actor_name: actorName,
-                    actor_avatar: actorAvatar,
+                    from: orgId,
+                    sender_id: orgId,
+                    senderName: orgName,
+                    senderAvatar: orgLogo,
+                    actor_name: orgName,
+                    actor_avatar: orgLogo,
                     referenceId: orgId,
                     reference_id: orgId,
                     metadata: { token, orgId, orgName, role: targetRole.name },

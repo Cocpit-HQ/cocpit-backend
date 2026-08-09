@@ -91,19 +91,19 @@ exports.inviteMember = async (req, res) => {
 
             // Get company name + inviter details for the notification
             const companyRes = await pool.query(
-                `SELECT name FROM organizations WHERE org_id = $1`, [companyId]
+                `SELECT name, logo_url FROM organizations WHERE org_id = $1`, [companyId]
             );
             const inviterDetailsRes = await pool.query(
                 `SELECT full_name, avatar_url FROM users WHERE user_id = $1`, [userId]
             );
             const organizationName = companyRes.rows[0]?.name || 'an organization';
+            const organizationLogo = companyRes.rows[0]?.logo_url || null;
             const inviterName = inviterDetailsRes.rows[0]?.full_name || 'Someone';
-            const inviterAvatar = inviterDetailsRes.rows[0]?.avatar_url;
 
             if (invitedUserRes.rowCount > 0) {
                 userFound = true;
                 const targetUserId = invitedUserRes.rows[0].user_id;
-                const notifText = `${inviterName} invited you to join ${organizationName} as ${role}`;
+                const notifText = `${organizationName} invited you to join as ${role}`;
 
                 // Persist notification
                 const notifRes = await pool.query(
@@ -113,16 +113,16 @@ exports.inviteMember = async (req, res) => {
                         JSON.stringify({ token, orgId: companyId, orgName: organizationName, role, inviteLink })]
                 );
 
-                // Real-time socket push (include actor_* fields for popover rendering)
+                // Real-time socket push (use company name/logo for popover rendering)
                 socketService.notifyUser(targetUserId, "notification", {
                     type: "organization_invite",
                     text: notifText,
-                    from: userId,
-                    sender_id: userId,
-                    senderName: inviterName,
-                    senderAvatar: inviterAvatar,
-                    actor_name: inviterName,
-                    actor_avatar: inviterAvatar,
+                    from: companyId,
+                    sender_id: companyId,
+                    senderName: organizationName,
+                    senderAvatar: organizationLogo,
+                    actor_name: organizationName,
+                    actor_avatar: organizationLogo,
                     referenceId: companyId,
                     reference_id: companyId,
                     metadata: { token, orgId: companyId, orgName: organizationName, role, inviteLink },
