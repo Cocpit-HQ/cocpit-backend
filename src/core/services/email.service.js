@@ -16,6 +16,7 @@ if (process.env.RESEND_API_KEY) {
  * @returns {Promise<Object>} The Resend API response
  */
 const sendOTPEmail = async (email, otp, purpose = "signup") => {
+    console.log(`🔑 [OTP CONSOLE LOG] Recipient: ${email} | Purpose: ${purpose} | OTP Code: ${otp}`);
     if (!resend) {
         throw new Error("Email service is not configured (RESEND_API_KEY missing).");
     }
@@ -409,11 +410,11 @@ const sendRecoveryEmailOTP = async (email, otp) => {
  * @param {string} orgName - Name of the organization
  */
 const sendOrgDeleteOTPEmail = async (recipients, otp, orgName) => {
+    const recipientList = Array.isArray(recipients) ? recipients : [recipients];
     if (!resend) {
         throw new Error("Email service is not configured (RESEND_API_KEY missing).");
     }
 
-    const recipientList = Array.isArray(recipients) ? recipients : [recipients];
     const subject = `Action Required: Organization Deletion Code for "${orgName || 'Organization'}"`;
 
     try {
@@ -459,11 +460,11 @@ const sendOrgDeleteOTPEmail = async (recipients, otp, orgName) => {
  * @param {string} orgName - Name of the organization
  */
 const sendOrgReactivateOTPEmail = async (recipients, otp, orgName) => {
+    const recipientList = Array.isArray(recipients) ? recipients : [recipients];
     if (!resend) {
         throw new Error("Email service is not configured (RESEND_API_KEY missing).");
     }
 
-    const recipientList = Array.isArray(recipients) ? recipients : [recipients];
     const subject = `Action Required: Verification Code to Reactivate "${orgName || 'Organization'}"`;
 
     try {
@@ -509,11 +510,11 @@ const sendOrgReactivateOTPEmail = async (recipients, otp, orgName) => {
  * @param {string} orgName - Name of the organization
  */
 const sendOrgRecoverOTPEmail = async (recipients, otp, orgName) => {
+    const recipientList = Array.isArray(recipients) ? recipients : [recipients];
     if (!resend) {
         throw new Error("Email service is not configured (RESEND_API_KEY missing).");
     }
 
-    const recipientList = Array.isArray(recipients) ? recipients : [recipients];
     const subject = `Action Required: Verification Code to Recover "${orgName || 'Organization'}"`;
 
     try {

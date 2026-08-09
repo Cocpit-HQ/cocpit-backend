@@ -1276,14 +1276,18 @@ exports.getPostById = async (req, res) => {
     COALESCE(ai.title, CASE WHEN c.name = 'Achievement' AND p.post_type = 'image' THEN p.title ELSE NULL END) AS achievement_image_title,
     COALESCE(
         (SELECT json_agg(json_build_object(
-            'id', u_tag.user_id,
-            'full_name', u_tag.full_name,
-            'account_name', u_tag.account_name,
-            'avatar_url', u_tag.avatar_url
+            'id', COALESCE(u_tag.user_id, o_tag.org_id),
+            'full_name', COALESCE(u_tag.full_name, o_tag.name),
+            'account_name', COALESCE(u_tag.account_name, o_tag.slug),
+            'avatar_url', COALESCE(u_tag.avatar_url, o_tag.logo_url),
+            'type', CASE WHEN o_tag.org_id IS NOT NULL THEN 'company' ELSE 'user' END
         ))
         FROM post_tags pt 
-        JOIN active_users u_tag ON pt.tagged_user_id = u_tag.user_id
-        WHERE pt.post_id = p.post_id AND pt.is_active_tag = true),
+        LEFT JOIN active_users u_tag ON pt.tagged_user_id = u_tag.user_id
+        LEFT JOIN organizations o_tag ON pt.tagged_user_id = o_tag.org_id AND o_tag.is_deleted = FALSE
+        WHERE pt.post_id = p.post_id 
+          AND pt.is_active_tag = true
+          AND (u_tag.user_id IS NOT NULL OR o_tag.org_id IS NOT NULL)),
         '[]'::json
     ) AS tags,
 

@@ -48,14 +48,18 @@ const getPostHydrationSelect = (companyParamIdx, userParamIdx) => `
 
     COALESCE(
         (SELECT json_agg(json_build_object(
-            'id', u.user_id,
-            'full_name', u.full_name,
-            'account_name', u.account_name,
-            'avatar_url', u.avatar_url
+            'id', COALESCE(u.user_id, o.org_id),
+            'full_name', COALESCE(u.full_name, o.name),
+            'account_name', COALESCE(u.account_name, o.slug),
+            'avatar_url', COALESCE(u.avatar_url, o.logo_url),
+            'type', CASE WHEN o.org_id IS NOT NULL THEN 'company' ELSE 'user' END
          ))
          FROM post_tags pt 
-          JOIN active_users u ON pt.tagged_user_id = u.user_id
-         WHERE pt.post_id = p.post_id AND pt.is_active_tag = true),
+         LEFT JOIN active_users u ON pt.tagged_user_id = u.user_id
+         LEFT JOIN organizations o ON pt.tagged_user_id = o.org_id AND o.is_deleted = FALSE
+         WHERE pt.post_id = p.post_id 
+           AND pt.is_active_tag = true
+           AND (u.user_id IS NOT NULL OR o.org_id IS NOT NULL)),
         '[]'::json
     ) AS tags,
 

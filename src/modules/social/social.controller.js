@@ -653,7 +653,7 @@ exports.getCompanyFollowers = async (req, res) => {
             const followersVisibility = privacyRes.rows[0]?.followers_visibility || "everyone";
 
             if (followersVisibility === "no_one") {
-                return res.status(200).json({ success: true, data: [] });
+                return res.status(200).json({ success: true, data: [], is_restricted: true, message: "The business page owner has restricted access to their followers." });
             } else if (followersVisibility === "followers_only") {
                 let isFollower = false;
                 if (req.actor && req.actor.type === "ORGANIZATION" && req.actor.orgId) {
@@ -670,7 +670,7 @@ exports.getCompanyFollowers = async (req, res) => {
                     isFollower = check.rowCount > 0;
                 }
                 if (!isFollower) {
-                    return res.status(200).json({ success: true, data: [] });
+                    return res.status(200).json({ success: true, data: [], is_restricted: true, message: "The business page owner has restricted access to their followers." });
                 }
             }
         }
@@ -5211,7 +5211,7 @@ exports.getOrganizationFollowing = async (req, res) => {
             const followingVisibility = privacyRes.rows[0]?.following_visibility || "everyone";
 
             if (followingVisibility === "no_one") {
-                return res.status(200).json({ success: true, data: [] });
+                return res.status(200).json({ success: true, data: [], is_restricted: true, message: "The business page owner has restricted access to their following." });
             } else if (followingVisibility === "followers_only") {
                 let isFollower = false;
                 if (req.actor && req.actor.type === "ORGANIZATION" && req.actor.orgId) {
@@ -5228,7 +5228,7 @@ exports.getOrganizationFollowing = async (req, res) => {
                     isFollower = check.rowCount > 0;
                 }
                 if (!isFollower) {
-                    return res.status(200).json({ success: true, data: [] });
+                    return res.status(200).json({ success: true, data: [], is_restricted: true, message: "The business page owner has restricted access to their following." });
                 }
             }
         }
