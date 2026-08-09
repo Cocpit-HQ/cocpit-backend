@@ -19,7 +19,9 @@ const companyActionLimiter = organizationActionLimiter; // Legacy alias
 
 /**
  * Stricter Limiter for OTP generation
+ * (TEMPORARILY COMMENTED OUT FOR DEVELOPMENT STAGE - RE-ENABLE LATER FOR PRODUCTION)
  */
+/*
 const otpGenerationLimiter = rateLimit({
     windowMs: 60 * 60 * 1000, // 1 hour
     limit: 5,
@@ -28,6 +30,9 @@ const otpGenerationLimiter = rateLimit({
     },
     legacyHeaders: false,
 });
+*/
+const otpGenerationLimiter = (req, res, next) => next();
+
 
 /**
  * Auth rate limiter — configurable in-memory limiter
