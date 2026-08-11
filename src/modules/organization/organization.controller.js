@@ -655,6 +655,11 @@ exports.sendDeleteOrgOTP = async (req, res) => {
         const emailService = require("../../core/services/email.service");
         await emailService.sendOrgDeleteOTPEmail(recipients, otp, org.name);
 
+        console.log(`\n==================================================`);
+        console.log(`🔑 [TESTING OTP] ORGANIZATION DELETION CODE`);
+        console.log(`👉 VERIFICATION CODE (OTP): ${otp}`);
+        console.log(`==================================================\n`);
+
         const maskedDisplay = recipients.map(maskEmail).join(", ");
         res.json({
             success: true,

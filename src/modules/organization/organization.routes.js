@@ -104,7 +104,8 @@ router.post("/organizations/:orgId/switch-context", requireAuth, async (req, res
 });
 
 // --- ACCOUNT SETTINGS & LIFECYCLE ---
-router.get("/organizations/:orgId/account-settings", requireAuth, requireOrgPermission("MANAGE_SETTINGS"), settingsController.getAccountSettings);
+router.post("/organizations/:orgId/deactivate/send-otp", requireAuth, otpGenerationLimiter, settingsController.sendDeactivateOrgOTP);
+router.post("/organizations/:orgId/deactivate/validate-otp", requireAuth, organizationActionLimiter, settingsController.validateDeactivateOrgOTP);
 router.patch("/organizations/:orgId/deactivate", requireAuth, settingsController.deactivateOrganization);
 router.patch("/organizations/:orgId/reactivate", requireAuth, settingsController.reactivateOrganization);
 
