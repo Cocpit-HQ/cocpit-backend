@@ -2109,7 +2109,7 @@ SELECT
     -- Name logic: Use group name if group, else other participant's name (User or Company)
     CASE 
         WHEN c.is_group THEN COALESCE(cp.left_group_name, c.conversation_name, 'Group Chat')
-        -- WHEN EXISTS(SELECT 1 FROM blocks WHERE blocker_id = u.user_id AND blocked_id = $1) THEN 'User not found' -- Update for Company?
+        WHEN cp_other.org_id IS NOT NULL AND (comp.name = 'Deleted Page' OR comp.org_id IS NULL) THEN 'Unknown Page'
         WHEN comp.org_id IS NOT NULL THEN comp.name
         WHEN raw_u.is_deactivated THEN 'Unknown User'
         WHEN u.display_name IS NULL AND comp.org_id IS NULL THEN COALESCE(c.conversation_name, 'Deleted User')
@@ -2119,9 +2119,10 @@ SELECT
     -- Avatar logic
     CASE 
         WHEN c.is_group THEN COALESCE(cp.left_group_avatar, c.group_avatar)
-        -- WHEN EXISTS(SELECT 1 FROM blocks WHERE blocker_id = u.user_id AND blocked_id = $1) THEN NULL
+        WHEN cp_other.org_id IS NOT NULL AND (comp.logo_url IS NULL OR comp.name = 'Deleted Page') THEN NULL
         WHEN comp.org_id IS NOT NULL THEN comp.logo_url
         WHEN u.display_avatar IS NULL AND comp.org_id IS NULL THEN NULL
+        WHEN cp_other.org_id IS NOT NULL THEN NULL
         ELSE u.display_avatar 
     END AS other_user_avatar,
     
@@ -3449,12 +3450,38 @@ exports.getMessages = async (req, res) => {
                 END as is_blocked,
                 m.text_content,
                 CASE 
+                    WHEN m.shared_post_id IS NOT NULL AND (
+                        sp.post_id IS NULL OR
+                        EXISTS (
+                            SELECT 1 FROM blocks b 
+                            WHERE (
+                                (b.blocker_id = COALESCE($6, $4) AND (b.blocked_id = sp.author_id OR (sp.author_org_id IS NOT NULL AND b.blocked_id = sp.author_org_id)))
+                                OR
+                                (b.blocked_id = COALESCE($6, $4) AND (b.blocker_id = sp.author_id OR (sp.author_org_id IS NOT NULL AND b.blocker_id = sp.author_org_id)))
+                            )
+                        )
+                    ) THEN true
+                    WHEN m.shared_profile_id IS NOT NULL AND (
+                        (m.shared_profile_type = 'user' AND NOT EXISTS (SELECT 1 FROM user_display_profiles pu WHERE pu.user_id = m.shared_profile_id AND pu.display_name != 'Deactivated User'))
+                        OR
+                        (m.shared_profile_type = 'company' AND NOT EXISTS (SELECT 1 FROM organizations pc WHERE pc.org_id = m.shared_profile_id AND pc.is_deleted = FALSE AND pc.is_deactivated = FALSE))
+                        OR
+                        EXISTS (
+                            SELECT 1 FROM blocks b 
+                            WHERE (b.blocker_id = COALESCE($6, $4) AND b.blocked_id = m.shared_profile_id)
+                               OR (b.blocked_id = COALESCE($6, $4) AND b.blocker_id = m.shared_profile_id)
+                        )
+                    ) THEN true
+                    ELSE false
+                END AS is_unavailable,
+                CASE 
                     WHEN m.shared_post_id IS NOT NULL 
                     THEN
                         json_build_object(
                             'post_id', sp.post_id,
                             'content', sp.content,
-                            'author', json_build_object('full_name', au.display_name, 'avatar_url', au.display_avatar),
+                            'author', COALESCE(sp_org.name, au.display_name, 'Unknown Author'),
+                            'author_avatar', COALESCE(sp_org.logo_url, au.display_avatar, NULL),
                             'media', (SELECT json_agg(json_build_object('url', url, 'media_type', media_type)) FROM post_media WHERE post_id = sp.post_id)
                         )
                     ELSE NULL 
@@ -3520,6 +3547,7 @@ exports.getMessages = async (req, res) => {
              LEFT JOIN organization_display_profiles c ON m.author_org_id = c.org_id
              LEFT JOIN posts sp ON m.shared_post_id = sp.post_id
              LEFT JOIN user_display_profiles au ON sp.author_id = au.user_id
+             LEFT JOIN organization_display_profiles sp_org ON sp.author_org_id = sp_org.org_id
              WHERE m.conversation_id = $1 
              -- Visibility: If not group, show all. If group, check ANY participation record.
              AND ($2::boolean = false OR EXISTS (
