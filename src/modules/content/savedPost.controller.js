@@ -317,7 +317,7 @@ exports.getSavedPosts = async (req, res) => {
             COALESCE(comp_auth.name, u_auth.full_name) AS author_name, 
             COALESCE(comp_auth.logo_url, u_auth.avatar_url) AS author_avatar,
             COALESCE(comp_auth.slug, u_auth.account_name) AS author_slug,
-            COALESCE(comp_auth.slogan, u_auth.headline) AS author_headline,
+            CASE WHEN p.author_org_id IS NOT NULL THEN comp_auth.headline ELSE u_auth.headline END AS author_headline,
             COALESCE(
                 (SELECT json_agg(json_build_object('url', pm.url, 'media_type', pm.media_type)) 
                  FROM post_media pm WHERE pm.post_id = p.post_id),

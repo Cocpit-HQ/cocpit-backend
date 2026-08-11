@@ -116,11 +116,13 @@ class BlockModel {
                 COALESCE(u.avatar_url, o.logo_url) AS avatar_url,
                 COALESCE(u.headline, o.headline, '') AS headline,
                 COALESCE(u.account_name, o.slug) AS account_name,
+                b.created_at,
                 CASE WHEN o.org_id IS NOT NULL THEN 'COMPANY' ELSE 'USER' END AS entity_type
              FROM blocks b
              LEFT JOIN active_users u ON b.blocked_id = u.user_id
              LEFT JOIN organizations o ON b.blocked_id = o.org_id
-             WHERE b.blocker_id = $1 AND b.is_org_block = false`,
+             WHERE b.blocker_id = $1 AND b.is_org_block = false
+             ORDER BY b.created_at DESC`,
             [userId]
         );
         return result.rows;
@@ -138,11 +140,13 @@ class BlockModel {
                 COALESCE(u.avatar_url, o.logo_url) AS avatar_url,
                 COALESCE(u.headline, o.headline, '') AS headline,
                 COALESCE(u.account_name, o.slug) AS account_name,
+                b.created_at,
                 CASE WHEN o.org_id IS NOT NULL THEN 'COMPANY' ELSE 'USER' END AS entity_type
              FROM blocks b
              LEFT JOIN active_users u ON b.blocked_id = u.user_id
              LEFT JOIN organizations o ON b.blocked_id = o.org_id
-             WHERE b.blocker_id = $1 AND b.is_org_block = true`,
+             WHERE b.blocker_id = $1 AND b.is_org_block = true
+             ORDER BY b.created_at DESC`,
             [orgId]
         );
         return result.rows;

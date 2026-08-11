@@ -1146,7 +1146,7 @@ exports.getBlockedUsers = async (req, res) => {
                     id: item.user_id,
                     type: item.entity_type === 'COMPANY' ? 'company' : 'user',
                     name: item.full_name || item.account_name || "Blocked Account",
-                    date: "Blocked recently",
+                    created_at: item.created_at || new Date().toISOString(),
                     avatar: item.avatar_url || "",
                 });
             }
@@ -1174,7 +1174,7 @@ exports.getBlockedUsers = async (req, res) => {
             id: item.user_id,
             type: "user",
             name: item.full_name || item.account_name || "User",
-            date: "Blocked recently",
+            created_at: item.created_at || new Date().toISOString(),
             avatar: item.avatar_url || "",
         }));
 
