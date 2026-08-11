@@ -35,7 +35,7 @@ if (hasCloudinary) {
       return {
         folder: "posts",
         resource_type: isVideo ? "video" : "image",
-        public_id: `${Date.now()}-${file.originalname}`,
+        public_id: `${Date.now()}-${file.originalname.replace(/[^a-zA-Z0-9.]/g, '_')}`,
       };
     },
   });
@@ -145,7 +145,7 @@ const eventBannerStorage = new CloudinaryStorage({
   params: {
     folder: "events",       // store event banners separately
     resource_type: "image", // only images for banner
-    public_id: (req, file) => `banner-${Date.now()}-${file.originalname}`
+    public_id: (req, file) => `banner-${Date.now()}-${file.originalname.replace(/[^a-zA-Z0-9.]/g, '_')}`
   }
 });
 
@@ -159,7 +159,7 @@ if (hasCloudinary) {
     params: {
       folder: "communities",
       resource_type: "image",
-      public_id: (req, file) => `banner-${Date.now()}-${file.originalname}`
+      public_id: (req, file) => `banner-${Date.now()}-${file.originalname.replace(/[^a-zA-Z0-9.]/g, '_')}`
     }
   });
 } else {
@@ -397,7 +397,7 @@ const chatMediaStorage = new CloudinaryStorage({
     return {
       folder: folder,
       resource_type: resource_type,
-      public_id: `chat-${req.user.sub}-${Date.now()}-${file.originalname}`,
+      public_id: `chat-${req.user.sub}-${Date.now()}-${file.originalname.replace(/[^a-zA-Z0-9.]/g, '_')}`,
       // format: file.mimetype === "application/pdf" ? "pdf" : undefined 
     };
   }

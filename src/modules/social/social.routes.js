@@ -27,9 +27,7 @@ router.post("/organizations/:orgId/following/organizations/:targetOrgId", requir
 router.delete("/organizations/:orgId/following/organizations/:targetOrgId", requireAuth, requireOrgPermission("MANAGE_COMPANY"), socialController.organizationUnfollowOrganization);
 router.get("/organizations/:orgId/following", socialController.getOrganizationFollowing);
 
-// Company/Organization Subscribe
-router.post("/organizations/:orgId/subscribe", requireAuth, socialController.subscribeCompany);
-router.delete("/organizations/:orgId/unsubscribe", requireAuth, socialController.unsubscribeCompany);
+
 
 // Company/Organization Connections
 router.post("/companies/:companyId/connect/:userId", requireAuth, requireCompanyPermission("MANAGE_CONNECTIONS"), socialController.sendCompanyConnectionRequest);

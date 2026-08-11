@@ -67,9 +67,9 @@ exports.createCommunity = async (req, res, next) => {
         if (!description) {
             throw new AppError("Description is required.", 400);
         }
-        const wordCount = description.trim() ? description.trim().split(/\s+/).length : 0;
-        if (wordCount < 20 || wordCount > 150) {
-            throw new AppError("Description must be between 20 and 150 words.", 400);
+        const charCount = description.trim().length;
+        if (charCount < 20 || charCount > 100) {
+            throw new AppError("Description must be between 20 and 100 characters.", 400);
         }
 
         // Check if community already exists
@@ -132,9 +132,9 @@ exports.updateCommunity = async (req, res, next) => {
             if (!description) {
                 throw new AppError("Description is required.", 400);
             }
-            const wordCount = description.trim() ? description.trim().split(/\s+/).length : 0;
-            if (wordCount < 20 || wordCount > 150) {
-                throw new AppError("Description must be between 20 and 150 words.", 400);
+            const charCount = description.trim().length;
+            if (charCount < 20 || charCount > 100) {
+                throw new AppError("Description must be between 20 and 100 characters.", 400);
             }
         }
 
@@ -293,6 +293,12 @@ exports.getSubscribedCommunities = async (req, res, next) => {
 exports.subscribeCommunity = async (req, res, next) => {
     const userId = req.user.sub;
     const { communityId } = req.params;
+
+    if (req.headers['x-actor-type'] === 'ORGANIZATION') {
+        return res.status(403).json({
+            message: "Only a user account can subscribe to a channel."
+        });
+    }
 
     const client = await pool.connect();
     try {
