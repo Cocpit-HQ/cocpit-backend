@@ -176,6 +176,7 @@ exports.getProfile = async (req, res) => {
                 ...(req.user?.sub === u.user_id ? { recovery_email: u.recovery_email || null } : {}),
                 mobile_number: (req.user?.sub === u.user_id || u.profile_show_phone) ? u.mobile_number : null,
                 account_type: u.account_type,
+                industry: u.industry,
                 is_identity_verified: u.is_identity_verified || false,
                 followers_count: parseInt(counts.followers_count), following_count: parseInt(counts.following_count),
                 connections_count: parseInt(counts.connections_count),
