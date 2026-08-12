@@ -3444,14 +3444,27 @@ exports.getMessages = async (req, res) => {
                         SELECT 1 FROM blocks b 
                         WHERE (b.blocked_id = COALESCE($6::uuid, $4::uuid) AND (b.blocker_id = m.sender_id OR (m.author_org_id IS NOT NULL AND b.blocker_id = m.author_org_id)))
                     ) THEN NULL
-                    ELSE COALESCE(c.logo_url, u.display_avatar, NULL) 
+                    ELSE COALESCE(
+                        c.logo_url, 
+                        (SELECT o_part.logo_url 
+                         FROM conversation_participants cp_org 
+                         JOIN organizations o_part ON cp_org.org_id = o_part.org_id 
+                         WHERE cp_org.conversation_id = m.conversation_id AND o_part.is_deleted = FALSE 
+                         LIMIT 1), 
+                        u.display_avatar, 
+                        NULL
+                    ) 
                 END as sender_avatar,
                 (SELECT json_agg(json_build_object('url', mm.url, 'media_type', mm.media_type, 'filename', mm.filename))
                  FROM message_media mm
                  WHERE mm.message_id = m.message_id
                 ) as media,
                 CASE 
-                    WHEN EXISTS (SELECT 1 FROM blocks WHERE blocker_id = $4::uuid AND blocked_id = m.sender_id) THEN true 
+                    WHEN EXISTS (
+                        SELECT 1 FROM blocks b 
+                        WHERE (b.blocker_id = COALESCE($6::uuid, $4::uuid) AND (b.blocked_id = m.sender_id OR (m.author_org_id IS NOT NULL AND b.blocked_id = m.author_org_id)))
+                           OR (b.blocked_id = COALESCE($6::uuid, $4::uuid) AND (b.blocker_id = m.sender_id OR (m.author_org_id IS NOT NULL AND b.blocker_id = m.author_org_id)))
+                    ) THEN true 
                     ELSE false 
                 END as is_blocked,
                 m.text_content,
