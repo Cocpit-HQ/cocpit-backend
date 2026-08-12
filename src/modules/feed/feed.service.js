@@ -106,20 +106,23 @@ async function _fetchChronologicalFeed(userId, cursor, limit, pool, orgActorId) 
       AND (p.is_removed IS FALSE OR p.is_removed IS NULL)
       AND p.is_community_article IS NOT TRUE
       AND p.created_at < $1
+      ${orgActorId ? `
       AND NOT EXISTS (
         SELECT 1 FROM blocks b
-        WHERE (b.blocker_id = $2 AND b.blocked_id = p.author_id)
-           OR (b.blocker_id = p.author_id AND b.blocked_id = $2)
+        WHERE (b.is_org_block = true AND ((b.blocker_id = $2 AND b.blocked_id = p.author_id) OR (b.blocker_id = p.author_id AND b.blocked_id = $2)))
+           OR (b.is_org_block = true AND p.author_org_id IS NOT NULL AND ((b.blocker_id = p.author_org_id AND b.blocked_id = $2) OR (b.blocker_id = $2 AND b.blocked_id = p.author_org_id)))
       )
+      ` : `
       AND NOT EXISTS (
-        SELECT 1 FROM organization_blocked_accounts oba
-        WHERE (oba.org_id = $4 AND (oba.blocked_id = p.author_id OR (p.author_org_id IS NOT NULL AND oba.blocked_id = p.author_org_id)))
-           OR (oba.blocked_id = $2 AND (p.author_org_id IS NOT NULL AND oba.org_id = p.author_org_id))
+        SELECT 1 FROM blocks b
+        WHERE (b.is_org_block = false AND ((b.blocker_id = $2 AND b.blocked_id = p.author_id) OR (b.blocker_id = p.author_id AND b.blocked_id = $2)))
+           OR (b.is_org_block = true AND p.author_org_id IS NOT NULL AND ((b.blocker_id = p.author_org_id AND b.blocked_id = $2) OR (b.blocker_id = $2 AND b.blocked_id = p.author_org_id)))
       )
+      `}
     ORDER BY p.created_at DESC
     LIMIT $3
   `;
-  const result = await pool.query(query, [cursorTs, userId, limit, orgActorId || null]);
+  const result = await pool.query(query, [cursorTs, orgActorId || userId, limit]);
   let items = result.rows;
 
   // Filter explicitly hidden posts
@@ -221,7 +224,7 @@ async function _hydrateFeedItems(items, userId, pool, orgActorId = null) {
     const query = `
       SELECT ${getPostHydrationSelect(2, 1)}
       ${getPostHydrationJoins()}
-      ${getPublicFeedWhere(1)}
+      ${getPublicFeedWhere(1, orgActorId ? 2 : null)}
       AND p.post_id = ANY($3::uuid[])
     `;
     // param 1: user (always real identity — blocks/membership checks etc.)

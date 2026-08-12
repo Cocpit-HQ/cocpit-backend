@@ -273,14 +273,25 @@ exports.getMyPosts = async (req, res) => {
 
         // ✅ Strict Block Logic for Shared Posts
         whereClause += `
+        ${isOrgActor ? `
         AND (
             p.shared_post_id IS NULL 
             OR NOT EXISTS (
                 SELECT 1 FROM blocks b 
-                WHERE (b.blocker_id = $${userParamIdx} AND b.blocked_id = sp.author_id)
-                   OR (b.blocker_id = sp.author_id AND b.blocked_id = $${userParamIdx})
+                WHERE (b.is_org_block = true AND ((b.blocker_id = $${orgParamIdx} AND b.blocked_id = sp.author_id) OR (b.blocker_id = sp.author_id AND b.blocked_id = $${orgParamIdx})))
+                   OR (b.is_org_block = true AND sp.author_org_id IS NOT NULL AND ((b.blocker_id = sp.author_org_id AND b.blocked_id = $${orgParamIdx}) OR (b.blocker_id = $${orgParamIdx} AND b.blocked_id = sp.author_org_id)))
             )
         )
+        ` : `
+        AND (
+            p.shared_post_id IS NULL 
+            OR NOT EXISTS (
+                SELECT 1 FROM blocks b 
+                WHERE (b.is_org_block = false AND ((b.blocker_id = $${userParamIdx} AND b.blocked_id = sp.author_id) OR (b.blocker_id = sp.author_id AND b.blocked_id = $${userParamIdx})))
+                   OR (b.is_org_block = true AND sp.author_org_id IS NOT NULL AND ((b.blocker_id = sp.author_org_id AND b.blocked_id = $${userParamIdx}) OR (b.blocker_id = $${userParamIdx} AND b.blocked_id = sp.author_org_id)))
+            )
+        )
+        `}
         `;
 
         // If org actor, $1 is the org_id. We might need the userId for block checks if they are personal blocks,
@@ -1665,16 +1676,19 @@ WHERE p.post_id = $1 AND p.is_active = TRUE AND (p.is_removed IS FALSE OR p.is_r
             return res.status(404).json({ message: "Post not found" });
         }
 
-        // STRICT BLOCK CHECK
+        // STRICT BLOCK CHECK (identity-aware)
+        // Use the active identity (companyId when acting as company, userId when personal)
+        // so personal blocks don't leak into company profile context
         const post = result.rows[0];
         if (userId) {
+            const activeActorId = companyId || userId;
             if (post.author_org_id) {
-                const isBlocked = await BlockModel.isOrgBlocked(post.author_org_id, userId);
+                const isBlocked = await BlockModel.isAnyBlocked(activeActorId, post.author_org_id);
                 if (isBlocked) {
                     return res.status(404).json({ message: "Post not found" });
                 }
             } else if (post.author_id && post.author_id !== userId) {
-                const isBlocked = await checkBlockStatus(userId, post.author_id);
+                const isBlocked = await BlockModel.isAnyBlocked(activeActorId, post.author_id);
                 if (isBlocked) {
                     return res.status(404).json({ message: "Post not found" });
                 }
@@ -3438,11 +3452,19 @@ exports.getComments = async (req, res) => {
       WHERE c.post_id = $1
       AND (c.author_org_id IS NULL OR comp.org_id IS NOT NULL)
       -- 1. Exclude blocked users
+      ${companyId ? `
       AND NOT EXISTS (
         SELECT 1 FROM blocks b 
-        WHERE (b.blocker_id = $2 AND b.blocked_id = c.author_id) 
-           OR (b.blocker_id = c.author_id AND b.blocked_id = $2)
+        WHERE (b.is_org_block = true AND ((b.blocker_id = $3 AND b.blocked_id = c.author_id) OR (b.blocker_id = c.author_id AND b.blocked_id = $3)))
+           OR (b.is_org_block = true AND c.author_org_id IS NOT NULL AND ((b.blocker_id = c.author_org_id AND b.blocked_id = $3) OR (b.blocker_id = $3 AND b.blocked_id = c.author_org_id)))
       )
+      ` : `
+      AND NOT EXISTS (
+        SELECT 1 FROM blocks b 
+        WHERE (b.is_org_block = false AND ((b.blocker_id = $2 AND b.blocked_id = c.author_id) OR (b.blocker_id = c.author_id AND b.blocked_id = $2)))
+           OR (b.is_org_block = true AND c.author_org_id IS NOT NULL AND ((b.blocker_id = c.author_org_id AND b.blocked_id = $2) OR (b.blocker_id = $2 AND b.blocked_id = c.author_org_id)))
+      )
+      `}
       -- 2. Exclude hidden comments (Hiding a comment or its parent hides the thread)
       AND NOT EXISTS (
         SELECT 1 FROM hidden_comments hc

@@ -1319,6 +1319,10 @@ exports.searchOrganizations = async (req, res) => {
     const searchTerm = `%${rawSearchTerm}%`;
     const limit = parseInt(req.query.limit) || 10;
 
+    const currentUserId = req.user?.sub;
+    const isOrgActor = req.actor?.type === "ORGANIZATION";
+    const activeActorId = isOrgActor ? (req.actor.orgId || currentUserId) : currentUserId;
+
     const client = await pool.connect();
     try {
         let queryStr = `
@@ -1328,6 +1332,17 @@ exports.searchOrganizations = async (req, res) => {
              WHERE (name ILIKE $2 OR slug ILIKE $2) AND is_deleted = FALSE
         `;
         const queryParams = [rawSearchTerm, searchTerm];
+
+        if (activeActorId) {
+            queryParams.push(activeActorId);
+            queryStr += `
+                AND NOT EXISTS (
+                    SELECT 1 FROM blocks b 
+                    WHERE (b.blocker_id = $${queryParams.length} AND b.blocked_id = organizations.org_id)
+                       OR (b.blocker_id = organizations.org_id AND b.blocked_id = $${queryParams.length})
+                )
+            `;
+        }
 
         if (entity_type) {
             queryParams.push(entity_type);

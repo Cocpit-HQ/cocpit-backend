@@ -114,6 +114,14 @@ exports.searchUsers = async (req, res) => {
     queryParams.push(searchTerm);
     const simParamIdx = queryParams.length;
 
+    const orgBlockFilter = `
+      AND NOT EXISTS (
+        SELECT 1 FROM blocks b 
+        WHERE (b.blocker_id = $1 AND b.blocked_id = c.org_id)
+           OR (b.blocker_id = c.org_id AND b.blocked_id = $1)
+      )
+    `;
+
     const queryText = `
       SELECT * FROM (
         (
@@ -155,6 +163,7 @@ exports.searchUsers = async (req, res) => {
           LEFT JOIN organization_privacy_settings ops ON c.org_id = ops.org_id
           WHERE c.is_deleted = FALSE AND c.is_deactivated = FALSE
           AND (c.name ILIKE $2 OR c.slug ILIKE $2)
+          ${orgBlockFilter}
           ${orgTagPrivacyFilter}
         )
       ) AS combined_results
