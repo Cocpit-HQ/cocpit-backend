@@ -236,9 +236,9 @@ exports.updateProfile = async (req, res) => {
     if (website && website.length > 255) return res.status(400).json({ message: "Website cannot exceed 255 characters" });
     // Validate account_name (username) if provided
     if (account_name !== undefined) {
-        const usernameRegex = /^[a-zA-Z0-9_-]{3,30}$/;
+        const usernameRegex = /^[a-z0-9_.]{3,20}$/;
         if (!usernameRegex.test(account_name)) {
-            return res.status(400).json({ message: "Username must be 3-30 characters and contain only letters, numbers, underscores, or hyphens" });
+            return res.status(400).json({ message: "Username must be 3-20 characters and contain only lowercase letters, numbers, underscores, or dots" });
         }
 
         // Check case-insensitive uniqueness
