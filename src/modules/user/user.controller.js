@@ -146,7 +146,7 @@ exports.searchUsers = async (req, res) => {
             c.slug AS account_name,
             c.headline AS headline,
             c.logo_url AS avatar_url,
-            NULL::text AS account_type,
+            c.entity_type AS account_type,
             'COMPANY'::text as type,
             c.slug as slug,
             c.industry as industry,
