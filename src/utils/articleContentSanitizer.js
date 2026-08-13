@@ -8,7 +8,12 @@ const sanitizeHtml = require('sanitize-html');
  */
 const sanitizeArticleContent = (html) => {
   if (!html) return '';
-  return sanitizeHtml(html, {
+
+  // Preserve the article divider comment which is used by the frontend to split the description from the body
+  const dividerPlaceholder = '___ARTICLE_DIVIDER_PLACEHOLDER___';
+  let processedHtml = html.replace(/<!--\s*article_divider\s*-->/g, dividerPlaceholder);
+
+  processedHtml = sanitizeHtml(processedHtml, {
     allowedTags: ['b', 'strong', 'i', 'em', 'u', 'h1', 'h2', 'h3', 'p', 'br', 'ul', 'ol', 'li', 'a',
                   'span', 'img', 'video', 'div', 'button', 'svg', 'path', 'line'],
     allowedAttributes: {
@@ -34,6 +39,9 @@ const sanitizeArticleContent = (html) => {
     // all attribute names, which silently breaks SVG icon rendering).
     parser: { lowerCaseAttributeNames: false },
   });
+
+  // Restore the article divider comment
+  return processedHtml.replace(new RegExp(dividerPlaceholder, 'g'), '<!-- article_divider -->');
 };
 
 module.exports = { sanitizeArticleContent };

@@ -272,6 +272,7 @@ exports.getUserProfile = async (req, res) => {
         u.profile_show_email,
         u.profile_show_phone,
         u.created_at,
+        u.is_identity_verified,
         p.account_type,
         p.open_to,
         p.availability,

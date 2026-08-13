@@ -4179,6 +4179,10 @@ exports.blockUser = async (req, res) => {
                     [blockerId, targetId]
                 );
                 await client.query(
+                    "DELETE FROM organization_followers WHERE user_id = $1 AND org_id = $2",
+                    [blockerId, targetId]
+                );
+                await client.query(
                     "DELETE FROM organization_connections WHERE user_id = $1 AND org_id = $2",
                     [blockerId, targetId]
                 );

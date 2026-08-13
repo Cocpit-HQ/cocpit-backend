@@ -328,6 +328,27 @@ exports.updateOrganizationJob = async (req, res) => {
                 return res.status(400).json({ message: `Invalid status transition from ${oldJobData.status} to ${status}` });
             }
         }
+        
+        // 2c. Validation for Publishing (ACTIVE status)
+        const nextStatus = status || oldJobData.status;
+        if (nextStatus === 'ACTIVE') {
+            const nextJobType = job_type !== undefined ? job_type : oldJobData.job_type;
+            const nextExpLabel = experience_level !== undefined ? experience_level : oldJobData.experience_label;
+            const nextWorkMode = work_mode !== undefined ? work_mode : oldJobData.work_mode;
+            
+            if (!nextJobType) {
+                await client.query('ROLLBACK');
+                return res.status(400).json({ message: "Job type is required to publish a job." });
+            }
+            if (!nextExpLabel) {
+                await client.query('ROLLBACK');
+                return res.status(400).json({ message: "Experience level is required to publish a job." });
+            }
+            if (!nextWorkMode) {
+                await client.query('ROLLBACK');
+                return res.status(400).json({ message: "Work mode is required to publish a job." });
+            }
+        }
 
         // 3. Update Job
         const updateRes = await client.query(`

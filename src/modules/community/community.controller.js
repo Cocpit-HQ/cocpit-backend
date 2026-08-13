@@ -257,7 +257,8 @@ exports.getSubscribedCommunities = async (req, res, next) => {
                AND (
                  cs.status = 'SUBSCRIBED'
                  OR o.created_by = $1
-               )`,
+               )
+             ORDER BY c.name ASC`,
             [userId]
         );
  
@@ -1280,7 +1281,7 @@ exports.searchArticles = async (req, res, next) => {
             `SELECT
                 p.post_id,
                 p.title,
-                LEFT(p.content, 1000) AS content_snippet,
+                p.content AS content_snippet,
                 p.created_at,
                 p.updated_at,
                 p.author_org_id,
@@ -1309,7 +1310,8 @@ exports.searchArticles = async (req, res, next) => {
 
         const extractExcerpt = (content, maxLen = 140) => {
             if (!content) return '';
-            const cleaned = content.replace(/<[^>]+>/g, ' ').replace(/[#*`~>_]/g, '').replace(/\s+/g, ' ').trim();
+            const textOnly = content.replace(/<[^>]*>?/gm, ' ').replace(/&nbsp;/g, ' ').replace(/&[a-z]+;/gi, '');
+            const cleaned = textOnly.replace(/[#*`~>_]/g, '').replace(/\s+/g, ' ').trim();
             return cleaned.length <= maxLen ? cleaned : cleaned.substring(0, maxLen) + '...';
         };
 

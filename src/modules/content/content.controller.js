@@ -737,6 +737,12 @@ exports.createPost = async (req, res) => {
     const { userId, orgId: companyId } = actorScope;
     let { content, category, visibility, media_urls, post_type, title, poll_options, poll_duration, is_broadcast, location, achievement_image_id, status } = req.body; // category is name, media_urls is array
 
+    if (media_urls && typeof media_urls === 'string') {
+        try {
+            media_urls = JSON.parse(media_urls);
+        } catch (e) { }
+    }
+
     if (status !== undefined && status !== "published" && status !== "draft") {
         return res.status(400).json({ message: "Invalid status. Allowed values: 'published', 'draft'" });
     }
@@ -803,7 +809,7 @@ exports.createPost = async (req, res) => {
         // fallback below so their behavior is unchanged.
         let coverFileUrl = coverFiles.length > 0
             ? (coverFiles[0].path || coverFiles[0].secure_url || '').replace(/\\/g, "/")
-            : null;
+            : (media_urls && media_urls.length > 0 ? media_urls[0] : null);
         // Everything in "media" is an inline content image/video - rewrite its blob
         // src to the real URL. Match on the basename without extension since blob:
         // URLs (e.g. "blob:http://host/<uuid>") carry no file extension.
@@ -814,7 +820,7 @@ exports.createPost = async (req, res) => {
             if (content && baseName && content.includes(baseName)) {
                 const regex = new RegExp(`src="[^"]*${baseName}[^"]*"`, 'g');
                 content = content.replace(regex, `src="${fileUrl}"`);
-            } else if (coverFiles.length === 0) {
+            } else if (!coverFileUrl) {
                 coverFileUrl = fileUrl;
             }
         });
