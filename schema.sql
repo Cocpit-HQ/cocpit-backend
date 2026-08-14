@@ -985,6 +985,7 @@ CREATE INDEX idx_profile_views_lookup ON profile_views(viewer_id, profile_owner_
 CREATE INDEX idx_profile_views_owner ON profile_views(profile_type, profile_owner_id);
 -- Removed unique_daily_profile_view to allow multiple views per day to increment count
 
+
 --20-01-26 -- student account type added 
 ALTER TABLE profiles
 DROP CONSTRAINT profiles_account_type_check;
@@ -2341,3 +2342,5 @@ CREATE TABLE user_verifications (
   created_at TIMESTAMPTZ DEFAULT now(),
   updated_at TIMESTAMPTZ DEFAULT now()
 );
+
+

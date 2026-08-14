@@ -3,6 +3,14 @@ const AppError = require("../../core/errors/AppError");
 const current_user = require("../profile/profile.controller");
 const profileRepo = require("../profile/profile.repository");
 const dashboardService = require("../dashboard/dashboard.service");
+const crypto = require("crypto");
+const redisClient = require("../../core/db/redis");
+const socketService = require("../../core/infrastructure/socket.service");
+const { sendAccountDeletionEmail } = require("../../core/services/email.service");
+const { verifyGoogleToken } = require("../auth/googleAuth.service");
+const { comparePassword } = require("../../core/utils/password");
+const { checkBlockStatus, checkActorBlockStatus } = require("../../core/utils/blockCheck");
+const { logAudit } = require("../../core/infrastructure/audit.service");
 
 /**
  * GET /api/users/search
@@ -212,7 +220,7 @@ exports.getUserProfile = async (req, res) => {
   let targetUserId = id;
 
   // Import block check util if not already imported (it's not)
-  const { checkBlockStatus } = require("../../core/utils/blockCheck");
+
 
   // ... existing code ...
 
@@ -235,7 +243,7 @@ exports.getUserProfile = async (req, res) => {
 
   // --- Block Check Implementation ---
   if (targetUserId !== currentUserId) {
-    const { checkActorBlockStatus } = require("../../core/utils/blockCheck");
+
     const isBlocked = await checkActorBlockStatus(req, targetUserId);
     if (isBlocked) {
       return res.status(404).json({ message: "User not found" });
@@ -246,9 +254,15 @@ exports.getUserProfile = async (req, res) => {
 
   try {
     // --- Centralized View Counting Logic (Redis + Atomic DB) ---
+    const actorContext = req.actor || null;
     if (targetUserId !== currentUserId) {
+
+      const viewerCompanyOrgId = actorContext && actorContext.type === "ORGANIZATION" ? actorContext.orgId : null;
+      const sourcePostId = req.query.source_post_id || req.query.sourcePostId || null;
+      const source = req.query.source || (sourcePostId ? 'post' : null);
+
       // Fire and forget view recording to keep profile load fast
-      dashboardService.addProfileView(currentUserId, targetUserId, 'user')
+      dashboardService.addProfileView(currentUserId, targetUserId, 'user', { source, sourcePostId, viewerCompanyOrgId, actor: actorContext })
         .catch(err => console.error("Error recording user profile view:", err));
     }
     // -----------------------------------------------------------
@@ -294,29 +308,23 @@ exports.getUserProfile = async (req, res) => {
     delete user.profile_id; // Remove from response payload
 
     // Log audit when viewing another user's profile under Organization actor context
-    if (targetUserId !== currentUserId) {
-      const { resolveActorContextForRequest } = require("../../core/middlewares/actor-context.middleware");
-      const { logAudit } = require("../../core/infrastructure/audit.service");
-      
-      resolveActorContextForRequest(req).then(actor => {
-        if (actor && actor.type === "ORGANIZATION" && actor.orgId) {
-          const handleOrId = user.account_name || targetUserId;
-          logAudit(pool, {
-            entityId: actor.orgId,
-            actorId: currentUserId,
-            actorRole: actor.roleName || null,
-            action: 'VIEW_USER_PROFILE',
-            metadata: {
-              targetId: targetUserId,
-              targetName: user.name,
-              targetHandle: user.account_name,
-              targetType: 'user',
-              linkUrl: `/u/${handleOrId}`,
-              highlightedText: 'profile'
-            }
-          }).catch(err => console.error("Error logging user profile view audit:", err));
+    if (targetUserId !== currentUserId && actorContext && actorContext.type === "ORGANIZATION" && actorContext.orgId) {
+
+      const handleOrId = user.account_name || targetUserId;
+      logAudit(pool, {
+        entityId: actorContext.orgId,
+        actorId: currentUserId,
+        actorRole: actorContext.roleName || null,
+        action: 'VIEW_USER_PROFILE',
+        metadata: {
+          targetId: targetUserId,
+          targetName: user.name,
+          targetHandle: user.account_name,
+          targetType: 'user',
+          linkUrl: `/u/${handleOrId}`,
+          highlightedText: 'profile'
         }
-      }).catch(() => {});
+      }).catch(err => console.error("Error logging user profile view audit:", err));
     }
 
     // 2. Fetch Experiences, Educations, Projects & Resume using profileRepo
@@ -580,7 +588,7 @@ exports.getPublicProfilePosts = async (req, res) => {
   // --- Block Check Implementation ---
   const currentUserId = req.user.sub;
   if (targetUserId !== currentUserId) {
-    const { checkActorBlockStatus } = require("../../core/utils/blockCheck");
+
     const isBlocked = await checkActorBlockStatus(req, targetUserId);
     if (isBlocked) {
       return res.status(404).json({ message: "User not found" });
@@ -660,7 +668,7 @@ exports.getPublicProfilePosts = async (req, res) => {
         ) AS media,
 
         (SELECT COUNT(*) FROM active_post_likes pl WHERE pl.post_id = p.post_id)::int AS like_count,
-        (SELECT COUNT(*) FROM posts sp_share WHERE sp_share.shared_post_id = p.post_id AND sp_share.is_active = TRUE AND (sp_share.is_removed IS FALSE OR sp_share.is_removed IS NULL))::int AS share_count,
+        ((SELECT COUNT(DISTINCT sp_share.author_id) FROM posts sp_share WHERE sp_share.shared_post_id = p.post_id AND sp_share.is_active = TRUE AND (sp_share.is_removed IS FALSE OR sp_share.is_removed IS NULL)) + (SELECT COUNT(DISTINCT s_share.sender_id) FROM shares s_share WHERE s_share.entity_id = p.post_id::text AND s_share.entity_type = 'post'))::int AS share_count,
         (
             SELECT COALESCE(comp_like.slug, u_like.account_name)
             FROM active_post_likes pl_sample
@@ -966,7 +974,7 @@ exports.getPublicProfileCommentedPosts = async (req, res) => {
   // Block check
   const currentUserId = req.user.sub;
   if (targetUserId !== currentUserId) {
-    const { checkActorBlockStatus } = require("../../core/utils/blockCheck");
+
     const isBlocked = await checkActorBlockStatus(req, targetUserId);
     if (isBlocked) {
       return res.status(404).json({ message: "User not found" });
@@ -1123,12 +1131,7 @@ exports.deleteAccount = async (req, res) => {
   const userId = req.user.sub;
   const { password, idToken, companyIdsToDelete = [] } = req.body;
 
-  const crypto = require("crypto");
-  const redisClient = require("../../core/db/redis");
-  const socketService = require("../../core/infrastructure/socket.service");
-  const { sendAccountDeletionEmail } = require("../../core/services/email.service");
-  const { verifyGoogleToken } = require("../auth/googleAuth.service");
-  const { comparePassword } = require("../../core/utils/password");
+
 
   const client = await pool.connect();
   try {
@@ -1314,7 +1317,7 @@ exports.restoreAccount = async (req, res) => {
     return res.status(400).json({ message: "Restoration token is required" });
   }
 
-  const crypto = require("crypto");
+
   const tokenHash = crypto.createHash("sha256").update(token).digest("hex");
 
   const client = await pool.connect();
@@ -1406,8 +1409,7 @@ exports.resendRecoveryEmail = async (req, res) => {
   // Process async — response already sent
   (async () => {
     try {
-      const crypto = require("crypto");
-      const { sendAccountDeletionEmail } = require("../../core/services/email.service");
+
 
       const userRes = await pool.query(
         `SELECT user_id, email, recovery_email, full_name, deletion_execute_at

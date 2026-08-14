@@ -5,7 +5,7 @@ const { requireAuth, optionalAuth } = require("../../core/middlewares/auth.middl
 const { resolveActorContext } = require("../../core/middlewares/actor-context.middleware");
 
 router.get("/stats", requireAuth, resolveActorContext, dashboardController.getDashboardStats);
-router.post("/view", requireAuth, dashboardController.recordProfileView);
+router.post("/view", requireAuth, resolveActorContext, dashboardController.recordProfileView);
 router.get("/:profileType/:profileOwnerId/views", requireAuth, dashboardController.getProfileViews);
 router.get("/:profileType/:profileId/search-appearances", requireAuth, dashboardController.getSearchAppearanceCount);
 

@@ -47,3 +47,9 @@ next-env.d.ts
 
 # secrets
 secrets/
+
+# Dev-only scripts (never commit to main/develop)
+scripts/dev-only/
+
+# Planning and documentation (use Notion/Confluence instead)
+# plans/

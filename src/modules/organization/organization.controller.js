@@ -228,9 +228,15 @@ exports.getOrganization = async (req, res) => {
 
         // Unified Profile View Tracking (Redis + Atomic DB)
         if (userId && company.org_id) {
+            const actorType = req.headers["x-actor-type"];
+            const actorId = req.headers["x-actor-id"];
+            let viewerCompanyOrgId = actorType === "ORGANIZATION" && actorId ? actorId : null;
+            const sourcePostId = req.query.source_post_id || req.query.sourcePostId || null;
+            const source = req.query.source || (sourcePostId ? 'post' : null);
+
             const dashboardService = require("../dashboard/dashboard.service");
             // Fire and forget to keep response fast
-            dashboardService.addProfileView(userId, company.org_id, 'organization')
+            dashboardService.addProfileView(userId, company.org_id, 'organization', { source, sourcePostId, viewerCompanyOrgId })
                 .catch(err => console.error("Error recording organization profile view:", err));
         }
 

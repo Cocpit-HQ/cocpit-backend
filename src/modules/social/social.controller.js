@@ -106,6 +106,7 @@ const notifyConversationPreferenceUpdate = async ({ conversationId, userId, comp
 exports.followUser = async (req, res) => {
     const followerId = req.user.sub;
     const followingId = req.params.id; // The person I am trying to follow
+    const { sourcePostId } = req.body || {}; // Analytics tracking
 
     if (followerId === followingId)
         return res.status(400).json({ message: "Cannot follow yourself" });
@@ -117,8 +118,8 @@ exports.followUser = async (req, res) => {
 
         // 1. Insert Follow
         const followResult = await client.query(
-            `INSERT INTO followers (follower_id, following_id) VALUES ($1, $2) ON CONFLICT DO NOTHING RETURNING *`,
-            [followerId, followingId]
+            `INSERT INTO followers (follower_id, following_id, source_post_id) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING RETURNING *`,
+            [followerId, followingId, sourcePostId || null]
         );
 
         if (followResult.rowCount === 0) {
@@ -351,14 +352,15 @@ exports.removeFollower = async (req, res) => {
 exports.followCompany = async (req, res) => {
     const userId = req.user.sub;
     const companyId = req.params.companyId || req.params.orgId;
+    const { sourcePostId } = req.body || {};
 
     const client = await pool.connect();
     try {
         await client.query('BEGIN');
 
         const result = await client.query(
-            `INSERT INTO organization_followers (user_id, org_id) VALUES ($1, $2) ON CONFLICT DO NOTHING RETURNING *`,
-            [userId, companyId]
+            `INSERT INTO organization_followers (user_id, org_id, source_post_id) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING RETURNING *`,
+            [userId, companyId, sourcePostId || null]
         );
 
         if (result.rowCount === 0) {
@@ -2808,6 +2810,13 @@ exports.sendMessage = async (req, res) => {
                     WHERE p.post_id = $1
                 `, [shared_post_id]);
                 if (spRes.rowCount > 0) sharedPostData = spRes.rows[0];
+
+                try {
+                    const shareService = require('../share/share.service');
+                    shareService.trackShare(senderId, targetUserId, 'post', shared_post_id, 'message');
+                } catch (err) {
+                    console.warn("[ShareTracking] Failed to track share event in message:", err.message);
+                }
             }
 
             // Check if this message is attached with a job/offer entity context card
@@ -5254,10 +5263,11 @@ exports.checkContextSent = async (req, res) => {
 // Organization follows a user
 exports.organizationFollowUser = async (req, res) => {
     const { orgId, userId } = req.params;
+    const { sourcePostId } = req.body || {};
     try {
         await pool.query(
-            `INSERT INTO organization_user_follows (org_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
-            [orgId, userId]
+            `INSERT INTO organization_user_follows (org_id, user_id, source_post_id) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
+            [orgId, userId, sourcePostId || null]
         );
         res.status(200).json({ success: true, message: "Organization followed user" });
     } catch (err) {
@@ -5284,13 +5294,14 @@ exports.organizationUnfollowUser = async (req, res) => {
 // Organization follows an organization
 exports.organizationFollowOrganization = async (req, res) => {
     const { orgId, targetOrgId } = req.params;
+    const { sourcePostId } = req.body || {};
     if (orgId === targetOrgId) {
         return res.status(400).json({ message: "Cannot follow yourself" });
     }
     try {
         await pool.query(
-            `INSERT INTO organization_org_follows (follower_org_id, following_org_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
-            [orgId, targetOrgId]
+            `INSERT INTO organization_org_follows (follower_org_id, following_org_id, source_post_id) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
+            [orgId, targetOrgId, sourcePostId || null]
         );
         res.status(200).json({ success: true, message: "Organization followed organization" });
     } catch (err) {

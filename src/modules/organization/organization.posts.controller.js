@@ -171,7 +171,7 @@ exports.getOrganizationPosts = async (req, res) => {
             COALESCE(pm.media, '[]'::json) AS media,
             COALESCE(lc.like_count, 0)::int AS like_count,
             COALESCE(cc.comment_count, 0)::int AS comment_count,
-            (SELECT COUNT(*) FROM posts sp_share WHERE sp_share.shared_post_id = p.post_id AND sp_share.is_active = TRUE AND (sp_share.is_removed IS FALSE OR sp_share.is_removed IS NULL))::int AS share_count,
+            ((SELECT COUNT(DISTINCT sp_share.author_id) FROM posts sp_share WHERE sp_share.shared_post_id = p.post_id AND sp_share.is_active = TRUE AND (sp_share.is_removed IS FALSE OR sp_share.is_removed IS NULL)) + (SELECT COUNT(DISTINCT s_share.sender_id) FROM shares s_share WHERE s_share.entity_id = p.post_id::text AND s_share.entity_type = 'post'))::int AS share_count,
             (
                 SELECT COALESCE(comp_like.slug, u_like.account_name)
                 FROM active_post_likes pl_sample

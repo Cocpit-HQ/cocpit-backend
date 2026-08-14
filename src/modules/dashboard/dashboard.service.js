@@ -2,6 +2,19 @@ const pool = require("../../core/db/pool");
 
 const redis = require("../../core/cache/redis");
 
+// Module-scoped in-memory deduplication map — fallback for Redis downtime.
+// Redis is the primary distributed layer; this only catches duplicate requests
+// within the same process before Redis responds.
+// Capped at 10,000 entries to prevent unbounded memory growth.
+const VIEW_SAFETY_MAP_MAX_SIZE = 10_000;
+const viewSafetyMap = new Map();
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, timestamp] of viewSafetyMap.entries()) {
+    if (now - timestamp > 3_600_000) viewSafetyMap.delete(key);
+  }
+}, 3_600_000);
+
 /**
  * Resolve a profile identifier (username or slug) to a UUID
  */
@@ -28,7 +41,7 @@ const resolveProfileId = async (identifier, type) => {
  * @param {string} profileOwnerIdentifier - ID or username/slug of the profile being viewed
  * @param {'user'|'organization'} profileType - Type of the profile
  */
-const addProfileView = async (viewerId, profileOwnerIdentifier, profileType) => {
+const addProfileView = async (viewerId, profileOwnerIdentifier, profileType, options = {}) => {
   if (!viewerId || !profileOwnerIdentifier || !["user", "organization"].includes(profileType)) {
     throw new Error("Invalid parameters for profile view.");
   }
@@ -37,52 +50,80 @@ const addProfileView = async (viewerId, profileOwnerIdentifier, profileType) => 
 
   if (viewerId === profileOwnerId) return;
 
+  let { source = null, sourcePostId = null, viewerCompanyOrgId = null, actor = null } = options;
+
+  // Resolve org context: explicit orgId takes priority, then actor type
+  const isOrgView = viewerCompanyOrgId || (actor && actor.type === 'ORGANIZATION');
+  const orgId = isOrgView ? (viewerCompanyOrgId || actor?.orgId) : null;
+
+  const hasAttribution = Boolean(sourcePostId || source || orgId);
+
   const nowDate = new Date();
   const today = `${nowDate.getFullYear()}-${String(nowDate.getMonth() + 1).padStart(2, '0')}-${String(nowDate.getDate()).padStart(2, '0')}`;
-  const cacheKey = `profile_view:${viewerId}:${profileOwnerId}:${profileType}:${today}`;
+
+  // Cache key scoped to the viewing entity (org or personal user)
+  const cacheKey = isOrgView
+    ? `profile_view:org:${orgId}:${profileOwnerId}:${profileType}:${today}`
+    : `profile_view:${viewerId}:${profileOwnerId}:${profileType}:${today}`;
+
+  const attributionCacheKey = hasAttribution
+    ? `${cacheKey}:src:${source || ''}:post:${sourcePostId || ''}`
+    : cacheKey;
 
   // 1. In-memory safety fallback (protects against Redis downtime + extra layer)
-  if (!global.viewSafetyMap) {
-    global.viewSafetyMap = new Map();
-    // Cleanup old keys every hour
-    setInterval(() => {
-      const now = Date.now();
-      for (const [key, timestamp] of global.viewSafetyMap.entries()) {
-        if (now - timestamp > 3600000) global.viewSafetyMap.delete(key);
-      }
-    }, 3600000);
+  // Evict oldest entry if map is at capacity (LRU-lite)
+  if (viewSafetyMap.size >= VIEW_SAFETY_MAP_MAX_SIZE) {
+    const oldestKey = viewSafetyMap.keys().next().value;
+    viewSafetyMap.delete(oldestKey);
   }
 
-  if (global.viewSafetyMap.has(cacheKey)) return;
-  global.viewSafetyMap.set(cacheKey, Date.now());
+  // If already tracked with this exact attribution, skip
+  if (viewSafetyMap.has(attributionCacheKey)) return;
+  viewSafetyMap.set(attributionCacheKey, Date.now());
+  if (!hasAttribution) {
+    viewSafetyMap.set(cacheKey, Date.now());
+  }
 
   // 2. Redis distributed cache check (24h TTL)
   if (redis.status === "ready") {
     try {
       const isNewView = await redis.set(
-        cacheKey,
+        attributionCacheKey,
         "1",
         "NX",
         "EX",
         86400
       );
-      if (!isNewView) return;
+      if (!isNewView && !hasAttribution) return;
     } catch (err) {
       // Logic continues to DB if Redis fails, but in-memory map already caught near-duplicates
       console.warn("[DashboardService] Redis cache check skipped during view tracking");
     }
   }
 
+  const finalSource = source || (sourcePostId ? 'post' : null);
+
   try {
-    const { rows } = await pool.query(
+    if (isOrgView && orgId) {
+      // 1. Organization context: Check rolling 24-hour window
+      // Use ON CONFLICT to make insert atomic — prevents race condition from concurrent requests
+      await pool.query(`
+          INSERT INTO organization_profile_views (organization_id, profile_owner_id, profile_type, viewed_at)
+          VALUES ($1, $2, $3, NOW())
+          ON CONFLICT (organization_id, profile_owner_id, profile_type, ((viewed_at AT TIME ZONE 'UTC')::date)) DO NOTHING
+      `, [orgId, profileOwnerId, profileType]);
+      return; // Stop here, organization views do NOT go into profile_views
+    }
+
+    // 2. Personal context: Insert into profile_views
+    // viewer_company_org_id is NOT set here to avoid polluting org analytics with personal views
+    await pool.query(
       `
-      INSERT INTO profile_views (viewer_id, profile_owner_id, profile_type, view_date)
-      VALUES ($1, $2, $3, CURRENT_DATE)
-      ON CONFLICT ON CONSTRAINT unique_24hr_view
-      DO NOTHING
-      RETURNING viewer_id
+      INSERT INTO profile_views (viewer_id, profile_owner_id, profile_type, view_date, source, source_post_id, viewer_company_org_id, viewer_industry)
+      VALUES ($1, $2, $3, CURRENT_DATE, $4, $5, $6, (SELECT job_title FROM users WHERE user_id = $1))
+      RETURNING view_id
       `,
-      [viewerId, profileOwnerId, profileType]
+      [viewerId, profileOwnerId, profileType, finalSource, sourcePostId, null]
     );
 
   } catch (err) {

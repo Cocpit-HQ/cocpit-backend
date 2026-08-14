@@ -11,6 +11,7 @@ const { processEventOutbox } = require("./workers/eventOutboxWorker");
 const { processStoryExpirations } = require("./workers/storyExpiryWorker");
 const { sweepActivityLogs, runDailyDecay } = require("./workers/intentEngine");
 const { startFeedWorker }              = require("./workers/feedWorker");
+const { processAnalyticsAggregations } = require("./workers/analytics.cron");
 const server = http.createServer(app);
 
 // Configure high timeouts (10 minutes) for streaming large video uploads to Cloudinary
@@ -50,6 +51,16 @@ setInterval(() => {
   runDailyDecay();
 }, 24 * 60 * 60 * 1000);
 
+// Analytics Aggregation Cron — runs hourly in production, every 10s in dev for testing
+const ANALYTICS_CRON_INTERVAL = process.env.NODE_ENV === 'production'
+  ? 60 * 60 * 1000   // 1 hour
+  : 10 * 1000;        // 10 seconds (dev only)
+
+processAnalyticsAggregations(); // run once immediately on startup
+setInterval(() => {
+  processAnalyticsAggregations().catch(err => console.error("[AnalyticsCron] Error:", err));
+}, ANALYTICS_CRON_INTERVAL);
+
 // B9.5 — Feed background worker (exploration pool refresh + analytics queue drain)
 // Interval configurable via FEED_WORKER_INTERVAL_MS (default: 5 minutes)
 startFeedWorker();
@@ -57,6 +68,7 @@ startFeedWorker();
 // B9.6 — AI Analysis background worker
 const { startWorker: startAiAnalysisWorker } = require("./workers/applicationAnalysisWorker");
 startAiAnalysisWorker().catch(e => console.error("AI Worker crashed:", e));
+
 
 // Event Outbox Processor disabled
 

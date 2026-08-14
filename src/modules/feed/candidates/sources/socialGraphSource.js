@@ -50,7 +50,7 @@ async function _fetchFirstDegree(userId, pool) {
       p.created_at,
       (SELECT COUNT(*) FROM active_post_likes    pl WHERE pl.post_id = p.post_id)::float AS like_count,
       (SELECT COUNT(*) FROM active_post_comments pc WHERE pc.post_id = p.post_id)::float AS comment_count,
-      (SELECT COUNT(*) FROM posts         rp WHERE rp.shared_post_id = p.post_id)::float AS share_count,
+      ((SELECT COUNT(DISTINCT rp.author_id) FROM posts rp WHERE rp.shared_post_id = p.post_id AND rp.is_active = TRUE) + (SELECT COUNT(DISTINCT s.sender_id) FROM shares s WHERE s.entity_id = p.post_id::text AND s.entity_type = 'post'))::float AS share_count,
       (SELECT COUNT(*) FROM reports       r  WHERE r.target_type = 'POST' AND r.target_id = p.post_id AND r.created_at > NOW() - INTERVAL '24 hours')::float AS report_count,
       EXISTS (
         SELECT 1 FROM connections c
@@ -92,7 +92,7 @@ async function _fetchSecondDegree(userId, pool) {
       p.created_at,
       (SELECT COUNT(*) FROM active_post_likes    pl WHERE pl.post_id = p.post_id)::float AS like_count,
       (SELECT COUNT(*) FROM active_post_comments pc WHERE pc.post_id = p.post_id)::float AS comment_count,
-      (SELECT COUNT(*) FROM posts         rp WHERE rp.shared_post_id = p.post_id)::float AS share_count,
+      ((SELECT COUNT(DISTINCT rp.author_id) FROM posts rp WHERE rp.shared_post_id = p.post_id AND rp.is_active = TRUE) + (SELECT COUNT(DISTINCT s.sender_id) FROM shares s WHERE s.entity_id = p.post_id::text AND s.entity_type = 'post'))::float AS share_count,
       (SELECT COUNT(*) FROM reports       r  WHERE r.target_type = 'POST' AND r.target_id = p.post_id AND r.created_at > NOW() - INTERVAL '24 hours')::float AS report_count
     FROM posts p
     JOIN followers f2 ON f2.following_id = p.author_id

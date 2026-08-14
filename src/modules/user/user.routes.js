@@ -29,8 +29,10 @@ router.get("/search", userController.searchUsers);
 // Get suggested users
 router.get("/suggested", userController.getSuggestedUsers);
 
+const { resolveActorContext } = require("../../core/middlewares/actor-context.middleware");
+
 // Get public profile
-router.get("/:id", userController.getUserProfile);
+router.get("/:id", resolveActorContext, userController.getUserProfile);
 
 // Get public profile posts (commented) - must be BEFORE /:id to avoid shadowing
 router.get("/:id/posts/commented", userController.getPublicProfileCommentedPosts);

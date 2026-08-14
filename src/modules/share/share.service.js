@@ -527,4 +527,4 @@ function buildLegacyProfilePreview(preview) {
     };
 }
 
-module.exports = { shareEntity };
+module.exports = { shareEntity, trackShare };

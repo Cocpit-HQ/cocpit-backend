@@ -27,11 +27,35 @@ const getDashboardStats = async (req, res) => {
 };
 
 const recordProfileView = async (req, res) => {
-  const { profileOwnerId, profileType } = req.body;
+  const { profileOwnerId, profileType, source, sourcePostId } = req.body;
   const viewerId = req.user.sub || req.user.id;
+  const actorType = req.headers["x-actor-type"];
+  const actorId = req.headers["x-actor-id"];
+  let viewerCompanyOrgId = req.actor?.type === "ORGANIZATION" ? req.actor.orgId : (actorType === "ORGANIZATION" && actorId ? actorId : null);
+
+  const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  let validSourcePostId = sourcePostId;
+  if (validSourcePostId && !UUID_REGEX.test(validSourcePostId)) {
+    validSourcePostId = null; // silently ignore invalid UUID
+  }
+
+  if (!viewerCompanyOrgId) {
+    try {
+      const orgRes = await pool.query("SELECT org_id FROM organization_members WHERE user_id = $1 AND status = 'ACTIVE' LIMIT 1", [viewerId]);
+      if (orgRes.rowCount > 0) {
+        viewerCompanyOrgId = orgRes.rows[0].org_id;
+      }
+    } catch (e) {
+      console.error("Failed to fetch org for viewer:", e);
+    }
+  }
 
   try {
-    await dashboardService.addProfileView(viewerId, profileOwnerId, profileType);
+    await dashboardService.addProfileView(viewerId, profileOwnerId, profileType, {
+        source,
+        sourcePostId: validSourcePostId,
+        viewerCompanyOrgId
+    });
     const totalViews = await dashboardService.getProfileViewCount(profileOwnerId, profileType);
     return sendSuccess(res, { totalViews }, 200, "Profile view recorded successfully");
   } catch (err) {
@@ -110,15 +134,15 @@ const recordImpression = async (req, res) => {
 
       // Record in Database
       await pool.query(
-        `INSERT INTO post_impressions (post_id, viewer_id, viewer_org_id)
-                 VALUES ($1, $2, $3)`,
+        `INSERT INTO post_impressions (post_id, viewer_id, viewer_org_id, view_date)
+                 VALUES ($1, $2, $3, CURRENT_DATE)`,
         [postId, userId, companyId || null]
       );
 
     } else {
       // Anonymous impression
       await pool.query(
-        `INSERT INTO post_impressions (post_id) VALUES ($1)`,
+        `INSERT INTO post_impressions (post_id, view_date) VALUES ($1, CURRENT_DATE)`,
         [postId]
       );
 
