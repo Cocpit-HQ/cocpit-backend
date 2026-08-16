@@ -884,9 +884,8 @@ exports.getPublicProfilePosts = async (req, res) => {
           p.shared_post_id IS NULL 
           OR NOT EXISTS (
               SELECT 1 FROM blocks b 
-              WHERE b.is_org_block = false
-                AND ((b.blocker_id = $${userParamIdx} AND b.blocked_id = sp.author_id)
-                  OR (b.blocker_id = sp.author_id AND b.blocked_id = $${userParamIdx}))
+              WHERE (b.is_org_block = false AND sp.author_org_id IS NULL AND ((b.blocker_id = $${userParamIdx} AND b.blocked_id = sp.author_id) OR (b.blocker_id = sp.author_id AND b.blocked_id = $${userParamIdx})))
+                 OR (b.is_org_block = true AND sp.author_org_id IS NOT NULL AND ((b.blocker_id = sp.author_org_id AND b.blocked_id = $${userParamIdx}) OR (b.blocker_id = $${userParamIdx} AND b.blocked_id = sp.author_org_id)))
           )
       )
 
@@ -1253,6 +1252,10 @@ exports.deleteAccount = async (req, res) => {
        VALUES ($1, $2, $3)`,
       [userId, tokenHash, deletionExecuteAt]
     );
+
+    // 7. Transfer group chat admin roles if this user was a group admin
+    const GroupChatService = require("../../services/groupChat.service");
+    await GroupChatService.handleAdminDeactivationOrDeletion(userId, client);
 
     await client.query("COMMIT");
 

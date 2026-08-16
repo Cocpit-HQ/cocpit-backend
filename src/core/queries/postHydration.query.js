@@ -425,7 +425,7 @@ const getPublicFeedWhere = (userParamIdx, companyParamIdx = null) => `
     ${companyParamIdx ? `
     AND NOT EXISTS (
         SELECT 1 FROM blocks b
-        WHERE (b.is_org_block = true AND ((b.blocker_id = $${companyParamIdx} AND b.blocked_id = p.author_id) OR (b.blocker_id = p.author_id AND b.blocked_id = $${companyParamIdx})))
+        WHERE (b.is_org_block = true AND p.author_org_id IS NULL AND ((b.blocker_id = $${companyParamIdx} AND b.blocked_id = p.author_id) OR (b.blocker_id = p.author_id AND b.blocked_id = $${companyParamIdx})))
            OR (b.is_org_block = true AND p.author_org_id IS NOT NULL AND ((b.blocker_id = p.author_org_id AND b.blocked_id = $${companyParamIdx}) OR (b.blocker_id = $${companyParamIdx} AND b.blocked_id = p.author_org_id)))
     )
     -- STRICT REPOST BLOCKING: Exclude repost if original author is blocked
@@ -433,14 +433,14 @@ const getPublicFeedWhere = (userParamIdx, companyParamIdx = null) => `
         p.shared_post_id IS NULL 
         OR NOT EXISTS (
             SELECT 1 FROM blocks b 
-            WHERE (b.is_org_block = true AND ((b.blocker_id = $${companyParamIdx} AND b.blocked_id = sp.author_id) OR (b.blocker_id = sp.author_id AND b.blocked_id = $${companyParamIdx})))
+            WHERE (b.is_org_block = true AND sp.author_org_id IS NULL AND ((b.blocker_id = $${companyParamIdx} AND b.blocked_id = sp.author_id) OR (b.blocker_id = sp.author_id AND b.blocked_id = $${companyParamIdx})))
                OR (b.is_org_block = true AND sp.author_org_id IS NOT NULL AND ((b.blocker_id = sp.author_org_id AND b.blocked_id = $${companyParamIdx}) OR (b.blocker_id = $${companyParamIdx} AND b.blocked_id = sp.author_org_id)))
         )
     )
     ` : `
     AND NOT EXISTS (
         SELECT 1 FROM blocks b 
-        WHERE (b.is_org_block = false AND ((b.blocker_id = $${userParamIdx} AND b.blocked_id = p.author_id) OR (b.blocker_id = p.author_id AND b.blocked_id = $${userParamIdx})))
+        WHERE (b.is_org_block = false AND p.author_org_id IS NULL AND ((b.blocker_id = $${userParamIdx} AND b.blocked_id = p.author_id) OR (b.blocker_id = p.author_id AND b.blocked_id = $${userParamIdx})))
            OR (b.is_org_block = true AND p.author_org_id IS NOT NULL AND ((b.blocker_id = p.author_org_id AND b.blocked_id = $${userParamIdx}) OR (b.blocker_id = $${userParamIdx} AND b.blocked_id = p.author_org_id)))
     )
     -- STRICT REPOST BLOCKING: Exclude repost if original author is blocked
@@ -448,7 +448,7 @@ const getPublicFeedWhere = (userParamIdx, companyParamIdx = null) => `
         p.shared_post_id IS NULL 
         OR NOT EXISTS (
             SELECT 1 FROM blocks b 
-            WHERE (b.is_org_block = false AND ((b.blocker_id = $${userParamIdx} AND b.blocked_id = sp.author_id) OR (b.blocker_id = sp.author_id AND b.blocked_id = $${userParamIdx})))
+            WHERE (b.is_org_block = false AND sp.author_org_id IS NULL AND ((b.blocker_id = $${userParamIdx} AND b.blocked_id = sp.author_id) OR (b.blocker_id = sp.author_id AND b.blocked_id = $${userParamIdx})))
                OR (b.is_org_block = true AND sp.author_org_id IS NOT NULL AND ((b.blocker_id = sp.author_org_id AND b.blocked_id = $${userParamIdx}) OR (b.blocker_id = $${userParamIdx} AND b.blocked_id = sp.author_org_id)))
         )
     )

@@ -1987,15 +1987,21 @@ SELECT
             (cp_b.org_id IS NOT NULL AND ($2::uuid IS NULL OR cp_b.org_id != $2) AND b.blocked_id = cp_b.org_id)
           )
     ) END as is_blocked_by_me,
-    CASE WHEN c.is_group THEN false ELSE EXISTS (
-        SELECT 1 FROM blocks b 
-        JOIN conversation_participants cp_b ON cp_b.conversation_id = c.conversation_id 
-        WHERE b.blocked_id = COALESCE($2, $1) 
-          AND (
-            (cp_b.user_id IS NOT NULL AND ($2::uuid IS NOT NULL OR cp_b.user_id != $1) AND ($2::uuid IS NULL OR cp_b.org_id IS NULL OR cp_b.org_id != $2) AND b.blocker_id = cp_b.user_id)
-            OR
-            (cp_b.org_id IS NOT NULL AND ($2::uuid IS NULL OR cp_b.org_id != $2) AND b.blocker_id = cp_b.org_id)
-          )
+    CASE WHEN c.is_group THEN false ELSE (
+        EXISTS (
+            SELECT 1 FROM blocks b 
+            JOIN conversation_participants cp_b ON cp_b.conversation_id = c.conversation_id 
+            WHERE b.blocked_id = COALESCE($2, $1) 
+              AND (
+                (cp_b.user_id IS NOT NULL AND ($2::uuid IS NOT NULL OR cp_b.user_id != $1) AND ($2::uuid IS NULL OR cp_b.org_id IS NULL OR cp_b.org_id != $2) AND b.blocker_id = cp_b.user_id)
+                OR
+                (cp_b.org_id IS NOT NULL AND ($2::uuid IS NULL OR cp_b.org_id != $2) AND b.blocker_id = cp_b.org_id)
+              )
+        )
+        OR
+        (cp_other.org_id IS NOT NULL AND COALESCE(raw_comp.is_deactivated, false) = true)
+        OR
+        (cp_other.user_id IS NOT NULL AND COALESCE(raw_u.is_deactivated, false) = true)
     ) END as is_blocked_by_other,
 
     -- Name logic: Use group name if group, else other participant's name (User or Company)
@@ -2012,11 +2018,11 @@ SELECT
                     (cp_b.org_id IS NOT NULL AND ($2::uuid IS NULL OR cp_b.org_id != $2) AND b.blocker_id = cp_b.org_id)
                   )
             )
-        ) THEN CASE WHEN cp_other.org_id IS NOT NULL THEN 'Unknown Page' ELSE 'Unknown user' END
+        ) THEN CASE WHEN cp_other.org_id IS NOT NULL THEN 'Unknown Page' ELSE 'Unknown User' END
         WHEN cp_other.org_id IS NOT NULL AND (comp.name = 'Deleted Page' OR comp.org_id IS NULL) THEN 'Unknown Page'
         WHEN comp.org_id IS NOT NULL THEN comp.name
         WHEN raw_u.is_deactivated THEN 'Unknown User'
-        WHEN u.display_name IS NULL AND comp.org_id IS NULL THEN COALESCE(c.conversation_name, 'Deleted User')
+        WHEN u.display_name IS NULL AND comp.org_id IS NULL THEN COALESCE(c.conversation_name, 'Unknown User')
         ELSE u.display_name 
     END AS other_user_name,
     
@@ -2088,6 +2094,12 @@ SELECT
         WHEN c.is_group = FALSE AND u.user_id IS NULL AND comp.org_id IS NULL THEN true 
         ELSE false 
     END AS is_deleted_user,
+
+    -- Flag for deactivated users/orgs
+    CASE 
+        WHEN cp_other.org_id IS NOT NULL THEN COALESCE(raw_comp.is_deactivated, false)
+        ELSE COALESCE(raw_u.is_deactivated, false)
+    END AS is_deactivated,
 
     -- Get the most recent message dynamically
     m.message_id AS last_message_id,
@@ -2211,6 +2223,7 @@ LEFT JOIN LATERAL (
 LEFT JOIN user_display_profiles u ON cp_other.user_id = u.user_id
 LEFT JOIN users raw_u ON cp_other.user_id = raw_u.user_id
 LEFT JOIN organization_display_profiles comp ON cp_other.org_id = comp.org_id -- JOIN organizations for Company participants
+LEFT JOIN organizations raw_comp ON cp_other.org_id = raw_comp.org_id
 
 -- LATERAL JOIN to find the latest VISIBLE message across ANY period
 LEFT JOIN LATERAL (
@@ -2230,7 +2243,8 @@ LEFT JOIN LATERAL (
                     'message_id', rm.message_id,
                     'text_content', rm.text_content,
                     'sender_name', COALESCE(rc.name, ru.display_name, 'Deleted User'),
-                    'message_type', rm.message_type
+                    'message_type', rm.message_type,
+                    'media', (SELECT json_agg(json_build_object('url', rmm.url, 'media_type', rmm.media_type, 'filename', rmm.filename)) FROM message_media rmm WHERE rmm.message_id = rm.message_id)
                 ) 
                 FROM messages rm 
                 LEFT JOIN user_display_profiles ru ON rm.sender_id = ru.user_id
@@ -2802,11 +2816,29 @@ exports.sendMessage = async (req, res) => {
             if (shared_post_id) {
                 const spRes = await client.query(`
                     SELECT 
-                        p.post_id, p.content, p.created_at, 
-                        json_build_object('full_name', u.full_name, 'avatar_url', u.avatar_url) as author,
-                        (SELECT json_agg(json_build_object('url', url, 'media_type', media_type)) FROM post_media WHERE post_id = p.post_id) as media
+                        p.post_id, p.content, p.created_at, p.post_type, p.title,
+                        COALESCE(org.name, u.display_name, 'Unknown Author') as author,
+                        COALESCE(org.logo_url, u.display_avatar, NULL) as author_avatar,
+                        COALESCE(org.headline, u.display_headline, NULL) as author_headline,
+                        (p.author_org_id IS NOT NULL) as is_organization_post,
+                        json_build_object('full_name', COALESCE(org.name, u.display_name), 'avatar_url', COALESCE(org.logo_url, u.display_avatar), 'headline', COALESCE(org.headline, u.display_headline)) as author_obj,
+                        (SELECT json_agg(json_build_object('url', url, 'media_type', media_type)) FROM post_media WHERE post_id = p.post_id) as media,
+                        (
+                            SELECT json_build_object(
+                                'poll_id', pp.poll_id,
+                                'options', (
+                                    SELECT json_agg(json_build_object('option_id', po.option_id, 'option_text', po.option_text, 'vote_count', (SELECT COUNT(*) FROM poll_votes pv WHERE pv.option_id = po.option_id)))
+                                    FROM poll_options po WHERE po.poll_id = pp.poll_id
+                                ),
+                                'total_votes', (SELECT COUNT(*) FROM poll_votes pv WHERE pv.poll_id = pp.poll_id),
+                                'duration', COALESCE(pp.duration, '1 day'),
+                                'is_active', (pp.created_at + COALESCE(pp.duration, '1 day')::interval > NOW())
+                            )
+                            FROM post_polls pp WHERE pp.post_id = p.post_id
+                        ) AS poll
                     FROM posts p
-                    JOIN active_users u ON p.author_id = u.user_id
+                    LEFT JOIN user_display_profiles u ON p.author_id = u.user_id
+                    LEFT JOIN organization_display_profiles org ON p.author_org_id = org.org_id
                     WHERE p.post_id = $1
                 `, [shared_post_id]);
                 if (spRes.rowCount > 0) sharedPostData = spRes.rows[0];
@@ -2879,7 +2911,8 @@ exports.sendMessage = async (req, res) => {
                         rm.message_id, 
                         rm.text_content, 
                         rm.message_type,
-                        COALESCE(rc.name, ru.display_name, 'Deleted User') as sender_name
+                        COALESCE(rc.name, ru.display_name, 'Deleted User') as sender_name,
+                        (SELECT json_agg(json_build_object('url', rmm.url, 'media_type', rmm.media_type, 'filename', rmm.filename)) FROM message_media rmm WHERE rmm.message_id = rm.message_id) as media
                     FROM messages rm
                     LEFT JOIN user_display_profiles ru ON rm.sender_id = ru.user_id
                     LEFT JOIN organization_display_profiles rc ON rm.author_org_id = rc.org_id
@@ -2927,7 +2960,7 @@ exports.sendMessage = async (req, res) => {
                           OR EXISTS (
                               SELECT 1 FROM blocks b 
                               WHERE b.blocked_id = $2::uuid
-                                AND (b.blocker_id = o.org_id OR b.blocker_id = o.created_by)
+                                AND b.blocker_id = o.org_id
                           )
                       )
                 `, [trimmedText, senderId]);
@@ -3406,6 +3439,7 @@ exports.getMessages = async (req, res) => {
                 m.message_id,
                 m.conversation_id,
                 m.sender_id,
+                m.shared_post_id,
                 m.created_at,
                 m.read_at,
                 m.edited_at,
@@ -3431,19 +3465,20 @@ exports.getMessages = async (req, res) => {
                         AND (m.sender_id IS NULL OR cp.user_id != m.sender_id)
                      ), 0
                  ) AS seen_count,
-                 CASE 
-                    WHEN EXISTS (
-                        SELECT 1 FROM blocks b 
-                        WHERE (b.blocked_id = COALESCE($6::uuid, $4::uuid) AND (b.blocker_id = m.sender_id OR (m.author_org_id IS NOT NULL AND b.blocker_id = m.author_org_id)))
-                    ) THEN CASE WHEN m.author_org_id IS NOT NULL THEN 'Unknown Page' ELSE 'Unknown user' END
-                    WHEN raw_u_msg.is_deactivated THEN 'Unknown User' 
-                    ELSE COALESCE(c.name, u.display_name, 'Deleted User') 
-                END as sender_name,
+                  CASE 
+                      WHEN EXISTS (
+                          SELECT 1 FROM blocks b 
+                          WHERE b.blocked_id = COALESCE($6::uuid, $4::uuid) AND (b.blocker_id = m.sender_id OR (m.author_org_id IS NOT NULL AND b.blocker_id = m.author_org_id))
+                      ) THEN CASE WHEN m.author_org_id IS NOT NULL THEN 'Unknown Page' ELSE 'Unknown User' END
+                      WHEN raw_u_msg.is_deactivated OR raw_u_msg.deletion_execute_at IS NOT NULL THEN 'Unknown User' 
+                      WHEN m.author_org_id IS NOT NULL AND (c.name = 'Deleted Page' OR raw_org.is_deleted = TRUE OR raw_org.is_deactivated = TRUE) THEN 'Unknown Page'
+                      ELSE COALESCE(c.name, u.display_name, 'Unknown User') 
+                  END as sender_name,
                 CASE WHEN raw_u_msg.is_deactivated THEN 'Unknown User' ELSE u.display_name END as sender_member_name,
                 CASE 
                     WHEN EXISTS (
                         SELECT 1 FROM blocks b 
-                        WHERE (b.blocked_id = COALESCE($6::uuid, $4::uuid) AND (b.blocker_id = m.sender_id OR (m.author_org_id IS NOT NULL AND b.blocker_id = m.author_org_id)))
+                        WHERE b.blocked_id = COALESCE($6::uuid, $4::uuid) AND (b.blocker_id = m.sender_id OR (m.author_org_id IS NOT NULL AND b.blocker_id = m.author_org_id))
                     ) THEN 'User unavailable'
                     ELSE COALESCE(c.headline, '') 
                 END as sender_org_headline,
@@ -3451,8 +3486,10 @@ exports.getMessages = async (req, res) => {
                 CASE 
                     WHEN EXISTS (
                         SELECT 1 FROM blocks b 
-                        WHERE (b.blocked_id = COALESCE($6::uuid, $4::uuid) AND (b.blocker_id = m.sender_id OR (m.author_org_id IS NOT NULL AND b.blocker_id = m.author_org_id)))
+                        WHERE b.blocked_id = COALESCE($6::uuid, $4::uuid) AND (b.blocker_id = m.sender_id OR (m.author_org_id IS NOT NULL AND b.blocker_id = m.author_org_id))
                     ) THEN NULL
+                    WHEN raw_u_msg.is_deactivated OR raw_u_msg.deletion_execute_at IS NOT NULL THEN NULL
+                    WHEN m.author_org_id IS NOT NULL AND (c.name = 'Deleted Page' OR raw_org.is_deleted = TRUE OR raw_org.is_deactivated = TRUE) THEN NULL
                     ELSE COALESCE(
                         c.logo_url, 
                         (SELECT o_part.logo_url 
@@ -3471,8 +3508,8 @@ exports.getMessages = async (req, res) => {
                 CASE 
                     WHEN EXISTS (
                         SELECT 1 FROM blocks b 
-                        WHERE (b.blocker_id = COALESCE($6::uuid, $4::uuid) AND (b.blocked_id = m.sender_id OR (m.author_org_id IS NOT NULL AND b.blocked_id = m.author_org_id)))
-                           OR (b.blocked_id = COALESCE($6::uuid, $4::uuid) AND (b.blocker_id = m.sender_id OR (m.author_org_id IS NOT NULL AND b.blocker_id = m.author_org_id)))
+                        WHERE (b.blocked_id = COALESCE($6::uuid, $4::uuid) AND (b.blocker_id = m.sender_id OR (m.author_org_id IS NOT NULL AND b.blocker_id = m.author_org_id)))
+                           OR (b.blocker_id = COALESCE($6::uuid, $4::uuid) AND (b.blocked_id = m.sender_id OR (m.author_org_id IS NOT NULL AND b.blocked_id = m.author_org_id)))
                     ) THEN true 
                     ELSE false 
                 END as is_blocked,
@@ -3480,7 +3517,7 @@ exports.getMessages = async (req, res) => {
                 CASE 
                     -- RULE 1 + 3: Shared Post — post itself is deleted/removed/inactive (BOTH SIDES)
                     --             OR post author's account is deactivated/deleted (BOTH SIDES)
-                    --             OR post author has blocked the current viewer (ONLY BLOCKED SIDE sees unavailable)
+                    --             OR post author/org and viewer have a block between them (BIDIRECTIONAL)
                     WHEN m.shared_post_id IS NOT NULL AND (
                         sp.post_id IS NULL 
                         OR sp.is_active = FALSE 
@@ -3498,74 +3535,149 @@ exports.getMessages = async (req, res) => {
                             WHERE o_a.org_id = sp.author_org_id 
                               AND (o_a.is_deleted = TRUE OR o_a.is_deactivated = TRUE)
                         ))
-                        -- RULE 2: Post author blocked the current viewer (viewer = blocked party)
-                        --         Edge case: even if Account 3 shares Account 1's post to Account 2,
-                        --         Account 2 sees unavailable because Account 1 (post owner) blocked Account 2
-                        OR EXISTS (
+                        -- RULE 2: Post author/org has a bidirectional block with current viewer
+                        OR (sp.author_org_id IS NULL AND EXISTS (
                             SELECT 1 FROM blocks b
-                            WHERE b.blocker_id = sp.author_id 
-                              AND b.blocked_id = COALESCE($6::uuid, $4::uuid)
-                        )
+                            WHERE (b.blocker_id = sp.author_id AND b.blocked_id = COALESCE($6::uuid, $4::uuid))
+                               OR (b.blocker_id = COALESCE($6::uuid, $4::uuid) AND b.blocked_id = sp.author_id)
+                        ))
                         OR (sp.author_org_id IS NOT NULL AND EXISTS (
                             SELECT 1 FROM blocks b
-                            WHERE b.blocker_id = sp.author_org_id 
-                              AND b.blocked_id = COALESCE($6::uuid, $4::uuid)
+                            WHERE (b.blocker_id = sp.author_org_id AND b.blocked_id = COALESCE($6::uuid, $4::uuid))
+                               OR (b.blocker_id = COALESCE($6::uuid, $4::uuid) AND b.blocked_id = sp.author_org_id)
                         ))
                     ) THEN true
 
-                    -- RULE 1: Post URL in text — post is deleted/removed/inactive (BOTH SIDES)
-                    WHEN m.shared_post_id IS NULL AND m.text_content LIKE '%/post/%' AND NOT EXISTS (
-                        SELECT 1 FROM posts p
-                        WHERE m.text_content LIKE '%' || p.post_id::text || '%'
-                          AND p.is_active = TRUE 
-                          AND (p.is_removed IS FALSE OR p.is_removed IS NULL)
-                    ) THEN true
-
-                    -- RULE 1 + 2 + 3: Shared USER profile — user is deactivated/deleted OR that user has blocked the viewer
-                    WHEN m.shared_profile_id IS NOT NULL AND m.shared_profile_type = 'user' AND (
+                    -- RULE 1: Post URL in text — post is deleted/removed/inactive OR author blocked
+                    WHEN m.shared_post_id IS NULL AND m.text_content LIKE '%/post/%' AND (
                         NOT EXISTS (
-                            SELECT 1 FROM users u2 
-                            WHERE u2.user_id = m.shared_profile_id 
-                              AND (u2.is_deactivated IS FALSE OR u2.is_deactivated IS NULL)
-                              AND u2.deletion_execute_at IS NULL
+                            SELECT 1 FROM posts p
+                            WHERE m.text_content LIKE '%' || p.post_id::text || '%'
+                              AND p.is_active = TRUE 
+                              AND (p.is_removed IS FALSE OR p.is_removed IS NULL)
                         )
-                        -- The shared profile's owner has blocked the current viewer
                         OR EXISTS (
-                            SELECT 1 FROM blocks b
-                            WHERE b.blocker_id = m.shared_profile_id 
-                              AND b.blocked_id = COALESCE($6::uuid, $4::uuid)
+                            SELECT 1 FROM posts p
+                            WHERE m.text_content LIKE '%' || p.post_id::text || '%'
+                              AND (
+                                  (p.author_org_id IS NULL AND EXISTS (
+                                      SELECT 1 FROM blocks b
+                                      WHERE (b.blocker_id = p.author_id AND b.blocked_id = COALESCE($6::uuid, $4::uuid))
+                                         OR (b.blocker_id = COALESCE($6::uuid, $4::uuid) AND b.blocked_id = p.author_id)
+                                  ))
+                                  OR
+                                  (p.author_org_id IS NOT NULL AND EXISTS (
+                                      SELECT 1 FROM blocks b
+                                      WHERE (b.blocker_id = p.author_org_id AND b.blocked_id = COALESCE($6::uuid, $4::uuid))
+                                         OR (b.blocker_id = COALESCE($6::uuid, $4::uuid) AND b.blocked_id = p.author_org_id)
+                                  ))
+                              )
                         )
                     ) THEN true
 
-                    -- RULE 1 + 2 + 3: Shared ORG profile — org is deleted/deactivated OR that org has blocked the viewer
-                    WHEN m.shared_profile_id IS NOT NULL AND m.shared_profile_type = 'company' AND (
+                    -- RULE 1 + 2 + 3: Shared USER profile (by shared_profile_id, entity_type='profile', or /profile/ URL)
+                    WHEN ((m.shared_profile_id IS NOT NULL AND m.shared_profile_type = 'user') OR (m.entity_type = 'profile' AND m.entity_id IS NOT NULL) OR (m.text_content LIKE '%/profile/%')) AND EXISTS (
+                        SELECT 1 FROM users u2 
+                        LEFT JOIN blocks b ON (
+                            (b.blocker_id = u2.user_id AND b.blocked_id = COALESCE($6::uuid, $4::uuid))
+                            OR (b.blocker_id = COALESCE($6::uuid, $4::uuid) AND b.blocked_id = u2.user_id)
+                        )
+                        WHERE (
+                            (m.shared_profile_id IS NOT NULL AND u2.user_id = m.shared_profile_id)
+                            OR (m.entity_id IS NOT NULL AND (u2.user_id::text = m.entity_id OR u2.account_name = m.entity_id))
+                            OR (m.text_content LIKE '%' || u2.user_id::text || '%' OR m.text_content LIKE '%' || u2.account_name || '%')
+                        )
+                        AND (
+                            b.blocker_id IS NOT NULL
+                            OR u2.is_deactivated = TRUE
+                            OR u2.deletion_execute_at IS NOT NULL
+                        )
+                    ) THEN true
+
+                    -- RULE 1 + 2 + 3: Shared ORG profile (by shared_profile_id, entity_type='company', or /organization/ URL)
+                    WHEN ((m.shared_profile_id IS NOT NULL AND m.shared_profile_type = 'company') OR (m.entity_type = 'company' AND m.entity_id IS NOT NULL) OR (m.text_content LIKE '%/organization/%')) AND EXISTS (
+                        SELECT 1 FROM organizations o2
+                        LEFT JOIN blocks b ON (
+                            (b.blocked_id = COALESCE($6::uuid, $4::uuid) AND b.blocker_id = o2.org_id)
+                            OR (b.blocker_id = COALESCE($6::uuid, $4::uuid) AND b.blocked_id = o2.org_id)
+                        )
+                        WHERE (
+                            (m.shared_profile_id IS NOT NULL AND o2.org_id = m.shared_profile_id)
+                            OR (m.entity_id IS NOT NULL AND (o2.org_id::text = m.entity_id OR o2.slug = m.entity_id))
+                            OR (m.text_content LIKE '%' || o2.org_id::text || '%' OR m.text_content LIKE '%' || o2.slug || '%')
+                        )
+                        AND (
+                            b.blocker_id IS NOT NULL
+                            OR o2.is_deleted = TRUE
+                            OR o2.is_deactivated = TRUE
+                        )
+                    ) THEN true
+
+                    -- RULE 1 + 2 + 3: Shared Job/Offer — job is deleted/inactive OR recruiter/org has bidirectional block
+                    WHEN m.entity_type IN ('job', 'offer') AND m.entity_id IS NOT NULL AND m.entity_id ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' AND (
                         NOT EXISTS (
-                            SELECT 1 FROM organizations o2
-                            WHERE o2.org_id = m.shared_profile_id 
-                              AND o2.is_deleted = FALSE AND o2.is_deactivated = FALSE
+                            SELECT 1 FROM jobs j
+                            WHERE j.job_id = (
+                                CASE WHEN m.entity_type = 'offer' THEN (SELECT job_id FROM job_offers WHERE offer_id = m.entity_id::uuid)
+                                     ELSE m.entity_id::uuid END
+                            )
+                            AND j.is_active = TRUE
                         )
-                        -- The shared org (or its owner) has blocked the current viewer
                         OR EXISTS (
-                            SELECT 1 FROM blocks b
-                            JOIN organizations o2 ON o2.org_id = m.shared_profile_id
-                            WHERE b.blocked_id = COALESCE($6::uuid, $4::uuid) 
-                              AND (b.blocker_id = o2.org_id OR b.blocker_id = o2.created_by)
+                            SELECT 1 FROM jobs j
+                            LEFT JOIN active_users u ON j.recruiter_id = u.user_id
+                            LEFT JOIN organizations c ON j.org_id = c.org_id
+                            WHERE j.job_id = (
+                                CASE WHEN m.entity_type = 'offer' THEN (SELECT job_id FROM job_offers WHERE offer_id = m.entity_id::uuid)
+                                     ELSE m.entity_id::uuid END
+                            )
+                            AND (
+                                u.user_id IS NULL
+                                OR (j.org_id IS NOT NULL AND (c.is_deleted = TRUE OR c.is_deactivated = TRUE))
+                                OR EXISTS (
+                                    SELECT 1 FROM blocks b
+                                    WHERE (j.org_id IS NULL AND (
+                                        (b.blocker_id = j.recruiter_id AND b.blocked_id = COALESCE($6::uuid, $4::uuid))
+                                        OR (b.blocker_id = COALESCE($6::uuid, $4::uuid) AND b.blocked_id = j.recruiter_id)
+                                    ))
+                                    OR (j.org_id IS NOT NULL AND (
+                                        (b.blocker_id = j.org_id AND b.blocked_id = COALESCE($6::uuid, $4::uuid))
+                                        OR (b.blocker_id = COALESCE($6::uuid, $4::uuid) AND b.blocked_id = j.org_id)
+                                    ))
+                                )
+                            )
                         )
                     ) THEN true
 
-                    -- RULE 1 + 2 + 3: Org URL in text — org is deleted/deactivated OR that org has blocked the viewer
-                    WHEN m.text_content LIKE '%/organization/%' AND EXISTS (
-                        SELECT 1 FROM organizations o
-                        WHERE (m.text_content LIKE '%' || o.slug || '%' OR m.text_content LIKE '%' || o.org_id::text || '%')
+                    -- RULE 1 + 2 + 3: Job/Offer URL in text — job is deleted/inactive OR recruiter/org has bidirectional block
+                    WHEN (m.text_content LIKE '%/job%' OR m.text_content LIKE '%/offer%') AND EXISTS (
+                        SELECT 1 FROM jobs j
+                        LEFT JOIN active_users u ON j.recruiter_id = u.user_id
+                        LEFT JOIN organizations o ON j.org_id = o.org_id
+                        WHERE (m.text_content LIKE '%' || j.job_id::text || '%')
                           AND (
-                              o.is_deleted = TRUE 
-                              OR o.is_deactivated = TRUE 
+                              j.is_active = FALSE 
+                              OR u.user_id IS NULL 
+                              OR (j.org_id IS NOT NULL AND (o.is_deleted = TRUE OR o.is_deactivated = TRUE))
                               OR EXISTS (
                                   SELECT 1 FROM blocks b 
-                                  WHERE b.blocked_id = COALESCE($6::uuid, $4::uuid)
-                                    AND (b.blocker_id = o.org_id OR b.blocker_id = o.created_by)
+                                  WHERE (j.org_id IS NULL AND (
+                                      (b.blocker_id = j.recruiter_id AND b.blocked_id = COALESCE($6::uuid, $4::uuid))
+                                      OR (b.blocker_id = COALESCE($6::uuid, $4::uuid) AND b.blocked_id = j.recruiter_id)
+                                  ))
+                                  OR (j.org_id IS NOT NULL AND (
+                                      (b.blocker_id = j.org_id AND b.blocked_id = COALESCE($6::uuid, $4::uuid))
+                                      OR (b.blocker_id = COALESCE($6::uuid, $4::uuid) AND b.blocked_id = j.org_id)
+                                  ))
                               )
                           )
+                    ) THEN true
+
+                    -- RULE: Message sent while block is active between sender and viewer (from block timestamp onward)
+                    WHEN m.sender_id IS NOT NULL AND EXISTS (
+                        SELECT 1 FROM blocks b
+                        WHERE b.blocker_id = m.sender_id AND b.blocked_id = COALESCE($6::uuid, $4::uuid)
+                          AND m.created_at >= b.created_at
                     ) THEN true
 
                     ELSE false
@@ -3576,9 +3688,27 @@ exports.getMessages = async (req, res) => {
                         json_build_object(
                             'post_id', sp.post_id,
                             'content', sp.content,
+                            'post_type', sp.post_type,
+                            'title', sp.title,
                             'author', COALESCE(sp_org.name, au.display_name, 'Unknown Author'),
                             'author_avatar', COALESCE(sp_org.logo_url, au.display_avatar, NULL),
-                            'media', (SELECT json_agg(json_build_object('url', url, 'media_type', media_type)) FROM post_media WHERE post_id = sp.post_id)
+                            'author_headline', COALESCE(sp_org.headline, au.display_headline, NULL),
+                            'author_username', au.display_username,
+                            'is_organization_post', (sp.author_org_id IS NOT NULL),
+                            'media', (SELECT json_agg(json_build_object('url', url, 'media_type', media_type)) FROM post_media WHERE post_id = sp.post_id),
+                            'poll', (
+                                SELECT json_build_object(
+                                    'poll_id', pp.poll_id,
+                                    'options', (
+                                        SELECT json_agg(json_build_object('option_id', po.option_id, 'option_text', po.option_text, 'vote_count', (SELECT COUNT(*) FROM poll_votes pv WHERE pv.option_id = po.option_id)))
+                                        FROM poll_options po WHERE po.poll_id = pp.poll_id
+                                    ),
+                                    'total_votes', (SELECT COUNT(*) FROM poll_votes pv WHERE pv.poll_id = pp.poll_id),
+                                    'duration', COALESCE(pp.duration, '1 day'),
+                                    'is_active', (pp.created_at + COALESCE(pp.duration, '1 day')::interval > NOW())
+                                )
+                                FROM post_polls pp WHERE pp.post_id = sp.post_id
+                            )
                         )
                     ELSE NULL 
                 END AS shared_post,
@@ -3613,7 +3743,8 @@ exports.getMessages = async (req, res) => {
                             'message_id', rm.message_id,
                             'text_content', rm.text_content,
                             'sender_name', COALESCE(rc.name, ru.display_name, 'Deleted User'),
-                            'message_type', rm.message_type
+                            'message_type', rm.message_type,
+                            'media', (SELECT json_agg(json_build_object('url', rmm.url, 'media_type', rmm.media_type, 'filename', rmm.filename)) FROM message_media rmm WHERE rmm.message_id = rm.message_id)
                         ) 
                         FROM messages rm 
                         LEFT JOIN user_display_profiles ru ON rm.sender_id = ru.user_id
@@ -3641,6 +3772,7 @@ exports.getMessages = async (req, res) => {
              LEFT JOIN user_display_profiles u ON m.sender_id = u.user_id
              LEFT JOIN users raw_u_msg ON m.sender_id = raw_u_msg.user_id
              LEFT JOIN organization_display_profiles c ON m.author_org_id = c.org_id
+             LEFT JOIN organizations raw_org ON m.author_org_id = raw_org.org_id
              LEFT JOIN posts sp ON m.shared_post_id = sp.post_id
              LEFT JOIN user_display_profiles au ON sp.author_id = au.user_id
              LEFT JOIN organization_display_profiles sp_org ON sp.author_org_id = sp_org.org_id

@@ -513,6 +513,9 @@ function buildLegacyPostPreview(preview) {
         content: preview.subtitle,
         author: { full_name: preview.title.replace("Post by ", ""), avatar_url: preview.image },
         media: null,
+        post_type: preview.post_type || "text",
+        title: preview.post_title || null,
+        poll: preview.poll || null,
     };
 }
 

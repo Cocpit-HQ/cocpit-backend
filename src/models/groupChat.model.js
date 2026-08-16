@@ -141,17 +141,62 @@ class GroupChatModel {
         return groupRes.rows[0];
     }
 
-    static async getGroupMembers(groupId, maxJoinedAt = null) {
+    static async getGroupMembers(groupId, maxJoinedAt = null, viewerId = null) {
+        const viewerParamIndex = maxJoinedAt ? '$3' : '$2';
+        const blockCheckClause = viewerId ? `
+            EXISTS (
+                SELECT 1 FROM blocks b 
+                WHERE (b.blocker_id = ${viewerParamIndex}::uuid AND b.blocked_id = COALESCE(u.user_id, c.org_id))
+                   OR (b.blocked_id = ${viewerParamIndex}::uuid AND b.blocker_id = COALESCE(u.user_id, c.org_id))
+            )
+        ` : 'false';
+
+        const blockedByMeClause = viewerId ? `
+            EXISTS (
+                SELECT 1 FROM blocks b 
+                WHERE b.blocker_id = ${viewerParamIndex}::uuid AND b.blocked_id = COALESCE(u.user_id, c.org_id)
+            )
+        ` : 'false';
+
+        const blockedByOtherClause = viewerId ? `
+            EXISTS (
+                SELECT 1 FROM blocks b 
+                WHERE b.blocked_id = ${viewerParamIndex}::uuid AND b.blocker_id = COALESCE(u.user_id, c.org_id)
+            )
+        ` : 'false';
+
         const query = maxJoinedAt ?
             `SELECT * FROM (
                 SELECT DISTINCT ON (COALESCE(u.user_id, c.org_id)) 
                     COALESCE(u.user_id, c.org_id) as user_id, 
-                    u.account_name, u.account_name as username, u.full_name, u.avatar_url, 
-                    u.headline, -- added for consistency
+                    u.account_name, u.account_name as username, 
+                    CASE 
+                        WHEN ${blockedByOtherClause} THEN (CASE WHEN c.org_id IS NOT NULL THEN 'Unknown Page' ELSE 'Unknown user' END)
+                        WHEN u.is_deactivated = TRUE OR u.deletion_execute_at IS NOT NULL THEN 'Unknown User'
+                        WHEN c.org_id IS NOT NULL AND (c.is_deleted = TRUE OR c.is_deactivated = TRUE) THEN 'Unknown Page'
+                        ELSE COALESCE(c.name, u.full_name)
+                    END as full_name,
+                    CASE 
+                        WHEN ${blockedByOtherClause} THEN NULL
+                        WHEN u.is_deactivated = TRUE OR u.deletion_execute_at IS NOT NULL THEN NULL
+                        WHEN c.org_id IS NOT NULL AND (c.is_deleted = TRUE OR c.is_deactivated = TRUE) THEN NULL
+                        ELSE COALESCE(c.logo_url, u.avatar_url)
+                    END as avatar_url,
+                    CASE 
+                        WHEN ${blockedByOtherClause} THEN 'User unavailable'
+                        WHEN u.is_deactivated = TRUE OR u.deletion_execute_at IS NOT NULL THEN 'User unavailable'
+                        ELSE u.headline
+                    END as headline,
                     c.name as org_name, c.logo_url as org_logo, cp.joined_at, cp.role,
                     'accepted' as status,
                     false as "isPending",
-                    CAST(NULL AS UUID) as invitation_id
+                    CAST(NULL AS UUID) as invitation_id,
+                    (${blockCheckClause}) as is_blocked,
+                    (${blockedByMeClause}) as is_blocked_by_me,
+                    (${blockedByOtherClause}) as is_blocked_by_other,
+                    (COALESCE(u.is_deactivated, c.is_deactivated, false) = TRUE) as is_deactivated,
+                    (u.deletion_execute_at IS NOT NULL OR COALESCE(c.is_deleted, false) = TRUE) as is_deleted,
+                    ((${blockCheckClause}) OR COALESCE(u.is_deactivated, c.is_deactivated, false) = TRUE OR u.deletion_execute_at IS NOT NULL OR COALESCE(c.is_deleted, false) = TRUE) as is_unavailable
                  FROM conversation_participants cp
                  LEFT JOIN users u ON cp.user_id = u.user_id
                  LEFT JOIN organizations c ON cp.org_id = c.org_id
@@ -163,11 +208,34 @@ class GroupChatModel {
             `SELECT * FROM (
                 SELECT DISTINCT ON (COALESCE(u.user_id, c.org_id)) 
                     COALESCE(u.user_id, c.org_id) as user_id, 
-                    u.account_name, u.account_name as username, u.full_name, u.avatar_url, u.headline, 
+                    u.account_name, u.account_name as username, 
+                    CASE 
+                        WHEN ${blockedByOtherClause} THEN (CASE WHEN c.org_id IS NOT NULL THEN 'Unknown Page' ELSE 'Unknown user' END)
+                        WHEN u.is_deactivated = TRUE OR u.deletion_execute_at IS NOT NULL THEN 'Unknown User'
+                        WHEN c.org_id IS NOT NULL AND (c.is_deleted = TRUE OR c.is_deactivated = TRUE) THEN 'Unknown Page'
+                        ELSE COALESCE(c.name, u.full_name)
+                    END as full_name,
+                    CASE 
+                        WHEN ${blockedByOtherClause} THEN NULL
+                        WHEN u.is_deactivated = TRUE OR u.deletion_execute_at IS NOT NULL THEN NULL
+                        WHEN c.org_id IS NOT NULL AND (c.is_deleted = TRUE OR c.is_deactivated = TRUE) THEN NULL
+                        ELSE COALESCE(c.logo_url, u.avatar_url)
+                    END as avatar_url,
+                    CASE 
+                        WHEN ${blockedByOtherClause} THEN 'User unavailable'
+                        WHEN u.is_deactivated = TRUE OR u.deletion_execute_at IS NOT NULL THEN 'User unavailable'
+                        ELSE u.headline
+                    END as headline,
                     c.name as org_name, c.logo_url as org_logo, cp.joined_at, cp.role,
                     'accepted' as status,
                     false as "isPending",
-                    CAST(NULL AS UUID) as invitation_id
+                    CAST(NULL AS UUID) as invitation_id,
+                    (${blockCheckClause}) as is_blocked,
+                    (${blockedByMeClause}) as is_blocked_by_me,
+                    (${blockedByOtherClause}) as is_blocked_by_other,
+                    (COALESCE(u.is_deactivated, c.is_deactivated, false) = TRUE) as is_deactivated,
+                    (u.deletion_execute_at IS NOT NULL OR COALESCE(c.is_deleted, false) = TRUE) as is_deleted,
+                    ((${blockCheckClause}) OR COALESCE(u.is_deactivated, c.is_deactivated, false) = TRUE OR u.deletion_execute_at IS NOT NULL OR COALESCE(c.is_deleted, false) = TRUE) as is_unavailable
                  FROM conversation_participants cp
                  LEFT JOIN users u ON cp.user_id = u.user_id
                  LEFT JOIN organizations c ON cp.org_id = c.org_id
@@ -175,7 +243,10 @@ class GroupChatModel {
                  ORDER BY COALESCE(u.user_id, c.org_id), cp.joined_at DESC
              ) active_members`;
 
-        const params = maxJoinedAt ? [groupId, maxJoinedAt] : [groupId];
+        let params = [groupId];
+        if (maxJoinedAt) params.push(maxJoinedAt);
+        if (viewerId) params.push(viewerId);
+
         const result = await pool.query(query, params);
         return result.rows;
     }
@@ -213,12 +284,32 @@ class GroupChatModel {
         const result = await pool.query(query, [groupId, userId, role]);
         return result.rows[0];
     }
-    static async createMessage({ groupId, senderId, content, type = 'text', actionType = null, targetId = null, previewText = null, replyMessageId = null }) {
+    static async createMessage({
+        groupId,
+        senderId,
+        content,
+        type = 'text',
+        actionType = null,
+        targetId = null,
+        previewText = null,
+        replyMessageId = null,
+        shared_post_id = null,
+        shared_profile_id = null,
+        shared_profile_type = null,
+        entity_type = null,
+        entity_id = null
+    }) {
         const result = await pool.query(
-            `INSERT INTO messages (conversation_id, sender_id, text_content, message_type, action_type, target_id, replied_msg_id) 
-       VALUES ($1, $2, $3, $4, $5, $6, $7) 
-       RETURNING *`,
-            [groupId, senderId, content, type, actionType, targetId, replyMessageId]
+            `INSERT INTO messages (
+                conversation_id, sender_id, text_content, message_type, action_type, target_id, replied_msg_id,
+                shared_post_id, shared_profile_id, shared_profile_type, entity_type, entity_id
+             ) 
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) 
+             RETURNING *`,
+            [
+                groupId, senderId, content, type, actionType, targetId, replyMessageId,
+                shared_post_id, shared_profile_id, shared_profile_type, entity_type, entity_id
+            ]
         );
 
         // Update conversation timestamp and last message for sorting

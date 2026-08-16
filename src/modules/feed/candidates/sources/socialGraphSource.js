@@ -63,8 +63,10 @@ async function _fetchFirstDegree(userId, pool) {
       AND p.created_at  > NOW() - INTERVAL '${FIRST_DEGREE_WINDOW_HOURS} hours'
       AND NOT EXISTS (
         SELECT 1 FROM blocks b
-        WHERE (b.blocker_id = $1 AND b.blocked_id = p.author_id)
-           OR (b.blocker_id = p.author_id AND b.blocked_id = $1)
+        WHERE p.author_org_id IS NULL AND (
+          (b.blocker_id = $1 AND b.blocked_id = p.author_id)
+          OR (b.blocker_id = p.author_id AND b.blocked_id = $1)
+        )
       )
       AND NOT EXISTS (
         SELECT 1 FROM organization_blocked_accounts oba

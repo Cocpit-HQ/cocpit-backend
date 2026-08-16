@@ -79,7 +79,7 @@ exports.getPreview = async (req, res) => {
         return res.status(400).json({ message: "entityType and entityId are required" });
     }
 
-    const validTypes = ["post", "profile", "company", "job", "event"];
+    const validTypes = ["post", "profile", "company", "job", "event", "channel", "community"];
     if (!validTypes.includes(entityType)) {
         return res.status(400).json({ message: `Invalid entityType. Supported: ${validTypes.join(", ")}` });
     }
@@ -111,8 +111,16 @@ exports.getPreview = async (req, res) => {
                     return res.status(404).json({ message: "Profile unavailable due to blocking" });
                 }
             } else if (entityType === "profile") {
-                if (entityId !== viewerId) {
-                    const isBlocked = await checkBlockStatus(viewerId, entityId);
+                const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(entityId);
+                let targetUserId = isUuid ? entityId : null;
+                if (!isUuid) {
+                    const uRes = await pool.query("SELECT user_id FROM users WHERE account_name = $1", [entityId]);
+                    if (uRes.rowCount > 0) {
+                        targetUserId = uRes.rows[0].user_id;
+                    }
+                }
+                if (targetUserId && targetUserId !== viewerId) {
+                    const isBlocked = await checkBlockStatus(viewerId, targetUserId);
                     if (isBlocked) {
                         return res.status(404).json({ message: "Profile unavailable due to blocking" });
                     }
@@ -903,11 +911,13 @@ exports.getShareUsers = async (req, res) => {
         const values = [userId];
         let userNameFilter = "";
         let orgNameFilter = "";
+        let groupNameFilter = "";
         if (searchTerm) {
             values.push(`%${searchTerm}%`);
             const likeTermIdx = values.length;
             userNameFilter = `AND (u.full_name ILIKE $${likeTermIdx} OR u.account_name ILIKE $${likeTermIdx})`;
             orgNameFilter = `AND (org.name ILIKE $${likeTermIdx} OR org.slug ILIKE $${likeTermIdx})`;
+            groupNameFilter = `AND conv.conversation_name ILIKE $${likeTermIdx}`;
         }
 
         let cursorClause = "";
@@ -1041,6 +1051,28 @@ exports.getShareUsers = async (req, res) => {
                           WHERE (b.blocker_id = org.org_id AND b.blocked_id = $1)
                              OR (b.blocker_id = $1 AND b.blocked_id = org.org_id)
                       )
+
+                    UNION ALL
+
+                    -- Group Chats
+                    SELECT
+                        conv.conversation_id AS user_id,
+                        conv.conversation_name AS full_name,
+                        conv.conversation_name AS account_name,
+                        COALESCE(conv.group_headline, '') AS headline,
+                        conv.group_avatar AS avatar_url,
+                        conv.conversation_id AS conversation_id,
+                        1 AS priority,
+                        COALESCE(conv.last_message_at, conv.created_at) AS sort_ts,
+                        'GROUP' AS type,
+                        NULL AS slug
+                    FROM conversations conv
+                    JOIN conversation_participants cp ON conv.conversation_id = cp.conversation_id
+                    WHERE conv.is_group = TRUE
+                      AND conv.is_active = TRUE
+                      AND cp.user_id = $1
+                      AND cp.left_at IS NULL
+                      ${groupNameFilter}
                 ) AS unsorted_results
                 ORDER BY user_id, priority ASC
             ) AS deduped_results

@@ -381,9 +381,13 @@ exports.getJobById = async (req, res) => {
 
     if (userId) {
       const BlockModel = require("../../models/block.model");
-      const isOrgBlocked = job.org_id ? await BlockModel.isAnyBlocked(userId, job.org_id) : false;
-      const isRecruiterBlocked = job.recruiter_id ? await BlockModel.isAnyBlocked(userId, job.recruiter_id) : false;
-      if (isOrgBlocked || isRecruiterBlocked) {
+      let isBlocked = false;
+      if (job.org_id) {
+        isBlocked = await BlockModel.isAnyBlocked(userId, job.org_id);
+      } else if (job.recruiter_id) {
+        isBlocked = await BlockModel.isAnyBlocked(userId, job.recruiter_id);
+      }
+      if (isBlocked) {
         return res.status(404).json({ message: "Job not found" });
       }
     }

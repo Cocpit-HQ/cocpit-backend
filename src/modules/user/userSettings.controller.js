@@ -568,7 +568,11 @@ exports.deactivateAccount = async (req, res) => {
         );
         const deactivatedOrgIds = orgsRes.rows.map((r) => r.org_id);
 
-        // 3. Delete refresh tokens
+        // 3. Transfer group chat admin roles if this user was a group admin
+        const GroupChatService = require("../../services/groupChat.service");
+        await GroupChatService.handleAdminDeactivationOrDeletion(userId, client);
+
+        // 4. Delete refresh tokens
         const sessionsRes = await client.query(
             "DELETE FROM refresh_tokens WHERE user_id = $1 RETURNING session_id",
             [userId]

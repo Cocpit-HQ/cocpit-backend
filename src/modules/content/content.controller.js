@@ -278,7 +278,7 @@ exports.getMyPosts = async (req, res) => {
             p.shared_post_id IS NULL 
             OR NOT EXISTS (
                 SELECT 1 FROM blocks b 
-                WHERE (b.is_org_block = true AND ((b.blocker_id = $${orgParamIdx} AND b.blocked_id = sp.author_id) OR (b.blocker_id = sp.author_id AND b.blocked_id = $${orgParamIdx})))
+                WHERE (b.is_org_block = true AND sp.author_org_id IS NULL AND ((b.blocker_id = $${orgParamIdx} AND b.blocked_id = sp.author_id) OR (b.blocker_id = sp.author_id AND b.blocked_id = $${orgParamIdx})))
                    OR (b.is_org_block = true AND sp.author_org_id IS NOT NULL AND ((b.blocker_id = sp.author_org_id AND b.blocked_id = $${orgParamIdx}) OR (b.blocker_id = $${orgParamIdx} AND b.blocked_id = sp.author_org_id)))
             )
         )
@@ -287,7 +287,7 @@ exports.getMyPosts = async (req, res) => {
             p.shared_post_id IS NULL 
             OR NOT EXISTS (
                 SELECT 1 FROM blocks b 
-                WHERE (b.is_org_block = false AND ((b.blocker_id = $${userParamIdx} AND b.blocked_id = sp.author_id) OR (b.blocker_id = sp.author_id AND b.blocked_id = $${userParamIdx})))
+                WHERE (b.is_org_block = false AND sp.author_org_id IS NULL AND ((b.blocker_id = $${userParamIdx} AND b.blocked_id = sp.author_id) OR (b.blocker_id = sp.author_id AND b.blocked_id = $${userParamIdx})))
                    OR (b.is_org_block = true AND sp.author_org_id IS NOT NULL AND ((b.blocker_id = sp.author_org_id AND b.blocked_id = $${userParamIdx}) OR (b.blocker_id = $${userParamIdx} AND b.blocked_id = sp.author_org_id)))
             )
         )
