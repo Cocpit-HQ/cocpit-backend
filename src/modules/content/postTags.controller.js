@@ -184,7 +184,7 @@ exports.syncPostTags = async (req, res) => {
                 }
             }
 
-            const notificationText = `${senderName} tagged you in a post`;
+            const notificationText = "tagged you in a post";
 
             for (const taggedUserId of filteredNewlyTaggedUserIds) {
                 const metadata = { post_id: postId, org_id: companyId || null };

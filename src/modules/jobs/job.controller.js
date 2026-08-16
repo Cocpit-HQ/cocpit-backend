@@ -1008,6 +1008,15 @@ exports.applyJob = async (req, res) => {
       await client.query("ROLLBACK");
       return res.status(403).json({ message: "This job is closed and no longer accepting applications" });
     }
+
+    const BlockModel = require("../../models/block.model");
+    const isOrgBlocked = job.org_id ? await BlockModel.isAnyBlocked(userId, job.org_id) : false;
+    const isRecruiterBlocked = job.recruiter_id ? await BlockModel.isAnyBlocked(userId, job.recruiter_id) : false;
+    
+    if (isOrgBlocked || isRecruiterBlocked) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ message: "Job not found" });
+    }
     const candidateSkills = skillsRes.rows.map(r => r.name);
     const experienceRows = expRes.rows;
     const educationRows = eduRes.rows;

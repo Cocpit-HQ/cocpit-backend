@@ -1131,7 +1131,7 @@ exports.createPost = async (req, res) => {
                 if (companyId && originalCompanyId && companyId === originalCompanyId) isSelfRepost = true;
 
                 if (!isSelfRepost) {
-                    const notificationText = `${reposterName} reposted your post`;
+                    const notificationText = "reposted your post";
 
                     const meta = {
                         org_id: companyId, // Sender company
@@ -2462,7 +2462,7 @@ exports.toggleLike = async (req, res) => {
 
                     const likeNotifPayload = {
                         type: "like",
-                        text: `${senderName} liked your post`,
+                        text: "liked your post",
                         from: userId,
                         senderName: senderName,
                         senderAvatar: senderAvatar,
@@ -2485,7 +2485,7 @@ exports.toggleLike = async (req, res) => {
                     await pool.query(
                         `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata, recipient_org_id) 
                          VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-                        [authorId, userId, "like", `${senderName} liked your post`, postId, JSON.stringify({ org_id: companyId }), authorCompanyId]
+                        [authorId, userId, "like", "liked your post", postId, JSON.stringify({ org_id: companyId }), authorCompanyId]
                     );
                 }
             }
@@ -2723,7 +2723,7 @@ exports.addComment = async (req, res) => {
         if (!companyId && postAuthorId === userId) shouldNotifyPostOwner = false;
 
         if (shouldNotifyPostOwner) {
-            const notificationText = `${actorName} commented on your post`;
+            const notificationText = "commented on your post";
 
             // Notification Metadata
             const meta = {

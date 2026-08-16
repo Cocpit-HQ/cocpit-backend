@@ -174,11 +174,14 @@ exports.getOrganizationJobs = async (req, res) => {
             }
 
             if (req.user?.sub) {
-                const BlockModel = require("../../models/block.model");
-                const isBlocked = await BlockModel.isAnyBlocked(companyId, req.user.sub);
-                if (isBlocked) {
-                    return res.status(200).json([]);
-                }
+                const userId = req.user.sub;
+                conditions.push(`NOT EXISTS (
+                    SELECT 1 FROM blocks b
+                    WHERE (j.org_id IS NOT NULL AND ((b.blocker_id = $${paramCount} AND b.blocked_id = j.org_id) OR (b.blocker_id = j.org_id AND b.blocked_id = $${paramCount})))
+                       OR (j.recruiter_id IS NOT NULL AND ((b.blocker_id = $${paramCount} AND b.blocked_id = j.recruiter_id) OR (b.blocker_id = j.recruiter_id AND b.blocked_id = $${paramCount})))
+                )`);
+                params.push(userId);
+                paramCount++;
             }
 
             conditions.push("j.status = 'ACTIVE'");

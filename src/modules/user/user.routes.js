@@ -23,11 +23,13 @@ router.post("/account/resend-recovery", resendRecoveryLimiter, userController.re
 
 router.use(requireAuth);
 
+const { resolveActorContext } = require("../../core/middlewares/actor-context.middleware");
+
 // Search users (real-time)
-router.get("/search", userController.searchUsers);
+router.get("/search", resolveActorContext, userController.searchUsers);
 
 // Get suggested users
-router.get("/suggested", userController.getSuggestedUsers);
+router.get("/suggested", resolveActorContext, userController.getSuggestedUsers);
 
 const { resolveActorContext } = require("../../core/middlewares/actor-context.middleware");
 
@@ -35,10 +37,10 @@ const { resolveActorContext } = require("../../core/middlewares/actor-context.mi
 router.get("/:id", resolveActorContext, userController.getUserProfile);
 
 // Get public profile posts (commented) - must be BEFORE /:id to avoid shadowing
-router.get("/:id/posts/commented", userController.getPublicProfileCommentedPosts);
+router.get("/:id/posts/commented", resolveActorContext, userController.getPublicProfileCommentedPosts);
 
 // Get public profile posts
-router.get("/:id/posts", userController.getPublicProfilePosts);
+router.get("/:id/posts", resolveActorContext, userController.getPublicProfilePosts);
 
 // Delete account (schedule soft deletion)
 router.delete("/account", userController.deleteAccount);

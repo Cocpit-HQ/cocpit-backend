@@ -287,32 +287,56 @@ exports.getOrgProfile = async (req, res) => {
         };
 
         if (viewerId) {
-            const [relResult, relevanceResult, mutualCountResult] = await Promise.all([
-                pool.query(
-                    `SELECT
-                        EXISTS(SELECT 1 FROM organization_followers WHERE user_id = $1 AND org_id = $2) AS is_following,
-                        EXISTS(SELECT 1 FROM community_subscriptions cs JOIN communities c ON cs.community_id = c.community_id WHERE cs.user_id = $1 AND c.org_id = $2 AND cs.status = 'SUBSCRIBED') AS is_subscribed,
-                        EXISTS(SELECT 1 FROM organization_connections WHERE user_id = $1 AND org_id = $2) AS is_connected,
-                        EXISTS(SELECT 1 FROM blocks WHERE (blocker_id = $1 AND blocked_id = $2) OR (blocker_id = $2 AND blocked_id = $1)) AS is_blocked`,
-                    [viewerId, org.org_id]
-                ),
-                pool.query(
-                    `SELECT u.user_id, u.full_name, u.avatar_url, u.headline, u.account_name
-                     FROM connections c
-                     JOIN active_users u ON c.connected_user_id = u.user_id
-                     JOIN organization_followers ofol ON ofol.user_id = u.user_id
-                     WHERE c.user_id = $1 AND ofol.org_id = $2
-                     LIMIT 5`,
-                    [viewerId, org.org_id]
-                ),
-                pool.query(
-                    `SELECT COUNT(*)::int AS count
-                     FROM connections c
-                     JOIN organization_followers ofol ON ofol.user_id = c.connected_user_id
-                     WHERE c.user_id = $1 AND ofol.org_id = $2`,
-                    [viewerId, org.org_id]
-                )
-            ]);
+            let relResult;
+            let relevanceResult = { rows: [] };
+            let mutualCountResult = { rows: [{ count: 0 }] };
+
+            if (isOwnOrgActor || (req.actor && req.actor.type === "ORGANIZATION" && req.actor.orgId)) {
+                // If viewing as an Organization, relationship checks use orgId
+                const actorOrgId = req.actor.orgId;
+                const [rResult] = await Promise.all([
+                    pool.query(
+                        `SELECT
+                            EXISTS(SELECT 1 FROM organization_org_follows WHERE follower_org_id = $1 AND following_org_id = $2) AS is_following,
+                            false AS is_subscribed,
+                            false AS is_connected,
+                            EXISTS(SELECT 1 FROM blocks WHERE (blocker_id = $1 AND blocked_id = $2) OR (blocker_id = $2 AND blocked_id = $1)) AS is_blocked`,
+                        [actorOrgId, org.org_id]
+                    )
+                ]);
+                relResult = rResult;
+            } else {
+                // If viewing as a normal User, use viewerId
+                const [rResult, rvResult, mcResult] = await Promise.all([
+                    pool.query(
+                        `SELECT
+                            EXISTS(SELECT 1 FROM organization_followers WHERE user_id = $1 AND org_id = $2) AS is_following,
+                            EXISTS(SELECT 1 FROM community_subscriptions cs JOIN communities c ON cs.community_id = c.community_id WHERE cs.user_id = $1 AND c.org_id = $2 AND cs.status = 'SUBSCRIBED') AS is_subscribed,
+                            EXISTS(SELECT 1 FROM organization_connections WHERE user_id = $1 AND org_id = $2) AS is_connected,
+                            EXISTS(SELECT 1 FROM blocks WHERE (blocker_id = $1 AND blocked_id = $2) OR (blocker_id = $2 AND blocked_id = $1)) AS is_blocked`,
+                        [viewerId, org.org_id]
+                    ),
+                    pool.query(
+                        `SELECT u.user_id, u.full_name, u.avatar_url, u.headline, u.account_name
+                         FROM connections c
+                         JOIN active_users u ON c.connected_user_id = u.user_id
+                         JOIN organization_followers ofol ON ofol.user_id = u.user_id
+                         WHERE c.user_id = $1 AND ofol.org_id = $2
+                         LIMIT 5`,
+                        [viewerId, org.org_id]
+                    ),
+                    pool.query(
+                        `SELECT COUNT(*)::int AS count
+                         FROM connections c
+                         JOIN organization_followers ofol ON ofol.user_id = c.connected_user_id
+                         WHERE c.user_id = $1 AND ofol.org_id = $2`,
+                        [viewerId, org.org_id]
+                    )
+                ]);
+                relResult = rResult;
+                relevanceResult = rvResult;
+                mutualCountResult = mcResult;
+            }
 
             relationship = {
                 is_following: !!relResult.rows[0]?.is_following,

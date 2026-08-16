@@ -823,7 +823,7 @@ exports.acceptInvitation = async (req, res, next) => {
         const inviteeAvatar = inviteeNameRes.rows[0]?.avatar_url;
 
         // Insert notification record for the inviter recruiter
-        const notificationText = `${inviteeName} accepted your invitation to join the community`;
+        const notificationText = "accepted your invitation to join the community";
         const meta = {
             org_id: org_id,
             invite_id: inviteId
@@ -1219,7 +1219,7 @@ exports.requestEditAccess = async (req, res, next) => {
         );
 
         if (adminsRes.rowCount > 0) {
-            const notificationText = `${userName} requested edit access to the ${companyName} community`;
+            const notificationText = `requested edit access to the ${companyName} community`;
             const meta = {
                 org_id: orgId,
                 requestee_id: userId

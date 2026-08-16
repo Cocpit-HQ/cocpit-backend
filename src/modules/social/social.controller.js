@@ -160,7 +160,7 @@ exports.followUser = async (req, res) => {
         // Notification 1: "Started following you"
         const followNotifData = {
             type: "follow",
-            text: `${follower.full_name} started following you`,
+            text: "started following you",
             from: followerId,
             senderName: follower.full_name,
             senderAvatar: follower.avatar_url,
@@ -188,7 +188,7 @@ exports.followUser = async (req, res) => {
         if (isConnected) {
             const connectionNotifData = {
                 type: "connection_accepted", // Reusing this type for "New Connection" UI treatment
-                text: `${follower.full_name} and you are now connected!`,
+                text: "and you are now connected!",
                 from: followerId,
                 senderName: follower.full_name,
                 senderAvatar: follower.avatar_url,
@@ -310,14 +310,22 @@ exports.removeFollower = async (req, res) => {
         await client.query('BEGIN');
 
         // 1. Delete from followers where follower_id = target AND following_id = me
-        const result = await client.query(
+        let result = await client.query(
             `DELETE FROM followers WHERE follower_id = $1 AND following_id = $2 RETURNING *`,
             [followerId, userId]
         );
 
         if (result.rowCount === 0) {
-            await client.query('ROLLBACK');
-            return res.status(404).json({ message: "This user is not following you" });
+            // Check if the follower is actually an organization
+            result = await client.query(
+                `DELETE FROM organization_user_follows WHERE org_id = $1 AND user_id = $2 RETURNING *`,
+                [followerId, userId]
+            );
+
+            if (result.rowCount === 0) {
+                await client.query('ROLLBACK');
+                return res.status(404).json({ message: "This user or company is not following you" });
+            }
         }
 
         // 2. If we were connected, break the connection
@@ -1070,7 +1078,7 @@ exports.sendConnectionRequest = async (req, res) => {
 
         const notificationData = {
             type: "connection_request",
-            text: `${sender.full_name} sent you a connection request`,
+            text: "sent you a connection request",
             from: senderId,
             senderName: sender.full_name,
             senderAvatar: sender.avatar_url,
@@ -4807,7 +4815,7 @@ exports.sendCompanyConnectionRequest = async (req, res) => {
 
         const notificationData = {
             type: "company_connection_request",
-            text: `${company.name} wants to connect with you`,
+            text: "wants to connect with you",
             from: companyId,
             senderName: company.name,
             senderAvatar: company.logo_url,
@@ -4929,7 +4937,7 @@ exports.handleCompanyConnectionRequest = async (req, res) => {
 
             socketService.notifyUser(userId, "notification", {
                 type: "company_connection_accepted",
-                text: `You are now connected with ${company.name}`,
+                text: "and you are now connected!",
                 from: companyId,
                 senderName: company.name,
                 senderAvatar: company.logo_url,
@@ -4963,7 +4971,7 @@ exports.handleCompanyConnectionRequest = async (req, res) => {
 
                 socketService.notifyUser(admin.user_id, "notification", {
                     type: "company_connection_accepted",
-                    text: `${user.full_name} accepted the company's connection request`,
+                    text: "accepted the company's connection request",
                     from: userId,
                     senderName: user.full_name,
                     senderAvatar: user.avatar_url,
