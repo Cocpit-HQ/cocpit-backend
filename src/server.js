@@ -51,10 +51,8 @@ setInterval(() => {
   runDailyDecay();
 }, 24 * 60 * 60 * 1000);
 
-// Analytics Aggregation Cron — runs hourly in production, every 10s in dev for testing
-const ANALYTICS_CRON_INTERVAL = process.env.NODE_ENV === 'production'
-  ? 60 * 60 * 1000   // 1 hour
-  : 10 * 1000;        // 10 seconds (dev only)
+// Analytics Aggregation Cron — runs hourly
+const ANALYTICS_CRON_INTERVAL = 60 * 60 * 1000; // 1 hour
 
 processAnalyticsAggregations(); // run once immediately on startup
 setInterval(() => {
