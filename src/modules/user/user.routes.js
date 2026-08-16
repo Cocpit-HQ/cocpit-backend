@@ -31,7 +31,7 @@ router.get("/search", resolveActorContext, userController.searchUsers);
 // Get suggested users
 router.get("/suggested", resolveActorContext, userController.getSuggestedUsers);
 
-const { resolveActorContext } = require("../../core/middlewares/actor-context.middleware");
+
 
 // Get public profile
 router.get("/:id", resolveActorContext, userController.getUserProfile);
