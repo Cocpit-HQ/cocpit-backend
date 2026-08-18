@@ -608,6 +608,12 @@ exports.deactivateAccount = async (req, res) => {
             SocketService.notifyOrg(orgId, 'ORGANIZATION_DEACTIVATED', { orgId });
         });
 
+        // 8. Broadcast user deactivation event
+        if (SocketService.io) {
+            SocketService.io.emit('user_deactivated', { userId });
+            SocketService.io.emit('USER_DEACTIVATED', { userId });
+        }
+
         return res.status(200).json({
             success: true,
             message: "Account deactivated successfully.",

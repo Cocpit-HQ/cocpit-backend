@@ -263,6 +263,10 @@ const loginUser = async ({ email, password, userAgent, ipAddress }) => {
         await pool.query(`UPDATE users SET is_deactivated = FALSE, deactivated_at = NULL WHERE user_id = $1`, [user.user_id]);
         await pool.query(`UPDATE organizations SET is_deactivated = FALSE, deactivated_at = NULL WHERE created_by = $1 AND is_deleted = FALSE`, [user.user_id]);
         await pool.query(`DELETE FROM message_reads WHERE user_id = $1 AND read_at >= $2`, [user.user_id, deactivatedSince]);
+        if (socketService.io) {
+            socketService.io.emit('user_reactivated', { userId: user.user_id });
+            socketService.io.emit('USER_REACTIVATED', { userId: user.user_id });
+        }
     }
 
     // 4. Initialize session (Shared logic)
@@ -481,6 +485,10 @@ const socialLogin = async ({ provider, idToken, accountType, userAgent, ipAddres
         await pool.query(`UPDATE users SET is_deactivated = FALSE, deactivated_at = NULL WHERE user_id = $1`, [user.user_id]);
         await pool.query(`UPDATE organizations SET is_deactivated = FALSE, deactivated_at = NULL WHERE created_by = $1 AND is_deleted = FALSE`, [user.user_id]);
         await pool.query(`DELETE FROM message_reads WHERE user_id = $1 AND read_at >= $2`, [user.user_id, deactivatedSince]);
+        if (socketService.io) {
+            socketService.io.emit('user_reactivated', { userId: user.user_id });
+            socketService.io.emit('USER_REACTIVATED', { userId: user.user_id });
+        }
     }
 
     // ── Step 4: Generate platform tokens (reuses existing JWT pipeline) ──
