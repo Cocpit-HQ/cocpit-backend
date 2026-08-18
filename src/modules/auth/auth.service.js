@@ -396,7 +396,7 @@ const getCurrentUser = async (userId, tokenRoles) => {
  * In ALL scenarios, we issue platform JWT tokens (access + refresh) using
  * the exact same session pipeline as email/password login.
  */
-const socialLogin = async ({ provider, idToken, accountType, userAgent, ipAddress }) => {
+const socialLogin = async ({ provider, idToken, accountType, fullName: clientFullName, userAgent, ipAddress }) => {
     // ── Step 1: Verify Social ID token ──
     let socialUser;
     try {
@@ -405,8 +405,11 @@ const socialLogin = async ({ provider, idToken, accountType, userAgent, ipAddres
         return { error: { status: 401, message: `Invalid or expired ${provider} token` } };
     }
 
-    const { providerId, email, fullName, avatarUrl } = socialUser;
+    const { providerId, email, avatarUrl } = socialUser;
     const normalizedEmail = email.toLowerCase();
+    
+    // Fallback logic for full name: Token -> Client -> Email prefix
+    const fullName = socialUser.fullName || clientFullName || normalizedEmail.split('@')[0];
 
     // ── Step 2: Find or create the user ──
     let user;
