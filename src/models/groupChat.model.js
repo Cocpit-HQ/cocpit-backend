@@ -414,12 +414,20 @@ class GroupChatModel {
 
     static async markMessagesAsRead(userId, groupId) {
         // 1. Insert into message_reads
+        // Only mark messages sent AFTER the user joined the group (prevents
+        // late-joining members from appearing in "Read by" for older messages)
         const result = await pool.query(
             `INSERT INTO message_reads (message_id, user_id, read_at)
              SELECT m.message_id, $1, NOW()
              FROM messages m
+             JOIN conversation_participants cp
+               ON cp.conversation_id = m.conversation_id
+               AND cp.user_id = $1
+               AND cp.left_at IS NULL
              WHERE m.conversation_id = $2
                AND m.sender_id != $1
+               AND m.created_at >= cp.joined_at
+               AND m.message_type != 'system'
              ON CONFLICT (message_id, user_id) DO NOTHING
              RETURNING message_id`,
             [userId, groupId]

@@ -2051,9 +2051,9 @@ SELECT
         ) THEN NULL
         WHEN cp_other.org_id IS NOT NULL AND (comp.logo_url IS NULL OR comp.name = 'Deleted Page') THEN NULL
         WHEN comp.org_id IS NOT NULL THEN comp.logo_url
-        WHEN u.display_avatar IS NULL AND comp.org_id IS NULL THEN NULL
+        WHEN COALESCE(u.display_avatar, raw_u.avatar_url) IS NULL AND comp.org_id IS NULL THEN NULL
         WHEN cp_other.org_id IS NOT NULL THEN NULL
-        ELSE u.display_avatar 
+        ELSE COALESCE(u.display_avatar, raw_u.avatar_url)
     END AS other_user_avatar,
     
     -- Other ID (User or Company)
@@ -3369,11 +3369,15 @@ exports.getMessageSeenBy = async (req, res) => {
             SELECT 
                 u.user_id,
                 u.display_name as full_name,
-                u.display_avatar as avatar_url,
+                COALESCE(u.display_avatar, raw_u.avatar_url) as avatar_url,
                 mr.read_at
             FROM message_reads mr
             JOIN user_display_profiles u ON mr.user_id = u.user_id
+            JOIN users raw_u ON mr.user_id = raw_u.user_id
+            JOIN messages m ON mr.message_id = m.message_id
+            JOIN conversation_participants cp ON m.conversation_id = cp.conversation_id AND mr.user_id = cp.user_id
             WHERE mr.message_id = $1
+              AND cp.joined_at <= m.created_at
             ORDER BY mr.read_at ASC
             `,
             [messageId]
@@ -3470,6 +3474,7 @@ exports.getMessages = async (req, res) => {
                       WHERE mr.message_id = m.message_id 
                         AND cp.conversation_id = m.conversation_id
                         AND cp.left_at IS NULL
+                        AND cp.joined_at <= m.created_at
                         AND (m.sender_id IS NULL OR cp.user_id != m.sender_id)
                      ), 0
                  ) AS seen_count,
@@ -3498,16 +3503,10 @@ exports.getMessages = async (req, res) => {
                     ) THEN NULL
                     WHEN raw_u_msg.is_deactivated OR raw_u_msg.deletion_execute_at IS NOT NULL THEN NULL
                     WHEN m.author_org_id IS NOT NULL AND (c.name = 'Deleted Page' OR raw_org.is_deleted = TRUE OR raw_org.is_deactivated = TRUE) THEN NULL
-                    ELSE COALESCE(
-                        c.logo_url, 
-                        (SELECT o_part.logo_url 
-                         FROM conversation_participants cp_org 
-                         JOIN organizations o_part ON cp_org.org_id = o_part.org_id 
-                         WHERE cp_org.conversation_id = m.conversation_id AND o_part.is_deleted = FALSE 
-                         LIMIT 1), 
-                        u.display_avatar, 
-                        NULL
-                    ) 
+                    ELSE CASE 
+                        WHEN m.author_org_id IS NOT NULL THEN COALESCE(c.logo_url, raw_org.logo_url)
+                        ELSE COALESCE(u.display_avatar, raw_u_msg.avatar_url)
+                    END
                 END as sender_avatar,
                 (SELECT json_agg(json_build_object('url', mm.url, 'media_type', mm.media_type, 'filename', mm.filename))
                  FROM message_media mm
