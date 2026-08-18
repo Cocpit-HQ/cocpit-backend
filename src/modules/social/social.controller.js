@@ -4260,6 +4260,8 @@ exports.blockUser = async (req, res) => {
 
         // Use model to record block (foreign key is safe)
         await BlockModel.blockUser(blockerId, targetId, isOrgActor);
+        // NEW: Immediately invalidate the blocked user's feed cache
+        await BlockModel.invalidateCache(targetId);
 
         // Remove any existing relationships (membership, followers, following, connections, requests)
         const client = await pool.connect();

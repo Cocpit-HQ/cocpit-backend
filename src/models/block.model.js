@@ -173,13 +173,41 @@ class BlockModel {
     static async invalidateCache(userId) {
         try {
             if (redisClient.isOpen) {
+                // Existing: clear block cache
                 await redisClient.del(this.getCacheKey(userId));
-                // Clear emptiness marker too
                 await redisClient.del(this.getCacheKey(userId) + ":empty");
+
+                // NEW: clear feed candidate pool (TTL 120s key)
+                await redisClient.del(`feed:candidates:${userId}`);
+
+                // NEW: clear all paginated feed slice keys for this user
+                // Pattern: feed:slice:{userId}:{cursor}  (TTL 300s each)
+                // SCAN is non-blocking and safe on single-instance Redis
+                let cursor = 0;
+                do {
+                    const reply = await redisClient.scan(cursor, {
+                        MATCH: `feed:slice:${userId}:*`,
+                        COUNT: 100,
+                    });
+                    cursor = reply.cursor;
+                    if (reply.keys && reply.keys.length > 0) {
+                        await redisClient.del(reply.keys);
+                    }
+                } while (cursor !== 0);
             }
         } catch (err) {
             console.warn("Redis invalidation error:", err.message);
         }
+    }
+
+    static async getBlockedAndBlockingIds(userId) {
+        const result = await pool.query(
+            `SELECT blocked_id AS related_id FROM blocks WHERE blocker_id = $1
+             UNION
+             SELECT blocker_id AS related_id FROM blocks WHERE blocked_id = $1`,
+            [userId]
+        );
+        return new Set(result.rows.map(r => r.related_id));
     }
 
     /**

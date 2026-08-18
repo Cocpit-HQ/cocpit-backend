@@ -126,7 +126,7 @@ exports.getPublicFeed = async (req, res) => {
         SELECT
             ${getPostHydrationSelect(companyParamIdx, userParamIdx)}
         ${getPostHydrationJoins()}
-        ${getPublicFeedWhere(userParamIdx)}
+        ${getPublicFeedWhere(userParamIdx, companyParamIdx)}
         ${cursorCondition}
         ORDER BY p.created_at DESC, p.post_id DESC
         LIMIT $${limitParamIdx}

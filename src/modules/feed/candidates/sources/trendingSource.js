@@ -166,7 +166,7 @@ function _mapRowToCandidate(row) {
  * @param {Set}     [params.socialGraphIds]- Set of contentIds from social graph source (for dedup)
  * @returns {Promise<Array>}               - CandidateItem[]
  */
-async function getTrendingCandidates({ userId, limit, pool, socialGraphIds = new Set() }) {
+async function getTrendingCandidates({ userId, limit, pool, socialGraphIds = new Set(), blockedIds = new Set() }) {
   try {
     void userId; // reserved for niche trending in future
 
@@ -179,6 +179,7 @@ async function getTrendingCandidates({ userId, limit, pool, socialGraphIds = new
       // Cache hit — map and filter
       candidates = redisRows
         .filter(row => !socialGraphIds.has(row.content_id))  // A4.3 dedup
+        .filter(row => !blockedIds.has(row.author_id) && !blockedIds.has(row.author_org_id))
         .slice(0, TRENDING_CAP)
         .map(row => _mapRowToCandidate(row));
 
@@ -205,6 +206,7 @@ async function getTrendingCandidates({ userId, limit, pool, socialGraphIds = new
     // ── Step 4: Filter against social graph, cap at 30, map to CandidateItem ─
     candidates = dbRows
       .filter(row => !socialGraphIds.has(row.content_id)) // A4.3 dedup
+      .filter(row => !blockedIds.has(row.author_id) && !blockedIds.has(row.author_org_id))
       .slice(0, TRENDING_CAP)
       .map(row => _mapRowToCandidate(row));
 

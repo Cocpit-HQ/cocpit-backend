@@ -63,15 +63,14 @@ async function _fetchFirstDegree(userId, pool) {
       AND p.created_at  > NOW() - INTERVAL '${FIRST_DEGREE_WINDOW_HOURS} hours'
       AND NOT EXISTS (
         SELECT 1 FROM blocks b
-        WHERE p.author_org_id IS NULL AND (
-          (b.blocker_id = $1 AND b.blocked_id = p.author_id)
-          OR (b.blocker_id = p.author_id AND b.blocked_id = $1)
-        )
-      )
-      AND NOT EXISTS (
-        SELECT 1 FROM organization_blocked_accounts oba
-        WHERE (oba.blocked_id = $1 AND (p.author_org_id IS NOT NULL AND oba.org_id = p.author_org_id))
-           OR (oba.org_id = $1 AND (oba.blocked_id = p.author_id OR (p.author_org_id IS NOT NULL AND oba.blocked_id = p.author_org_id)))
+        WHERE
+          (b.is_org_block = false AND p.author_org_id IS NULL
+            AND ((b.blocker_id = $1 AND b.blocked_id = p.author_id)
+                 OR (b.blocker_id = p.author_id AND b.blocked_id = $1)))
+          OR
+          (b.is_org_block = true AND p.author_org_id IS NOT NULL
+            AND ((b.blocker_id = p.author_org_id AND b.blocked_id = $1)
+                 OR (b.blocker_id = $1 AND b.blocked_id = p.author_org_id)))
       )
     ORDER BY p.created_at DESC
     LIMIT ${SOURCE_CAP}
@@ -109,6 +108,17 @@ async function _fetchSecondDegree(userId, pool) {
       AND NOT EXISTS (
         SELECT 1 FROM followers direct
         WHERE direct.follower_id = $1 AND direct.following_id = p.author_id
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM blocks b
+        WHERE
+          (b.is_org_block = false AND p.author_org_id IS NULL
+            AND ((b.blocker_id = $1 AND b.blocked_id = p.author_id)
+                 OR (b.blocker_id = p.author_id AND b.blocked_id = $1)))
+          OR
+          (b.is_org_block = true AND p.author_org_id IS NOT NULL
+            AND ((b.blocker_id = p.author_org_id AND b.blocked_id = $1)
+                 OR (b.blocker_id = $1 AND b.blocked_id = p.author_org_id)))
       )
     ORDER BY p.created_at DESC
     LIMIT ${SOURCE_CAP}
