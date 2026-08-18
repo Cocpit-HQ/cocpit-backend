@@ -370,11 +370,14 @@ class GroupChatService {
                 // Count OTHER ACTIVE admins
                 const adminCountRes = await client.query(
                     `SELECT COUNT(*)::int as count
-                     FROM conversation_participants
-                     WHERE conversation_id = $1 
-                     AND role = 'admin' 
-                     AND user_id != $2
-                     AND left_at IS NULL`, // CRITICAL: Only count active admins
+                     FROM conversation_participants cp
+                     JOIN users u ON cp.user_id = u.user_id
+                     WHERE cp.conversation_id = $1 
+                     AND cp.role = 'admin' 
+                     AND cp.user_id != $2
+                     AND cp.left_at IS NULL
+                     AND (u.is_deactivated IS FALSE OR u.is_deactivated IS NULL)
+                     AND u.deletion_execute_at IS NULL`, // CRITICAL: Only count active admins
                     [groupId, userId]
                 );
 
@@ -391,6 +394,8 @@ class GroupChatService {
                          WHERE cp.conversation_id = $1 
                          AND cp.user_id != $2
                          AND cp.left_at IS NULL
+                         AND (u.is_deactivated IS FALSE OR u.is_deactivated IS NULL)
+                         AND u.deletion_execute_at IS NULL
                          ORDER BY cp.joined_at ASC
                          LIMIT 1`,
                         [groupId, userId]
@@ -439,12 +444,15 @@ class GroupChatService {
                     // Reassign ownership to another existing admin
                     console.log(`[GroupChatService] User was owner but other admins exist. Reassigning ownership.`);
                     const otherAdminRes = await client.query(
-                        `SELECT user_id FROM conversation_participants 
-                         WHERE conversation_id = $1 
-                         AND role = 'admin' 
-                         AND user_id != $2
-                         AND left_at IS NULL
-                         ORDER BY joined_at ASC
+                        `SELECT cp.user_id FROM conversation_participants cp
+                         JOIN users u ON cp.user_id = u.user_id
+                         WHERE cp.conversation_id = $1 
+                         AND cp.role = 'admin' 
+                         AND cp.user_id != $2
+                         AND cp.left_at IS NULL
+                         AND (u.is_deactivated IS FALSE OR u.is_deactivated IS NULL)
+                         AND u.deletion_execute_at IS NULL
+                         ORDER BY cp.joined_at ASC
                          LIMIT 1`,
                         [groupId, userId]
                     );
