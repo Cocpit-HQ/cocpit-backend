@@ -67,6 +67,7 @@ const processAnalyticsAggregations = async () => {
                         0 as connections
                     FROM profile_views
                     WHERE DATE(view_date) = DATE(${dateStr})
+                      AND viewer_company_org_id IS NULL
                     GROUP BY profile_owner_id, DATE(view_date)
 
                     UNION ALL

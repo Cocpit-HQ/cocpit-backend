@@ -34,9 +34,7 @@ const getOverviewData = async (userId, { filter, startDate, endDate }) => {
 
     const currConnReqs = await getCount(`SELECT COUNT(1) as count FROM connection_requests WHERE receiver_id = $1 AND created_at >= $2 AND created_at <= $3`, [userId, start, end]);
     const currFollowers = await getCount(`SELECT COUNT(1) as count FROM followers WHERE following_id = $1 AND created_at >= $2 AND created_at <= $3`, [userId, start, end]);
-    const currOppViewsLegacy = await getCount(`SELECT COUNT(1) as count FROM profile_views WHERE profile_owner_id = $1 AND (source = 'job_application_dashboard' OR viewer_company_org_id IS NOT NULL) AND view_date >= DATE($2) AND view_date <= DATE($3)`, [userId, start, end]);
-    const currOppViewsNew = await getCount(`SELECT COUNT(1) as count FROM organization_profile_views WHERE profile_owner_id = $1 AND viewed_at >= $2 AND viewed_at <= $3`, [userId, start, end]);
-    const currOppViewsViewsOnly = currOppViewsLegacy + currOppViewsNew;
+    const currOppViewsViewsOnly = await getCount(`SELECT COUNT(1) as count FROM profile_views WHERE profile_owner_id = $1 AND source = 'job_application_dashboard' AND view_date >= DATE($2) AND view_date <= DATE($3)`, [userId, start, end]);
     const currOppViewsOffers = await getCount(`SELECT COUNT(1) as count FROM job_offers WHERE user_id = $1 AND created_at >= $2 AND created_at <= $3`, [userId, start, end]);
     const currOppViews = currOppViewsViewsOnly + currOppViewsOffers;
     
@@ -61,9 +59,7 @@ const getOverviewData = async (userId, { filter, startDate, endDate }) => {
 
         prevConnReqs = await getCount(`SELECT COUNT(1) as count FROM connection_requests WHERE receiver_id = $1 AND created_at >= $2 AND created_at <= $3`, [userId, previousStart, previousEnd]);
         prevFollowers = await getCount(`SELECT COUNT(1) as count FROM followers WHERE following_id = $1 AND created_at >= $2 AND created_at <= $3`, [userId, previousStart, previousEnd]);
-        const prevOppViewsLegacy = await getCount(`SELECT COUNT(1) as count FROM profile_views WHERE profile_owner_id = $1 AND (source = 'job_application_dashboard' OR viewer_company_org_id IS NOT NULL) AND view_date >= DATE($2) AND view_date <= DATE($3)`, [userId, previousStart, previousEnd]);
-        const prevOppViewsNew = await getCount(`SELECT COUNT(1) as count FROM organization_profile_views WHERE profile_owner_id = $1 AND viewed_at >= $2 AND viewed_at <= $3`, [userId, previousStart, previousEnd]);
-        const prevOppViewsViewsOnly = prevOppViewsLegacy + prevOppViewsNew;
+        const prevOppViewsViewsOnly = await getCount(`SELECT COUNT(1) as count FROM profile_views WHERE profile_owner_id = $1 AND source = 'job_application_dashboard' AND view_date >= DATE($2) AND view_date <= DATE($3)`, [userId, previousStart, previousEnd]);
         const prevOppViewsOffers = await getCount(`SELECT COUNT(1) as count FROM job_offers WHERE user_id = $1 AND created_at >= $2 AND created_at <= $3`, [userId, previousStart, previousEnd]);
         prevOppViews = prevOppViewsViewsOnly + prevOppViewsOffers;
         
@@ -179,8 +175,13 @@ const getOverviewData = async (userId, { filter, startDate, endDate }) => {
                 }
             });
             
-            profileStrength.message = profileStrength.missingFields.length > 0 
-                ? `Add ${profileStrength.missingFields.join(' & ')} to hit 100%`
+            const formatFieldName = (fieldName) => {
+                return fieldName.split('_').map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(' ');
+            };
+            const formattedMissingFields = profileStrength.missingFields.map(formatFieldName);
+            
+            profileStrength.message = formattedMissingFields.length > 0 
+                ? `Add ${formattedMissingFields.join(' & ')} to hit 100%`
                 : "Your profile is 100% complete!";
         }
     } catch (err) {
@@ -438,10 +439,9 @@ const getOpportunitiesData = async (userId, { filter, startDate, endDate }) => {
 
     // 2. Opportunity Activity (Dashboard Views + Offers)
     const getOppActivity = async (s, e) => {
-        const pvCount = await getCount(`SELECT COUNT(1) as count FROM profile_views WHERE profile_owner_id = $1 AND (source = 'job_application_dashboard' OR viewer_company_org_id IS NOT NULL) AND view_date >= DATE($2) AND view_date <= DATE($3)`, [userId, s, e]);
-        const orgPvCount = await getCount(`SELECT COUNT(1) as count FROM organization_profile_views WHERE profile_owner_id = $1 AND viewed_at >= $2 AND viewed_at <= $3`, [userId, s, e]);
+        const pvCount = await getCount(`SELECT COUNT(1) as count FROM profile_views WHERE profile_owner_id = $1 AND source = 'job_application_dashboard' AND view_date >= DATE($2) AND view_date <= DATE($3)`, [userId, s, e]);
         const offersCount = await getCount(`SELECT COUNT(1) as count FROM job_offers WHERE user_id = $1 AND created_at >= $2 AND created_at <= $3`, [userId, s, e]);
-        return pvCount + orgPvCount + offersCount;
+        return pvCount + offersCount;
     };
 
     const currActivity = await getOppActivity(start, end);
@@ -517,8 +517,8 @@ const getOpportunitiesData = async (userId, { filter, startDate, endDate }) => {
         JOIN organizations org ON cv.org_id = org.org_id
         LEFT JOIN users u ON cv.viewer_id = u.user_id
         GROUP BY cv.org_id, org.name, org.industry, org.logo_url
-        ORDER BY visits_count DESC
-        LIMIT 4
+        ORDER BY MAX(cv.v_date) DESC, visits_count DESC
+        LIMIT 50
     `, [userId, start, end]);
 
     const topOrganizations = topOrgsRes.rows.map(r => ({

@@ -39,17 +39,6 @@ const recordProfileView = async (req, res) => {
     validSourcePostId = null; // silently ignore invalid UUID
   }
 
-  if (!viewerCompanyOrgId) {
-    try {
-      const orgRes = await pool.query("SELECT org_id FROM organization_members WHERE user_id = $1 AND status = 'ACTIVE' LIMIT 1", [viewerId]);
-      if (orgRes.rowCount > 0) {
-        viewerCompanyOrgId = orgRes.rows[0].org_id;
-      }
-    } catch (e) {
-      console.error("Failed to fetch org for viewer:", e);
-    }
-  }
-
   try {
     await dashboardService.addProfileView(viewerId, profileOwnerId, profileType, {
         source,

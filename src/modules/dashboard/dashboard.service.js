@@ -56,7 +56,8 @@ const addProfileView = async (viewerId, profileOwnerIdentifier, profileType, opt
   const isOrgView = viewerCompanyOrgId || (actor && actor.type === 'ORGANIZATION');
   const orgId = isOrgView ? (viewerCompanyOrgId || actor?.orgId) : null;
 
-  const hasAttribution = Boolean(sourcePostId || source || orgId);
+  const finalSource = source || (sourcePostId ? 'post' : null);
+  const hasAttribution = Boolean(sourcePostId || finalSource || orgId);
 
   const nowDate = new Date();
   const today = `${nowDate.getFullYear()}-${String(nowDate.getMonth() + 1).padStart(2, '0')}-${String(nowDate.getDate()).padStart(2, '0')}`;
@@ -67,7 +68,7 @@ const addProfileView = async (viewerId, profileOwnerIdentifier, profileType, opt
     : `profile_view:${viewerId}:${profileOwnerId}:${profileType}:${today}`;
 
   const attributionCacheKey = hasAttribution
-    ? `${cacheKey}:src:${source || ''}:post:${sourcePostId || ''}`
+    ? `${cacheKey}:src:${finalSource || ''}:post:${sourcePostId || ''}`
     : cacheKey;
 
   // 1. In-memory safety fallback (protects against Redis downtime + extra layer)
@@ -94,36 +95,41 @@ const addProfileView = async (viewerId, profileOwnerIdentifier, profileType, opt
         "EX",
         86400
       );
-      if (!isNewView && !hasAttribution) return;
+      if (!isNewView) return;
     } catch (err) {
       // Logic continues to DB if Redis fails, but in-memory map already caught near-duplicates
       console.warn("[DashboardService] Redis cache check skipped during view tracking");
     }
   }
 
-  const finalSource = source || (sourcePostId ? 'post' : null);
-
   try {
     if (isOrgView && orgId) {
-      // 1. Organization context: Check rolling 24-hour window
-      // Use ON CONFLICT to make insert atomic — prevents race condition from concurrent requests
+      if (profileType !== 'user') {
+        return; // The organization_profile_views table only supports user profiles as targets.
+      }
+
+      // Insert into organization_profile_views
       await pool.query(`
           INSERT INTO organization_profile_views (organization_id, profile_owner_id, profile_type, viewed_at)
           VALUES ($1, $2, $3, NOW())
           ON CONFLICT (organization_id, profile_owner_id, profile_type, ((viewed_at AT TIME ZONE 'UTC')::date)) DO NOTHING
       `, [orgId, profileOwnerId, profileType]);
-      return; // Stop here, organization views do NOT go into profile_views
     }
 
-    // 2. Personal context: Insert into profile_views
-    // viewer_company_org_id is NOT set here to avoid polluting org analytics with personal views
+    // 2. Insert into profile_views (for personal views, and org views that need source tracking like Opportunity Views)
+    // Pass orgId to viewer_company_org_id so the cron job knows to exclude it from Overview aggregations
     await pool.query(
       `
       INSERT INTO profile_views (viewer_id, profile_owner_id, profile_type, view_date, source, source_post_id, viewer_company_org_id, viewer_industry)
       VALUES ($1, $2, $3, CURRENT_DATE, $4, $5, $6, (SELECT job_title FROM users WHERE user_id = $1))
+      ON CONFLICT (viewer_id, profile_owner_id, profile_type, view_date) 
+      DO UPDATE SET 
+        source = COALESCE(EXCLUDED.source, profile_views.source),
+        source_post_id = COALESCE(EXCLUDED.source_post_id, profile_views.source_post_id),
+        viewer_company_org_id = COALESCE(EXCLUDED.viewer_company_org_id, profile_views.viewer_company_org_id)
       RETURNING view_id
       `,
-      [viewerId, profileOwnerId, profileType, finalSource, sourcePostId, null]
+      [viewerId, profileOwnerId, profileType, finalSource, sourcePostId, isOrgView ? orgId : null]
     );
 
   } catch (err) {

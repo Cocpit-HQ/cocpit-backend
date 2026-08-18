@@ -10,7 +10,8 @@ const resolveDateRange = (filter, startDate, endDate, userCreatedAt) => {
     const now = new Date();
     let start, end, previousStart, previousEnd;
 
-    end = now;
+    // Add a 5 minute buffer to the current time to account for clock skew between API and DB servers
+    end = dateFns.addMinutes(now, 5);
     previousEnd = null;
     previousStart = null;
 
