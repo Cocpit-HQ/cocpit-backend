@@ -750,8 +750,6 @@ exports.createPost = async (req, res) => {
     let isCommunityArticle = false;
     if (req.body.is_community_article !== undefined) {
         isCommunityArticle = req.body.is_community_article === true || req.body.is_community_article === 'true';
-    } else if (post_type === 'article' && companyId) {
-        isCommunityArticle = true;
     }
 
     status = status || ((post_type === "article" && isCommunityArticle) ? "draft" : "published");
@@ -1056,8 +1054,6 @@ exports.createPost = async (req, res) => {
         isCommunityArticle = false;
         if (req.body.is_community_article !== undefined) {
             isCommunityArticle = req.body.is_community_article === true || req.body.is_community_article === 'true';
-        } else if (post_type === 'article' && companyId) {
-            isCommunityArticle = true;
         }
 
         // 2. Insert Post
@@ -2619,7 +2615,8 @@ exports.addComment = async (req, res) => {
                      WHERE org_id = $1 AND created_by = $2`,
                     [postCompanyId, userId]
                 );
-                if (subscriptionCheck.rowCount === 0 && ownerCheck.rowCount === 0) {
+                const isCompanyCommentingOnOwnPost = companyId && (companyId === postCompanyId);
+                if (!isCompanyCommentingOnOwnPost && subscriptionCheck.rowCount === 0 && ownerCheck.rowCount === 0) {
                     return res.status(403).json({
                         message: "You must subscribe to the community to post thoughts"
                     });
