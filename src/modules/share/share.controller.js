@@ -474,11 +474,11 @@ exports.shareProfile = async (req, res) => {
                 conversationId = convRes.rows[0].conversation_id;
 
                 await client.query(
-                    `INSERT INTO conversation_participants(conversation_id, org_id) VALUES($1, $2)`,
+                    `INSERT INTO conversation_participants(conversation_id, org_id, last_read_at) VALUES($1, $2, NOW())`,
                     [conversationId, senderOrgId]
                 );
                 await client.query(
-                    `INSERT INTO conversation_participants(conversation_id, org_id) VALUES($1, $2)`,
+                    `INSERT INTO conversation_participants(conversation_id, org_id, last_read_at) VALUES($1, $2, NULL)`,
                     [conversationId, receiverId]
                 );
             }
@@ -502,11 +502,11 @@ exports.shareProfile = async (req, res) => {
                 conversationId = convRes.rows[0].conversation_id;
 
                 await client.query(
-                    `INSERT INTO conversation_participants(conversation_id, org_id) VALUES($1, $2)`,
+                    `INSERT INTO conversation_participants(conversation_id, org_id, last_read_at) VALUES($1, $2, NOW())`,
                     [conversationId, senderOrgId]
                 );
                 await client.query(
-                    `INSERT INTO conversation_participants(conversation_id, user_id) VALUES($1, $2)`,
+                    `INSERT INTO conversation_participants(conversation_id, user_id, last_read_at) VALUES($1, $2, NULL)`,
                     [conversationId, receiverId]
                 );
             }
@@ -530,11 +530,11 @@ exports.shareProfile = async (req, res) => {
                 conversationId = convRes.rows[0].conversation_id;
 
                 await client.query(
-                    `INSERT INTO conversation_participants(conversation_id, user_id) VALUES($1, $2)`,
+                    `INSERT INTO conversation_participants(conversation_id, user_id, last_read_at) VALUES($1, $2, NOW())`,
                     [conversationId, senderId]
                 );
                 await client.query(
-                    `INSERT INTO conversation_participants(conversation_id, org_id) VALUES($1, $2)`,
+                    `INSERT INTO conversation_participants(conversation_id, org_id, last_read_at) VALUES($1, $2, NULL)`,
                     [conversationId, receiverId]
                 );
             }
@@ -560,7 +560,7 @@ exports.shareProfile = async (req, res) => {
                 conversationId = convRes.rows[0].conversation_id;
 
                 await client.query(
-                    `INSERT INTO conversation_participants(conversation_id, user_id) VALUES($1, $2), ($1, $3)`,
+                    `INSERT INTO conversation_participants(conversation_id, user_id, last_read_at) VALUES($1, $2, NOW()), ($1, $3, NULL)`,
                     [conversationId, senderId, receiverId]
                 );
             }

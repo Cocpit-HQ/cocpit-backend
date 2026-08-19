@@ -617,6 +617,18 @@ exports.deactivateOrganization = async (req, res) => {
         });
 
         await client.query("COMMIT");
+
+        try {
+            const socketService = require("../../core/infrastructure/socket.service");
+            if (socketService && socketService.io) {
+                socketService.io.emit("ORGANIZATION_DEACTIVATED", { orgId });
+                socketService.io.emit("organization_deactivated", { orgId });
+                socketService.io.emit("org_status_changed", { orgId, status: "deactivated", action: "deactivated" });
+            }
+        } catch (sockErr) {
+            console.error("[deactivateOrganization] Socket emit error:", sockErr);
+        }
+
         res.json({ success: true, message: "Organization page deactivated successfully" });
     } catch (err) {
         await client.query("ROLLBACK");
@@ -825,9 +837,14 @@ exports.reactivateOrganization = async (req, res) => {
 
         await client.query("COMMIT");
 
-        // Broadcast real-time socket event to all organization members
+        // Broadcast real-time socket event to all connected sockets & organization members
         try {
             const socketService = require("../../core/infrastructure/socket.service");
+            if (socketService && socketService.io) {
+                socketService.io.emit("ORGANIZATION_REACTIVATED", { orgId });
+                socketService.io.emit("organization_reactivated", { orgId });
+                socketService.io.emit("org_status_changed", { orgId, status: "active", action: "reactivated" });
+            }
             const membersRes = await pool.query(`SELECT user_id FROM organization_members WHERE org_id = $1`, [orgId]);
             for (const m of membersRes.rows) {
                 socketService.notifyUser(m.user_id, 'org_status_changed', { orgId, status: 'active', action: 'reactivated' });

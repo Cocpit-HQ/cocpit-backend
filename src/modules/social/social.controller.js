@@ -2393,8 +2393,8 @@ WHERE gi.invitee_id = $1
         -- If I am User, sender is NOT me (User)
         ($2::uuid IS NULL AND (m.author_org_id IS NOT NULL OR m.sender_id != $1 OR m.sender_id IS NULL))
     )
-    AND (cp.last_read_at IS NULL OR m.created_at > cp.last_read_at)
-    AND m.created_at >= cp.joined_at
+    AND (cp.last_read_at IS NULL OR cp.last_read_at <= cp.joined_at OR m.created_at > cp.last_read_at)
+    AND m.created_at >= (cp.joined_at - INTERVAL '1 minute')
   GROUP BY m.conversation_id
   `, [userId, companyId]
         );
@@ -2405,24 +2405,27 @@ WHERE gi.invitee_id = $1
         }
 
 
-        const conversationsWithUnread = [...result.rows, ...pendingGroupInvitationRows].map(c => ({
-            ...c,
-            // Determine online status for direct (non-group) conversations
-            onlineStatus: (function () {
-                if (c.is_group) return 'offline'; // groups don't have a single status
-                if (c.is_blocked_by_me || c.is_blocked_by_other) return 'offline';
-                const otherId = c.other_user_id;
-                // Prioritize typing status
-                if (socketService.isUserTyping(otherId, c.conversation_id)) return 'typing';
-                // Then online
-                if (socketService.isUserOnline(otherId)) return 'online';
-                return 'offline';
-            })(),
-            is_requesting: c.is_requesting && (c.created_by === userId) ? false : c.is_requesting,
-            timeAgo: timeAgo(c.updated_at),
-            unread_count: unreadMap[c.conversation_id] || 0
-
-        })).sort((a, b) => {
+        const conversationsWithUnread = [...result.rows, ...pendingGroupInvitationRows].map(c => {
+            const calculatedUnread = unreadMap[c.conversation_id] || 0;
+            return {
+                ...c,
+                // Determine online status for direct (non-group) conversations
+                onlineStatus: (function () {
+                    if (c.is_group) return 'offline'; // groups don't have a single status
+                    if (c.is_blocked_by_me || c.is_blocked_by_other) return 'offline';
+                    const otherId = c.other_user_id;
+                    // Prioritize typing status
+                    if (socketService.isUserTyping(otherId, c.conversation_id)) return 'typing';
+                    // Then online
+                    if (socketService.isUserOnline(otherId)) return 'online';
+                    return 'offline';
+                })(),
+                is_requesting: c.is_requesting && (c.created_by === userId) ? false : c.is_requesting,
+                timeAgo: timeAgo(c.updated_at),
+                unread_count: calculatedUnread,
+                is_read: c.is_read !== undefined ? c.is_read : calculatedUnread === 0,
+            };
+        }).sort((a, b) => {
             const left = new Date(a.last_message_at || a.updated_at || 0).getTime();
             const right = new Date(b.last_message_at || b.updated_at || 0).getTime();
             return right - left;
@@ -2660,18 +2663,18 @@ exports.sendMessage = async (req, res) => {
 
                     // Sender company participant
                     await client.query(
-                        `INSERT INTO conversation_participants (conversation_id, org_id) VALUES ($1, $2)`,
+                        `INSERT INTO conversation_participants (conversation_id, org_id, last_read_at) VALUES ($1, $2, NOW())`,
                         [conversationId, authorCompanyId]
                     );
                     // Target participant (org_id if targetIsCompany, user_id if targetIsUser)
                     if (targetIsCompany) {
                         await client.query(
-                            `INSERT INTO conversation_participants (conversation_id, org_id) VALUES ($1, $2)`,
+                            `INSERT INTO conversation_participants (conversation_id, org_id, last_read_at) VALUES ($1, $2, NULL)`,
                             [conversationId, targetUserId]
                         );
                     } else {
                         await client.query(
-                            `INSERT INTO conversation_participants (conversation_id, user_id) VALUES ($1, $2)`,
+                            `INSERT INTO conversation_participants (conversation_id, user_id, last_read_at) VALUES ($1, $2, NULL)`,
                             [conversationId, targetUserId]
                         );
                     }
@@ -2698,12 +2701,12 @@ exports.sendMessage = async (req, res) => {
 
                     // Sender user participant
                     await client.query(
-                        `INSERT INTO conversation_participants (conversation_id, user_id) VALUES ($1, $2)`,
+                        `INSERT INTO conversation_participants (conversation_id, user_id, last_read_at) VALUES ($1, $2, NOW())`,
                         [conversationId, senderId]
                     );
                     // Target company participant
                     await client.query(
-                        `INSERT INTO conversation_participants (conversation_id, org_id) VALUES ($1, $2)`,
+                        `INSERT INTO conversation_participants (conversation_id, org_id, last_read_at) VALUES ($1, $2, NULL)`,
                         [conversationId, targetUserId]
                     );
                 }
@@ -2740,7 +2743,7 @@ exports.sendMessage = async (req, res) => {
                     isNewConversation = true;
 
                     await client.query(
-                        `INSERT INTO conversation_participants (conversation_id, user_id) VALUES ($1, $2), ($1, $3)`,
+                        `INSERT INTO conversation_participants (conversation_id, user_id, last_read_at) VALUES ($1, $2, NOW()), ($1, $3, NULL)`,
                         [conversationId, senderId, targetUserId]
                     );
                 }
