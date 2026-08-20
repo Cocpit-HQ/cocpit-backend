@@ -147,7 +147,8 @@ exports.searchUsers = async (req, res) => {
             COALESCE(u.tag_permission, 'everyone')::text AS tag_permission
           FROM active_users u
           LEFT JOIN profiles p ON u.user_id = p.user_id
-          WHERE (u.full_name ILIKE $2 OR u.account_name ILIKE $2)
+          WHERE u.is_deactivated = FALSE
+            AND (u.full_name ILIKE $2 OR u.account_name ILIKE $2)
             AND u.full_name IS NOT NULL AND TRIM(u.full_name) <> ''
             AND u.account_name IS NOT NULL AND TRIM(u.account_name) <> ''
           ${userAccountFilter}
@@ -229,7 +230,7 @@ exports.getUserProfile = async (req, res) => {
     // If not a UUID, try to resolve as account_name (case-insensitive)
     try {
       const resolveResult = await pool.query(
-        "SELECT user_id FROM active_users WHERE LOWER(account_name) = LOWER($1)",
+        "SELECT user_id FROM active_users WHERE LOWER(account_name) = LOWER($1) AND is_deactivated = FALSE",
         [id]
       );
       if (resolveResult.rowCount === 0) {
@@ -296,7 +297,7 @@ exports.getUserProfile = async (req, res) => {
        
       FROM active_users u
       LEFT JOIN profiles p ON u.user_id = p.user_id
-      WHERE u.user_id = $1
+      WHERE u.user_id = $1 AND u.is_deactivated = FALSE
     `;
     const userResult = await pool.query(userQuery, [targetUserId]);
 
@@ -573,7 +574,7 @@ exports.getPublicProfilePosts = async (req, res) => {
     // If not a UUID, try to resolve as account_name (case-insensitive)
     try {
       const resolveResult = await pool.query(
-        "SELECT user_id FROM active_users WHERE LOWER(account_name) = LOWER($1)",
+        "SELECT user_id FROM active_users WHERE LOWER(account_name) = LOWER($1) AND is_deactivated = FALSE",
         [userId]
       );
       if (resolveResult.rowCount === 0) {
@@ -962,7 +963,7 @@ exports.getPublicProfileCommentedPosts = async (req, res) => {
   if (!uuidRegex.test(userId)) {
     try {
       const resolveResult = await pool.query(
-        "SELECT user_id FROM active_users WHERE LOWER(account_name) = LOWER($1)",
+        "SELECT user_id FROM active_users WHERE LOWER(account_name) = LOWER($1) AND is_deactivated = FALSE",
         [userId]
       );
       if (resolveResult.rowCount === 0) {
@@ -1530,7 +1531,8 @@ exports.getSuggestedUsers = async (req, res) => {
         (SELECT COUNT(*) FROM followers WHERE following_id = u.user_id) + (SELECT COUNT(*) FROM organization_user_follows cf JOIN organizations c ON cf.org_id = c.org_id WHERE cf.user_id = u.user_id AND c.is_deleted = FALSE) as followers_count
       FROM active_users u
       LEFT JOIN profiles p ON u.user_id = p.user_id
-      WHERE u.full_name IS NOT NULL AND TRIM(u.full_name) <> ''
+      WHERE u.is_deactivated = FALSE
+      AND u.full_name IS NOT NULL AND TRIM(u.full_name) <> ''
       AND u.account_name IS NOT NULL AND TRIM(u.account_name) <> ''
       AND NOT EXISTS (
         SELECT 1 FROM followers WHERE follower_id = $1 AND following_id = u.user_id

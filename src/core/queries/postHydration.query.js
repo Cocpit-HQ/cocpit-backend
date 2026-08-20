@@ -48,18 +48,17 @@ const getPostHydrationSelect = (companyParamIdx, userParamIdx) => `
 
     COALESCE(
         (SELECT json_agg(json_build_object(
-            'id', COALESCE(u.user_id, o.org_id),
-            'full_name', COALESCE(u.full_name, o.name),
-            'account_name', COALESCE(u.account_name, o.slug),
-            'avatar_url', COALESCE(u.avatar_url, o.logo_url),
+            'id', COALESCE(u.user_id, o.org_id, pt.tagged_user_id),
+            'full_name', CASE WHEN u.is_deactivated = TRUE OR (u.user_id IS NULL AND o.org_id IS NULL) THEN 'Unknown User' ELSE COALESCE(u.full_name, o.name) END,
+            'account_name', CASE WHEN u.is_deactivated = TRUE OR (u.user_id IS NULL AND o.org_id IS NULL) THEN NULL ELSE COALESCE(u.account_name, o.slug) END,
+            'avatar_url', CASE WHEN u.is_deactivated = TRUE OR (u.user_id IS NULL AND o.org_id IS NULL) THEN NULL ELSE COALESCE(u.avatar_url, o.logo_url) END,
             'type', CASE WHEN o.org_id IS NOT NULL THEN 'company' ELSE 'user' END
-         ))
+         ) ORDER BY (CASE WHEN u.is_deactivated = TRUE OR (u.user_id IS NULL AND o.org_id IS NULL) THEN 1 ELSE 0 END) ASC)
          FROM post_tags pt 
          LEFT JOIN active_users u ON pt.tagged_user_id = u.user_id
          LEFT JOIN organizations o ON pt.tagged_user_id = o.org_id AND o.is_deleted = FALSE
          WHERE pt.post_id = p.post_id 
-           AND pt.is_active_tag = true
-           AND (u.user_id IS NOT NULL OR o.org_id IS NOT NULL)),
+           AND pt.is_active_tag = true),
         '[]'::json
     ) AS tags,
 
@@ -445,6 +444,7 @@ const getPublicFeedWhere = (userParamIdx, companyParamIdx = null) => `
     )
     AND (p.is_removed IS FALSE OR p.is_removed IS NULL)
     AND p.is_active = TRUE
+    AND (p.author_org_id IS NOT NULL OR u.is_deactivated = FALSE)
     AND (p.author_org_id IS NULL OR (comp.is_deleted = FALSE AND comp.is_deactivated = FALSE))
     AND p.is_community_article IS NOT TRUE
     ${companyParamIdx ? `
@@ -480,7 +480,10 @@ const getPublicFeedWhere = (userParamIdx, companyParamIdx = null) => `
     `}
     AND (
         p.shared_post_id IS NULL 
-        OR (sp.author_org_id IS NULL OR (sp_comp.is_deleted = FALSE AND sp_comp.is_deactivated = FALSE))
+        OR (
+            (sp.author_org_id IS NOT NULL OR sp_u.is_deactivated = FALSE)
+            AND (sp.author_org_id IS NULL OR (sp_comp.is_deleted = FALSE AND sp_comp.is_deactivated = FALSE))
+        )
     )
 
     -- Privacy Escalation: Hide reposts if original post's privacy tightened

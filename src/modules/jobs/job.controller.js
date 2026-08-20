@@ -177,7 +177,7 @@ exports.getAllJobs = async (req, res) => {
     const limitClause = `LIMIT $${paramCount}`;
     params.push(Number(limit));
 
-    const baseWhere = `j.is_active = TRUE AND j.status = 'ACTIVE' AND u.user_id IS NOT NULL AND (j.org_id IS NULL OR (c.is_deleted = FALSE AND c.is_deactivated = FALSE))`;
+    const baseWhere = `j.is_active = TRUE AND j.status = 'ACTIVE' AND u.user_id IS NOT NULL AND (j.org_id IS NOT NULL OR u.is_deactivated = FALSE) AND (j.org_id IS NULL OR (c.is_deleted = FALSE AND c.is_deactivated = FALSE))`;
     const whereClause = conditions.length > 0 ? `WHERE ${baseWhere} AND ${conditions.join(" AND ")}` : `WHERE ${baseWhere}`;
 
     const query = `
@@ -253,7 +253,7 @@ exports.getRecommendations = async (req, res) => {
       ${userId ? "LEFT JOIN job_saves js ON js.job_id = j.job_id AND js.user_id = $1" : ""}
       ${userId ? "LEFT JOIN job_applications ja ON ja.job_id = j.job_id AND ja.applicant_id = $1" : ""}
       ${userId ? "LEFT JOIN job_offers jo ON jo.job_id = j.job_id AND jo.user_id = $1" : ""}
-      WHERE j.is_active = TRUE AND j.status = 'ACTIVE' AND u.user_id IS NOT NULL AND (j.org_id IS NULL OR (c.is_deleted = FALSE AND c.is_deactivated = FALSE))
+      WHERE j.is_active = TRUE AND j.status = 'ACTIVE' AND u.user_id IS NOT NULL AND (j.org_id IS NOT NULL OR u.is_deactivated = FALSE) AND (j.org_id IS NULL OR (c.is_deleted = FALSE AND c.is_deactivated = FALSE))
       ${userId ? "AND j.recruiter_id != $1" : ""}
       ${userId ? "AND (ja.application_id IS NULL OR ja.current_status = 'Withdrawn')" : ""}
       ${userId ? "AND jo.offer_id IS NULL" : ""}
@@ -368,6 +368,7 @@ exports.getJobById = async (req, res) => {
       ${userId ? 'LEFT JOIN job_offers jo ON jo.job_id = j.job_id AND jo.user_id = $2' : ''}
       WHERE j.job_id = $1
       AND u.user_id IS NOT NULL 
+      AND (j.org_id IS NOT NULL OR u.is_deactivated = FALSE)
       AND (j.org_id IS NULL OR (c.is_deleted = FALSE AND c.is_deactivated = FALSE))
       `,
       userId ? [resolvedJobId, userId] : [resolvedJobId]
@@ -953,8 +954,8 @@ exports.applyJob = async (req, res) => {
   let { full_name, email, phone, mobile_number, cover_note } = body;
 
   // Sanitize user-generated content
-  cover_note = sanitizeContent(cover_note);
-  const contactPhone = phone || mobile_number;
+  cover_note = sanitizeContent(cover_note) || null;
+  const contactPhone = phone || mobile_number || null;
 
   const client = await pool.connect();
   try {
@@ -1414,7 +1415,7 @@ exports.getMySavedJobs = async (req, res) => {
       LEFT JOIN organizations c ON j.org_id = c.org_id
       LEFT JOIN job_applications ja ON ja.job_id = j.job_id AND ja.applicant_id = $1
       LEFT JOIN job_offers jo ON jo.job_id = j.job_id AND jo.user_id = $1
-      WHERE js.user_id = $1 AND j.is_active = TRUE AND u.user_id IS NOT NULL AND (j.org_id IS NULL OR (c.is_deleted = FALSE AND c.is_deactivated = FALSE))
+      WHERE js.user_id = $1 AND j.is_active = TRUE AND u.user_id IS NOT NULL AND (j.org_id IS NOT NULL OR u.is_deactivated = FALSE) AND (j.org_id IS NULL OR (c.is_deleted = FALSE AND c.is_deactivated = FALSE))
         AND NOT EXISTS (
           SELECT 1 FROM blocks b
           WHERE (j.org_id IS NOT NULL AND ((b.blocker_id = $1 AND b.blocked_id = j.org_id) OR (b.blocker_id = j.org_id AND b.blocked_id = $1)))

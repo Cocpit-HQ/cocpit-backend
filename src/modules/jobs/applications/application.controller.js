@@ -273,6 +273,7 @@ exports.getApplicationDetail = async (req, res) => {
       email:         detail.email,
       phone:         detail.phone || null,
       avatarUrl:     detail.avatarUrl || null,
+      isDeactivated: detail.isDeactivated || false,
       headline:      detail.headline || '',
       location:      detail.location || '',
       about:         detail.about || null,
