@@ -197,7 +197,7 @@ const processAnalyticsAggregations = async () => {
                     SELECT 
                         entity_id::uuid as p_id,
                         DATE(created_at) as agg_date,
-                        0 as imps, 0 as lks, 0 as cmts, COUNT(DISTINCT sender_id) as shrs, 0 as svs
+                        0 as imps, 0 as lks, 0 as cmts, COUNT(1) as shrs, 0 as svs
                     FROM shares
                     WHERE entity_type = 'post' 
                       AND entity_id ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
@@ -210,7 +210,7 @@ const processAnalyticsAggregations = async () => {
                     SELECT 
                         shared_post_id as p_id,
                         DATE(created_at) as agg_date,
-                        0 as imps, 0 as lks, 0 as cmts, COUNT(DISTINCT author_id) as shrs, 0 as svs
+                        0 as imps, 0 as lks, 0 as cmts, COUNT(1) as shrs, 0 as svs
                     FROM posts
                     WHERE shared_post_id IS NOT NULL 
                       AND DATE(created_at) = DATE(${dateStr})

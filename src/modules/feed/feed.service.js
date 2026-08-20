@@ -235,8 +235,11 @@ async function _hydrateFeedItems(items, userId, pool, orgActorId = null) {
 
     const { rows } = await pool.query(query, params);
     
+    const { hydrateShareCounts } = require('../../utils/shareHydration');
+    const hydratedRows = await hydrateShareCounts(rows);
+
     const rowMap = new Map();
-    for (const row of rows) {
+    for (const row of hydratedRows) {
       rowMap.set(row.post_id, row);
     }
 

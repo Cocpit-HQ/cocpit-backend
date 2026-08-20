@@ -1370,9 +1370,20 @@ exports.getUserReports = async (req, res) => {
         const limit = parseInt(req.query.limit) || 20;
         const offset = (page - 1) * limit;
 
+        const actorOrgId = req.actor?.type === "ORGANIZATION" ? req.actor.orgId : (req.headers["x-actor-id"] || req.query.companyId || null);
+        const isOrgActor = !!actorOrgId;
+
+        let whereClause = "WHERE r.reporter_id = $1 AND r.reporter_org_id IS NULL";
+        let queryParams = [userId];
+
+        if (isOrgActor) {
+            whereClause = "WHERE r.reporter_org_id = $1";
+            queryParams = [actorOrgId];
+        }
+
         const countRes = await pool.query(
-            'SELECT COUNT(*) FROM reports WHERE reporter_id = $1',
-            [userId]
+            `SELECT COUNT(*) FROM reports r ${whereClause}`,
+            queryParams
         );
         const total = parseInt(countRes.rows[0].count);
 
@@ -1402,10 +1413,10 @@ exports.getUserReports = async (req, res) => {
             LEFT JOIN post_comments pc  ON r.target_type IN ('COMMENT', 'THOUGHT') AND r.target_id = pc.comment_id
             LEFT JOIN users cu          ON pc.author_id = cu.user_id
             LEFT JOIN organizations o   ON r.target_type = 'COMPANY' AND r.target_id = o.org_id
-            WHERE r.reporter_id = $1
+            ${whereClause}
             ORDER BY r.created_at DESC
             LIMIT $2 OFFSET $3`,
-            [userId, limit, offset]
+            [...queryParams, limit, offset]
         );
 
         const reports = result.rows.map((row) => ({

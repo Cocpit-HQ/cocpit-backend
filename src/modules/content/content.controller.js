@@ -91,6 +91,7 @@ const broadcastChannelArticlePublished = async (orgId, article) => {
 };
 
 const { getPostHydrationSelect, getPostHydrationJoins, getPublicFeedWhere } = require("../../core/queries/postHydration.query.js");
+const { hydrateShareCounts } = require("../../utils/shareHydration");
 
 // --- Feed / Posts ---
 exports.getPublicFeed = async (req, res) => {
@@ -194,6 +195,7 @@ exports.getPublicFeed = async (req, res) => {
 
         const last = rows[rows.length - 1];
 
+        finalRows = await hydrateShareCounts(finalRows);
         res.json({
             posts: finalRows.map(post => {
                 // If it's not an article or poll, completely remove the title key
@@ -370,6 +372,7 @@ exports.getMyPosts = async (req, res) => {
 
         const last = rows[rows.length - 1];
 
+        finalRows = await hydrateShareCounts(finalRows);
         res.json({
             posts: finalRows.map(post => {
                 // If it's not an article or poll, completely remove the title key
@@ -498,8 +501,9 @@ exports.getMyCommentedPosts = async (req, res) => {
         const { rows } = await pool.query(query, params);
         const last = rows[rows.length - 1];
 
+        const hydratedRows = await hydrateShareCounts(rows);
         res.json({
-            posts: rows,
+            posts: hydratedRows,
             nextCursor: last ? { cursorCreatedAt: last.created_at, cursorPostId: last.post_id } : null,
         });
     } catch (err) {
@@ -595,8 +599,9 @@ exports.getMyPrivatePosts = async (req, res) => {
         const { rows } = await pool.query(query, params);
         const last = rows[rows.length - 1];
 
+        const hydratedRows = await hydrateShareCounts(rows);
         res.json({
-            posts: rows,
+            posts: hydratedRows,
             nextCursor: last ? { cursorCreatedAt: last.created_at, cursorPostId: last.post_id } : null,
         });
     } catch (err) {
@@ -964,6 +969,7 @@ exports.createPost = async (req, res) => {
 
                     // Category-level RBAC check
                     const categoryPermissionMap = {
+                        'Professional': 'CREATE_CONTENT',
                         'Announcement': 'POST_ANNOUNCEMENT',
                         'Academic': 'CREATE_ACADEMIC_CONTENT',
                         'Research': 'CREATE_ACADEMIC_CONTENT',
@@ -1341,7 +1347,8 @@ exports.getPostById = async (req, res) => {
     (SELECT COUNT(*) FROM active_post_comments pc WHERE pc.post_id = p.post_id)::int AS comment_count,
 
     -- Share Count
-    ((SELECT COUNT(DISTINCT sp_share.author_id) FROM posts sp_share WHERE sp_share.shared_post_id = p.post_id AND sp_share.is_active = TRUE AND (sp_share.is_removed IS FALSE OR sp_share.is_removed IS NULL)) + (SELECT COUNT(DISTINCT s_share.sender_id) FROM shares s_share WHERE s_share.entity_id = p.post_id::text AND s_share.entity_type = 'post'))::int AS share_count,
+    (SELECT COUNT(*) FROM posts sp_share WHERE sp_share.shared_post_id = p.post_id AND sp_share.is_active = TRUE AND (sp_share.is_removed IS FALSE OR sp_share.is_removed IS NULL))::int AS share_count,
+    0::int AS external_share_count,
 
     -- Is Liked (Identity Aware)
     EXISTS(
@@ -1535,6 +1542,7 @@ exports.getPostById = async (req, res) => {
                 'like_count', (SELECT COUNT(*) FROM active_post_likes pl WHERE pl.post_id = sp.post_id)::int,
                 'comment_count', (SELECT COUNT(*) FROM active_post_comments pc WHERE pc.post_id = sp.post_id)::int,
                 'share_count', (SELECT COUNT(*) FROM posts sp_share2 WHERE sp_share2.shared_post_id = sp.post_id AND sp_share2.is_active = TRUE AND (sp_share2.is_removed IS FALSE OR sp_share2.is_removed IS NULL))::int,
+                'external_share_count', 0::int,
                 'is_liked', EXISTS(
                     SELECT 1 FROM active_post_likes pl 
                     WHERE pl.post_id = sp.post_id 
@@ -1767,11 +1775,14 @@ WHERE p.post_id = $1 AND p.is_active = TRUE AND (p.is_removed IS FALSE OR p.is_r
             }
         }
 
+        const hydratedArray = await hydrateShareCounts([post]);
+        const finalPost = hydratedArray[0];
+
         const mappedPost = {
-            ...post,
-            id: post.post_id,
-            channelId: post.author_org_id,
-            created_by_user_id: post.author_id,
+            ...finalPost,
+            id: finalPost.post_id,
+            channelId: finalPost.author_org_id,
+            created_by_user_id: finalPost.author_id,
             coverImage: (post.media && post.media.length > 0) ? post.media[0].url : null,
             publishedAt: post.created_at,
             updatedAt: post.updated_at

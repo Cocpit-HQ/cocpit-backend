@@ -1636,19 +1636,26 @@ ON CONFLICT (code) DO NOTHING;
 CREATE TABLE IF NOT EXISTS reports (
   id BIGSERIAL PRIMARY KEY,
   reporter_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+  reporter_org_id UUID REFERENCES organizations(org_id) ON DELETE CASCADE,
   target_type VARCHAR(20) NOT NULL, -- 'POST', 'USER', 'COMMENT', 'COMPANY'
   target_id UUID NOT NULL, -- Target entity ID (Post, User, etc.)
   reason_id INT REFERENCES report_reasons(id) ON DELETE SET NULL,
   custom_reason TEXT NULL,
-  created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
-
-  -- Unique constraint: preventing same user from reporting same target twice
-  UNIQUE (reporter_id, target_type, target_id)
+  created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
 
 -- Index for admin moderation (Phase 2)
 CREATE INDEX IF NOT EXISTS idx_reports_target ON reports(target_type, target_id);
 CREATE INDEX IF NOT EXISTS idx_reports_reporter ON reports(reporter_id);
+
+-- Unique indexes: preventing same user/org from reporting same target twice
+CREATE UNIQUE INDEX IF NOT EXISTS reports_unique_user 
+ON reports (reporter_id, target_type, target_id) 
+WHERE reporter_org_id IS NULL;
+
+CREATE UNIQUE INDEX IF NOT EXISTS reports_unique_org 
+ON reports (reporter_id, target_type, target_id, reporter_org_id) 
+WHERE reporter_org_id IS NOT NULL;
 
 -- ---------------------------------------------------------
 -- Missing tables (blocks, post_impressions)

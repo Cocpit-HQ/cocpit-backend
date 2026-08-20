@@ -12,6 +12,7 @@
  */
 
 const pool = require("../../core/db/pool");
+const redisClient = require("../../core/db/redis");
 const socketService = require("../../core/infrastructure/socket.service");
 const { resolveEntity, generateEntityUrl } = require("./entityResolver");
 const { validateShareRules } = require("./shareRules");
@@ -29,6 +30,9 @@ async function trackShare(senderId, receiverId, entityType, entityId, shareMetho
              VALUES ($1, $2, $3, $4, $5)`,
             [senderId, receiverId || null, entityType, entityId, shareMethod]
         );
+        if (entityType === 'post' && redisClient.isOpen) {
+            await redisClient.incr(`post:${entityId}:share_count`);
+        }
     } catch (err) {
         console.warn("[ShareTracking] Failed to track share event:", err.message);
     }

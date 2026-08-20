@@ -33,6 +33,7 @@ const proxy = new Proxy(masterRedis, {
                 'zRangeWithScores': 'zrange',
                 'zAdd': 'zadd',
                 'zRem': 'zrem',
+                'mGet': 'mget',
             };
             if (camelToSnake[prop]) {
                 actualProp = camelToSnake[prop];

@@ -1,4 +1,5 @@
 const pool = require("../../core/db/pool");
+const { hydrateShareCounts } = require("../../utils/shareHydration");
 const BlockModel = require("../../models/block.model");
 const { checkOrgPermission } = require("../../core/utils/rbac");
 const { checkActorBlockStatus } = require("../../core/utils/blockCheck");
@@ -171,7 +172,8 @@ exports.getOrganizationPosts = async (req, res) => {
             COALESCE(pm.media, '[]'::json) AS media,
             COALESCE(lc.like_count, 0)::int AS like_count,
             COALESCE(cc.comment_count, 0)::int AS comment_count,
-            ((SELECT COUNT(DISTINCT sp_share.author_id) FROM posts sp_share WHERE sp_share.shared_post_id = p.post_id AND sp_share.is_active = TRUE AND (sp_share.is_removed IS FALSE OR sp_share.is_removed IS NULL)) + (SELECT COUNT(DISTINCT s_share.sender_id) FROM shares s_share WHERE s_share.entity_id = p.post_id::text AND s_share.entity_type = 'post'))::int AS share_count,
+            (SELECT COUNT(*) FROM posts sp_share WHERE sp_share.shared_post_id = p.post_id AND sp_share.is_active = TRUE AND (sp_share.is_removed IS FALSE OR sp_share.is_removed IS NULL))::int AS share_count,
+            0::int AS external_share_count,
             (
                 SELECT COALESCE(comp_like.slug, u_like.account_name)
                 FROM active_post_likes pl_sample
@@ -253,6 +255,7 @@ exports.getOrganizationPosts = async (req, res) => {
                         'like_count', (SELECT COUNT(*) FROM active_post_likes pl WHERE pl.post_id = sp.post_id)::int,
                         'comment_count', (SELECT COUNT(*) FROM active_post_comments pc WHERE pc.post_id = sp.post_id)::int,
                         'share_count', (SELECT COUNT(*) FROM posts sp_share2 WHERE sp_share2.shared_post_id = sp.post_id AND sp_share2.is_active = TRUE AND (sp_share2.is_removed IS FALSE OR sp_share2.is_removed IS NULL))::int,
+                        'external_share_count', 0::int,
                         'is_liked', EXISTS(
                             SELECT 1 FROM active_post_likes pl WHERE pl.post_id = sp.post_id AND (
                                 ($${orgActorParamIdx}::uuid IS NOT NULL AND pl.org_id = $${orgActorParamIdx}::uuid) OR ($${orgActorParamIdx}::uuid IS NULL AND pl.user_id = $${userParamIdx} AND pl.org_id IS NULL)
@@ -364,8 +367,10 @@ exports.getOrganizationPosts = async (req, res) => {
         const { rows } = await pool.query(query, params);
         const last = rows[rows.length - 1];
 
+        const hydratedRows = await hydrateShareCounts(rows);
+
         res.json({
-            posts: rows,
+            posts: hydratedRows,
             nextCursor: last ? { cursorCreatedAt: last.created_at, cursorPostId: last.post_id } : null
         });
 

@@ -26,7 +26,7 @@ const { validateShareRules } = require("./shareRules");
  * }
  */
 exports.share = async (req, res) => {
-    const senderId = req.user.sub || req.user.user_id;
+    const senderId = req.user.sub || req.user.user_id || req.user.userId;
     const { entityType, entityId, shareMethod, targetId, targetType, message, senderCompanyId } = req.body;
 
     // Validation
@@ -682,6 +682,7 @@ exports.shareProfile = async (req, res) => {
 exports.sharePostToConversations = async (req, res) => {
     const pool = require("../../core/db/pool");
     const socketService = require("../../core/infrastructure/socket.service");
+    const shareService = require("./share.service");
 
     const senderId = req.user.sub || req.user.user_id;
     const { postId, targetUserIds, message } = req.body;
@@ -749,6 +750,10 @@ exports.sharePostToConversations = async (req, res) => {
             );
 
             await client.query(`UPDATE conversations SET updated_at = now() WHERE conversation_id = $1`, [conversationId]);
+            
+            // Track the share in Redis and DB
+            shareService.trackShare(senderId, targetUserId, 'post', postId, 'message');
+            
             results.push({ targetUserId, conversationId, messageData: { ...msgRes.rows[0], shared_post: sharedPostData } });
         }
 
