@@ -1,6 +1,6 @@
 const pool = require("../../core/db/pool");
 const dateFns = require("date-fns");
-const { resolveDateRange, calculateTrend, generateDateRange } = require("./analytics.helpers");
+const { resolveDateRange, calculateTrend, generateDateRange, formatIndustryName } = require("./analytics.helpers");
 const { calculateFullProfileScore } = require("../profile/profile.calculator");
 const profileRepository = require("../profile/profile.repository"); // Needed for profile calculator
 
@@ -34,8 +34,22 @@ const getOverviewData = async (userId, { filter, startDate, endDate }) => {
 
     const currConnReqs = await getCount(`SELECT COUNT(1) as count FROM connection_requests WHERE receiver_id = $1 AND created_at >= $2 AND created_at <= $3`, [userId, start, end]);
     const currFollowers = await getCount(`SELECT COUNT(1) as count FROM followers WHERE following_id = $1 AND created_at >= $2 AND created_at <= $3`, [userId, start, end]);
+    const oppOffersQuery = `
+        SELECT COUNT(1) as count 
+        FROM job_offers jo
+        WHERE jo.user_id = $1 
+          AND jo.created_at >= $2 
+          AND jo.created_at <= $3
+          AND NOT EXISTS (
+              SELECT 1 FROM profile_views pv 
+              WHERE pv.profile_owner_id = jo.user_id 
+                AND pv.viewer_id = jo.sent_by 
+                AND pv.source = 'job_application_dashboard'
+                AND pv.view_date = DATE(jo.created_at)
+          )
+    `;
     const currOppViewsViewsOnly = await getCount(`SELECT COUNT(1) as count FROM profile_views WHERE profile_owner_id = $1 AND source = 'job_application_dashboard' AND view_date >= DATE($2) AND view_date <= DATE($3)`, [userId, start, end]);
-    const currOppViewsOffers = await getCount(`SELECT COUNT(1) as count FROM job_offers WHERE user_id = $1 AND created_at >= $2 AND created_at <= $3`, [userId, start, end]);
+    const currOppViewsOffers = await getCount(oppOffersQuery, [userId, start, end]);
     const currOppViews = currOppViewsViewsOnly + currOppViewsOffers;
     
     // Resumes (Need user's resume IDs)
@@ -60,7 +74,7 @@ const getOverviewData = async (userId, { filter, startDate, endDate }) => {
         prevConnReqs = await getCount(`SELECT COUNT(1) as count FROM connection_requests WHERE receiver_id = $1 AND created_at >= $2 AND created_at <= $3`, [userId, previousStart, previousEnd]);
         prevFollowers = await getCount(`SELECT COUNT(1) as count FROM followers WHERE following_id = $1 AND created_at >= $2 AND created_at <= $3`, [userId, previousStart, previousEnd]);
         const prevOppViewsViewsOnly = await getCount(`SELECT COUNT(1) as count FROM profile_views WHERE profile_owner_id = $1 AND source = 'job_application_dashboard' AND view_date >= DATE($2) AND view_date <= DATE($3)`, [userId, previousStart, previousEnd]);
-        const prevOppViewsOffers = await getCount(`SELECT COUNT(1) as count FROM job_offers WHERE user_id = $1 AND created_at >= $2 AND created_at <= $3`, [userId, previousStart, previousEnd]);
+        const prevOppViewsOffers = await getCount(oppOffersQuery, [userId, previousStart, previousEnd]);
         prevOppViews = prevOppViewsViewsOnly + prevOppViewsOffers;
         
         if (resumeIds.length > 0) {
@@ -137,18 +151,34 @@ const getOverviewData = async (userId, { filter, startDate, endDate }) => {
     // 6. Chart Tip
     let tip = null;
     if (peakDate && maxViews > 0) {
-        // Check for post 24-48h prior
-        const tipStart = dateFns.subHours(peakDate, 48);
-        const tipEnd = dateFns.subHours(peakDate, 24);
+        const peakStart = peakDate;
+        const peakEnd = rangeDays > 31 ? dateFns.addDays(peakDate, 6) : peakDate;
+        const tipEnd = dateFns.addDays(peakEnd, 1);
         
-        const recentPost = await pool.query(`
-            SELECT created_at FROM posts 
-            WHERE author_id = $1 AND created_at >= $2 AND created_at <= $3
+        let recentPost = await pool.query(`
+            SELECT p.post_id, p.created_at, COUNT(1) as visit_count
+            FROM posts p
+            JOIN profile_views pv ON p.post_id = pv.source_post_id
+            WHERE p.author_id = $1 AND p.created_at < $2
+              AND pv.view_date >= DATE($3) AND pv.view_date <= DATE($4)
+            GROUP BY p.post_id, p.created_at
+            ORDER BY visit_count DESC, p.created_at DESC
             LIMIT 1
-        `, [userId, tipStart, tipEnd]);
+        `, [userId, tipEnd, peakStart, peakEnd]);
+
+        if (recentPost.rowCount === 0) {
+            const fallbackStart = dateFns.subDays(peakDate, 3);
+            recentPost = await pool.query(`
+                SELECT post_id, created_at FROM posts 
+                WHERE author_id = $1 AND created_at >= $2 AND created_at < $3
+                ORDER BY created_at DESC
+                LIMIT 1
+            `, [userId, fallbackStart, tipEnd]);
+        }
 
         if (recentPost.rowCount > 0) {
-            const dayOfWeek = dateFns.format(recentPost.rows[0].created_at, 'EEEE');
+            const post = recentPost.rows[0];
+            const dayOfWeek = dateFns.format(post.created_at, 'EEEE');
             tip = `Your activity peaked after ${dayOfWeek}'s post.`;
         }
     }
@@ -375,7 +405,7 @@ const getAudienceData = async (userId, { filter, startDate, endDate }) => {
     `, [userId, start, end]);
 
     const audienceIndustries = industriesRes.rows.map(r => ({
-        name: r.name,
+        name: formatIndustryName(r.name),
         value: Number(((parseInt(r.cnt, 10) / totalViewers) * 100).toFixed(1))
     }));
 
@@ -439,8 +469,22 @@ const getOpportunitiesData = async (userId, { filter, startDate, endDate }) => {
 
     // 2. Opportunity Activity (Dashboard Views + Offers)
     const getOppActivity = async (s, e) => {
+        const oppOffersQuery = `
+            SELECT COUNT(1) as count 
+            FROM job_offers jo
+            WHERE jo.user_id = $1 
+              AND jo.created_at >= $2 
+              AND jo.created_at <= $3
+              AND NOT EXISTS (
+                  SELECT 1 FROM profile_views pv 
+                  WHERE pv.profile_owner_id = jo.user_id 
+                    AND pv.viewer_id = jo.sent_by 
+                    AND pv.source = 'job_application_dashboard'
+                    AND pv.view_date = DATE(jo.created_at)
+              )
+        `;
         const pvCount = await getCount(`SELECT COUNT(1) as count FROM profile_views WHERE profile_owner_id = $1 AND source = 'job_application_dashboard' AND view_date >= DATE($2) AND view_date <= DATE($3)`, [userId, s, e]);
-        const offersCount = await getCount(`SELECT COUNT(1) as count FROM job_offers WHERE user_id = $1 AND created_at >= $2 AND created_at <= $3`, [userId, s, e]);
+        const offersCount = await getCount(oppOffersQuery, [userId, s, e]);
         return pvCount + offersCount;
     };
 
@@ -523,7 +567,7 @@ const getOpportunitiesData = async (userId, { filter, startDate, endDate }) => {
 
     const topOrganizations = topOrgsRes.rows.map(r => ({
         name: r.name,
-        industry: r.industry,
+        industry: formatIndustryName(r.industry),
         visits: `${r.visits_count} visits`,
         role: r.role || 'Recruiter',
         icon: r.icon || '/images/analytics/organization1.png'
@@ -555,7 +599,7 @@ const getOpportunitiesData = async (userId, { filter, startDate, endDate }) => {
     orgIndRes.rows.forEach(r => { totalOrgVisits += parseInt(r.visits_count, 10); });
     
     const organizationIndustries = orgIndRes.rows.map(r => ({
-        name: r.name,
+        name: formatIndustryName(r.name),
         value: Number(((parseInt(r.visits_count, 10) / (totalOrgVisits || 1)) * 100).toFixed(1))
     }));
 
@@ -627,7 +671,8 @@ const getContentData = async (userId, { filter, startDate, endDate, sort }) => {
     // 3. Top Performing Posts
     // Base SQL query
     let sortColumn = 'engagement_score DESC';
-    if (sort === 'most_viewed') sortColumn = 'views DESC';
+    if (sort === 'most_recent') sortColumn = 'p.created_at DESC';
+    else if (sort === 'most_viewed') sortColumn = 'views DESC';
     else if (sort === 'most_liked') sortColumn = 'likes DESC';
     else if (sort === 'most_shared') sortColumn = 'shares DESC';
 
@@ -645,13 +690,13 @@ const getContentData = async (userId, { filter, startDate, endDate, sort }) => {
         WHERE p.author_id = $1
         GROUP BY p.post_id, p.title, p.content, p.post_type, p.created_at
         ORDER BY ${sortColumn}, p.created_at DESC
-        LIMIT 5
     `, [userId, start, end]);
 
     const topPosts = topPostsRes.rows.map(p => {
         let title = p.title;
         if (!title) {
-            title = p.content ? (p.content.length > 50 ? p.content.substring(0, 50) + '...' : p.content) : 'Untitled Post';
+            let plainTextContent = p.content ? p.content.replace(/<[^>]*>?/gm, '').trim() : '';
+            title = plainTextContent ? (plainTextContent.length > 50 ? plainTextContent.substring(0, 50) + '...' : plainTextContent) : 'No caption';
         }
 
         let fallbackIcon = 'lucide:type';
@@ -679,7 +724,7 @@ const getContentData = async (userId, { filter, startDate, endDate, sort }) => {
     };
 };
 
-const recordResumeEvent = async (viewerId, targetUserId, eventType, ipAddress) => {
+const recordResumeEvent = async (viewerId, targetUserId, eventType, ipAddress, viewerOrgId = null) => {
     // Prevent self-views from counting towards analytics (optional, but good practice)
     // if (viewerId === targetUserId) {
     //     return;
@@ -697,11 +742,43 @@ const recordResumeEvent = async (viewerId, targetUserId, eventType, ipAddress) =
 
     const resumeId = resumeRes.rows[0].resume_id;
 
-    // 2. Insert the event
+    // 2. Check for duplicate event within 24 hours
+    let recentEventQuery = `
+        SELECT 1 FROM resume_view_events 
+        WHERE resume_id = $1 AND event_type = $2 AND created_at >= NOW() - INTERVAL '24 HOURS'
+    `;
+    const queryParams = [resumeId, eventType];
+
+    if (viewerId) {
+        queryParams.push(viewerId);
+        recentEventQuery += ` AND viewer_id = $${queryParams.length}`;
+    } else if (ipAddress) {
+        queryParams.push(ipAddress);
+        recentEventQuery += ` AND viewer_id IS NULL AND ip_address = $${queryParams.length}`;
+    } else {
+        recentEventQuery = null;
+    }
+
+    if (recentEventQuery) {
+        if (viewerOrgId) {
+            queryParams.push(viewerOrgId);
+            recentEventQuery += ` AND viewer_company_org_id = $${queryParams.length}`;
+        } else {
+            recentEventQuery += ` AND viewer_company_org_id IS NULL`;
+        }
+
+        const recentEventRes = await pool.query(recentEventQuery, queryParams);
+        if (recentEventRes.rowCount > 0) {
+            // Duplicate event within 24 hours, do not record again
+            return;
+        }
+    }
+
+    // 3. Insert the event
     await pool.query(
-        `INSERT INTO resume_view_events (resume_id, viewer_id, event_type, ip_address) 
-         VALUES ($1, $2, $3, $4)`,
-        [resumeId, viewerId || null, eventType, ipAddress || null]
+        `INSERT INTO resume_view_events (resume_id, viewer_id, event_type, ip_address, viewer_company_org_id) 
+         VALUES ($1, $2, $3, $4, $5)`,
+        [resumeId, viewerId || null, eventType, ipAddress || null, viewerOrgId || null]
     );
 };
 

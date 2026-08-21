@@ -127,6 +127,7 @@ exports.followUser = async (req, res) => {
             return res.status(200).json({ message: "Already following" });
         }
 
+
         // 2. Check for Reverse Follow (Is followingId already following followerId?)
         const reverseFollow = await client.query(
             "SELECT 1 FROM followers WHERE follower_id = $1 AND following_id = $2",
@@ -375,6 +376,7 @@ exports.followCompany = async (req, res) => {
             await client.query('ROLLBACK');
             return res.status(200).json({ message: "Already following" });
         }
+
 
         // Auto-create notification preferences (all categories ON by default)
         await client.query(

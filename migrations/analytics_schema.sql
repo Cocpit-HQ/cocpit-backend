@@ -6,6 +6,7 @@ CREATE TABLE IF NOT EXISTS resume_view_events (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     resume_id UUID REFERENCES user_resumes(resume_id) ON DELETE CASCADE,
     viewer_id UUID REFERENCES users(user_id) ON DELETE SET NULL,
+    viewer_company_org_id UUID,
     event_type VARCHAR(20) CHECK (event_type IN ('view', 'download')),
     ip_address INET,
     created_at TIMESTAMPTZ DEFAULT NOW()
@@ -86,6 +87,11 @@ BEGIN
     
     IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'user_resumes' AND column_name = 'download_count') THEN
         ALTER TABLE user_resumes ADD COLUMN download_count INT DEFAULT 0;
+    END IF;
+
+    -- resume_view_events
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'resume_view_events' AND column_name = 'viewer_company_org_id') THEN
+        ALTER TABLE resume_view_events ADD COLUMN viewer_company_org_id UUID;
     END IF;
 
     -- followers

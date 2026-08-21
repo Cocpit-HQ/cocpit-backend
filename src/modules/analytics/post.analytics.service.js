@@ -1,6 +1,6 @@
 const pool = require("../../core/db/pool");
 const dateFns = require("date-fns");
-const { resolveDateRange, generateDateRange, formatNumber, calculateTrend } = require("./analytics.helpers");
+const { resolveDateRange, generateDateRange, formatNumber, calculateTrend, formatIndustryName } = require("./analytics.helpers");
 
 const getPostAnalyticsData = async (postId, userId, { filter, startDate, endDate }) => {
     // 1. Resolve Dates
@@ -20,9 +20,10 @@ const getPostAnalyticsData = async (postId, userId, { filter, startDate, endDate
     if (postRes.rowCount === 0) throw new Error("Post not found");
     const p = postRes.rows[0];
 
+    let plainTextContent = p.content ? p.content.replace(/<[^>]*>?/gm, '').trim() : '';
     let title = p.title;
     if (!title) {
-        title = p.content ? (p.content.length > 50 ? p.content.substring(0, 50) + '...' : p.content) : 'Untitled Post';
+        title = plainTextContent ? plainTextContent : 'No caption';
     }
 
     let fallbackIcon = 'lucide:type';
@@ -35,7 +36,7 @@ const getPostAnalyticsData = async (postId, userId, { filter, startDate, endDate
         title,
         type: p.post_type ? p.post_type.charAt(0).toUpperCase() + p.post_type.slice(1).toLowerCase() + ' post' : 'Post',
         publishedAt: dateFns.format(new Date(p.created_at), 'MMM dd yyyy').toLowerCase(),
-        contentSnippet: p.content ? (p.content.length > 80 ? p.content.substring(0, 80) + '...' : p.content) : '',
+        contentSnippet: plainTextContent ? (plainTextContent.length > 80 ? plainTextContent.substring(0, 80) + '...' : plainTextContent) : '',
         mediaUrl: p.media_url || null,
         fallbackIcon: p.media_url ? null : fallbackIcon
     };
@@ -130,7 +131,7 @@ const getPostAnalyticsData = async (postId, userId, { filter, startDate, endDate
     `, [postId, start, end]);
     const organizationViews = await getDirectImpactCount(`
         SELECT COUNT(1) as count FROM (
-            SELECT DISTINCT DATE(view_date), COALESCE(viewer_id::text, impression_id::text)
+            SELECT DISTINCT DATE(view_date), COALESCE(viewer_org_id::text, viewer_id::text, impression_id::text)
             FROM post_impressions 
             WHERE post_id = $1 AND viewer_org_id IS NOT NULL AND view_date >= DATE($2) AND view_date <= DATE($3)
         ) sub
@@ -161,7 +162,7 @@ const getPostAnalyticsData = async (postId, userId, { filter, startDate, endDate
 
     const allOrgViewsRes = await getDirectImpactCount(`
         SELECT COUNT(1) as count FROM (
-            SELECT DISTINCT DATE(pi.view_date), COALESCE(pi.viewer_id::text, pi.impression_id::text)
+            SELECT DISTINCT DATE(pi.view_date), COALESCE(pi.viewer_org_id::text, pi.viewer_id::text, pi.impression_id::text)
             FROM post_impressions pi
             JOIN posts p ON p.post_id = pi.post_id 
             WHERE p.author_id = $1 AND pi.viewer_org_id IS NOT NULL AND pi.view_date >= DATE($2) AND pi.view_date <= DATE($3)
@@ -233,7 +234,7 @@ const getPostAnalyticsData = async (postId, userId, { filter, startDate, endDate
     const audienceDemographics = {
         cities: formatDemo(citiesRes),
         countries: formatDemo(countriesRes),
-        industries: formatDemo(industriesRes.rows)
+        industries: formatDemo(industriesRes.rows.map(r => ({ ...r, name: formatIndustryName(r.name) })))
     };
 
     return {
@@ -241,7 +242,11 @@ const getPostAnalyticsData = async (postId, userId, { filter, startDate, endDate
         performance,
         reachChart: {
             labels: chartLabels,
-            datasets: [{ label: "Impressions", data: chartData }]
+            datasets: [{ label: "Impressions", data: chartData }],
+            dateRangeStr: {
+                start: dateFns.format(start, 'dd MMM yyyy').toUpperCase(),
+                end: dateFns.format(end, 'dd MMM yyyy').toUpperCase()
+            }
         },
         directImpact,
         audienceDemographics

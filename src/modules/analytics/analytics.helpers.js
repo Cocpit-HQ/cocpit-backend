@@ -83,9 +83,27 @@ const generateDateRange = (start, end) => {
     return dates;
 };
 
+/**
+ * Formats industry names to expected camel/Pascal case (e.g. information_technology -> InformationTechnology)
+ */
+const formatIndustryName = (name) => {
+    if (!name || name === 'Other') return name;
+    return name
+        .split(/[_\s]+/)
+        .map(word => {
+            if (word.toLowerCase() === 'saas') return 'SaaS';
+            if (word.toLowerCase() === 'ui') return 'UI';
+            if (word.toLowerCase() === 'ux') return 'UX';
+            if (word.toLowerCase() === 'it') return 'IT';
+            return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
+        })
+        .join(' ');
+};
+
 module.exports = {
     resolveDateRange,
     calculateTrend,
     formatNumber,
-    generateDateRange
+    generateDateRange,
+    formatIndustryName
 };

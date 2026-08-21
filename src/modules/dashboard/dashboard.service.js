@@ -126,7 +126,11 @@ const addProfileView = async (viewerId, profileOwnerIdentifier, profileType, opt
       DO UPDATE SET 
         source = COALESCE(EXCLUDED.source, profile_views.source),
         source_post_id = COALESCE(EXCLUDED.source_post_id, profile_views.source_post_id),
-        viewer_company_org_id = COALESCE(EXCLUDED.viewer_company_org_id, profile_views.viewer_company_org_id)
+        viewer_company_org_id = CASE 
+          WHEN EXCLUDED.viewer_company_org_id IS NULL OR profile_views.viewer_company_org_id IS NULL 
+          THEN NULL   
+          ELSE EXCLUDED.viewer_company_org_id 
+        END
       RETURNING view_id
       `,
       [viewerId, profileOwnerId, profileType, finalSource, sourcePostId, isOrgView ? orgId : null]

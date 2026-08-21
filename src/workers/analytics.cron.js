@@ -164,7 +164,7 @@ const processAnalyticsAggregations = async () => {
                     SELECT 
                         post_id as p_id,
                         DATE(view_date) as agg_date,
-                        COUNT(DISTINCT COALESCE(viewer_id::text, impression_id::text)) as imps, 0 as lks, 0 as cmts, 0 as shrs, 0 as svs
+                        COUNT(DISTINCT COALESCE(viewer_org_id::text, viewer_id::text, impression_id::text)) as imps, 0 as lks, 0 as cmts, 0 as shrs, 0 as svs
                     FROM post_impressions
                     WHERE DATE(view_date) = DATE(${dateStr})
                     GROUP BY post_id, DATE(view_date)

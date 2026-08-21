@@ -190,7 +190,7 @@ exports.searchUsers = async (req, res) => {
       result.rows.forEach(profile => {
         // Map COMPANY to organization for schema compatibility
         const profileType = profile.type === 'COMPANY' ? 'organization' : 'user';
-        dashboardService.addSearchAppearance(currentUserId, profile.id, profileType)
+        dashboardService.addSearchAppearance(blockerId, profile.id, profileType)
           .catch(err => console.error("Error recording search appearance:", err));
       });
     }

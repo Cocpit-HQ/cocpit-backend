@@ -71,7 +71,7 @@ exports.getContent = async (req, res, next) => {
 exports.recordResumeEvent = async (req, res, next) => {
     try {
         const viewerId = req.user?.sub || req.user?.id || req.user?.user_id;
-        const { targetUserId, eventType } = req.body;
+        const { targetUserId, eventType, orgId } = req.body;
         
         if (!targetUserId || !eventType) {
             return res.status(400).json({ status: 'error', message: 'targetUserId and eventType are required' });
@@ -84,7 +84,7 @@ exports.recordResumeEvent = async (req, res, next) => {
         // Pass ip_address if needed, but not strictly required
         const ipAddress = req.ip || req.connection.remoteAddress;
         
-        await analyticsService.recordResumeEvent(viewerId, targetUserId, eventType, ipAddress);
+        await analyticsService.recordResumeEvent(viewerId, targetUserId, eventType, ipAddress, orgId);
         
         res.status(200).json({ status: 'success', message: 'Event recorded' });
     } catch (err) {
