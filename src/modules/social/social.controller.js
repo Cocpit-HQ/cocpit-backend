@@ -2059,6 +2059,7 @@ SELECT
     -- Other ID (User or Company)
     COALESCE(u.user_id, comp.org_id) AS other_user_id,
     CASE 
+        WHEN c.is_group THEN COALESCE(cp.left_group_headline, c.group_headline, '')
         WHEN (
             EXISTS (
                 SELECT 1 FROM blocks b 
@@ -3797,8 +3798,13 @@ exports.getMessages = async (req, res) => {
                     OR
                     ($6::uuid IS NULL AND cp.user_id = $4)
                 )
-                AND m.created_at >= cp.joined_at
-                AND (cp.left_at IS NULL OR m.created_at <= cp.left_at)
+                AND (
+                    m.action_type = 'create_group'
+                    OR (
+                        m.created_at >= cp.joined_at
+                        AND (cp.left_at IS NULL OR m.created_at <= cp.left_at)
+                    )
+                )
              ))
              -- Filter out messages created before this participant deleted/cleared the chat
              AND NOT EXISTS (

@@ -474,6 +474,8 @@ exports.declineChatRequest = async (req, res) => {
 exports.searchUsersForMessaging = async (req, res) => {
     try {
         const userId = req.user.sub || req.user.user_id;
+        const isOrgActor = req.actor?.type === "ORGANIZATION";
+        const actorId = isOrgActor && req.actor?.orgId ? req.actor.orgId : userId;
         const { q, cursor, limit: limitParam } = req.query;
 
         // --- Input sanitization ---
@@ -498,15 +500,16 @@ exports.searchUsersForMessaging = async (req, res) => {
 
         // --- Build query parameters ---
         // $1 = current userId (always)
-        // $2 = likeTerm (only when searchTerm present)
+        // $2 = actorId (always)
+        // $3 = likeTerm (only when searchTerm present)
         // remaining = cursor params if present
-        const values = [userId];
+        const values = [userId, actorId];
         let likeTermIdx = null;
         let nameFilter = "";
 
         if (searchTerm) {
             values.push(`%${searchTerm}%`);
-            likeTermIdx = values.length; // $2
+            likeTermIdx = values.length; // $3
             nameFilter = `AND (u.full_name ILIKE $${likeTermIdx} OR u.account_name ILIKE $${likeTermIdx})`;
         }
 
@@ -555,6 +558,8 @@ exports.searchUsersForMessaging = async (req, res) => {
                         END AS priority
                     FROM users u
                     WHERE u.user_id != $1
+                      AND COALESCE(u.is_deactivated, false) = FALSE
+                      AND u.deletion_execute_at IS NULL
                       AND u.full_name IS NOT NULL AND TRIM(u.full_name) <> ''
                       AND u.account_name IS NOT NULL AND TRIM(u.account_name) <> ''
                     ${nameFilter}
@@ -562,6 +567,8 @@ exports.searchUsersForMessaging = async (req, res) => {
                         SELECT 1 FROM blocks b
                         WHERE (b.blocker_id = $1 AND b.blocked_id = u.user_id)
                            OR (b.blocker_id = u.user_id AND b.blocked_id = $1)
+                           OR (b.blocker_id = $2 AND b.blocked_id = u.user_id)
+                           OR (b.blocker_id = u.user_id AND b.blocked_id = $2)
                     )
                 ) AS unsorted_results
                 ORDER BY user_id, priority ASC

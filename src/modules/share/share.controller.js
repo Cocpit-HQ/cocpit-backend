@@ -998,12 +998,15 @@ exports.getShareUsers = async (req, res) => {
                           AND cp2.user_id = u.user_id
                           AND conv.is_group = FALSE
                           AND conv.is_active = TRUE
+                          AND conv.is_requesting = FALSE
                           AND cp1.left_at IS NULL
                           AND cp2.left_at IS NULL
                         ORDER BY conv.last_message_at DESC NULLS LAST
                         LIMIT 1
                     ) chat ON TRUE
                     WHERE u.user_id != $1
+                      AND COALESCE(u.is_deactivated, false) = FALSE
+                      AND u.deletion_execute_at IS NULL
                       AND u.full_name IS NOT NULL AND TRIM(u.full_name) <> ''
                       AND u.account_name IS NOT NULL AND TRIM(u.account_name) <> ''
                       ${userNameFilter}
@@ -1011,6 +1014,16 @@ exports.getShareUsers = async (req, res) => {
                           SELECT 1 FROM blocks b
                           WHERE (b.blocker_id = $1 AND b.blocked_id = u.user_id)
                              OR (b.blocker_id = u.user_id AND b.blocked_id = $1)
+                      )
+                      AND NOT EXISTS (
+                          SELECT 1 FROM conversations req_conv
+                          JOIN conversation_participants cp_r1 ON req_conv.conversation_id = cp_r1.conversation_id
+                          JOIN conversation_participants cp_r2 ON req_conv.conversation_id = cp_r2.conversation_id
+                          WHERE cp_r1.user_id = $1
+                            AND cp_r2.user_id = u.user_id
+                            AND req_conv.is_group = FALSE
+                            AND req_conv.is_active = TRUE
+                            AND req_conv.is_requesting = TRUE
                       )
 
                     UNION ALL
@@ -1043,12 +1056,14 @@ exports.getShareUsers = async (req, res) => {
                           AND cp2.org_id = org.org_id
                           AND conv.is_group = FALSE
                           AND conv.is_active = TRUE
+                          AND conv.is_requesting = FALSE
                           AND cp1.left_at IS NULL
                           AND cp2.left_at IS NULL
                         ORDER BY conv.last_message_at DESC NULLS LAST
                         LIMIT 1
                     ) org_chat ON TRUE
                     WHERE org.is_deleted = FALSE
+                      AND COALESCE(org.is_deactivated, false) = FALSE
                       AND org.name IS NOT NULL AND TRIM(org.name) <> ''
                       ${orgNameFilter}
                       AND NOT EXISTS (
@@ -1075,6 +1090,7 @@ exports.getShareUsers = async (req, res) => {
                     JOIN conversation_participants cp ON conv.conversation_id = cp.conversation_id
                     WHERE conv.is_group = TRUE
                       AND conv.is_active = TRUE
+                      AND conv.is_requesting = FALSE
                       AND cp.user_id = $1
                       AND cp.left_at IS NULL
                       ${groupNameFilter}
