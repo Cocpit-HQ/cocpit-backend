@@ -12,7 +12,6 @@ async function hydrateShareCounts(posts) {
     if (!posts || posts.length === 0) return posts;
 
     try {
-        console.log(`[ShareHydration] Hydrating ${posts.length} posts`);
         const postIds = [];
         // Extract all post IDs (main posts and shared posts)
         posts.forEach(p => {
@@ -33,7 +32,6 @@ async function hydrateShareCounts(posts) {
         if (redisClient.isOpen) {
             const keys = uniquePostIds.map(id => `post:${id}:share_count`);
             const redisResults = await redisClient.mGet(keys);
-            console.log(`[ShareHydration] mGet results for ${keys.length} keys:`, redisResults);
             
             uniquePostIds.forEach((id, index) => {
                 const val = redisResults[index];
