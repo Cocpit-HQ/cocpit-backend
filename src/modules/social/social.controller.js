@@ -2467,7 +2467,6 @@ exports.deleteConversation = async (req, res) => {
                  JOIN conversation_participants cp
                    ON cp.conversation_id = c.conversation_id
                  WHERE c.conversation_id = $1
-                   AND c.is_active = TRUE
                    AND cp.left_at IS NULL
                    AND (
                        ($3::uuid IS NOT NULL AND cp.org_id = $3)
