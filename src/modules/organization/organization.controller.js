@@ -859,6 +859,12 @@ exports.verifyOTPAndDeleteOrganization = async (req, res) => {
         // Broadcast real-time socket event `org_deleted` and `org_status_changed`
         try {
             const socketService = require("../../core/infrastructure/socket.service");
+            if (socketService && socketService.io) {
+                socketService.io.emit("ORGANIZATION_DEACTIVATED", { orgId });
+                socketService.io.emit("organization_deactivated", { orgId });
+                socketService.io.emit("org_deleted", { orgId });
+                socketService.io.emit("org_status_changed", { orgId, status: "deleted", action: "deleted" });
+            }
             socketService.notifyOrg(orgId, 'org_deleted', { orgId, deletedBy: userId });
             const membersRes = await pool.query(`SELECT user_id FROM organization_members WHERE org_id = $1`, [orgId]);
             for (const m of membersRes.rows) {

@@ -2074,6 +2074,7 @@ SELECT
                   )
             )
         ) THEN 'User unavailable'
+        WHEN (raw_u.deletion_execute_at IS NOT NULL) THEN 'This user is no longer available'
         WHEN raw_u.is_deactivated THEN 'This user has gone offline - for a while.' 
         ELSE u.display_headline 
     END AS other_user_headline,
@@ -2090,6 +2091,8 @@ SELECT
                   )
             )
         ) THEN 'User unavailable'
+        WHEN (raw_comp.is_deleted = TRUE OR raw_comp.deletion_execute_at IS NOT NULL) THEN 'This page is no longer available'
+        WHEN raw_comp.is_deactivated THEN 'This page has gone offline - for a while.'
         ELSE COALESCE(comp.headline, '') 
     END AS org_headline,
     CASE WHEN comp.org_id IS NOT NULL THEN 'COMPANY' ELSE 'USER' END as other_user_type,
