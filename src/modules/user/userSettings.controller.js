@@ -636,8 +636,13 @@ exports.deactivateAccount = async (req, res) => {
  */
 exports.getActivityLogs = async (req, res) => {
     try {
-        const actorOrgId = req.actor?.type === "ORGANIZATION" ? req.actor.orgId : (req.headers["x-actor-id"] || req.query.companyId || null);
-        const isOrgActor = !!actorOrgId;
+        // For personal activity, only treat as org actor when explicitly requested via headers
+        // (NOT from cookie). The activeActor cookie is always sent with requests, so using
+        // req.actor.type here would return org data even on the personal settings page.
+        const explicitActorType = req.headers["x-actor-type"];
+        const explicitActorId = req.headers["x-actor-id"] || req.query.companyId || null;
+        const isOrgActor = explicitActorType === "ORGANIZATION" && !!explicitActorId;
+        const actorOrgId = isOrgActor ? explicitActorId : null;
         const targetId = isOrgActor ? actorOrgId : req.user.sub;
         const { type } = req.query;
 
