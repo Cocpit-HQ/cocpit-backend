@@ -1281,6 +1281,15 @@ exports.deleteAccount = async (req, res) => {
       ).catch((err) => console.error("[deleteAccount] Socket disconnect failed:", err));
     }
 
+    // Broadcast user deletion socket events to invalidate real-time chat and post caches for other clients
+    if (socketService?.io) {
+      socketService.io.emit('user_deleted', { userId });
+      socketService.io.emit('USER_DELETED', { userId });
+      socketService.io.emit('user_deactivated', { userId });
+      socketService.io.emit('USER_DEACTIVATED', { userId });
+      socketService.io.emit('account_state_changed', { userId, type: 'user', action: 'deleted' });
+    }
+
     // 9. Send recovery email to recovery_email and/or primary email (non-blocking)
     const recipientEmails = Array.from(
       new Set([user.recovery_email, user.email].filter((e) => Boolean(e) && typeof e === "string" && e.trim() !== ""))
@@ -1389,6 +1398,13 @@ exports.restoreAccount = async (req, res) => {
     );
 
     await client.query("COMMIT");
+
+    // Broadcast user reactivation socket events
+    if (socketService?.io) {
+      socketService.io.emit('user_reactivated', { userId: tokenRow.user_id });
+      socketService.io.emit('USER_REACTIVATED', { userId: tokenRow.user_id });
+      socketService.io.emit('account_state_changed', { userId: tokenRow.user_id, type: 'user', action: 'restored' });
+    }
 
     return res.status(200).json({ message: "Your account has been restored. You can now log in." });
   } catch (err) {

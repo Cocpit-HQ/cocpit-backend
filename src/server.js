@@ -10,7 +10,7 @@ const { processJobExpirations } = require("./workers/jobExpiryWorker");
 const { processEventOutbox } = require("./workers/eventOutboxWorker");
 const { processStoryExpirations } = require("./workers/storyExpiryWorker");
 const { sweepActivityLogs, runDailyDecay } = require("./workers/intentEngine");
-const { startFeedWorker }              = require("./workers/feedWorker");
+const { startFeedWorker } = require("./workers/feedWorker");
 const { processAnalyticsAggregations } = require("./workers/analytics.cron");
 const server = http.createServer(app);
 
@@ -52,8 +52,8 @@ setInterval(() => {
 }, 24 * 60 * 60 * 1000);
 
 // Analytics Aggregation Cron — runs every 10 seconds
-const ANALYTICS_CRON_INTERVAL = 60 * 60 * 1000; // 1 hour
-// const ANALYTICS_CRON_INTERVAL = 10 * 1000; // 10 seconds
+// const ANALYTICS_CRON_INTERVAL = 60 * 60 * 1000; // 1 hour
+const ANALYTICS_CRON_INTERVAL = 10 * 1000; // 10 seconds
 
 processAnalyticsAggregations(); // run once immediately on startup
 setInterval(() => {

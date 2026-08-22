@@ -497,7 +497,14 @@ exports.deleteAccount = async (req, res) => {
 
         res.clearCookie("refreshToken");
 
-        res.clearCookie("refreshToken");
+        // Broadcast user deletion socket events to invalidate real-time chat and post caches for other clients
+        if (SocketService && SocketService.io) {
+            SocketService.io.emit('user_deleted', { userId });
+            SocketService.io.emit('USER_DELETED', { userId });
+            SocketService.io.emit('user_deactivated', { userId });
+            SocketService.io.emit('USER_DEACTIVATED', { userId });
+            SocketService.io.emit('account_state_changed', { userId, type: 'user', action: 'deleted' });
+        }
 
         if (userObj) {
             const recipientEmails = Array.from(

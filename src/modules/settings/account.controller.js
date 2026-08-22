@@ -692,6 +692,15 @@ exports.initiateAccountDeletion = async (req, res) => {
             socketService.disconnectUserSession(userId, sid).catch(console.error);
         }
 
+        // Broadcast user deletion socket events to invalidate real-time chat and post caches for other clients
+        if (socketService?.io) {
+            socketService.io.emit('user_deleted', { userId });
+            socketService.io.emit('USER_DELETED', { userId });
+            socketService.io.emit('user_deactivated', { userId });
+            socketService.io.emit('USER_DEACTIVATED', { userId });
+            socketService.io.emit('account_state_changed', { userId, type: 'user', action: 'deleted' });
+        }
+
         // Send restoration email
         const userFetch = await pool.query("SELECT email, recovery_email, full_name FROM users WHERE user_id = $1", [userId]);
         if (userFetch.rowCount > 0) {
