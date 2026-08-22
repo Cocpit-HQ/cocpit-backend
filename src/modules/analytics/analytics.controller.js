@@ -84,13 +84,14 @@ exports.recordResumeEvent = async (req, res, next) => {
         // Pass ip_address if needed, but not strictly required
         const ipAddress = req.ip || req.connection.remoteAddress;
         
-        await analyticsService.recordResumeEvent(viewerId, targetUserId, eventType, ipAddress, orgId);
+        const recorded = await analyticsService.recordResumeEvent(viewerId, targetUserId, eventType, ipAddress, orgId);
+        
+        if (!recorded) {
+            return res.status(200).json({ status: 'success', message: 'No resume found, event ignored' });
+        }
         
         res.status(200).json({ status: 'success', message: 'Event recorded' });
     } catch (err) {
-        if (err.message === "Resume not found") {
-            return res.status(404).json({ status: 'error', message: err.message });
-        }
         next(err);
     }
 };

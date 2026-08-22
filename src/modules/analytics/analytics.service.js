@@ -644,7 +644,7 @@ const getContentData = async (userId, { filter, startDate, endDate, sort }) => {
         FROM posts p 
         LEFT JOIN post_analytics_daily pad ON p.post_id = pad.post_id 
           AND pad.date >= DATE($2) AND pad.date <= DATE($3)
-        WHERE p.author_id = $1
+        WHERE p.author_id = $1 AND p.is_active = TRUE AND (p.is_removed IS FALSE OR p.is_removed IS NULL)
         GROUP BY p.post_type
     `, [userId, start, end]);
 
@@ -687,7 +687,7 @@ const getContentData = async (userId, { filter, startDate, endDate, sort }) => {
         FROM posts p
         LEFT JOIN post_analytics_daily pad ON p.post_id = pad.post_id
           AND pad.date >= DATE($2) AND pad.date <= DATE($3)
-        WHERE p.author_id = $1
+        WHERE p.author_id = $1 AND p.is_active = TRUE AND (p.is_removed IS FALSE OR p.is_removed IS NULL)
         GROUP BY p.post_id, p.title, p.content, p.post_type, p.created_at
         ORDER BY ${sortColumn}, p.created_at DESC
     `, [userId, start, end]);
@@ -725,10 +725,10 @@ const getContentData = async (userId, { filter, startDate, endDate, sort }) => {
 };
 
 const recordResumeEvent = async (viewerId, targetUserId, eventType, ipAddress, viewerOrgId = null) => {
-    // Prevent self-views from counting towards analytics (optional, but good practice)
-    // if (viewerId === targetUserId) {
-    //     return;
-    // }
+    // Prevent self-views from counting towards analytics
+    if (viewerId === targetUserId) {
+        return false;
+    }
 
     // 1. Get the target user's latest resume
     const resumeRes = await pool.query(
@@ -737,7 +737,7 @@ const recordResumeEvent = async (viewerId, targetUserId, eventType, ipAddress, v
     );
 
     if (resumeRes.rowCount === 0) {
-        throw new Error("Resume not found");
+        return false;
     }
 
     const resumeId = resumeRes.rows[0].resume_id;
@@ -780,6 +780,7 @@ const recordResumeEvent = async (viewerId, targetUserId, eventType, ipAddress, v
          VALUES ($1, $2, $3, $4, $5)`,
         [resumeId, viewerId || null, eventType, ipAddress || null, viewerOrgId || null]
     );
+    return true;
 };
 
 module.exports = {

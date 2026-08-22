@@ -25,16 +25,31 @@ const { validateShareRules } = require("./shareRules");
  */
 async function trackShare(senderId, receiverId, entityType, entityId, shareMethod) {
     try {
-        await pool.query(
+        const result = await pool.query(
             `INSERT INTO shares (sender_id, receiver_id, entity_type, entity_id, share_method)
-             VALUES ($1, $2, $3, $4, $5)`,
+             SELECT $1::TEXT, $2::TEXT, $3::TEXT, $4::TEXT, $5::TEXT
+             WHERE NOT EXISTS (
+                 SELECT 1 FROM shares 
+                 WHERE sender_id = $1 
+                   AND receiver_id IS NOT DISTINCT FROM $2
+                   AND entity_type = $3 
+                   AND entity_id = $4 
+                   AND share_method = $5
+             )
+             RETURNING id`,
             [senderId, receiverId || null, entityType, entityId, shareMethod]
         );
-        if (entityType === 'post' && redisClient.isOpen) {
-            await redisClient.incr(`post:${entityId}:share_count`);
+        let tracked = false;
+        if (result.rowCount > 0) {
+            tracked = true;
+            if (entityType === 'post' && redisClient.isOpen) {
+                await redisClient.incr(`post:${entityId}:share_count`);
+            }
         }
+        return tracked;
     } catch (err) {
         console.warn("[ShareTracking] Failed to track share event:", err.message);
+        return false;
     }
 }
 
