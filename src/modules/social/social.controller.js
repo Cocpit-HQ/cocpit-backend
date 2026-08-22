@@ -2861,7 +2861,7 @@ exports.sendMessage = async (req, res) => {
 
                 try {
                     const shareService = require('../share/share.service');
-                    const tracked = await shareService.trackShare(senderId, targetUserId, 'post', shared_post_id, 'message');
+                    const tracked = await shareService.trackShare(authorCompanyId || senderId, targetUserId, 'post', shared_post_id, 'message');
                     newMessage.shareTracked = tracked;
                 } catch (err) {
                     console.warn("[ShareTracking] Failed to track share event in message:", err.message);

@@ -199,7 +199,7 @@ async function shareViaMessage(senderId, { entityType, entityId, targetId, targe
         client.release();
 
         // Non-blocking: track share event after releasing connection
-        trackShare(senderId, targetId, entityType, entityId, "message");
+        trackShare(senderOrgId || senderId, targetId, entityType, entityId, "message");
     }
 }
 
@@ -343,7 +343,7 @@ async function shareViaNotification(senderId, { entityType, entityId, targetId, 
         client.release();
 
         // Non-blocking: track share event after releasing connection
-        trackShare(senderId, targetId, entityType, entityId, "notification");
+        trackShare(senderOrgId || senderId, targetId, entityType, entityId, "notification");
     }
 }
 
@@ -352,11 +352,11 @@ async function shareViaNotification(senderId, { entityType, entityId, targetId, 
  *
  * No DB write. Generate URL and return.
  */
-async function shareViaCopyLink(senderId, { entityType, entityId }) {
+async function shareViaCopyLink(senderId, { entityType, entityId, senderOrgId }) {
     const url = generateEntityUrl(entityType, entityId);
 
     // Non-blocking: track copy_link share event
-    trackShare(senderId, null, entityType, entityId, "copy_link");
+    trackShare(senderOrgId || senderId, null, entityType, entityId, "copy_link");
 
     return {
         success: true,
