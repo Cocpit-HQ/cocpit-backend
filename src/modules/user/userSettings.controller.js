@@ -550,7 +550,7 @@ exports.deactivateAccount = async (req, res) => {
         const userObj = userFetch.rows[0];
         const isMatch = await comparePassword(password, userObj.password_hash);
         if (!isMatch) {
-            return res.status(401).json({ success: false, message: "Invalid password" });
+            return res.status(400).json({ success: false, message: "Invalid password" });
         }
 
         await client.query("BEGIN");

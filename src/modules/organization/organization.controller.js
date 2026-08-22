@@ -460,7 +460,7 @@ exports.deleteOrganization = async (req, res) => {
         const userRes = await client.query("SELECT password_hash FROM users WHERE user_id = $1", [userId]);
         const { comparePassword } = require("../../core/utils/password");
         const isValid = await comparePassword(password, userRes.rows[0].password_hash);
-        if (!isValid) throw new AppError("Invalid password", 401);
+        if (!isValid) throw new AppError("Invalid password", 400);
 
         const orgRes = await client.query("SELECT name FROM organizations WHERE org_id = $1", [orgId]);
         if (orgRes.rowCount === 0) throw new AppError("Organization not found", 404);

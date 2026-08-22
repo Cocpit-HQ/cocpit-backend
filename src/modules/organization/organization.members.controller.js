@@ -484,7 +484,7 @@ exports.transferOwnership = async (req, res) => {
         const userRes = await client.query("SELECT password_hash FROM users WHERE user_id = $1", [userId]);
         const { comparePassword } = require("../../core/utils/password");
         const isValid = await comparePassword(password, userRes.rows[0].password_hash);
-        if (!isValid) throw new AppError("Invalid password", 401);
+        if (!isValid) throw new AppError("Invalid password", 400);
 
         // 2. Transaction
         // Find or create the Admin role
