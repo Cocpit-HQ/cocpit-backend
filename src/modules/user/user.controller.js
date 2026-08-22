@@ -245,10 +245,68 @@ exports.getUserProfile = async (req, res) => {
 
   // --- Block Check Implementation ---
   if (targetUserId !== currentUserId) {
+    const activeActorId = req.actor?.type === "ORGANIZATION" && req.actor?.orgId
+      ? req.actor.orgId
+      : req.user?.sub;
 
-    const isBlocked = await checkActorBlockStatus(req, targetUserId);
-    if (isBlocked) {
+    // 1. Check if TARGET blocked the VIEWER (Blocked side - viewer strictly receives 404)
+    const blockedByTargetRes = await pool.query(
+      `SELECT 1 FROM blocks WHERE blocker_id = $1 AND blocked_id = $2`,
+      [targetUserId, activeActorId]
+    );
+    if (blockedByTargetRes.rowCount > 0) {
       return res.status(404).json({ message: "User not found" });
+    }
+
+    // 2. Check if VIEWER blocked the TARGET (Blocker side - viewer sees minimal blocked view)
+    const blockedByViewerRes = await pool.query(
+      `SELECT 1 FROM blocks WHERE blocker_id = $1 AND blocked_id = $2`,
+      [activeActorId, targetUserId]
+    );
+    if (blockedByViewerRes.rowCount > 0) {
+      const userRes = await pool.query(
+        `SELECT
+           u.user_id AS id,
+           u.account_name,
+           u.full_name AS name,
+           u.headline,
+           u.avatar_url AS avatar,
+           u.cover_image_url AS cover_image
+         FROM active_users u
+         WHERE u.user_id = $1 AND u.is_deactivated = FALSE`,
+        [targetUserId]
+      );
+      if (userRes.rowCount === 0) {
+        return res.status(404).json({ message: "User not found" });
+      }
+      const user = userRes.rows[0];
+      return res.status(200).json({
+        user: {
+          ...user,
+          about: "",
+          followers_count: 0,
+          following_count: 0,
+          connections_count: 0,
+          is_blocked_by_me: true,
+          is_following: false,
+          is_followed_by: false,
+          connection_request_status: null,
+          connection_request_id: null,
+          connection_request_sender: null,
+          open_to: null,
+          availability: null,
+          work_preference: null,
+          working_industry: null,
+          organization_roles: [],
+          company_roles: [],
+        },
+        experiences: [],
+        educations: [],
+        projects: [],
+        skills: [],
+        posts: [],
+        resume: null,
+      });
     }
   }
   // ----------------------------------
