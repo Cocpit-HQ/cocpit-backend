@@ -3387,6 +3387,8 @@ exports.getMessageSeenBy = async (req, res) => {
             JOIN conversation_participants cp ON m.conversation_id = cp.conversation_id AND mr.user_id = cp.user_id
             WHERE mr.message_id = $1
               AND cp.joined_at <= m.created_at
+              AND COALESCE(raw_u.is_deactivated, false) = FALSE
+              AND raw_u.deletion_execute_at IS NULL
             ORDER BY mr.read_at ASC
             `,
             [messageId]
@@ -3473,18 +3475,32 @@ exports.getMessages = async (req, res) => {
                 m.is_deleted_for_everyone,
                 m.deleted_at,
                 (SELECT COUNT(*)::int FROM conversation_participants cp 
+                 LEFT JOIN users u_p ON cp.user_id = u_p.user_id
+                 LEFT JOIN organizations o_p ON cp.org_id = o_p.org_id
                  WHERE cp.conversation_id = m.conversation_id 
                    AND cp.left_at IS NULL 
+                   AND cp.joined_at <= m.created_at
+                   AND (
+                       (cp.user_id IS NOT NULL AND (
+                           (COALESCE(u_p.is_deactivated, false) = FALSE AND u_p.deletion_execute_at IS NULL)
+                           OR (u_p.deactivated_at IS NOT NULL AND u_p.deactivated_at > m.created_at)
+                           OR (u_p.deletion_scheduled_at IS NOT NULL AND u_p.deletion_scheduled_at > m.created_at)
+                       ))
+                       OR
+                       (cp.org_id IS NOT NULL AND COALESCE(o_p.is_deactivated, false) = FALSE AND COALESCE(o_p.is_deleted, false) = FALSE)
+                   )
                    AND (m.sender_id IS NULL OR cp.user_id != m.sender_id)
+                   AND (m.author_org_id IS NULL OR cp.org_id != m.author_org_id)
                 ) AS active_member_count,
                  COALESCE(
-                     (SELECT COUNT(*)::int FROM message_reads mr 
-                      JOIN conversation_participants cp ON mr.user_id = cp.user_id
-                      WHERE mr.message_id = m.message_id 
-                        AND cp.conversation_id = m.conversation_id
-                        AND cp.left_at IS NULL
-                        AND cp.joined_at <= m.created_at
-                        AND (m.sender_id IS NULL OR cp.user_id != m.sender_id)
+                     (SELECT COUNT(DISTINCT cp_r.user_id)::int 
+                      FROM conversation_participants cp_r
+                      LEFT JOIN message_reads mr ON mr.message_id = m.message_id AND mr.user_id = cp_r.user_id
+                      WHERE cp_r.conversation_id = m.conversation_id
+                        AND cp_r.left_at IS NULL
+                        AND cp_r.joined_at <= m.created_at
+                        AND (m.sender_id IS NULL OR cp_r.user_id != m.sender_id)
+                        AND (mr.read_at IS NOT NULL OR cp_r.last_read_at >= m.created_at)
                      ), 0
                  ) AS seen_count,
                   CASE 

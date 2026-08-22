@@ -1397,6 +1397,17 @@ exports.restoreAccount = async (req, res) => {
       [tokenRow.id]
     );
 
+    // Reset unread count for group conversations by updating last_read_at to NOW()
+    await client.query(`
+      UPDATE conversation_participants cp
+      SET last_read_at = NOW()
+      FROM conversations c
+      WHERE cp.conversation_id = c.conversation_id
+        AND c.is_group = TRUE
+        AND cp.user_id = $1
+        AND cp.left_at IS NULL
+    `, [tokenRow.user_id]);
+
     await client.query("COMMIT");
 
     // Broadcast user reactivation socket events

@@ -256,13 +256,23 @@ const loginUser = async ({ email, password, userAgent, ipAddress }) => {
         };
     }
 
-    // 3.5 Auto-reactivate if deactivated & reset unread messages
+    // 3.5 Auto-reactivate if deactivated & reset group unread messages
     if (user.is_deactivated) {
         const pool = require("../../core/db/pool");
-        const deactivatedSince = user.deactivated_at || new Date(0);
         await pool.query(`UPDATE users SET is_deactivated = FALSE, deactivated_at = NULL WHERE user_id = $1`, [user.user_id]);
         await pool.query(`UPDATE organizations SET is_deactivated = FALSE, deactivated_at = NULL WHERE created_by = $1 AND is_deleted = FALSE`, [user.user_id]);
-        await pool.query(`DELETE FROM message_reads WHERE user_id = $1 AND read_at >= $2`, [user.user_id, deactivatedSince]);
+        
+        // Reset unread count for group conversations by updating last_read_at to NOW()
+        await pool.query(`
+            UPDATE conversation_participants cp
+            SET last_read_at = NOW()
+            FROM conversations c
+            WHERE cp.conversation_id = c.conversation_id
+              AND c.is_group = TRUE
+              AND cp.user_id = $1
+              AND cp.left_at IS NULL
+        `, [user.user_id]);
+
         if (socketService.io) {
             socketService.io.emit('user_reactivated', { userId: user.user_id });
             socketService.io.emit('USER_REACTIVATED', { userId: user.user_id });
@@ -481,13 +491,23 @@ const socialLogin = async ({ provider, idToken, accountType, fullName: clientFul
         };
     }
 
-    // ── Step 3.5: Auto-reactivate if deactivated & reset unread messages ──
+    // ── Step 3.5: Auto-reactivate if deactivated & reset group unread messages ──
     if (user.is_deactivated) {
         const pool = require("../../core/db/pool");
-        const deactivatedSince = user.deactivated_at || new Date(0);
         await pool.query(`UPDATE users SET is_deactivated = FALSE, deactivated_at = NULL WHERE user_id = $1`, [user.user_id]);
         await pool.query(`UPDATE organizations SET is_deactivated = FALSE, deactivated_at = NULL WHERE created_by = $1 AND is_deleted = FALSE`, [user.user_id]);
-        await pool.query(`DELETE FROM message_reads WHERE user_id = $1 AND read_at >= $2`, [user.user_id, deactivatedSince]);
+        
+        // Reset unread count for group conversations by updating last_read_at to NOW()
+        await pool.query(`
+            UPDATE conversation_participants cp
+            SET last_read_at = NOW()
+            FROM conversations c
+            WHERE cp.conversation_id = c.conversation_id
+              AND c.is_group = TRUE
+              AND cp.user_id = $1
+              AND cp.left_at IS NULL
+        `, [user.user_id]);
+
         if (socketService.io) {
             socketService.io.emit('user_reactivated', { userId: user.user_id });
             socketService.io.emit('USER_REACTIVATED', { userId: user.user_id });

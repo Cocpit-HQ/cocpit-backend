@@ -450,6 +450,8 @@ class GroupChatModel {
              FROM message_reads mr
              JOIN users u ON mr.user_id = u.user_id
              WHERE mr.message_id = $1
+               AND COALESCE(u.is_deactivated, false) = FALSE
+               AND u.deletion_execute_at IS NULL
              ORDER BY mr.read_at ASC`,
             [messageId]
         );
