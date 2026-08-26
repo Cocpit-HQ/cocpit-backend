@@ -45,7 +45,8 @@ const corsOptions = {
       origin.match(/^https:\/\/.*\.ngrok-free\.(app|dev)$/) ||
       origin.match(/^https:\/\/.*\.loca\.lt$/) ||
       origin === "https://frontend.cocpit.in" ||
-      origin === "https://staging.cocpit.in"
+      origin === "https://staging.cocpit.in" ||
+      origin === "https://uat.cocpit.in"
     ) {
       callback(null, true);
     } else if (process.env.ALLOWED_ORIGINS && process.env.ALLOWED_ORIGINS.includes(origin)) {

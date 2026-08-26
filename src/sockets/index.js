@@ -25,7 +25,8 @@ module.exports.initSocket = async (httpServer) => {
           origin.match(/^https:\/\/.*\.ngrok-free\.(app|dev)$/) ||
           origin.match(/^https:\/\/.*\.loca\.lt$/) ||
           origin === "https://frontend.cocpit.in" ||
-          origin === "https://staging.cocpit.in"
+          origin === "https://uat.cocpit.in" ||
+          origin === "https://staging.cocpit.in"  
       ) {
         callback(null, true);
       } else {
