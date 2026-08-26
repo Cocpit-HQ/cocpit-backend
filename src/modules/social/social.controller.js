@@ -2029,9 +2029,11 @@ SELECT
                   )
             )
         ) THEN CASE WHEN cp_other.org_id IS NOT NULL THEN 'Unknown Page' ELSE 'Unknown User' END
-        WHEN cp_other.org_id IS NOT NULL AND (comp.name = 'Deleted Page' OR comp.org_id IS NULL) THEN 'Unknown Page'
+        WHEN cp_other.org_id IS NOT NULL AND (comp.name = 'Deleted Page' OR comp.org_id IS NULL OR raw_comp.is_deleted = TRUE OR raw_comp.deletion_execute_at IS NOT NULL) THEN 'Unknown Page'
+        WHEN cp_other.org_id IS NOT NULL AND raw_comp.is_deactivated = TRUE THEN 'Unknown Page'
         WHEN comp.org_id IS NOT NULL THEN comp.name
-        WHEN raw_u.is_deactivated THEN 'Unknown User'
+        WHEN raw_u.deletion_execute_at IS NOT NULL OR raw_u.user_id IS NULL THEN 'Unknown User'
+        WHEN raw_u.is_deactivated = TRUE THEN 'Unknown User'
         WHEN u.display_name IS NULL AND comp.org_id IS NULL THEN COALESCE(c.conversation_name, 'Unknown User')
         ELSE u.display_name 
     END AS other_user_name,
@@ -2051,8 +2053,9 @@ SELECT
                   )
             )
         ) THEN NULL
-        WHEN cp_other.org_id IS NOT NULL AND (comp.logo_url IS NULL OR comp.name = 'Deleted Page') THEN NULL
+        WHEN cp_other.org_id IS NOT NULL AND (comp.logo_url IS NULL OR comp.name = 'Deleted Page' OR raw_comp.is_deleted = TRUE OR raw_comp.deletion_execute_at IS NOT NULL OR raw_comp.is_deactivated = TRUE) THEN NULL
         WHEN comp.org_id IS NOT NULL THEN comp.logo_url
+        WHEN raw_u.deletion_execute_at IS NOT NULL OR raw_u.user_id IS NULL OR raw_u.is_deactivated = TRUE THEN NULL
         WHEN COALESCE(u.display_avatar, raw_u.avatar_url) IS NULL AND comp.org_id IS NULL THEN NULL
         WHEN cp_other.org_id IS NOT NULL THEN NULL
         ELSE COALESCE(u.display_avatar, raw_u.avatar_url)
@@ -2105,14 +2108,20 @@ SELECT
     
     -- Flag for deleted users
     CASE 
-        WHEN c.is_group = FALSE AND u.user_id IS NULL AND comp.org_id IS NULL THEN true 
-        ELSE false 
+        WHEN c.is_group = TRUE THEN false
+        WHEN cp_other.org_id IS NOT NULL THEN 
+            CASE WHEN (raw_comp.org_id IS NULL OR raw_comp.is_deleted = TRUE OR raw_comp.deletion_execute_at IS NOT NULL) THEN true ELSE false END
+        ELSE 
+            CASE WHEN (raw_u.user_id IS NULL OR raw_u.deletion_execute_at IS NOT NULL) THEN true ELSE false END
     END AS is_deleted_user,
 
     -- Flag for deactivated users/orgs
     CASE 
-        WHEN cp_other.org_id IS NOT NULL THEN COALESCE(raw_comp.is_deactivated, false)
-        ELSE COALESCE(raw_u.is_deactivated, false)
+        WHEN c.is_group = TRUE THEN false
+        WHEN cp_other.org_id IS NOT NULL THEN 
+            CASE WHEN (raw_comp.org_id IS NOT NULL AND (raw_comp.is_deleted = FALSE OR raw_comp.is_deleted IS NULL) AND raw_comp.deletion_execute_at IS NULL AND raw_comp.is_deactivated = TRUE) THEN true ELSE false END
+        ELSE 
+            CASE WHEN (raw_u.user_id IS NOT NULL AND raw_u.deletion_execute_at IS NULL AND raw_u.is_deactivated = TRUE) THEN true ELSE false END
     END AS is_deactivated,
 
     -- Get the most recent message dynamically
@@ -2349,6 +2358,7 @@ SELECT
     FALSE AS is_muted,
     NULL::timestamptz AS muted_until,
     FALSE AS is_deleted_user,
+    FALSE AS is_deactivated,
     NULL::uuid AS last_message_id,
     COALESCE(inviter.full_name, 'A member') || ' invited you to join the group' AS last_message_text,
     COALESCE(gi.updated_at, gi.created_at, c.updated_at) AS last_message_at,
@@ -3047,6 +3057,7 @@ exports.sendMessage = async (req, res) => {
                 other_user_slug: senderSlug,
                 other_user_type: authorCompanyId ? 'COMPANY' : 'USER',
                 is_deleted_user: false,
+                is_deactivated: false,
                 unread_count: 1, // receiver always has at least 1 unread
             };
 
@@ -3062,6 +3073,7 @@ exports.sendMessage = async (req, res) => {
                 other_user_slug: targetSlug,
                 other_user_type: targetType,
                 is_deleted_user: false,
+                is_deactivated: false,
                 unread_count: 0, // sender has read their own message
             };
 

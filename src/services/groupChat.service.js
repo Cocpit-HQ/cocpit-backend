@@ -132,6 +132,7 @@ class GroupChatService {
             is_muted: false,
             muted_until: null,
             is_deleted_user: false,
+            is_deactivated: false,
             last_message_id: null,
             last_message_text: `${inviter.full_name || 'A member'} invited you to join the group`,
             last_message_at: invitation.updated_at || invitation.created_at || new Date().toISOString(),
