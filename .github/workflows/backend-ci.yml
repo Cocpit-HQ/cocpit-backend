@@ -1,15 +1,15 @@
 name: Deploy Backend
-
+ 
 on:
   push:
     branches:
       - main
       - develop
-
+ 
 jobs:
   deploy:
     runs-on: self-hosted
-
+ 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -17,7 +17,7 @@ jobs:
           fetch-depth: 2
         env:
           FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-
+ 
       - name: Set environment variables
         shell: powershell
         run: |
@@ -28,7 +28,7 @@ jobs:
             echo "DEST=C:\Users\Administrator\Desktop\COCPIT BACKEND\cocpit-backend-staging" >> $env:GITHUB_ENV
             echo "PM2_NAME=cocpit-backend-staging" >> $env:GITHUB_ENV
           }
-
+ 
       - name: Sync files
         shell: powershell
         run: |
@@ -37,13 +37,13 @@ jobs:
           robocopy . "$destPath" /MIR /XF .env firebase-service-account.json /XD .git node_modules _work
           # robocopy exit codes 0-7 are success/warning states, not errors
           if ($LASTEXITCODE -le 7) { $LASTEXITCODE = 0 }
-
+ 
       - name: Install dependencies
         shell: powershell
         run: |
           $before = "${{ github.event.before }}"
           $sha    = "${{ github.sha }}"
-
+ 
           # On first push to a new branch, github.event.before is all zeros
           # In that case we have no history to diff, so install unconditionally
           if ($before -eq "0000000000000000000000000000000000000000") {
@@ -65,7 +65,7 @@ jobs:
               $depsChanged = $true
             }
           }
-
+ 
           if ($depsChanged) {
             Set-Location -Path "${{ env.DEST }}"
             Write-Host "Running npm install in: $(Get-Location)"
@@ -76,12 +76,27 @@ jobs:
             }
             Write-Host "npm install completed successfully."
           }
-
+ 
       - name: Restart PM2
         shell: powershell
         run: |
-          pm2 reload $env:PM2_NAME --update-env
-          if ($LASTEXITCODE -ne 0) {
-            Write-Host "PM2 process not found. Starting fresh..."
+          # Stop PM2 process first (ignore errors if it's not running)
+          pm2 stop $env:PM2_NAME 2>$null
+ 
+          # Kill any process still holding the port (prevents EADDRINUSE)
+          $port = if ($env:PM2_NAME -eq "cocpit-backend-prod") { 5000 } else { 5001 }
+          $conn = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue
+          if ($conn) {
+            Stop-Process -Id $conn.OwningProcess -Force -ErrorAction SilentlyContinue
+            Write-Host "Killed ghost process on port $port"
+            Start-Sleep -Seconds 2
+          }
+ 
+          # Now start cleanly
+          $isRegistered = pm2 list --no-color | Select-String $env:PM2_NAME
+          if ($isRegistered) {
+            pm2 start $env:PM2_NAME
+          } else {
             pm2 start "${{ env.DEST }}\src\server.js" --name $env:PM2_NAME
           }
+          pm2 save
