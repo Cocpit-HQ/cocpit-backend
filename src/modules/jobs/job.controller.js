@@ -4,6 +4,8 @@ const { buildJobFilters } = require("../../core/utils/jobQueryBuilder");
 const { logAudit } = require("../../core/infrastructure/audit.service");
 const { checkOrgPermission } = require("../../core/utils/rbac");
 const { notifyOrgFollowers } = require("../../services/notification.service");
+const { sendToUser } = require("../notification/notification.service");
+const socketService = require("../../services/socket.service");
 const { hasActorPermission } = require("../../core/middlewares/actor-context.middleware");
 const { logActivity } = require("../../core/services/activityLogger");
 const { logActivity: logIntentActivity } = require("../../utils/activityLogger");
@@ -1165,8 +1167,70 @@ exports.applyJob = async (req, res) => {
     );
     const totalApplications = parseInt(totalAppsRes.rows[0].total, 10);
 
+    // --- Row 1 Notification: Application Thresholds ---
+    if (job.org_id && totalApplications >= 10 && (totalApplications - 10) % 15 === 0) {
+      const notifyUserIds = new Set();
+      
+      const adminsRes = await client.query(
+          `SELECT cm.user_id FROM organization_members cm
+           JOIN organization_roles cr ON cm.role_id = cr.role_id
+           WHERE cm.org_id = $1 AND cm.status = 'ACTIVE'
+             AND (cr.permissions @> '["*"]'::jsonb OR cr.permissions @> '["MANAGE_JOBS"]'::jsonb)`,
+          [job.org_id]
+      );
+      adminsRes.rows.forEach(r => notifyUserIds.add(r.user_id));
+      if (job.recruiter_id) notifyUserIds.add(job.recruiter_id);
+
+      const adminIdsArray = Array.from(notifyUserIds);
+      let dbNotification = null;
+
+      if (adminIdsArray.length > 0) {
+        const notifRes = await client.query(
+          `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, recipient_org_id, metadata)
+           VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING notification_id, created_at`,
+          [
+            adminIdsArray[0], // Nominal owner for the DB row
+            null, // System generated
+            'new_application_threshold',
+            `"${totalApplications}" people have applied for "${job.title}". Review them now`,
+            id,
+            job.org_id || null,
+            JSON.stringify({ job_id: id })
+          ]
+        );
+        dbNotification = notifRes.rows[0];
+      }
+
+      // Send real-time socket and push notifications to ALL admins
+      for (const adminId of adminIdsArray) {
+        if (dbNotification) {
+          socketService.notifyUser(adminId, "notification", {
+            notification_id: dbNotification.notification_id,
+            type: 'new_application_threshold',
+            text: `"${totalApplications}" people have applied for "${job.title}". Review them now`,
+            reference_id: id,
+            is_read: false,
+            created_at: dbNotification.created_at.toISOString(),
+            actor_name: 'Cocpit Engine',
+            actor_avatar: null,
+            actor_slug: null,
+            is_company_actor: false,
+            metadata: { job_id: id }
+          });
+        }
+
+        sendToUser(
+          adminId,
+          "New application received",
+          `"${totalApplications}" people have applied for "${job.title}". Review them now`,
+          { type: 'new_application_threshold', referenceId: id }
+        ).catch(() => {});
+      }
+    }
+
+
     if (totalApplications < MIN_POOL) {
-      console.log(`[applyJob] Job ${id} has ${totalApplications}/${MIN_POOL} apps — skipping auto-queue.`);
+
     } else {
       const rankRes = await client.query(`
         SELECT COUNT(*) + 1 AS rank
@@ -1223,7 +1287,54 @@ exports.applyJob = async (req, res) => {
 
     // 11. COMMIT and return
     await client.query('COMMIT');
-    res.status(201).json({ message: "Application submitted successfully", applicationId: appId });
+    
+    // Notifications (Phase 1)
+    const orgRes = await pool.query(`SELECT name, logo_url FROM organizations WHERE org_id = $1`, [job.org_id]);
+    const companyName = orgRes.rowCount > 0 ? orgRes.rows[0].name : "the company";
+    const companyAvatar = orgRes.rowCount > 0 ? orgRes.rows[0].logo_url : null;
+    const text = `Your application for ${job.title} at ${companyName} has been submitted successfully.`;
+
+    try {
+      const type = 'application_submitted';
+      const notifRes = await pool.query(`
+        INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata)
+        VALUES ($1, NULL, $2, $3, $4, $5)
+        RETURNING notification_id
+      `, [
+        userId,
+        type,
+        text,
+        id,
+        JSON.stringify({ job_id: id, application_id: appId, org_id: job.org_id })
+      ]);
+      const notificationId = notifRes.rows[0]?.notification_id;
+
+      const socketService = require('../../core/infrastructure/socket.service');
+      socketService.notifyUser(userId, 'notification', {
+        notification_id: notificationId,
+        type,
+        title: "Application Submitted",
+        text,
+        message: text,
+        senderName: companyName,
+        senderAvatar: companyAvatar,
+        referenceId: id,
+        timestamp: new Date().toISOString()
+      });
+
+      const { sendToUser } = require('../../modules/notification/notification.service');
+      // Using fire and forget, and sending a data-only silent push as requested in spec
+      sendToUser(userId, "Application Submitted", text, {
+          type,
+          referenceId: id,
+          silent: 'true'
+      }).catch(() => {});
+
+    } catch (notifErr) {
+      console.error("[applyJob] Failed to send notifications:", notifErr);
+    }
+
+    res.status(201).json({ message: text, applicationId: appId });
 
     // 🎯 Intent Layer: Log Apply Job
     logIntentActivity({ userId, action: "apply_job", metadata: { jobId: id, applicationId: appId } });

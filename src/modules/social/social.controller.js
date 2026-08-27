@@ -385,6 +385,91 @@ exports.followCompany = async (req, res) => {
             [userId, companyId]
         );
 
+        // --- NOTIFICATIONS: company_follower and company_milestone ---
+        const userRes = await client.query(`SELECT full_name, avatar_url FROM active_users WHERE user_id = $1`, [userId]);
+        const userName = userRes.rows[0]?.full_name || "Someone";
+        const userAvatar = userRes.rows[0]?.avatar_url || null;
+
+        const orgRes = await client.query(`SELECT name, created_by FROM organizations WHERE org_id = $1`, [companyId]);
+        const orgName = orgRes.rows[0]?.name || "your company";
+        
+        // Find company admins to notify
+        const adminsRes = await client.query(
+            `SELECT user_id FROM organization_members WHERE org_id = $1 AND role_id IN (
+                SELECT role_id FROM organization_roles WHERE org_id = $1 AND name IN ('Owner', 'Admin')
+            )`,
+            [companyId]
+        );
+        // Fallback to creator if no admins found
+        const notifyUsers = adminsRes.rowCount > 0 ? adminsRes.rows.map(r => r.user_id) : (orgRes.rows[0] ? [orgRes.rows[0].created_by] : []);
+
+        // 1. company_follower Notification
+        const followerTitle = "New Follower";
+        const followerText = `${userName} started following ${orgName}`;
+        
+        for (const adminId of notifyUsers) {
+            const notifRes = await client.query(
+                `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata, recipient_org_id)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING notification_id, created_at`,
+                [adminId, userId, "company_follower", followerText, companyId, JSON.stringify({ title: followerTitle, orgId: companyId }), companyId]
+            );
+            
+            const payload = {
+                type: "company_follower",
+                title: followerTitle,
+                message: followerText,
+                from: userId,
+                senderName: userName,
+                senderAvatar: userAvatar,
+                targetProfileType: "COMPANY",
+                targetCompanyId: companyId,
+                notification_id: notifRes.rows[0].notification_id,
+                created_at: notifRes.rows[0].created_at.toISOString(),
+                timestamp: new Date().toISOString()
+            };
+            
+            socketService.notifyUserScoped(adminId, "notification", payload, `org:${companyId}`);
+            sendPush(adminId, followerTitle, followerText, { type: "company_follower", companyId }).catch(() => {});
+        }
+
+        // 2. company_milestone Notification
+        const countRes = await client.query(`SELECT COUNT(*) FROM organization_followers WHERE org_id = $1`, [companyId]);
+        const followerCount = parseInt(countRes.rows[0].count, 10);
+        let isMilestone = false;
+        if (followerCount >= 1000) {
+            const magnitude = Math.pow(10, Math.floor(Math.log10(followerCount)));
+            const leadingDigit = followerCount / magnitude;
+            isMilestone = [1, 2, 5].includes(leadingDigit);
+        }
+
+        if (isMilestone) {
+            const milestoneTitle = "Follower Milestone Reached!";
+            const milestoneText = `${orgName} just hit ${followerCount.toLocaleString()} followers!`;
+
+            for (const adminId of notifyUsers) {
+                const notifRes = await client.query(
+                    `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata, recipient_org_id)
+                     VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING notification_id, created_at`,
+                    [adminId, adminId, "company_milestone", milestoneText, companyId, JSON.stringify({ title: milestoneTitle, orgId: companyId, followerCount }), companyId]
+                );
+                
+                const payload = {
+                    type: "company_milestone",
+                    title: milestoneTitle,
+                    message: milestoneText,
+                    targetProfileType: "COMPANY",
+                    targetCompanyId: companyId,
+                    followerCount,
+                    notification_id: notifRes.rows[0].notification_id,
+                    created_at: notifRes.rows[0].created_at.toISOString(),
+                    timestamp: new Date().toISOString()
+                };
+                
+                socketService.notifyUserScoped(adminId, "notification", payload, `org:${companyId}`);
+                sendPush(adminId, milestoneTitle, milestoneText, { type: "company_milestone", companyId }).catch(() => {});
+            }
+        }
+
         await client.query('COMMIT');
 
         // Invalidate Cache
@@ -931,7 +1016,7 @@ exports.sendConnectionRequest = async (req, res) => {
 
                 const notificationData = {
                     type: "connection_accepted",
-                    text: `accepted your connection request`,
+                    text: `${myProfile.full_name} accepted your connection request.`,
                     from: senderId,
                     senderName: myProfile.full_name,
                     senderAvatar: myProfile.avatar_url,
@@ -942,8 +1027,8 @@ exports.sendConnectionRequest = async (req, res) => {
 
                 await pool.query( // Using pool for non-transactional notification insert if slightly delayed is ok, or reuse client if strict
                     `INSERT INTO notifications (user_id, sender_id, type, text, reference_id) 
-                     VALUES ($1, $2, 'connection_accepted', 'accepted your connection request', $3)`,
-                    [receiverId, senderId, senderId]
+                     VALUES ($1, $2, 'connection_accepted', $3, $4)`,
+                    [receiverId, senderId, notificationData.text, senderId]
                 );
 
 
@@ -1080,7 +1165,7 @@ exports.sendConnectionRequest = async (req, res) => {
 
         const notificationData = {
             type: "connection_request",
-            text: "sent you a connection request",
+            text: `${sender.full_name} has sent you a connection request`,
             from: senderId,
             senderName: sender.full_name,
             senderAvatar: sender.avatar_url,
@@ -1703,7 +1788,7 @@ exports.handleConnectionRequest = async (req, res) => {
             // Create Notification for Sender
             const senderNotification = {
                 type: 'connection_accepted',
-                text: 'accepted your connection request',
+                text: `${req.user.full_name} accepted your connection request.`,
                 from: receiver_id,
                 senderName: req.user.full_name, // I am the one accepting
                 senderAvatar: req.user.avatar_url,
@@ -1713,8 +1798,8 @@ exports.handleConnectionRequest = async (req, res) => {
 
             await client.query(
                 `INSERT INTO notifications (user_id, sender_id, type, text, reference_id) 
-                 VALUES ($1, $2, 'connection_accepted', 'accepted your connection request', $3)`,
-                [sender_id, receiver_id, receiver_id]
+                 VALUES ($1, $2, 'connection_accepted', $3, $4)`,
+                [sender_id, receiver_id, senderNotification.text, receiver_id]
             );
 
             // Create Notification for Receiver (Optional log)
@@ -3084,13 +3169,69 @@ exports.sendMessage = async (req, res) => {
                 ? `org:${targetUserId}`
                 : `user:${targetUserId}`;
 
+            // Format the message preview to match the spreadsheet specs (max 40 chars)
+            const formattedPreviewText = previewText.length > 40 ? previewText.substring(0, 40) + '...' : previewText;
+            const notificationTitle = `New message from ${senderName}`;
+            const notificationBody = `${senderName}: "${formattedPreviewText}"`;
+
             // Notify via socket
             if (targetIsCompany) {
                 // User→Company: notify all members of the target company in the company actor scope only
-                const members = await pool.query(
+                const members = await client.query(
                     'SELECT user_id FROM organization_members WHERE org_id = $1',
                     [targetUserId]
                 );
+
+                let isFirstMessage = false;
+                let customNotifType = "message";
+                let customPushTitle = notificationTitle;
+                let customPushBody = notificationBody;
+                
+                if (entity_type === 'job' || entity_type === 'job_application' || entity_type === 'offer') {
+                    // Check if this is the first message REGARDING THIS SPECIFIC JOB/OFFER from this user
+                    const jobMsgCountRes = await client.query(
+                        `SELECT COUNT(*) FROM messages 
+                         WHERE sender_id = $1 AND sender_type = 'USER' AND conversation_id = $2 
+                         AND entity_type = $3 AND entity_id = $4`,
+                        [senderId, conversationId, entity_type, entity_id || null]
+                    );
+                    isFirstMessage = parseInt(jobMsgCountRes.rows[0].count) === 1;
+
+                    if (isFirstMessage) {
+                        let jobTitle = "a position";
+                        const { sendCompanyJobChatEmail } = require("../../core/services/email.service");
+                        
+                        if (entity_id) {
+                            if (entity_type === 'offer') {
+                                const offerRes = await client.query(
+                                    `SELECT j.title FROM job_offers o JOIN jobs j ON o.job_id = j.job_id WHERE o.offer_id = $1`, 
+                                    [entity_id]
+                                );
+                                if (offerRes.rowCount > 0) jobTitle = offerRes.rows[0].title;
+                            } else {
+                                const jobRes = await client.query(`SELECT title FROM jobs WHERE job_id = $1`, [entity_id]);
+                                if (jobRes.rowCount > 0) jobTitle = jobRes.rows[0].title;
+                            }
+                        }
+
+                        customNotifType = "company_job_chat_started";
+                        customPushTitle = `${senderName} started a chat`;
+                        customPushBody = `${senderName} started a conversation with you about ${jobTitle}.`;
+
+                        // Send email to all members
+                        const orgRes = await client.query(`SELECT name FROM organizations WHERE org_id = $1`, [targetUserId]);
+                        const orgName = orgRes.rows[0]?.name || "your company";
+
+                        for (const member of members.rows) {
+                            const userRes = await client.query(`SELECT email FROM active_users WHERE user_id = $1`, [member.user_id]);
+                            const userEmail = userRes.rows[0]?.email;
+                            if (userEmail) {
+                                sendCompanyJobChatEmail(userEmail, orgName, senderName, jobTitle).catch(() => {});
+                            }
+                        }
+                    }
+                }
+
                 for (const member of members.rows) {
                     socketService.notifyUserScoped(member.user_id, "new_message", messageData, targetActorScope);
                     socketService.notifyUserScoped(member.user_id, "conversation_updated", {
@@ -3099,41 +3240,128 @@ exports.sendMessage = async (req, res) => {
                         target_company_id: targetUserId
                     }, targetActorScope);
                     if (!targetNotificationMuted) {
-                        socketService.notifyUserScoped(member.user_id, "notification", {
-                            type: "message",
-                            isJobChat: finalIsJobChat,
-                            from: senderId,
-                            senderName,
-                            senderAvatar,
-                            conversationId,
-                            text: previewText,
-                            targetProfileType: 'COMPANY',
-                            targetCompanyId: targetUserId
-                        }, targetActorScope);
+                        // Persist notification for the Notification Center
+                        client.query(
+                            `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata, recipient_org_id)
+                             VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING notification_id, created_at`,
+                            [
+                                member.user_id,
+                                senderId,
+                                customNotifType,
+                                customPushBody,
+                                conversationId,
+                                JSON.stringify({ isJobChat: finalIsJobChat, from: senderId, title: customPushTitle, targetCompanyId: targetUserId }),
+                                targetUserId
+                            ]
+                        ).then((notifRes) => {
+                            if (notifRes.rowCount > 0) {
+                                socketService.notifyUserScoped(member.user_id, "notification", {
+                                    type: customNotifType,
+                                    isJobChat: finalIsJobChat,
+                                    from: senderId,
+                                    senderName,
+                                    senderAvatar,
+                                    conversationId,
+                                    title: customPushTitle,
+                                    text: customPushBody,
+                                    targetProfileType: 'COMPANY',
+                                    targetCompanyId: targetUserId,
+                                    notification_id: notifRes.rows[0].notification_id,
+                                    created_at: notifRes.rows[0].created_at.toISOString()
+                                }, targetActorScope);
+                            }
+                        }).catch(err => console.error("Error inserting message notification:", err));
+                        
                         // Push notification for offline devices
-                        sendPush(member.user_id, senderName, previewText, { type: 'message', conversationId, senderId }).catch(() => {});
+                        sendPush(member.user_id, customPushTitle, customPushBody, { type: customNotifType, conversationId, senderId }).catch(() => {});
                     }
                 }
             } else {
                 // User→User or Company→User: notify target user directly in the user actor scope
+                let shouldNotifyUser = true;
+                let customNotifType = "message";
+                let customPushTitle = notificationTitle;
+                let customPushBody = notificationBody;
+
+                if (authorCompanyId) { // Company -> User
+                    let isFirstMessage = false;
+
+                    if (entity_type === 'job' || entity_type === 'job_application' || entity_type === 'offer') {
+                        // For job/offer chats, check if this is the first message REGARDING THIS SPECIFIC JOB/OFFER
+                        const jobMsgCountRes = await client.query(
+                            `SELECT COUNT(*) FROM messages 
+                             WHERE sender_id = $1 AND sender_type = 'COMPANY' AND conversation_id = $2 
+                             AND entity_type = $3 AND entity_id = $4`,
+                            [senderId, conversationId, entity_type, entity_id || null]
+                        );
+                        isFirstMessage = parseInt(jobMsgCountRes.rows[0].count) === 1;
+
+                        if (isFirstMessage) {
+                            let jobTitle = "a position";
+                            const { sendJobApplicationChatEmail, sendJobOfferChatEmail } = require("../../core/services/email.service");
+                            
+                            const userRes = await client.query(`SELECT email FROM active_users WHERE user_id = $1`, [targetUserId]);
+                            const userEmail = userRes.rows[0]?.email;
+
+                            if (entity_type === 'job' || entity_type === 'job_application') {
+                                customNotifType = "job_application_chat";
+                                customPushTitle = `${senderName} started a conversation`;
+                                if (entity_type === 'job' && entity_id) {
+                                    const jobRes = await client.query(`SELECT title FROM jobs WHERE job_id = $1`, [entity_id]);
+                                    if (jobRes.rowCount > 0) jobTitle = jobRes.rows[0].title;
+                                }
+                                customPushBody = `${senderName} wants to talk to you about ${jobTitle}.`;
+                                if (userEmail) sendJobApplicationChatEmail(userEmail, senderName, jobTitle).catch(() => {});
+                            } else if (entity_type === 'offer') {
+                                customNotifType = "job_offer_chat";
+                                customPushTitle = `${senderName} sent you a message about your offer`;
+                                if (entity_id) {
+                                    const offerRes = await client.query(
+                                        `SELECT j.title FROM job_offers o JOIN jobs j ON o.job_id = j.job_id WHERE o.offer_id = $1`, 
+                                        [entity_id]
+                                    );
+                                    if (offerRes.rowCount > 0) jobTitle = offerRes.rows[0].title;
+                                }
+                                customPushBody = `${senderName} wants to talk to you about your offer for ${jobTitle}.`;
+                                if (userEmail) sendJobOfferChatEmail(userEmail, senderName, jobTitle).catch(() => {});
+                            }
+                        } else {
+                            shouldNotifyUser = false; // Suppress notification if they already discussed this specific job
+                        }
+                    } else {
+                        // For standard generic chats, check if it's the first message IN THE ENTIRE CONVERSATION
+                        const msgCountRes = await client.query(
+                            `SELECT COUNT(*) FROM messages 
+                             WHERE sender_id = $1 AND sender_type = 'COMPANY' AND conversation_id = $2`,
+                            [senderId, conversationId]
+                        );
+                        isFirstMessage = parseInt(msgCountRes.rows[0].count) === 1;
+                        if (!isFirstMessage) {
+                            shouldNotifyUser = false; // Only once for individual company (Row 2 in spreadsheet)
+                        }
+                    }
+                }
+
                 socketService.notifyUserScoped(targetUserId, "new_message", messageData, targetActorScope);
                 socketService.notifyUserScoped(targetUserId, "conversation_updated", {
                     ...receiverConvPayload,
                     target_profile_type: 'USER'
                 }, targetActorScope);
-                if (!targetNotificationMuted) {
+
+                if (shouldNotifyUser && !targetNotificationMuted) {
                     socketService.notifyUserScoped(targetUserId, "notification", {
-                        type: "message",
+                        type: customNotifType,
                         isJobChat: finalIsJobChat,
                         from: senderId,
                         senderName,
                         senderAvatar,
                         conversationId,
-                        text: previewText,
+                        title: customPushTitle,
+                        text: customPushBody,
                         targetProfileType: 'USER'
                     }, targetActorScope);
                     // Push notification for offline devices
-                    sendPush(targetUserId, senderName, previewText, { type: 'message', conversationId, senderId }).catch(() => {});
+                    sendPush(targetUserId, customPushTitle, customPushBody, { type: customNotifType, conversationId, senderId }).catch(() => {});
                 }
             }
             // Notify sender as well in the sender's active scope
@@ -4042,15 +4270,18 @@ exports.getNotifications = async (req, res) => {
             SELECT n.*, 
                 n.recipient_org_id as recipient_company_id,
                 CASE 
-                    WHEN COALESCE(NULLIF(n.metadata->>'org_id', ''), NULLIF(n.metadata->>'orgId', '')) IS NOT NULL THEN c.name 
+                    WHEN COALESCE(NULLIF(n.metadata->>'org_id', ''), NULLIF(n.metadata->>'orgId', '')) IS NOT NULL 
+                         AND n.type NOT IN ('community_invite_accepted', 'team_invite_accepted', 'offer_accepted', 'job_offer_declined', 'company_channel_subscriber') THEN c.name 
                     ELSE u.display_name 
                 END as actor_name, 
                 CASE 
-                    WHEN COALESCE(NULLIF(n.metadata->>'org_id', ''), NULLIF(n.metadata->>'orgId', '')) IS NOT NULL THEN c.logo_url 
+                    WHEN COALESCE(NULLIF(n.metadata->>'org_id', ''), NULLIF(n.metadata->>'orgId', '')) IS NOT NULL 
+                         AND n.type NOT IN ('community_invite_accepted', 'team_invite_accepted', 'offer_accepted', 'job_offer_declined', 'company_channel_subscriber') THEN c.logo_url 
                     ELSE u.display_avatar 
                 END as actor_avatar,
                 COALESCE(c.slug, u.display_username) as actor_slug,
-                (COALESCE(NULLIF(n.metadata->>'org_id', ''), NULLIF(n.metadata->>'orgId', '')) IS NOT NULL) as is_company_actor,
+                (COALESCE(NULLIF(n.metadata->>'org_id', ''), NULLIF(n.metadata->>'orgId', '')) IS NOT NULL 
+                 AND n.type NOT IN ('community_invite_accepted', 'team_invite_accepted', 'offer_accepted', 'job_offer_declined', 'company_channel_subscriber')) as is_company_actor,
                 cr.request_id as request_id, 
                 cr.status as request_status
             FROM notifications n 
@@ -5267,9 +5498,9 @@ exports.upsertReaction = async (req, res) => {
     }
 
     try {
-        // Verify the message exists and get its conversation_id for socket notification
+        // Verify the message exists and get its details for socket/push notification
         const msgRes = await pool.query(
-            `SELECT conversation_id FROM messages WHERE message_id = $1`,
+            `SELECT conversation_id, sender_id, content, preview_text FROM messages WHERE message_id = $1`,
             [messageId]
         );
 
@@ -5277,7 +5508,7 @@ exports.upsertReaction = async (req, res) => {
             return res.status(404).json({ message: "Message not found" });
         }
 
-        const { conversation_id } = msgRes.rows[0];
+        const { conversation_id, sender_id, content, preview_text } = msgRes.rows[0];
 
         // Determine if this is a clear (empty emoji) or a real reaction
         const emojiValue = (typeof emoji === "string" && emoji.trim() !== "") ? emoji.trim() : "";
@@ -5317,6 +5548,19 @@ exports.upsertReaction = async (req, res) => {
                 conversationId: conversation_id,
                 reaction
             });
+
+            // Notify the original message sender via push
+            if (reaction.user_id !== sender_id) {
+                const msgText = content || preview_text || 'an attachment';
+                const formattedPreview = msgText.length > 40 ? msgText.substring(0, 40) + '...' : msgText;
+                
+                sendPush(
+                    sender_id,
+                    `${reaction.user_full_name} reacted to your message`,
+                    `${reaction.user_full_name} reacted ${reaction.emoji} to: "${formattedPreview}"`,
+                    { type: 'message_reaction', conversationId: conversation_id, messageId }
+                ).catch(() => {});
+            }
 
             return res.json({ success: true, reaction });
         } else {

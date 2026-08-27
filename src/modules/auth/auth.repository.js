@@ -252,6 +252,16 @@ const findSessionByUserAndId = async (userId, sessionId) => {
     return result.rows[0] || null;
 };
 
+const checkDeviceExists = async (userId, userAgent, ipAddress) => {
+    const result = await pool.query(
+        `SELECT 1 FROM refresh_tokens
+         WHERE user_id = $1 AND user_agent = $2 AND ip_address = $3
+         LIMIT 1`,
+        [userId, userAgent, ipAddress]
+    );
+    return result.rowCount > 0;
+};
+
 const updateSessionToken = async (sessionId, newTokenHash, expectedCurrentHash) => {
     const hasExpectedHash = typeof expectedCurrentHash === "string" && expectedCurrentHash.length > 0;
     const query = hasExpectedHash
@@ -302,6 +312,7 @@ module.exports = {
     deleteAllOtherSessions,
     insertSession,
     findSessionByUserAndId,
+    checkDeviceExists,
     updateSessionToken,
     // Transactions
     beginTransaction,

@@ -12,6 +12,9 @@ const { processStoryExpirations } = require("./workers/storyExpiryWorker");
 const { sweepActivityLogs, runDailyDecay } = require("./workers/intentEngine");
 const { startFeedWorker } = require("./workers/feedWorker");
 const { processAnalyticsAggregations } = require("./workers/analytics.cron");
+const { processProfileNudges } = require("./workers/profileNudge.cron");
+const { processUnreadMessagesNudges } = require("./workers/unreadMessages.cron");
+const { processOfferExpiryNudges } = require("./workers/jobOfferExpiry.cron");
 const server = http.createServer(app);
 
 // Configure high timeouts (10 minutes) for streaming large video uploads to Cloudinary
@@ -51,9 +54,27 @@ setInterval(() => {
   runDailyDecay();
 }, 24 * 60 * 60 * 1000);
 
+// Start Profile Incomplete Nudge Worker (Every 1 day)
+processProfileNudges(); // Run immediately on boot
+setInterval(() => {
+  processProfileNudges();
+}, 24 * 60 * 60 * 1000);
+
+// Start Unread Messages Nudge Worker (Every 1 day)
+processUnreadMessagesNudges(); // Run immediately on boot
+setInterval(() => {
+  processUnreadMessagesNudges();
+}, 24 * 60 * 60 * 1000);
+
+// Start Job Offer Expiry Worker (Every 1 day)
+processOfferExpiryNudges(); // Run immediately on boot
+setInterval(() => {
+  processOfferExpiryNudges();
+}, 24 * 60 * 60 * 1000);
+
 // Analytics Aggregation Cron — runs every 10 seconds
-const ANALYTICS_CRON_INTERVAL = 60 * 60 * 1000; // 1 hour
-// const ANALYTICS_CRON_INTERVAL = 10 * 1000; // 10 seconds
+ const ANALYTICS_CRON_INTERVAL = 60 * 60 * 1000; // 1 hour
+//const ANALYTICS_CRON_INTERVAL = 10 * 1000; // 10 seconds
 
 processAnalyticsAggregations(); // run once immediately on startup
 setInterval(() => {

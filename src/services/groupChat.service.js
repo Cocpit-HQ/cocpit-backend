@@ -174,6 +174,15 @@ class GroupChatService {
             socketService.notifyUser(receiverId, 'group_invite', requestConversationPayload);
         }
 
+        const groupName = group?.name || 'a group';
+        const adderName = inviter.full_name || 'Someone';
+        sendPush(
+            receiverId,
+            'You were added to a group',
+            `${adderName} added you to ${groupName}.`,
+            { type: 'group_invite', conversationId: groupId, senderId }
+        ).catch(() => {});
+
         return invitation;
     }
 
@@ -1033,6 +1042,8 @@ class GroupChatService {
             }
         }
 
+        const group = await GroupChatModel.getGroupDetails(groupId);
+
         // Notify list update (MessagingPage listens to this) via individual notifications
         members.forEach(member => {
             const memberIdStr = String(member.user_id);
@@ -1058,11 +1069,21 @@ class GroupChatService {
                     text: notifText
                 });
 
+                let pushTitle = sender.full_name;
+                let pushBody = notifText;
+                
+                if (!isMentioned) {
+                    const groupName = group?.name || 'a group';
+                    pushTitle = `New message in ${groupName}`;
+                    const formattedPreview = notifText.length > 40 ? notifText.substring(0, 40) + '...' : notifText;
+                    pushBody = `${sender.full_name} in ${groupName}: "${formattedPreview}"`;
+                }
+
                 // Push notification for offline devices (respects mute, same as socket above)
                 sendPush(
                     member.user_id,
-                    sender.full_name,
-                    notifText,
+                    pushTitle,
+                    pushBody,
                     { type: isMentioned ? 'mention' : 'message', conversationId: groupId, senderId }
                 ).catch(() => {});
             }

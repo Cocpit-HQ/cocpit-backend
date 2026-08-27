@@ -4,6 +4,8 @@ const pool = require("../../core/db/pool");
 const AppError = require("../../core/errors/AppError");
 const { logAudit } = require("../../core/infrastructure/audit.service");
 const socketService = require("../../core/infrastructure/socket.service");
+const { sendToUser } = require("../notification/notification.service");
+const emailService = require("../../core/services/email.service");
 
 // Helper to check target is Owner (creator of the organization)
 async function isTargetOwner(client, orgId, userId) {
@@ -944,7 +946,7 @@ exports.sendInvite = async (req, res, next) => {
             const orgLogo = orgRes.rows[0]?.logo_url || null;
             const actorRes = await client.query(`SELECT full_name, avatar_url FROM active_users WHERE user_id = $1`, [actorId]);
             const actorName = actorRes.rows[0]?.full_name || "Someone";
-            const notifText = `${orgName} invited you to join as ${targetRole.name}`;
+            const notifText = `invited you to join "${targetRole.name}" department.`;
 
             const notifRes = await client.query(
                 `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata)
@@ -974,6 +976,19 @@ exports.sendInvite = async (req, res, next) => {
                     is_read: false
                 });
             }
+
+            const pushText = `${orgName} ${notifText}`;
+            sendToUser(
+                userId,
+                "You're invited to join a team",
+                pushText,
+                { type: "organization_invite", referenceId: orgId }
+            ).catch(() => {});
+
+            // Email Notification
+            emailService.sendTeamInviteEmail(email, orgName, targetRole.name).catch(e => {
+                console.error("[INVITE EMAIL] Failed to send email:", e.message);
+            });
         } catch (e) {
             console.error("[INVITE] Notification delivery failed:", e.message);
         }

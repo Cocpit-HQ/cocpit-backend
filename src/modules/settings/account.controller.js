@@ -20,7 +20,7 @@ exports.changePassword = async (req, res) => {
         }
 
         const userRes = await pool.query(
-            "SELECT password_hash FROM users WHERE user_id = $1",
+            "SELECT email, password_hash FROM users WHERE user_id = $1",
             [userId]
         );
 
@@ -54,6 +54,35 @@ exports.changePassword = async (req, res) => {
 
         // Security Invariant (Section 7.4): Invalidate all OTHER sessions
         const revokedCount = await revokeOtherSessions(userId, currentSessionId);
+
+        // ─── Trigger Password Changed Notification (Row 2) ───
+        try {
+            const now = new Date();
+            const dateStr = now.toLocaleDateString();
+            const timeStr = now.toLocaleTimeString();
+            const msgText = `Your password was changed on ${dateStr}, ${timeStr}. If this wasn't you, secure your account.`;
+
+            await pool.query(
+                `INSERT INTO notifications (user_id, type, text, is_read, metadata)
+                 VALUES ($1, 'password_changed', $2, false, $3)`,
+                [userId, msgText, JSON.stringify({ title: 'Your password was changed' })]
+            );
+
+            if (socketService.io) {
+                socketService.notifyUser(userId, {
+                    type: 'password_changed',
+                    title: 'Your password was changed',
+                    text: msgText,
+                    created_at: now.toISOString()
+                });
+            }
+
+            if (user.email) {
+                emailService.sendPasswordChangedEmail(user.email, `${dateStr}, ${timeStr}`).catch(e => console.error(e));
+            }
+        } catch (e) {
+            console.error("Failed to trigger password changed notification:", e);
+        }
 
         return res.status(200).json({
             success: true,
@@ -248,6 +277,14 @@ exports.confirmNewEmail = async (req, res) => {
             return res.status(result.error.status).json({ success: false, message: result.error.message });
         }
 
+        let oldEmail = "";
+        try {
+            const oldEmailRes = isOrgActor 
+                ? await pool.query("SELECT email FROM organizations WHERE org_id = $1", [actorId])
+                : await pool.query("SELECT email FROM users WHERE user_id = $1", [actorId]);
+            oldEmail = oldEmailRes.rows[0]?.email;
+        } catch(e) {}
+
         if (isOrgActor) {
             await pool.query(
                 "UPDATE organizations SET email = $1, updated_at = NOW() WHERE org_id = $2",
@@ -269,6 +306,31 @@ exports.confirmNewEmail = async (req, res) => {
         if (!isOrgActor) {
             // Security Invariant: Invalidate all OTHER user sessions on email change
             revokedCount = await revokeOtherSessions(actorId, currentSessionId);
+            
+            // ─── Trigger Email Changed Notification (Row 4) ───
+            try {
+                await pool.query(
+                    `INSERT INTO notifications (user_id, type, text, is_read, metadata)
+                     VALUES ($1, 'email_changed', $2, false, $3)`,
+                    [actorId, `Your account email was changed to ${pendingEmail}.`, JSON.stringify({ title: 'Your email address was updated' })]
+                );
+                
+                if (socketService.io) {
+                    socketService.notifyUser(actorId, {
+                        type: 'email_changed',
+                        title: 'Your email address was updated',
+                        text: `Your account email was changed to ${pendingEmail}.`,
+                        created_at: new Date().toISOString()
+                    });
+                }
+                
+                emailService.sendEmailAddressChangedEmail(pendingEmail, pendingEmail).catch(e => console.error(e));
+                if (oldEmail && oldEmail !== pendingEmail) {
+                    emailService.sendEmailAddressChangedEmail(oldEmail, pendingEmail).catch(e => console.error(e));
+                }
+            } catch (e) {
+                console.error("Email changed notification error:", e);
+            }
         }
 
         return res.status(200).json({
@@ -701,17 +763,13 @@ exports.initiateAccountDeletion = async (req, res) => {
             socketService.io.emit('account_state_changed', { userId, type: 'user', action: 'deleted' });
         }
 
-        // Send restoration email
-        const userFetch = await pool.query("SELECT email, recovery_email, full_name FROM users WHERE user_id = $1", [userId]);
-        if (userFetch.rowCount > 0) {
+        // Send deletion emails to primary email only
+        const userFetch = await pool.query("SELECT email, full_name FROM users WHERE user_id = $1", [userId]);
+        if (userFetch.rowCount > 0 && userFetch.rows[0].email) {
             const userObj = userFetch.rows[0];
-            const recipientEmails = Array.from(
-                new Set([userObj.recovery_email, userObj.email].filter((e) => Boolean(e) && typeof e === "string" && e.trim() !== ""))
-            );
-            for (const recipientEmail of recipientEmails) {
-                emailService.sendAccountDeletionEmail(recipientEmail, userObj.full_name, null, deletionDate)
-                    .catch((err) => console.error(`[initiateAccountDeletion] Failed to send recovery email to ${recipientEmail}:`, err));
-            }
+            emailService.sendAccountDeletionEmail(userObj.email, userObj.full_name, null, deletionDate)
+                .catch((err) => console.error(`[initiateAccountDeletion] Failed to send deletion email to ${userObj.email}:`, err));
+            emailService.sendAccountDeletionCompletedEmail(userObj.email).catch(e => console.error(e));
         }
 
         return res.status(200).json({
@@ -735,7 +793,7 @@ exports.verifyIdentity = async (req, res) => {
     try {
         const isOrgActor = req.actor && req.actor.type === 'ORGANIZATION';
         const actorId = isOrgActor ? req.actor.orgId : req.user.sub;
-        
+
         const documentType = req.body.documentType || 'ID';
 
         const frontImage = req.files && req.files.frontImage ? req.files.frontImage[0] : null;
@@ -751,26 +809,26 @@ exports.verifyIdentity = async (req, res) => {
         const pool = require('../../core/db/pool');
 
         if (isOrgActor) {
-             const { legalName, incorporationDay, incorporationMonth, incorporationYear } = req.body;
-             let incorporationDate = null;
-             if (incorporationDay && incorporationMonth && incorporationYear) {
-                 const monthMap = { Jan: '01', Feb: '02', Mar: '03', Apr: '04', May: '05', Jun: '06', Jul: '07', Aug: '08', Sep: '09', Oct: '10', Nov: '11', Dec: '12' };
-                 const mm = monthMap[incorporationMonth] || '01';
-                 const dd = String(incorporationDay).padStart(2, '0');
-                 incorporationDate = `${incorporationYear}-${mm}-${dd}`;
-             }
+            const { legalName, incorporationDay, incorporationMonth, incorporationYear } = req.body;
+            let incorporationDate = null;
+            if (incorporationDay && incorporationMonth && incorporationYear) {
+                const monthMap = { Jan: '01', Feb: '02', Mar: '03', Apr: '04', May: '05', Jun: '06', Jul: '07', Aug: '08', Sep: '09', Oct: '10', Nov: '11', Dec: '12' };
+                const mm = monthMap[incorporationMonth] || '01';
+                const dd = String(incorporationDay).padStart(2, '0');
+                incorporationDate = `${incorporationYear}-${mm}-${dd}`;
+            }
 
-             await pool.query(
-                 'INSERT INTO organization_verifications (org_id, verification_type, document_type, document_urls, is_verified, legal_name, incorporation_date) VALUES ($1, $2, $3, $4, $5, $6, $7)',
-                 [actorId, 'IDENTITY', documentType, JSON.stringify([frontImageUrl, backImageUrl].filter(Boolean)), true, legalName || null, incorporationDate]
-             );
-             await pool.query('UPDATE organizations SET verification_status = $1 WHERE org_id = $2', ['VERIFIED', actorId]);
+            await pool.query(
+                'INSERT INTO organization_verifications (org_id, verification_type, document_type, document_urls, is_verified, legal_name, incorporation_date) VALUES ($1, $2, $3, $4, $5, $6, $7)',
+                [actorId, 'IDENTITY', documentType, JSON.stringify([frontImageUrl, backImageUrl].filter(Boolean)), true, legalName || null, incorporationDate]
+            );
+            await pool.query('UPDATE organizations SET verification_status = $1 WHERE org_id = $2', ['VERIFIED', actorId]);
         } else {
-             await pool.query(
-                 'INSERT INTO user_verifications (user_id, verification_type, document_type, front_image_url, back_image_url, is_verified, status) VALUES ($1, $2, $3, $4, $5, $6, $7)',
-                 [actorId, 'IDENTITY', documentType, frontImageUrl, backImageUrl, true, 'VERIFIED']
-             );
-             await pool.query('UPDATE users SET is_identity_verified = true WHERE user_id = $1', [actorId]);
+            await pool.query(
+                'INSERT INTO user_verifications (user_id, verification_type, document_type, front_image_url, back_image_url, is_verified, status) VALUES ($1, $2, $3, $4, $5, $6, $7)',
+                [actorId, 'IDENTITY', documentType, frontImageUrl, backImageUrl, true, 'VERIFIED']
+            );
+            await pool.query('UPDATE users SET is_identity_verified = true WHERE user_id = $1', [actorId]);
         }
 
         return res.status(200).json({ success: true, message: 'Identity verified successfully' });

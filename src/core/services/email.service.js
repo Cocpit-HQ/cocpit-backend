@@ -603,6 +603,356 @@ const sendOrgRecoverOTPEmail = async (recipients, otp, orgName) => {
     }
 };
 
+const sendTeamInviteEmail = async (email, subject, bodyText, actionUrl) => {
+    if (!resend) return;
+    try {
+        const { data, error } = await resend.emails.send({
+            from: "Cocpit <noreply@cocpit.in>",
+            to: [email],
+            subject,
+            html: `
+                <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 560px; margin: 0 auto;">
+                    <div style="background: #ffffff; padding: 32px; border-radius: 8px; border: 1px solid #e0e0e0;">
+                        <h3 style="margin-top: 0; color: #111;">Team Invitation</h3>
+                        <p>${bodyText}</p>
+                        <div style="text-align: center; margin: 24px 0;">
+                            <a href="${actionUrl}" style="background: #2563eb; color: #ffffff; text-decoration: none; padding: 12px 24px; border-radius: 6px; font-weight: bold; display: inline-block;">View Invitation</a>
+                        </div>
+                    </div>
+                </div>
+            `,
+        });
+        if (error) console.error("Resend error (team invite):", error);
+        return data;
+    } catch (err) {
+        console.error("Failed to send team invite email to:", email, err);
+    }
+};
+
+const sendDocumentVerifiedEmail = async (email, fullName) => {
+    if (!resend) return;
+    try {
+        const { data, error } = await resend.emails.send({
+            from: "Cocpit <noreply@cocpit.in>",
+            to: [email],
+            subject: "Document Verification Completed",
+            html: `
+                <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 560px; margin: 0 auto;">
+                    <h2 style="color: #0F172A;">Verification Successful</h2>
+                    <p>Hi ${fullName || "there"},</p>
+                    <p>Your documents have been reviewed and verified successfully. Your profile is now verified.</p>
+                </div>
+            `,
+        });
+        if (error) console.error("Resend error (doc verified):", error);
+        return data;
+    } catch (err) {
+        console.error("Failed to send doc verified email to:", email, err);
+    }
+};
+
+const sendDocumentRejectedEmail = async (email, fullName, reason) => {
+    if (!resend) return;
+    try {
+        const { data, error } = await resend.emails.send({
+            from: "Cocpit <noreply@cocpit.in>",
+            to: [email],
+            subject: "Document Verification Unsuccessful",
+            html: `
+                <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 560px; margin: 0 auto;">
+                    <h2 style="color: #0F172A;">Verification Unsuccessful</h2>
+                    <p>Hi ${fullName || "there"},</p>
+                    <p>We couldn't verify your documents. Please review and resubmit.</p>
+                    <p><strong>Reason:</strong> ${reason || "Not specified"}</p>
+                </div>
+            `,
+        });
+        if (error) console.error("Resend error (doc rejected):", error);
+        return data;
+    } catch (err) {
+        console.error("Failed to send doc rejected email to:", email, err);
+    }
+};
+
+const sendOrgDocumentSubmittedEmail = async (email, companyName) => {
+    if (!resend) return;
+    try {
+        const { data, error } = await resend.emails.send({
+            from: "Cocpit <noreply@cocpit.in>",
+            to: [email],
+            subject: "Documents Submitted for Review",
+            html: `
+                <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 560px; margin: 0 auto;">
+                    <h2 style="color: #0F172A;">Documents Submitted</h2>
+                    <p>Hi there,</p>
+                    <p>Your documents for ${companyName || "your company"} have been submitted and are under review.</p>
+                </div>
+            `,
+        });
+        if (error) console.error("Resend error (org doc submitted):", error);
+        return data;
+    } catch (err) {
+        console.error("Failed to send org doc submitted email to:", email, err);
+    }
+};
+
+const sendOrgDocumentVerifiedEmail = async (email, companyName) => {
+    if (!resend) return;
+    try {
+        const { data, error } = await resend.emails.send({
+            from: "Cocpit <noreply@cocpit.in>",
+            to: [email],
+            subject: "Document Verification Completed",
+            html: `
+                <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 560px; margin: 0 auto;">
+                    <h2 style="color: #0F172A;">Verification Successful</h2>
+                    <p>Hi there,</p>
+                    <p>Your company documents have been reviewed and verified successfully. You now have full access to Cocpit's hiring tools.</p>
+                </div>
+            `,
+        });
+        if (error) console.error("Resend error (org doc verified):", error);
+        return data;
+    } catch (err) {
+        console.error("Failed to send org doc verified email to:", email, err);
+    }
+};
+
+const sendOrgDocumentRejectedEmail = async (email, companyName, reason) => {
+    if (!resend) return;
+    try {
+        const { data, error } = await resend.emails.send({
+            from: "Cocpit <noreply@cocpit.in>",
+            to: [email],
+            subject: "Document Verification Unsuccessful",
+            html: `
+                <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 560px; margin: 0 auto;">
+                    <h2 style="color: #0F172A;">Verification Unsuccessful</h2>
+                    <p>Hi there,</p>
+                    <p>We couldn't verify your documents for ${companyName || "your company"}. Please review and resubmit.</p>
+                    <p><strong>Reason:</strong> ${reason || "Not specified"}</p>
+                </div>
+            `,
+        });
+        if (error) console.error("Resend error (org doc rejected):", error);
+        return data;
+    } catch (err) {
+        console.error("Failed to send org doc rejected email to:", email, err);
+    }
+};
+
+const sendJobApplicationChatEmail = async (userEmail, companyName, jobTitle) => {
+    if (!resend) return;
+    try {
+        const response = await resend.emails.send({
+            from: "Cocpit <noreply@cocpit.in>",
+            to: userEmail,
+            subject: `${companyName} started a conversation`,
+            html: `
+                <div style="font-family: sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; border: 1px solid #ddd; border-radius: 8px; overflow: hidden;">
+                    <div style="padding: 20px;">
+                        <p>${companyName} wants to talk to you about <strong>${jobTitle}</strong>.</p>
+                        <p>Log in to your account to reply to this message.</p>
+                        <p>Best regards,<br>The Cocpit Team</p>
+                    </div>
+                </div>
+            `,
+        });
+        return response;
+    } catch (error) {
+        console.error("Error sending job application chat email:", error);
+    }
+};
+
+const sendJobOfferChatEmail = async (userEmail, companyName, jobTitle) => {
+    if (!resend) return;
+    try {
+        const response = await resend.emails.send({
+            from: "Cocpit <noreply@cocpit.in>",
+            to: userEmail,
+            subject: `${companyName} sent you a message about your offer`,
+            html: `
+                <div style="font-family: sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; border: 1px solid #ddd; border-radius: 8px; overflow: hidden;">
+                    <div style="padding: 20px;">
+                        <p>${companyName} wants to talk to you about your offer for <strong>${jobTitle}</strong>.</p>
+                        <p>Log in to your account to reply to this message.</p>
+                        <p>Best regards,<br>The Cocpit Team</p>
+                    </div>
+                </div>
+            `,
+        });
+        return response;
+    } catch (error) {
+        console.error("Error sending job offer chat email:", error);
+    }
+};
+
+const sendCompanyJobChatEmail = async (userEmail, orgName, professionalName, jobTitle) => {
+    if (!resend) return;
+    try {
+        const response = await resend.emails.send({
+            from: "Cocpit <noreply@cocpit.in>",
+            to: userEmail,
+            subject: `${professionalName} started a chat`,
+            html: `
+                <div style="font-family: sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; border: 1px solid #ddd; border-radius: 8px; overflow: hidden;">
+                    <div style="padding: 20px;">
+                        <p>${professionalName} started a conversation with you about <strong>${jobTitle}</strong>.</p>
+                        <p>Log in to your ${orgName} company account to reply to this message.</p>
+                        <p>Best regards,<br>The Cocpit Team</p>
+                    </div>
+                </div>
+            `,
+        });
+        return response;
+    } catch (error) {
+        console.error("Error sending company job chat email:", error);
+    }
+};
+
+
+
+const sendShortlistedEmail = async (email, companyName, jobTitle) => {
+    if (!resend) return;
+    try {
+        const response = await resend.emails.send({
+            from: "Cocpit <noreply@cocpit.in>",
+            to: email,
+            subject: "Your application has been shortlisted",
+            html: `
+                <div style="font-family: sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; border: 1px solid #ddd; border-radius: 8px; overflow: hidden;">
+                    <div style="padding: 20px;">
+                        <p>${companyName} has shortlisted your application for the role <strong>${jobTitle}</strong>.</p>
+                        <p>Best regards,<br>The Cocpit Team</p>
+                    </div>
+                </div>
+            `,
+        });
+        return response;
+    } catch (error) {
+        console.error("Error sending shortlisted email:", error);
+    }
+};
+
+
+const sendOfferExpiringEmail = async (email, companyName) => {
+    if (!resend) return;
+    try {
+        const response = await resend.emails.send({
+            from: "Cocpit <noreply@cocpit.in>",
+            to: email,
+            subject: "Last day to respond to your offer",
+            html: `
+                <div style="font-family: sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; border: 1px solid #ddd; border-radius: 8px; overflow: hidden;">
+                    <div style="padding: 20px;">
+                        <p>Your offer from ${companyName} expires tomorrow. Don't miss it.</p>
+                        <p>Best regards,<br>The Cocpit Team</p>
+                    </div>
+                </div>
+            `,
+        });
+        return response;
+    } catch (error) {
+        console.error("Error sending offer expiring email:", error);
+    }
+};
+
+const sendNewDeviceLoginEmail = async (email, userAgent, ipAddress, location = 'Unknown location') => {
+    if (!resend) return;
+    try {
+        const response = await resend.emails.send({
+            from: "Cocpit <noreply@cocpit.in>",
+            to: email,
+            subject: "New login detected on your Cocpit account",
+            html: `
+                <div style="font-family: sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; border: 1px solid #ddd; border-radius: 8px; overflow: hidden;">
+                    <div style="padding: 20px;">
+                        <h2 style="color: #333;">New Login Detected</h2>
+                        <p>A new login to your account was detected from <strong>${userAgent}</strong> at IP <strong>${ipAddress}</strong> (${location}).</p>
+                        <p>If this was you, no further action is required. If you do not recognize this activity, please secure your account immediately by changing your password.</p>
+                        <p>Best regards,<br>The Cocpit Team</p>
+                    </div>
+                </div>
+            `,
+        });
+        return response;
+    } catch (error) {
+        console.error("Error sending new device login email:", error);
+    }
+};
+
+const sendPasswordChangedEmail = async (email, time) => {
+    if (!resend) return;
+    try {
+        console.log(`[EmailService] Sending password changed email to ${email}`);
+        const response = await resend.emails.send({
+            from: "Cocpit <noreply@cocpit.in>",
+            to: email,
+            subject: "Your Cocpit password was changed",
+            html: `
+                <div style="font-family: sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; border: 1px solid #ddd; border-radius: 8px; overflow: hidden;">
+                    <div style="padding: 20px;">
+                        <h2 style="color: #333;">Password Changed</h2>
+                        <p>Your password was changed on ${time || new Date().toLocaleString()}. If this wasn't you, secure your account.</p>
+                        <p>Best regards,<br>The Cocpit Team</p>
+                    </div>
+                </div>
+            `,
+        });
+        return response;
+    } catch (error) {
+        console.error("Error sending password changed email:", error);
+    }
+};
+
+const sendEmailAddressChangedEmail = async (email, newEmail) => {
+    if (!resend) return;
+    try {
+        const response = await resend.emails.send({
+            from: "Cocpit <noreply@cocpit.in>",
+            to: email,
+            subject: "Your Cocpit email address was updated",
+            html: `
+                <div style="font-family: sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; border: 1px solid #ddd; border-radius: 8px; overflow: hidden;">
+                    <div style="padding: 20px;">
+                        <h2 style="color: #333;">Email Address Updated</h2>
+                        <p>Your account primary email was changed to <strong>${newEmail}</strong>.</p>
+                        <p>If you did not authorize this change, please secure your account immediately or contact support.</p>
+                        <p>Best regards,<br>The Cocpit Team</p>
+                    </div>
+                </div>
+            `,
+        });
+        return response;
+    } catch (error) {
+        console.error("Error sending email address changed email:", error);
+    }
+};
+
+const sendAccountDeletionCompletedEmail = async (email) => {
+    if (!resend) return;
+    try {
+        const response = await resend.emails.send({
+            from: "Cocpit <noreply@cocpit.in>",
+            to: email,
+            subject: "Your Cocpit account has been deleted",
+            html: `
+                <div style="font-family: sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; border: 1px solid #ddd; border-radius: 8px; overflow: hidden;">
+                    <div style="padding: 20px;">
+                        <h2 style="color: #333;">Account Deleted</h2>
+                        <p>Your Cocpit account and all associated data have been permanently deleted.</p>
+                        <p>We're sorry to see you go! If you ever wish to return, you are welcome to create a new account.</p>
+                        <p>Best regards,<br>The Cocpit Team</p>
+                    </div>
+                </div>
+            `,
+        });
+        return response;
+    } catch (error) {
+        console.error("Error sending account deletion completed email:", error);
+    }
+};
+
 module.exports = {
     sendOTPEmail,
     sendAccountDeletionEmail,
@@ -614,5 +964,23 @@ module.exports = {
     sendOrgDeactivateOTPEmail,
     sendOrgReactivateOTPEmail,
     sendOrgRecoverOTPEmail,
+    sendTeamInviteEmail,
+    sendDocumentVerifiedEmail,
+    sendDocumentRejectedEmail,
+    sendOrgDocumentSubmittedEmail,
+    sendOrgDocumentVerifiedEmail,
+    sendOrgDocumentRejectedEmail,
+    sendJobApplicationChatEmail,
+    sendJobOfferChatEmail,
+    sendCompanyJobChatEmail,
+
+
+    sendShortlistedEmail,
+
+    sendOfferExpiringEmail,
+    sendNewDeviceLoginEmail,
+    sendPasswordChangedEmail,
+    sendEmailAddressChangedEmail,
+    sendAccountDeletionCompletedEmail,
 };
 

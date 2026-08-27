@@ -144,6 +144,53 @@ const initializeUserSession = async (user, userAgent, ipAddress) => {
     };
 };
 
+const handleNewDeviceDetection = async (userId, userEmail, userAgent, ipAddress) => {
+    try {
+        const isKnownDevice = await authRepo.checkDeviceExists(userId, userAgent, ipAddress);
+        if (isKnownDevice) return;
+
+        const emailService = require("../../core/services/email.service");
+        const notificationService = require("../notification/notification.service");
+        const pool = require("../../core/db/pool");
+        const socketService = require("../../core/infrastructure/socket.service");
+
+        const locationStr = ipAddress || "Unknown Location";
+        const deviceStr = userAgent ? (userAgent.substring(0, 30) + '...') : "Unknown Device";
+
+        // DB Insert
+        await pool.query(
+            `INSERT INTO notifications (user_id, type, text, is_read, metadata)
+             VALUES ($1, 'new_device_login', $2, false, $3)`,
+            [userId, `A new login to your account was detected from ${locationStr}.`, JSON.stringify({ title: 'New login detected' })]
+        );
+
+        // Socket Emit
+        if (socketService.io) {
+            socketService.notifyUser(userId, {
+                type: 'new_device_login',
+                title: 'New login detected',
+                text: `A new login to your account was detected from ${locationStr}.`,
+                created_at: new Date().toISOString()
+            });
+        }
+
+        // Push Notification
+        notificationService.sendToUser(userId, {
+            notification: {
+                title: 'New login detected',
+                body: `A new login to your account was detected from ${locationStr}.`
+            },
+            data: { type: 'new_device_login' }
+        }).catch(e => console.error("[Auth] Push error:", e));
+
+        // Email
+        emailService.sendNewDeviceLoginEmail(userEmail, deviceStr, locationStr).catch(e => console.error("[Auth] Email error:", e));
+
+    } catch (e) {
+        console.error("[Auth] New device detection error:", e);
+    }
+};
+
 const waitForRefreshReplay = async (userId, sessionId, presentedTokenHash, maxAttempts = 12, delayMs = 50) => {
     for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
         const replay = await getRefreshReplay(userId, sessionId, presentedTokenHash);
@@ -279,7 +326,10 @@ const loginUser = async ({ email, password, userAgent, ipAddress }) => {
         }
     }
 
-    // 4. Initialize session (Shared logic)
+    // 4. New Device Detection
+    await handleNewDeviceDetection(user.user_id, user.email, userAgent, ipAddress);
+
+    // 5. Initialize session (Shared logic)
     return initializeUserSession(user, userAgent, ipAddress);
 };
 
@@ -534,6 +584,10 @@ const socialLogin = async ({ provider, idToken, accountType, fullName: clientFul
     const hashedRefresh = crypto.createHash("sha256").update(refreshToken).digest("hex");
 
     // ── Step 4: Store session (respects existing 10-device limit) ──
+    if (!isNewUser) {
+        await handleNewDeviceDetection(user.user_id, user.email || normalizedEmail, userAgent, ipAddress);
+    }
+
     await authRepo.beginTransaction();
     try {
         const activeSessions = await authRepo.getActiveSessions(user.user_id);

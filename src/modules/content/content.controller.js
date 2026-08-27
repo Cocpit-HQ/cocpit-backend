@@ -69,21 +69,62 @@ const getOptionalContentActorScope = (req, _fallbackOrgId = null) => {
 
 const broadcastChannelArticlePublished = async (orgId, article) => {
     try {
+        // 1. Fetch organization details
+        const orgRes = await pool.query(`SELECT name, logo_url FROM organizations WHERE org_id = $1`, [orgId]);
+        if (orgRes.rows.length === 0) return;
+        const orgName = orgRes.rows[0].name || "An organization";
+        const orgLogo = orgRes.rows[0].logo_url || null;
+
+        // 2. Fetch subscribers
         const subscribers = await pool.query(
             `SELECT cs.user_id FROM community_subscriptions cs
              JOIN communities c ON cs.community_id = c.community_id
              WHERE c.org_id = $1 AND cs.status = 'SUBSCRIBED'`,
             [orgId]
         );
-        for (const sub of subscribers.rows) {
-            socketService.notifyUser(sub.user_id, "channel_article_published", {
-                orgId,
-                article: {
-                    id: article.id,
-                    title: article.title,
-                    createdAt: article.createdAt || article.created_at
-                }
+
+        if (subscribers.rows.length === 0) return;
+
+        const subscriberIds = subscribers.rows.map(sub => sub.user_id);
+        const notificationText = `"${orgName}" posted: "${article.preview}"`;
+        const notificationTitle = `New update from "${orgName}"`;
+
+        // 3. Bulk Insert DB Notifications
+        const insertQuery = `
+            INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata, is_read, created_at)
+            SELECT unnest($1::uuid[]), NULL, 'channel_article', $2, $3, $4::jsonb, false, NOW()
+            RETURNING notification_id, user_id, created_at
+        `;
+        const insertValues = [
+            subscriberIds,
+            notificationText,
+            article.id,
+            JSON.stringify({ org_id: orgId })
+        ];
+
+        const insertRes = await pool.query(insertQuery, insertValues);
+
+        // 4. Emit real-time sockets & push notifications
+        for (const row of insertRes.rows) {
+            // Socket emit
+            socketService.notifyUser(row.user_id, "notification", {
+                notification_id: row.notification_id,
+                type: 'channel_article',
+                text: notificationText,
+                reference_id: article.id,
+                is_read: false,
+                created_at: row.created_at.toISOString(),
+                actor_name: orgName,
+                actor_avatar: orgLogo,
+                is_company_actor: true,
+                metadata: { org_id: orgId }
             });
+
+            // Push notification
+            sendPush(row.user_id, notificationTitle, notificationText, {
+                type: 'channel_article',
+                referenceId: article.id
+            }).catch(() => {});
         }
     } catch (err) {
         console.error("Error broadcasting channel article publication:", err);
@@ -1194,28 +1235,31 @@ exports.createPost = async (req, res) => {
 
         // Notify followers with 'posts' preference enabled (fire-and-forget, after commit)
         if (companyId) {
-            const companyNameRes = await pool.query(`SELECT name FROM organizations WHERE org_id = $1`, [companyId]);
-            const cName = companyNameRes.rows[0]?.name || 'An organization';
-            notifyOrgFollowers(companyId, "posts", {
-                type: "organization_post",
-                text: `${cName} published a new post`,
-                referenceId: postId,
-                metadata: { post_title: title || content?.substring(0, 50) },
-            }).catch(err => console.error("Post notification error:", err));
+            // Real-time channel article update notification for subscribers
+            if (post_type === 'article' && status === 'published') {
+                const newPostCreatedAt = postResult.rows[0].created_at;
+                const previewText = title || 'a new article';
+
+                broadcastChannelArticlePublished(companyId, {
+                    id: postId,
+                    title: title,
+                    createdAt: newPostCreatedAt,
+                    preview: previewText
+                }).catch(err => console.error("Error in broadcastChannelArticlePublished:", err));
+            } else {
+                const companyNameRes = await pool.query(`SELECT name FROM organizations WHERE org_id = $1`, [companyId]);
+                const cName = companyNameRes.rows[0]?.name || 'An organization';
+                notifyOrgFollowers(companyId, "posts", {
+                    type: "organization_post",
+                    text: `${cName} published a new post`,
+                    referenceId: postId,
+                    metadata: { post_title: title || content?.substring(0, 50) },
+                }).catch(err => console.error("Post notification error:", err));
+            }
 
             // Broadcast: notify all members of all child orgs (fire-and-forget)
             if (is_broadcast) {
                 notifyBroadcastToChildOrgs(companyId, postId, content).catch(err => console.error("Broadcast notification error:", err));
-            }
-
-            // Real-time channel article update notification for subscribers
-            if (post_type === 'article' && status === 'published') {
-                const newPostCreatedAt = postResult.rows[0].created_at;
-                broadcastChannelArticlePublished(companyId, {
-                    id: postId,
-                    title: title,
-                    createdAt: newPostCreatedAt
-                }).catch(err => console.error("Error in broadcastChannelArticlePublished:", err));
             }
         }
 
@@ -2444,64 +2488,6 @@ exports.toggleLike = async (req, res) => {
 
             // 📝 Log Activity: Like Post
             logActivity(userId, 'like_post', 'post', postId);
-
-
-            // 🔔 Notify Author
-            // Fetch post author
-            const postRes = await pool.query("SELECT author_id, author_org_id FROM posts WHERE post_id = $1", [postId]);
-            if (postRes.rowCount > 0) {
-                const authorId = postRes.rows[0].author_id;
-                const authorCompanyId = postRes.rows[0].author_org_id;
-
-                // Don't notify if self (User liking own user post OR Company liking own company post)
-                let isSelf = (!companyId && !authorCompanyId && authorId === userId);
-                if (companyId && authorCompanyId && companyId === authorCompanyId) isSelf = true;
-
-                if (!isSelf) {
-                    let senderName, senderAvatar;
-
-                    if (companyId) {
-                        const companyRes = await pool.query("SELECT name, logo_url FROM organizations WHERE org_id = $1", [companyId]);
-                        senderName = companyRes.rows[0].name;
-                        senderAvatar = companyRes.rows[0].logo_url;
-                    } else {
-                        const userRes = await pool.query("SELECT full_name, avatar_url FROM users WHERE user_id = $1", [userId]);
-                        senderName = userRes.rows[0].full_name;
-                        senderAvatar = userRes.rows[0].avatar_url;
-                    }
-
-                    const likeNotifPayload = {
-                        type: "like",
-                        text: "liked your post",
-                        from: userId,
-                        senderName: senderName,
-                        senderAvatar: senderAvatar,
-                        referenceId: postId,
-                        time: "Just now",
-                        metadata: { org_id: companyId }
-                    };
-
-                    // Emit real-time to the post author (personal)
-                    socketService.notifyUser(authorId, "notification", likeNotifPayload);
-                    // Push notification for offline devices
-                    sendPush(authorId, senderName, likeNotifPayload.text, { type: 'like', postId }).catch(() => {});
-
-                    // Also emit to org room if post belongs to an org (so team members see it)
-                    if (authorCompanyId) {
-                        socketService.notifyOrg(authorCompanyId, "notification", likeNotifPayload);
-                    }
-
-                    // Persist notification
-                    await pool.query(
-                        `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata, recipient_org_id) 
-                         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-                        [authorId, userId, "like", "liked your post", postId, JSON.stringify({ org_id: companyId }), authorCompanyId]
-                    );
-                }
-            }
-
-            // 📝 Log Activity: Like Post
-            logActivity(userId, 'like_post', 'post', postId);
         }
 
 
@@ -2546,6 +2532,72 @@ exports.toggleLike = async (req, res) => {
                     fullName: user.full_name,
                     avatar: user.avatar_url
                 };
+            }
+        }
+
+        // 🔔 Notify Author (In-App unconditional, Push conditional)
+        if (liked) {
+            const postRes = await pool.query("SELECT author_id, author_org_id FROM posts WHERE post_id = $1", [postId]);
+            if (postRes.rowCount > 0) {
+                const authorId = postRes.rows[0].author_id;
+                const authorCompanyId = postRes.rows[0].author_org_id;
+
+                // Don't notify if self
+                let isSelf = (!companyId && !authorCompanyId && authorId === userId);
+                if (companyId && authorCompanyId && companyId === authorCompanyId) isSelf = true;
+
+                if (!isSelf) {
+                    const notificationText = `liked your post`;
+
+                    // Persist DB Notification unconditionally
+                    const notifRes = await pool.query(
+                        `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata, recipient_org_id) 
+                         VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING notification_id, created_at`,
+                        [
+                            authorId, 
+                            userId, 
+                            "like", 
+                            notificationText, 
+                            postId, 
+                            JSON.stringify({ org_id: companyId, post_id: postId }), 
+                            authorCompanyId
+                        ]
+                    );
+
+                    const dbNotification = notifRes.rows[0];
+
+                    const likeNotifPayload = {
+                        notification_id: dbNotification.notification_id,
+                        type: "like",
+                        text: notificationText,
+                        reference_id: postId,
+                        is_read: false,
+                        created_at: dbNotification.created_at.toISOString(),
+                        actor_name: actorInfo.fullName,
+                        actor_avatar: actorInfo.avatar,
+                        actor_slug: actorInfo.username,
+                        is_company_actor: !!companyId,
+                        metadata: { org_id: companyId, post_id: postId }
+                    };
+
+                    // Emit real-time to the post author unconditionally
+                    const ioService = require("../../core/infrastructure/socket.service");
+                    if (ioService && ioService.notifyUser) {
+                        ioService.notifyUser(authorId, "notification", likeNotifPayload);
+                    }
+                    
+                    // Also emit to org room if post belongs to an org
+                    if (authorCompanyId && ioService && ioService.notifyOrg) {
+                        ioService.notifyOrg(authorCompanyId, "notification", likeNotifPayload);
+                    }
+
+                    // Push notification conditionally based on thresholds EXACTLY as in image
+                    const likeThresholds = [6, 10, 40, 70, 100, 150, 200, 500, 750, 1000];
+                    if (likeThresholds.includes(likeCount)) {
+                        const pushText = `"${actorInfo.fullName}" and ${likeCount - 1} others liked your post`;
+                        sendPush(authorId, "New like on your post", pushText, { type: 'like', referenceId: postId }).catch(() => {});
+                    }
+                }
             }
         }
 
@@ -2734,39 +2786,61 @@ exports.addComment = async (req, res) => {
         if (!companyId && postAuthorId === userId) shouldNotifyPostOwner = false;
 
         if (shouldNotifyPostOwner) {
-            const notificationText = "commented on your post";
+            // Count total comments on post
+            const countResult = await pool.query(
+                "SELECT COUNT(*) FROM active_post_comments WHERE post_id = $1",
+                [postId]
+            );
+            const commentCount = Number(countResult.rows[0].count);
+
+            let cleanedContent = content.replace(/@\w+\s*/g, '').trim();
+            let preview = cleanedContent.substring(0, 40);
+            if (cleanedContent.length > 40) preview += "...";
+            
+            let notificationText = `${actorName} commented: "${preview}"`;
 
             // Notification Metadata
             const meta = {
                 comment_id: newComment.comment_id,
-                org_id: companyId
+                org_id: companyId,
+                post_id: postId
             };
 
-            await pool.query(
+            const notifRes = await pool.query(
                 `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata, recipient_org_id) 
-                 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+                 VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING notification_id, created_at`,
                 [postAuthorId, userId, 'comment', notificationText, postId, JSON.stringify(meta), postCompanyId]
             );
 
+            const dbNotification = notifRes.rows[0];
+
             const commentNotifPayload = {
+                notification_id: dbNotification.notification_id,
                 type: 'comment',
                 text: notificationText,
-                from: userId,
-                senderName: actorName,
-                senderAvatar: actorAvatar,
-                referenceId: postId,
-                metadata: meta,
-                time: "Just now"
+                reference_id: postId,
+                is_read: false,
+                created_at: dbNotification.created_at.toISOString(),
+                actor_name: actorName,
+                actor_avatar: actorAvatar,
+                actor_slug: null, // Could fetch if needed
+                is_company_actor: !!companyId,
+                metadata: meta
             };
 
-            // Notify the post author (personal)
+            // Notify the post author (personal) unconditionally
             socketService.notifyUser(postAuthorId, "notification", commentNotifPayload);
-            // Push notification for offline devices
-            sendPush(postAuthorId, actorName, commentNotifPayload.text, { type: 'comment', postId }).catch(() => {});
-
+            
             // Also notify org room if the post belongs to an org
             if (postCompanyId) {
                 socketService.notifyOrg(postCompanyId, "notification", commentNotifPayload);
+            }
+
+            // Push notification conditionally based on thresholds EXACTLY as in image
+            const commentThresholds = [40, 55, 70, 85, 100, 150, 200, 500, 750, 1000];
+            if (commentThresholds.includes(commentCount)) {
+                let pushText = `${actorName} and ${commentCount - 1} others commented: "${preview}"`;
+                sendPush(postAuthorId, "New comment on your post", pushText, { type: 'comment', referenceId: postId }).catch(() => {});
             }
         }
 
@@ -2794,20 +2868,26 @@ exports.addComment = async (req, res) => {
                 if (!companyId && !parentCompanyId && parentAuthorId === userId) isSelfReply = true;
 
                 if (!isSelfReply && !isPostOwner) {
-                    const replyText = `${actorName} replied to your comment`;
+                    let cleanedContent = content.replace(/@\w+\s*/g, '').trim();
+                    let preview = cleanedContent.substring(0, 40);
+                    if (cleanedContent.length > 40) preview += "...";
+                    const replyText = `${actorName} replied to your comment: "${preview}"`;
                     const meta = {
                         comment_id: newComment.comment_id,
                         parent_id,
                         org_id: companyId
                     };
 
-                    await pool.query(
+                    const notifRes = await pool.query(
                         `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata, recipient_org_id) 
-                         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+                         VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING notification_id, created_at`,
                         [parentAuthorId, userId, 'reply', replyText, postId, JSON.stringify(meta), parentCompanyId]
                     );
 
+                    const dbNotification = notifRes.rows[0];
+
                     const replyNotifPayload = {
+                        notification_id: dbNotification.notification_id,
                         type: 'reply',
                         text: replyText,
                         from: userId,
@@ -2816,6 +2896,7 @@ exports.addComment = async (req, res) => {
                         referenceId: postId,
                         metadata: meta,
                         time: "Just now",
+                        created_at: dbNotification.created_at.toISOString(),
                         recipient_org_id: parentCompanyId
                     };
 

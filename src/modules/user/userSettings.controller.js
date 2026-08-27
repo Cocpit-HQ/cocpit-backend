@@ -279,12 +279,14 @@ exports.updatePassword = async (req, res) => {
         const currentSessionId = req.user.sid;
         const { currentPassword, newPassword } = req.body;
 
+
+        
         if (!currentPassword || !newPassword) {
             return res.status(400).json({ success: false, message: "currentPassword and newPassword are required" });
         }
 
         const userRes = await pool.query(
-            `SELECT password_hash FROM users WHERE user_id = $1`,
+            `SELECT email, password_hash FROM users WHERE user_id = $1`,
             [userId]
         );
 
@@ -317,6 +319,45 @@ exports.updatePassword = async (req, res) => {
         );
 
         await revokeOtherSessions(userId, currentSessionId);
+
+        // ─── Trigger Password Changed Notification (Row 2) ───
+        console.log(`[PasswordChange] ✅ Password updated for userId=${userId}, email=${user.email}. Now triggering notification...`);
+        try {
+            const now = new Date();
+            const dateStr = now.toLocaleDateString();
+            const timeStr = now.toLocaleTimeString();
+            const msgText = `Your password was changed on ${dateStr}, ${timeStr}. If this wasn't you, secure your account.`;
+
+            await pool.query(
+                `INSERT INTO notifications (user_id, type, text, is_read, metadata)
+                 VALUES ($1, 'password_changed', $2, false, $3)`,
+                [userId, msgText, JSON.stringify({ title: 'Your password was changed' })]
+            );
+            console.log(`[PasswordChange] ✅ Notification inserted into DB`);
+
+            if (SocketService.io) {
+                SocketService.notifyUser(userId, {
+                    type: 'password_changed',
+                    title: 'Your password was changed',
+                    text: msgText,
+                    created_at: now.toISOString()
+                });
+                console.log(`[PasswordChange] ✅ Socket notification sent`);
+            } else {
+                console.log(`[PasswordChange] ⚠️ SocketService.io is falsy, skipping socket`);
+            }
+
+            if (user.email) {
+                console.log(`[PasswordChange] Sending email to ${user.email}...`);
+                emailService.sendPasswordChangedEmail(user.email, `${dateStr}, ${timeStr}`)
+                    .then(() => console.log(`[PasswordChange] ✅ Email sent successfully`))
+                    .catch(e => console.error(`[PasswordChange] ❌ Email failed:`, e));
+            } else {
+                console.log(`[PasswordChange] ⚠️ user.email is falsy, skipping email`);
+            }
+        } catch (e) {
+            console.error("[PasswordChange] ❌ Failed to trigger password changed notification:", e);
+        }
 
         return res.status(200).json({ success: true });
     } catch (error) {

@@ -10,7 +10,7 @@ const analyticsController = require("./organization.analytics.controller");
 const { requireAuth, optionalAuth } = require("../../core/middlewares/auth.middleware");
 const { requireOrgPermission } = require("../../core/middlewares/organization.auth.middleware");
 const { organizationActionLimiter, otpGenerationLimiter } = require("../../core/middlewares/rateLimit.middleware");
-const { uploadAvatar, uploadCover, uploadChatMedia } = require("../../core/middlewares/upload.middleware");
+const { uploadAvatar, uploadCover, uploadChatMedia, uploadSupportAttachment } = require("../../core/middlewares/upload.middleware");
 const { requireRoles } = require("../../core/middlewares/role.middleware");
 const { validate } = require("../../core/middlewares/validation.middleware");
 const {
@@ -128,7 +128,7 @@ router.post("/companies/:orgId/enroll", requireAuth, institutionController.reque
 // --- VERIFICATION ---
 router.post("/organizations/:orgId/verify/domain", requireAuth, requireOrgPermission("MANAGE_SETTINGS"), otpGenerationLimiter, verifyController.verifyDomain);
 router.post("/organizations/:orgId/verify/edu-email", requireAuth, requireOrgPermission("MANAGE_VERIFICATION"), verifyController.verifyByEduEmail);
-router.post("/organizations/:orgId/verify/document", requireAuth, requireOrgPermission("MANAGE_VERIFICATION"), verifyController.submitDocumentVerification);
+router.post("/organizations/:orgId/verify/document", requireAuth, requireOrgPermission("MANAGE_VERIFICATION"), uploadSupportAttachment ? uploadSupportAttachment.fields([{ name: 'frontImage', maxCount: 1 }, { name: 'backImage', maxCount: 1 }]) : (req, res, next) => next(), verifyController.submitDocumentVerification);
 
 router.post("/companies/:orgId/verify/domain", requireAuth, requireOrgPermission("MANAGE_SETTINGS"), otpGenerationLimiter, verifyController.verifyDomain);
 

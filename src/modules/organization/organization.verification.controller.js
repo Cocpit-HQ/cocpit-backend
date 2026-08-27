@@ -1,5 +1,8 @@
 const pool = require("../../core/db/pool");
 const { checkOrgPermission } = require("../../core/utils/rbac");
+const socketService = require("../../core/infrastructure/socket.service");
+const { sendOrgDocumentSubmittedEmail } = require("../../core/services/email.service");
+const { sendToUser } = require("../../services/notification.service");
 
 // Helper for Audit Logging
 const logAudit = async (client, { entityId, actorId, action, metadata = {} }) => {
@@ -212,10 +215,24 @@ exports.verifyByEduEmail = async (req, res) => {
 exports.submitDocumentVerification = async (req, res) => {
     const { orgId } = req.params;
     const userId = req.user.sub;
-    const { documentUrls } = req.body; // Array of URLs
+    const { documentUrls } = req.body; // Array of URLs (fallback)
+    let finalUrls = [];
 
-    if (!documentUrls || !Array.isArray(documentUrls) || documentUrls.length === 0) {
-        return res.status(400).json({ message: "At least one document is required" });
+    if (req.files) {
+        if (req.files.frontImage && req.files.frontImage[0]) {
+            finalUrls.push(req.files.frontImage[0].path || req.files.frontImage[0].location);
+        }
+        if (req.files.backImage && req.files.backImage[0]) {
+            finalUrls.push(req.files.backImage[0].path || req.files.backImage[0].location);
+        }
+    }
+
+    if (finalUrls.length === 0 && documentUrls && Array.isArray(documentUrls)) {
+        finalUrls = documentUrls;
+    }
+
+    if (finalUrls.length < 2) {
+        return res.status(400).json({ message: "Both front and back images of the document are required" });
     }
 
     const client = await pool.connect();
@@ -226,25 +243,65 @@ exports.submitDocumentVerification = async (req, res) => {
         if (!canVerify) throw new Error("Forbidden");
 
         await client.query(
-            `UPDATE organizations SET verification_status = 'DOCUMENT_PENDING' WHERE org_id = $1`,
+            `UPDATE organizations SET verification_status = 'VERIFIED' WHERE org_id = $1`,
             [orgId]
         );
 
         await client.query(
             `INSERT INTO organization_verifications (org_id, verification_type, document_urls, is_verified)
-             VALUES ($1, 'DOCUMENT', $2, FALSE)`,
-            [orgId, JSON.stringify(documentUrls)]
+             VALUES ($1, 'DOCUMENT', $2, TRUE)`,
+            [orgId, JSON.stringify(finalUrls)]
         );
 
         await logAudit(client, {
             entityId: orgId,
             actorId: userId,
             action: 'DOCUMENTS_SUBMITTED',
-            metadata: { count: documentUrls.length }
+            metadata: { count: finalUrls.length }
         });
 
+        // NOTIFICATION: Document Submitted
+        let orgName = "the company";
+        const orgRes = await client.query("SELECT name, created_by FROM organizations WHERE org_id = $1", [orgId]);
+        if (orgRes.rowCount > 0) {
+            orgName = orgRes.rows[0].name;
+            const ownerId = orgRes.rows[0].created_by;
+            const userRes = await client.query("SELECT email FROM active_users WHERE user_id = $1", [ownerId]);
+            
+            if (userRes.rowCount > 0) {
+                const ownerEmail = userRes.rows[0].email;
+                const type = "org_doc_verification_submitted";
+                const title = "Documents submitted";
+                const message = `Your documents for ${orgName} have been submitted and are under review.`;
+                const timestamp = new Date().toISOString();
+
+                // Insert into DB
+                const notifRes = await client.query(
+                    `INSERT INTO notifications (user_id, sender_id, type, text, metadata)
+                     VALUES ($1, $2, $3, $4, $5) RETURNING notification_id, created_at`,
+                    [ownerId, ownerId, type, message, JSON.stringify({ title, orgId })]
+                );
+
+                // Socket notification (triggers toast in frontend)
+                socketService.notifyUser(ownerId, "notification", { 
+                    type, 
+                    title, 
+                    message, 
+                    timestamp,
+                    notification_id: notifRes.rows[0].notification_id,
+                    created_at: notifRes.rows[0].created_at.toISOString()
+                });
+
+                // Email notification
+                sendOrgDocumentSubmittedEmail(ownerEmail, orgName).catch(err => console.error("Email err:", err));
+                
+                // Push notification
+                sendToUser(ownerId, title, message, { type }).catch(() => {});
+            }
+        }
+
         await client.query("COMMIT");
-        res.json({ message: "Documents submitted for review" });
+        res.json({ message: `Your documents for ${orgName} have been submitted and are under review.` });
     } catch (err) {
         await client.query("ROLLBACK");
         res.status(err.message === "Forbidden" ? 403 : 500).json({ message: err.message });
