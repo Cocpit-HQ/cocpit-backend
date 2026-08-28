@@ -5500,7 +5500,7 @@ exports.upsertReaction = async (req, res) => {
     try {
         // Verify the message exists and get its details for socket/push notification
         const msgRes = await pool.query(
-            `SELECT conversation_id, sender_id, content, preview_text FROM messages WHERE message_id = $1`,
+            `SELECT conversation_id, sender_id, text_content FROM messages WHERE message_id = $1`,
             [messageId]
         );
 
@@ -5508,7 +5508,7 @@ exports.upsertReaction = async (req, res) => {
             return res.status(404).json({ message: "Message not found" });
         }
 
-        const { conversation_id, sender_id, content, preview_text } = msgRes.rows[0];
+        const { conversation_id, sender_id, text_content } = msgRes.rows[0];
 
         // Determine if this is a clear (empty emoji) or a real reaction
         const emojiValue = (typeof emoji === "string" && emoji.trim() !== "") ? emoji.trim() : "";
@@ -5551,7 +5551,7 @@ exports.upsertReaction = async (req, res) => {
 
             // Notify the original message sender via push
             if (reaction.user_id !== sender_id) {
-                const msgText = content || preview_text || 'an attachment';
+                const msgText = text_content || 'an attachment';
                 const formattedPreview = msgText.length > 40 ? msgText.substring(0, 40) + '...' : msgText;
                 
                 sendPush(
