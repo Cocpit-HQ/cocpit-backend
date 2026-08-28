@@ -6,7 +6,8 @@ const otpService = require("./otp.service");
  * POST /auth/reset-password
  */
 exports.resetPassword = async (req, res) => {
-    const { email, newPassword, otp } = req.body;
+    const { email, newPassword, otp, logoutOtherDevices, logoutOthers } = req.body;
+    const shouldLogoutOthers = logoutOtherDevices ?? logoutOthers ?? true;
 
     try {
         const otpResult = await otpService.verifyOTP(email, otp);
@@ -17,7 +18,7 @@ exports.resetPassword = async (req, res) => {
             });
         }
 
-        const result = await passwordResetService.resetPassword(email, newPassword);
+        const result = await passwordResetService.resetPassword(email, newPassword, shouldLogoutOthers);
 
         res.status(200).json({
             message: result.message,
@@ -28,7 +29,14 @@ exports.resetPassword = async (req, res) => {
 
         if (err.message === "User not found") {
             return res.status(404).json({
-                message: "No account found with this email address",
+                message: "We couldn't find an account with this email",
+                success: false,
+            });
+        }
+
+        if (err.message === "Choose a different password") {
+            return res.status(400).json({
+                message: "Choose a different password",
                 success: false,
             });
         }
@@ -131,5 +139,20 @@ exports.getResetLinkStatus = async (req, res) => {
     } catch (err) {
         console.error("Get reset link status error:", err);
         return res.status(500).json({ hasActiveLink: false, remainingSeconds: 0 });
+    }
+};
+
+/**
+ * Live validation for old password comparison on blur
+ * POST /auth/validate-password
+ */
+exports.validatePassword = async (req, res) => {
+    try {
+        const { email, token, password } = req.body;
+        const result = await passwordResetService.validatePassword({ email, token, password });
+        return res.status(200).json(result);
+    } catch (err) {
+        console.error("Validate password error:", err);
+        return res.status(200).json({ isSamePassword: false });
     }
 };

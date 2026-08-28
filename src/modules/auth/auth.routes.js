@@ -62,6 +62,7 @@ router.post("/forgot-password-link", requireAuth, passwordResetLimiter, password
 router.get("/reset-link-status", requireAuth, passwordResetController.getResetLinkStatus);
 router.get("/verify-reset-token", passwordResetController.verifyResetToken);
 router.post("/reset-password-token", passwordResetLimiter, passwordResetController.resetPasswordWithToken);
+router.post("/validate-password", passwordResetController.validatePassword);
 
 // Admin
 router.get("/admin", requireAuth, requireRoles(['Admin']), async (req, res) => {

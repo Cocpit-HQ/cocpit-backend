@@ -1,20 +1,21 @@
 const { z } = require("zod");
 
+const passwordValidation = z.string({
+  required_error: "Password is required",
+})
+  .min(8, { message: "Password must be at least 8 characters" })
+  .regex(/[A-Z]/, { message: "Password must contain at least 1 uppercase letter" })
+  .regex(/[0-9]/, { message: "Password must contain at least 1 number" })
+  .regex(/[@#$%\^&*!?:;_=\-+(){}[\]|\\/.,~`"'<>]/, { message: "Password must contain at least 1 special character" });
+
 const registerSchema = z.object({
   body: z.object({
     email: z.string({
       required_error: "Email is required",
     }).email({
-      message: "Invalid email address",
+      message: "Enter a valid email address.",
     }),
-    password: z.string({
-      required_error: "Password is required",
-    })
-      .min(8, { message: "Password must be at least 8 characters long" })
-      .max(15, { message: "Password must be at most 15 characters long" })
-      .regex(/[a-z]/, { message: "Password must contain at least 1 lowercase letter (a-z)" })
-      .regex(/[A-Z]/, { message: "Password must contain at least 1 uppercase letter (A-Z)" })
-      .regex(/[@#$%\^&*!?:;_=\-+(){}[\]|\\/.,~`"'<>]/, { message: "Password must contain at least 1 special character (e.g., @, #, $, %, &, *)" }),
+    password: passwordValidation,
     otp: z.string({
       required_error: "OTP is required",
     }).length(6, {
@@ -28,11 +29,11 @@ const loginSchema = z.object({
     email: z.string({
       required_error: "Email is required",
     }).email({
-      message: "Invalid email address",
+      message: "Enter a valid email address.",
     }),
     password: z.string({
       required_error: "Password is required",
-    }),
+    }).min(1, { message: "Password is required" }),
   }),
 });
 
@@ -49,21 +50,16 @@ const resetPasswordSchema = z.object({
     email: z.string({
       required_error: "Email is required",
     }).email({
-      message: "Invalid email address",
+      message: "Enter a valid email address.",
     }),
-    newPassword: z.string({
-      required_error: "New password is required",
-    })
-      .min(8, { message: "Password must be at least 8 characters long" })
-      .max(15, { message: "Password must be at most 15 characters long" })
-      .regex(/[a-z]/, { message: "Password must contain at least 1 lowercase letter (a-z)" })
-      .regex(/[A-Z]/, { message: "Password must contain at least 1 uppercase letter (A-Z)" })
-      .regex(/[@#$%\^&*!?:;_=\-+(){}[\]|\\/.,~`"'<>]/, { message: "Password must contain at least 1 special character (e.g., @, #, $, %, &, *)" }),
+    newPassword: passwordValidation,
     otp: z.string({
       required_error: "OTP is required",
     }).length(6, {
       message: "OTP must be exactly 6 digits",
     }),
+    logoutOtherDevices: z.boolean().optional(),
+    logoutOthers: z.boolean().optional(),
   }),
 });
 
@@ -72,4 +68,6 @@ module.exports = {
   loginSchema,
   refreshTokenSchema,
   resetPasswordSchema,
+  passwordValidation,
 };
+

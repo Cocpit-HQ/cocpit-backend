@@ -278,7 +278,7 @@ const loginUser = async ({ email, password, userAgent, ipAddress }) => {
     // 1. Find user
     const user = await authRepo.findUserByEmail(normalizedEmail);
     if (!user) {
-        return { error: { status: 401, message: "User not found" } };
+        return { error: { status: 401, message: "Incorrect password. Try again." } };
     }
 
     // 2. Validate password
@@ -287,7 +287,7 @@ const loginUser = async ({ email, password, userAgent, ipAddress }) => {
     }
     const isValid = await comparePassword(password, user.password_hash);
     if (!isValid) {
-        return { error: { status: 401, message: "Invalid credentials" } };
+        return { error: { status: 401, message: "Incorrect password. Try again." } };
     }
 
     // 3. Block login if account is pending deletion
@@ -426,6 +426,13 @@ const refreshTokens = async (refreshTokenValue) => {
 const logoutUser = async (accessTokenValue) => {
     const { sub: userId, sid: sessionId } = verifyAccessToken(accessTokenValue, { ignoreExpiration: true });
     await authRepo.deleteSessionForUser(userId, sessionId);
+    if (redisClient.isOpen && sessionId) {
+        try {
+            await redisClient.setEx(`revoked_session:${sessionId}`, 15 * 60, "1");
+        } catch (redisErr) {
+            console.warn("[Auth] Failed to set revoked_session in Redis on logout:", redisErr.message);
+        }
+    }
     const disconnectedSockets = await socketService.disconnectUserSession(userId, sessionId);
     return { userId, sessionId, disconnectedSockets };
 };

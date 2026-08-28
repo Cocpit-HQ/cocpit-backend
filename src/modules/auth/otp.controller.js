@@ -5,15 +5,10 @@ const otpService = require("./otp.service");
  * POST /api/auth/request-otp
  *
  * Body: { email: string, purpose: "signup" | "password_reset" }
- *
- * Security notes:
- *   - "signup" returns 409 if email is already registered (intentional UX: redirect to sign in)
- *   - "password_reset" always returns 200 regardless of whether the account exists,
- *     preventing account enumeration attacks. OTP is only sent internally if the account exists.
  */
 const requestOTP = async (req, res, next) => {
     try {
-        const { email, purpose = "signup" } = req.body;
+        const { email, purpose = "signup", isResend = false } = req.body;
 
         if (!email) {
             return res.status(400).json({
@@ -28,28 +23,30 @@ const requestOTP = async (req, res, next) => {
             });
         }
 
-        const result = await otpService.requestOTP(email, purpose);
+        console.log(`\n📨 [API] /api/auth/request-otp called for: ${email} | Purpose: ${purpose} | isResend: ${isResend}`);
+        const result = await otpService.requestOTP(email, purpose, isResend);
 
         if (result && result.error) {
-            // For password_reset, NEVER expose whether the email exists — always return 200
-            // For signup, surface errors (e.g. 409 duplicate) so the user knows to sign in
-            if (purpose === "password_reset") {
-                // Swallow the error — respond generically regardless
-                return res.status(200).json({
-                    success: true,
-                    message: "If an account exists with that email, an OTP has been sent."
-                });
-            }
+            console.log(`❌ [API] /api/auth/request-otp failed for: ${email} - ${result.error.message}`);
             return res.status(result.error.status).json({
+                success: false,
                 message: result.error.message
             });
         }
 
+        console.log(`✅ [API] /api/auth/request-otp succeeded for: ${email}`);
         return res.status(200).json({
             success: true,
-            message: purpose === "password_reset"
-                ? "If an account exists with that email, an OTP has been sent."
-                : "If that email is valid, an OTP has been sent."
+            message: result.message || "A new code has been sent.",
+            sessionActive: Boolean(result.sessionActive),
+            verified: Boolean(result.verified),
+            sessionExpiresAt: result.sessionExpiresAt || null,
+            remainingSeconds: result.remainingSeconds !== undefined ? result.remainingSeconds : null,
+            otpActive: Boolean(result.otpActive),
+            remainingCooldown: result.remainingCooldown !== undefined ? result.remainingCooldown : 120,
+            cooldownExpiresAt: result.cooldownExpiresAt || null,
+            remainingExpiry: result.remainingExpiry !== undefined ? result.remainingExpiry : null,
+            serverTime: result.serverTime || new Date().toISOString(),
         });
     } catch (error) {
         console.error("Error requesting OTP:", error);
@@ -81,12 +78,10 @@ const verifyOTP = async (req, res, next) => {
             });
         }
 
-        // 5. Mark email verified if valid - This logic is generally custom to the User table.
-        // Since we are decoupling the OTP system, we return a success response here.
-        // The calling client or a webhook can then update the user's verified status.
         return res.status(200).json({
             success: true,
-            message: result.message
+            message: result.message,
+            sessionExpiresAt: result.sessionExpiresAt || null,
         });
 
     } catch (error) {

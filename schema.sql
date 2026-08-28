@@ -1532,6 +1532,8 @@ CREATE TABLE IF NOT EXISTS email_otps (
     attempts INTEGER DEFAULT 0,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     request_count INTEGER DEFAULT 1,
+    verified_at TIMESTAMPTZ,
+    session_expires_at TIMESTAMPTZ,
     CONSTRAINT unique_email_otp UNIQUE (email)
 );
 
