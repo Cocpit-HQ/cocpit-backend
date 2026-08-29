@@ -425,7 +425,7 @@ exports.sendDeactivateOrgOTP = async (req, res) => {
 
         // Rate Limit & Cooldown Check
         const existing = await client.query(
-            `SELECT created_at, request_count FROM email_otps WHERE email = $1`,
+            `SELECT created_at, request_count FROM email_otps WHERE email = $1 AND purpose = 'org_deactivation'`,
             [primaryEmail]
         );
 
@@ -448,9 +448,9 @@ exports.sendDeactivateOrgOTP = async (req, res) => {
         const expiresAt = new Date(Date.now() + OTP_EXPIRY_MINUTES * 60000);
 
         await client.query(
-            `INSERT INTO email_otps (email, otp_hash, expires_at, attempts, created_at, request_count)
-             VALUES ($1, $2, $3, 0, NOW(), 1)
-             ON CONFLICT (email)
+            `INSERT INTO email_otps (email, otp_hash, expires_at, attempts, created_at, request_count, purpose)
+             VALUES ($1, $2, $3, 0, NOW(), 1, 'org_deactivation')
+             ON CONFLICT (email, purpose)
              DO UPDATE SET
                  otp_hash = EXCLUDED.otp_hash,
                  expires_at = EXCLUDED.expires_at,
@@ -462,9 +462,9 @@ exports.sendDeactivateOrgOTP = async (req, res) => {
 
         if (recipients.length > 1) {
             await client.query(
-                `INSERT INTO email_otps (email, otp_hash, expires_at, attempts, created_at, request_count)
-                 VALUES ($1, $2, $3, 0, NOW(), 1)
-                 ON CONFLICT (email)
+                `INSERT INTO email_otps (email, otp_hash, expires_at, attempts, created_at, request_count, purpose)
+                 VALUES ($1, $2, $3, 0, NOW(), 1, 'org_deactivation')
+                 ON CONFLICT (email, purpose)
                  DO UPDATE SET
                      otp_hash = EXCLUDED.otp_hash,
                      expires_at = EXCLUDED.expires_at,
@@ -522,7 +522,7 @@ exports.validateDeactivateOrgOTP = async (req, res) => {
         const ownerRes = await client.query("SELECT email FROM users WHERE user_id = $1", [org.created_by || userId]);
         const primaryEmail = (org.email || ownerRes.rows[0]?.email || "").toLowerCase().trim();
 
-        const otpRes = await client.query("SELECT * FROM email_otps WHERE email = $1", [primaryEmail]);
+        const otpRes = await client.query("SELECT * FROM email_otps WHERE email = $1 AND purpose = 'org_deactivation'", [primaryEmail]);
         if (otpRes.rowCount === 0) {
             return res.status(400).json({ message: "No verification code was requested for this email." });
         }
@@ -581,7 +581,7 @@ exports.deactivateOrganization = async (req, res) => {
         const primaryEmail = (org.email || ownerRes.rows[0]?.email || "").toLowerCase().trim();
 
         // Verify OTP
-        const otpRes = await client.query("SELECT * FROM email_otps WHERE email = $1", [primaryEmail]);
+        const otpRes = await client.query("SELECT * FROM email_otps WHERE email = $1 AND purpose = 'org_deactivation'", [primaryEmail]);
         if (otpRes.rowCount === 0) {
             await client.query("ROLLBACK");
             return res.status(400).json({ message: "No verification code was requested for this organization." });
@@ -601,7 +601,7 @@ exports.deactivateOrganization = async (req, res) => {
         }
 
         // Delete OTP after successful verification
-        await client.query("DELETE FROM email_otps WHERE email = $1", [primaryEmail]);
+        await client.query("DELETE FROM email_otps WHERE email = $1 AND purpose = 'org_deactivation'", [primaryEmail]);
 
         await client.query(
             `UPDATE organizations SET is_deactivated = true, deactivated_at = NOW() WHERE org_id = $1`,
@@ -685,7 +685,7 @@ exports.sendReactivateOrgOTP = async (req, res) => {
 
         // Rate Limit & Cooldown Check
         const existing = await client.query(
-            `SELECT created_at, request_count FROM email_otps WHERE email = $1`,
+            `SELECT created_at, request_count FROM email_otps WHERE email = $1 AND purpose = 'org_reactivation'`,
             [primaryEmail]
         );
 
@@ -708,9 +708,9 @@ exports.sendReactivateOrgOTP = async (req, res) => {
         const expiresAt = new Date(Date.now() + OTP_EXPIRY_MINUTES * 60000);
 
         await client.query(
-            `INSERT INTO email_otps (email, otp_hash, expires_at, attempts, created_at, request_count)
-             VALUES ($1, $2, $3, 0, NOW(), 1)
-             ON CONFLICT (email)
+            `INSERT INTO email_otps (email, otp_hash, expires_at, attempts, created_at, request_count, purpose)
+             VALUES ($1, $2, $3, 0, NOW(), 1, 'org_reactivation')
+             ON CONFLICT (email, purpose)
              DO UPDATE SET
                  otp_hash = EXCLUDED.otp_hash,
                  expires_at = EXCLUDED.expires_at,
@@ -722,9 +722,9 @@ exports.sendReactivateOrgOTP = async (req, res) => {
 
         if (recipients.length > 1) {
             await client.query(
-                `INSERT INTO email_otps (email, otp_hash, expires_at, attempts, created_at, request_count)
-                 VALUES ($1, $2, $3, 0, NOW(), 1)
-                 ON CONFLICT (email)
+                `INSERT INTO email_otps (email, otp_hash, expires_at, attempts, created_at, request_count, purpose)
+                 VALUES ($1, $2, $3, 0, NOW(), 1, 'org_reactivation')
+                 ON CONFLICT (email, purpose)
                  DO UPDATE SET
                      otp_hash = EXCLUDED.otp_hash,
                      expires_at = EXCLUDED.expires_at,
@@ -811,9 +811,9 @@ exports.reactivateOrganization = async (req, res) => {
             }
 
             const { verifyOTP } = require("../auth/otp.service");
-            let otpResult = await verifyOTP(recipients[0], otp, true);
+            let otpResult = await verifyOTP(recipients[0], otp, true, "org_reactivation");
             if (otpResult.error && otpResult.error.message.includes("No active OTP found") && recipients.length > 1) {
-                otpResult = await verifyOTP(recipients[1], otp, true);
+                otpResult = await verifyOTP(recipients[1], otp, true, "org_reactivation");
             }
 
             if (otpResult.error) {

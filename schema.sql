@@ -1534,7 +1534,8 @@ CREATE TABLE IF NOT EXISTS email_otps (
     request_count INTEGER DEFAULT 1,
     verified_at TIMESTAMPTZ,
     session_expires_at TIMESTAMPTZ,
-    CONSTRAINT unique_email_otp UNIQUE (email)
+    purpose VARCHAR(100) NOT NULL DEFAULT 'signup',
+    CONSTRAINT unique_email_otp_purpose UNIQUE (email, purpose)
 );
 
 CREATE INDEX IF NOT EXISTS idx_email_otps_email ON email_otps(email);

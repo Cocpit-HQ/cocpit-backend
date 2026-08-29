@@ -16,7 +16,7 @@ exports.register = async (req, res) => {
     const ipAddress = req.ip || "unknown";
 
     try {
-        const otpResult = await otpService.verifyOTP(email, otp);
+        const otpResult = await otpService.verifyOTP(email, otp, true, "signup");
         if (otpResult.error) {
             return res.status(otpResult.error.status).json({ message: otpResult.error.message });
         }

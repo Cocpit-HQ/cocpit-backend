@@ -43,7 +43,7 @@ const requestOTP = async (req, res, next) => {
             sessionExpiresAt: result.sessionExpiresAt || null,
             remainingSeconds: result.remainingSeconds !== undefined ? result.remainingSeconds : null,
             otpActive: Boolean(result.otpActive),
-            remainingCooldown: result.remainingCooldown !== undefined ? result.remainingCooldown : 120,
+            remainingCooldown: result.remainingCooldown !== undefined ? result.remainingCooldown : 60,
             cooldownExpiresAt: result.cooldownExpiresAt || null,
             remainingExpiry: result.remainingExpiry !== undefined ? result.remainingExpiry : null,
             serverTime: result.serverTime || new Date().toISOString(),
@@ -60,7 +60,7 @@ const requestOTP = async (req, res, next) => {
  */
 const verifyOTP = async (req, res, next) => {
     try {
-        const { email, otp } = req.body;
+        const { email, otp, purpose = "signup" } = req.body;
 
         if (!email || !otp) {
             return res.status(400).json({
@@ -70,7 +70,7 @@ const verifyOTP = async (req, res, next) => {
 
         // We pass consume=false so that the frontend can safely verify the OTP 
         // to show a green checkmark, without deleting the OTP before the final registration submit.
-        const result = await otpService.verifyOTP(email, otp, false);
+        const result = await otpService.verifyOTP(email, otp, false, purpose);
 
         if (result.error) {
             return res.status(result.error.status).json({
@@ -90,7 +90,34 @@ const verifyOTP = async (req, res, next) => {
     }
 };
 
+/**
+ * Cancel an OTP session
+ * POST /api/auth/cancel-otp
+ */
+const cancelOTP = async (req, res, next) => {
+    try {
+        const { email, purpose = "signup" } = req.body;
+
+        if (!email) {
+            return res.status(400).json({
+                message: "Email is required to cancel session."
+            });
+        }
+
+        const result = await otpService.cancelOTP(email, purpose);
+        return res.status(200).json({
+            success: true,
+            message: "Verification session cancelled."
+        });
+
+    } catch (error) {
+        console.error("Error cancelling OTP:", error);
+        next(error);
+    }
+};
+
 module.exports = {
     requestOTP,
-    verifyOTP
+    verifyOTP,
+    cancelOTP
 };

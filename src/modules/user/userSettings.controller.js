@@ -475,7 +475,7 @@ exports.deleteAccount = async (req, res) => {
                 return res.status(400).json({ success: false, message: "Owner registered primary email not found" });
             }
 
-            const verifyResult = await verifyOTP(ownerRes.rows[0].email, otp, `org_deletion_${orgId}`);
+            const verifyResult = await verifyOTP(ownerRes.rows[0].email, otp, true, `org_deletion_${orgId}`);
             if (verifyResult.error) {
                 return res.status(verifyResult.error.status).json({ success: false, message: verifyResult.error.message });
             }
@@ -514,7 +514,7 @@ exports.deleteAccount = async (req, res) => {
         }
 
         const userObj = userFetch.rows[0];
-        const verifyResult = await verifyOTP(userObj.email, otp, `user_deletion_${userId}`);
+        const verifyResult = await verifyOTP(userObj.email, otp, true, `user_deletion_${userId}`);
         if (verifyResult.error) {
             return res.status(verifyResult.error.status).json({ success: false, message: verifyResult.error.message });
         }

@@ -1,5 +1,5 @@
 const express = require("express");
-const { requestOTP, verifyOTP } = require("./otp.controller");
+const { requestOTP, verifyOTP, cancelOTP } = require("./otp.controller");
 const rateLimit = require("express-rate-limit");
 
 const router = express.Router();
@@ -58,6 +58,7 @@ const emailLimiter = rateLimit({
 // Routes with layered rate limiters evaluated in strict order (IP -> Device -> Account)
 router.post("/request-otp", ipLimiter, deviceLimiter, emailLimiter, requestOTP);
 router.post("/verify-otp", ipLimiter, deviceLimiter, verifyOTP);
+router.post("/cancel-otp", ipLimiter, deviceLimiter, emailLimiter, cancelOTP);
 
 module.exports = router;
 

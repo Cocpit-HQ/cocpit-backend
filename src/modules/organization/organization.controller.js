@@ -611,7 +611,7 @@ exports.sendDeleteOrgOTP = async (req, res) => {
 
         // 4. Rate Limit & Cooldown Check (from email_otps table)
         const existing = await client.query(
-            `SELECT created_at, request_count FROM email_otps WHERE email = $1`,
+            `SELECT created_at, request_count FROM email_otps WHERE email = $1 AND purpose = 'org_deletion'`,
             [primaryEmail]
         );
 
@@ -635,9 +635,9 @@ exports.sendDeleteOrgOTP = async (req, res) => {
         const expiresAt = new Date(Date.now() + OTP_EXPIRY_MINUTES * 60000);
 
         await client.query(
-            `INSERT INTO email_otps (email, otp_hash, expires_at, attempts, created_at, request_count)
-             VALUES ($1, $2, $3, 0, NOW(), 1)
-             ON CONFLICT (email)
+            `INSERT INTO email_otps (email, otp_hash, expires_at, attempts, created_at, request_count, purpose)
+             VALUES ($1, $2, $3, 0, NOW(), 1, 'org_deletion')
+             ON CONFLICT (email, purpose)
              DO UPDATE SET
                  otp_hash = EXCLUDED.otp_hash,
                  expires_at = EXCLUDED.expires_at,
@@ -649,9 +649,9 @@ exports.sendDeleteOrgOTP = async (req, res) => {
 
         if (recipients.length > 1) {
             await client.query(
-                `INSERT INTO email_otps (email, otp_hash, expires_at, attempts, created_at, request_count)
-                 VALUES ($1, $2, $3, 0, NOW(), 1)
-                 ON CONFLICT (email)
+                `INSERT INTO email_otps (email, otp_hash, expires_at, attempts, created_at, request_count, purpose)
+                 VALUES ($1, $2, $3, 0, NOW(), 1, 'org_deletion')
+                 ON CONFLICT (email, purpose)
                  DO UPDATE SET
                      otp_hash = EXCLUDED.otp_hash,
                      expires_at = EXCLUDED.expires_at,
@@ -734,9 +734,9 @@ exports.validateOTPForOrganizationDeletion = async (req, res) => {
 
         // 3. Verify OTP via otpService (consume = false)
         const { verifyOTP } = require("../auth/otp.service");
-        let otpResult = await verifyOTP(recipients[0], otp, false);
+        let otpResult = await verifyOTP(recipients[0], otp, false, "org_deletion");
         if (otpResult.error && otpResult.error.message.includes("No active OTP found") && recipients.length > 1) {
-            otpResult = await verifyOTP(recipients[1], otp, false);
+            otpResult = await verifyOTP(recipients[1], otp, false, "org_deletion");
         }
 
         if (otpResult.error) {
@@ -799,9 +799,9 @@ exports.verifyOTPAndDeleteOrganization = async (req, res) => {
 
         // 3. Verify OTP via otpService
         const { verifyOTP } = require("../auth/otp.service");
-        let otpResult = await verifyOTP(recipients[0], otp, true);
+        let otpResult = await verifyOTP(recipients[0], otp, true, "org_deletion");
         if (otpResult.error && otpResult.error.message.includes("No active OTP found") && recipients.length > 1) {
-            otpResult = await verifyOTP(recipients[1], otp, true);
+            otpResult = await verifyOTP(recipients[1], otp, true, "org_deletion");
         }
 
         if (otpResult.error) {
@@ -1143,7 +1143,7 @@ exports.sendRecoverOrgOTP = async (req, res) => {
         const primaryEmail = recipients[0];
 
         const existing = await client.query(
-            `SELECT created_at, request_count FROM email_otps WHERE email = $1`,
+            `SELECT created_at, request_count FROM email_otps WHERE email = $1 AND purpose = 'org_recovery'`,
             [primaryEmail]
         );
 
@@ -1166,9 +1166,9 @@ exports.sendRecoverOrgOTP = async (req, res) => {
         const expiresAt = new Date(Date.now() + OTP_EXPIRY_MINUTES * 60000);
 
         await client.query(
-            `INSERT INTO email_otps (email, otp_hash, expires_at, attempts, created_at, request_count)
-             VALUES ($1, $2, $3, 0, NOW(), 1)
-             ON CONFLICT (email)
+            `INSERT INTO email_otps (email, otp_hash, expires_at, attempts, created_at, request_count, purpose)
+             VALUES ($1, $2, $3, 0, NOW(), 1, 'org_recovery')
+             ON CONFLICT (email, purpose)
              DO UPDATE SET
                  otp_hash = EXCLUDED.otp_hash,
                  expires_at = EXCLUDED.expires_at,
@@ -1180,9 +1180,9 @@ exports.sendRecoverOrgOTP = async (req, res) => {
 
         if (recipients.length > 1) {
             await client.query(
-                `INSERT INTO email_otps (email, otp_hash, expires_at, attempts, created_at, request_count)
-                 VALUES ($1, $2, $3, 0, NOW(), 1)
-                 ON CONFLICT (email)
+                `INSERT INTO email_otps (email, otp_hash, expires_at, attempts, created_at, request_count, purpose)
+                 VALUES ($1, $2, $3, 0, NOW(), 1, 'org_recovery')
+                 ON CONFLICT (email, purpose)
                  DO UPDATE SET
                      otp_hash = EXCLUDED.otp_hash,
                      expires_at = EXCLUDED.expires_at,
@@ -1270,9 +1270,9 @@ exports.verifyOTPAndRecoverOrganization = async (req, res) => {
             }
 
             const { verifyOTP } = require("../auth/otp.service");
-            let otpResult = await verifyOTP(recipients[0], otp, true);
+            let otpResult = await verifyOTP(recipients[0], otp, true, "org_recovery");
             if (otpResult.error && otpResult.error.message.includes("No active OTP found") && recipients.length > 1) {
-                otpResult = await verifyOTP(recipients[1], otp, true);
+                otpResult = await verifyOTP(recipients[1], otp, true, "org_recovery");
             }
 
             if (otpResult.error) {

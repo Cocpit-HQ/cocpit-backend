@@ -163,7 +163,7 @@ exports.confirmCurrentEmail = async (req, res) => {
             currentEmail = userRes.rows[0].email;
         }
 
-        const result = await verifyOTP(currentEmail, otp);
+        const result = await verifyOTP(currentEmail, otp, true, "email_change");
         if (result.error) {
             return res.status(result.error.status).json({ success: false, message: result.error.message });
         }
@@ -272,7 +272,7 @@ exports.confirmNewEmail = async (req, res) => {
             });
         }
 
-        const result = await verifyOTP(pendingEmail, otp);
+        const result = await verifyOTP(pendingEmail, otp, true, "email_change");
         if (result.error) {
             return res.status(result.error.status).json({ success: false, message: result.error.message });
         }
@@ -425,7 +425,7 @@ exports.confirmRecoveryEmail = async (req, res) => {
             return res.status(400).json({ success: false, message: "No pending recovery email request found or expired." });
         }
 
-        const result = await verifyOTP(pendingRecoveryEmail, otp);
+        const result = await verifyOTP(pendingRecoveryEmail, otp, true, "recovery");
         if (result.error) {
             return res.status(result.error.status).json({ success: false, message: result.error.message });
         }

@@ -10,7 +10,7 @@ exports.resetPassword = async (req, res) => {
     const shouldLogoutOthers = logoutOtherDevices ?? logoutOthers ?? true;
 
     try {
-        const otpResult = await otpService.verifyOTP(email, otp);
+        const otpResult = await otpService.verifyOTP(email, otp, true, "password_reset");
         if (otpResult.error) {
             return res.status(otpResult.error.status).json({
                 message: otpResult.error.message,
