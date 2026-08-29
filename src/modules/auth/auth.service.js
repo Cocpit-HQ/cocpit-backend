@@ -473,10 +473,10 @@ const socialLogin = async ({ provider, idToken, accountType, fullName: clientFul
     }
 
     const { providerId, email, avatarUrl } = socialUser;
-    const normalizedEmail = email.toLowerCase();
+    const normalizedEmail = email ? email.toLowerCase() : `${providerId}@${provider}.placeholder.com`;
     
     // Fallback logic for full name: Token -> Client -> Email prefix
-    const fullName = socialUser.fullName || clientFullName || normalizedEmail.split('@')[0];
+    const fullName = socialUser.fullName || clientFullName || (email ? normalizedEmail.split('@')[0] : 'Apple User');
 
     // ── Step 2: Find or create the user ──
     let user;
