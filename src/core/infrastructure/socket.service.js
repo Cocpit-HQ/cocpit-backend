@@ -364,6 +364,19 @@ class SocketService {
     // io.sockets.adapter.rooms is a Map where key is room name and value is Set of socket IDs
     return this.io.sockets.adapter.rooms.has(room);
   }
+
+  /**
+   * Broadcast an event to all connected clients globally
+   * @param {string} event
+   * @param {object} payload
+   */
+  broadcastGlobal(event, payload) {
+    if (!this.io) {
+      this._warnUninitialized();
+      return;
+    }
+    this.io.emit(event, payload);
+  }
 }
 
 module.exports = new SocketService();

@@ -1004,7 +1004,6 @@ const sendAccountDeletionCompletedEmail = async (email) => {
     }
 };
 
->>>>>>> 2661dd912c7506b8ce587aea0103db9815a54baa
 module.exports = {
     sendOTPEmail,
     sendAccountDeletionEmail,
@@ -1026,10 +1025,7 @@ module.exports = {
     sendJobOfferChatEmail,
     sendCompanyJobChatEmail,
     sendSuspensionAppealEmail,
-
-
     sendShortlistedEmail,
-
     sendOfferExpiringEmail,
     sendNewDeviceLoginEmail,
     sendPasswordChangedEmail,

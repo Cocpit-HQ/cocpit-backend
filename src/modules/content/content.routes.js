@@ -99,5 +99,5 @@ router.get("/debug-db", async (req, res) => {
 router.get("/ai/usage", requireAuth, contentController.getAIUsage);
 router.post("/ai/generate", requireAuth, contentController.generateAIContent);
 
->>>>>>> 2661dd912c7506b8ce587aea0103db9815a54baa
+
 module.exports = router;

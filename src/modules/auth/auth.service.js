@@ -612,7 +612,6 @@ const socialLogin = async ({ provider, idToken, accountType, fullName: clientFul
             socketService.io.emit('user_reactivated', { userId: user.user_id });
             socketService.io.emit('USER_REACTIVATED', { userId: user.user_id });
         }
->>>>>>> 2661dd912c7506b8ce587aea0103db9815a54baa
     }
 
     // ── Step 4: Generate platform tokens (reuses existing JWT pipeline) ──

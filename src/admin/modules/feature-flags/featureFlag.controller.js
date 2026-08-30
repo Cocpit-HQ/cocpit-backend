@@ -1,5 +1,5 @@
 const redis = require('../../../core/cache/redis');
-
+const socketService = require('../../../core/infrastructure/socket.service');
 const getFlags = async (req, res) => {
   try {
     const keys = await redis.keys('feature_flag:*');
@@ -26,6 +26,7 @@ const updateFlag = async (req, res) => {
     }
 
     const updated = [];
+    const broadcastPayload = {};
     for (const [k, v] of Object.entries(itemsToUpdate)) {
       if (v !== undefined && v !== null) {
         const strVal = String(v);
@@ -37,9 +38,13 @@ const updateFlag = async (req, res) => {
           value: boolVal
         }));
         updated.push({ key: k, value: boolVal });
+        broadcastPayload[k] = boolVal;
       }
     }
     
+    if (Object.keys(broadcastPayload).length > 0) {
+      socketService.broadcastGlobal('feature_flags_updated', broadcastPayload);
+    }
     res.json({ success: true, message: `${updated.length} flag(s) updated successfully`, data: updated });
   } catch (error) {
     console.error('Error updating flag:', error);
