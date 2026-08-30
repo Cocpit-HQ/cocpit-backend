@@ -17,7 +17,7 @@ const trackActivity = (req, res, next) => {
       activityCache.set(userId, now);
       
       // Fire-and-forget background query to update the timestamp
-      pool.query('UPDATE users SET last_active_at = NOW() WHERE user_id = $1', [userId])
+      req.db.query('UPDATE users SET last_active_at = NOW() WHERE user_id = $1', [userId])
         .catch(err => console.error('Failed to update last_active_at:', err));
     }
   }

@@ -5,6 +5,7 @@ const cookieParser = require('cookie-parser');
 
 const adminRoutes = require('./admin/routes/admin.routes');
 const { adminGlobalLimiter } = require('./admin/middlewares/rateLimiter');
+const environmentMiddleware = require('./core/middlewares/environment.middleware');
 const errorHandler = require('./core/middlewares/error.middleware');
 
 const app = express();
@@ -26,14 +27,14 @@ app.get('/health', (req, res) => {
 });
 
 const authRoutes = require('./admin/modules/auth/auth.routes');
-app.use('/api/auth', authRoutes);
+app.use('/api/auth', environmentMiddleware, authRoutes);
 
 // Public Config Endpoint (Feature Flags)
 const configRoutes = require('./modules/config/config.routes');
 app.use('/api/config', configRoutes);
 
 // Admin Routes
-app.use('/api/admin', adminGlobalLimiter, adminRoutes);
+app.use('/api/admin', adminGlobalLimiter, environmentMiddleware, adminRoutes);
 
 // Error Handling
 app.use(errorHandler);

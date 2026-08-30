@@ -17,7 +17,7 @@ exports.getJobs = async (req, res) => {
 
     // Get total count for pagination
     const countQuery = `SELECT COUNT(*) FROM jobs ${whereClause}`;
-    const countResult = await pool.query(countQuery, queryParams);
+    const countResult = await req.db.query(countQuery, queryParams);
     const total = parseInt(countResult.rows[0].count, 10);
 
     // Get paginated jobs
@@ -69,7 +69,7 @@ exports.getJobs = async (req, res) => {
       LIMIT $${queryParams.length + 1} OFFSET $${queryParams.length + 2}
     `;
 
-    const result = await pool.query(dataQuery, [...queryParams, limit, offset]);
+    const result = await req.db.query(dataQuery, [...queryParams, limit, offset]);
 
     res.json({
       jobs: result.rows,
@@ -114,7 +114,7 @@ exports.moderateJob = async (req, res) => {
       RETURNING *
     `;
     const isActive = (modStatusVal === 'APPROVED');
-    const result = await pool.query(query, [statusVal, modStatusVal, isActive, id, rejection_reason]);
+    const result = await req.db.query(query, [statusVal, modStatusVal, isActive, id, rejection_reason]);
 
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'Job not found' });
@@ -123,7 +123,7 @@ exports.moderateJob = async (req, res) => {
     const job = result.rows[0];
 
     // Log the audit activity
-    await logAdminActivity(
+    await logAdminActivity(req.db, 
       req.user.userId,
       logAction,
       `Moderated job "${job.title}" by "${job.company_name}": status set to ${modStatusVal}`
@@ -187,7 +187,7 @@ exports.getJobById = async (req, res) => {
       LEFT JOIN organizations o ON jobs.org_id = o.org_id
       WHERE jobs.job_id = $1
     `;
-    const result = await pool.query(query, [id]);
+    const result = await req.db.query(query, [id]);
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'Job not found' });
     }

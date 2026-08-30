@@ -2357,3 +2357,15 @@ CREATE TABLE user_verifications (
 );
 
 
+
+-- Migration: Add missing community_invitations table
+CREATE TABLE IF NOT EXISTS community_invitations (
+    invitation_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    community_id UUID REFERENCES communities(community_id) ON DELETE CASCADE,
+    inviter_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
+    invitee_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
+    status VARCHAR(20) DEFAULT 'pending',
+    is_active BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);

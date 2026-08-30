@@ -8,7 +8,7 @@ const pool = require('../../core/db/pool');
  */
 async function createAuditLog(adminId, actionType, description) {
   try {
-    await pool.query(
+    await req.db.query(
       'INSERT INTO admin_audit_logs (user_id, action_type, description) VALUES ($1, $2, $3)',
       [adminId, actionType, description]
     );

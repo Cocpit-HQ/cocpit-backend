@@ -31,6 +31,8 @@ subscriber.on('message', async (channel, message) => {
     if (channel === 'admin:feature_flags') {
       if (payload.action_taken === 'updated' && payload.key) {
         updateFlagInMemory(payload.key, payload.value);
+        // Broadcast the real-time update to all connected frontend clients
+        socketService.broadcastGlobal('feature_flags_updated', { [payload.key]: payload.value });
       }
     } 
     else if (channel === 'admin:users') {

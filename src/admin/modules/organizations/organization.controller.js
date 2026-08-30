@@ -26,13 +26,13 @@ exports.getOrganizations = async (req, res) => {
     }
 
     const countQuery = `SELECT COUNT(*) FROM (${query}) AS filtered_orgs`;
-    const countRes = await pool.query(countQuery, params);
+    const countRes = await req.db.query(countQuery, params);
     const totalCount = parseInt(countRes.rows[0].count, 10);
 
     query += ` ORDER BY created_at DESC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`;
     params.push(limit, offset);
 
-    const orgsRes = await pool.query(query, params);
+    const orgsRes = await req.db.query(query, params);
     const organizations = orgsRes.rows.map(org => ({
       id: org.id,
       name: org.name || 'Unnamed Org',
@@ -108,11 +108,11 @@ exports.getOrganizationDetails = async (req, res) => {
     `;
 
     const [orgRes, docsRes, membersRes, techRes, activityRes] = await Promise.all([
-      pool.query(orgQuery, [id]),
-      pool.query(docsQuery, [id]),
-      pool.query(membersQuery, [id]),
-      pool.query(techQuery, [id]),
-      pool.query(activityQuery, [id])
+      req.db.query(orgQuery, [id]),
+      req.db.query(docsQuery, [id]),
+      req.db.query(membersQuery, [id]),
+      req.db.query(techQuery, [id]),
+      req.db.query(activityQuery, [id])
     ]);
     
     if (orgRes.rows.length === 0) {
@@ -169,7 +169,7 @@ exports.warnOrganization = async (req, res) => {
     }
     
     // Insert into organization_warnings
-    await pool.query(
+    await req.db.query(
       'INSERT INTO organization_warnings (org_id, reason, message, is_severe) VALUES ($1, $2, $3, $4)',
       [id, reason, message, isSevere]
     );
@@ -181,7 +181,7 @@ exports.warnOrganization = async (req, res) => {
       WHERE org_id = $1 
       RETURNING moderation_flags, name, created_by
     `;
-    const result = await pool.query(updateQuery, [id, points]);
+    const result = await req.db.query(updateQuery, [id, points]);
     
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'Organization not found' });
@@ -195,13 +195,13 @@ exports.warnOrganization = async (req, res) => {
     
     if (newFlagsCount >= 7) {
       // Suspend and reset flags to 0
-      await pool.query(
+      await req.db.query(
         'UPDATE organizations SET is_suspended = true, suspension_count = COALESCE(suspension_count, 0) + 1, moderation_flags = 0 WHERE org_id = $1',
         [id]
       );
       autoSuspended = true;
       // Log suspension
-      await pool.query(
+      await req.db.query(
         'INSERT INTO admin_audit_logs (user_id, action_type, description) VALUES ($1, $2, $3)',
         [adminId, 'ORG_SUSPENDED', `Automatically suspended ${targetName} due to exceeding 7 moderation flags.`]
       );
@@ -213,13 +213,13 @@ exports.warnOrganization = async (req, res) => {
         ? `Your organization "${targetName}" has received a severe warning. Reason: ${reason}. Message: ${message || 'No additional details'}`
         : `Your organization "${targetName}" has received a warning. Reason: ${reason}. Message: ${message || 'No additional details'}`;
       
-      await pool.query(`
+      await req.db.query(`
         INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata)
         VALUES ($1, $2, $3, $4, $5, $6)
       `, [orgCreatorId, adminId, 'organization_warning', notificationText, id, JSON.stringify({ orgId: id, reason, message, isSevere, autoSuspended })]);
       
       // Notify the organization (so it shows up when acting as the company)
-      await pool.query(`
+      await req.db.query(`
         INSERT INTO notifications (recipient_org_id, sender_id, type, text, reference_id, metadata)
         VALUES ($1, $2, $3, $4, $5, $6)
       `, [id, adminId, 'organization_warning', notificationText, id, JSON.stringify({ orgId: id, reason, message, isSevere, autoSuspended })]);
@@ -234,7 +234,7 @@ exports.warnOrganization = async (req, res) => {
     }
 
     // Log the warning action to audit logs
-    await pool.query(
+    await req.db.query(
       'INSERT INTO admin_audit_logs (user_id, action_type, description) VALUES ($1, $2, $3)',
       [adminId, 'ORG_WARNING_SENT', `Sent a ${isSevere ? 'severe ' : ''}warning to ${targetName}. Reason: ${reason}`]
     );
@@ -251,12 +251,12 @@ exports.suspendOrganization = async (req, res) => {
     const { id } = req.params;
     const adminId = req.user.userId;
     
-    await pool.query(
+    await req.db.query(
       'UPDATE organizations SET is_suspended = true, suspension_count = COALESCE(suspension_count, 0) + 1, moderation_flags = 0 WHERE org_id = $1',
       [id]
     );
     
-    await pool.query(
+    await req.db.query(
       'INSERT INTO admin_audit_logs (user_id, action_type, description) VALUES ($1, $2, $3)',
       [adminId, 'ORG_SUSPENDED', `Manually suspended organization with ID: ${id}`]
     );
@@ -273,12 +273,12 @@ exports.unsuspendOrganization = async (req, res) => {
     const { id } = req.params;
     const adminId = req.user.userId;
     
-    await pool.query(
+    await req.db.query(
       'UPDATE organizations SET is_suspended = false, moderation_flags = 0 WHERE org_id = $1',
       [id]
     );
     
-    await pool.query(
+    await req.db.query(
       'INSERT INTO admin_audit_logs (user_id, action_type, description) VALUES ($1, $2, $3)',
       [adminId, 'ORG_UNSUSPENDED', `Unsuspended organization with ID: ${id}`]
     );
@@ -293,7 +293,7 @@ exports.unsuspendOrganization = async (req, res) => {
 exports.getOrganizationIndustries = async (req, res) => {
   try {
     const query = "SELECT DISTINCT industry FROM organizations WHERE is_deleted = false AND industry IS NOT NULL AND industry != '' ORDER BY industry ASC";
-    const result = await pool.query(query);
+    const result = await req.db.query(query);
     const industries = result.rows.map(row => row.industry);
     res.json(industries);
   } catch (error) {
@@ -314,7 +314,7 @@ exports.getVerificationQueue = async (req, res) => {
       WHERE o.is_deleted = false AND o.verification_status != 'UNVERIFIED'
       ORDER BY o.created_at DESC
     `;
-    const result = await pool.query(query);
+    const result = await req.db.query(query);
     const orgs = result.rows;
     
     for (let org of orgs) {
@@ -343,7 +343,7 @@ exports.getVerificationQueue = async (req, res) => {
       org.fullLocation = org.location || 'N/A';
       org.author = org.author || 'N/A';
       
-      const docsResult = await pool.query(
+      const docsResult = await req.db.query(
         `SELECT document_id as id, document_name, document_type, document_url, uploaded_at, status, review_notes
          FROM organization_documents
          WHERE org_id = $1`,
@@ -375,14 +375,14 @@ exports.reviewDocument = async (req, res) => {
       WHERE document_id = $3
       RETURNING org_id, document_name
     `;
-    const result = await pool.query(query, [status, notes, documentId]);
+    const result = await req.db.query(query, [status, notes, documentId]);
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'Document not found' });
     }
     
     const { org_id, document_name } = result.rows[0];
     
-    await pool.query(
+    await req.db.query(
       'INSERT INTO admin_audit_logs (user_id, action_type, description) VALUES ($1, $2, $3)',
       [adminId, 'DOCUMENT_REVIEWED', `Reviewed document "${document_name}" for Org ID: ${org_id}. Status: ${status}`]
     );
@@ -405,7 +405,7 @@ exports.reviewOrganizationVerification = async (req, res) => {
     }
     
     const { createAuditLog } = require('../../middlewares/auditLog.middleware');
-    const client = await pool.connect();
+    const client = await req.db.connect();
     try {
       await client.query('BEGIN');
       
@@ -505,7 +505,7 @@ exports.bulkWarnOrganizations = async (req, res) => {
     const results = [];
 
     for (const id of orgIds) {
-      const updateResult = await pool.query(
+      const updateResult = await req.db.query(
         'UPDATE organizations SET moderation_flags = COALESCE(moderation_flags, 0) + $1 WHERE org_id = $2 RETURNING name, created_by, moderation_flags',
         [isSevere ? 1 : 0, id]
       );
@@ -515,12 +515,12 @@ exports.bulkWarnOrganizations = async (req, res) => {
       let autoSuspended = false;
 
       if (newFlagsCount >= 7) {
-        await pool.query('UPDATE organizations SET is_suspended = true, suspension_count = COALESCE(suspension_count, 0) + 1, moderation_flags = 0 WHERE org_id = $1', [id]);
+        await req.db.query('UPDATE organizations SET is_suspended = true, suspension_count = COALESCE(suspension_count, 0) + 1, moderation_flags = 0 WHERE org_id = $1', [id]);
         autoSuspended = true;
-        await pool.query('INSERT INTO admin_audit_logs (user_id, action_type, description) VALUES ($1, $2, $3)', [adminId, 'ORG_SUSPENDED', `Automatically suspended ${targetName} due to flags.`]);
+        await req.db.query('INSERT INTO admin_audit_logs (user_id, action_type, description) VALUES ($1, $2, $3)', [adminId, 'ORG_SUSPENDED', `Automatically suspended ${targetName} due to flags.`]);
       }
 
-      await pool.query('INSERT INTO admin_audit_logs (user_id, action_type, description) VALUES ($1, $2, $3)', [adminId, 'ORG_WARNING_SENT', `Sent warning to ${targetName}. Reason: ${reason} (Bulk)`]);
+      await req.db.query('INSERT INTO admin_audit_logs (user_id, action_type, description) VALUES ($1, $2, $3)', [adminId, 'ORG_WARNING_SENT', `Sent warning to ${targetName}. Reason: ${reason} (Bulk)`]);
       results.push({ id, name: targetName, moderation_flags: newFlagsCount, autoSuspended });
     }
     res.json({ success: true, results });
@@ -541,14 +541,14 @@ exports.bulkSuspendOrganizations = async (req, res) => {
     const results = [];
 
     for (const id of orgIds) {
-      const updateResult = await pool.query(
+      const updateResult = await req.db.query(
         'UPDATE organizations SET is_suspended = true, suspension_count = COALESCE(suspension_count, 0) + 1, moderation_flags = 0 WHERE org_id = $1 RETURNING name',
         [id]
       );
       if (updateResult.rows.length === 0) continue;
 
       const targetName = updateResult.rows[0].name;
-      await pool.query(
+      await req.db.query(
         'INSERT INTO admin_audit_logs (user_id, action_type, description) VALUES ($1, $2, $3)',
         [adminId, 'ORG_SUSPENDED', `Manually suspended ${targetName} (Bulk)`]
       );
@@ -572,14 +572,14 @@ exports.bulkDeleteOrganizations = async (req, res) => {
     const results = [];
 
     for (const id of orgIds) {
-      const updateResult = await pool.query(
+      const updateResult = await req.db.query(
         'UPDATE organizations SET is_deleted = true WHERE org_id = $1 RETURNING name',
         [id]
       );
       if (updateResult.rows.length === 0) continue;
 
       const targetName = updateResult.rows[0].name;
-      await pool.query(
+      await req.db.query(
         'INSERT INTO admin_audit_logs (user_id, action_type, description) VALUES ($1, $2, $3)',
         [adminId, 'ORG_DELETED', `Soft deleted ${targetName} (Bulk)`]
       );
@@ -603,14 +603,14 @@ exports.bulkUnsuspendOrganizations = async (req, res) => {
     const results = [];
 
     for (const id of orgIds) {
-      const updateResult = await pool.query(
+      const updateResult = await req.db.query(
         'UPDATE organizations SET is_suspended = false, moderation_flags = 0 WHERE org_id = $1 RETURNING name',
         [id]
       );
       if (updateResult.rows.length === 0) continue;
 
       const targetName = updateResult.rows[0].name;
-      await pool.query(
+      await req.db.query(
         'INSERT INTO admin_audit_logs (user_id, action_type, description) VALUES ($1, $2, $3)',
         [adminId, 'ORG_UNSUSPENDED', `Manually unsuspended ${targetName} (Bulk)`]
       );

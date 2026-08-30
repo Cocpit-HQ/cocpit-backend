@@ -12,7 +12,7 @@ exports.getUserRoles = async (req, res) => {
       SELECT DISTINCT user_type AS role FROM users WHERE user_type IS NOT NULL
       ORDER BY role
     `;
-    const result = await pool.query(query);
+    const result = await req.db.query(query);
     res.json(result.rows.map(row => row.role));
   } catch (err) {
     console.error('Error fetching user roles:', err);
@@ -60,7 +60,7 @@ exports.getUsers = async (req, res) => {
 
     // Get Total Count for Pagination
     const countQuery = `SELECT COUNT(*) ${baseQuery}`;
-    const countResult = await pool.query(countQuery, queryParams);
+    const countResult = await req.db.query(countQuery, queryParams);
     const total = parseInt(countResult.rows[0].count);
     const totalPages = Math.ceil(total / limit) || 1;
 
@@ -72,7 +72,7 @@ exports.getUsers = async (req, res) => {
         COUNT(*) FILTER (WHERE is_suspended = true) as suspended_users
       FROM users
     `;
-    const statsResult = await pool.query(statsQuery);
+    const statsResult = await req.db.query(statsQuery);
     const stats = {
       totalUsers: parseInt(statsResult.rows[0].total_users),
       activeUsers: parseInt(statsResult.rows[0].active_users),
@@ -96,7 +96,7 @@ exports.getUsers = async (req, res) => {
     `;
 
     const paginatedParams = [...queryParams, limit, offset];
-    const { rows } = await pool.query(dataQuery, paginatedParams);
+    const { rows } = await req.db.query(dataQuery, paginatedParams);
 
     const formattedUsers = rows.map(user => {
       // Calculate initials
@@ -159,7 +159,7 @@ exports.getUserDetails = async (req, res) => {
              suspension_count
       FROM users WHERE user_id = $1
     `;
-    const userResult = await pool.query(userQuery, [id]);
+    const userResult = await req.db.query(userQuery, [id]);
 
     if (userResult.rows.length === 0) {
       return res.status(404).json({ error: 'User not found' });
@@ -175,7 +175,7 @@ exports.getUserDetails = async (req, res) => {
         (SELECT count(*) FROM connections WHERE user_id = $1 OR connected_user_id = $1) as connections_count,
         (SELECT count(*) FROM reports WHERE target_id = $1) as flags_count
     `;
-    const statsResult = await pool.query(statsQuery, [id]);
+    const statsResult = await req.db.query(statsQuery, [id]);
     const stats = statsResult.rows[0];
 
     const activityQuery = `
@@ -205,13 +205,13 @@ exports.getUserDetails = async (req, res) => {
       ORDER BY c.created_at DESC 
       LIMIT 15
     `;
-    const activityResult = await pool.query(activityQuery, [id]);
+    const activityResult = await req.db.query(activityQuery, [id]);
 
     // 4. Linked Accounts
     const socialQuery = `
       SELECT provider FROM user_social_accounts WHERE user_id = $1
     `;
-    const socialResult = await pool.query(socialQuery, [id]);
+    const socialResult = await req.db.query(socialQuery, [id]);
 
     // 5. Action History (Warnings)
     const warningsQuery = `
@@ -220,7 +220,7 @@ exports.getUserDetails = async (req, res) => {
       WHERE user_id = $1 
       ORDER BY created_at DESC
     `;
-    const warningsResult = await pool.query(warningsQuery, [id]);
+    const warningsResult = await req.db.query(warningsQuery, [id]);
 
     // Formatting status and role
     let status = 'Active';
@@ -285,12 +285,12 @@ exports.warnUser = async (req, res) => {
     }
 
     // Insert into user_warnings
-    await pool.query(
+    await req.db.query(
       'INSERT INTO user_warnings (user_id, reason, message, is_severe) VALUES ($1, $2, $3, $4)',
       [id, reason, message, isSevere]
     );
 
-    await pool.query(
+    await req.db.query(
       'INSERT INTO moderation_actions (user_id, action_type, reason, message, created_by) VALUES ($1, $2, $3, $4, $5)',
       [id, 'WARNING', reason, message, req.user.userId]
     );
@@ -302,7 +302,7 @@ exports.warnUser = async (req, res) => {
       WHERE user_id = $1 
       RETURNING moderation_flags, full_name
     `;
-    const result = await pool.query(updateQuery, [id, points]);
+    const result = await req.db.query(updateQuery, [id, points]);
 
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'User not found' });
@@ -315,18 +315,18 @@ exports.warnUser = async (req, res) => {
 
     if (newFlagsCount >= 7) {
       // Suspend and reset flags to 0
-      await pool.query(
+      await req.db.query(
         'UPDATE users SET is_suspended = true, suspension_count = COALESCE(suspension_count, 0) + 1, moderation_flags = 0 WHERE user_id = $1',
         [id]
       );
       autoSuspended = true;
       // Log suspension
-      await pool.query(
+      await req.db.query(
         'INSERT INTO admin_audit_logs (user_id, action_type, description) VALUES ($1, $2, $3)',
         [adminId, 'USER_SUSPENDED', `Automatically suspended ${targetName} due to exceeding 7 moderation flags.`]
       );
 
-      await pool.query(
+      await req.db.query(
         'INSERT INTO moderation_actions (user_id, action_type, reason, message, duration_days, created_by) VALUES ($1, $2, $3, $4, $5, $6)',
         [id, 'SUSPENSION', `Auto-suspension for exceeding 7 moderation flags`, `Your account has been automatically suspended due to repeated violations.`, 7, adminId]
       );
@@ -340,7 +340,7 @@ exports.warnUser = async (req, res) => {
     const actionDesc = isSevere
       ? `Issued a SEVERE warning to ${targetName} for: ${reason}`
       : `Issued a warning to ${targetName} for: ${reason}`;
-    await pool.query(
+    await req.db.query(
       'INSERT INTO admin_audit_logs (user_id, action_type, description) VALUES ($1, $2, $3)',
       [adminId, 'USER_WARNED', actionDesc]
     );
@@ -350,7 +350,7 @@ exports.warnUser = async (req, res) => {
       ? `Your account has been issued a severe warning for ${reason.toLowerCase()}.`
       : `Your account has been issued a warning for ${reason.toLowerCase()}.`;
 
-    await pool.query(`
+    await req.db.query(`
       INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata)
       VALUES ($1, $2, $3, $4, $5, $6)
     `, [id, adminId, 'user_warning', notificationText, id, JSON.stringify({ reason, message, isSevere, autoSuspended })]);
@@ -391,7 +391,7 @@ exports.suspendUser = async (req, res) => {
       suspendedUntil.setDate(suspendedUntil.getDate() + 30);
     }
 
-    const result = await pool.query(
+    const result = await req.db.query(
       'UPDATE users SET is_suspended = true, suspended_until = $2, suspension_count = COALESCE(suspension_count, 0) + 1 WHERE user_id = $1 RETURNING full_name, email',
       [id, suspendedUntil]
     );
@@ -408,12 +408,12 @@ exports.suspendUser = async (req, res) => {
     if (duration === 'Short Temporary (3-7 days)') durationDays = 7;
     else if (duration === 'Long Temporary (30 days)') durationDays = 30;
 
-    await pool.query(
+    await req.db.query(
       'INSERT INTO admin_audit_logs (user_id, action_type, description) VALUES ($1, $2, $3)',
       [adminId, 'USER_SUSPENDED', `Manually suspended ${targetName}. Duration: ${suspensionDuration}.`]
     );
 
-    const actionRes = await pool.query(
+    const actionRes = await req.db.query(
       'INSERT INTO moderation_actions (user_id, action_type, reason, message, duration_days, created_by) VALUES ($1, $2, $3, $4, $5, $6) RETURNING action_id',
       [id, 'SUSPENSION', `Manual suspension by admin`, `Your account has been suspended. Duration: ${suspensionDuration}.`, durationDays, adminId]
     );
@@ -423,7 +423,7 @@ exports.suspendUser = async (req, res) => {
     const expiresAt = new Date();
     expiresAt.setDate(expiresAt.getDate() + 7);
 
-    await pool.query(
+    await req.db.query(
       'INSERT INTO appeal_tokens (action_id, user_id, token_string, expires_at) VALUES ($1, $2, $3, $4)',
       [actionId, id, appealToken, expiresAt]
     );
@@ -464,7 +464,7 @@ exports.bulkUnsuspendUsers = async (req, res) => {
     const results = [];
 
     for (const id of userIds) {
-      const updateResult = await pool.query(
+      const updateResult = await req.db.query(
         'UPDATE users SET is_suspended = false, moderation_flags = 0 WHERE user_id = $1 RETURNING full_name',
         [id]
       );
@@ -472,7 +472,7 @@ exports.bulkUnsuspendUsers = async (req, res) => {
       if (updateResult.rows.length === 0) continue;
 
       const targetName = updateResult.rows[0].full_name || 'user';
-      await pool.query(
+      await req.db.query(
         'INSERT INTO admin_audit_logs (user_id, action_type, description) VALUES ($1, $2, $3)',
         [adminId, 'USER_UNSUSPENDED', `Unsuspended ${targetName} (Bulk Action).`]
       );
@@ -495,7 +495,7 @@ exports.unsuspendUser = async (req, res) => {
   try {
     const { id } = req.params;
     const updateQuery = `UPDATE users SET is_suspended = false, suspended_until = NULL, moderation_flags = 0 WHERE user_id = $1 RETURNING full_name`;
-    const result = await pool.query(updateQuery, [id]);
+    const result = await req.db.query(updateQuery, [id]);
 
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'User not found' });
@@ -504,7 +504,7 @@ exports.unsuspendUser = async (req, res) => {
     const targetName = result.rows[0].full_name || 'user';
     const adminId = req.user.userId;
 
-    await pool.query(
+    await req.db.query(
       'INSERT INTO admin_audit_logs (user_id, action_type, description) VALUES ($1, $2, $3)',
       [adminId, 'USER_UNSUSPENDED', `Manually reinstated access for ${targetName}.`]
     );
@@ -533,18 +533,18 @@ exports.bulkWarnUsers = async (req, res) => {
 
     for (const id of userIds) {
       // 1. Insert warning
-      await pool.query(
+      await req.db.query(
         'INSERT INTO user_warnings (user_id, reason, message, is_severe) VALUES ($1, $2, $3, $4)',
         [id, reason, message, isSevere]
       );
 
-      await pool.query(
+      await req.db.query(
         'INSERT INTO moderation_actions (user_id, action_type, reason, message, created_by) VALUES ($1, $2, $3, $4, $5)',
         [id, 'WARNING', reason, message, adminId]
       );
 
       // 2. Increment flags
-      const updateResult = await pool.query(
+      const updateResult = await req.db.query(
         'UPDATE users SET moderation_flags = COALESCE(moderation_flags, 0) + $2 WHERE user_id = $1 RETURNING moderation_flags, full_name, email',
         [id, points]
       );
@@ -561,17 +561,17 @@ exports.bulkWarnUsers = async (req, res) => {
 
       // 3. Auto-suspension check
       if (newFlagsCount >= 7) {
-        await pool.query(
+        await req.db.query(
           'UPDATE users SET is_suspended = true, suspension_count = COALESCE(suspension_count, 0) + 1, moderation_flags = 0 WHERE user_id = $1',
           [id]
         );
         autoSuspended = true;
-        await pool.query(
+        await req.db.query(
           'INSERT INTO admin_audit_logs (user_id, action_type, description) VALUES ($1, $2, $3)',
           [adminId, 'USER_SUSPENDED', `Automatically suspended ${targetName} due to exceeding 7 moderation flags.`]
         );
 
-        const actionRes = await pool.query(
+        const actionRes = await req.db.query(
           'INSERT INTO moderation_actions (user_id, action_type, reason, message, duration_days, created_by) VALUES ($1, $2, $3, $4, $5, $6) RETURNING action_id',
           [id, 'SUSPENSION', `Auto-suspension for exceeding 7 moderation flags`, `Your account has been automatically suspended due to repeated violations.`, 7, adminId]
         );
@@ -581,7 +581,7 @@ exports.bulkWarnUsers = async (req, res) => {
         const expiresAt = new Date();
         expiresAt.setDate(expiresAt.getDate() + 7);
 
-        await pool.query(
+        await req.db.query(
           'INSERT INTO appeal_tokens (action_id, user_id, token_string, expires_at) VALUES ($1, $2, $3, $4)',
           [actionId, id, appealToken, expiresAt]
         );
@@ -603,7 +603,7 @@ exports.bulkWarnUsers = async (req, res) => {
       const actionDesc = isSevere
         ? `Issued a SEVERE warning to ${targetName} for: ${reason}`
         : `Issued a warning to ${targetName} for: ${reason}`;
-      await pool.query(
+      await req.db.query(
         'INSERT INTO admin_audit_logs (user_id, action_type, description) VALUES ($1, $2, $3)',
         [adminId, 'USER_WARNED', actionDesc]
       );
@@ -613,7 +613,7 @@ exports.bulkWarnUsers = async (req, res) => {
         ? `Your account has been issued a severe warning for ${reason.toLowerCase()}.`
         : `Your account has been issued a warning for ${reason.toLowerCase()}.`;
 
-      await pool.query(`
+      await req.db.query(`
         INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata)
         VALUES ($1, $2, $3, $4, $5, $6)
       `, [id, adminId, 'user_warning', notificationText, id, JSON.stringify({ reason, message, isSevere, autoSuspended })]);
@@ -647,7 +647,7 @@ exports.bulkSuspendUsers = async (req, res) => {
     const results = [];
 
     for (const id of userIds) {
-      const updateResult = await pool.query(
+      const updateResult = await req.db.query(
         'UPDATE users SET is_suspended = true, suspension_count = COALESCE(suspension_count, 0) + 1 WHERE user_id = $1 RETURNING full_name, email',
         [id]
       );
@@ -659,12 +659,12 @@ exports.bulkSuspendUsers = async (req, res) => {
 
       const targetName = updateResult.rows[0].full_name || 'user';
       const userEmail = updateResult.rows[0].email;
-      await pool.query(
+      await req.db.query(
         'INSERT INTO admin_audit_logs (user_id, action_type, description) VALUES ($1, $2, $3)',
         [adminId, 'USER_SUSPENDED', `Manually suspended ${targetName} (Bulk Action).`]
       );
 
-      const actionRes = await pool.query(
+      const actionRes = await req.db.query(
         'INSERT INTO moderation_actions (user_id, action_type, reason, message, created_by) VALUES ($1, $2, $3, $4, $5) RETURNING action_id',
         [id, 'SUSPENSION', `Bulk manual suspension by admin`, `Your account has been suspended for violating community guidelines.`, adminId]
       );
@@ -674,7 +674,7 @@ exports.bulkSuspendUsers = async (req, res) => {
       const expiresAt = new Date();
       expiresAt.setDate(expiresAt.getDate() + 7);
 
-      await pool.query(
+      await req.db.query(
         'INSERT INTO appeal_tokens (action_id, user_id, token_string, expires_at) VALUES ($1, $2, $3, $4)',
         [actionId, id, appealToken, expiresAt]
       );
@@ -736,13 +736,13 @@ exports.updateUser = async (req, res) => {
     queryArgs.push(id);
     const updateQuery = `UPDATE users SET ${setStrings.join(', ')} WHERE user_id = $${argCount} RETURNING full_name, user_type`;
 
-    const result = await pool.query(updateQuery, queryArgs);
+    const result = await req.db.query(updateQuery, queryArgs);
 
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'User not found' });
     }
 
-    await pool.query(
+    await req.db.query(
       'INSERT INTO admin_audit_logs (user_id, action_type, description) VALUES ($1, $2, $3)',
       [adminId, 'USER_UPDATED', `Updated profile data for ${result.rows[0].full_name}`]
     );
@@ -759,7 +759,7 @@ exports.deleteUser = async (req, res) => {
     const { id } = req.params;
     const adminId = req.user.userId;
 
-    const result = await pool.query(
+    const result = await req.db.query(
       'UPDATE users SET is_deleted = true WHERE user_id = $1 RETURNING full_name',
       [id]
     );
@@ -768,12 +768,12 @@ exports.deleteUser = async (req, res) => {
       return res.status(404).json({ error: 'User not found' });
     }
 
-    await pool.query(
+    await req.db.query(
       'INSERT INTO admin_audit_logs (user_id, action_type, description) VALUES ($1, $2, $3)',
       [adminId, 'USER_DELETED', `Soft deleted user ${result.rows[0].full_name}`]
     );
 
-    await pool.query(
+    await req.db.query(
       'INSERT INTO moderation_actions (user_id, action_type, reason, message, created_by) VALUES ($1, $2, $3, $4, $5)',
       [id, 'BAN', `Manual soft deletion by admin`, `Your account has been deleted.`, adminId]
     );
@@ -796,7 +796,7 @@ exports.bulkDeleteUsers = async (req, res) => {
     const results = [];
 
     for (const id of userIds) {
-      const updateResult = await pool.query(
+      const updateResult = await req.db.query(
         'UPDATE users SET is_deleted = true WHERE user_id = $1 RETURNING full_name',
         [id]
       );
@@ -807,12 +807,12 @@ exports.bulkDeleteUsers = async (req, res) => {
       }
 
       const targetName = updateResult.rows[0].full_name || 'user';
-      await pool.query(
+      await req.db.query(
         'INSERT INTO admin_audit_logs (user_id, action_type, description) VALUES ($1, $2, $3)',
         [adminId, 'USER_DELETED', `Soft deleted ${targetName} (Bulk Action).`]
       );
 
-      await pool.query(
+      await req.db.query(
         'INSERT INTO moderation_actions (user_id, action_type, reason, message, created_by) VALUES ($1, $2, $3, $4, $5)',
         [id, 'BAN', `Bulk manual soft deletion by admin`, `Your account has been deleted.`, adminId]
       );
@@ -843,7 +843,7 @@ exports.getUserThoughts = async (req, res) => {
       WHERE c.author_id = $1
       ORDER BY c.created_at DESC
     `;
-    const result = await pool.query(query, [id]);
+    const result = await req.db.query(query, [id]);
 
     const thoughts = result.rows.map(row => ({
       id: row.id,

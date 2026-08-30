@@ -2,7 +2,7 @@ const pool = require('../../../core/db/pool');
 
 exports.getReportReasons = async (req, res) => {
   try {
-    const result = await pool.query('SELECT DISTINCT code, label FROM report_reasons ORDER BY code');
+    const result = await req.db.query('SELECT DISTINCT code, label FROM report_reasons ORDER BY code');
     res.json(result.rows);
   } catch (err) {
     console.error('Error fetching report reasons:', err);
@@ -48,7 +48,7 @@ exports.getReports = async (req, res) => {
 
     // Get total count for pagination
     const countQuery = `SELECT COUNT(*) FROM admin_reports_view ${whereClause}`;
-    const countResult = await pool.query(countQuery, queryParams);
+    const countResult = await req.db.query(countQuery, queryParams);
     const total = parseInt(countResult.rows[0].count, 10);
 
     const query = `
@@ -77,7 +77,7 @@ exports.getReports = async (req, res) => {
       LIMIT $${queryParams.length + 1} OFFSET $${queryParams.length + 2}
     `;
 
-    const result = await pool.query(query, [...queryParams, limit, offset]);
+    const result = await req.db.query(query, [...queryParams, limit, offset]);
 
     res.json({
       reports: result.rows,
@@ -98,7 +98,7 @@ exports.updateReport = async (req, res) => {
 
     if (!status) return res.status(400).json({ error: 'Status is required' });
 
-    const result = await pool.query(
+    const result = await req.db.query(
       'UPDATE reports SET status = $1, resolved_at = NOW() WHERE id = $2 RETURNING *',
       [status, id]
     );
@@ -132,7 +132,7 @@ exports.getAppeals = async (req, res) => {
       WHERE a.status = $1
       ORDER BY a.created_at DESC
     `;
-    const result = await pool.query(query, [status]);
+    const result = await req.db.query(query, [status]);
     res.json(result.rows);
   } catch (err) {
     console.error('Error fetching appeals:', err);
@@ -141,7 +141,7 @@ exports.getAppeals = async (req, res) => {
 };
 
 exports.updateAppeal = async (req, res) => {
-  const client = await pool.connect();
+  const client = await req.db.connect();
   try {
     const { id } = req.params;
     const { action } = req.body; // 'reinstate', 'reinstate_with_warning', 'uphold'
@@ -240,7 +240,7 @@ exports.deleteReportedPost = async (req, res) => {
     const { id } = req.params;
 
     // Soft delete the post
-    const updateRes = await pool.query(
+    const updateRes = await req.db.query(
       'UPDATE posts SET is_deleted = true WHERE post_id = $1 RETURNING *',
       [id]
     );
@@ -250,7 +250,7 @@ exports.deleteReportedPost = async (req, res) => {
     }
 
     // Automatically resolve all active/escalated reports targeting this post
-    await pool.query(
+    await req.db.query(
       "UPDATE reports SET status = 'resolved', resolved_at = NOW() WHERE target_type IN ('Content', 'POST', 'COMMENT') AND target_id = $1 AND status IN ('active', 'escalated')",
       [id]
     );
@@ -267,7 +267,7 @@ exports.deleteReportedComment = async (req, res) => {
     const { id } = req.params;
 
     // Soft delete the comment
-    const updateRes = await pool.query(
+    const updateRes = await req.db.query(
       'UPDATE post_comments SET is_deleted = true WHERE comment_id = $1 RETURNING *',
       [id]
     );
@@ -277,7 +277,7 @@ exports.deleteReportedComment = async (req, res) => {
     }
 
     // Automatically resolve all active/escalated reports targeting this comment
-    await pool.query(
+    await req.db.query(
       "UPDATE reports SET status = 'resolved', resolved_at = NOW() WHERE target_type IN ('Content', 'POST', 'COMMENT') AND target_id = $1 AND status IN ('active', 'escalated')",
       [id]
     );

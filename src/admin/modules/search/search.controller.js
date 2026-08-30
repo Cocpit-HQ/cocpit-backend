@@ -25,19 +25,19 @@ exports.globalSearch = async (req, res) => {
 
     if (isUUID(searchQuery)) {
       // Search by exact UUID
-      const userResult = await pool.query(
+      const userResult = await req.db.query(
         'SELECT user_id, full_name, email, avatar_url, job_title FROM users WHERE user_id = $1',
         [searchQuery]
       );
       users = userResult.rows;
 
-      const orgResult = await pool.query(
+      const orgResult = await req.db.query(
         'SELECT org_id, name, slug, logo_url, industry, verification_status FROM organizations WHERE org_id = $1',
         [searchQuery]
       );
       organizations = orgResult.rows;
 
-      const jobResult = await pool.query(
+      const jobResult = await req.db.query(
         'SELECT job_id, title, company_name, location, status FROM jobs WHERE job_id = $1',
         [searchQuery]
       );
@@ -46,7 +46,7 @@ exports.globalSearch = async (req, res) => {
       // Search by text (ILIKE)
       const ilikeQuery = `%${searchQuery}%`;
       
-      const userResult = await pool.query(
+      const userResult = await req.db.query(
         `SELECT user_id, full_name, email, avatar_url, job_title 
          FROM users 
          WHERE full_name ILIKE $1 OR email ILIKE $1 OR user_id::text ILIKE $1
@@ -56,7 +56,7 @@ exports.globalSearch = async (req, res) => {
       );
       users = userResult.rows;
 
-      const orgResult = await pool.query(
+      const orgResult = await req.db.query(
         `SELECT org_id, name, slug, logo_url, industry, verification_status 
          FROM organizations 
          WHERE name ILIKE $1 OR slug ILIKE $1 OR org_id::text ILIKE $1
@@ -66,7 +66,7 @@ exports.globalSearch = async (req, res) => {
       );
       organizations = orgResult.rows;
 
-      const jobResult = await pool.query(
+      const jobResult = await req.db.query(
         `SELECT job_id, title, company_name, location, status 
          FROM jobs 
          WHERE title ILIKE $1 OR company_name ILIKE $1 OR job_id::text ILIKE $1

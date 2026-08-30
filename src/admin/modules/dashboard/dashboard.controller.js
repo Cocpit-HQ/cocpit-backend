@@ -25,22 +25,22 @@ exports.getDashboardMetrics = async (req, res) => {
       totalUsersQuery = 'SELECT COUNT(*) FROM users WHERE created_at >= $1 AND created_at <= $2';
       totalUsersParams = [start.toISOString(), end.toISOString()];
     }
-    const totalUsersRes = await pool.query(totalUsersQuery, totalUsersParams);
+    const totalUsersRes = await req.db.query(totalUsersQuery, totalUsersParams);
     const totalUsers = parseInt(totalUsersRes.rows[0].count, 10);
 
     // 2. Active Users (Active within start and end date)
-    const activeUsersRes = await pool.query(
+    const activeUsersRes = await req.db.query(
       'SELECT COUNT(*) FROM users WHERE last_active_at >= $1 AND last_active_at <= $2',
       [start.toISOString(), end.toISOString()]
     );
     const activeUsers = parseInt(activeUsersRes.rows[0].count, 10);
 
     // 3. User Growth
-    const newUsersCurrentRes = await pool.query(
+    const newUsersCurrentRes = await req.db.query(
       'SELECT COUNT(*) FROM users WHERE created_at >= $1 AND created_at <= $2',
       [start.toISOString(), end.toISOString()]
     );
-    const newUsersPrevRes = await pool.query(
+    const newUsersPrevRes = await req.db.query(
       'SELECT COUNT(*) FROM users WHERE created_at >= $1 AND created_at <= $2',
       [prevStart.toISOString(), prevEnd.toISOString()]
     );
@@ -62,22 +62,22 @@ exports.getDashboardMetrics = async (req, res) => {
       totalOrgsQuery = 'SELECT COUNT(*) FROM organizations WHERE is_deleted = FALSE AND created_at >= $1 AND created_at <= $2';
       totalOrgsParams = [start.toISOString(), end.toISOString()];
     }
-    const totalOrgsRes = await pool.query(totalOrgsQuery, totalOrgsParams);
+    const totalOrgsRes = await req.db.query(totalOrgsQuery, totalOrgsParams);
     const totalOrgs = parseInt(totalOrgsRes.rows[0].count, 10);
 
     // 5. Active Organizations
-    const activeOrgsRes = await pool.query(
+    const activeOrgsRes = await req.db.query(
       'SELECT COUNT(*) FROM organizations WHERE is_deleted = FALSE AND last_active_at >= $1 AND last_active_at <= $2',
       [start.toISOString(), end.toISOString()]
     );
     const activeOrgs = parseInt(activeOrgsRes.rows[0].count, 10);
 
     // 6. Organization Growth
-    const newOrgsCurrentRes = await pool.query(
+    const newOrgsCurrentRes = await req.db.query(
       'SELECT COUNT(*) FROM organizations WHERE is_deleted = FALSE AND created_at >= $1 AND created_at <= $2',
       [start.toISOString(), end.toISOString()]
     );
-    const newOrgsPrevRes = await pool.query(
+    const newOrgsPrevRes = await req.db.query(
       'SELECT COUNT(*) FROM organizations WHERE is_deleted = FALSE AND created_at >= $1 AND created_at <= $2',
       [prevStart.toISOString(), prevEnd.toISOString()]
     );
@@ -96,14 +96,14 @@ exports.getDashboardMetrics = async (req, res) => {
     if (orgGrowth < 0) orgGrowth = 0;
 
     // 7. Suspended Users
-    const suspendedUsersRes = await pool.query('SELECT COUNT(*) FROM users WHERE is_suspended = TRUE');
+    const suspendedUsersRes = await req.db.query('SELECT COUNT(*) FROM users WHERE is_suspended = TRUE');
     const suspendedUsers = parseInt(suspendedUsersRes.rows[0].count, 10);
 
-    const suspendedOrgsRes = await pool.query('SELECT COUNT(*) FROM organizations WHERE is_deleted = TRUE');
+    const suspendedOrgsRes = await req.db.query('SELECT COUNT(*) FROM organizations WHERE is_deleted = TRUE');
     const suspendedOrgs = parseInt(suspendedOrgsRes.rows[0].count, 10);
 
     // 8. Total Thoughts
-    const totalThoughtsRes = await pool.query('SELECT COUNT(*) FROM post_comments');
+    const totalThoughtsRes = await req.db.query('SELECT COUNT(*) FROM post_comments');
     const totalThoughts = parseInt(totalThoughtsRes.rows[0].count, 10);
 
     const durationDays = intervalMs / (1000 * 60 * 60 * 24);
@@ -145,7 +145,7 @@ exports.getDashboardMetrics = async (req, res) => {
       ) ao ON time_bucket.ts = ao.date
       ORDER BY time_bucket.ts ASC
     `;
-    const chartRes = await pool.query(chartQuery, [start.toISOString(), end.toISOString()]);
+    const chartRes = await req.db.query(chartQuery, [start.toISOString(), end.toISOString()]);
 
     // Format the date string based on bucketFormat to be UI friendly
     const chartData = chartRes.rows.map(row => {
@@ -220,7 +220,7 @@ exports.getRecentAuditLogs = async (req, res) => {
 
     query += ` ORDER BY l.created_at DESC LIMIT 5`;
 
-    const logsRes = await pool.query(query, queryParams);
+    const logsRes = await req.db.query(query, queryParams);
 
     // Format response
     const logs = logsRes.rows.map(row => ({
@@ -283,7 +283,7 @@ exports.getAllAuditLogs = async (req, res) => {
 
     // Fetch Total Count
     const countQuery = `SELECT COUNT(*) ${baseQuery}`;
-    const countRes = await pool.query(countQuery, queryParams);
+    const countRes = await req.db.query(countQuery, queryParams);
     const totalLogs = parseInt(countRes.rows[0].count, 10);
 
     // Fetch Paginated Logs
@@ -297,7 +297,7 @@ exports.getAllAuditLogs = async (req, res) => {
       LIMIT $${paramIndex++} OFFSET $${paramIndex++}
     `;
 
-    const logsRes = await pool.query(dataQuery, [...queryParams, limit, offset]);
+    const logsRes = await req.db.query(dataQuery, [...queryParams, limit, offset]);
 
     const logs = logsRes.rows.map(row => ({
       id: row.log_id,
@@ -331,7 +331,7 @@ exports.getEngagementHeatmap = async (req, res) => {
       WHERE created_at >= NOW() - INTERVAL '30 days'
       GROUP BY 1, 2
     `;
-    const result = await pool.query(query);
+    const result = await req.db.query(query);
 
     // Initialize 7x24 array
     // ISO DOW: 1=Mon, 7=Sun
@@ -414,7 +414,7 @@ exports.getCohortRetention = async (req, res) => {
       LEFT JOIN retention r ON cs.signup_week = r.signup_week
       ORDER BY cs.signup_week ASC, r.week_number ASC;
     `;
-    const result = await pool.query(query);
+    const result = await req.db.query(query);
 
     const cohortsMap = new Map();
 
@@ -477,7 +477,7 @@ exports.getFeatureAdoption = async (req, res) => {
       GROUP BY activity_type
       ORDER BY count DESC
     `;
-    const result = await pool.query(query);
+    const result = await req.db.query(query);
 
     // Map to categories
     let categories = {
@@ -538,7 +538,7 @@ exports.getActiveUserDemographics = async (req, res) => {
       JOIN active_users au ON u.user_id = au.user_id
       GROUP BY demographic_type
     `;
-    const result = await pool.query(query);
+    const result = await req.db.query(query);
 
     const colors = {
       'Professional': '#6366f1', // Indigo
@@ -569,11 +569,11 @@ exports.getUserVelocity = async (req, res) => {
     const prevEnd = new Date(start.getTime());
 
     // 1. Gross Acquisition
-    const grossRes = await pool.query(
+    const grossRes = await req.db.query(
       'SELECT COUNT(*) FROM users WHERE created_at >= $1 AND created_at <= $2',
       [start.toISOString(), end.toISOString()]
     );
-    const prevGrossRes = await pool.query(
+    const prevGrossRes = await req.db.query(
       'SELECT COUNT(*) FROM users WHERE created_at >= $1 AND created_at <= $2',
       [prevStart.toISOString(), prevEnd.toISOString()]
     );
@@ -581,11 +581,11 @@ exports.getUserVelocity = async (req, res) => {
     const prevGross = parseInt(prevGrossRes.rows[0].count, 10);
 
     // 2. Churn Velocity (users where is_deleted = TRUE and deleted_at falls in range)
-    const churnRes = await pool.query(
+    const churnRes = await req.db.query(
       'SELECT COUNT(*) FROM users WHERE is_deleted = TRUE AND deleted_at >= $1 AND deleted_at <= $2',
       [start.toISOString(), end.toISOString()]
     );
-    const prevChurnRes = await pool.query(
+    const prevChurnRes = await req.db.query(
       'SELECT COUNT(*) FROM users WHERE is_deleted = TRUE AND deleted_at >= $1 AND deleted_at <= $2',
       [prevStart.toISOString(), prevEnd.toISOString()]
     );
@@ -628,7 +628,7 @@ exports.getDemographicMomentum = async (req, res) => {
     const prevEnd = new Date(start.getTime());
 
     // Get current counts
-    const currentRes = await pool.query(`
+    const currentRes = await req.db.query(`
       SELECT user_type, COUNT(*) as count 
       FROM users 
       WHERE created_at >= $1 AND created_at <= $2 
@@ -636,7 +636,7 @@ exports.getDemographicMomentum = async (req, res) => {
     `, [start.toISOString(), end.toISOString()]);
 
     // Get prev counts
-    const prevRes = await pool.query(`
+    const prevRes = await req.db.query(`
       SELECT user_type, COUNT(*) as count 
       FROM users 
       WHERE created_at >= $1 AND created_at <= $2 
@@ -724,7 +724,7 @@ exports.getLiveSignups = async (req, res) => {
       LIMIT 5
     `;
 
-    const result = await pool.query(query);
+    const result = await req.db.query(query);
 
     const formattedData = result.rows.map((row, index) => {
       // Calculate time relative to now
@@ -793,14 +793,14 @@ exports.getRegionalHotspots = async (req, res) => {
       'Argentina': 'Latin America'
     };
 
-    const currentRes = await pool.query(`
+    const currentRes = await req.db.query(`
       SELECT location_country, COUNT(*) as count 
       FROM users 
       WHERE created_at >= $1 AND created_at <= $2 
       GROUP BY location_country
     `, [start.toISOString(), end.toISOString()]);
 
-    const prevRes = await pool.query(`
+    const prevRes = await req.db.query(`
       SELECT location_country, COUNT(*) as count 
       FROM users 
       WHERE created_at >= $1 AND created_at <= $2 
@@ -885,7 +885,7 @@ exports.getInternalSpreadMetric = async (req, res) => {
         AND o.created_at <= $1
     `;
 
-    const result = await pool.query(query, [end.toISOString()]);
+    const result = await req.db.query(query, [end.toISOString()]);
     let avgUsers = 0;
     if (result.rows.length > 0 && result.rows[0].avg_users_per_org !== null) {
       avgUsers = parseFloat(result.rows[0].avg_users_per_org);
@@ -916,10 +916,10 @@ exports.getOrganizationDemographics = async (req, res) => {
       ORDER BY count DESC 
       LIMIT 4
     `;
-    const industryResult = await pool.query(industryQuery, [end.toISOString()]);
+    const industryResult = await req.db.query(industryQuery, [end.toISOString()]);
 
     // Calculate total for percentages
-    const totalIndRes = await pool.query(`
+    const totalIndRes = await req.db.query(`
       SELECT COUNT(*) as total FROM organizations 
       WHERE created_at <= $1 AND industry IS NOT NULL AND industry != ''
     `, [end.toISOString()]);
@@ -943,9 +943,9 @@ exports.getOrganizationDemographics = async (req, res) => {
       GROUP BY size 
       ORDER BY count DESC
     `;
-    const sizeResult = await pool.query(sizeQuery, [end.toISOString()]);
+    const sizeResult = await req.db.query(sizeQuery, [end.toISOString()]);
 
-    const totalSizeRes = await pool.query(`
+    const totalSizeRes = await req.db.query(`
       SELECT COUNT(*) as total FROM organizations 
       WHERE created_at <= $1 AND size IS NOT NULL AND size != ''
     `, [end.toISOString()]);
@@ -993,7 +993,7 @@ exports.getSeatUtilization = async (req, res) => {
           AND ual.created_at <= $2
         WHERE om.joined_at <= $2
       `;
-      const result = await pool.query(query, [periodStart.toISOString(), periodEnd.toISOString()]);
+      const result = await req.db.query(query, [periodStart.toISOString(), periodEnd.toISOString()]);
       const total = parseInt(result.rows[0].total_org_users, 10);
       const active = parseInt(result.rows[0].active_org_users, 10);
       return { total, active, rate: total > 0 ? (active / total) * 100 : 0 };
@@ -1031,7 +1031,7 @@ exports.getB2BActivity = async (req, res) => {
         (SELECT COUNT(*) FROM jobs WHERE created_at >= $1 AND created_at <= $2) AS jobs_count,
         (SELECT COUNT(*) FROM posts WHERE author_org_id IS NOT NULL AND created_at >= $1 AND created_at <= $2) AS posts_count
     `;
-    const activityRes = await pool.query(activityQuery, [start.toISOString(), end.toISOString()]);
+    const activityRes = await req.db.query(activityQuery, [start.toISOString(), end.toISOString()]);
 
     const sourcingCount = parseInt(activityRes.rows[0].sourcing_count, 10);
     const jobsCount = parseInt(activityRes.rows[0].jobs_count, 10);
@@ -1057,7 +1057,7 @@ exports.getB2BActivity = async (req, res) => {
       FROM organizations o
       WHERE o.is_deleted = FALSE
     `;
-    const leaderboardRes = await pool.query(leaderboardQuery, [start.toISOString(), end.toISOString()]);
+    const leaderboardRes = await req.db.query(leaderboardQuery, [start.toISOString(), end.toISOString()]);
 
     const powerOrgsData = leaderboardRes.rows.map((org, index) => {
       const jobs = parseInt(org.jobs_posted, 10);
@@ -1110,7 +1110,7 @@ exports.getOrganizationGrowthBreakdown = async (req, res) => {
         (SELECT COUNT(*) FROM organizations WHERE created_at >= $1 AND created_at <= $2 AND (logo_url IS NOT NULL OR website IS NOT NULL OR description IS NOT NULL) AND is_deleted = FALSE) AS profile_complete,
         (SELECT COUNT(DISTINCT o.org_id) FROM organizations o WHERE o.created_at >= $1 AND o.created_at <= $2 AND o.is_deleted = FALSE AND (EXISTS (SELECT 1 FROM jobs j WHERE j.org_id = o.org_id) OR EXISTS (SELECT 1 FROM posts p WHERE p.author_org_id = o.org_id))) AS first_action
     `;
-    const funnelRes = await pool.query(funnelQuery, [start.toISOString(), end.toISOString()]);
+    const funnelRes = await req.db.query(funnelQuery, [start.toISOString(), end.toISOString()]);
     const funnelRow = funnelRes.rows[0];
 
     const funnelData = [
@@ -1135,8 +1135,8 @@ exports.getOrganizationGrowthBreakdown = async (req, res) => {
     `;
 
     const [currIndRes, prevIndRes] = await Promise.all([
-      pool.query(currIndustryQuery, [start.toISOString(), end.toISOString()]),
-      pool.query(prevIndustryQuery, [prevStart.toISOString(), prevEnd.toISOString()])
+      req.db.query(currIndustryQuery, [start.toISOString(), end.toISOString()]),
+      req.db.query(prevIndustryQuery, [prevStart.toISOString(), prevEnd.toISOString()])
     ]);
 
     const prevIndMap = {};
@@ -1179,7 +1179,7 @@ exports.getOrganizationGrowthBreakdown = async (req, res) => {
       FROM org_first_actions
       WHERE first_action_at IS NOT NULL;
     `;
-    const ttvRes = await pool.query(ttvQuery, [start.toISOString(), end.toISOString()]);
+    const ttvRes = await req.db.query(ttvQuery, [start.toISOString(), end.toISOString()]);
     let ttvString = 'N/A';
     if (ttvRes.rows.length > 0 && ttvRes.rows[0].avg_ttv_days !== null) {
       const ttv = parseFloat(parseFloat(ttvRes.rows[0].avg_ttv_days).toFixed(1));
@@ -1200,7 +1200,7 @@ exports.getOrganizationGrowthBreakdown = async (req, res) => {
 exports.getJobsMetrics = async (req, res) => {
   try {
     // 1. ATS Pipeline Data
-    const pipelineRes = await pool.query(`
+    const pipelineRes = await req.db.query(`
       SELECT current_status, COUNT(*) 
       FROM job_applications 
       GROUP BY current_status
@@ -1218,7 +1218,7 @@ exports.getJobsMetrics = async (req, res) => {
     ];
 
     // 2. Audit Trail & Flags (System Integrity Log)
-    const auditRes = await pool.query(`
+    const auditRes = await req.db.query(`
       SELECT jv.version_id, jv.trigger_event, jv.created_at, jv.provenance, j.title, j.job_id, u.full_name as changer_name, jv.changed_by
       FROM job_versions jv 
       JOIN jobs j ON jv.job_id = j.job_id 
@@ -1248,7 +1248,7 @@ exports.getJobsMetrics = async (req, res) => {
       };
     });
 
-    const flagsRes = await pool.query(`
+    const flagsRes = await req.db.query(`
       SELECT jr.report_id, jr.reason, jr.created_at, j.title, j.job_id, u.full_name as reporter_name, jr.reporter_id 
       FROM job_reports jr 
       JOIN jobs j ON jr.job_id = j.job_id 
@@ -1268,7 +1268,7 @@ exports.getJobsMetrics = async (req, res) => {
     }));
 
     // 3. Skills Matrix
-    const skillsRes = await pool.query(`
+    const skillsRes = await req.db.query(`
       SELECT skill, COUNT(*) as count FROM (
         SELECT jsonb_array_elements_text(ai_extracted_requirements->'skills') as skill
         FROM jobs 
@@ -1285,7 +1285,7 @@ exports.getJobsMetrics = async (req, res) => {
     }));
 
     // 4. Candidate Engagement (Trending Jobs)
-    const trendingRes = await pool.query(`
+    const trendingRes = await req.db.query(`
       SELECT j.job_id, j.title, COUNT(js.job_id) as saves 
       FROM job_saves js 
       JOIN jobs j ON js.job_id = j.job_id 
@@ -1347,10 +1347,10 @@ exports.getOrganizationStats = async (req, res) => {
     const thirtyDaysAgo = new Date(new Date().setDate(now.getDate() - 30)).toISOString();
 
     // 1. Total Organizations
-    const totalOrgsRes = await pool.query('SELECT COUNT(*) FROM organizations WHERE is_deleted = false');
+    const totalOrgsRes = await req.db.query('SELECT COUNT(*) FROM organizations WHERE is_deleted = false');
     const totalOrgs = parseInt(totalOrgsRes.rows[0].count, 10);
 
-    const prevOrgsRes = await pool.query('SELECT COUNT(*) FROM organizations WHERE is_deleted = false AND created_at <= $1', [thirtyDaysAgo]);
+    const prevOrgsRes = await req.db.query('SELECT COUNT(*) FROM organizations WHERE is_deleted = false AND created_at <= $1', [thirtyDaysAgo]);
     const prevOrgsCount = parseInt(prevOrgsRes.rows[0].count, 10);
 
     let orgGrowth = 0;
@@ -1361,15 +1361,15 @@ exports.getOrganizationStats = async (req, res) => {
     }
 
     // 2. Pending Verification
-    const pendingVerificationRes = await pool.query("SELECT COUNT(*) FROM organizations WHERE verification_status IN ('UNVERIFIED', 'DOMAIN_PENDING') AND is_deleted = false");
+    const pendingVerificationRes = await req.db.query("SELECT COUNT(*) FROM organizations WHERE verification_status IN ('UNVERIFIED', 'DOMAIN_PENDING') AND is_deleted = false");
     const pendingVerification = parseInt(pendingVerificationRes.rows[0].count, 10);
 
     // 3. Incomplete Onboarding
-    const incompleteOnboardingRes = await pool.query('SELECT COUNT(*) FROM organizations WHERE onboarding_stage = 2 AND is_deleted = false');
+    const incompleteOnboardingRes = await req.db.query('SELECT COUNT(*) FROM organizations WHERE onboarding_stage = 2 AND is_deleted = false');
     const incompleteOnboarding = parseInt(incompleteOnboardingRes.rows[0].count, 10);
 
     // 4. Avg. Verification Time
-    const avgVerificationTimeRes = await pool.query(`
+    const avgVerificationTimeRes = await req.db.query(`
         SELECT AVG(EXTRACT(EPOCH FROM (verified_at - created_at))) as avg_seconds
         FROM organizations
         WHERE verification_status = 'DOMAIN_VERIFIED' AND verified_at IS NOT NULL
@@ -1380,7 +1380,7 @@ exports.getOrganizationStats = async (req, res) => {
 
     // Previous 7 days avg verification time
     const sevenDaysAgo = new Date(new Date().setDate(new Date().getDate() - 7)).toISOString();
-    const prevAvgVerificationTimeRes = await pool.query(`
+    const prevAvgVerificationTimeRes = await req.db.query(`
         SELECT AVG(EXTRACT(EPOCH FROM (verified_at - created_at))) as avg_seconds
         FROM organizations
         WHERE verification_status = 'DOMAIN_VERIFIED' AND verified_at IS NOT NULL AND verified_at <= $1
@@ -1392,14 +1392,14 @@ exports.getOrganizationStats = async (req, res) => {
     const avgVerificationTimeChange = (avgVerificationTimeDays - prevAvgVerificationTimeDays).toFixed(1);
 
     // 5. Active Organizations
-    const activeOrgsRes = await pool.query(
+    const activeOrgsRes = await req.db.query(
       "SELECT COUNT(*) FROM organizations WHERE last_active_at >= $1 AND is_deleted = false AND is_suspended = false",
       [thirtyDaysAgo]
     );
     const activeOrganizations = parseInt(activeOrgsRes.rows[0].count, 10);
 
     // 6. Suspended
-    const suspendedRes = await pool.query('SELECT COUNT(*) FROM organizations WHERE is_suspended = TRUE AND is_deleted = false');
+    const suspendedRes = await req.db.query('SELECT COUNT(*) FROM organizations WHERE is_suspended = TRUE AND is_deleted = false');
     const suspended = parseInt(suspendedRes.rows[0].count, 10);
 
     const responseData = {
@@ -1427,7 +1427,7 @@ exports.getOrganizationStats = async (req, res) => {
 
 exports.getSystemAlerts = async (req, res) => {
   try {
-    const alertsRes = await pool.query('SELECT * FROM system_alerts WHERE is_active = TRUE ORDER BY created_at DESC');
+    const alertsRes = await req.db.query('SELECT * FROM system_alerts WHERE is_active = TRUE ORDER BY created_at DESC');
     res.json({ alerts: alertsRes.rows });
   } catch (error) {
     console.error('Error fetching system alerts:', error);
@@ -1462,10 +1462,10 @@ exports.getSystemMetrics = async (req, res) => {
     const heapUsagePercent = Math.round((heapUsedMb / heapTotalMb) * 100);
 
     // Database Metrics
-    const connectionsRes = await pool.query('SELECT count(*) FROM pg_stat_activity');
+    const connectionsRes = await req.db.query('SELECT count(*) FROM pg_stat_activity');
     const activeDbConnections = parseInt(connectionsRes.rows[0].count, 10);
 
-    const dbSizeRes = await pool.query("SELECT pg_size_pretty(pg_database_size('cocpit_admin_panel')) as size");
+    const dbSizeRes = await req.db.query("SELECT pg_size_pretty(pg_database_size('cocpit_admin_panel')) as size");
     const dbSize = dbSizeRes.rows[0].size;
 
     res.json({
@@ -1488,7 +1488,7 @@ exports.getSystemMetrics = async (req, res) => {
 
 exports.getDeployments = async (req, res) => {
   try {
-    const deploymentsRes = await pool.query('SELECT * FROM deployments ORDER BY created_at DESC LIMIT 10');
+    const deploymentsRes = await req.db.query('SELECT * FROM deployments ORDER BY created_at DESC LIMIT 10');
     res.json({ deployments: deploymentsRes.rows });
   } catch (error) {
     console.error('Error fetching deployments:', error);
@@ -1500,7 +1500,7 @@ exports.getDeployments = async (req, res) => {
 
 exports.getSlowQueries = async (req, res) => {
   try {
-    const queriesRes = await pool.query('SELECT * FROM slow_queries ORDER BY duration_ms DESC LIMIT 10');
+    const queriesRes = await req.db.query('SELECT * FROM slow_queries ORDER BY duration_ms DESC LIMIT 10');
     res.json({ slowQueries: queriesRes.rows });
   } catch (error) {
     console.error('Error fetching slow queries:', error);
@@ -1510,9 +1510,9 @@ exports.getSlowQueries = async (req, res) => {
 
 exports.getBackgroundTasks = async (req, res) => {
   try {
-    const pendingRes = await pool.query("SELECT count(*) FROM background_tasks WHERE status = 'Pending'");
-    const deadLetterRes = await pool.query("SELECT count(*) FROM background_tasks WHERE status = 'Dead Letter'");
-    const tasksRes = await pool.query("SELECT * FROM background_tasks WHERE status = 'Dead Letter' ORDER BY created_at DESC");
+    const pendingRes = await req.db.query("SELECT count(*) FROM background_tasks WHERE status = 'Pending'");
+    const deadLetterRes = await req.db.query("SELECT count(*) FROM background_tasks WHERE status = 'Dead Letter'");
+    const tasksRes = await req.db.query("SELECT * FROM background_tasks WHERE status = 'Dead Letter' ORDER BY created_at DESC");
 
     res.json({
       pendingCount: parseInt(pendingRes.rows[0].count, 10),
@@ -1538,7 +1538,7 @@ exports.getNetworkingHealth = async (req, res) => {
         AVG(EXTRACT(EPOCH FROM (updated_at - created_at))) FILTER (WHERE status = 'connected') as avg_acceptance_time
       FROM connection_requests
     `;
-    const overallRes = await pool.query(overallQuery);
+    const overallRes = await req.db.query(overallQuery);
     const overall = overallRes.rows[0];
 
     const totalRequests = parseInt(overall.total_requests || 0, 10);
@@ -1605,7 +1605,7 @@ exports.getNetworkingHealth = async (req, res) => {
       GROUP BY d.ts
       ORDER BY d.ts ASC
     `;
-    const liquidityRes = await pool.query(liquidityQuery);
+    const liquidityRes = await req.db.query(liquidityQuery);
     
     const liquidityData = liquidityRes.rows.map(row => {
       const d = new Date(row.date);
@@ -1633,7 +1633,7 @@ exports.getNetworkingHealth = async (req, res) => {
       FROM connection_requests
       WHERE status = 'pending'
     `;
-    const agingRes = await pool.query(agingQuery);
+    const agingRes = await req.db.query(agingQuery);
     const ag = agingRes.rows[0];
     
     // If no pending, use mock data
@@ -1669,7 +1669,7 @@ exports.getNetworkingHealth = async (req, res) => {
       ORDER BY total_offenses DESC
       LIMIT 5
     `;
-    const watchlistRes = await pool.query(watchlistQuery);
+    const watchlistRes = await req.db.query(watchlistQuery);
     const spamUsers = watchlistRes.rows.map((row) => {
       const offenses = parseInt(row.total_offenses, 10) || 1;
       const riskScore = Math.min(99, Math.round(50 + (offenses * 10)));
@@ -1703,7 +1703,7 @@ exports.getNetworkingHealth = async (req, res) => {
       ORDER BY count DESC 
       LIMIT 5
     `;
-    const locationsRes = await pool.query(locationsQuery);
+    const locationsRes = await req.db.query(locationsQuery);
     
     const locationsData = locationsRes.rows.length > 0 
       ? locationsRes.rows.map(row => ({
@@ -1748,7 +1748,7 @@ exports.getNetworkingHealth = async (req, res) => {
 
 exports.getTotalUsersBreakdown = async (req, res) => {
   try {
-    const acquisitionRes = await pool.query(`
+    const acquisitionRes = await req.db.query(`
       SELECT acquisition_source as name, COUNT(*) as value 
       FROM users 
       WHERE acquisition_source IS NOT NULL 
@@ -1776,7 +1776,7 @@ exports.getTotalUsersBreakdown = async (req, res) => {
 exports.getUpcomingEventsBreakdown = async (req, res) => {
   try {
     // 1. Revenue
-    const revenueRes = await pool.query(`
+    const revenueRes = await req.db.query(`
       SELECT SUM(e.price) as total_sales
       FROM events e
       JOIN event_registrations er ON e.event_id = er.event_id
@@ -1793,7 +1793,7 @@ exports.getUpcomingEventsBreakdown = async (req, res) => {
     };
 
     // 2. Waitlist Escalations (Events where registrations exceed or are close to capacity)
-    const waitlistRes = await pool.query(`
+    const waitlistRes = await req.db.query(`
       SELECT e.event_id as id, e.title, e.event_type as type, e.location, e.max_attendees as capacity, 
              COUNT(er.user_id) as registered
       FROM events e
@@ -1913,8 +1913,8 @@ exports.getAiAnalytics = async (req, res) => {
     `;
 
     const [featureResult, timeSeriesResult] = await Promise.all([
-      pool.query(featureQuery, queryParams),
-      pool.query(timeSeriesQuery, queryParams)
+      req.db.query(featureQuery, queryParams),
+      req.db.query(timeSeriesQuery, queryParams)
     ]);
 
     const featureData = featureResult.rows.map(row => ({
@@ -1956,13 +1956,13 @@ exports.getAiAnalytics = async (req, res) => {
 
 exports.getAdminNotifications = async (req, res) => {
   try {
-    const appealsRes = await pool.query("SELECT COUNT(*) FROM post_appeals WHERE status = 'pending'");
+    const appealsRes = await req.db.query("SELECT COUNT(*) FROM post_appeals WHERE status = 'pending'");
     const appealsCount = parseInt(appealsRes.rows[0].count, 10);
 
-    const reportsRes = await pool.query("SELECT COUNT(*) FROM reports WHERE status IN ('active', 'escalated')");
+    const reportsRes = await req.db.query("SELECT COUNT(*) FROM reports WHERE status IN ('active', 'escalated')");
     const reportsCount = parseInt(reportsRes.rows[0].count, 10);
 
-    const orgsRes = await pool.query("SELECT COUNT(*) FROM organizations WHERE verification_status = 'pending' AND is_deleted = false");
+    const orgsRes = await req.db.query("SELECT COUNT(*) FROM organizations WHERE verification_status = 'pending' AND is_deleted = false");
     const orgsCount = parseInt(orgsRes.rows[0].count, 10);
 
     res.json({

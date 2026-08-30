@@ -10,7 +10,7 @@ exports.getModerationAppeals = async (req, res) => {
       FROM moderation_appeals
       WHERE status = $1
     `;
-    const countRes = await pool.query(countQuery, [status]);
+    const countRes = await req.db.query(countQuery, [status]);
     const total = parseInt(countRes.rows[0].count);
 
     const query = `
@@ -33,7 +33,7 @@ exports.getModerationAppeals = async (req, res) => {
       ORDER BY ma.created_at ASC
       LIMIT $2 OFFSET $3
     `;
-    const result = await pool.query(query, [status, limit, offset]);
+    const result = await req.db.query(query, [status, limit, offset]);
 
     res.json({
       appeals: result.rows,
@@ -54,10 +54,10 @@ exports.approveAppeal = async (req, res) => {
     const adminId = req.user.userId;
 
     // Start transaction
-    await pool.query('BEGIN');
+    await req.db.query('BEGIN');
 
     // 1. Update appeal status
-    const appealRes = await pool.query(
+    const appealRes = await req.db.query(
       `UPDATE moderation_appeals 
        SET status = 'APPROVED', reviewer_id = $1, reviewer_notes = $2, reviewed_at = NOW() 
        WHERE appeal_id = $3 AND status = 'PENDING'
@@ -66,26 +66,26 @@ exports.approveAppeal = async (req, res) => {
     );
 
     if (appealRes.rowCount === 0) {
-      await pool.query('ROLLBACK');
+      await req.db.query('ROLLBACK');
       return res.status(404).json({ error: 'Appeal not found or already resolved' });
     }
 
     const { user_id, action_id } = appealRes.rows[0];
 
     // 2. Mark action as inactive
-    await pool.query(
+    await req.db.query(
       `UPDATE moderation_actions SET is_active = false WHERE action_id = $1`,
       [action_id]
     );
 
     // 3. Unsuspend the user
-    await pool.query(
+    await req.db.query(
       `UPDATE users SET is_suspended = false, suspended_until = NULL, moderation_flags = 0 WHERE user_id = $1`,
       [user_id]
     );
 
     // 4. Log audit
-    await pool.query(
+    await req.db.query(
       'INSERT INTO admin_audit_logs (user_id, action_type, description) VALUES ($1, $2, $3)',
       [adminId, 'APPEAL_APPROVED', `Approved appeal ${id} and unsuspended user ${user_id}`]
     );
@@ -96,10 +96,10 @@ exports.approveAppeal = async (req, res) => {
     await redis.del(`suspended_user:${user_id}`);
     redis.disconnect();
 
-    await pool.query('COMMIT');
+    await req.db.query('COMMIT');
     res.json({ success: true, message: 'Appeal approved and user unsuspended.' });
   } catch (error) {
-    await pool.query('ROLLBACK');
+    await req.db.query('ROLLBACK');
     console.error('Error approving appeal:', error);
     res.status(500).json({ error: 'Failed to approve appeal' });
   }
@@ -111,7 +111,7 @@ exports.rejectAppeal = async (req, res) => {
     const { notes } = req.body;
     const adminId = req.user.userId;
 
-    const appealRes = await pool.query(
+    const appealRes = await req.db.query(
       `UPDATE moderation_appeals 
        SET status = 'REJECTED', reviewer_id = $1, reviewer_notes = $2, reviewed_at = NOW() 
        WHERE appeal_id = $3 AND status = 'PENDING'
@@ -123,7 +123,7 @@ exports.rejectAppeal = async (req, res) => {
       return res.status(404).json({ error: 'Appeal not found or already resolved' });
     }
 
-    await pool.query(
+    await req.db.query(
       'INSERT INTO admin_audit_logs (user_id, action_type, description) VALUES ($1, $2, $3)',
       [adminId, 'APPEAL_REJECTED', `Rejected appeal ${id} for user ${appealRes.rows[0].user_id}`]
     );

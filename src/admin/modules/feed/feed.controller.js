@@ -9,28 +9,28 @@ exports.getFeedMetrics = async (req, res) => {
     const start = req.query.startDate ? new Date(req.query.startDate) : new Date(end.getTime() - 30 * 24 * 60 * 60 * 1000);
 
     // 1. Total Daily Activity Volume (posts created today in UTC)
-    const dailyVolumeRes = await pool.query(
+    const dailyVolumeRes = await req.db.query(
       "SELECT COUNT(*) FROM posts WHERE created_at >= NOW() - INTERVAL '24 hours'"
     );
     const dailyActivityVolume = parseInt(dailyVolumeRes.rows[0].count, 10);
 
     // 2. Engagement Rate calculation:
     // (Total Likes + Total Comments + Total Shares in period) / (Active Users in period)
-    const activeUsersRes = await pool.query(
+    const activeUsersRes = await req.db.query(
       "SELECT COUNT(DISTINCT user_id) FROM user_activity_log WHERE created_at >= $1 AND created_at <= $2",
       [start.toISOString(), end.toISOString()]
     );
     const activeUsersCount = parseInt(activeUsersRes.rows[0].count, 10) || 1; // avoid divide by zero
 
-    const likesCountRes = await pool.query(
+    const likesCountRes = await req.db.query(
       "SELECT COUNT(*) FROM post_likes WHERE created_at >= $1 AND created_at <= $2",
       [start.toISOString(), end.toISOString()]
     );
-    const commentsCountRes = await pool.query(
+    const commentsCountRes = await req.db.query(
       "SELECT COUNT(*) FROM post_comments WHERE created_at >= $1 AND created_at <= $2",
       [start.toISOString(), end.toISOString()]
     );
-    const sharesCountRes = await pool.query(
+    const sharesCountRes = await req.db.query(
       "SELECT COUNT(*) FROM post_shares WHERE created_at >= $1 AND created_at <= $2",
       [start.toISOString(), end.toISOString()]
     );
@@ -45,7 +45,7 @@ exports.getFeedMetrics = async (req, res) => {
       : 0;
 
     // 3. Avg Engagement per Post (interactions / total posts in period)
-    const postsCountRes = await pool.query(
+    const postsCountRes = await req.db.query(
       "SELECT COUNT(*) FROM posts WHERE created_at >= $1 AND created_at <= $2",
       [start.toISOString(), end.toISOString()]
     );
@@ -178,10 +178,10 @@ exports.getFeedPosts = async (req, res) => {
       ${whereSql}
     `;
 
-    const countRes = await pool.query(countQuery, queryParams);
+    const countRes = await req.db.query(countQuery, queryParams);
     const totalPosts = parseInt(countRes.rows[0].count, 10);
 
-    const postsRes = await pool.query(postsQuery, [...queryParams, limit, offset]);
+    const postsRes = await req.db.query(postsQuery, [...queryParams, limit, offset]);
 
     // Filter out posts that contain raw code, stack traces, console errors, or code frame lines
     const filteredRows = postsRes.rows.filter(row => {
@@ -243,7 +243,7 @@ exports.deleteFeedPost = async (req, res) => {
     const { reason = 'Post Moderation Takedown', message = 'Your post has been unlisted for violating community guidelines.' } = req.body;
 
     // Verify post exists
-    const checkRes = await pool.query('SELECT post_id, author_id FROM posts WHERE post_id = $1', [id]);
+    const checkRes = await req.db.query('SELECT post_id, author_id FROM posts WHERE post_id = $1', [id]);
     if (checkRes.rowCount === 0) {
       return res.status(404).json({ error: 'Post not found' });
     }
@@ -251,7 +251,7 @@ exports.deleteFeedPost = async (req, res) => {
     const post = checkRes.rows[0];
 
     // Soft takedown: Toggle is_unlisted to true and make it private
-    await pool.query("UPDATE posts SET is_unlisted = true, visibility = 'private' WHERE post_id = $1", [id]);
+    await req.db.query("UPDATE posts SET is_unlisted = true, visibility = 'private' WHERE post_id = $1", [id]);
 
     // Purge from global feed pools
     if (redis.status === 'ready') {
@@ -260,13 +260,13 @@ exports.deleteFeedPost = async (req, res) => {
     }
 
     // Send a warning notification to the author
-    await pool.query(
+    await req.db.query(
       'INSERT INTO user_warnings (user_id, reason, message, is_severe) VALUES ($1, $2, $3, false)',
       [post.author_id, reason, message]
     );
 
     // Audit log
-    await pool.query(
+    await req.db.query(
       `INSERT INTO admin_audit_logs (user_id, action_type, description) 
        VALUES ($1, 'UNLIST_POST', $2)`,
       [req.user.sub || null, `Unlisted post ${id} by user ${post.author_id} for: ${reason}`]
@@ -285,7 +285,7 @@ exports.restoreFeedPost = async (req, res) => {
     const { id } = req.params;
 
     // Verify post exists
-    const checkRes = await pool.query('SELECT post_id, author_id FROM posts WHERE post_id = $1', [id]);
+    const checkRes = await req.db.query('SELECT post_id, author_id FROM posts WHERE post_id = $1', [id]);
     if (checkRes.rowCount === 0) {
       return res.status(404).json({ error: 'Post not found' });
     }
@@ -293,10 +293,10 @@ exports.restoreFeedPost = async (req, res) => {
     const post = checkRes.rows[0];
 
     // Restore: Toggle is_unlisted to false and make it public again
-    await pool.query("UPDATE posts SET is_unlisted = false, visibility = 'public' WHERE post_id = $1", [id]);
+    await req.db.query("UPDATE posts SET is_unlisted = false, visibility = 'public' WHERE post_id = $1", [id]);
 
     // Resolve pending appeals as approved
-    await pool.query("UPDATE post_appeals SET status = 'approved', resolved_at = NOW() WHERE post_id = $1 AND status = 'pending'", [id]);
+    await req.db.query("UPDATE post_appeals SET status = 'approved', resolved_at = NOW() WHERE post_id = $1 AND status = 'pending'", [id]);
 
     // Notify Main API to emit Socket.io notification
     try {
@@ -318,7 +318,7 @@ exports.restoreFeedPost = async (req, res) => {
     }
 
     // Audit log
-    await pool.query(
+    await req.db.query(
       `INSERT INTO admin_audit_logs (user_id, action_type, description) 
        VALUES ($1, 'RESTORE_POST', $2)`,
       [req.user.sub || null, `Restored post ${id} by user ${post.author_id}`]
@@ -337,7 +337,7 @@ exports.rejectFeedPostAppeal = async (req, res) => {
     const { id } = req.params;
 
     // Verify post exists
-    const checkRes = await pool.query('SELECT post_id, author_id FROM posts WHERE post_id = $1', [id]);
+    const checkRes = await req.db.query('SELECT post_id, author_id FROM posts WHERE post_id = $1', [id]);
     if (checkRes.rowCount === 0) {
       return res.status(404).json({ error: 'Post not found' });
     }
@@ -345,7 +345,7 @@ exports.rejectFeedPostAppeal = async (req, res) => {
     const post = checkRes.rows[0];
 
     // Resolve pending appeals as rejected
-    await pool.query("UPDATE post_appeals SET status = 'rejected', resolved_at = NOW() WHERE post_id = $1 AND status = 'pending'", [id]);
+    await req.db.query("UPDATE post_appeals SET status = 'rejected', resolved_at = NOW() WHERE post_id = $1 AND status = 'pending'", [id]);
 
     // Notify Main API to emit Socket.io notification
     try {
@@ -367,7 +367,7 @@ exports.rejectFeedPostAppeal = async (req, res) => {
     }
 
     // Audit log
-    await pool.query(
+    await req.db.query(
       `INSERT INTO admin_audit_logs (user_id, action_type, description) 
        VALUES ($1, 'REJECT_APPEAL', $2)`,
       [req.user.sub || null, `Rejected appeal for post ${id} by user ${post.author_id}`]
@@ -383,7 +383,7 @@ exports.rejectFeedPostAppeal = async (req, res) => {
 // GET /api/admin/feed/hashtags
 exports.getTrendingHashtags = async (req, res) => {
   try {
-    const result = await pool.query(
+    const result = await req.db.query(
       `SELECT 
          h.hashtag_id AS id, 
          h.tag, 
@@ -434,7 +434,7 @@ exports.getFeedLeaderboard = async (req, res) => {
       ORDER BY (COALESCE(l.likes_count, 0) + (COALESCE(c.comments_count, 0) * 2) + (COALESCE(s.shares_count, 0) * 3)) DESC
       LIMIT 5
     `;
-    const result = await pool.query(query);
+    const result = await req.db.query(query);
     res.json(result.rows.map(row => ({
       id: row.id,
       title: row.title || 'Untitled Post',
@@ -468,7 +468,7 @@ exports.getPostComments = async (req, res) => {
       WHERE c.post_id = $1
       ORDER BY c.created_at ASC
     `;
-    const result = await pool.query(query, [id]);
+    const result = await req.db.query(query, [id]);
     res.json(result.rows.map(row => ({
       id: row.id,
       content: row.content,
@@ -501,11 +501,11 @@ exports.createPostComment = async (req, res) => {
       VALUES ($1, $2, $3, $4)
       RETURNING comment_id AS id, content, created_at, parent_id
     `;
-    const result = await pool.query(insertQuery, [id, userId, content, parent_id || null]);
+    const result = await req.db.query(insertQuery, [id, userId, content, parent_id || null]);
     
     // Fetch the admin user details to return a complete comment object
     const userQuery = `SELECT full_name, avatar_url, job_title, company_name FROM users WHERE user_id = $1`;
-    const userResult = await pool.query(userQuery, [userId]);
+    const userResult = await req.db.query(userQuery, [userId]);
     const u = userResult.rows[0] || {};
     
     const newComment = {
@@ -544,7 +544,7 @@ exports.getPostById = async (req, res) => {
       JOIN users u ON p.author_id = u.user_id
       WHERE p.post_id = $1
     `;
-    const result = await pool.query(query, [id]);
+    const result = await req.db.query(query, [id]);
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'Post not found' });
     }
@@ -573,7 +573,7 @@ exports.getAllChannels = async (req, res) => {
       WHERE c.is_active = TRUE
       ORDER BY c.created_at DESC
     `;
-    const result = await pool.query(query);
+    const result = await req.db.query(query);
     res.json({ channels: result.rows });
   } catch (error) {
     console.error('Error fetching channels:', error);
@@ -588,7 +588,7 @@ exports.getChannelArticles = async (req, res) => {
     
     // Check if the channel (community) exists
     const channelQuery = `SELECT org_id FROM communities WHERE community_id = $1 AND is_active = TRUE`;
-    const channelResult = await pool.query(channelQuery, [id]);
+    const channelResult = await req.db.query(channelQuery, [id]);
     if (channelResult.rows.length === 0) {
       return res.status(404).json({ error: 'Channel not found' });
     }
@@ -609,7 +609,7 @@ exports.getChannelArticles = async (req, res) => {
       WHERE p.author_org_id = $1 AND p.post_type = 'article'
       ORDER BY p.created_at DESC
     `;
-    const articlesResult = await pool.query(articlesQuery, [orgId]);
+    const articlesResult = await req.db.query(articlesQuery, [orgId]);
     
     // Post process to extract title from content if title is missing
     const articles = articlesResult.rows.map(row => {
@@ -641,7 +641,7 @@ exports.getAllThoughts = async (req, res) => {
     const { page = 1, limit = 10 } = req.query;
     const offset = (page - 1) * limit;
 
-    const countRes = await pool.query('SELECT COUNT(*) FROM post_comments');
+    const countRes = await req.db.query('SELECT COUNT(*) FROM post_comments');
     const totalThoughts = parseInt(countRes.rows[0].count, 10);
 
     const query = `
@@ -660,7 +660,7 @@ exports.getAllThoughts = async (req, res) => {
       ORDER BY c.created_at DESC
       LIMIT $1 OFFSET $2
     `;
-    const result = await pool.query(query, [limit, offset]);
+    const result = await req.db.query(query, [limit, offset]);
     
     const thoughts = result.rows.map(row => ({
       id: row.id,
@@ -691,7 +691,7 @@ exports.getAllThoughts = async (req, res) => {
 exports.deleteThought = async (req, res) => {
   try {
     const { id } = req.params;
-    const result = await pool.query('DELETE FROM post_comments WHERE comment_id = $1 RETURNING *', [id]);
+    const result = await req.db.query('DELETE FROM post_comments WHERE comment_id = $1 RETURNING *', [id]);
     
     if (result.rowCount === 0) {
       return res.status(404).json({ error: 'Thought not found' });
