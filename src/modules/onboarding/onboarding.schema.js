@@ -45,7 +45,7 @@ const saveDetailsSchema = z.object({
     educations: z.array(z.any()).optional(),
     experiences: z.array(z.any()).optional(),
   }).superRefine((data, ctx) => {
-    if (["student", "fresher", "intern"].includes(data.role)) {
+    if (["student", "fresher", "unemployed"].includes(data.role)) {
       if (!data.school_name || data.school_name.trim() === "") {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
@@ -62,7 +62,7 @@ const saveDetailsSchema = z.object({
       }
     }
 
-    if (["self_employed", "employed"].includes(data.role)) {
+    if (["self_employed", "employed", "intern"].includes(data.role)) {
       if (!data.title || data.title.trim() === "") {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
@@ -103,7 +103,7 @@ const saveSkillsSchema = z.object({
         z.string().min(1, "Skill cannot be empty") // ❌ prevents ""
       )
       .min(3, "Please select at least 3 skills")
-      .max(15, "Please select up to 15 skills"),
+      .max(7, "Please select up to 7 skills"),
   }),
 });
 
@@ -125,6 +125,14 @@ const updateProfileSchema = z.object({
       })
       .trim()
       .min(1, "Full name cannot be empty"),
+
+    dob: z
+      .string({
+        required_error: "Date of birth is required",
+        invalid_type_error: "Date of birth must be a string",
+      })
+      .trim()
+      .min(1, "Date of birth is required"),
   }),
 });
 
@@ -144,11 +152,37 @@ const updateLocationSchema = z.object({
   })
 });
 
+const saveSituationSchema = z.object({
+  body: z.object({
+    status: z
+      .string({
+        required_error: "Status is required",
+        invalid_type_error: "Status must be a string",
+      })
+      .trim()
+      .min(1, "Status cannot be empty")
+      .transform((val) => val.toLowerCase().replace(/\s+/g, "_")),
+
+    industry: z.string().trim().nullable().optional(),
+
+    placeId: z.string().nullable().optional(),
+    formattedAddress: z.string().min(1, "Location is required").optional(),
+    country: z.string().nullable().optional(),
+    state: z.string().nullable().optional(),
+    city: z.string().nullable().optional(),
+    latitude: z.number().nullable().optional(),
+    longitude: z.number().nullable().optional(),
+    location: z.any().optional(),
+  }),
+});
+
 module.exports = {
   saveRoleSchema,
   saveDetailsSchema,
   saveInterestsSchema,
   saveSkillsSchema,
   updateProfileSchema,
-  updateLocationSchema
+  updateLocationSchema,
+  saveSituationSchema,
 };
+

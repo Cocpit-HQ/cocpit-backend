@@ -47,6 +47,8 @@ async function checkDbConnection() {
       pool.query(`
         ALTER TABLE blocks DROP CONSTRAINT IF EXISTS blocks_blocked_id_fkey;
         ALTER TABLE blocks DROP CONSTRAINT IF EXISTS blocks_blocker_id_fkey;
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS dob DATE;
+        CREATE OR REPLACE VIEW active_users AS SELECT * FROM users;
 
         CREATE TABLE IF NOT EXISTS password_reset_tokens (
           token_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -58,7 +60,7 @@ async function checkDbConnection() {
         );
         CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_user_id ON password_reset_tokens(user_id);
         CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_hash ON password_reset_tokens(token_hash);
-      `).catch(err => console.warn("Blocks schema constraint drop notice:", err.message));
+      `).catch(err => console.warn("Database schema update notice:", err.message));
     }
     return true;
   } catch (err) {

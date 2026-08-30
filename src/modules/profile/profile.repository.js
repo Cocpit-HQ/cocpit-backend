@@ -11,6 +11,7 @@ const getFullProfile = async (userId) => {
         `SELECT u.user_id, u.full_name, u.headline, u.avatar_url, u.cover_image_url,
                 u.location, u.about_text, u.email, u.recovery_email, u.mobile_number, u.account_name, u.website, u.created_at,
                 u.onboarding_step, u.profile_show_email, u.profile_show_phone,
+                u.dob,
                 u.location_formatted, u.location_country, u.location_state, u.location_city,
                 u.location_lat, u.location_lng, u.location_place_id, u.is_identity_verified,
                 p.profile_id, p.account_type, p.open_to, p.availability, p.work_preference,
@@ -609,6 +610,7 @@ const getUserRole = async (userId) => {
         `SELECT r.role_name FROM user_roles ur
          JOIN roles r ON ur.role_id = r.role_id
          WHERE ur.user_id = $1
+         ORDER BY ur.assigned_at DESC
          LIMIT 1`,
         [userId]
     );

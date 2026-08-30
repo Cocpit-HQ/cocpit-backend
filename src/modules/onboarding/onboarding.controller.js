@@ -48,13 +48,9 @@ exports.saveRole = async (req, res) => {
             roleId = insertRoleRes.rows[0].role_id;
         }
 
-        const allowedRoles = ['student', 'fresher', 'intern', 'self_employed', 'employed', 'unemployed'];
-
         await client.query(
-            `DELETE FROM user_roles 
-             WHERE user_id = $1 
-             AND role_id IN (SELECT role_id FROM roles WHERE role_name = ANY($2::text[]))`,
-            [userId, allowedRoles]
+            `DELETE FROM user_roles WHERE user_id = $1`,
+            [userId]
         );
 
         await client.query(
@@ -62,6 +58,13 @@ exports.saveRole = async (req, res) => {
              VALUES ($1, $2)`,
             [userId, roleId]
         );
+
+        // When role is updated/changed on Step 2, clear previous background records in the database
+        const profileId = await getProfileId(userId);
+        if (profileId) {
+            await client.query(`DELETE FROM educations WHERE profile_id = $1`, [profileId]);
+            await client.query(`DELETE FROM experiences WHERE profile_id = $1`, [profileId]);
+        }
 
         await client.query(
             `UPDATE users SET onboarding_step = $1, updated_at = NOW() WHERE user_id = $2`,
@@ -136,8 +139,8 @@ exports.saveDetails = async (req, res) => {
             return null;
         };
 
-        const isStudentRole = ["student", "fresher", "intern"].includes(role);
-        const isEmployedRole = ["self_employed", "employed"].includes(role);
+        const isStudentRole = ["student", "fresher", "unemployed"].includes(role);
+        const isEmployedRole = ["self_employed", "employed", "intern"].includes(role);
 
         // ── PRIMARY insert: based on the user's declared role ───────────────
         if (isStudentRole) {
@@ -225,7 +228,7 @@ exports.saveDetails = async (req, res) => {
 
         await client.query(
             `UPDATE users SET onboarding_step = $1, updated_at = NOW() WHERE user_id = $2`,
-            [ONBOARDING_STEPS.INTERESTS, userId]
+            [ONBOARDING_STEPS.SKILLS, userId]
         );
 
         await client.query('COMMIT');
@@ -233,7 +236,7 @@ exports.saveDetails = async (req, res) => {
         return res.status(200).json({
             success: true,
             message: "Details saved successfully",
-            data: { next_step: ONBOARDING_STEPS.INTERESTS }
+            data: { next_step: ONBOARDING_STEPS.SKILLS }
         });
     } catch (err) {
         await client.query('ROLLBACK');
@@ -249,7 +252,8 @@ exports.getInterests = async (req, res) => {
     const { q = "", cursor: rawCursor = "", limit: rawLimit = "20" } = req.query;
 
     const limit = Math.min(50, Math.max(1, parseInt(rawLimit, 10) || 20));
-    const searchPattern = q.trim() ? `%${q.trim()}%` : null;
+    const trimmedQ = q.trim();
+    const searchPattern = trimmedQ.length >= 3 ? `%${trimmedQ}%` : null;
 
     // Decode cursor — base64(name of last seen item)
     let cursorName = null;
@@ -302,7 +306,8 @@ exports.getSkills = async (req, res) => {
     const { q = "", cursor: rawCursor = "", limit: rawLimit = "20" } = req.query;
 
     const limit = Math.min(50, Math.max(1, parseInt(rawLimit, 10) || 20));
-    const searchPattern = q.trim() ? `%${q.trim()}%` : null;
+    const trimmedQ = q.trim();
+    const searchPattern = trimmedQ.length >= 3 ? `%${trimmedQ}%` : null;
 
     // Decode cursor — base64(name of last seen item)
     let cursorName = null;
@@ -383,17 +388,21 @@ exports.saveInterests = async (req, res) => {
 
         await client.query('BEGIN');
 
-        // 1. Fetch existing interests using slug (fixes divergent formatting bugs)
+        // 1. Fetch existing interests using name or slug (case-insensitive)
+        const normalizedNames = deduplicatedNames.map(n => n.toLowerCase());
         const interestData = await client.query(
-            `SELECT interest_id, slug FROM interests WHERE slug = ANY($1::text[])`,
-            [deduplicatedSlugs]
+            `SELECT interest_id, name, slug FROM interests WHERE LOWER(name) = ANY($1::text[]) OR LOWER(slug) = ANY($1::text[])`,
+            [normalizedNames]
         );
 
         let finalInterestIds = interestData.rows.map(r => r.interest_id);
-        const existingSlugs = new Set(interestData.rows.map(r => r.slug));
+        const existingNames = new Set(interestData.rows.map(r => r.name.toLowerCase()));
+        const existingSlugs = new Set(interestData.rows.map(r => r.slug.toLowerCase()));
 
         // 2. Identify missing interests
-        const missingEntries = Array.from(uniqueMap.entries()).filter(([slug]) => !existingSlugs.has(slug));
+        const missingEntries = Array.from(uniqueMap.entries()).filter(([slug, name]) => 
+            !existingNames.has(name.toLowerCase()) && !existingSlugs.has(slug.toLowerCase())
+        );
 
         // 3. Bulk insert missing interests safely
         if (missingEntries.length > 0) {
@@ -403,21 +412,21 @@ exports.saveInterests = async (req, res) => {
                 insertParams.push(name, slug);
             }
 
-            await client.query(
-                `INSERT INTO interests (name, slug) VALUES ${valuesParams} ON CONFLICT DO NOTHING`,
+            const insertRes = await client.query(
+                `INSERT INTO interests (name, slug) VALUES ${valuesParams} 
+                 ON CONFLICT (slug) DO UPDATE SET name = EXCLUDED.name 
+                 RETURNING interest_id`,
                 insertParams
             );
-
-            // Re-fetch to get IDs of newly inserted, handling concurrent inserts gracefully
-            const missingSlugs = missingEntries.map(([slug]) => slug);
-            const newInterestData = await client.query(
-                `SELECT interest_id FROM interests WHERE slug = ANY($1::text[])`,
-                [missingSlugs]
-            );
-            finalInterestIds.push(...newInterestData.rows.map(r => r.interest_id));
+            finalInterestIds.push(...insertRes.rows.map(r => r.interest_id));
         }
 
-        // 4. Batch mapping assignment into user_interests
+        // Deduplicate final IDs
+        finalInterestIds = [...new Set(finalInterestIds)];
+
+        // 4. Batch mapping assignment into user_interests (replace previous user_interests)
+        await client.query(`DELETE FROM user_interests WHERE user_id = $1`, [userId]);
+
         if (finalInterestIds.length > 0) {
             const values = finalInterestIds.map((_, i) => `($1, $${i + 2}, 'onboarding', 5.0)`).join(", ");
             await client.query(
@@ -444,7 +453,7 @@ exports.saveInterests = async (req, res) => {
              SET onboarding_step = $1, 
                  updated_at = NOW() 
              WHERE user_id = $2`,
-            [ONBOARDING_STEPS.SKILLS, userId]
+            [ONBOARDING_STEPS.COMPLETE, userId]
         );
 
         await client.query('COMMIT');
@@ -454,7 +463,7 @@ exports.saveInterests = async (req, res) => {
             message: "Interests saved successfully",
             data: {
                 selected_count: finalInterestIds.length,
-                next_step: ONBOARDING_STEPS.SKILLS
+                next_step: ONBOARDING_STEPS.COMPLETE
             }
         });
     } catch (err) {
@@ -479,8 +488,8 @@ exports.saveSkills = async (req, res) => {
             .filter(Boolean)
     )];
 
-    if (skillList.length < 3 || skillList.length > 15) {
-        return res.status(400).json({ success: false, message: "Please select between 3 and 15 valid unique skills" });
+    if (skillList.length < 3 || skillList.length > 7) {
+        return res.status(400).json({ success: false, message: "Please select between 3 and 7 valid unique skills" });
     }
 
     const client = await getClient();
@@ -524,7 +533,7 @@ exports.saveSkills = async (req, res) => {
 
         await client.query(
             `UPDATE users SET onboarding_step = $1, updated_at = NOW() WHERE user_id = $2`,
-            [ONBOARDING_STEPS.COMPLETE, req.user?.sub]
+            [ONBOARDING_STEPS.INTERESTS, req.user?.sub]
         );
 
         await client.query("COMMIT");
@@ -532,7 +541,7 @@ exports.saveSkills = async (req, res) => {
         res.status(201).json({
             success: true,
             message: "Skills updated successfully",
-            data: { next_step: ONBOARDING_STEPS.COMPLETE }
+            data: { next_step: ONBOARDING_STEPS.INTERESTS }
         });
     } catch (err) {
         await client.query("ROLLBACK");
@@ -604,7 +613,7 @@ exports.completeOnboarding = async (req, res) => {
 
 exports.updateProfile = async (req, res) => {
     const userId = req.user?.sub;
-    let { account_name, full_name, avatar_url } = req.body;
+    let { account_name, full_name, avatar_url, dob } = req.body;
 
     if (req.file) {
         avatar_url = req.file.path.replace(/\\/g, "/");
@@ -615,19 +624,25 @@ exports.updateProfile = async (req, res) => {
         return res.status(400).json({ success: false, message: "Account name cannot be empty" });
     }
 
+    if (dob !== undefined && (!dob || String(dob).trim() === "")) {
+        return res.status(400).json({ success: false, message: "Date of birth is required" });
+    }
+
     try {
         const result = await pool.query(
             `UPDATE users
              SET account_name = COALESCE($1, account_name),
                  full_name = COALESCE($2, full_name),
                  avatar_url = COALESCE($3, avatar_url),
+                 dob = COALESCE($4, dob),
                  updated_at = NOW()
-             WHERE user_id = $4
+             WHERE user_id = $5
              RETURNING *`,
             [
                 account_name !== undefined ? account_name : null,
                 full_name !== undefined ? full_name : null,
                 avatar_url !== undefined ? avatar_url : null,
+                dob !== undefined ? dob : null,
                 userId
             ]
         );
@@ -871,3 +886,223 @@ exports.parseResumeUpload = async (req, res) => {
         return res.status(422).json({ success: false, message: "Failed to parse resume reliably." });
     }
 };
+
+const MASTER_STATUS_OPTIONS = [
+    { id: "employed", label: "Employed" },
+    { id: "self_employed", label: "Self-employed" },
+    { id: "student", label: "Student" },
+    { id: "fresher", label: "Fresher" },
+    { id: "intern", label: "Intern" },
+    { id: "unemployed", label: "Currently not working" }
+];
+
+const MASTER_INDUSTRIES = [
+    "Accounting", "Airlines/Aviation", "Alternative Dispute Resolution", "Alternative Medicine",
+    "Animation", "Apparel & Fashion", "Architecture & Planning", "Arts & Crafts",
+    "Automotive", "Aviation & Aerospace", "Banking", "Biotechnology",
+    "Broadcast Media", "Building Materials", "Business Supplies & Equipment",
+    "Capital Markets", "Chemicals", "Civic & Social Organization", "Civil Engineering",
+    "Commercial Real Estate", "Computer & Network Security", "Computer Games",
+    "Computer Hardware", "Computer Networking", "Computer Software", "Construction",
+    "Consumer Electronics", "Consumer Goods", "Consumer Services", "Cosmetics",
+    "Dairy", "Defense & Space", "Design", "E-Learning", "Education Management",
+    "Electrical/Electronic Manufacturing", "Entertainment", "Environmental Services",
+    "Events Services", "Executive Office", "Facilities Services", "Farming",
+    "Financial Services", "Fine Art", "Fishery", "Food & Beverages",
+    "Food Production", "Fund-Raising", "Furniture", "Gambling & Casinos",
+    "Glass, Ceramics & Concrete", "Government Administration", "Government Relations",
+    "Graphic Design", "Health, Wellness & Fitness", "Higher Education",
+    "Hospital & Health Care", "Hospitality", "Human Resources", "Import & Export",
+    "Individual & Family Services", "Industrial Automation", "Information Services",
+    "Information Technology & Services", "Insurance", "International Affairs",
+    "International Trade & Development", "Internet", "Investment Banking",
+    "Investment Management", "Judiciary", "Law Enforcement", "Law Practice",
+    "Legal Services", "Legislative Offices", "Leisure, Travel & Tourism",
+    "Libraries", "Logistics & Supply Chain", "Luxury Goods & Jewelry",
+    "Machinery", "Management Consulting", "Maritime", "Market Research",
+    "Marketing & Advertising", "Mechanical or Industrial Engineering", "Media Production",
+    "Medical Devices", "Medical Practice", "Mental Health Care", "Military",
+    "Mining & Metals", "Motion Pictures & Film", "Museums & Institutions",
+    "Music", "Nanotechnology", "Newspapers", "Non-Profit Organization Management",
+    "Oil & Energy", "Online Media", "Outsourcing/Offshoring", "Package/Freight Delivery",
+    "Packaging & Containers", "Paper & Forest Products", "Performing Arts",
+    "Pharmaceuticals", "Philanthropy", "Photography", "Plastics",
+    "Political Organization", "Primary/Secondary Education", "Printing",
+    "Professional Training & Coaching", "Program Development", "Public Policy",
+    "Public Relations & Communications", "Public Safety", "Publishing",
+    "Railroad Manufacture", "Ranching", "Real Estate", "Recreational Facilities & Services",
+    "Religious Institutions", "Renewables & Environment", "Research",
+    "Restaurants", "Retail", "Security & Investigations", "Semiconductors",
+    "Shipbuilding", "Sporting Goods", "Sports", "Staffing & Recruiting",
+    "Supermarkets", "Telecommunications", "Textiles", "Think Tanks",
+    "Tobacco", "Translation & Localization", "Transportation/Trucking/Railroad",
+    "Utilities", "Venture Capital & Private Equity", "Veterinary",
+    "Warehousing", "Wholesale", "Wine & Spirits", "Wireless", "Writing & Editing"
+];
+
+exports.getOnboardingOptions = async (req, res) => {
+    const { slug } = req.params;
+    const { q = "" } = req.query;
+    const query = q.toLowerCase().trim();
+
+    try {
+        if (slug === "status" || slug === "roles") {
+            const filtered = query
+                ? MASTER_STATUS_OPTIONS.filter(o => o.label.toLowerCase().includes(query))
+                : MASTER_STATUS_OPTIONS;
+            return res.status(200).json({ success: true, data: filtered });
+        }
+
+        if (slug === "industries" || slug === "industry") {
+            let list = MASTER_INDUSTRIES;
+            // Try fetching distinct working industries from database if available
+            try {
+                const dbRes = await pool.query(
+                    `SELECT DISTINCT working_industry FROM profiles WHERE working_industry IS NOT NULL AND working_industry != '' ORDER BY working_industry ASC LIMIT 100`
+                );
+                if (dbRes.rows.length > 0) {
+                    const dbIndustries = dbRes.rows.map(r => r.working_industry);
+                    list = Array.from(new Set([...list, ...dbIndustries]));
+                }
+            } catch (dbErr) {
+                // fallback to static master list
+            }
+
+            const formatted = list
+                .filter(name => !query || name.toLowerCase().includes(query))
+                .slice(0, 50)
+                .map(name => ({ id: name, label: name }));
+
+            return res.status(200).json({ success: true, data: formatted });
+        }
+
+        return res.status(400).json({ success: false, message: `Invalid options slug: ${slug}` });
+    } catch (err) {
+        console.error("Get onboarding options error:", err);
+        return res.status(500).json({ success: false, message: "Failed to fetch options" });
+    }
+};
+
+exports.saveSituation = async (req, res) => {
+    const userId = req.user?.sub;
+    const { status, industry, location, placeId, formattedAddress, country, state, city, latitude, longitude } = req.body;
+
+    if (!userId) {
+        return res.status(401).json({ success: false, message: "Unauthorized" });
+    }
+
+    const locFormatted = formattedAddress || (typeof location === 'string' ? location : location?.formattedAddress);
+    const locCountry = country || (typeof location === 'object' ? location?.country : null);
+    const locState = state || (typeof location === 'object' ? location?.state : null);
+    const locCity = city || (typeof location === 'object' ? location?.city : null);
+    const locLat = latitude !== undefined ? latitude : (typeof location === 'object' ? location?.latitude : null);
+    const locLng = longitude !== undefined ? longitude : (typeof location === 'object' ? location?.longitude : null);
+    const locPlaceId = placeId || (typeof location === 'object' ? location?.placeId : null);
+
+    if (!locFormatted || String(locFormatted).trim() === "") {
+        return res.status(400).json({ success: false, message: "Location is required" });
+    }
+
+    const ALLOWED_COUNTRIES = ["India", "United Arab Emirates", "Japan"];
+    if (locCountry && !ALLOWED_COUNTRIES.includes(locCountry)) {
+        return res.status(400).json({
+            success: false,
+            message: "Location must be in India, UAE, or Japan",
+            code: "INVALID_LOCATION_COUNTRY"
+        });
+    }
+
+    const client = await pool.connect();
+    try {
+        await client.query("BEGIN");
+
+        // 1. Assign role
+        const roleName = status.toLowerCase().trim();
+        const roleRes = await client.query("SELECT role_id FROM roles WHERE LOWER(role_name) = $1", [roleName]);
+        let roleId;
+        if (roleRes.rows.length > 0) {
+            roleId = roleRes.rows[0].role_id;
+        } else {
+            const newRole = await client.query(
+                "INSERT INTO roles (role_name) VALUES ($1) ON CONFLICT (role_name) DO UPDATE SET role_name = EXCLUDED.role_name RETURNING role_id",
+                [roleName]
+            );
+            roleId = newRole.rows[0].role_id;
+        }
+
+        // Delete any existing user role before inserting new role to prevent multiple active roles
+        await client.query(
+            "DELETE FROM user_roles WHERE user_id = $1",
+            [userId]
+        );
+
+        await client.query(
+            "INSERT INTO user_roles (user_id, role_id) VALUES ($1, $2)",
+            [userId, roleId]
+        );
+
+        // 2. Determine next step
+        const nextStep = roleName === "unemployed" ? ONBOARDING_STEPS.INTERESTS : ONBOARDING_STEPS.DETAILS;
+
+        // 3. Update users table with location & onboarding_step
+        await client.query(
+            `UPDATE users
+             SET location           = COALESCE($1, location),
+                 location_formatted = COALESCE($1, location_formatted),
+                 location_country   = COALESCE($2, location_country),
+                 location_state     = COALESCE($3, location_state),
+                 location_city      = COALESCE($4, location_city),
+                 location_lat       = COALESCE($5, location_lat),
+                 location_lng       = COALESCE($6, location_lng),
+                 location_place_id  = COALESCE($7, location_place_id),
+                 onboarding_step    = $8,
+                 updated_at         = NOW()
+             WHERE user_id = $9`,
+            [
+                locFormatted,
+                locCountry,
+                locState,
+                locCity,
+                locLat,
+                locLng,
+                locPlaceId,
+                nextStep,
+                userId
+            ]
+        );
+
+        // 4. Update profiles working_industry if provided
+        if (industry !== undefined) {
+            const cleanIndustry = industry ? String(industry).trim() : null;
+            await client.query(
+                `INSERT INTO profiles (user_id, working_industry, updated_at)
+                 VALUES ($1, $2, NOW())
+                 ON CONFLICT (user_id)
+                 DO UPDATE SET working_industry = $2, updated_at = NOW()`,
+                [userId, cleanIndustry]
+            );
+        }
+
+        await client.query("COMMIT");
+
+        return res.status(200).json({
+            success: true,
+            message: "Situation and location updated successfully",
+            data: {
+                status: roleName,
+                industry: industry || null,
+                location_formatted: locFormatted,
+                location_country: locCountry,
+                location_city: locCity,
+                next_step: nextStep
+            }
+        });
+    } catch (err) {
+        await client.query("ROLLBACK");
+        console.error("Save situation error:", err);
+        return res.status(500).json({ success: false, message: "Failed to save situation and location" });
+    } finally {
+        client.release();
+    }
+};
+

@@ -17,6 +17,7 @@ CREATE TABLE users (
   email TEXT UNIQUE NOT NULL,
   password_hash TEXT NOT NULL,       -- Hashed via bcrypt/argon2 in app
   full_name TEXT NOT NULL,
+  dob DATE,
   mobile_number TEXT,
   headline TEXT,
   avatar_url TEXT,
