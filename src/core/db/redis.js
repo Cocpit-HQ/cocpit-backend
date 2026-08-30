@@ -68,6 +68,15 @@ const proxy = new Proxy(masterRedis, {
                     args.push('WITHSCORES');
                 }
 
+                // Transform node-redis scan(cursor, {MATCH, COUNT}) to ioredis scan(cursor, 'MATCH', match, 'COUNT', count)
+                if (prop === 'scan' && args.length === 2 && typeof args[1] === 'object') {
+                    const options = args[1];
+                    const flatArgs = [args[0]];
+                    if (options.MATCH) flatArgs.push('MATCH', options.MATCH);
+                    if (options.COUNT) flatArgs.push('COUNT', options.COUNT);
+                    args = flatArgs;
+                }
+
                 try {
                     const result = await val.apply(target, args);
 
@@ -81,6 +90,14 @@ const proxy = new Proxy(masterRedis, {
                             });
                         }
                         return transformed;
+                    }
+
+                    // Transform ioredis scan result [cursor, keys] into node-redis {cursor, keys}
+                    if (prop === 'scan' && Array.isArray(result)) {
+                        return {
+                            cursor: Number(result[0]),
+                            keys: result[1]
+                        };
                     }
 
                     return result;
