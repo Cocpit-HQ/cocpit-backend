@@ -463,11 +463,11 @@ const getCurrentUser = async (userId, tokenRoles) => {
  * In ALL scenarios, we issue platform JWT tokens (access + refresh) using
  * the exact same session pipeline as email/password login.
  */
-const socialLogin = async ({ provider, idToken, accountType, fullName: clientFullName, userAgent, ipAddress }) => {
+const socialLogin = async ({ provider, idToken, accountType, fullName: clientFullName, userAgent, ipAddress, action }) => {
     // ── Step 1: Verify Social ID token ──
     let socialUser;
     try {
-        socialUser = await verifySocialToken(provider, idToken);
+        socialUser = await  verifySocialToken(provider, idToken);
     } catch (err) {
         return { error: { status: 401, message: `Invalid or expired ${provider} token` } };
     }
@@ -506,7 +506,18 @@ const socialLogin = async ({ provider, idToken, accountType, fullName: clientFul
             await authRepo.linkSocialAccount(user.user_id, provider, providerId);
 
         } else {
-            // Case 3: Brand new user — accountType defaults to Student if not provided
+            // Case 3: Brand new user
+            if (action === "login") {
+                return {
+                    error: {
+                        status: 404,
+                        code: "ACCOUNT_NOT_FOUND",
+                        message: "No account found. This account isn't registered with cocpit. Create an account to continue.",
+                    },
+                };
+            }
+
+            // accountType defaults to Student if not provided
             const finalAccountType = accountType || "Student";
 
             const validTypes = ["Fresher", "Student", "Employer", "Admin"];
