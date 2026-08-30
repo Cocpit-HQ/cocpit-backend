@@ -50,7 +50,7 @@ async function _fetchFirstDegree(userId, pool) {
       p.created_at,
       (SELECT COUNT(*) FROM active_post_likes    pl WHERE pl.post_id = p.post_id)::float AS like_count,
       (SELECT COUNT(*) FROM active_post_comments pc WHERE pc.post_id = p.post_id)::float AS comment_count,
-      (SELECT COUNT(*) FROM posts         rp WHERE rp.shared_post_id = p.post_id)::float AS share_count,
+      ((SELECT COUNT(DISTINCT rp.author_id) FROM posts rp WHERE rp.shared_post_id = p.post_id AND rp.is_active = TRUE) + (SELECT COUNT(DISTINCT s.sender_id) FROM shares s WHERE s.entity_id = p.post_id::text AND s.entity_type = 'post'))::float AS share_count,
       (SELECT COUNT(*) FROM reports       r  WHERE r.target_type = 'POST' AND r.target_id = p.post_id AND r.created_at > NOW() - INTERVAL '24 hours')::float AS report_count,
       EXISTS (
         SELECT 1 FROM connections c
@@ -61,9 +61,17 @@ async function _fetchFirstDegree(userId, pool) {
     WHERE f.follower_id = $1
       AND p.author_id  != $1
       AND p.created_at  > NOW() - INTERVAL '${FIRST_DEGREE_WINDOW_HOURS} hours'
-      AND p.visibility  = 'public'
-      AND (p.is_removed IS FALSE OR p.is_removed IS NULL)
-      AND p.is_community_article IS NOT TRUE
+      AND NOT EXISTS (
+        SELECT 1 FROM blocks b
+        WHERE
+          (b.is_org_block = false AND p.author_org_id IS NULL
+            AND ((b.blocker_id = $1 AND b.blocked_id = p.author_id)
+                 OR (b.blocker_id = p.author_id AND b.blocked_id = $1)))
+          OR
+          (b.is_org_block = true AND p.author_org_id IS NOT NULL
+            AND ((b.blocker_id = p.author_org_id AND b.blocked_id = $1)
+                 OR (b.blocker_id = $1 AND b.blocked_id = p.author_org_id)))
+      )
     ORDER BY p.created_at DESC
     LIMIT ${SOURCE_CAP}
   `;
@@ -85,7 +93,7 @@ async function _fetchSecondDegree(userId, pool) {
       p.created_at,
       (SELECT COUNT(*) FROM active_post_likes    pl WHERE pl.post_id = p.post_id)::float AS like_count,
       (SELECT COUNT(*) FROM active_post_comments pc WHERE pc.post_id = p.post_id)::float AS comment_count,
-      (SELECT COUNT(*) FROM posts         rp WHERE rp.shared_post_id = p.post_id)::float AS share_count,
+      ((SELECT COUNT(DISTINCT rp.author_id) FROM posts rp WHERE rp.shared_post_id = p.post_id AND rp.is_active = TRUE) + (SELECT COUNT(DISTINCT s.sender_id) FROM shares s WHERE s.entity_id = p.post_id::text AND s.entity_type = 'post'))::float AS share_count,
       (SELECT COUNT(*) FROM reports       r  WHERE r.target_type = 'POST' AND r.target_id = p.post_id AND r.created_at > NOW() - INTERVAL '24 hours')::float AS report_count
     FROM posts p
     JOIN followers f2 ON f2.following_id = p.author_id
@@ -100,6 +108,17 @@ async function _fetchSecondDegree(userId, pool) {
       AND NOT EXISTS (
         SELECT 1 FROM followers direct
         WHERE direct.follower_id = $1 AND direct.following_id = p.author_id
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM blocks b
+        WHERE
+          (b.is_org_block = false AND p.author_org_id IS NULL
+            AND ((b.blocker_id = $1 AND b.blocked_id = p.author_id)
+                 OR (b.blocker_id = p.author_id AND b.blocked_id = $1)))
+          OR
+          (b.is_org_block = true AND p.author_org_id IS NOT NULL
+            AND ((b.blocker_id = p.author_org_id AND b.blocked_id = $1)
+                 OR (b.blocker_id = $1 AND b.blocked_id = p.author_org_id)))
       )
     ORDER BY p.created_at DESC
     LIMIT ${SOURCE_CAP}

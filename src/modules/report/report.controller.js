@@ -20,6 +20,8 @@ exports.getReportReasons = async (req, res) => {
  */
 exports.createReport = async (req, res) => {
   const reporterId = req.user?.sub || req.user?.user_id || req.user?.id;
+  const isOrgType = req.actor?.type === 'ORGANIZATION' || req.headers['x-actor-type'] === 'ORGANIZATION';
+  const reporterOrgId = isOrgType ? (req.actor?.orgId || req.headers['x-actor-id']) : null;
   const { targetType, targetId, reasonId, customReason } = req.body;
 
   // 1. Basic Validation
@@ -33,7 +35,7 @@ exports.createReport = async (req, res) => {
     return res.status(400).json({ message: "Provide either a reasonId or a customReason" });
   }
 
-  const validTypes = ["POST", "USER", "COMMENT", "COMPANY"];
+  const validTypes = ["POST", "USER", "COMMENT", "COMPANY", "THOUGHT"];
   if (!validTypes.includes(targetType)) {
     console.warn("[Report] Validation failed: Invalid targetType", { targetType });
     return res.status(400).json({ message: `Invalid targetType: ${targetType}` });
@@ -53,14 +55,14 @@ exports.createReport = async (req, res) => {
     
     switch (targetType) {
       case "POST":
-        query = "SELECT author_id FROM posts WHERE post_id = $1::uuid";
+        query = "SELECT author_id, author_org_id FROM posts WHERE post_id = $1::uuid";
         break;
       case "USER":
-        // For users, the targetId IS the authorId
-        query = "SELECT user_id FROM users WHERE user_id = $1::uuid";
+        query = "SELECT user_id AS author_id, NULL AS author_org_id FROM users WHERE user_id = $1::uuid";
         break;
+      case "THOUGHT":
       case "COMMENT":
-        query = "SELECT author_id FROM post_comments WHERE comment_id = $1::uuid";
+        query = "SELECT author_id, author_org_id FROM post_comments WHERE comment_id = $1::uuid";
         break;
       case "COMPANY":
         // For companies, check if reporter is an OWNER/ADMIN
@@ -92,9 +94,25 @@ exports.createReport = async (req, res) => {
             return res.status(400).json({ message: "Owners and Admins cannot report their own organization" });
           }
         } else {
-          authorId = targetRes.rows[0].author_id || targetRes.rows[0].user_id;
-          if (authorId === reporterId) {
-            console.warn(`[Report] Blocked: User ${reporterId} tried to report their own ${targetType}`, { targetId });
+          const targetAuthorId = targetRes.rows[0].author_id;
+          const targetAuthorOrgId = targetRes.rows[0].author_org_id;
+          
+          let isOwnContent = false;
+          
+          if (reporterOrgId) {
+            // Acting as a company: cannot report the company's own content
+            if (targetAuthorOrgId && targetAuthorOrgId === reporterOrgId) {
+              isOwnContent = true;
+            }
+          } else {
+            // Acting as a personal user: cannot report own personal content
+            if (targetAuthorId === reporterId && !targetAuthorOrgId) {
+              isOwnContent = true;
+            }
+          }
+
+          if (isOwnContent) {
+            console.warn(`[Report] Blocked: Actor tried to report their own ${targetType}`, { targetId });
             return res.status(400).json({ message: `You cannot report your own ${targetType.toLowerCase()}` });
           }
         }
@@ -106,10 +124,17 @@ exports.createReport = async (req, res) => {
     }
 
     // 3. Duplicate Prevention (Checked via DB Unique Constraint, but can also check here)
-    const duplicateRes = await pool.query(
-      "SELECT 1 FROM reports WHERE reporter_id = $1::uuid AND target_type = $2 AND target_id = $3::uuid",
-      [reporterId, targetType, targetId]
-    );
+    let duplicateQuery = "SELECT 1 FROM reports WHERE reporter_id = $1::uuid AND target_type = $2 AND target_id = $3::uuid";
+    const duplicateParams = [reporterId, targetType, targetId];
+    
+    if (reporterOrgId) {
+      duplicateQuery += " AND reporter_org_id = $4::uuid";
+      duplicateParams.push(reporterOrgId);
+    } else {
+      duplicateQuery += " AND reporter_org_id IS NULL";
+    }
+
+    const duplicateRes = await pool.query(duplicateQuery, duplicateParams);
 
     if (duplicateRes.rowCount > 0) {
       return res.status(409).json({ message: "You have already reported this content" });
@@ -117,10 +142,10 @@ exports.createReport = async (req, res) => {
 
     // 4. Save Report
     const insertRes = await pool.query(
-      `INSERT INTO reports (reporter_id, target_type, target_id, reason_id, custom_reason)
-       VALUES ($1::uuid, $2, $3::uuid, $4, $5)
+      `INSERT INTO reports (reporter_id, target_type, target_id, reason_id, custom_reason, reporter_org_id)
+       VALUES ($1::uuid, $2, $3::uuid, $4, $5, $6::uuid)
        RETURNING id`,
-      [reporterId, targetType, targetId, reasonId || null, customReason || null]
+      [reporterId, targetType, targetId, reasonId || null, customReason || null, reporterOrgId]
     );
 
     const newReportId = insertRes.rows[0].id;
@@ -131,7 +156,7 @@ exports.createReport = async (req, res) => {
        VALUES ($1, $2, TRUE)`,
       [
         newReportId,
-        "We have received your report. Our moderation team will review it as soon as possible. We'll update you if any action is taken.",
+        "Thank you for your report. We've received it and our moderation team will review it as soon as possible. We'll update you if any action is taken.",
       ]
     );
 

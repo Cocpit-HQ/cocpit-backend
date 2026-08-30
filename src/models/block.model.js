@@ -116,11 +116,13 @@ class BlockModel {
                 COALESCE(u.avatar_url, o.logo_url) AS avatar_url,
                 COALESCE(u.headline, o.headline, '') AS headline,
                 COALESCE(u.account_name, o.slug) AS account_name,
+                b.created_at,
                 CASE WHEN o.org_id IS NOT NULL THEN 'COMPANY' ELSE 'USER' END AS entity_type
              FROM blocks b
              LEFT JOIN active_users u ON b.blocked_id = u.user_id
              LEFT JOIN organizations o ON b.blocked_id = o.org_id
-             WHERE b.blocker_id = $1 AND b.is_org_block = false`,
+             WHERE b.blocker_id = $1 AND b.is_org_block = false
+             ORDER BY b.created_at DESC`,
             [userId]
         );
         return result.rows;
@@ -138,11 +140,13 @@ class BlockModel {
                 COALESCE(u.avatar_url, o.logo_url) AS avatar_url,
                 COALESCE(u.headline, o.headline, '') AS headline,
                 COALESCE(u.account_name, o.slug) AS account_name,
+                b.created_at,
                 CASE WHEN o.org_id IS NOT NULL THEN 'COMPANY' ELSE 'USER' END AS entity_type
              FROM blocks b
              LEFT JOIN active_users u ON b.blocked_id = u.user_id
              LEFT JOIN organizations o ON b.blocked_id = o.org_id
-             WHERE b.blocker_id = $1 AND b.is_org_block = true`,
+             WHERE b.blocker_id = $1 AND b.is_org_block = true
+             ORDER BY b.created_at DESC`,
             [orgId]
         );
         return result.rows;
@@ -169,13 +173,41 @@ class BlockModel {
     static async invalidateCache(userId) {
         try {
             if (redisClient.isOpen) {
+                // Existing: clear block cache
                 await redisClient.del(this.getCacheKey(userId));
-                // Clear emptiness marker too
                 await redisClient.del(this.getCacheKey(userId) + ":empty");
+
+                // NEW: clear feed candidate pool (TTL 120s key)
+                await redisClient.del(`feed:candidates:${userId}`);
+
+                // NEW: clear all paginated feed slice keys for this user
+                // Pattern: feed:slice:{userId}:{cursor}  (TTL 300s each)
+                // SCAN is non-blocking and safe on single-instance Redis
+                let cursor = 0;
+                do {
+                    const reply = await redisClient.scan(cursor, {
+                        MATCH: `feed:slice:${userId}:*`,
+                        COUNT: 100,
+                    });
+                    cursor = reply.cursor;
+                    if (reply.keys && reply.keys.length > 0) {
+                        await redisClient.del(reply.keys);
+                    }
+                } while (cursor !== 0);
             }
         } catch (err) {
             console.warn("Redis invalidation error:", err.message);
         }
+    }
+
+    static async getBlockedAndBlockingIds(userId) {
+        const result = await pool.query(
+            `SELECT blocked_id AS related_id FROM blocks WHERE blocker_id = $1
+             UNION
+             SELECT blocker_id AS related_id FROM blocks WHERE blocked_id = $1`,
+            [userId]
+        );
+        return new Set(result.rows.map(r => r.related_id));
     }
 
     /**

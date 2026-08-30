@@ -39,13 +39,22 @@ async function notifyOrgFollowers(orgId, category, notificationData) {
         if (companyRes.rowCount === 0) return;
         const company = companyRes.rows[0];
 
-        // 2. Get opted-in followers (who have this category enabled)
+        // 2. Get opted-in followers (who have this category enabled and are not blocked)
         const followersRes = await pool.query(
             `SELECT cf.user_id
        FROM organization_followers cf
        INNER JOIN organization_notification_preferences cnp
          ON cf.user_id = cnp.user_id AND cf.org_id = cnp.org_id
-       WHERE cf.org_id = $1 AND cnp.${column} = TRUE`,
+       WHERE cf.org_id = $1 AND cnp.${column} = TRUE
+         AND NOT EXISTS (
+           SELECT 1 FROM blocks b
+           WHERE (b.blocker_id = $1 AND b.blocked_id = cf.user_id)
+              OR (b.blocker_id = cf.user_id AND b.blocked_id = $1)
+         )
+         AND NOT EXISTS (
+           SELECT 1 FROM organization_blocked_accounts oba
+           WHERE oba.org_id = $1 AND oba.blocked_id = cf.user_id
+         )`,
             [orgId]
         );
 
@@ -123,14 +132,19 @@ async function notifyBroadcastToChildOrgs(parentOrgId, postId, postContent) {
         if (parentRes.rowCount === 0) return;
         const parent = parentRes.rows[0];
 
-        // 2. Find all unique active members and their respective child organizations
+        // 2. Find all unique active members and their respective child organizations (excluding blocked users)
         const recipientsRes = await pool.query(
             `SELECT om.user_id, child.org_id as child_org_id
              FROM organization_members om
              JOIN organizations child ON om.org_id = child.org_id
              WHERE child.parent_org_id = $1 
                AND child.is_deleted = FALSE 
-               AND om.status = 'ACTIVE'`,
+               AND om.status = 'ACTIVE'
+               AND NOT EXISTS (
+                 SELECT 1 FROM blocks b
+                 WHERE (b.blocker_id = $1 AND b.blocked_id = om.user_id)
+                    OR (b.blocker_id = om.user_id AND b.blocked_id = $1)
+               )`,
             [parentOrgId]
         );
 

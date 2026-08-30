@@ -1,5 +1,6 @@
 const pool = require("../../core/db/pool");
 const socketService = require("../../core/infrastructure/socket.service");
+const { sendToUser } = require("../notification/notification.service");
 
 /**
  * sendJobOffer
@@ -378,34 +379,58 @@ exports.respondToOffer = async (req, res) => {
         notifyUserIds.add(offer.sent_by); // Always notify the original recruiter
 
         const actionText = action === 'accepted' ? 'accepted' : 'declined';
+        const notificationType = action === 'accepted' ? 'offer_accepted' : 'job_offer_declined';
+        const notificationText = action === 'accepted' 
+            ? `"${user.full_name}" accepted your offer for the job role "${jobTitle}"`
+            : `${user.full_name} declined your offer for ${jobTitle}`;
 
-        for (const notifyUserId of notifyUserIds) {
+        // Insert exactly ONE row for the company dashboard
+        const adminIdsArray = Array.from(notifyUserIds);
+        let dbNotification = null;
+        
+        if (adminIdsArray.length > 0) {
             const notifRes = await client.query(
                 `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, recipient_org_id, metadata)
                  VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
                 [
-                    notifyUserId,
+                    adminIdsArray[0], // Nominal owner for the DB row
                     userId,
-                    `job_offer_${actionText}`,
-                    `${user.full_name} ${actionText} your offer for ${jobTitle}`,
-                    offer.offer_id,
+                    notificationType,
+                    notificationText,
+                    offer.job_id, // Use job_id so clicking routes to the job applicants page
                     offer.org_id || null,
                     JSON.stringify({ org_id: offer.org_id || null, offer_id: offerId, job_id: offer.job_id })
                 ]
             );
+            dbNotification = notifRes.rows[0];
+        }
 
-            socketService.notifyUser(notifyUserId, "notification", {
-                type: `job_offer_${actionText}`,
-                text: `${user.full_name} ${actionText} your offer for ${jobTitle}`,
-                from: userId,
-                senderName: user.full_name,
-                senderAvatar: user.avatar_url,
-                referenceId: offer.offer_id,
-                notification_id: notifRes.rows[0].notification_id,
-                created_at: notifRes.rows[0].created_at.toISOString(),
-                time: "Just now",
-                metadata: { org_id: offer.org_id || null, offer_id: offerId, job_id: offer.job_id }
-            });
+        // Send real-time socket and push notifications to ALL admins
+        for (const notifyUserId of adminIdsArray) {
+            if (dbNotification) {
+                socketService.notifyUser(notifyUserId, "notification", {
+                    notification_id: dbNotification.notification_id,
+                    type: notificationType,
+                    text: notificationText,
+                    reference_id: offer.job_id,
+                    is_read: false,
+                    created_at: dbNotification.created_at.toISOString(),
+                    actor_name: user.full_name,
+                    actor_avatar: user.avatar_url,
+                    actor_slug: null,
+                    is_company_actor: false,
+                    metadata: { org_id: offer.org_id || null, offer_id: offerId, job_id: offer.job_id }
+                });
+            }
+            
+            if (action === 'accepted') {
+                sendToUser(
+                    notifyUserId,
+                    "Offer accepted",
+                    notificationText,
+                    { type: 'offer_accepted', referenceId: offer.job_id }
+                ).catch(() => {});
+            }
         }
 
         // 5. Notify the user (confirmation in their history)
@@ -783,6 +808,7 @@ exports.sendChatContext = async (req, res) => {
         socketService.notifyUser(targetUserId, "newMessage", socketPayload);
         socketService.notifyUser(targetUserId, "notification", {
             type: "message",
+            isJobChat: true,
             from: userId,
             senderName: candidateName,
             senderAvatar: candidateAvatar,

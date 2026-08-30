@@ -1,6 +1,7 @@
 const pool = require("../../core/db/pool");
 const { logActivity: logIntentActivity } = require("../../utils/activityLogger");
 const cloudinary = require("../../core/infrastructure/cloudinary.client");
+const socketService = require("../../core/infrastructure/socket.service");
 
 const getRequestedOrganizationActorId = (req, fallbackOrgId = null) => {
     const actorOrgId = req.actor?.type === "ORGANIZATION" ? req.actor.orgId : null;
@@ -22,6 +23,15 @@ const getSavedPostActorScope = (req, fallbackOrgId = null) => {
         orgId,
         isOrgActor: !!orgId,
     };
+};
+
+const notifySavedUpdate = (orgId, userId, event, payload) => {
+    if (orgId) {
+        socketService.notifyOrg(orgId, event, payload);
+    }
+    if (userId) {
+        socketService.notifyUser(userId, event, payload);
+    }
 };
 
 const resolveCoverImage = async (file, rawCoverImage) => {
@@ -61,11 +71,14 @@ exports.createFolder = async (req, res) => {
     }
 
     try {
-        const { userId, orgId } = getSavedPostActorScope(req, companyId || null);
+        const { userId, orgId, isOrgActor } = getSavedPostActorScope(req, companyId || null);
         const result = await pool.query(
             `INSERT INTO saved_folders (user_id, org_id, name, cover_image) VALUES ($1, $2, $3, $4) RETURNING *`,
             [userId, orgId, name.trim(), coverImage]
         );
+
+        await notifySavedUpdate(isOrgActor ? orgId : null, userId, "saved_folders_updated", { folder: result.rows[0], action: "create" });
+
         return res.status(201).json({ success: true, folder: result.rows[0] });
     } catch (error) {
         if (error.code === '23505') { // Unique violation
@@ -82,17 +95,26 @@ exports.getFolders = async (req, res) => {
     try {
         const { userId, orgId, isOrgActor } = getSavedPostActorScope(req, companyId || null);
 
-        // Get folders with post counts
-        const result = await pool.query(
-            `SELECT sf.*, 
+        let queryText;
+        let queryParams;
+
+        if (isOrgActor) {
+            queryText = `SELECT sf.*, 
                     (SELECT COUNT(*) FROM saved_post sp WHERE sp.folder_id = sf.folder_id)::int AS post_count
              FROM saved_folders sf
-             WHERE sf.user_id = $1 AND (
-                 ${isOrgActor ? 'sf.org_id = $2::uuid' : 'sf.org_id IS NULL'}
-             )
-             ORDER BY sf.created_at DESC`,
-            isOrgActor ? [userId, orgId] : [userId]
-        );
+             WHERE sf.org_id = $1::uuid
+             ORDER BY sf.created_at DESC`;
+            queryParams = [orgId];
+        } else {
+            queryText = `SELECT sf.*, 
+                    (SELECT COUNT(*) FROM saved_post sp WHERE sp.folder_id = sf.folder_id)::int AS post_count
+             FROM saved_folders sf
+             WHERE sf.user_id = $1 AND sf.org_id IS NULL
+             ORDER BY sf.created_at DESC`;
+            queryParams = [userId];
+        }
+
+        const result = await pool.query(queryText, queryParams);
         return res.status(200).json({ success: true, folders: result.rows });
     } catch (error) {
         console.error("Get Folders Error:", error);
@@ -114,17 +136,26 @@ exports.renameFolder = async (req, res) => {
     try {
         const { userId, orgId, isOrgActor } = getSavedPostActorScope(req, companyId || null);
 
-        const result = await pool.query(
-            `UPDATE saved_folders SET name = $1, cover_image = COALESCE($2, cover_image), updated_at = NOW() 
-             WHERE folder_id = $3 AND user_id = $4 AND (
-                 ${isOrgActor ? 'org_id = $5::uuid' : 'org_id IS NULL'}
-             ) RETURNING *`,
-            isOrgActor ? [name.trim(), newCoverImage, folderId, userId, orgId] : [name.trim(), newCoverImage, folderId, userId]
-        );
+        let queryText;
+        let queryParams;
+
+        if (isOrgActor) {
+            queryText = `UPDATE saved_folders SET name = $1, cover_image = COALESCE($2, cover_image), updated_at = NOW() 
+             WHERE folder_id = $3 AND org_id = $4::uuid RETURNING *`;
+            queryParams = [name.trim(), newCoverImage, folderId, orgId];
+        } else {
+            queryText = `UPDATE saved_folders SET name = $1, cover_image = COALESCE($2, cover_image), updated_at = NOW() 
+             WHERE folder_id = $3 AND user_id = $4 AND org_id IS NULL RETURNING *`;
+            queryParams = [name.trim(), newCoverImage, folderId, userId];
+        }
+
+        const result = await pool.query(queryText, queryParams);
 
         if (result.rowCount === 0) {
             return res.status(404).json({ success: false, message: "Folder not found" });
         }
+
+        await notifySavedUpdate(isOrgActor ? orgId : null, userId, "saved_folders_updated", { folder: result.rows[0], action: "rename" });
 
         return res.status(200).json({ success: true, folder: result.rows[0] });
     } catch (error) {
@@ -144,23 +175,38 @@ exports.deleteFolder = async (req, res) => {
     try {
         const { userId, orgId, isOrgActor } = getSavedPostActorScope(req, companyId || null);
 
-        // Explicitly completely unsave all posts inside this folder
-        await pool.query(
-            `DELETE FROM saved_post WHERE folder_id = $1 AND user_id = $2 AND (
-                ${isOrgActor ? 'org_id = $3::uuid' : 'org_id IS NULL'}
-            )`,
-            isOrgActor ? [folderId, userId, orgId] : [folderId, userId]
-        );
+        if (isOrgActor) {
+            await pool.query(
+                `DELETE FROM saved_post WHERE folder_id = $1 AND org_id = $2::uuid`,
+                [folderId, orgId]
+            );
 
-        const result = await pool.query(
-            `DELETE FROM saved_folders WHERE folder_id = $1 AND user_id = $2 AND (
-                ${isOrgActor ? 'org_id = $3::uuid' : 'org_id IS NULL'}
-            ) RETURNING *`,
-            isOrgActor ? [folderId, userId, orgId] : [folderId, userId]
-        );
+            const result = await pool.query(
+                `DELETE FROM saved_folders WHERE folder_id = $1 AND org_id = $2::uuid RETURNING *`,
+                [folderId, orgId]
+            );
 
-        if (result.rowCount === 0) {
-            return res.status(404).json({ success: false, message: "Folder not found" });
+            if (result.rowCount === 0) {
+                return res.status(404).json({ success: false, message: "Folder not found" });
+            }
+
+            await notifySavedUpdate(orgId, userId, "saved_folders_updated", { folderId, action: "delete" });
+        } else {
+            await pool.query(
+                `DELETE FROM saved_post WHERE folder_id = $1 AND user_id = $2 AND org_id IS NULL`,
+                [folderId, userId]
+            );
+
+            const result = await pool.query(
+                `DELETE FROM saved_folders WHERE folder_id = $1 AND user_id = $2 AND org_id IS NULL RETURNING *`,
+                [folderId, userId]
+            );
+
+            if (result.rowCount === 0) {
+                return res.status(404).json({ success: false, message: "Folder not found" });
+            }
+
+            await notifySavedUpdate(null, userId, "saved_folders_updated", { folderId, action: "delete" });
         }
 
         return res.status(200).json({ success: true, message: "Folder deleted" });
@@ -180,22 +226,24 @@ exports.toggleSavePost = async (req, res) => {
         const { userId, orgId, isOrgActor } = getSavedPostActorScope(req, companyId || null);
 
         // Check if already saved
-        const existing = await pool.query(
-            `SELECT * FROM saved_post WHERE user_id = $1 AND post_id = $2 AND (
-                ${isOrgActor ? 'org_id = $3::uuid' : 'org_id IS NULL'}
-            )`,
-            isOrgActor ? [userId, postId, orgId] : [userId, postId]
-        );
+        const existingQuery = isOrgActor
+            ? `SELECT * FROM saved_post WHERE post_id = $1 AND org_id = $2::uuid`
+            : `SELECT * FROM saved_post WHERE user_id = $1 AND post_id = $2 AND org_id IS NULL`;
+
+        const existingParams = isOrgActor ? [postId, orgId] : [userId, postId];
+        const existing = await pool.query(existingQuery, existingParams);
 
         if (folderId !== undefined) {
             if (existing.rows.length > 0) {
                 // Move to folder
-                await pool.query(
-                    `UPDATE saved_post SET folder_id = $1, saved_at = NOW() WHERE user_id = $2 AND post_id = $3 AND (
-                        ${isOrgActor ? 'org_id = $4::uuid' : 'org_id IS NULL'}
-                    )`,
-                    isOrgActor ? [folderId, userId, postId, orgId] : [folderId, userId, postId]
-                );
+                const updateQuery = isOrgActor
+                    ? `UPDATE saved_post SET folder_id = $1, saved_at = NOW() WHERE post_id = $2 AND org_id = $3::uuid`
+                    : `UPDATE saved_post SET folder_id = $1, saved_at = NOW() WHERE user_id = $2 AND post_id = $3 AND org_id IS NULL`;
+                const updateParams = isOrgActor ? [folderId, postId, orgId] : [folderId, userId, postId];
+                await pool.query(updateQuery, updateParams);
+
+                await notifySavedUpdate(isOrgActor ? orgId : null, userId, "saved_posts_updated", { postId, folderId, saved: true });
+
                 return res.status(200).json({ success: true, saved: true, message: "Post moved to folder" });
             } else {
                 // Insert with folder
@@ -203,6 +251,9 @@ exports.toggleSavePost = async (req, res) => {
                     `INSERT INTO saved_post (user_id, org_id, post_id, folder_id) VALUES ($1, $2, $3, $4)`,
                     [userId, orgId, postId, folderId]
                 );
+
+                await notifySavedUpdate(isOrgActor ? orgId : null, userId, "saved_posts_updated", { postId, folderId, saved: true });
+
                 return res.status(200).json({ success: true, saved: true, message: "Post saved to folder" });
             }
         }
@@ -210,12 +261,14 @@ exports.toggleSavePost = async (req, res) => {
         // Legacy Toggle Behavior
         if (existing.rows.length > 0) {
             // Unsave
-            await pool.query(
-                `DELETE FROM saved_post WHERE user_id = $1 AND post_id = $2 AND (
-                    ${isOrgActor ? 'org_id = $3::uuid' : 'org_id IS NULL'}
-                )`,
-                isOrgActor ? [userId, postId, orgId] : [userId, postId]
-            );
+            const deleteQuery = isOrgActor
+                ? `DELETE FROM saved_post WHERE post_id = $1 AND org_id = $2::uuid`
+                : `DELETE FROM saved_post WHERE user_id = $1 AND post_id = $2 AND org_id IS NULL`;
+            const deleteParams = isOrgActor ? [postId, orgId] : [userId, postId];
+            await pool.query(deleteQuery, deleteParams);
+
+            await notifySavedUpdate(isOrgActor ? orgId : null, userId, "saved_posts_updated", { postId, saved: false });
+
             return res.status(200).json({ success: true, saved: false, message: "Post unsaved" });
         }
 
@@ -227,6 +280,8 @@ exports.toggleSavePost = async (req, res) => {
 
         // 🎯 Intent Layer: Log Save Post
         logIntentActivity({ userId, action: "save_post", metadata: { postId, orgId } });
+
+        await notifySavedUpdate(isOrgActor ? orgId : null, userId, "saved_posts_updated", { postId, saved: true });
 
         return res.status(200).json({ success: true, saved: true, message: "Post saved" });
 
@@ -243,19 +298,53 @@ exports.getSavedPosts = async (req, res) => {
 
     try {
         const { userId, orgId, isOrgActor } = getSavedPostActorScope(req, companyId || null);
-        let queryParams = [userId];
+
+        let queryParams = [];
+        let whereClause = "";
+
+        if (isOrgActor) {
+            queryParams.push(orgId);
+            whereClause = `sp.org_id = $1::uuid`;
+        } else {
+            queryParams.push(userId);
+            whereClause = `sp.user_id = $1 AND sp.org_id IS NULL`;
+        }
+
         let queryText = `SELECT 
             p.*, 
+            p.content AS content,
             sp.saved_at,
             COALESCE(comp_auth.name, u_auth.full_name) AS author_name, 
             COALESCE(comp_auth.logo_url, u_auth.avatar_url) AS author_avatar,
             COALESCE(comp_auth.slug, u_auth.account_name) AS author_slug,
-            COALESCE(comp_auth.slogan, u_auth.headline) AS author_headline,
+            CASE WHEN p.author_org_id IS NOT NULL THEN comp_auth.headline ELSE u_auth.headline END AS author_headline,
             COALESCE(
                 (SELECT json_agg(json_build_object('url', pm.url, 'media_type', pm.media_type)) 
                  FROM post_media pm WHERE pm.post_id = p.post_id),
                 '[]'::json
             ) AS media,
+            (SELECT pm.url FROM post_media pm WHERE pm.post_id = p.post_id AND pm.media_type = 'image' LIMIT 1) AS image_url,
+            (SELECT pm.url FROM post_media pm WHERE pm.post_id = p.post_id LIMIT 1) AS post_url,
+            ARRAY(SELECT pm.url FROM post_media pm WHERE pm.post_id = p.post_id AND pm.media_type = 'image') AS images,
+            CASE 
+                WHEN p.shared_post_id IS NOT NULL THEN
+                    json_build_object(
+                        'is_accessible', true,
+                        'post_id', orig_p.post_id,
+                        'content', orig_p.content,
+                        'author', json_build_object(
+                            'user_id', COALESCE(orig_p.author_org_id, u_orig.user_id),
+                            'full_name', COALESCE(comp_orig.name, u_orig.full_name),
+                            'avatar_url', COALESCE(comp_orig.logo_url, u_orig.avatar_url)
+                        ),
+                        'media', COALESCE(
+                            (SELECT json_agg(json_build_object('url', pm.url, 'media_type', pm.media_type)) 
+                             FROM post_media pm WHERE pm.post_id = orig_p.post_id),
+                            '[]'::json
+                        )
+                    )
+                ELSE NULL
+            END AS shared_post,
             (SELECT COUNT(*) FROM active_post_likes pl WHERE pl.post_id = p.post_id)::int AS like_count,
             (SELECT COUNT(*) FROM active_post_comments pc WHERE pc.post_id = p.post_id)::int AS comment_count,
             (SELECT COUNT(*) FROM saved_post sp_cnt WHERE sp_cnt.post_id = p.post_id)::int AS save_count,
@@ -265,28 +354,27 @@ exports.getSavedPosts = async (req, res) => {
                 SELECT 1 FROM active_post_likes pl_me 
                 WHERE pl_me.post_id = p.post_id 
                 AND (
-                    ${isOrgActor ? 'pl_me.org_id = $2::uuid' : 'pl_me.user_id = $1 AND pl_me.org_id IS NULL'}
+                    ${isOrgActor ? 'pl_me.org_id = $1::uuid' : 'pl_me.user_id = $1 AND pl_me.org_id IS NULL'}
                 )
             ) AS is_liked,
             EXISTS(
                 SELECT 1 FROM active_post_comments pc_me 
                 WHERE pc_me.post_id = p.post_id 
                 AND (
-                    ${isOrgActor ? 'pc_me.author_org_id = $2::uuid' : 'pc_me.author_id = $1 AND pc_me.author_org_id IS NULL'}
+                    ${isOrgActor ? 'pc_me.author_org_id = $1::uuid' : 'pc_me.author_id = $1 AND pc_me.author_org_id IS NULL'}
                 )
             ) AS is_commented,
             true AS is_saved
          FROM saved_post sp
          JOIN posts p ON p.post_id = sp.post_id
+         LEFT JOIN posts orig_p ON orig_p.post_id = p.shared_post_id
          JOIN active_users u_auth ON u_auth.user_id = p.author_id
          LEFT JOIN organizations comp_auth ON comp_auth.org_id = p.author_org_id
-         WHERE sp.user_id = $1 AND (
-             ${isOrgActor ? 'sp.org_id = $2::uuid' : 'sp.org_id IS NULL'}
-        )`;
+         LEFT JOIN active_users u_orig ON u_orig.user_id = orig_p.author_id
+         LEFT JOIN organizations comp_orig ON comp_orig.org_id = orig_p.author_org_id
+         WHERE ${whereClause}`;
 
-        let paramIndex = isOrgActor ? 3 : 2;
-        if (isOrgActor) queryParams.push(orgId);
-
+        let paramIndex = 2;
         if (folderId === 'null' || folderId === 'unsorted') {
             queryText += ` AND sp.folder_id IS NULL`;
         } else if (folderId && folderId !== 'all') {
@@ -303,7 +391,18 @@ exports.getSavedPosts = async (req, res) => {
         // Check if there might be more (simple heuristic: if we got 'limit' items, maybe more)
         const hasMore = result.rows.length === parseInt(limit);
 
-        return res.status(200).json({ success: true, posts: result.rows, hasMore, page: parseInt(page) });
+        const formattedPosts = result.rows.map(row => {
+            const firstImage = row.image_url || row.post_url || (Array.isArray(row.media) && row.media.length > 0 ? row.media[0].url : null);
+            return {
+                ...row,
+                image_url: firstImage,
+                post_url: firstImage,
+                imageSrc: firstImage,
+                images: Array.isArray(row.images) && row.images.length > 0 ? row.images : (firstImage ? [firstImage] : []),
+            };
+        });
+
+        return res.status(200).json({ success: true, posts: formattedPosts, hasMore, page: parseInt(page) });
 
     } catch (error) {
         console.error("Get Saved Posts Error:", error);
@@ -318,12 +417,13 @@ exports.checkIfPostSaved = async (req, res) => {
 
     try {
         const { userId, orgId, isOrgActor } = getSavedPostActorScope(req, companyId || null);
-        const result = await pool.query(
-            `SELECT folder_id FROM saved_post WHERE user_id = $1 AND post_id = $2 AND (
-                ${isOrgActor ? 'org_id = $3::uuid' : 'org_id IS NULL'}
-            )`,
-            isOrgActor ? [userId, postId, orgId] : [userId, postId]
-        );
+
+        const queryText = isOrgActor
+            ? `SELECT folder_id FROM saved_post WHERE post_id = $1 AND org_id = $2::uuid`
+            : `SELECT folder_id FROM saved_post WHERE user_id = $1 AND post_id = $2 AND org_id IS NULL`;
+        const queryParams = isOrgActor ? [postId, orgId] : [userId, postId];
+
+        const result = await pool.query(queryText, queryParams);
 
         return res.status(200).json({
             success: true,

@@ -26,6 +26,7 @@ const configRoutes = require("./modules/config/config.routes");
 const deviceRoutes = require("./modules/device/device.routes");
 const feedRoutes = require("./modules/feed/feed.routes");
 const placesRoutes = require("./modules/places/places.routes");
+const analyticsRoutes = require("./modules/analytics/analytics.routes");
 const settingsRoutes = require("./modules/settings/settings.routes");
 const userSettingsRoutes = require("./modules/user/userSettings.routes");
 const { optionalAuth } = require("./core/middlewares/auth.middleware");
@@ -44,7 +45,8 @@ const corsOptions = {
       origin.match(/^https:\/\/.*\.ngrok-free\.(app|dev)$/) ||
       origin.match(/^https:\/\/.*\.loca\.lt$/) ||
       origin === "https://frontend.cocpit.in" ||
-      origin === "https://staging.cocpit.in"
+      origin === "https://staging.cocpit.in" ||
+      origin === "https://uat.cocpit.in"
     ) {
       callback(null, true);
     } else if (process.env.ALLOWED_ORIGINS && process.env.ALLOWED_ORIGINS.includes(origin)) {
@@ -130,6 +132,7 @@ app.use("/api", shareRoutes);
 app.use("/api/places", placesRoutes);
 app.use("/api/device", deviceRoutes);
 app.use("/api/feed", feedRoutes);
+app.use("/api", analyticsRoutes);
 app.use("/api/settings", settingsRoutes);
 app.use("/api/user", userSettingsRoutes);
 const errorHandler = require("./core/middlewares/error.middleware");

@@ -10,7 +10,7 @@ const analyticsController = require("./organization.analytics.controller");
 const { requireAuth, optionalAuth } = require("../../core/middlewares/auth.middleware");
 const { requireOrgPermission } = require("../../core/middlewares/organization.auth.middleware");
 const { organizationActionLimiter, otpGenerationLimiter } = require("../../core/middlewares/rateLimit.middleware");
-const { uploadAvatar, uploadCover, uploadChatMedia } = require("../../core/middlewares/upload.middleware");
+const { uploadAvatar, uploadCover, uploadChatMedia, uploadSupportAttachment } = require("../../core/middlewares/upload.middleware");
 const { requireRoles } = require("../../core/middlewares/role.middleware");
 const { validate } = require("../../core/middlewares/validation.middleware");
 const {
@@ -76,9 +76,47 @@ router.post("/organizations/teams/invites/decline", requireAuth, membersControll
 
 // --- MEMBERSHIP ---
 router.post("/organizations/:orgId/leave", requireAuth, membersController.leaveOrganization);
+router.delete("/organizations/:orgId/leave", requireAuth, membersController.leaveOrganization);
 
 // Legacy Member Aliases
 router.post("/companies/:orgId/leave", requireAuth, membersController.leaveOrganization);
+router.delete("/companies/:orgId/leave", requireAuth, membersController.leaveOrganization);
+
+// --- CONTEXT SWITCH ---
+router.post("/organizations/:orgId/switch-context", requireAuth, async (req, res, next) => {
+    const actorContextService = require("../auth/actorContext.service");
+    try {
+        const result = await actorContextService.setActorContext(req.user.sub, { type: "ORGANIZATION", id: req.params.orgId });
+        if (result.cookieValue) {
+            res.cookie(
+                actorContextService.ACTOR_CONTEXT_COOKIE_NAME,
+                result.cookieValue,
+                actorContextService.ACTOR_CONTEXT_COOKIE_OPTIONS
+            );
+        }
+        return res.json({
+            success: true,
+            data: result
+        });
+    } catch (err) {
+        next(err);
+    }
+});
+
+// --- ACCOUNT SETTINGS & LIFECYCLE ---
+router.post("/organizations/:orgId/deactivate/send-otp", requireAuth, otpGenerationLimiter, settingsController.sendDeactivateOrgOTP);
+router.post("/organizations/:orgId/deactivate/validate-otp", requireAuth, organizationActionLimiter, settingsController.validateDeactivateOrgOTP);
+router.patch("/organizations/:orgId/deactivate", requireAuth, settingsController.deactivateOrganization);
+router.patch("/organizations/:orgId/reactivate", requireAuth, settingsController.reactivateOrganization);
+
+router.post("/organizations/:orgId/reactivate/send-otp", requireAuth, otpGenerationLimiter, settingsController.sendReactivateOrgOTP);
+router.post("/organizations/:orgId/reactivate/verify-otp", requireAuth, organizationActionLimiter, settingsController.reactivateOrganization);
+router.post("/organizations/:orgId/reactivate", requireAuth, settingsController.reactivateOrganization);
+
+router.post("/organizations/:orgId/recover/send-otp", requireAuth, otpGenerationLimiter, organizationController.sendRecoverOrgOTP);
+router.post("/organizations/:orgId/recover/verify-otp", requireAuth, organizationActionLimiter, organizationController.verifyOTPAndRecoverOrganization);
+router.post("/organizations/:orgId/recover", requireAuth, organizationController.verifyOTPAndRecoverOrganization);
+
 
 // --- INSTITUTION ENROLLMENT ---
 router.post("/organizations/:orgId/enroll", requireAuth, institutionController.requestEnrollment);
@@ -90,7 +128,7 @@ router.post("/companies/:orgId/enroll", requireAuth, institutionController.reque
 // --- VERIFICATION ---
 router.post("/organizations/:orgId/verify/domain", requireAuth, requireOrgPermission("MANAGE_SETTINGS"), otpGenerationLimiter, verifyController.verifyDomain);
 router.post("/organizations/:orgId/verify/edu-email", requireAuth, requireOrgPermission("MANAGE_VERIFICATION"), verifyController.verifyByEduEmail);
-router.post("/organizations/:orgId/verify/document", requireAuth, requireOrgPermission("MANAGE_VERIFICATION"), verifyController.submitDocumentVerification);
+router.post("/organizations/:orgId/verify/document", requireAuth, requireOrgPermission("MANAGE_VERIFICATION"), uploadSupportAttachment ? uploadSupportAttachment.fields([{ name: 'frontImage', maxCount: 1 }, { name: 'backImage', maxCount: 1 }]) : (req, res, next) => next(), verifyController.submitDocumentVerification);
 
 router.post("/companies/:orgId/verify/domain", requireAuth, requireOrgPermission("MANAGE_SETTINGS"), otpGenerationLimiter, verifyController.verifyDomain);
 
@@ -99,6 +137,10 @@ router.put("/organizations/:orgId", requireAuth, requireOrgPermission("MANAGE_CO
 
 // Organization Action Routes
 router.post("/organizations/restore", organizationController.restoreOrganization);
+
+router.post("/organizations/:orgId/delete/send-otp", requireAuth, requireOrgPermission("MANAGE_COMPANY"), otpGenerationLimiter, organizationController.sendDeleteOrgOTP);
+router.post("/organizations/:orgId/delete/validate-otp", requireAuth, requireOrgPermission("MANAGE_COMPANY"), organizationActionLimiter, organizationController.validateOTPForOrganizationDeletion);
+router.post("/organizations/:orgId/delete/verify-otp", requireAuth, requireOrgPermission("MANAGE_COMPANY"), organizationActionLimiter, organizationController.verifyOTPAndDeleteOrganization);
 
 router.delete("/organizations/:orgId", requireAuth, requireOrgPermission("MANAGE_COMPANY"), organizationActionLimiter, organizationController.deleteOrganization);
 
@@ -143,6 +185,11 @@ router.post("/organizations/:orgId/logo", requireAuth, requireOrgPermission("MAN
 router.delete("/organizations/:orgId/logo", requireAuth, requireOrgPermission("MANAGE_SETTINGS"), settingsController.deleteLogo);
 router.post("/organizations/:orgId/cover", requireAuth, requireOrgPermission("MANAGE_SETTINGS"), uploadCover.single("cover"), settingsController.uploadCover);
 router.delete("/organizations/:orgId/cover", requireAuth, requireOrgPermission("MANAGE_SETTINGS"), settingsController.deleteCover);
+
+// --- ACCOUNT SETTINGS & LIFECYCLE ---
+router.get("/organizations/:orgId/account-settings", requireAuth, requireOrgPermission("MANAGE_SETTINGS"), settingsController.getAccountSettings);
+router.patch("/organizations/:orgId/deactivate", requireAuth, settingsController.deactivateOrganization);
+router.patch("/organizations/:orgId/reactivate", requireAuth, settingsController.reactivateOrganization);
 
 // --- NOTIFICATIONS ---
 router.get("/organizations/:orgId/notification-preferences", requireAuth, settingsController.getNotificationPreferences);

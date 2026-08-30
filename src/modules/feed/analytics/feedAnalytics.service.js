@@ -130,7 +130,7 @@ function _validateEvent(event) {
     item_id:    event.item_id,
     item_type:  event.item_type,
     user_id:    event.user_id,
-    session_id: event.session_id,
+    session_id: (event.session_id && /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(event.session_id)) ? event.session_id : null,
     position:   parseInt(event.position, 10),
     dwell_ms:   event.dwell_ms ? parseInt(event.dwell_ms, 10) : null,
     slot_type:  event.slot_type || null,

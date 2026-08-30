@@ -40,6 +40,7 @@ const buildOrganizationActor = (organization) => {
         avatar_url: organization.logo_url,
         entity_type: organization.entity_type,
         viewer_role_data: viewerRoleData,
+        verification_status: organization.verification_status,
     };
 };
 
@@ -58,13 +59,14 @@ async function getOrganizationsForUser(userId) {
                     'name', cr.name,
                     'description', cr.description,
                     'permissions', cr.permissions,
-                    'priority', cr.priority
+                    'priority', cr.priority,
+                    'is_owner', (c.created_by = $1)
                 ) as viewer_role_data,
                 cr.name as role
          FROM organizations c
          JOIN organization_members cm ON c.org_id = cm.org_id
          LEFT JOIN organization_roles cr ON cm.role_id = cr.role_id
-         WHERE cm.user_id = $1 AND c.is_deleted = FALSE AND cm.status = 'ACTIVE'
+         WHERE cm.user_id = $1 AND c.is_deleted = FALSE AND c.is_deactivated = FALSE AND cm.status = 'ACTIVE'
          ORDER BY c.created_at DESC`,
         [userId]
     );

@@ -81,6 +81,79 @@ function buildCacheScopeId(userId, orgActorId) {
   return orgActorId ? `${userId}:org:${orgActorId}` : userId;
 }
 
+// ---------------------------------------------------------------------------
+// Main Entry
+// ---------------------------------------------------------------------------
+
+/**
+ * Fetch a chronological feed, bypassing all ranking logic and seen-set filtering.
+ * It will filter out explicitly hidden posts and blocked users.
+ */
+async function _fetchChronologicalFeed(userId, cursor, limit, pool, orgActorId) {
+  const scopeId = buildCacheScopeId(userId, orgActorId);
+  
+  // Use timestamp string (e.g. ts:2026-07-15T10:00:00.000Z) or default to now
+  let cursorTs = new Date().toISOString();
+  if (cursor && cursor.startsWith('ts:')) {
+    cursorTs = cursor.slice(3);
+  }
+
+  // Fetch chronological posts, filtering blocked users and blocked organizations directly in SQL
+  const query = `
+    SELECT p.post_id AS id, 'post' AS type, 'organic' AS slot_type, p.created_at
+    FROM posts p
+    WHERE p.visibility = 'public'
+      AND (p.is_removed IS FALSE OR p.is_removed IS NULL)
+      AND p.is_community_article IS NOT TRUE
+      AND p.created_at < $1
+      ${orgActorId ? `
+      AND NOT EXISTS (
+        SELECT 1 FROM blocks b
+        WHERE (b.is_org_block = true AND p.author_org_id IS NULL AND ((b.blocker_id = $2 AND b.blocked_id = p.author_id) OR (b.blocker_id = p.author_id AND b.blocked_id = $2)))
+           OR (b.is_org_block = true AND p.author_org_id IS NOT NULL AND ((b.blocker_id = p.author_org_id AND b.blocked_id = $2) OR (b.blocker_id = $2 AND b.blocked_id = p.author_org_id)))
+      )
+      ` : `
+      AND NOT EXISTS (
+        SELECT 1 FROM blocks b
+        WHERE (b.is_org_block = false AND p.author_org_id IS NULL AND ((b.blocker_id = $2 AND b.blocked_id = p.author_id) OR (b.blocker_id = p.author_id AND b.blocked_id = $2)))
+           OR (b.is_org_block = true AND p.author_org_id IS NOT NULL AND ((b.blocker_id = p.author_org_id AND b.blocked_id = $2) OR (b.blocker_id = $2 AND b.blocked_id = p.author_org_id)))
+      )
+      `}
+    ORDER BY p.created_at DESC
+    LIMIT $3
+  `;
+  const result = await pool.query(query, [cursorTs, orgActorId || userId, limit]);
+  let items = result.rows;
+
+  // Filter explicitly hidden posts
+  try {
+    const hiddenSet = await getHiddenSet(scopeId);
+    if (hiddenSet && hiddenSet.length > 0) {
+      const hiddenIds = new Set(hiddenSet);
+      items = items.filter(item => !hiddenIds.has(item.id));
+    }
+  } catch (err) {
+    console.warn('[feedService] Failed to fetch hidden set for chronological feed:', err.message);
+  }
+
+  // Map to position for standard response format
+  const formattedItems = items.map((item, index) => ({
+    id: item.id,
+    type: item.type,
+    slot_type: item.slot_type,
+    position: index,
+    created_at: item.created_at
+  }));
+
+  // Determine next cursor based on the last item's created_at
+  let nextCursor = null;
+  if (formattedItems.length > 0) {
+    const lastItemTs = new Date(formattedItems[formattedItems.length - 1].created_at).toISOString();
+    nextCursor = `ts:${lastItemTs}`;
+  }
+
+  return { items: formattedItems, nextCursor };
+}
 
 // ---------------------------------------------------------------------------
 // Internal: run the full generation → ranking → reranking pipeline
@@ -151,7 +224,7 @@ async function _hydrateFeedItems(items, userId, pool, orgActorId = null) {
     const query = `
       SELECT ${getPostHydrationSelect(2, 1)}
       ${getPostHydrationJoins()}
-      ${getPublicFeedWhere(1)}
+      ${getPublicFeedWhere(1, orgActorId ? 2 : null)}
       AND p.post_id = ANY($3::uuid[])
     `;
     // param 1: user (always real identity — blocks/membership checks etc.)
@@ -162,8 +235,11 @@ async function _hydrateFeedItems(items, userId, pool, orgActorId = null) {
 
     const { rows } = await pool.query(query, params);
     
+    const { hydrateShareCounts } = require('../../utils/shareHydration');
+    const hydratedRows = await hydrateShareCounts(rows);
+
     const rowMap = new Map();
-    for (const row of rows) {
+    for (const row of hydratedRows) {
       rowMap.set(row.post_id, row);
     }
 

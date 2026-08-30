@@ -4,6 +4,8 @@ const pool = require("../../core/db/pool");
 const AppError = require("../../core/errors/AppError");
 const { logAudit } = require("../../core/infrastructure/audit.service");
 const socketService = require("../../core/infrastructure/socket.service");
+const { sendToUser } = require("../notification/notification.service");
+const emailService = require("../../core/services/email.service");
 
 // Helper to check target is Owner (creator of the organization)
 async function isTargetOwner(client, orgId, userId) {
@@ -422,8 +424,10 @@ exports.getPermissionKeys = async (req, res, next) => {
 // 8. Get all members in organization
 exports.getMembers = async (req, res, next) => {
     const orgId = req.params.orgId;
-    const { page = 1, limit = 20, search = '', status = 'ACTIVE', exclude_owner, excludeOwner } = req.query;
+    const { page = 1, limit = 20, search = '', status = 'ACTIVE', exclude_owner, excludeOwner, exclude_self, excludeSelf } = req.query;
     const shouldExcludeOwner = exclude_owner === 'true' || exclude_owner === true || excludeOwner === 'true' || excludeOwner === true;
+    const shouldExcludeSelf = exclude_self === 'true' || exclude_self === true || excludeSelf === 'true' || excludeSelf === true;
+    const requesterId = req.actor?.userId || req.user?.sub;
     const offset = (page - 1) * limit;
 
     try {
@@ -443,6 +447,12 @@ exports.getMembers = async (req, res, next) => {
 
         if (shouldExcludeOwner) {
             query += ` AND om.user_id != o.created_by`;
+        }
+
+        if (shouldExcludeSelf && requesterId) {
+            query += ` AND om.user_id != $${paramIndex}`;
+            params.push(requesterId);
+            paramIndex++;
         }
 
         if (status && status !== 'all') {
@@ -473,6 +483,12 @@ exports.getMembers = async (req, res, next) => {
 
         if (shouldExcludeOwner) {
             countQuery += ` AND om.user_id != o.created_by`;
+        }
+
+        if (shouldExcludeSelf && requesterId) {
+            countQuery += ` AND om.user_id != $${countParamIdx}`;
+            countParams.push(requesterId);
+            countParamIdx++;
         }
 
         if (status && status !== 'all') {
@@ -925,12 +941,12 @@ exports.sendInvite = async (req, res, next) => {
 
         // 8. Persistent Notification and Real-time push
         try {
-            const orgRes = await client.query(`SELECT name FROM organizations WHERE org_id = $1`, [orgId]);
+            const orgRes = await client.query(`SELECT name, logo_url FROM organizations WHERE org_id = $1`, [orgId]);
             const orgName = orgRes.rows[0]?.name || "Organization";
+            const orgLogo = orgRes.rows[0]?.logo_url || null;
             const actorRes = await client.query(`SELECT full_name, avatar_url FROM active_users WHERE user_id = $1`, [actorId]);
             const actorName = actorRes.rows[0]?.full_name || "Someone";
-            const actorAvatar = actorRes.rows[0]?.avatar_url || null;
-            const notifText = `${actorName} invited you to join ${orgName} as ${targetRole.name}`;
+            const notifText = `invited you to join "${targetRole.name}" department.`;
 
             const notifRes = await client.query(
                 `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata)
@@ -946,12 +962,12 @@ exports.sendInvite = async (req, res, next) => {
                 socketService.notifyUser(userId, "notification", {
                     type: "organization_invite",
                     text: notifText,
-                    from: actorId,
-                    sender_id: actorId,
-                    senderName: actorName,
-                    senderAvatar: actorAvatar,
-                    actor_name: actorName,
-                    actor_avatar: actorAvatar,
+                    from: orgId,
+                    sender_id: orgId,
+                    senderName: orgName,
+                    senderAvatar: orgLogo,
+                    actor_name: orgName,
+                    actor_avatar: orgLogo,
                     referenceId: orgId,
                     reference_id: orgId,
                     metadata: { token, orgId, orgName, role: targetRole.name },
@@ -960,6 +976,19 @@ exports.sendInvite = async (req, res, next) => {
                     is_read: false
                 });
             }
+
+            const pushText = `${orgName} ${notifText}`;
+            sendToUser(
+                userId,
+                "You're invited to join a team",
+                pushText,
+                { type: "organization_invite", referenceId: orgId }
+            ).catch(() => {});
+
+            // Email Notification
+            emailService.sendTeamInviteEmail(email, orgName, targetRole.name).catch(e => {
+                console.error("[INVITE EMAIL] Failed to send email:", e.message);
+            });
         } catch (e) {
             console.error("[INVITE] Notification delivery failed:", e.message);
         }

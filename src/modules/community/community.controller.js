@@ -1,6 +1,8 @@
 const pool = require("../../core/db/pool");
 const AppError = require("../../core/errors/AppError");
 const redisClient = require("../../core/db/redis");
+const { sendToUser } = require("../notification/notification.service");
+const socketService = require("../../core/infrastructure/socket.service");
 
 // --- GROUP 1: Community Creation (Company Side) ---
 
@@ -67,9 +69,9 @@ exports.createCommunity = async (req, res, next) => {
         if (!description) {
             throw new AppError("Description is required.", 400);
         }
-        const wordCount = description.trim() ? description.trim().split(/\s+/).length : 0;
-        if (wordCount < 20 || wordCount > 150) {
-            throw new AppError("Description must be between 20 and 150 words.", 400);
+        const charCount = description.trim().length;
+        if (charCount < 20 || charCount > 100) {
+            throw new AppError("Description must be between 20 and 100 characters.", 400);
         }
 
         // Check if community already exists
@@ -132,9 +134,9 @@ exports.updateCommunity = async (req, res, next) => {
             if (!description) {
                 throw new AppError("Description is required.", 400);
             }
-            const wordCount = description.trim() ? description.trim().split(/\s+/).length : 0;
-            if (wordCount < 20 || wordCount > 150) {
-                throw new AppError("Description must be between 20 and 150 words.", 400);
+            const charCount = description.trim().length;
+            if (charCount < 20 || charCount > 100) {
+                throw new AppError("Description must be between 20 and 100 characters.", 400);
             }
         }
 
@@ -257,7 +259,8 @@ exports.getSubscribedCommunities = async (req, res, next) => {
                AND (
                  cs.status = 'SUBSCRIBED'
                  OR o.created_by = $1
-               )`,
+               )
+             ORDER BY c.name ASC`,
             [userId]
         );
  
@@ -293,6 +296,12 @@ exports.getSubscribedCommunities = async (req, res, next) => {
 exports.subscribeCommunity = async (req, res, next) => {
     const userId = req.user.sub;
     const { communityId } = req.params;
+
+    if (req.headers['x-actor-type'] === 'ORGANIZATION') {
+        return res.status(403).json({
+            message: "Only a user account can subscribe to a channel."
+        });
+    }
 
     const client = await pool.connect();
     try {
@@ -352,6 +361,119 @@ exports.subscribeCommunity = async (req, res, next) => {
         } catch (cacheErr) {
             console.warn("[SUBSCRIBE_COMMUNITY] Cache invalidation failed:", cacheErr.message);
         }
+
+        // --- START NOTIFICATION LOGIC ---
+        try {
+            // Fetch professional details
+            const userRes = await pool.query(`SELECT full_name, avatar_url FROM users WHERE user_id = $1`, [userId]);
+            const professionalName = userRes.rows[0]?.full_name || 'A user';
+            const professionalAvatar = userRes.rows[0]?.avatar_url || null;
+
+            // Fetch company details
+            const orgRes = await pool.query(`SELECT name, logo_url FROM organizations WHERE org_id = $1`, [orgId]);
+            const companyName = orgRes.rows[0]?.name || 'An organization';
+            const companyLogo = orgRes.rows[0]?.logo_url || null;
+
+            // Find all active admins/owners to notify
+            const adminsRes = await pool.query(`
+                SELECT cm.user_id, cr.name as cr_name, cm.role as cm_role
+                FROM organization_members cm
+                LEFT JOIN organization_roles cr ON cm.role_id = cr.role_id
+                WHERE cm.org_id = $1 AND cm.status = 'ACTIVE' 
+            `, [orgId]);
+
+            const filteredAdmins = adminsRes.rows.filter(row => ['Owner', 'Admin', 'Editor'].includes(row.cr_name || row.cm_role));
+            const adminIds = filteredAdmins.map(row => row.user_id);
+
+            if (adminIds.length > 0) {
+                // 1. Follower Notification
+                const notifText1 = `${professionalName} subscribed to your channel.`;
+                const insertNotifQuery = `
+                    INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata, recipient_org_id, is_read, created_at)
+                    SELECT unnest($1::uuid[]), $2, 'company_channel_subscriber', $3, $4, $5::jsonb, $6, false, NOW()
+                    RETURNING notification_id, user_id, created_at
+                `;
+                const notifRes1 = await pool.query(insertNotifQuery, [
+                    adminIds,
+                    userId,
+                    notifText1,
+                    userId, // reference_id is the subscriber's id
+                    JSON.stringify({ org_id: orgId }),
+                    orgId // recipient_org_id
+                ]);
+
+                for (const row of notifRes1.rows) {
+                    // Socket
+                    socketService.notifyUser(row.user_id, 'notification', {
+                        notification_id: row.notification_id,
+                        type: 'company_channel_subscriber',
+                        text: notifText1,
+                        reference_id: userId,
+                        is_read: false,
+                        created_at: row.created_at.toISOString(),
+                        actor_name: professionalName,
+                        actor_avatar: professionalAvatar,
+                        is_company_actor: false,
+                        metadata: { org_id: orgId }
+                    });
+                    
+                    // Push
+                    sendToUser(row.user_id, 'New channel subscriber', notifText1, {
+                        type: 'company_channel_subscriber',
+                        referenceId: userId
+                    }).catch(() => {});
+                }
+
+                // 2. Milestone Check
+                const countRes = await pool.query(
+                    `SELECT COUNT(*) as total FROM community_subscriptions WHERE community_id = $1 AND status = 'SUBSCRIBED'`,
+                    [communityId]
+                );
+                const totalSubscribers = parseInt(countRes.rows[0].total, 10);
+                const milestones = [1000, 5000, 10000, 20000, 50000, 100000, 500000, 1000000];
+
+                if (milestones.includes(totalSubscribers)) {
+                    const notifText2 = `Congratulations, your channel has reached ${totalSubscribers} subscribers.`;
+                    const insertMilestoneQuery = `
+                        INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata, recipient_org_id, is_read, created_at)
+                        SELECT unnest($1::uuid[]), NULL, 'company_channel_milestone', $2, $3, $4::jsonb, $5, false, NOW()
+                        RETURNING notification_id, user_id, created_at
+                    `;
+                    const notifRes2 = await pool.query(insertMilestoneQuery, [
+                        adminIds,
+                        notifText2,
+                        orgId, // reference_id is the company_id for milestone
+                        JSON.stringify({ subscriber_count: totalSubscribers, org_id: orgId }),
+                        orgId // recipient_org_id
+                    ]);
+
+                    for (const row of notifRes2.rows) {
+                        // Socket
+                        socketService.notifyUser(row.user_id, 'notification', {
+                            notification_id: row.notification_id,
+                            type: 'company_channel_milestone',
+                            text: notifText2,
+                            reference_id: orgId,
+                            is_read: false,
+                            created_at: row.created_at.toISOString(),
+                            actor_name: companyName,
+                            actor_avatar: companyLogo,
+                            is_company_actor: true,
+                            metadata: { subscriber_count: totalSubscribers, org_id: orgId }
+                        });
+                        
+                        // Push
+                        sendToUser(row.user_id, 'Your channel is growing', notifText2, {
+                            type: 'company_channel_milestone',
+                            referenceId: orgId
+                        }).catch(() => {});
+                    }
+                }
+            }
+        } catch (notifErr) {
+            console.error("[SUBSCRIBE_COMMUNITY] Notification error:", notifErr);
+        }
+        // --- END NOTIFICATION LOGIC ---
 
         res.status(200).json({ message: "Subscribed successfully" });
 
@@ -663,6 +785,10 @@ exports.sendInvitation = async (req, res, next) => {
         const companyName = orgRes.rows[0]?.name || "Organization";
         const companyLogo = orgRes.rows[0]?.logo_url;
 
+        // Fetch inviter name
+        const inviterRes = await client.query(`SELECT full_name FROM users WHERE user_id = $1`, [inviterId]);
+        const inviterName = inviterRes.rows[0]?.full_name || "Someone";
+
         const insertRes = await client.query(
             `INSERT INTO community_invitations (community_id, inviter_id, invitee_id, status, is_active)
              VALUES ($1, $2, $3, 'PENDING', TRUE)
@@ -675,7 +801,7 @@ exports.sendInvitation = async (req, res, next) => {
         const inviteId = insertRes.rows[0].invite_id;
 
         // Insert notification record for the invitee
-        const notificationText = `You have been invited to join the ${companyName} community`;
+        const notificationText = `${companyName} invited you to join "${communityName}".`;
         const meta = {
             org_id: orgId,
             invite_id: inviteId
@@ -685,6 +811,13 @@ exports.sendInvitation = async (req, res, next) => {
              VALUES ($1, $2, $3, $4, $5, $6)`,
             [invitee_id, inviterId, "community_invite", notificationText, inviteId, JSON.stringify(meta)]
         );
+
+        sendToUser(
+            invitee_id, 
+            "You're invited to join a channel", 
+            notificationText, 
+            { type: "community_invite", referenceId: inviteId }
+        ).catch(() => {});
 
         await client.query("COMMIT");
 
@@ -766,7 +899,7 @@ exports.acceptInvitation = async (req, res, next) => {
 
         // Fetch invitation
         const inviteRes = await client.query(
-            `SELECT ci.community_id, ci.invitee_id, ci.inviter_id, c.org_id 
+            `SELECT ci.community_id, ci.invitee_id, ci.inviter_id, c.org_id, c.name as community_name 
              FROM community_invitations ci
              JOIN communities c ON ci.community_id = c.community_id
              WHERE ci.invite_id = $1 AND ci.status = 'PENDING' AND ci.is_active = TRUE`,
@@ -777,7 +910,7 @@ exports.acceptInvitation = async (req, res, next) => {
             throw new AppError("Invitation not found or already processed", 404);
         }
 
-        const { community_id, invitee_id, inviter_id, org_id } = inviteRes.rows[0];
+        const { community_id, invitee_id, inviter_id, org_id, community_name } = inviteRes.rows[0];
 
         if (invitee_id !== userId) {
             throw new AppError("Not authorized to accept this invitation", 403);
@@ -816,7 +949,7 @@ exports.acceptInvitation = async (req, res, next) => {
         const inviteeAvatar = inviteeNameRes.rows[0]?.avatar_url;
 
         // Insert notification record for the inviter recruiter
-        const notificationText = `${inviteeName} accepted your invitation to join the community`;
+        const notificationText = `${inviteeName} accepted your invite to "${community_name}".`;
         const meta = {
             org_id: org_id,
             invite_id: inviteId
@@ -826,6 +959,13 @@ exports.acceptInvitation = async (req, res, next) => {
              VALUES ($1, $2, $3, $4, $5, $6, $7)`,
             [inviter_id, userId, "community_invite_accepted", notificationText, inviteId, JSON.stringify(meta), org_id]
         );
+
+        sendToUser(
+            inviter_id,
+            "Invitation accepted",
+            notificationText,
+            { type: "community_invite_accepted", referenceId: org_id }
+        ).catch(() => {});
 
         await client.query("COMMIT");
 
@@ -1212,7 +1352,7 @@ exports.requestEditAccess = async (req, res, next) => {
         );
 
         if (adminsRes.rowCount > 0) {
-            const notificationText = `${userName} requested edit access to the ${companyName} community`;
+            const notificationText = `requested edit access to the ${companyName} community`;
             const meta = {
                 org_id: orgId,
                 requestee_id: userId
@@ -1274,7 +1414,7 @@ exports.searchArticles = async (req, res, next) => {
             `SELECT
                 p.post_id,
                 p.title,
-                LEFT(p.content, 1000) AS content_snippet,
+                p.content AS content_snippet,
                 p.created_at,
                 p.updated_at,
                 p.author_org_id,
@@ -1303,7 +1443,8 @@ exports.searchArticles = async (req, res, next) => {
 
         const extractExcerpt = (content, maxLen = 140) => {
             if (!content) return '';
-            const cleaned = content.replace(/<[^>]+>/g, ' ').replace(/[#*`~>_]/g, '').replace(/\s+/g, ' ').trim();
+            const textOnly = content.replace(/<[^>]*>?/gm, ' ').replace(/&nbsp;/g, ' ').replace(/&[a-z]+;/gi, '');
+            const cleaned = textOnly.replace(/[#*`~>_]/g, '').replace(/\s+/g, ' ').trim();
             return cleaned.length <= maxLen ? cleaned : cleaned.substring(0, maxLen) + '...';
         };
 

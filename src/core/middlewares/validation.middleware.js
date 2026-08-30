@@ -38,8 +38,10 @@ const validate = (schema) => (req, res, next) => {
     }
 
     if (err.name === "ZodError") {
+      const firstMessage = err.issues[0]?.message || "Validation failed";
       return res.status(400).json({
         success: false,
+        message: firstMessage,
         errors: err.issues.map((e) => ({
           field: e.path.join("."),
           message: e.message,

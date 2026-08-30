@@ -10,7 +10,7 @@ const pool = require("../../core/db/pool");
 const findUserByEmail = async (email) => {
     const result = await pool.query(
         `SELECT user_id, email, password_hash, is_onboarding_complete, account_name, full_name, avatar_url,
-                deletion_execute_at
+                deletion_execute_at, is_deactivated
          FROM users WHERE email = $1`,
         [email]
     );
@@ -107,7 +107,7 @@ const getUserPasswordHash = async (userId) => {
 const findUserBySocialId = async (provider, providerId) => {
     const result = await pool.query(
         `SELECT u.user_id, u.email, u.full_name, u.avatar_url, u.is_onboarding_complete,
-                u.account_name, u.deletion_execute_at, sa.provider, sa.provider_id
+                u.account_name, u.deletion_execute_at, u.is_deactivated, sa.provider, sa.provider_id
          FROM users u
          JOIN user_social_accounts sa ON u.user_id = sa.user_id
          WHERE sa.provider = $1 AND sa.provider_id = $2`,
@@ -252,6 +252,16 @@ const findSessionByUserAndId = async (userId, sessionId) => {
     return result.rows[0] || null;
 };
 
+const checkDeviceExists = async (userId, userAgent, ipAddress) => {
+    const result = await pool.query(
+        `SELECT 1 FROM refresh_tokens
+         WHERE user_id = $1 AND user_agent = $2 AND ip_address = $3
+         LIMIT 1`,
+        [userId, userAgent, ipAddress]
+    );
+    return result.rowCount > 0;
+};
+
 const updateSessionToken = async (sessionId, newTokenHash, expectedCurrentHash) => {
     const hasExpectedHash = typeof expectedCurrentHash === "string" && expectedCurrentHash.length > 0;
     const query = hasExpectedHash
@@ -302,6 +312,7 @@ module.exports = {
     deleteAllOtherSessions,
     insertSession,
     findSessionByUserAndId,
+    checkDeviceExists,
     updateSessionToken,
     // Transactions
     beginTransaction,

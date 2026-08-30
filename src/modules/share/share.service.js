@@ -12,6 +12,7 @@
  */
 
 const pool = require("../../core/db/pool");
+const redisClient = require("../../core/db/redis");
 const socketService = require("../../core/infrastructure/socket.service");
 const { resolveEntity, generateEntityUrl } = require("./entityResolver");
 const { validateShareRules } = require("./shareRules");
@@ -24,13 +25,31 @@ const { validateShareRules } = require("./shareRules");
  */
 async function trackShare(senderId, receiverId, entityType, entityId, shareMethod) {
     try {
-        await pool.query(
+        const result = await pool.query(
             `INSERT INTO shares (sender_id, receiver_id, entity_type, entity_id, share_method)
-             VALUES ($1, $2, $3, $4, $5)`,
+             SELECT $1::TEXT, $2::TEXT, $3::TEXT, $4::TEXT, $5::TEXT
+             WHERE NOT EXISTS (
+                 SELECT 1 FROM shares 
+                 WHERE sender_id = $1 
+                   AND receiver_id IS NOT DISTINCT FROM $2
+                   AND entity_type = $3 
+                   AND entity_id = $4 
+                   AND share_method = $5
+             )
+             RETURNING id`,
             [senderId, receiverId || null, entityType, entityId, shareMethod]
         );
+        let tracked = false;
+        if (result.rowCount > 0) {
+            tracked = true;
+            if (entityType === 'post' && redisClient.isOpen) {
+                await redisClient.incr(`post:${entityId}:share_count`);
+            }
+        }
+        return tracked;
     } catch (err) {
         console.warn("[ShareTracking] Failed to track share event:", err.message);
+        return false;
     }
 }
 
@@ -180,7 +199,7 @@ async function shareViaMessage(senderId, { entityType, entityId, targetId, targe
         client.release();
 
         // Non-blocking: track share event after releasing connection
-        trackShare(senderId, targetId, entityType, entityId, "message");
+        trackShare(senderOrgId || senderId, targetId, entityType, entityId, "message");
     }
 }
 
@@ -324,7 +343,7 @@ async function shareViaNotification(senderId, { entityType, entityId, targetId, 
         client.release();
 
         // Non-blocking: track share event after releasing connection
-        trackShare(senderId, targetId, entityType, entityId, "notification");
+        trackShare(senderOrgId || senderId, targetId, entityType, entityId, "notification");
     }
 }
 
@@ -333,11 +352,11 @@ async function shareViaNotification(senderId, { entityType, entityId, targetId, 
  *
  * No DB write. Generate URL and return.
  */
-async function shareViaCopyLink(senderId, { entityType, entityId }) {
+async function shareViaCopyLink(senderId, { entityType, entityId, senderOrgId }) {
     const url = generateEntityUrl(entityType, entityId);
 
     // Non-blocking: track copy_link share event
-    trackShare(senderId, null, entityType, entityId, "copy_link");
+    trackShare(senderOrgId || senderId, null, entityType, entityId, "copy_link");
 
     return {
         success: true,
@@ -455,17 +474,17 @@ async function findOrCreateConversation(client, senderId, targetId, targetType, 
 
     // Add participants
     if (senderOrgId && targetType === "company") {
-        await client.query(`INSERT INTO conversation_participants(conversation_id, org_id) VALUES($1, $2)`, [conversationId, senderOrgId]);
-        await client.query(`INSERT INTO conversation_participants(conversation_id, org_id) VALUES($1, $2)`, [conversationId, targetId]);
+        await client.query(`INSERT INTO conversation_participants(conversation_id, org_id, last_read_at) VALUES($1, $2, NOW())`, [conversationId, senderOrgId]);
+        await client.query(`INSERT INTO conversation_participants(conversation_id, org_id, last_read_at) VALUES($1, $2, NULL)`, [conversationId, targetId]);
     } else if (senderOrgId && targetType === "user") {
-        await client.query(`INSERT INTO conversation_participants(conversation_id, org_id) VALUES($1, $2)`, [conversationId, senderOrgId]);
-        await client.query(`INSERT INTO conversation_participants(conversation_id, user_id) VALUES($1, $2)`, [conversationId, targetId]);
+        await client.query(`INSERT INTO conversation_participants(conversation_id, org_id, last_read_at) VALUES($1, $2, NOW())`, [conversationId, senderOrgId]);
+        await client.query(`INSERT INTO conversation_participants(conversation_id, user_id, last_read_at) VALUES($1, $2, NULL)`, [conversationId, targetId]);
     } else if (!senderOrgId && targetType === "company") {
-        await client.query(`INSERT INTO conversation_participants(conversation_id, user_id) VALUES($1, $2)`, [conversationId, senderId]);
-        await client.query(`INSERT INTO conversation_participants(conversation_id, org_id) VALUES($1, $2)`, [conversationId, targetId]);
+        await client.query(`INSERT INTO conversation_participants(conversation_id, user_id, last_read_at) VALUES($1, $2, NOW())`, [conversationId, senderId]);
+        await client.query(`INSERT INTO conversation_participants(conversation_id, org_id, last_read_at) VALUES($1, $2, NULL)`, [conversationId, targetId]);
     } else {
         await client.query(
-            `INSERT INTO conversation_participants(conversation_id, user_id) VALUES($1, $2), ($1, $3)`,
+            `INSERT INTO conversation_participants(conversation_id, user_id, last_read_at) VALUES($1, $2, NOW()), ($1, $3, NULL)`,
             [conversationId, senderId, targetId]
         );
     }
@@ -513,6 +532,9 @@ function buildLegacyPostPreview(preview) {
         content: preview.subtitle,
         author: { full_name: preview.title.replace("Post by ", ""), avatar_url: preview.image },
         media: null,
+        post_type: preview.post_type || "text",
+        title: preview.post_title || null,
+        poll: preview.poll || null,
     };
 }
 
@@ -527,4 +549,4 @@ function buildLegacyProfilePreview(preview) {
     };
 }
 
-module.exports = { shareEntity };
+module.exports = { shareEntity, trackShare };

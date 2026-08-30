@@ -20,7 +20,7 @@ const appleSigninAuth = require('apple-signin-auth');
 const verifyAppleToken = async (idToken, nonce) => {
     try {
         const verifyOptions = {
-            audience: process.env.APPLE_CLIENT_ID,
+            audience: [process.env.APPLE_CLIENT_ID, process.env.APPLE_WEB_CLIENT_ID].filter(Boolean),
             ignoreExpiration: false,
         };
 

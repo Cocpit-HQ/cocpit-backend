@@ -9,6 +9,7 @@ const jobsCtrl = require('./organization.jobs.controller');
 const { requireAuth, optionalAuth } = require('../../core/middlewares/auth.middleware');
 const { requireOrgPermission } = require('../../core/middlewares/organization.auth.middleware');
 const { uploadChatMedia } = require('../../core/middlewares/upload.middleware');
+const { resolveActorContext } = require('../../core/middlewares/actor-context.middleware');
 
 // ---------------------------------------------------------------------------
 // READ — public / optional auth
@@ -19,7 +20,7 @@ const { uploadChatMedia } = require('../../core/middlewares/upload.middleware');
  * Home tab — overview, stats, about snippet, core team, latest posts, relationship
  * Auth: optional (own/other view determined by membership check inside controller)
  */
-router.get('/:orgId/profile', optionalAuth, profileCtrl.getOrgProfile);
+router.get('/:orgId/profile', optionalAuth, resolveActorContext, profileCtrl.getOrgProfile);
 
 /**
  * GET /api/organizations/:orgId/about

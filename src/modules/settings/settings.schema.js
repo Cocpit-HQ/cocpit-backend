@@ -37,7 +37,7 @@ const submitNewEmailSchema = z.object({
   body: z.object({
     newEmail: z.string({
       required_error: "New email is required",
-    }).email({ message: "Invalid email address" }),
+    }).email({ message: "Please enter a valid email address." }),
   }),
 });
 
@@ -55,7 +55,7 @@ const setRecoveryEmailSchema = z.object({
   body: z.object({
     recoveryEmail: z.string({
       required_error: "Recovery email is required",
-    }).email({ message: "Invalid email address" }),
+    }).email({ message: "Please enter a valid email address." }),
   }),
 });
 
@@ -99,16 +99,28 @@ const notificationPreferencesSchema = z.object({
     post_notifications: z.boolean().optional(),
     job_alerts: z.boolean().optional(),
     message_notifications: z.boolean().optional(),
+    messages_chat_enabled: z.boolean().optional(),
+    messages_jobs_enabled: z.boolean().optional(),
     email_notifications: z.boolean().optional(),
+    push_notifications: z.boolean().optional(),
   }),
 });
 
 const privacySchema = z.object({
   body: z.object({
     show_email: z.boolean().optional(),
+    showEmail: z.boolean().optional(),
     show_phone: z.boolean().optional(),
+    showPhone: z.boolean().optional(),
     tag_permission: z.enum(["everyone", "connections_only", "followers_only", "no_one"]).optional(),
-  }),
+    tagPermission: z.enum(["everyone", "connections_only", "followers_only", "no_one"]).optional(),
+    following_visibility: z.enum(["everyone", "followers_only", "no_one"]).optional(),
+    followingVisibility: z.enum(["everyone", "followers_only", "no_one"]).optional(),
+    followers_visibility: z.enum(["everyone", "followers_only", "no_one"]).optional(),
+    followersVisibility: z.enum(["everyone", "followers_only", "no_one"]).optional(),
+    message_permission: z.enum(["everyone", "followers_only", "no_one"]).optional(),
+    messagePermission: z.enum(["everyone", "followers_only", "no_one"]).optional(),
+  }).passthrough(),
 });
 
 // Account deletion initiation schema

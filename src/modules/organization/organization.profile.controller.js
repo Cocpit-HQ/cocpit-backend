@@ -114,6 +114,7 @@ exports.getOrgProfile = async (req, res) => {
             linksResult,
             keyOfferingsResult,
             growthData,
+            privacyResult,
         ] = await Promise.all([
             // Counts (followers, subscribers, members, posts, active jobs)
             pool.query(
@@ -122,7 +123,10 @@ exports.getOrgProfile = async (req, res) => {
                         (SELECT COUNT(*) FROM organization_user_follows WHERE org_id = $1) +
                         (SELECT COUNT(*) FROM organization_org_follows WHERE follower_org_id = $1)
                     )::int AS following_count,
-                    (SELECT COUNT(*) FROM organization_followers WHERE org_id = $1)::int AS followers_count,
+                    (
+                        (SELECT COUNT(*) FROM organization_followers WHERE org_id = $1) +
+                        (SELECT COUNT(*) FROM organization_org_follows WHERE following_org_id = $1)
+                    )::int AS followers_count,
                     (
                         SELECT COUNT(DISTINCT cs.user_id) 
                         FROM community_subscriptions cs
@@ -200,12 +204,63 @@ exports.getOrgProfile = async (req, res) => {
             ),
             // Employee growth trend
             calculateEmployeeGrowth(pool, org.org_id),
+            // Privacy settings check
+            pool.query(
+                `SELECT show_email, show_phone, tag_permission, following_visibility, followers_visibility, message_permission FROM organization_privacy_settings WHERE org_id = $1`,
+                [org.org_id]
+            ),
         ]);
 
         const counts = countsResult.rows[0];
         const membership = membershipResult; // null if not a member
-        const isOwnProfile = !!membership;
+        const isOwnOrgActor = req.actor && req.actor.type === "ORGANIZATION" && req.actor.orgId === org.org_id;
         const isOwner = !!(viewerId && org.created_by && viewerId === org.created_by);
+        const isOwnProfile = isOwnOrgActor || isOwner || !!membership;
+
+        const privacy = privacyResult?.rows?.[0] || {
+            show_email: true,
+            show_phone: true,
+            tag_permission: "everyone",
+            following_visibility: "everyone",
+            followers_visibility: "everyone",
+            message_permission: "everyone",
+        };
+
+        let isFollower = false;
+        if (!isOwnOrgActor) {
+            if (req.actor && req.actor.type === "ORGANIZATION" && req.actor.orgId) {
+                const followCheck = await pool.query(
+                    `SELECT 1 FROM organization_org_follows WHERE following_org_id = $1 AND follower_org_id = $2`,
+                    [org.org_id, req.actor.orgId]
+                );
+                isFollower = followCheck.rowCount > 0;
+            } else if (viewerId) {
+                const followCheck = await pool.query(
+                    `SELECT 1 FROM organization_followers WHERE org_id = $1 AND user_id = $2`,
+                    [org.org_id, viewerId]
+                );
+                isFollower = followCheck.rowCount > 0;
+            }
+        }
+
+        const canViewEmail = isOwnOrgActor ? true : (privacy.show_email ?? true);
+        const canViewPhone = isOwnOrgActor ? true : (privacy.show_phone ?? true);
+
+        const showMessage = isOwnOrgActor ? false : (privacy.message_permission === 'everyone' || (privacy.message_permission === 'followers_only' && isFollower));
+        const showFollowersList = isOwnOrgActor ? true : (privacy.followers_visibility === 'everyone' || (privacy.followers_visibility === 'followers_only' && isFollower));
+        const showFollowingList = isOwnOrgActor ? true : (privacy.following_visibility === 'everyone' || (privacy.following_visibility === 'followers_only' && isFollower));
+
+        org.showMessage = showMessage;
+        org.showFollowersList = showFollowersList;
+        org.showFollowingList = showFollowingList;
+        org.tagPermission = privacy.tag_permission || "everyone";
+        org.isEmailShow = canViewEmail;
+        org.isMobileShow = canViewPhone;
+        org.is_email_show = canViewEmail;
+        org.is_mobile_show = canViewPhone;
+
+        if (!canViewEmail) org.email = null;
+        if (!canViewPhone) org.phone = null;
 
         // 3. Core team — always public (visible to all viewers)
         const teamResult = await pool.query(
@@ -239,39 +294,57 @@ exports.getOrgProfile = async (req, res) => {
             total_followers: counts.followers_count
         };
 
-        if (isOwner) {
-            relationship = {
-                is_following: true,
-                is_subscribed: true,
-                is_connected: true,
-            };
-        } else if (viewerId) {
-            const [relResult, relevanceResult, mutualCountResult] = await Promise.all([
-                pool.query(
-                    `SELECT
-                        EXISTS(SELECT 1 FROM organization_followers WHERE user_id = $1 AND org_id = $2) AS is_following,
-                        EXISTS(SELECT 1 FROM community_subscriptions cs JOIN communities c ON cs.community_id = c.community_id WHERE cs.user_id = $1 AND c.org_id = $2 AND cs.status = 'SUBSCRIBED') AS is_subscribed,
-                        EXISTS(SELECT 1 FROM organization_connections WHERE user_id = $1 AND org_id = $2) AS is_connected,
-                        EXISTS(SELECT 1 FROM blocks WHERE (blocker_id = $1 AND blocked_id = $2) OR (blocker_id = $2 AND blocked_id = $1)) AS is_blocked`,
-                    [viewerId, org.org_id]
-                ),
-                pool.query(
-                    `SELECT u.user_id, u.full_name, u.avatar_url, u.headline, u.account_name
-                     FROM connections c
-                     JOIN active_users u ON c.connected_user_id = u.user_id
-                     JOIN organization_followers ofol ON ofol.user_id = u.user_id
-                     WHERE c.user_id = $1 AND ofol.org_id = $2
-                     LIMIT 5`,
-                    [viewerId, org.org_id]
-                ),
-                pool.query(
-                    `SELECT COUNT(*)::int AS count
-                     FROM connections c
-                     JOIN organization_followers ofol ON ofol.user_id = c.connected_user_id
-                     WHERE c.user_id = $1 AND ofol.org_id = $2`,
-                    [viewerId, org.org_id]
-                )
-            ]);
+        if (viewerId) {
+            let relResult;
+            let relevanceResult = { rows: [] };
+            let mutualCountResult = { rows: [{ count: 0 }] };
+
+            if (isOwnOrgActor || (req.actor && req.actor.type === "ORGANIZATION" && req.actor.orgId)) {
+                // If viewing as an Organization, relationship checks use orgId
+                const actorOrgId = req.actor.orgId;
+                const [rResult] = await Promise.all([
+                    pool.query(
+                        `SELECT
+                            EXISTS(SELECT 1 FROM organization_org_follows WHERE follower_org_id = $1 AND following_org_id = $2) AS is_following,
+                            false AS is_subscribed,
+                            false AS is_connected,
+                            EXISTS(SELECT 1 FROM blocks WHERE (blocker_id = $1 AND blocked_id = $2) OR (blocker_id = $2 AND blocked_id = $1)) AS is_blocked`,
+                        [actorOrgId, org.org_id]
+                    )
+                ]);
+                relResult = rResult;
+            } else {
+                // If viewing as a normal User, use viewerId
+                const [rResult, rvResult, mcResult] = await Promise.all([
+                    pool.query(
+                        `SELECT
+                            EXISTS(SELECT 1 FROM organization_followers WHERE user_id = $1 AND org_id = $2) AS is_following,
+                            EXISTS(SELECT 1 FROM community_subscriptions cs JOIN communities c ON cs.community_id = c.community_id WHERE cs.user_id = $1 AND c.org_id = $2 AND cs.status = 'SUBSCRIBED') AS is_subscribed,
+                            EXISTS(SELECT 1 FROM organization_connections WHERE user_id = $1 AND org_id = $2) AS is_connected,
+                            EXISTS(SELECT 1 FROM blocks WHERE (blocker_id = $1 AND blocked_id = $2) OR (blocker_id = $2 AND blocked_id = $1)) AS is_blocked`,
+                        [viewerId, org.org_id]
+                    ),
+                    pool.query(
+                        `SELECT u.user_id, u.full_name, u.avatar_url, u.headline, u.account_name
+                         FROM connections c
+                         JOIN active_users u ON c.connected_user_id = u.user_id
+                         JOIN organization_followers ofol ON ofol.user_id = u.user_id
+                         WHERE c.user_id = $1 AND ofol.org_id = $2
+                         LIMIT 5`,
+                        [viewerId, org.org_id]
+                    ),
+                    pool.query(
+                        `SELECT COUNT(*)::int AS count
+                         FROM connections c
+                         JOIN organization_followers ofol ON ofol.user_id = c.connected_user_id
+                         WHERE c.user_id = $1 AND ofol.org_id = $2`,
+                        [viewerId, org.org_id]
+                    )
+                ]);
+                relResult = rResult;
+                relevanceResult = rvResult;
+                mutualCountResult = mcResult;
+            }
 
             relationship = {
                 is_following: !!relResult.rows[0]?.is_following,
@@ -437,6 +510,10 @@ exports.getOrgProfile = async (req, res) => {
                 active_jobs_count: counts.active_jobs_count,
                 owner_id: org.created_by,
                 key_offerings: keyOfferingsResult.rows.map(r => ({ id: r.offering_id, icon: r.icon, label: r.label, content: r.content })),
+                isEmailShow: canViewEmail,
+                isMobileShow: canViewPhone,
+                is_email_show: canViewEmail,
+                is_mobile_show: canViewPhone,
             },
             is_own_profile: isOwner,
             viewer_role: membership?.role_name || null,
@@ -480,11 +557,12 @@ exports.getOrgAbout = async (req, res) => {
             if (isBlocked) return res.status(404).json({ message: 'Organization not found' });
         }
 
-        // Viewer membership (to decide if sensitive fields exposed)
-        const membership = await getViewerMembership(org.org_id, viewerId);
-        const isOwnProfile = !!membership;
-
-        const [officesResult, linksResult, specialtiesResult] = await Promise.all([
+        const [membership, privacyRes, officesResult, linksResult, specialtiesResult] = await Promise.all([
+            getViewerMembership(org.org_id, viewerId),
+            pool.query(
+                `SELECT show_email, show_phone FROM organization_privacy_settings WHERE org_id = $1`,
+                [org.org_id]
+            ),
             pool.query(
                 `SELECT office_id, city, country, address, is_headquarters
                  FROM organization_offices 
@@ -508,6 +586,14 @@ exports.getOrgAbout = async (req, res) => {
             ),
         ]);
 
+        const isOwnOrgActor = req.actor && req.actor.type === "ORGANIZATION" && req.actor.orgId === org.org_id;
+        const isOwnProfile = isOwnOrgActor || (org.created_by === viewerId) || !!membership;
+
+        const privacy = privacyRes.rows[0] || { show_email: true, show_phone: true };
+        // If req.actor is org & requesting own profile -> show credentials; else -> show based on privacy permissions
+        const canViewEmail = isOwnOrgActor ? true : (privacy.show_email ?? true);
+        const canViewPhone = isOwnOrgActor ? true : (privacy.show_phone ?? true);
+
         const about = {
             description: org.description,
             slogan: org.slogan,
@@ -522,12 +608,15 @@ exports.getOrgAbout = async (req, res) => {
             institution_type: org.institution_type,
             campus_location: org.campus_location,
             headline: org.headline,
+            email: canViewEmail ? org.email : null,
+            phone: canViewPhone ? org.phone : null,
+            isEmailShow: canViewEmail,
+            isMobileShow: canViewPhone,
+            is_email_show: canViewEmail,
+            is_mobile_show: canViewPhone,
         };
 
-        // Sensitive fields exposed only to members
         if (isOwnProfile) {
-            about.phone = org.phone;
-            about.email = org.email;
             about.phone_verified = org.phone_verified;
             about.email_verified = org.email_verified;
             about.verification_status = org.verification_status;
@@ -623,7 +712,10 @@ async function calculateOrgDemographics(client, orgId, type, search, graduationY
            FROM experiences e
            JOIN profiles p ON e.profile_id = p.profile_id
            JOIN active_users u ON p.user_id = u.user_id
-           WHERE e.org_id = $1::uuid
+           WHERE (
+               e.org_id = $1::uuid
+               OR (e.org_id IS NULL AND LOWER(TRIM(e.company_name)) = LOWER(TRIM((SELECT name FROM organizations WHERE org_id = $1::uuid))))
+           )
              AND (e.is_current = TRUE OR e.end_date IS NULL)
              AND ($2::text IS NULL OR (u.full_name ILIKE $2::text OR e.title ILIKE $2::text))`
         : `SELECT DISTINCT ON (p.user_id) p.user_id
@@ -829,7 +921,10 @@ exports.getOrgPeople = async (req, res) => {
                      FROM experiences e
                      JOIN profiles p ON e.profile_id = p.profile_id
                      JOIN active_users u ON p.user_id = u.user_id
-                     WHERE e.org_id = $1::uuid
+                     WHERE (
+                         e.org_id = $1::uuid
+                         OR (e.org_id IS NULL AND LOWER(TRIM(e.company_name)) = LOWER(TRIM((SELECT name FROM organizations WHERE org_id = $1::uuid))))
+                     )
                        AND (e.is_current = TRUE OR e.end_date IS NULL)
                        ${searchClause}
                      ORDER BY p.user_id, e.start_date DESC
@@ -874,7 +969,10 @@ exports.getOrgPeople = async (req, res) => {
                      FROM experiences e
                      JOIN profiles p ON e.profile_id = p.profile_id
                      JOIN active_users u ON p.user_id = u.user_id
-                     WHERE e.org_id = $1::uuid
+                     WHERE (
+                         e.org_id = $1::uuid
+                         OR (e.org_id IS NULL AND LOWER(TRIM(e.company_name)) = LOWER(TRIM((SELECT name FROM organizations WHERE org_id = $1::uuid))))
+                     )
                        AND (e.is_current = TRUE OR e.end_date IS NULL)
                        ${countSearchClause}
                  )

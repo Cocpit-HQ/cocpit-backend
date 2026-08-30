@@ -2,6 +2,7 @@ const GroupChatModel = require("../models/groupChat.model");
 const socketService = require("../core/infrastructure/socket.service"); // Assuming existing socket service
 const pool = require("../core/db/pool"); // For specific queries if model isn't enough or for transactions
 const { listConversationMuteStates } = require("./conversationMute.service");
+const { sendToUser: sendPush } = require("../modules/notification/notification.service");
 const fs = require("fs");
 const path = require("path");
 
@@ -66,10 +67,11 @@ class GroupChatService {
         // System message: Group created
         await GroupChatModel.createMessage({
             groupId: group.conversation_id,
-            senderId: null,
+            senderId: adminId,
             content: `${adminName} created the group "${name}"`,
             type: 'system',
-            actionType: 'create_group'
+            actionType: 'create_group',
+            targetId: adminId
         });
 
         // 3. Invite other initial members
@@ -130,6 +132,7 @@ class GroupChatService {
             is_muted: false,
             muted_until: null,
             is_deleted_user: false,
+            is_deactivated: false,
             last_message_id: null,
             last_message_text: `${inviter.full_name || 'A member'} invited you to join the group`,
             last_message_at: invitation.updated_at || invitation.created_at || new Date().toISOString(),
@@ -170,6 +173,15 @@ class GroupChatService {
         } else {
             socketService.notifyUser(receiverId, 'group_invite', requestConversationPayload);
         }
+
+        const groupName = group?.name || 'a group';
+        const adderName = inviter.full_name || 'Someone';
+        sendPush(
+            receiverId,
+            'You were added to a group',
+            `${adderName} added you to ${groupName}.`,
+            { type: 'group_invite', conversationId: groupId, senderId }
+        ).catch(() => {});
 
         return invitation;
     }
@@ -219,76 +231,224 @@ class GroupChatService {
     }
 
     static async acceptInvitation(userId, invitationId) {
-        const invitation = await GroupChatModel.getInvitationById(invitationId);
-        if (!invitation) throw new Error("Invitation not found");
-        if (invitation.invitee_id !== userId) throw new Error("Unauthorized");
-        if (invitation.status !== 'pending') throw new Error("Invitation not pending");
+        const client = await pool.connect();
+        try {
+            await client.query('BEGIN');
 
-        // Update status
-        await GroupChatModel.updateInvitationStatus(invitationId, 'accepted');
+            const invRes = await client.query(
+                `SELECT * FROM group_invitations WHERE invitation_id = $1 FOR UPDATE`,
+                [invitationId]
+            );
+            if (invRes.rowCount === 0) throw new Error("Invitation not found");
+            const invitation = invRes.rows[0];
+            if (invitation.invitee_id !== userId) throw new Error("Unauthorized");
+            if (invitation.status !== 'pending') throw new Error("Invitation not pending");
 
-        // Add member
-        await GroupChatModel.addMember({ groupId: invitation.conversation_id, userId });
+            const groupId = invitation.conversation_id;
 
-        // System message: "User joined"
-        const userRes = await pool.query(`SELECT full_name FROM users WHERE user_id = $1`, [userId]);
-        const userName = userRes.rows[0]?.full_name || "A new member";
+            // 1. Lock conversation row to prevent race conditions during admin assignment
+            await client.query(
+                `SELECT 1 FROM conversations WHERE conversation_id = $1 AND is_active = TRUE FOR UPDATE`,
+                [groupId]
+            );
 
-        const systemMsg = await GroupChatModel.createMessage({
-            groupId: invitation.conversation_id,
-            senderId: invitation.inviter_id, // The inviter is the "adder"
-            content: `${userName} was added to the group`, // Fallback text
-            type: 'system',
-            actionType: 'add',
-            targetId: userId
-        });
+            // 2. Check if the group currently has ANY active admin
+            const adminCountRes = await client.query(
+                `SELECT COUNT(*)::int as count
+                 FROM conversation_participants cp
+                 JOIN users u ON cp.user_id = u.user_id
+                 WHERE cp.conversation_id = $1 
+                 AND cp.role = 'admin' 
+                 AND cp.left_at IS NULL
+                 AND (u.is_deactivated IS FALSE OR u.is_deactivated IS NULL)
+                 AND u.deletion_execute_at IS NULL`,
+                [groupId]
+            );
+            const activeAdminCount = adminCountRes.rows[0]?.count || 0;
+            const assignedRole = activeAdminCount === 0 ? 'admin' : 'member';
 
+            // 3. Update invitation status
+            await client.query(
+                `UPDATE group_invitations SET status = 'accepted', updated_at = NOW() WHERE invitation_id = $1`,
+                [invitationId]
+            );
 
+            // 4. Add member with the determined role
+            const activeRes = await client.query(
+                `SELECT * FROM conversation_participants 
+                 WHERE conversation_id = $1 AND user_id = $2 AND left_at IS NULL`,
+                [groupId, userId]
+            );
 
+            if (activeRes.rowCount === 0) {
+                await client.query(
+                    `INSERT INTO conversation_participants (conversation_id, user_id, role, joined_at, left_at) 
+                     VALUES ($1, $2, $3, now(), NULL)`,
+                    [groupId, userId, assignedRole]
+                );
+            } else if (assignedRole === 'admin' && activeRes.rows[0].role !== 'admin') {
+                await client.query(
+                    `UPDATE conversation_participants SET role = 'admin' WHERE conversation_id = $1 AND user_id = $2`,
+                    [groupId, userId]
+                );
+            }
 
-        // Broadcast system message
-        const members = await GroupChatModel.getGroupMembers(invitation.conversation_id);
-        members.forEach(member => {
-            socketService.notifyUser(member.user_id, 'new_message', {
-                ...systemMsg,
-                sender_name: 'System',
-                is_system: true,
-                conversation_id: invitation.conversation_id, // Ensure conversation_id is present
-                isGroup: true
+            // If promoted to admin, update conversations.admin_id
+            if (assignedRole === 'admin') {
+                await client.query(
+                    `UPDATE conversations SET admin_id = $1 WHERE conversation_id = $2`,
+                    [userId, groupId]
+                );
+            }
+
+            // 5. System messages
+            const userRes = await client.query(`SELECT full_name FROM users WHERE user_id = $1`, [userId]);
+            const userName = userRes.rows[0]?.full_name || "A new member";
+
+            const addMsgContent = `${userName} was added to the group`;
+            const sysMsgRes = await client.query(
+                `INSERT INTO messages (conversation_id, sender_id, text_content, message_type, action_type, target_id)
+                 VALUES ($1, $2, $3, 'system', 'add', $4) RETURNING *`,
+                [groupId, invitation.inviter_id, addMsgContent, userId]
+            );
+            const systemMsg = sysMsgRes.rows[0];
+
+            let promoMsg = null;
+            if (assignedRole === 'admin') {
+                const promoMsgContent = `${userName} was promoted to admin`;
+                const promoMsgRes = await client.query(
+                    `INSERT INTO messages (conversation_id, sender_id, text_content, message_type, action_type, target_id)
+                     VALUES ($1, NULL, $2, 'system', 'promote', $3) RETURNING *`,
+                    [groupId, promoMsgContent, userId]
+                );
+                promoMsg = promoMsgRes.rows[0];
+            }
+
+            await client.query(
+                `UPDATE conversations SET updated_at = now(), last_message = $2, last_message_at = now() WHERE conversation_id = $1`,
+                [groupId, assignedRole === 'admin' ? `${userName} was promoted to admin` : addMsgContent]
+            );
+
+            await client.query('COMMIT');
+
+            // 6. Broadcast system message & role update to all members
+            const members = await GroupChatModel.getGroupMembers(groupId);
+            members.forEach(member => {
+                socketService.notifyUser(member.user_id, 'new_message', {
+                    ...systemMsg,
+                    sender_name: 'System',
+                    is_system: true,
+                    conversation_id: groupId,
+                    isGroup: true
+                });
+
+                if (promoMsg) {
+                    socketService.notifyUser(member.user_id, 'new_message', {
+                        ...promoMsg,
+                        sender_name: 'System',
+                        is_system: true,
+                        conversation_id: groupId,
+                        isGroup: true
+                    });
+                }
+
+                if (assignedRole === 'admin') {
+                    socketService.notifyUser(member.user_id, 'group_role_update', {
+                        groupId,
+                        userId,
+                        role: 'admin',
+                        updatedBy: 'System'
+                    });
+                }
             });
-        });
 
-        // Notify Admin of invitation update (to remove from pending)
-        const group = await GroupChatModel.getGroupDetails(invitation.conversation_id);
-        if (group && group.admin_id) {
-            socketService.notifyUser(group.admin_id, 'invitation_update', {
-                groupId: invitation.conversation_id,
-                invitationId,
-                status: 'accepted'
+            // 7. Notify Admin of invitation update (to remove from pending)
+            const group = await GroupChatModel.getGroupDetails(groupId);
+            if (group && group.admin_id && String(group.admin_id) !== String(userId)) {
+                socketService.notifyUser(group.admin_id, 'invitation_update', {
+                    groupId,
+                    invitationId,
+                    status: 'accepted'
+                });
+            }
+
+            // Also notify the accepting user so their active chat thread refreshes
+            socketService.notifyUser(userId, 'conversation_updated', {
+                conversationId: groupId,
+                groupId,
+                role: assignedRole,
+                isAdmin: assignedRole === 'admin'
             });
+
+            return { success: true, groupId, role: assignedRole };
+        } catch (err) {
+            await client.query('ROLLBACK');
+            throw err;
+        } finally {
+            client.release();
         }
-
-        return { success: true, groupId: invitation.conversation_id };
     }
 
     static async rejectInvitation(userId, invitationId) {
-        const invitation = await GroupChatModel.getInvitationById(invitationId);
-        if (!invitation) throw new Error("Invitation not found");
-        if (invitation.invitee_id !== userId) throw new Error("Unauthorized");
+        const client = await pool.connect();
+        try {
+            await client.query('BEGIN');
+            const invitation = await GroupChatModel.getInvitationById(invitationId);
+            if (!invitation) throw new Error("Invitation not found");
+            if (invitation.invitee_id !== userId) throw new Error("Unauthorized");
 
-        await GroupChatModel.updateInvitationStatus(invitationId, 'rejected');
+            await GroupChatModel.updateInvitationStatus(invitationId, 'rejected');
 
-        // Notify Admin
-        const group = await GroupChatModel.getGroupDetails(invitation.conversation_id);
-        if (group && group.admin_id) {
-            socketService.notifyUser(group.admin_id, 'invitation_update', {
-                groupId: invitation.conversation_id,
-                invitationId,
-                status: 'rejected'
-            });
+            const groupId = invitation.conversation_id;
+
+            // Check if group has 0 active members and 0 remaining pending invites
+            const activeRemainingRes = await client.query(
+                `SELECT COUNT(*)::int as count 
+                 FROM conversation_participants cp
+                 JOIN users u ON cp.user_id = u.user_id
+                 WHERE cp.conversation_id = $1 
+                 AND cp.left_at IS NULL
+                 AND (u.is_deactivated IS FALSE OR u.is_deactivated IS NULL)
+                 AND u.deletion_execute_at IS NULL`,
+                [groupId]
+            );
+            const activeRemainingCount = activeRemainingRes.rows[0]?.count || 0;
+
+            const pendingInvitesRes = await client.query(
+                `SELECT COUNT(*)::int as count 
+                 FROM group_invitations 
+                 WHERE conversation_id = $1 AND status = 'pending'`,
+                [groupId]
+            );
+            const pendingInvitesCount = pendingInvitesRes.rows[0]?.count || 0;
+
+            if (activeRemainingCount === 0 && pendingInvitesCount === 0) {
+                console.log(`[GroupChatService] Group ${groupId} has no active members or pending invites. Deactivating group.`);
+                await client.query(
+                    `UPDATE conversations SET is_active = FALSE, admin_id = NULL WHERE conversation_id = $1`,
+                    [groupId]
+                );
+            }
+
+            await client.query('COMMIT');
+
+            // Notify Admin
+            const group = await GroupChatModel.getGroupDetails(groupId);
+            if (group && group.admin_id) {
+                socketService.notifyUser(group.admin_id, 'invitation_update', {
+                    groupId,
+                    invitationId,
+                    status: 'rejected'
+                });
+            }
+
+            return { success: true };
+        } catch (err) {
+            await client.query('ROLLBACK');
+            throw err;
+        } finally {
+            client.release();
         }
-
-        return { success: true };
     }
 
     static async leaveGroup(userId, groupId) {
@@ -369,11 +529,14 @@ class GroupChatService {
                 // Count OTHER ACTIVE admins
                 const adminCountRes = await client.query(
                     `SELECT COUNT(*)::int as count
-                     FROM conversation_participants
-                     WHERE conversation_id = $1 
-                     AND role = 'admin' 
-                     AND user_id != $2
-                     AND left_at IS NULL`, // CRITICAL: Only count active admins
+                     FROM conversation_participants cp
+                     JOIN users u ON cp.user_id = u.user_id
+                     WHERE cp.conversation_id = $1 
+                     AND cp.role = 'admin' 
+                     AND cp.user_id != $2
+                     AND cp.left_at IS NULL
+                     AND (u.is_deactivated IS FALSE OR u.is_deactivated IS NULL)
+                     AND u.deletion_execute_at IS NULL`, // CRITICAL: Only count active admins
                     [groupId, userId]
                 );
 
@@ -390,6 +553,8 @@ class GroupChatService {
                          WHERE cp.conversation_id = $1 
                          AND cp.user_id != $2
                          AND cp.left_at IS NULL
+                         AND (u.is_deactivated IS FALSE OR u.is_deactivated IS NULL)
+                         AND u.deletion_execute_at IS NULL
                          ORDER BY cp.joined_at ASC
                          LIMIT 1`,
                         [groupId, userId]
@@ -438,12 +603,15 @@ class GroupChatService {
                     // Reassign ownership to another existing admin
                     console.log(`[GroupChatService] User was owner but other admins exist. Reassigning ownership.`);
                     const otherAdminRes = await client.query(
-                        `SELECT user_id FROM conversation_participants 
-                         WHERE conversation_id = $1 
-                         AND role = 'admin' 
-                         AND user_id != $2
-                         AND left_at IS NULL
-                         ORDER BY joined_at ASC
+                        `SELECT cp.user_id FROM conversation_participants cp
+                         JOIN users u ON cp.user_id = u.user_id
+                         WHERE cp.conversation_id = $1 
+                         AND cp.role = 'admin' 
+                         AND cp.user_id != $2
+                         AND cp.left_at IS NULL
+                         AND (u.is_deactivated IS FALSE OR u.is_deactivated IS NULL)
+                         AND u.deletion_execute_at IS NULL
+                         ORDER BY cp.joined_at ASC
                          LIMIT 1`,
                         [groupId, userId]
                     );
@@ -468,6 +636,35 @@ class GroupChatService {
                 [groupId, userId]
             );
             console.log(`[GroupChatService] User ${userId} marked as left (soft delete)`);
+
+            // Check if ANY active members or pending invitations remain
+            const activeRemainingRes = await client.query(
+                `SELECT COUNT(*)::int as count 
+                 FROM conversation_participants cp
+                 JOIN users u ON cp.user_id = u.user_id
+                 WHERE cp.conversation_id = $1 
+                 AND cp.left_at IS NULL
+                 AND (u.is_deactivated IS FALSE OR u.is_deactivated IS NULL)
+                 AND u.deletion_execute_at IS NULL`,
+                [groupId]
+            );
+            const activeRemainingCount = activeRemainingRes.rows[0]?.count || 0;
+
+            const pendingInvitesRes = await client.query(
+                `SELECT COUNT(*)::int as count 
+                 FROM group_invitations 
+                 WHERE conversation_id = $1 AND status = 'pending'`,
+                [groupId]
+            );
+            const pendingInvitesCount = pendingInvitesRes.rows[0]?.count || 0;
+
+            if (activeRemainingCount === 0 && pendingInvitesCount === 0) {
+                console.log(`[GroupChatService] Group ${groupId} has no active members or pending invites. Deactivating group.`);
+                await client.query(
+                    `UPDATE conversations SET is_active = FALSE, admin_id = NULL WHERE conversation_id = $1`,
+                    [groupId]
+                );
+            }
 
             await client.query('COMMIT');
             inTransaction = false;
@@ -602,8 +799,8 @@ class GroupChatService {
         // Try to identify the requesting user's status for UI hints (optional)
         const participant = await GroupChatModel.getParticipant(groupId, userId);
         
-        // Always fetch active members for the mention system to work correctly
-        const members = await GroupChatModel.getGroupMembers(groupId) || [];
+        // Always fetch active members with viewer-specific block/deactivation masking
+        const members = await GroupChatModel.getGroupMembers(groupId, null, userId) || [];
         
         if (participant && participant.left_at !== null) {
             // Check if the user was removed by admin vs left manually
@@ -635,7 +832,7 @@ class GroupChatService {
             left_at: null
         };
     }
-    static async sendMessage(senderId, groupId, content, type, media = [], previewText = null, replyMessageId = null) {
+    static async sendMessage(senderId, groupId, content, type, media = [], previewText = null, replyMessageId = null, shared_post_id = null, shared_profile_id = null, shared_profile_type = null, entity_type = null, entity_id = null) {
         // 1. Verify user is member of group
         const members = await GroupChatModel.getGroupMembers(groupId);
         // console.log("Group Members:", members);
@@ -652,8 +849,27 @@ class GroupChatService {
             mentionedUsernames = mentionMatches ? mentionMatches.map(m => m.substring(1)) : [];
         }
 
+        // Resolve shared profile type if not provided
+        let finalSharedProfileType = shared_profile_type;
+        if (shared_profile_id && !finalSharedProfileType) {
+            const orgCheck = await pool.query("SELECT 1 FROM organizations WHERE org_id = $1", [shared_profile_id]);
+            finalSharedProfileType = orgCheck.rowCount > 0 ? 'company' : 'user';
+        }
+
         // 2. Create message
-        const message = await GroupChatModel.createMessage({ groupId, senderId, content, type, previewText, replyMessageId });
+        const message = await GroupChatModel.createMessage({
+            groupId,
+            senderId,
+            content,
+            type,
+            previewText,
+            replyMessageId,
+            shared_post_id,
+            shared_profile_id,
+            shared_profile_type: finalSharedProfileType,
+            entity_type,
+            entity_id
+        });
 
         // 3. Insert Media
         let mediaRecords = [];
@@ -668,13 +884,53 @@ class GroupChatService {
                     rm.message_id, 
                     rm.text_content, 
                     rm.message_type,
-                    COALESCE(rc.name, ru.full_name, 'Deleted User') as sender_name
+                    COALESCE(rc.name, ru.full_name, 'Deleted User') as sender_name,
+                    (SELECT json_agg(json_build_object('url', rmm.url, 'media_type', rmm.media_type, 'filename', rmm.filename)) FROM message_media rmm WHERE rmm.message_id = rm.message_id) as media
                 FROM messages rm
                 LEFT JOIN users ru ON rm.sender_id = ru.user_id
                 LEFT JOIN organizations rc ON rm.author_org_id = rc.org_id
                 WHERE rm.message_id = $1
             `, [replyMessageId]);
             if (rmRes.rowCount > 0) replyMessageData = rmRes.rows[0];
+        }
+
+        // Fetch shared post details if applicable
+        let sharedPostData = null;
+        if (shared_post_id) {
+            const spRes = await pool.query(`
+                SELECT 
+                    p.post_id, p.content, p.created_at, p.post_type, p.title,
+                    COALESCE(org.name, u.display_name, 'Unknown Author') as author,
+                    COALESCE(org.logo_url, u.display_avatar, NULL) as author_avatar,
+                    COALESCE(org.headline, u.display_headline, NULL) as author_headline,
+                    (p.author_org_id IS NOT NULL) as is_organization_post,
+                    (SELECT json_agg(json_build_object('url', url, 'media_type', media_type)) FROM post_media WHERE post_id = p.post_id) as media
+                FROM posts p
+                LEFT JOIN user_display_profiles u ON p.author_id = u.user_id
+                LEFT JOIN organization_display_profiles org ON p.author_org_id = org.org_id
+                WHERE p.post_id = $1
+            `, [shared_post_id]);
+            if (spRes.rowCount > 0) sharedPostData = spRes.rows[0];
+        }
+
+        // Fetch shared profile details if applicable
+        let sharedProfileData = null;
+        if (shared_profile_id) {
+            if (finalSharedProfileType === 'user') {
+                const uRes = await pool.query(`
+                    SELECT display_name AS name, display_avatar AS avatar, display_headline AS headline, location, display_username AS username 
+                    FROM user_display_profiles 
+                    WHERE user_id = $1
+                `, [shared_profile_id]);
+                if (uRes.rowCount > 0) sharedProfileData = uRes.rows[0];
+            } else if (finalSharedProfileType === 'company') {
+                const cRes = await pool.query(`
+                    SELECT name, logo_url as avatar, industry as headline, industry, slug 
+                    FROM organizations 
+                    WHERE org_id = $1 AND is_deleted = FALSE
+                `, [shared_profile_id]);
+                if (cRes.rowCount > 0) sharedProfileData = cRes.rows[0];
+            }
         }
 
         // 4. Emit socket event
@@ -693,11 +949,58 @@ class GroupChatService {
             is_own: false, // Will be determined by client
             active_member_count,
             delivered_count: active_member_count,
-            seen_count: 0
+            seen_count: 0,
+            shared_post: sharedPostData,
+            shared_profile: sharedProfileData
         };
 
-        // Notify all members via room broadcast for the message itself
-        socketService.notifyConversation(groupId, 'new_message', enrichedMessage);
+        // Query bidirectional block relationships for all group members relative to senderId
+        const memberUserIds = members.map(m => m.user_id).filter(Boolean);
+        const blocksRes = await pool.query(
+            `SELECT blocker_id, blocked_id FROM blocks 
+             WHERE (blocker_id = $1 AND blocked_id = ANY($2::uuid[]))
+                OR (blocked_id = $1 AND blocker_id = ANY($2::uuid[]))`,
+            [senderId, memberUserIds]
+        );
+        const blockedUserIds = new Set();
+        const blockedByOtherMap = new Map();
+        const blockedByMeMap = new Map();
+
+        blocksRes.rows.forEach(b => {
+            if (String(b.blocker_id) === String(senderId)) {
+                blockedUserIds.add(String(b.blocked_id));
+                blockedByOtherMap.set(String(b.blocked_id), true);
+            }
+            if (String(b.blocked_id) === String(senderId)) {
+                blockedUserIds.add(String(b.blocker_id));
+                blockedByMeMap.set(String(b.blocker_id), true);
+            }
+        });
+
+        // Notify all members via per-user notification to respect individual block states
+        members.forEach(member => {
+            const memberIdStr = String(member.user_id);
+            const isBlockedMember = blockedUserIds.has(memberIdStr);
+            if (isBlockedMember) {
+                const blockedPayload = {
+                    ...enrichedMessage,
+                    text_content: "Message unavailable",
+                    text: "Message unavailable",
+                    sender_name: "Unknown user",
+                    sender_avatar: null,
+                    media: [],
+                    shared_post: null,
+                    shared_profile: null,
+                    is_unavailable: true,
+                    is_blocked: true,
+                    is_blocked_by_other: Boolean(blockedByOtherMap.get(memberIdStr)),
+                    is_blocked_by_me: Boolean(blockedByMeMap.get(memberIdStr))
+                };
+                socketService.notifyUser(member.user_id, 'new_message', blockedPayload);
+            } else {
+                socketService.notifyUser(member.user_id, 'new_message', enrichedMessage);
+            }
+        });
 
         const muteStates = await listConversationMuteStates(pool, groupId);
         const mutedMemberIds = new Set(
@@ -719,11 +1022,11 @@ class GroupChatService {
             }
 
             for (const mentionedMember of mentionedGroupMembers) {
-                if (mutedMemberIds.has(mentionedMember.user_id)) {
+                const mentionedIdStr = String(mentionedMember.user_id);
+                if (mutedMemberIds.has(mentionedMember.user_id) || blockedUserIds.has(mentionedIdStr)) {
                     continue;
                 }
 
-                // Here we avoid checking block status for group chats, but we can if we want to. For now skip.
                 const notifText = `${sender.full_name} mentioned you in a group chat`;
                 const meta = {
                     message_id: message.message_id,
@@ -739,16 +1042,22 @@ class GroupChatService {
             }
         }
 
+        const group = await GroupChatModel.getGroupDetails(groupId);
+
         // Notify list update (MessagingPage listens to this) via individual notifications
         members.forEach(member => {
-            // Suppress notification toast for the sender themselves
-            if (member.user_id !== senderId) {
+            const memberIdStr = String(member.user_id);
+            // Suppress notification toast for the sender themselves or blocked members
+            if (member.user_id !== senderId && !blockedUserIds.has(memberIdStr)) {
                 if (mutedMemberIds.has(member.user_id)) {
                     return;
                 }
 
                 // If the user was mentioned, override default message notification with a mention one
                 const isMentioned = mentionedGroupMembers.some(m => m.user_id === member.user_id);
+                const notifText = isMentioned
+                    ? `${sender.full_name} mentioned you in a group chat`
+                    : (previewText || content);
                 
                 socketService.notifyUser(member.user_id, 'notification', {
                     type: isMentioned ? 'mention' : 'message',
@@ -757,8 +1066,26 @@ class GroupChatService {
                     senderAvatar: sender.avatar_url,
                     conversationId: groupId,
                     isGroup: true,
-                    text: isMentioned ? `${sender.full_name} mentioned you in a group chat` : (previewText || content) // Use previewText if available
+                    text: notifText
                 });
+
+                let pushTitle = sender.full_name;
+                let pushBody = notifText;
+                
+                if (!isMentioned) {
+                    const groupName = group?.name || 'a group';
+                    pushTitle = `New message in ${groupName}`;
+                    const formattedPreview = notifText.length > 40 ? notifText.substring(0, 40) + '...' : notifText;
+                    pushBody = `${sender.full_name} in ${groupName}: "${formattedPreview}"`;
+                }
+
+                // Push notification for offline devices (respects mute, same as socket above)
+                sendPush(
+                    member.user_id,
+                    pushTitle,
+                    pushBody,
+                    { type: isMentioned ? 'mention' : 'message', conversationId: groupId, senderId }
+                ).catch(() => {});
             }
         });
 
@@ -972,39 +1299,34 @@ class GroupChatService {
     }
 
     static async markGroupMessagesAsRead(userId, groupId) {
-        // 1. Verify user is member
-        const members = await GroupChatModel.getGroupMembers(groupId);
-        if (!members.find(m => m.user_id == userId)) {
+        // 1. Verify user is participant
+        const participant = await GroupChatModel.getParticipant(groupId, userId);
+        if (!participant) {
             throw new Error("User is not a member of this group");
         }
+        if (participant.left_at !== null) {
+            return { success: true, readCount: 0 };
+        }
+
+        const members = await GroupChatModel.getGroupMembers(groupId);
 
         // 2. Mark messages as read
         const newlyReadMessages = await GroupChatModel.markMessagesAsRead(userId, groupId);
 
         // 3. Notify other members if any messages were newly read
         if (newlyReadMessages.length > 0) {
-            // We can emit a 'messages_read' event to the group (conversation room)
-            // Payload needs to say "User X read these messages"
-            // But usually we just say "User X read up to message Y" or "User X read messages [ids]"
-
-            // Let's emit "messages_read" with the user and the list of message IDs
             const messageIds = newlyReadMessages.map(m => m.message_id);
-
-            // Fetch user details for the event
             const member = members.find(m => m.user_id == userId);
 
             members.forEach(m => {
-                // Don't notify self (optional, but good practice to reduce noise, though frontend might use it to confirm)
-                // if (m.user_id !== userId) {
                 socketService.notifyUser(m.user_id, 'messages_read', {
                     conversation_id: groupId,
                     user_id: userId,
-                    user_name: member.full_name,
-                    user_avatar: member.avatar_url,
+                    user_name: member ? member.full_name : 'Member',
+                    user_avatar: member ? member.avatar_url : null,
                     message_ids: messageIds,
                     read_at: new Date().toISOString()
                 });
-                //}
             });
         }
 
@@ -1020,6 +1342,117 @@ class GroupChatService {
 
         // 2. Get read receipts
         return await GroupChatModel.getReadReceipts(messageId);
+    }
+
+    /**
+     * Handle automated admin role transfer when an admin deactivates or deletes their account.
+     * Transferred permanently to the earliest active member (joined_at ASC).
+     */
+    static async handleAdminDeactivationOrDeletion(userId, dbClient = null) {
+        const client = dbClient || pool;
+        try {
+            // 1. Find all groups where the user is an admin
+            const adminGroups = await client.query(
+                `SELECT conversation_id 
+                 FROM conversation_participants 
+                 WHERE user_id = $1 AND role = 'admin' AND left_at IS NULL`,
+                [userId]
+            );
+
+            for (const row of adminGroups.rows) {
+                const groupId = row.conversation_id;
+
+                // Check if other active admins exist in this group
+                const otherAdmins = await client.query(
+                    `SELECT cp.user_id 
+                     FROM conversation_participants cp
+                     JOIN users u ON cp.user_id = u.user_id
+                     WHERE cp.conversation_id = $1 
+                       AND cp.user_id != $2 
+                       AND cp.role = 'admin' 
+                       AND cp.left_at IS NULL
+                       AND (u.is_deactivated IS FALSE OR u.is_deactivated IS NULL)
+                       AND u.deletion_execute_at IS NULL`,
+                    [groupId, userId]
+                );
+
+                if (otherAdmins.rowCount === 0) {
+                    // Find the earliest joined active member
+                    const nextMemberRes = await client.query(
+                        `SELECT cp.user_id, u.full_name
+                         FROM conversation_participants cp
+                         JOIN users u ON cp.user_id = u.user_id
+                         WHERE cp.conversation_id = $1 
+                           AND cp.user_id != $2 
+                           AND cp.left_at IS NULL
+                           AND (u.is_deactivated IS FALSE OR u.is_deactivated IS NULL)
+                           AND u.deletion_execute_at IS NULL
+                         ORDER BY cp.joined_at ASC
+                         LIMIT 1`,
+                        [groupId, userId]
+                    );
+
+                    if (nextMemberRes.rowCount > 0) {
+                        const newAdmin = nextMemberRes.rows[0];
+                        // Promote new admin
+                        await client.query(
+                            `UPDATE conversation_participants 
+                             SET role = 'admin' 
+                             WHERE conversation_id = $1 AND user_id = $2`,
+                            [groupId, newAdmin.user_id]
+                        );
+
+                        // Demote the leaving admin to member
+                        await client.query(
+                            `UPDATE conversation_participants 
+                             SET role = 'member' 
+                             WHERE conversation_id = $1 AND user_id = $2`,
+                            [groupId, userId]
+                        );
+
+                        // Update conversations.admin_id to the new admin
+                        await client.query(
+                            `UPDATE conversations 
+                             SET admin_id = $2 
+                             WHERE conversation_id = $1`,
+                            [groupId, newAdmin.user_id]
+                        );
+
+                        // Insert system message into group chat
+                        const newAdminName = newAdmin.full_name || 'A member';
+                        const systemMsgText = `${newAdminName} is now a group admin`;
+                        await client.query(
+                            `INSERT INTO messages (conversation_id, sender_id, text_content, message_type, action_type, target_id)
+                             VALUES ($1, $2, $3, 'system', 'role_change', $4)`,
+                            [groupId, userId, systemMsgText, newAdmin.user_id]
+                        );
+
+                        // Socket notification
+                        try {
+                            const socketService = require("../core/infrastructure/socket.service");
+                            socketService.notifyConversation(groupId, 'role_updated', {
+                                groupId,
+                                targetUserId: newAdmin.user_id,
+                                newRole: 'admin',
+                                systemMessage: systemMsgText
+                            });
+                        } catch (err) {
+                            console.error("[handleAdminDeactivationOrDeletion] Socket notification error:", err);
+                        }
+                    }
+                } else {
+                    // Demote leaving user since other admins exist
+                    await client.query(
+                        `UPDATE conversation_participants 
+                         SET role = 'member' 
+                         WHERE conversation_id = $1 AND user_id = $2`,
+                        [groupId, userId]
+                    );
+                }
+            }
+        } catch (error) {
+            console.error("[handleAdminDeactivationOrDeletion] Error transferring admin role:", error);
+        }
     }
 }
 

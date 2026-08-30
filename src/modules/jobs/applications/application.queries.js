@@ -62,9 +62,9 @@ async function getApplicantList(jobId, filters = {}) {
     SELECT
       ja.application_id            AS "applicationId",
       ja.applicant_id              AS "applicantId",
-      ja.full_name                 AS "name",
-      ja.email,
-      u.avatar_url                 AS "avatarUrl",
+      CASE WHEN u.is_deactivated = TRUE OR u.user_id IS NULL THEN 'Unknown User' ELSE ja.full_name END AS "name",
+      CASE WHEN u.is_deactivated = TRUE OR u.user_id IS NULL THEN NULL ELSE ja.email END AS "email",
+      CASE WHEN u.is_deactivated = TRUE OR u.user_id IS NULL THEN NULL ELSE u.avatar_url END AS "avatarUrl",
       u.headline,
       u.location,
       ja.current_status            AS "status",
@@ -84,7 +84,7 @@ async function getApplicantList(jobId, filters = {}) {
       LIMIT 1
     ) aaa ON TRUE
     ${whereClause}
-    ORDER BY aaa.match_score DESC NULLS LAST, ja.applied_at DESC
+    ORDER BY (CASE WHEN u.is_deactivated = TRUE OR u.user_id IS NULL THEN 1 ELSE 0 END) ASC, aaa.match_score DESC NULLS LAST, ja.applied_at DESC
   `, params);
 
   return result.rows;
@@ -98,10 +98,11 @@ async function getApplicationDetail(applicationId, recruiterId) {
     SELECT
       ja.application_id            AS "applicationId",
       ja.applicant_id              AS "applicantId",
-      ja.full_name                 AS "name",
-      ja.email,
-      ja.phone,
-      u.avatar_url                 AS "avatarUrl",
+      CASE WHEN u.is_deactivated = TRUE OR u.user_id IS NULL THEN 'Unknown User' ELSE ja.full_name END AS "name",
+      CASE WHEN u.is_deactivated = TRUE OR u.user_id IS NULL THEN NULL ELSE ja.email END AS "email",
+      CASE WHEN u.is_deactivated = TRUE OR u.user_id IS NULL THEN NULL ELSE ja.phone END AS "phone",
+      CASE WHEN u.is_deactivated = TRUE OR u.user_id IS NULL THEN NULL ELSE u.avatar_url END AS "avatarUrl",
+      CASE WHEN u.is_deactivated = TRUE OR u.user_id IS NULL THEN TRUE ELSE FALSE END AS "isDeactivated",
       u.headline,
       u.location,
       u.about_text                 AS "about",

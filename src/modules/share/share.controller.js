@@ -26,7 +26,7 @@ const { validateShareRules } = require("./shareRules");
  * }
  */
 exports.share = async (req, res) => {
-    const senderId = req.user.sub || req.user.user_id;
+    const senderId = req.user.sub || req.user.user_id || req.user.userId;
     const { entityType, entityId, shareMethod, targetId, targetType, message, senderCompanyId } = req.body;
 
     // Validation
@@ -79,7 +79,7 @@ exports.getPreview = async (req, res) => {
         return res.status(400).json({ message: "entityType and entityId are required" });
     }
 
-    const validTypes = ["post", "profile", "company", "job", "event"];
+    const validTypes = ["post", "profile", "company", "job", "event", "channel", "community"];
     if (!validTypes.includes(entityType)) {
         return res.status(400).json({ message: `Invalid entityType. Supported: ${validTypes.join(", ")}` });
     }
@@ -111,8 +111,16 @@ exports.getPreview = async (req, res) => {
                     return res.status(404).json({ message: "Profile unavailable due to blocking" });
                 }
             } else if (entityType === "profile") {
-                if (entityId !== viewerId) {
-                    const isBlocked = await checkBlockStatus(viewerId, entityId);
+                const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(entityId);
+                let targetUserId = isUuid ? entityId : null;
+                if (!isUuid) {
+                    const uRes = await pool.query("SELECT user_id FROM users WHERE account_name = $1", [entityId]);
+                    if (uRes.rowCount > 0) {
+                        targetUserId = uRes.rows[0].user_id;
+                    }
+                }
+                if (targetUserId && targetUserId !== viewerId) {
+                    const isBlocked = await checkBlockStatus(viewerId, targetUserId);
                     if (isBlocked) {
                         return res.status(404).json({ message: "Profile unavailable due to blocking" });
                     }
@@ -466,11 +474,11 @@ exports.shareProfile = async (req, res) => {
                 conversationId = convRes.rows[0].conversation_id;
 
                 await client.query(
-                    `INSERT INTO conversation_participants(conversation_id, org_id) VALUES($1, $2)`,
+                    `INSERT INTO conversation_participants(conversation_id, org_id, last_read_at) VALUES($1, $2, NOW())`,
                     [conversationId, senderOrgId]
                 );
                 await client.query(
-                    `INSERT INTO conversation_participants(conversation_id, org_id) VALUES($1, $2)`,
+                    `INSERT INTO conversation_participants(conversation_id, org_id, last_read_at) VALUES($1, $2, NULL)`,
                     [conversationId, receiverId]
                 );
             }
@@ -494,11 +502,11 @@ exports.shareProfile = async (req, res) => {
                 conversationId = convRes.rows[0].conversation_id;
 
                 await client.query(
-                    `INSERT INTO conversation_participants(conversation_id, org_id) VALUES($1, $2)`,
+                    `INSERT INTO conversation_participants(conversation_id, org_id, last_read_at) VALUES($1, $2, NOW())`,
                     [conversationId, senderOrgId]
                 );
                 await client.query(
-                    `INSERT INTO conversation_participants(conversation_id, user_id) VALUES($1, $2)`,
+                    `INSERT INTO conversation_participants(conversation_id, user_id, last_read_at) VALUES($1, $2, NULL)`,
                     [conversationId, receiverId]
                 );
             }
@@ -522,11 +530,11 @@ exports.shareProfile = async (req, res) => {
                 conversationId = convRes.rows[0].conversation_id;
 
                 await client.query(
-                    `INSERT INTO conversation_participants(conversation_id, user_id) VALUES($1, $2)`,
+                    `INSERT INTO conversation_participants(conversation_id, user_id, last_read_at) VALUES($1, $2, NOW())`,
                     [conversationId, senderId]
                 );
                 await client.query(
-                    `INSERT INTO conversation_participants(conversation_id, org_id) VALUES($1, $2)`,
+                    `INSERT INTO conversation_participants(conversation_id, org_id, last_read_at) VALUES($1, $2, NULL)`,
                     [conversationId, receiverId]
                 );
             }
@@ -552,7 +560,7 @@ exports.shareProfile = async (req, res) => {
                 conversationId = convRes.rows[0].conversation_id;
 
                 await client.query(
-                    `INSERT INTO conversation_participants(conversation_id, user_id) VALUES($1, $2), ($1, $3)`,
+                    `INSERT INTO conversation_participants(conversation_id, user_id, last_read_at) VALUES($1, $2, NOW()), ($1, $3, NULL)`,
                     [conversationId, senderId, receiverId]
                 );
             }
@@ -674,6 +682,7 @@ exports.shareProfile = async (req, res) => {
 exports.sharePostToConversations = async (req, res) => {
     const pool = require("../../core/db/pool");
     const socketService = require("../../core/infrastructure/socket.service");
+    const shareService = require("./share.service");
 
     const senderId = req.user.sub || req.user.user_id;
     const { postId, targetUserIds, message } = req.body;
@@ -741,6 +750,10 @@ exports.sharePostToConversations = async (req, res) => {
             );
 
             await client.query(`UPDATE conversations SET updated_at = now() WHERE conversation_id = $1`, [conversationId]);
+            
+            // Track the share in Redis and DB
+            shareService.trackShare(senderId, targetUserId, 'post', postId, 'message');
+            
             results.push({ targetUserId, conversationId, messageData: { ...msgRes.rows[0], shared_post: sharedPostData } });
         }
 
@@ -903,11 +916,13 @@ exports.getShareUsers = async (req, res) => {
         const values = [userId];
         let userNameFilter = "";
         let orgNameFilter = "";
+        let groupNameFilter = "";
         if (searchTerm) {
             values.push(`%${searchTerm}%`);
             const likeTermIdx = values.length;
             userNameFilter = `AND (u.full_name ILIKE $${likeTermIdx} OR u.account_name ILIKE $${likeTermIdx})`;
             orgNameFilter = `AND (org.name ILIKE $${likeTermIdx} OR org.slug ILIKE $${likeTermIdx})`;
+            groupNameFilter = `AND conv.conversation_name ILIKE $${likeTermIdx}`;
         }
 
         let cursorClause = "";
@@ -983,12 +998,15 @@ exports.getShareUsers = async (req, res) => {
                           AND cp2.user_id = u.user_id
                           AND conv.is_group = FALSE
                           AND conv.is_active = TRUE
+                          AND conv.is_requesting = FALSE
                           AND cp1.left_at IS NULL
                           AND cp2.left_at IS NULL
                         ORDER BY conv.last_message_at DESC NULLS LAST
                         LIMIT 1
                     ) chat ON TRUE
                     WHERE u.user_id != $1
+                      AND COALESCE(u.is_deactivated, false) = FALSE
+                      AND u.deletion_execute_at IS NULL
                       AND u.full_name IS NOT NULL AND TRIM(u.full_name) <> ''
                       AND u.account_name IS NOT NULL AND TRIM(u.account_name) <> ''
                       ${userNameFilter}
@@ -996,6 +1014,16 @@ exports.getShareUsers = async (req, res) => {
                           SELECT 1 FROM blocks b
                           WHERE (b.blocker_id = $1 AND b.blocked_id = u.user_id)
                              OR (b.blocker_id = u.user_id AND b.blocked_id = $1)
+                      )
+                      AND NOT EXISTS (
+                          SELECT 1 FROM conversations req_conv
+                          JOIN conversation_participants cp_r1 ON req_conv.conversation_id = cp_r1.conversation_id
+                          JOIN conversation_participants cp_r2 ON req_conv.conversation_id = cp_r2.conversation_id
+                          WHERE cp_r1.user_id = $1
+                            AND cp_r2.user_id = u.user_id
+                            AND req_conv.is_group = FALSE
+                            AND req_conv.is_active = TRUE
+                            AND req_conv.is_requesting = TRUE
                       )
 
                     UNION ALL
@@ -1028,12 +1056,14 @@ exports.getShareUsers = async (req, res) => {
                           AND cp2.org_id = org.org_id
                           AND conv.is_group = FALSE
                           AND conv.is_active = TRUE
+                          AND conv.is_requesting = FALSE
                           AND cp1.left_at IS NULL
                           AND cp2.left_at IS NULL
                         ORDER BY conv.last_message_at DESC NULLS LAST
                         LIMIT 1
                     ) org_chat ON TRUE
                     WHERE org.is_deleted = FALSE
+                      AND COALESCE(org.is_deactivated, false) = FALSE
                       AND org.name IS NOT NULL AND TRIM(org.name) <> ''
                       ${orgNameFilter}
                       AND NOT EXISTS (
@@ -1041,6 +1071,29 @@ exports.getShareUsers = async (req, res) => {
                           WHERE (b.blocker_id = org.org_id AND b.blocked_id = $1)
                              OR (b.blocker_id = $1 AND b.blocked_id = org.org_id)
                       )
+
+                    UNION ALL
+
+                    -- Group Chats
+                    SELECT
+                        conv.conversation_id AS user_id,
+                        conv.conversation_name AS full_name,
+                        conv.conversation_name AS account_name,
+                        COALESCE(conv.group_headline, '') AS headline,
+                        conv.group_avatar AS avatar_url,
+                        conv.conversation_id AS conversation_id,
+                        1 AS priority,
+                        COALESCE(conv.last_message_at, conv.created_at) AS sort_ts,
+                        'GROUP' AS type,
+                        NULL AS slug
+                    FROM conversations conv
+                    JOIN conversation_participants cp ON conv.conversation_id = cp.conversation_id
+                    WHERE conv.is_group = TRUE
+                      AND conv.is_active = TRUE
+                      AND conv.is_requesting = FALSE
+                      AND cp.user_id = $1
+                      AND cp.left_at IS NULL
+                      ${groupNameFilter}
                 ) AS unsorted_results
                 ORDER BY user_id, priority ASC
             ) AS deduped_results

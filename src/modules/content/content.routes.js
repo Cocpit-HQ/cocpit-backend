@@ -80,4 +80,24 @@ router.get("/stories/:id/comments", requireAuth, contentController.getStoryComme
 router.delete("/stories/comments/:comment_id", requireAuth, contentController.deleteStoryComment);
 
 
+router.get("/debug-db", async (req, res) => {
+    const pool = require("../../core/db/pool");
+    try {
+        const result = await pool.query("SELECT current_database(), inet_server_addr(), inet_client_addr()");
+        res.json({
+            database: result.rows[0].current_database,
+            server_addr: result.rows[0].inet_server_addr,
+            client_addr: result.rows[0].inet_client_addr,
+            env_db_host: process.env.DB_HOST,
+            env_db_name: process.env.DB_NAME
+        });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+// AI Enhancement
+router.get("/ai/usage", requireAuth, contentController.getAIUsage);
+router.post("/ai/generate", requireAuth, contentController.generateAIContent);
+
+>>>>>>> 2661dd912c7506b8ce587aea0103db9815a54baa
 module.exports = router;

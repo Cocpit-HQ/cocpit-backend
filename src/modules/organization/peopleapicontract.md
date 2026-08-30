@@ -12,6 +12,7 @@ Both endpoints are structural twins: same enrichment (`is_following`, `is_follow
 
 **Auth**: `optionalAuth` — works signed-out, but connection fields are only meaningful when a viewer is present.
 
+
 **Query parameters**
 | param | type | notes |
 |---|---|---|

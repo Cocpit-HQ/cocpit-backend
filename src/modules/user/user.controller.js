@@ -1,8 +1,17 @@
 const pool = require("../../core/db/pool");
+const { hydrateShareCounts } = require("../../utils/shareHydration");
 const AppError = require("../../core/errors/AppError");
 const current_user = require("../profile/profile.controller");
 const profileRepo = require("../profile/profile.repository");
 const dashboardService = require("../dashboard/dashboard.service");
+const crypto = require("crypto");
+const redisClient = require("../../core/db/redis");
+const socketService = require("../../core/infrastructure/socket.service");
+const { sendAccountDeletionEmail } = require("../../core/services/email.service");
+const { verifyGoogleToken } = require("../auth/googleAuth.service");
+const { comparePassword } = require("../../core/utils/password");
+const { checkBlockStatus, checkActorBlockStatus } = require("../../core/utils/blockCheck");
+const { logAudit } = require("../../core/infrastructure/audit.service");
 
 /**
  * GET /api/users/search
@@ -66,6 +75,7 @@ exports.searchUsers = async (req, res) => {
     }
 
     let tagPrivacyFilter = "";
+    let orgTagPrivacyFilter = "";
     if (req.query.forTagging === "true") {
       tagPrivacyFilter = `
         AND u.tag_permission != 'noone'
@@ -90,11 +100,36 @@ exports.searchUsers = async (req, res) => {
           )
         )
       `;
+
+      const orgFollowCheck = isOrgActor
+        ? `EXISTS (SELECT 1 FROM organization_org_follows WHERE follower_org_id = $1 AND following_org_id = c.org_id)`
+        : `EXISTS (SELECT 1 FROM organization_followers WHERE user_id = $1 AND org_id = c.org_id)`;
+
+      orgTagPrivacyFilter = `
+        AND COALESCE(ops.tag_permission, 'everyone') != 'noone'
+        AND COALESCE(ops.tag_permission, 'everyone') != 'no_one'
+        AND (
+          ops.tag_permission = 'everyone'
+          OR ops.tag_permission IS NULL
+          OR (
+            ops.tag_permission = 'followers_only'
+            AND ${orgFollowCheck}
+          )
+        )
+      `;
     }
 
     // Similarity param (raw term)
     queryParams.push(searchTerm);
     const simParamIdx = queryParams.length;
+
+    const orgBlockFilter = `
+      AND NOT EXISTS (
+        SELECT 1 FROM blocks b 
+        WHERE (b.blocker_id = $1 AND b.blocked_id = c.org_id)
+           OR (b.blocker_id = c.org_id AND b.blocked_id = $1)
+      )
+    `;
 
     const queryText = `
       SELECT * FROM (
@@ -108,10 +143,12 @@ exports.searchUsers = async (req, res) => {
             p.account_type,
             'USER'::text as type,
             NULL::text as slug,
-            NULL::text as industry
+            NULL::text as industry,
+            COALESCE(u.tag_permission, 'everyone')::text AS tag_permission
           FROM active_users u
           LEFT JOIN profiles p ON u.user_id = p.user_id
-          WHERE (u.full_name ILIKE $2 OR u.account_name ILIKE $2)
+          WHERE u.is_deactivated = FALSE
+            AND (u.full_name ILIKE $2 OR u.account_name ILIKE $2)
             AND u.full_name IS NOT NULL AND TRIM(u.full_name) <> ''
             AND u.account_name IS NOT NULL AND TRIM(u.account_name) <> ''
           ${userAccountFilter}
@@ -127,13 +164,17 @@ exports.searchUsers = async (req, res) => {
             c.slug AS account_name,
             c.headline AS headline,
             c.logo_url AS avatar_url,
-            NULL::text AS account_type,
+            c.entity_type AS account_type,
             'COMPANY'::text as type,
             c.slug as slug,
-            c.industry as industry
+            c.industry as industry,
+            COALESCE(ops.tag_permission, 'everyone')::text AS tag_permission
           FROM organizations c
-          WHERE c.is_deleted = FALSE
+          LEFT JOIN organization_privacy_settings ops ON c.org_id = ops.org_id
+          WHERE c.is_deleted = FALSE AND c.is_deactivated = FALSE
           AND (c.name ILIKE $2 OR c.slug ILIKE $2)
+          ${orgBlockFilter}
+          ${orgTagPrivacyFilter}
         )
       ) AS combined_results
       ORDER BY 
@@ -149,7 +190,7 @@ exports.searchUsers = async (req, res) => {
       result.rows.forEach(profile => {
         // Map COMPANY to organization for schema compatibility
         const profileType = profile.type === 'COMPANY' ? 'organization' : 'user';
-        dashboardService.addSearchAppearance(currentUserId, profile.id, profileType)
+        dashboardService.addSearchAppearance(blockerId, profile.id, profileType)
           .catch(err => console.error("Error recording search appearance:", err));
       });
     }
@@ -181,7 +222,7 @@ exports.getUserProfile = async (req, res) => {
   let targetUserId = id;
 
   // Import block check util if not already imported (it's not)
-  const { checkBlockStatus } = require("../../core/utils/blockCheck");
+
 
   // ... existing code ...
 
@@ -189,7 +230,7 @@ exports.getUserProfile = async (req, res) => {
     // If not a UUID, try to resolve as account_name (case-insensitive)
     try {
       const resolveResult = await pool.query(
-        "SELECT user_id FROM active_users WHERE LOWER(account_name) = LOWER($1)",
+        "SELECT user_id FROM active_users WHERE LOWER(account_name) = LOWER($1) AND is_deactivated = FALSE",
         [id]
       );
       if (resolveResult.rowCount === 0) {
@@ -204,10 +245,68 @@ exports.getUserProfile = async (req, res) => {
 
   // --- Block Check Implementation ---
   if (targetUserId !== currentUserId) {
-    const { checkActorBlockStatus } = require("../../core/utils/blockCheck");
-    const isBlocked = await checkActorBlockStatus(req, targetUserId);
-    if (isBlocked) {
+    const activeActorId = req.actor?.type === "ORGANIZATION" && req.actor?.orgId
+      ? req.actor.orgId
+      : req.user?.sub;
+
+    // 1. Check if TARGET blocked the VIEWER (Blocked side - viewer strictly receives 404)
+    const blockedByTargetRes = await pool.query(
+      `SELECT 1 FROM blocks WHERE blocker_id = $1 AND blocked_id = $2`,
+      [targetUserId, activeActorId]
+    );
+    if (blockedByTargetRes.rowCount > 0) {
       return res.status(404).json({ message: "User not found" });
+    }
+
+    // 2. Check if VIEWER blocked the TARGET (Blocker side - viewer sees minimal blocked view)
+    const blockedByViewerRes = await pool.query(
+      `SELECT 1 FROM blocks WHERE blocker_id = $1 AND blocked_id = $2`,
+      [activeActorId, targetUserId]
+    );
+    if (blockedByViewerRes.rowCount > 0) {
+      const userRes = await pool.query(
+        `SELECT
+           u.user_id AS id,
+           u.account_name,
+           u.full_name AS name,
+           u.headline,
+           u.avatar_url AS avatar,
+           u.cover_image_url AS cover_image
+         FROM active_users u
+         WHERE u.user_id = $1 AND u.is_deactivated = FALSE`,
+        [targetUserId]
+      );
+      if (userRes.rowCount === 0) {
+        return res.status(404).json({ message: "User not found" });
+      }
+      const user = userRes.rows[0];
+      return res.status(200).json({
+        user: {
+          ...user,
+          about: "",
+          followers_count: 0,
+          following_count: 0,
+          connections_count: 0,
+          is_blocked_by_me: true,
+          is_following: false,
+          is_followed_by: false,
+          connection_request_status: null,
+          connection_request_id: null,
+          connection_request_sender: null,
+          open_to: null,
+          availability: null,
+          work_preference: null,
+          working_industry: null,
+          organization_roles: [],
+          company_roles: [],
+        },
+        experiences: [],
+        educations: [],
+        projects: [],
+        skills: [],
+        posts: [],
+        resume: null,
+      });
     }
   }
   // ----------------------------------
@@ -215,9 +314,15 @@ exports.getUserProfile = async (req, res) => {
 
   try {
     // --- Centralized View Counting Logic (Redis + Atomic DB) ---
+    const actorContext = req.actor || null;
     if (targetUserId !== currentUserId) {
+
+      const viewerCompanyOrgId = actorContext && actorContext.type === "ORGANIZATION" ? actorContext.orgId : null;
+      const sourcePostId = req.query.source_post_id || req.query.sourcePostId || null;
+      const source = req.query.source || (sourcePostId ? 'post' : null);
+
       // Fire and forget view recording to keep profile load fast
-      dashboardService.addProfileView(currentUserId, targetUserId, 'user')
+      dashboardService.addProfileView(currentUserId, targetUserId, 'user', { source, sourcePostId, viewerCompanyOrgId, actor: actorContext })
         .catch(err => console.error("Error recording user profile view:", err));
     }
     // -----------------------------------------------------------
@@ -241,14 +346,16 @@ exports.getUserProfile = async (req, res) => {
         u.profile_show_email,
         u.profile_show_phone,
         u.created_at,
+        u.is_identity_verified,
         p.account_type,
         p.open_to,
         p.availability,
-        p.work_preference
+        p.work_preference,
+        p.working_industry AS industry
        
       FROM active_users u
       LEFT JOIN profiles p ON u.user_id = p.user_id
-      WHERE u.user_id = $1
+      WHERE u.user_id = $1 AND u.is_deactivated = FALSE
     `;
     const userResult = await pool.query(userQuery, [targetUserId]);
 
@@ -261,29 +368,23 @@ exports.getUserProfile = async (req, res) => {
     delete user.profile_id; // Remove from response payload
 
     // Log audit when viewing another user's profile under Organization actor context
-    if (targetUserId !== currentUserId) {
-      const { resolveActorContextForRequest } = require("../../core/middlewares/actor-context.middleware");
-      const { logAudit } = require("../../core/infrastructure/audit.service");
-      
-      resolveActorContextForRequest(req).then(actor => {
-        if (actor && actor.type === "ORGANIZATION" && actor.orgId) {
-          const handleOrId = user.account_name || targetUserId;
-          logAudit(pool, {
-            entityId: actor.orgId,
-            actorId: currentUserId,
-            actorRole: actor.roleName || null,
-            action: 'VIEW_USER_PROFILE',
-            metadata: {
-              targetId: targetUserId,
-              targetName: user.name,
-              targetHandle: user.account_name,
-              targetType: 'user',
-              linkUrl: `/u/${handleOrId}`,
-              highlightedText: 'profile'
-            }
-          }).catch(err => console.error("Error logging user profile view audit:", err));
+    if (targetUserId !== currentUserId && actorContext && actorContext.type === "ORGANIZATION" && actorContext.orgId) {
+
+      const handleOrId = user.account_name || targetUserId;
+      logAudit(pool, {
+        entityId: actorContext.orgId,
+        actorId: currentUserId,
+        actorRole: actorContext.roleName || null,
+        action: 'VIEW_USER_PROFILE',
+        metadata: {
+          targetId: targetUserId,
+          targetName: user.name,
+          targetHandle: user.account_name,
+          targetType: 'user',
+          linkUrl: `/u/${handleOrId}`,
+          highlightedText: 'profile'
         }
-      }).catch(() => {});
+      }).catch(err => console.error("Error logging user profile view audit:", err));
     }
 
     // 2. Fetch Experiences, Educations, Projects & Resume using profileRepo
@@ -477,7 +578,7 @@ exports.getUserProfile = async (req, res) => {
       LEFT JOIN organization_roles cr ON cm.role_id = cr.role_id
       WHERE cm.user_id = $1 
       AND cm.is_role_visible = TRUE
-      AND c.is_deleted = FALSE
+      AND c.is_deleted = FALSE AND c.is_deactivated = FALSE
       ORDER BY cm.is_primary_display DESC, COALESCE(cr.priority, 0) DESC, c.name ASC
       `,
       [targetUserId]
@@ -531,7 +632,7 @@ exports.getPublicProfilePosts = async (req, res) => {
     // If not a UUID, try to resolve as account_name (case-insensitive)
     try {
       const resolveResult = await pool.query(
-        "SELECT user_id FROM active_users WHERE LOWER(account_name) = LOWER($1)",
+        "SELECT user_id FROM active_users WHERE LOWER(account_name) = LOWER($1) AND is_deactivated = FALSE",
         [userId]
       );
       if (resolveResult.rowCount === 0) {
@@ -547,7 +648,7 @@ exports.getPublicProfilePosts = async (req, res) => {
   // --- Block Check Implementation ---
   const currentUserId = req.user.sub;
   if (targetUserId !== currentUserId) {
-    const { checkActorBlockStatus } = require("../../core/utils/blockCheck");
+
     const isBlocked = await checkActorBlockStatus(req, targetUserId);
     if (isBlocked) {
       return res.status(404).json({ message: "User not found" });
@@ -627,7 +728,8 @@ exports.getPublicProfilePosts = async (req, res) => {
         ) AS media,
 
         (SELECT COUNT(*) FROM active_post_likes pl WHERE pl.post_id = p.post_id)::int AS like_count,
-        (SELECT COUNT(*) FROM posts sp_share WHERE sp_share.shared_post_id = p.post_id)::int AS share_count,
+        (SELECT COUNT(*) FROM posts sp_share WHERE sp_share.shared_post_id = p.post_id AND sp_share.is_active = TRUE AND (sp_share.is_removed IS FALSE OR sp_share.is_removed IS NULL))::int AS share_count,
+        0::int AS external_share_count,
         (
             SELECT COALESCE(comp_like.slug, u_like.account_name)
             FROM active_post_likes pl_sample
@@ -645,12 +747,14 @@ exports.getPublicProfilePosts = async (req, res) => {
             SELECT 1 FROM posts sp_rep
             WHERE sp_rep.shared_post_id = p.post_id 
             AND sp_rep.author_id = $${userParamIdx} AND sp_rep.author_org_id IS NULL
+            AND sp_rep.is_active = TRUE
             AND (sp_rep.is_removed IS FALSE OR sp_rep.is_removed IS NULL)
         ) AS is_reposted,
         (
             SELECT sp_rep.post_id FROM posts sp_rep
             WHERE sp_rep.shared_post_id = p.post_id 
             AND sp_rep.author_id = $${userParamIdx} AND sp_rep.author_org_id IS NULL
+            AND sp_rep.is_active = TRUE
             AND (sp_rep.is_removed IS FALSE OR sp_rep.is_removed IS NULL)
             LIMIT 1
         ) AS repost_id,
@@ -716,30 +820,34 @@ exports.getPublicProfilePosts = async (req, res) => {
               'is_accessible', true,
               'post_id', sp.post_id,
               'content', sp.content,
+              'location', sp.location,
               'created_at', sp.created_at,
               'author', json_build_object(
                 'user_id', COALESCE(sp.author_org_id, sp_u.user_id),
                 'full_name', COALESCE(sp_comp.name, sp_u.full_name),
                 'avatar_url', COALESCE(sp_comp.logo_url, sp_u.avatar_url),
                 'author_slug', COALESCE(sp_comp.slug, sp_u.account_name),
-                'author_headline', COALESCE(sp_comp.slogan, sp_u.headline),
+                'author_headline', CASE WHEN sp.author_org_id IS NOT NULL THEN sp_comp.headline ELSE sp_u.headline END,
                 'is_organization_post', (sp.author_org_id IS NOT NULL)
               ),
               'media', COALESCE((SELECT json_agg(json_build_object('url', pm.url, 'media_type', pm.media_type)) FROM post_media pm WHERE pm.post_id = sp.post_id), '[]'::json),
               'like_count', (SELECT COUNT(*) FROM active_post_likes pl WHERE pl.post_id = sp.post_id)::int,
               'comment_count', (SELECT COUNT(*) FROM active_post_comments pc WHERE pc.post_id = sp.post_id)::int,
-              'share_count', (SELECT COUNT(*) FROM posts sp_share2 WHERE sp_share2.shared_post_id = sp.post_id)::int,
+              'share_count', (SELECT COUNT(*) FROM posts sp_share2 WHERE sp_share2.shared_post_id = sp.post_id AND sp_share2.is_active = TRUE AND (sp_share2.is_removed IS FALSE OR sp_share2.is_removed IS NULL))::int,
+              'external_share_count', 0::int,
               'is_liked', EXISTS(SELECT 1 FROM active_post_likes pl WHERE pl.post_id = sp.post_id AND pl.user_id = $${userParamIdx}),
               'is_reposted', EXISTS(
                   SELECT 1 FROM posts sp_rep
                   WHERE sp_rep.shared_post_id = sp.post_id 
                   AND sp_rep.author_id = $${userParamIdx} AND sp_rep.author_org_id IS NULL
+                  AND sp_rep.is_active = TRUE
                   AND (sp_rep.is_removed IS FALSE OR sp_rep.is_removed IS NULL)
               ),
               'repost_id', (
                   SELECT sp_rep.post_id FROM posts sp_rep
                   WHERE sp_rep.shared_post_id = sp.post_id 
                   AND sp_rep.author_id = $${userParamIdx} AND sp_rep.author_org_id IS NULL
+                  AND sp_rep.is_active = TRUE
                   AND (sp_rep.is_removed IS FALSE OR sp_rep.is_removed IS NULL)
                   LIMIT 1
               ),
@@ -838,9 +946,8 @@ exports.getPublicProfilePosts = async (req, res) => {
           p.shared_post_id IS NULL 
           OR NOT EXISTS (
               SELECT 1 FROM blocks b 
-              WHERE b.is_org_block = false
-                AND ((b.blocker_id = $${userParamIdx} AND b.blocked_id = sp.author_id)
-                  OR (b.blocker_id = sp.author_id AND b.blocked_id = $${userParamIdx}))
+              WHERE (b.is_org_block = false AND sp.author_org_id IS NULL AND ((b.blocker_id = $${userParamIdx} AND b.blocked_id = sp.author_id) OR (b.blocker_id = sp.author_id AND b.blocked_id = $${userParamIdx})))
+                 OR (b.is_org_block = true AND sp.author_org_id IS NOT NULL AND ((b.blocker_id = sp.author_org_id AND b.blocked_id = $${userParamIdx}) OR (b.blocker_id = $${userParamIdx} AND b.blocked_id = sp.author_org_id)))
           )
       )
 
@@ -876,8 +983,10 @@ exports.getPublicProfilePosts = async (req, res) => {
     const { rows } = await pool.query(query, params);
     const last = rows[rows.length - 1];
 
+    const hydratedRows = await hydrateShareCounts(rows);
+
     res.json({
-      posts: rows,
+      posts: hydratedRows,
       nextCursor: last
         ? {
           cursorCreatedAt: last.created_at,
@@ -912,7 +1021,7 @@ exports.getPublicProfileCommentedPosts = async (req, res) => {
   if (!uuidRegex.test(userId)) {
     try {
       const resolveResult = await pool.query(
-        "SELECT user_id FROM active_users WHERE LOWER(account_name) = LOWER($1)",
+        "SELECT user_id FROM active_users WHERE LOWER(account_name) = LOWER($1) AND is_deactivated = FALSE",
         [userId]
       );
       if (resolveResult.rowCount === 0) {
@@ -928,7 +1037,7 @@ exports.getPublicProfileCommentedPosts = async (req, res) => {
   // Block check
   const currentUserId = req.user.sub;
   if (targetUserId !== currentUserId) {
-    const { checkActorBlockStatus } = require("../../core/utils/blockCheck");
+
     const isBlocked = await checkActorBlockStatus(req, targetUserId);
     if (isBlocked) {
       return res.status(404).json({ message: "User not found" });
@@ -974,7 +1083,7 @@ exports.getPublicProfileCommentedPosts = async (req, res) => {
         COALESCE(comp.logo_url, u.avatar_url) AS author_avatar,
         COALESCE(comp.slug, u.account_name) AS author_slug,
         (p.author_org_id IS NOT NULL) AS is_organization_post,
-        u.headline AS author_headline,
+        CASE WHEN p.author_org_id IS NOT NULL THEN comp.headline ELSE u.headline END AS author_headline,
 
         pc.name AS category_name,
         p.location,
@@ -987,12 +1096,14 @@ exports.getPublicProfileCommentedPosts = async (req, res) => {
             SELECT 1 FROM posts sp_rep
             WHERE sp_rep.shared_post_id = p.post_id 
             AND sp_rep.author_id = $${userParamIdx} AND sp_rep.author_org_id IS NULL
+            AND sp_rep.is_active = TRUE
             AND (sp_rep.is_removed IS FALSE OR sp_rep.is_removed IS NULL)
         ) AS is_reposted,
         (
             SELECT sp_rep.post_id FROM posts sp_rep
             WHERE sp_rep.shared_post_id = p.post_id 
             AND sp_rep.author_id = $${userParamIdx} AND sp_rep.author_org_id IS NULL
+            AND sp_rep.is_active = TRUE
             AND (sp_rep.is_removed IS FALSE OR sp_rep.is_removed IS NULL)
             LIMIT 1
         ) AS repost_id,
@@ -1063,8 +1174,10 @@ exports.getPublicProfileCommentedPosts = async (req, res) => {
     const { rows } = await pool.query(query, params);
     const last = rows[rows.length - 1];
 
+    const hydratedRows = await hydrateShareCounts(rows);
+
     res.json({
-      posts: rows,
+      posts: hydratedRows,
       nextCursor: last
         ? { cursorCreatedAt: last.created_at, cursorPostId: last.post_id }
         : null,
@@ -1083,12 +1196,7 @@ exports.deleteAccount = async (req, res) => {
   const userId = req.user.sub;
   const { password, idToken, companyIdsToDelete = [] } = req.body;
 
-  const crypto = require("crypto");
-  const redisClient = require("../../core/db/redis");
-  const socketService = require("../../core/infrastructure/socket.service");
-  const { sendAccountDeletionEmail } = require("../../core/services/email.service");
-  const { verifyGoogleToken } = require("../auth/googleAuth.service");
-  const { comparePassword } = require("../../core/utils/password");
+
 
   const client = await pool.connect();
   try {
@@ -1096,7 +1204,7 @@ exports.deleteAccount = async (req, res) => {
 
     // 1. Fetch user record
     const userRes = await client.query(
-      "SELECT user_id, email, full_name, password_hash, google_id FROM users WHERE user_id = $1",
+      "SELECT user_id, email, recovery_email, full_name, password_hash, google_id FROM users WHERE user_id = $1",
       [userId]
     );
 
@@ -1110,28 +1218,37 @@ exports.deleteAccount = async (req, res) => {
     // 2. Identity verification — password user OR Google user
     let isAuthenticated = false;
 
-    if (password && user.password_hash) {
+    if (user.password_hash) {
+      if (!password) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({ message: "Password is required to delete your account" });
+      }
       const isValid = await comparePassword(password, user.password_hash);
       if (isValid) {
         isAuthenticated = true;
       } else {
         await client.query("ROLLBACK");
-        return res.status(401).json({ message: "Invalid password" });
+        return res.status(400).json({ message: "Invalid password" });
       }
-    } else if (idToken && user.google_id) {
-      let googlePayload;
+    } else if (user.google_id) {
+      if (!idToken) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({ message: "Google re-authentication is required to delete your account." });
+      }
       try {
-        googlePayload = await verifyGoogleToken(idToken);
+        const googlePayload = await verifyGoogleToken(idToken);
         if (googlePayload.googleId === user.google_id) {
           isAuthenticated = true;
         } else {
           await client.query("ROLLBACK");
-          return res.status(401).json({ message: "Google account does not match this account." });
+          return res.status(400).json({ message: "Google account does not match this account." });
         }
       } catch {
         await client.query("ROLLBACK");
-        return res.status(401).json({ message: "Invalid Google token. Please re-authenticate and try again." });
+        return res.status(400).json({ message: "Invalid Google token. Please re-authenticate and try again." });
       }
+    } else {
+      isAuthenticated = true;
     }
 
     if (!isAuthenticated) {
@@ -1202,6 +1319,10 @@ exports.deleteAccount = async (req, res) => {
       [userId, tokenHash, deletionExecuteAt]
     );
 
+    // 7. Transfer group chat admin roles if this user was a group admin
+    const GroupChatService = require("../../services/groupChat.service");
+    await GroupChatService.handleAdminDeactivationOrDeletion(userId, client);
+
     await client.query("COMMIT");
 
     // 7. Blacklist all session JWTs in Redis (non-blocking, outside transaction)
@@ -1218,10 +1339,25 @@ exports.deleteAccount = async (req, res) => {
       ).catch((err) => console.error("[deleteAccount] Socket disconnect failed:", err));
     }
 
-    // 9. Send recovery email (non-blocking — do not fail the request if email fails)
-    sendAccountDeletionEmail(user.email, user.full_name, rawToken, deletionExecuteAt).catch((err) =>
-      console.error("[deleteAccount] Failed to send recovery email:", err)
+    // Broadcast user deletion socket events to invalidate real-time chat and post caches for other clients
+    if (socketService?.io) {
+      socketService.io.emit('user_deleted', { userId });
+      socketService.io.emit('USER_DELETED', { userId });
+      socketService.io.emit('user_deactivated', { userId });
+      socketService.io.emit('USER_DEACTIVATED', { userId });
+      socketService.io.emit('account_state_changed', { userId, type: 'user', action: 'deleted' });
+    }
+
+    // 9. Send recovery email to recovery_email and/or primary email (non-blocking)
+    const recipientEmails = Array.from(
+      new Set([user.recovery_email, user.email].filter((e) => Boolean(e) && typeof e === "string" && e.trim() !== ""))
     );
+
+    for (const recipientEmail of recipientEmails) {
+      sendAccountDeletionEmail(recipientEmail, user.full_name, rawToken, deletionExecuteAt).catch((err) => {
+        console.error(`[deleteAccount] Failed to send recovery email to ${recipientEmail}:`, err.message || err);
+      });
+    }
 
     // 10. Clear cookies
     res.clearCookie("refreshToken", {
@@ -1259,7 +1395,7 @@ exports.restoreAccount = async (req, res) => {
     return res.status(400).json({ message: "Restoration token is required" });
   }
 
-  const crypto = require("crypto");
+
   const tokenHash = crypto.createHash("sha256").update(token).digest("hex");
 
   const client = await pool.connect();
@@ -1319,7 +1455,25 @@ exports.restoreAccount = async (req, res) => {
       [tokenRow.id]
     );
 
+    // Reset unread count for group conversations by updating last_read_at to NOW()
+    await client.query(`
+      UPDATE conversation_participants cp
+      SET last_read_at = NOW()
+      FROM conversations c
+      WHERE cp.conversation_id = c.conversation_id
+        AND c.is_group = TRUE
+        AND cp.user_id = $1
+        AND cp.left_at IS NULL
+    `, [tokenRow.user_id]);
+
     await client.query("COMMIT");
+
+    // Broadcast user reactivation socket events
+    if (socketService?.io) {
+      socketService.io.emit('user_reactivated', { userId: tokenRow.user_id });
+      socketService.io.emit('USER_REACTIVATED', { userId: tokenRow.user_id });
+      socketService.io.emit('account_state_changed', { userId: tokenRow.user_id, type: 'user', action: 'restored' });
+    }
 
     return res.status(200).json({ message: "Your account has been restored. You can now log in." });
   } catch (err) {
@@ -1351,16 +1505,18 @@ exports.resendRecoveryEmail = async (req, res) => {
   // Process async — response already sent
   (async () => {
     try {
-      const crypto = require("crypto");
-      const { sendAccountDeletionEmail } = require("../../core/services/email.service");
+
 
       const userRes = await pool.query(
-        `SELECT user_id, email, full_name, deletion_execute_at
-         FROM users WHERE email = $1 AND deletion_execute_at IS NOT NULL`,
+        `SELECT user_id, email, recovery_email, full_name, deletion_execute_at
+         FROM users WHERE (LOWER(email) = $1 OR LOWER(recovery_email) = $1) AND deletion_execute_at IS NOT NULL`,
         [email.toLowerCase()]
       );
 
-      if (userRes.rowCount === 0) return; // Email not found or not pending deletion — silently exit
+      if (userRes.rowCount === 0) {
+        console.log(`[resendRecoveryEmail] No account pending deletion found for email: ${email}`);
+        return;
+      }
 
       const user = userRes.rows[0];
 
@@ -1381,7 +1537,15 @@ exports.resendRecoveryEmail = async (req, res) => {
         [user.user_id, tokenHash, user.deletion_execute_at]
       );
 
-      await sendAccountDeletionEmail(user.email, user.full_name, rawToken, user.deletion_execute_at);
+      const recipientEmails = Array.from(
+        new Set([user.recovery_email, user.email].filter((e) => Boolean(e) && typeof e === "string" && e.trim() !== ""))
+      );
+
+      for (const recipientEmail of recipientEmails) {
+        await sendAccountDeletionEmail(recipientEmail, user.full_name, rawToken, user.deletion_execute_at).catch((err) => {
+          console.error(`[resendRecoveryEmail] Failed to send recovery email to ${recipientEmail}:`, err.message || err);
+        });
+      }
     } catch (err) {
       console.error("[resendRecoveryEmail] Background processing error:", err);
     }
@@ -1452,7 +1616,8 @@ exports.getSuggestedUsers = async (req, res) => {
         (SELECT COUNT(*) FROM followers WHERE following_id = u.user_id) + (SELECT COUNT(*) FROM organization_user_follows cf JOIN organizations c ON cf.org_id = c.org_id WHERE cf.user_id = u.user_id AND c.is_deleted = FALSE) as followers_count
       FROM active_users u
       LEFT JOIN profiles p ON u.user_id = p.user_id
-      WHERE u.full_name IS NOT NULL AND TRIM(u.full_name) <> ''
+      WHERE u.is_deactivated = FALSE
+      AND u.full_name IS NOT NULL AND TRIM(u.full_name) <> ''
       AND u.account_name IS NOT NULL AND TRIM(u.account_name) <> ''
       AND NOT EXISTS (
         SELECT 1 FROM followers WHERE follower_id = $1 AND following_id = u.user_id

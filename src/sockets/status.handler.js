@@ -7,17 +7,26 @@ const SocketService = require("../core/infrastructure/socket.service");
  */
 async function getRelatedUserIds(userId) {
   const query = `
-    SELECT follower_id AS user_id FROM followers WHERE following_id = $1
-    UNION
-    SELECT following_id AS user_id FROM followers WHERE follower_id = $1
-    UNION
-    SELECT DISTINCT cp2.user_id AS user_id
-    FROM conversation_participants cp1
-    JOIN conversation_participants cp2 ON cp1.conversation_id = cp2.conversation_id
-    WHERE cp1.user_id = $1
-      AND cp1.left_at IS NULL
-      AND cp2.left_at IS NULL
-      AND cp2.user_id <> $1
+    WITH base_users AS (
+      SELECT follower_id AS user_id FROM followers WHERE following_id = $1
+      UNION
+      SELECT following_id AS user_id FROM followers WHERE follower_id = $1
+      UNION
+      SELECT DISTINCT cp2.user_id AS user_id
+      FROM conversation_participants cp1
+      JOIN conversation_participants cp2 ON cp1.conversation_id = cp2.conversation_id
+      WHERE cp1.user_id = $1
+        AND cp1.left_at IS NULL
+        AND cp2.left_at IS NULL
+        AND cp2.user_id <> $1
+    )
+    SELECT u.user_id 
+    FROM base_users u
+    WHERE NOT EXISTS (
+      SELECT 1 FROM blocks b 
+      WHERE (b.blocker_id = $1 AND b.blocked_id = u.user_id)
+         OR (b.blocker_id = u.user_id AND b.blocked_id = $1)
+    )
   `;
 
   try {

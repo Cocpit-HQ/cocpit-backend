@@ -39,6 +39,7 @@ CREATE TABLE users (
   last_login_at TIMESTAMPTZ,
   deletion_scheduled_at TIMESTAMPTZ,
   deletion_execute_at TIMESTAMPTZ,
+  is_deactivated BOOLEAN DEFAULT false,
   CONSTRAINT mobile_format CHECK (mobile_number ~ '^[0-9]{10}$')
 );
 
@@ -985,6 +986,7 @@ CREATE INDEX idx_profile_views_lookup ON profile_views(viewer_id, profile_owner_
 CREATE INDEX idx_profile_views_owner ON profile_views(profile_type, profile_owner_id);
 -- Removed unique_daily_profile_view to allow multiple views per day to increment count
 
+
 --20-01-26 -- student account type added 
 ALTER TABLE profiles
 DROP CONSTRAINT profiles_account_type_check;
@@ -1532,7 +1534,10 @@ CREATE TABLE IF NOT EXISTS email_otps (
     attempts INTEGER DEFAULT 0,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     request_count INTEGER DEFAULT 1,
-    CONSTRAINT unique_email_otp UNIQUE (email)
+    verified_at TIMESTAMPTZ,
+    session_expires_at TIMESTAMPTZ,
+    purpose VARCHAR(100) NOT NULL DEFAULT 'signup',
+    CONSTRAINT unique_email_otp_purpose UNIQUE (email, purpose)
 );
 
 CREATE INDEX IF NOT EXISTS idx_email_otps_email ON email_otps(email);
@@ -1636,19 +1641,26 @@ ON CONFLICT (code) DO NOTHING;
 CREATE TABLE IF NOT EXISTS reports (
   id BIGSERIAL PRIMARY KEY,
   reporter_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+  reporter_org_id UUID REFERENCES organizations(org_id) ON DELETE CASCADE,
   target_type VARCHAR(20) NOT NULL, -- 'POST', 'USER', 'COMMENT', 'COMPANY'
   target_id UUID NOT NULL, -- Target entity ID (Post, User, etc.)
   reason_id INT REFERENCES report_reasons(id) ON DELETE SET NULL,
   custom_reason TEXT NULL,
-  created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
-
-  -- Unique constraint: preventing same user from reporting same target twice
-  UNIQUE (reporter_id, target_type, target_id)
+  created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
 
 -- Index for admin moderation (Phase 2)
 CREATE INDEX IF NOT EXISTS idx_reports_target ON reports(target_type, target_id);
 CREATE INDEX IF NOT EXISTS idx_reports_reporter ON reports(reporter_id);
+
+-- Unique indexes: preventing same user/org from reporting same target twice
+CREATE UNIQUE INDEX IF NOT EXISTS reports_unique_user 
+ON reports (reporter_id, target_type, target_id) 
+WHERE reporter_org_id IS NULL;
+
+CREATE UNIQUE INDEX IF NOT EXISTS reports_unique_org 
+ON reports (reporter_id, target_type, target_id, reporter_org_id) 
+WHERE reporter_org_id IS NOT NULL;
 
 -- ---------------------------------------------------------
 -- Missing tables (blocks, post_impressions)
@@ -1871,8 +1883,8 @@ SELECT
     END AS location
 FROM users;
 
--- 1. Add preferred_industry
-ALTER TABLE profiles ADD COLUMN IF NOT EXISTS preferred_industry TEXT;
+-- 1. Add working_industry
+ALTER TABLE profiles ADD COLUMN IF NOT EXISTS working_industry TEXT;
  
 -- 2. Add work_mode as a new column
 ALTER TABLE profiles ADD COLUMN IF NOT EXISTS work_mode job_work_mode;
@@ -2118,6 +2130,7 @@ CREATE TABLE IF NOT EXISTS user_notification_preferences (
     job_alerts BOOLEAN DEFAULT TRUE,
     message_notifications BOOLEAN DEFAULT TRUE,
     email_notifications BOOLEAN DEFAULT TRUE,
+    push_notifications BOOLEAN DEFAULT TRUE,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
@@ -2265,21 +2278,82 @@ CREATE OR REPLACE VIEW organization_display_profiles AS
 SELECT 
     org_id,
     CASE 
-        WHEN deletion_execute_at IS NULL AND is_deleted = FALSE THEN name 
+        WHEN deletion_execute_at IS NULL AND is_deleted = FALSE AND is_deactivated = FALSE THEN name 
         ELSE 'Deleted Page' 
     END AS name,
     CASE 
-        WHEN deletion_execute_at IS NULL AND is_deleted = FALSE THEN slug 
+        WHEN deletion_execute_at IS NULL AND is_deleted = FALSE AND is_deactivated = FALSE THEN slug 
         ELSE 'deleted_page' 
     END AS slug,
     CASE 
-        WHEN deletion_execute_at IS NULL AND is_deleted = FALSE THEN logo_url 
+        WHEN deletion_execute_at IS NULL AND is_deleted = FALSE AND is_deactivated = FALSE THEN logo_url 
         ELSE NULL 
     END AS logo_url,
     CASE 
-        WHEN deletion_execute_at IS NULL AND is_deleted = FALSE THEN headline 
+        WHEN deletion_execute_at IS NULL AND is_deleted = FALSE AND is_deactivated = FALSE THEN headline 
         ELSE 'This page has been deactivated' 
     END AS headline,
     entity_type
 FROM organizations;
+
+-- ==========================================
+-- SETTINGS ACTOR CONTEXT SCHEMA EXTENSIONS
+-- ==========================================
+
+CREATE TABLE IF NOT EXISTS organization_privacy_settings (
+    org_id UUID PRIMARY KEY REFERENCES organizations(org_id) ON DELETE CASCADE,
+    show_email BOOLEAN NOT NULL DEFAULT true,
+    show_phone BOOLEAN NOT NULL DEFAULT true,
+    tag_permission VARCHAR(20) NOT NULL DEFAULT 'everyone'
+        CHECK (tag_permission IN ('everyone', 'followers_only', 'no_one')),
+    following_visibility VARCHAR(20) NOT NULL DEFAULT 'everyone'
+        CHECK (following_visibility IN ('everyone', 'followers_only', 'no_one')),
+    followers_visibility VARCHAR(20) NOT NULL DEFAULT 'everyone'
+        CHECK (followers_visibility IN ('everyone', 'followers_only', 'no_one')),
+    message_permission VARCHAR(20) NOT NULL DEFAULT 'everyone'
+        CHECK (message_permission IN ('everyone', 'followers_only', 'no_one')),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_org_privacy_org_id ON organization_privacy_settings(org_id);
+
+ALTER TABLE organization_notification_preferences
+    ADD COLUMN IF NOT EXISTS messages_enabled BOOLEAN NOT NULL DEFAULT true,
+    ADD COLUMN IF NOT EXISTS messages_chat_enabled BOOLEAN NOT NULL DEFAULT true,
+    ADD COLUMN IF NOT EXISTS messages_jobs_enabled BOOLEAN NOT NULL DEFAULT true,
+    ADD COLUMN IF NOT EXISTS email_enabled BOOLEAN NOT NULL DEFAULT true,
+    ADD COLUMN IF NOT EXISTS push_enabled BOOLEAN NOT NULL DEFAULT true;
+
+ALTER TABLE organizations
+    ADD COLUMN IF NOT EXISTS is_deactivated BOOLEAN NOT NULL DEFAULT false,
+    ADD COLUMN IF NOT EXISTS deactivated_at TIMESTAMPTZ;
+
+CREATE TABLE IF NOT EXISTS organization_blocked_accounts (
+    block_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    org_id UUID NOT NULL REFERENCES organizations(org_id) ON DELETE CASCADE,
+    blocked_type VARCHAR(20) NOT NULL CHECK (blocked_type IN ('user', 'company')),
+    blocked_id UUID NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (org_id, blocked_type, blocked_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_org_blocked_org ON organization_blocked_accounts(org_id);
+
+
+
+
+-- Added for user identity verification
+CREATE TABLE user_verifications (
+  verification_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+  verification_type VARCHAR(50) DEFAULT 'IDENTITY',
+  front_image_url TEXT NOT NULL,
+  back_image_url TEXT,
+  is_verified BOOLEAN DEFAULT FALSE,
+  status VARCHAR(20) DEFAULT 'VERIFIED',
+  created_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ DEFAULT now()
+);
+
 

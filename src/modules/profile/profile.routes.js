@@ -61,6 +61,7 @@ router.put("/projects/:id", requireAuth, requireActiveSession, profileController
 router.patch("/projects/:id", requireAuth, requireActiveSession, profileController.updateProject);
 router.delete("/projects/:id", requireAuth, requireActiveSession, profileController.deleteProject);
 
+router.get("/:id/download-resume", requireAuth, profileController.downloadResume);
 router.get("/:id", requireAuth, profileController.getProfile);
 
 module.exports = router;

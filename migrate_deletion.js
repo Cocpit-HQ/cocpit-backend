@@ -63,7 +63,7 @@ async function run() {
     await pool.query(`
       CREATE OR REPLACE VIEW active_organizations AS
       SELECT * FROM organizations 
-      WHERE deletion_execute_at IS NULL AND is_deleted = FALSE;
+      WHERE deletion_execute_at IS NULL AND is_deleted = FALSE AND is_deactivated = FALSE;
     `);
     console.log("Created active_organizations view.");
 

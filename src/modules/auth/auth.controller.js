@@ -26,7 +26,7 @@ exports.register = async (req, res) => {
 
     try {
         if (flags["requireOtpVerification"] !== false) {
-            const otpResult = await otpService.verifyOTP(email, otp);
+            const otpResult = await otpService.verifyOTP(email, otp, true, "signup");
             if (otpResult.error) {
                 return res.status(otpResult.error.status).json({ message: otpResult.error.message });
             }
@@ -265,7 +265,7 @@ exports.setActorContext = async (req, res) => {
  * Common handler for social logins (Google & Apple)
  */
 const handleSocialLogin = async (req, res, provider) => {
-    const { idToken, accountType } = req.body;
+    const { idToken, accountType, fullName, action } = req.body;
     const userAgent = req.headers["user-agent"] || "unknown";
     const ipAddress = req.ip || "unknown";
 
@@ -279,7 +279,7 @@ const handleSocialLogin = async (req, res, provider) => {
     }
 
     try {
-        const result = await authService.socialLogin({ provider, idToken, accountType, userAgent, ipAddress });
+        const result = await authService.socialLogin({ provider, idToken, accountType, fullName, userAgent, ipAddress, action });
 
         if (result.error) {
             return res.status(result.error.status).json({

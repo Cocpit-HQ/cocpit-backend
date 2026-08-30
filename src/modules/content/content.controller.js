@@ -12,8 +12,8 @@ const { checkOrgPermission } = require("../../core/utils/rbac");
 const { notifyOrgFollowers, notifyBroadcastToChildOrgs } = require("../../services/notification.service");
 const { logActivity, removeActivity } = require("../../core/services/activityLogger");
 const { logActivity: logIntentActivity } = require("../../utils/activityLogger");
-
-
+const { sendToUser: sendPush } = require("../notification/notification.service");
+const contentGenerationService = require("../../services/contentGeneration.service");
 
 const getRequestedOrganizationActorId = (req, fallbackOrgId = null) => {
     // 1. Prefer Explicit Actor Header Context
@@ -69,21 +69,62 @@ const getOptionalContentActorScope = (req, _fallbackOrgId = null) => {
 
 const broadcastChannelArticlePublished = async (orgId, article) => {
     try {
+        // 1. Fetch organization details
+        const orgRes = await pool.query(`SELECT name, logo_url FROM organizations WHERE org_id = $1`, [orgId]);
+        if (orgRes.rows.length === 0) return;
+        const orgName = orgRes.rows[0].name || "An organization";
+        const orgLogo = orgRes.rows[0].logo_url || null;
+
+        // 2. Fetch subscribers
         const subscribers = await pool.query(
             `SELECT cs.user_id FROM community_subscriptions cs
              JOIN communities c ON cs.community_id = c.community_id
              WHERE c.org_id = $1 AND cs.status = 'SUBSCRIBED'`,
             [orgId]
         );
-        for (const sub of subscribers.rows) {
-            socketService.notifyUser(sub.user_id, "channel_article_published", {
-                orgId,
-                article: {
-                    id: article.id,
-                    title: article.title,
-                    createdAt: article.createdAt || article.created_at
-                }
+
+        if (subscribers.rows.length === 0) return;
+
+        const subscriberIds = subscribers.rows.map(sub => sub.user_id);
+        const notificationText = `"${orgName}" posted: "${article.preview}"`;
+        const notificationTitle = `New update from "${orgName}"`;
+
+        // 3. Bulk Insert DB Notifications
+        const insertQuery = `
+            INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata, is_read, created_at)
+            SELECT unnest($1::uuid[]), NULL, 'channel_article', $2, $3, $4::jsonb, false, NOW()
+            RETURNING notification_id, user_id, created_at
+        `;
+        const insertValues = [
+            subscriberIds,
+            notificationText,
+            article.id,
+            JSON.stringify({ org_id: orgId })
+        ];
+
+        const insertRes = await pool.query(insertQuery, insertValues);
+
+        // 4. Emit real-time sockets & push notifications
+        for (const row of insertRes.rows) {
+            // Socket emit
+            socketService.notifyUser(row.user_id, "notification", {
+                notification_id: row.notification_id,
+                type: 'channel_article',
+                text: notificationText,
+                reference_id: article.id,
+                is_read: false,
+                created_at: row.created_at.toISOString(),
+                actor_name: orgName,
+                actor_avatar: orgLogo,
+                is_company_actor: true,
+                metadata: { org_id: orgId }
             });
+
+            // Push notification
+            sendPush(row.user_id, notificationTitle, notificationText, {
+                type: 'channel_article',
+                referenceId: article.id
+            }).catch(() => {});
         }
     } catch (err) {
         console.error("Error broadcasting channel article publication:", err);
@@ -91,6 +132,7 @@ const broadcastChannelArticlePublished = async (orgId, article) => {
 };
 
 const { getPostHydrationSelect, getPostHydrationJoins, getPublicFeedWhere } = require("../../core/queries/postHydration.query.js");
+const { hydrateShareCounts } = require("../../utils/shareHydration");
 
 // --- Feed / Posts ---
 exports.getPublicFeed = async (req, res) => {
@@ -126,7 +168,7 @@ exports.getPublicFeed = async (req, res) => {
         SELECT
             ${getPostHydrationSelect(companyParamIdx, userParamIdx)}
         ${getPostHydrationJoins()}
-        ${getPublicFeedWhere(userParamIdx)}
+        ${getPublicFeedWhere(userParamIdx, companyParamIdx)}
         ${cursorCondition}
         ORDER BY p.created_at DESC, p.post_id DESC
         LIMIT $${limitParamIdx}
@@ -194,6 +236,7 @@ exports.getPublicFeed = async (req, res) => {
 
         const last = rows[rows.length - 1];
 
+        finalRows = await hydrateShareCounts(finalRows);
         res.json({
             posts: finalRows.map(post => {
                 // If it's not an article or poll, completely remove the title key
@@ -273,14 +316,25 @@ exports.getMyPosts = async (req, res) => {
 
         // ✅ Strict Block Logic for Shared Posts
         whereClause += `
+        ${isOrgActor ? `
         AND (
             p.shared_post_id IS NULL 
             OR NOT EXISTS (
                 SELECT 1 FROM blocks b 
-                WHERE (b.blocker_id = $${userParamIdx} AND b.blocked_id = sp.author_id)
-                   OR (b.blocker_id = sp.author_id AND b.blocked_id = $${userParamIdx})
+                WHERE (b.is_org_block = true AND sp.author_org_id IS NULL AND ((b.blocker_id = $${orgParamIdx} AND b.blocked_id = sp.author_id) OR (b.blocker_id = sp.author_id AND b.blocked_id = $${orgParamIdx})))
+                   OR (b.is_org_block = true AND sp.author_org_id IS NOT NULL AND ((b.blocker_id = sp.author_org_id AND b.blocked_id = $${orgParamIdx}) OR (b.blocker_id = $${orgParamIdx} AND b.blocked_id = sp.author_org_id)))
             )
         )
+        ` : `
+        AND (
+            p.shared_post_id IS NULL 
+            OR NOT EXISTS (
+                SELECT 1 FROM blocks b 
+                WHERE (b.is_org_block = false AND sp.author_org_id IS NULL AND ((b.blocker_id = $${userParamIdx} AND b.blocked_id = sp.author_id) OR (b.blocker_id = sp.author_id AND b.blocked_id = $${userParamIdx})))
+                   OR (b.is_org_block = true AND sp.author_org_id IS NOT NULL AND ((b.blocker_id = sp.author_org_id AND b.blocked_id = $${userParamIdx}) OR (b.blocker_id = $${userParamIdx} AND b.blocked_id = sp.author_org_id)))
+            )
+        )
+        `}
         `;
 
         // If org actor, $1 is the org_id. We might need the userId for block checks if they are personal blocks,
@@ -359,6 +413,7 @@ exports.getMyPosts = async (req, res) => {
 
         const last = rows[rows.length - 1];
 
+        finalRows = await hydrateShareCounts(finalRows);
         res.json({
             posts: finalRows.map(post => {
                 // If it's not an article or poll, completely remove the title key
@@ -442,8 +497,8 @@ exports.getMyCommentedPosts = async (req, res) => {
                 ${isOrgActor ? `pl_me.org_id = $${orgParamIdx}::uuid` : `pl_me.user_id = $${userParamIdx} AND pl_me.org_id IS NULL`}
             )) AS is_liked,
             true AS is_commented,
-            EXISTS(SELECT 1 FROM saved_post sp_me WHERE sp_me.post_id = p.post_id AND sp_me.user_id = $${userParamIdx} AND (
-                ${isOrgActor ? `sp_me.org_id = $${orgParamIdx}::uuid` : 'sp_me.org_id IS NULL'}
+            EXISTS(SELECT 1 FROM saved_post sp_me WHERE sp_me.post_id = p.post_id AND (
+                ${isOrgActor ? `sp_me.org_id = $${orgParamIdx}::uuid` : `sp_me.user_id = $${userParamIdx} AND sp_me.org_id IS NULL`}
             )) AS is_saved,
             COALESCE(cc.comment_count, 0) AS comment_count,
             (
@@ -487,8 +542,9 @@ exports.getMyCommentedPosts = async (req, res) => {
         const { rows } = await pool.query(query, params);
         const last = rows[rows.length - 1];
 
+        const hydratedRows = await hydrateShareCounts(rows);
         res.json({
-            posts: rows,
+            posts: hydratedRows,
             nextCursor: last ? { cursorCreatedAt: last.created_at, cursorPostId: last.post_id } : null,
         });
     } catch (err) {
@@ -550,7 +606,7 @@ exports.getMyPrivatePosts = async (req, res) => {
             COALESCE(comp.name, u.full_name) AS author_name,
             COALESCE(comp.logo_url, u.avatar_url) AS author_avatar,
             COALESCE(comp.slug, u.account_name) AS author_slug,
-            COALESCE(comp.slogan, u.headline) AS author_headline,
+            CASE WHEN p.author_org_id IS NOT NULL THEN comp.headline ELSE u.headline END AS author_headline,
             (p.author_org_id IS NOT NULL) AS is_organization_post,
             pc.name AS category_name,
             p.location,
@@ -562,8 +618,8 @@ exports.getMyPrivatePosts = async (req, res) => {
             EXISTS(SELECT 1 FROM active_post_comments pc_me WHERE pc_me.post_id = p.post_id AND (
                 ${isOrgActor ? `pc_me.author_org_id = $${orgParamIdx}::uuid` : `pc_me.author_id = $${userParamIdx} AND pc_me.author_org_id IS NULL`}
             )) AS is_commented,
-            EXISTS(SELECT 1 FROM saved_post sp_me WHERE sp_me.post_id = p.post_id AND sp_me.user_id = $${userParamIdx} AND (
-                ${isOrgActor ? `sp_me.org_id = $${orgParamIdx}::uuid` : 'sp_me.org_id IS NULL'}
+            EXISTS(SELECT 1 FROM saved_post sp_me WHERE sp_me.post_id = p.post_id AND (
+                ${isOrgActor ? `sp_me.org_id = $${orgParamIdx}::uuid` : `sp_me.user_id = $${userParamIdx} AND sp_me.org_id IS NULL`}
             )) AS is_saved,
             COALESCE(cc.comment_count, 0) AS comment_count
         FROM posts p
@@ -584,8 +640,9 @@ exports.getMyPrivatePosts = async (req, res) => {
         const { rows } = await pool.query(query, params);
         const last = rows[rows.length - 1];
 
+        const hydratedRows = await hydrateShareCounts(rows);
         res.json({
-            posts: rows,
+            posts: hydratedRows,
             nextCursor: last ? { cursorCreatedAt: last.created_at, cursorPostId: last.post_id } : null,
         });
     } catch (err) {
@@ -726,6 +783,12 @@ exports.createPost = async (req, res) => {
     const { userId, orgId: companyId } = actorScope;
     let { content, category, visibility, media_urls, post_type, title, poll_options, poll_duration, is_broadcast, location, achievement_image_id, status } = req.body; // category is name, media_urls is array
 
+    if (media_urls && typeof media_urls === 'string') {
+        try {
+            media_urls = JSON.parse(media_urls);
+        } catch (e) { }
+    }
+
     if (status !== undefined && status !== "published" && status !== "draft") {
         return res.status(400).json({ message: "Invalid status. Allowed values: 'published', 'draft'" });
     }
@@ -733,8 +796,6 @@ exports.createPost = async (req, res) => {
     let isCommunityArticle = false;
     if (req.body.is_community_article !== undefined) {
         isCommunityArticle = req.body.is_community_article === true || req.body.is_community_article === 'true';
-    } else if (post_type === 'article' && companyId) {
-        isCommunityArticle = true;
     }
 
     status = status || ((post_type === "article" && isCommunityArticle) ? "draft" : "published");
@@ -792,7 +853,7 @@ exports.createPost = async (req, res) => {
         // fallback below so their behavior is unchanged.
         let coverFileUrl = coverFiles.length > 0
             ? (coverFiles[0].path || coverFiles[0].secure_url || '').replace(/\\/g, "/")
-            : null;
+            : (media_urls && media_urls.length > 0 ? media_urls[0] : null);
         // Everything in "media" is an inline content image/video - rewrite its blob
         // src to the real URL. Match on the basename without extension since blob:
         // URLs (e.g. "blob:http://host/<uuid>") carry no file extension.
@@ -803,7 +864,7 @@ exports.createPost = async (req, res) => {
             if (content && baseName && content.includes(baseName)) {
                 const regex = new RegExp(`src="[^"]*${baseName}[^"]*"`, 'g');
                 content = content.replace(regex, `src="${fileUrl}"`);
-            } else if (coverFiles.length === 0) {
+            } else if (!coverFileUrl) {
                 coverFileUrl = fileUrl;
             }
         });
@@ -868,6 +929,7 @@ exports.createPost = async (req, res) => {
                         ($3::uuid IS NULL AND author_id = $2 AND author_org_id IS NULL)
                    )
                    AND (content IS NULL OR content = '')
+                   AND is_active = TRUE
                    AND (is_removed IS FALSE OR is_removed IS NULL)`,
                 [req.body.shared_post_id, userId, companyId || null]
             );
@@ -922,7 +984,7 @@ exports.createPost = async (req, res) => {
             // --- CONTEXT-AWARE CATEGORY VALIDATION ---
             const userAllowed = ['Personal', 'Professional', 'Achievement'];
             const companyAllowed = ['Update', 'Hiring', 'Milestone', 'Insight', 'Professional', 'Article'];
-            const institutionAllowed = ['Announcement', 'Academic', 'Admission', 'Campus Life', 'Research', 'Club Activity', 'General'];
+            const institutionAllowed = ['Professional', 'Announcement', 'Academic', 'Admission', 'Campus Life', 'Research', 'Club Activity', 'General'];
 
             if (companyId) {
                 // Determine if it's a COMPANY or INSTITUTION
@@ -948,6 +1010,7 @@ exports.createPost = async (req, res) => {
 
                     // Category-level RBAC check
                     const categoryPermissionMap = {
+                        'Professional': 'CREATE_CONTENT',
                         'Announcement': 'POST_ANNOUNCEMENT',
                         'Academic': 'CREATE_ACADEMIC_CONTENT',
                         'Research': 'CREATE_ACADEMIC_CONTENT',
@@ -958,7 +1021,7 @@ exports.createPost = async (req, res) => {
                     };
 
                     const requiredPerm = categoryPermissionMap[category];
-                    const canPost = await checkOrgPermission(client, companyId, userId, [requiredPerm, 'MANAGE_COMPANY', 'CREATE_CONTENT']);
+                    const canPost = await checkOrgPermission(client, companyId, userId, [requiredPerm, 'MANAGE_COMPANY', 'CREATE_CONTENT', 'CREATE_POST']);
 
                     if (!canPost) {
                         // Allow Students to post in General freely
@@ -1038,8 +1101,6 @@ exports.createPost = async (req, res) => {
         isCommunityArticle = false;
         if (req.body.is_community_article !== undefined) {
             isCommunityArticle = req.body.is_community_article === true || req.body.is_community_article === 'true';
-        } else if (post_type === 'article' && companyId) {
-            isCommunityArticle = true;
         }
 
         // 2. Insert Post
@@ -1113,7 +1174,7 @@ exports.createPost = async (req, res) => {
                 if (companyId && originalCompanyId && companyId === originalCompanyId) isSelfRepost = true;
 
                 if (!isSelfRepost) {
-                    const notificationText = `${reposterName} reposted your post`;
+                    const notificationText = "reposted your post";
 
                     const meta = {
                         org_id: companyId, // Sender company
@@ -1174,28 +1235,31 @@ exports.createPost = async (req, res) => {
 
         // Notify followers with 'posts' preference enabled (fire-and-forget, after commit)
         if (companyId) {
-            const companyNameRes = await pool.query(`SELECT name FROM organizations WHERE org_id = $1`, [companyId]);
-            const cName = companyNameRes.rows[0]?.name || 'An organization';
-            notifyOrgFollowers(companyId, "posts", {
-                type: "organization_post",
-                text: `${cName} published a new post`,
-                referenceId: postId,
-                metadata: { post_title: title || content?.substring(0, 50) },
-            }).catch(err => console.error("Post notification error:", err));
+            // Real-time channel article update notification for subscribers
+            if (post_type === 'article' && status === 'published') {
+                const newPostCreatedAt = postResult.rows[0].created_at;
+                const previewText = title || 'a new article';
+
+                broadcastChannelArticlePublished(companyId, {
+                    id: postId,
+                    title: title,
+                    createdAt: newPostCreatedAt,
+                    preview: previewText
+                }).catch(err => console.error("Error in broadcastChannelArticlePublished:", err));
+            } else {
+                const companyNameRes = await pool.query(`SELECT name FROM organizations WHERE org_id = $1`, [companyId]);
+                const cName = companyNameRes.rows[0]?.name || 'An organization';
+                notifyOrgFollowers(companyId, "posts", {
+                    type: "organization_post",
+                    text: `${cName} published a new post`,
+                    referenceId: postId,
+                    metadata: { post_title: title || content?.substring(0, 50) },
+                }).catch(err => console.error("Post notification error:", err));
+            }
 
             // Broadcast: notify all members of all child orgs (fire-and-forget)
             if (is_broadcast) {
                 notifyBroadcastToChildOrgs(companyId, postId, content).catch(err => console.error("Broadcast notification error:", err));
-            }
-
-            // Real-time channel article update notification for subscribers
-            if (post_type === 'article' && status === 'published') {
-                const newPostCreatedAt = postResult.rows[0].created_at;
-                broadcastChannelArticlePublished(companyId, {
-                    id: postId,
-                    title: title,
-                    createdAt: newPostCreatedAt
-                }).catch(err => console.error("Error in broadcastChannelArticlePublished:", err));
             }
         }
 
@@ -1265,7 +1329,7 @@ exports.getPostById = async (req, res) => {
     COALESCE(comp.name, u.full_name) AS author_name,
     COALESCE(comp.logo_url, u.avatar_url) AS author_avatar,
     COALESCE(comp.slug, u.account_name) AS author_slug,
-    COALESCE(comp.slogan, u.headline) AS author_headline,
+    CASE WHEN p.author_org_id IS NOT NULL THEN comp.headline ELSE u.headline END AS author_headline,
     (p.author_org_id IS NOT NULL) AS is_organization_post,
     (SELECT community_id FROM communities WHERE org_id = p.author_org_id AND is_active = TRUE LIMIT 1) AS community_id,
     c.name AS category_name,
@@ -1275,14 +1339,18 @@ exports.getPostById = async (req, res) => {
     COALESCE(ai.title, CASE WHEN c.name = 'Achievement' AND p.post_type = 'image' THEN p.title ELSE NULL END) AS achievement_image_title,
     COALESCE(
         (SELECT json_agg(json_build_object(
-            'id', u_tag.user_id,
-            'full_name', u_tag.full_name,
-            'account_name', u_tag.account_name,
-            'avatar_url', u_tag.avatar_url
+            'id', COALESCE(u_tag.user_id, o_tag.org_id),
+            'full_name', COALESCE(u_tag.full_name, o_tag.name),
+            'account_name', COALESCE(u_tag.account_name, o_tag.slug),
+            'avatar_url', COALESCE(u_tag.avatar_url, o_tag.logo_url),
+            'type', CASE WHEN o_tag.org_id IS NOT NULL THEN 'company' ELSE 'user' END
         ))
         FROM post_tags pt 
-        JOIN active_users u_tag ON pt.tagged_user_id = u_tag.user_id
-        WHERE pt.post_id = p.post_id AND pt.is_active_tag = true),
+        LEFT JOIN active_users u_tag ON pt.tagged_user_id = u_tag.user_id
+        LEFT JOIN organizations o_tag ON pt.tagged_user_id = o_tag.org_id AND o_tag.is_deleted = FALSE
+        WHERE pt.post_id = p.post_id 
+          AND pt.is_active_tag = true
+          AND (u_tag.user_id IS NOT NULL OR o_tag.org_id IS NOT NULL)),
         '[]'::json
     ) AS tags,
 
@@ -1323,7 +1391,8 @@ exports.getPostById = async (req, res) => {
     (SELECT COUNT(*) FROM active_post_comments pc WHERE pc.post_id = p.post_id)::int AS comment_count,
 
     -- Share Count
-    (SELECT COUNT(*) FROM posts sp_share WHERE sp_share.shared_post_id = p.post_id)::int AS share_count,
+    (SELECT COUNT(*) FROM posts sp_share WHERE sp_share.shared_post_id = p.post_id AND sp_share.is_active = TRUE AND (sp_share.is_removed IS FALSE OR sp_share.is_removed IS NULL))::int AS share_count,
+    0::int AS external_share_count,
 
     -- Is Liked (Identity Aware)
     EXISTS(
@@ -1344,6 +1413,7 @@ exports.getPostById = async (req, res) => {
             OR
             ($3::uuid IS NULL AND sp_rep.author_id = $2 AND sp_rep.author_org_id IS NULL)
         )
+        AND sp_rep.is_active = TRUE
         AND (sp_rep.is_removed IS FALSE OR sp_rep.is_removed IS NULL)
     ) AS is_reposted,
 
@@ -1355,6 +1425,7 @@ exports.getPostById = async (req, res) => {
             OR
             ($3::uuid IS NULL AND sp_rep.author_id = $2 AND sp_rep.author_org_id IS NULL)
         )
+        AND sp_rep.is_active = TRUE
         AND (sp_rep.is_removed IS FALSE OR sp_rep.is_removed IS NULL)
         LIMIT 1
     ) AS repost_id,
@@ -1394,7 +1465,15 @@ exports.getPostById = async (req, res) => {
         )
     ) AS is_commented,
 
-    EXISTS(SELECT 1 FROM saved_post sp_me WHERE sp_me.post_id = p.post_id AND sp_me.user_id = $2) AS is_saved,
+    EXISTS(
+        SELECT 1 FROM saved_post sp_me 
+        WHERE sp_me.post_id = p.post_id 
+        AND (
+            ($3::uuid IS NOT NULL AND sp_me.org_id = $3::uuid)
+            OR
+            ($3::uuid IS NULL AND sp_me.user_id = $2 AND sp_me.org_id IS NULL)
+        )
+    ) AS is_saved,
 
     -- Media (array)
     COALESCE(
@@ -1493,19 +1572,21 @@ exports.getPostById = async (req, res) => {
                 'is_accessible', true,
                 'post_id', sp.post_id,
                 'content', sp.content,
+                'location', sp.location,
                 'created_at', sp.created_at,
                 'author', json_build_object(
                     'user_id', COALESCE(sp.author_org_id, sp_u.user_id),
                     'full_name', COALESCE(sp_comp.name, sp_u.full_name),
                     'avatar_url', COALESCE(sp_comp.logo_url, sp_u.avatar_url),
-                    'author_headline', COALESCE(sp_comp.slogan, sp_u.headline),
+                    'author_headline', CASE WHEN sp.author_org_id IS NOT NULL THEN sp_comp.headline ELSE sp_u.headline END,
                     'author_slug', COALESCE(sp_comp.slug, sp_u.account_name),
                     'is_organization_post', (sp.author_org_id IS NOT NULL)
                 ),
                 'media', COALESCE(sp_media.media, '[]'::json),
                 'like_count', (SELECT COUNT(*) FROM active_post_likes pl WHERE pl.post_id = sp.post_id)::int,
                 'comment_count', (SELECT COUNT(*) FROM active_post_comments pc WHERE pc.post_id = sp.post_id)::int,
-                'share_count', (SELECT COUNT(*) FROM posts sp_share2 WHERE sp_share2.shared_post_id = sp.post_id)::int,
+                'share_count', (SELECT COUNT(*) FROM posts sp_share2 WHERE sp_share2.shared_post_id = sp.post_id AND sp_share2.is_active = TRUE AND (sp_share2.is_removed IS FALSE OR sp_share2.is_removed IS NULL))::int,
+                'external_share_count', 0::int,
                 'is_liked', EXISTS(
                     SELECT 1 FROM active_post_likes pl 
                     WHERE pl.post_id = sp.post_id 
@@ -1523,6 +1604,7 @@ exports.getPostById = async (req, res) => {
                         OR
                         ($3::uuid IS NULL AND sp_rep.author_id = $2 AND sp_rep.author_org_id IS NULL)
                     )
+                    AND sp_rep.is_active = TRUE
                     AND (sp_rep.is_removed IS FALSE OR sp_rep.is_removed IS NULL)
                 ),
                 'repost_id', (
@@ -1533,6 +1615,7 @@ exports.getPostById = async (req, res) => {
                         OR
                         ($3::uuid IS NULL AND sp_rep.author_id = $2 AND sp_rep.author_org_id IS NULL)
                     )
+                    AND sp_rep.is_active = TRUE
                     AND (sp_rep.is_removed IS FALSE OR sp_rep.is_removed IS NULL)
                     LIMIT 1
                 ),
@@ -1638,7 +1721,10 @@ LEFT JOIN (
     GROUP BY post_id
 ) sp_media ON sp.post_id = sp_media.post_id
 
-WHERE p.post_id = $1 AND p.is_active = TRUE AND (p.is_removed IS FALSE OR p.is_removed IS NULL);
+WHERE p.post_id = $1 
+  AND p.is_active = TRUE 
+  AND (p.is_removed IS FALSE OR p.is_removed IS NULL)
+  AND (p.author_org_id IS NULL OR (comp.is_deleted = FALSE AND comp.deletion_execute_at IS NULL AND comp.is_deactivated = FALSE));
 `
 
         const result = await pool.query(query, [postId, userId, companyId || null]);
@@ -1647,16 +1733,19 @@ WHERE p.post_id = $1 AND p.is_active = TRUE AND (p.is_removed IS FALSE OR p.is_r
             return res.status(404).json({ message: "Post not found" });
         }
 
-        // STRICT BLOCK CHECK
+        // STRICT BLOCK CHECK (identity-aware)
+        // Use the active identity (companyId when acting as company, userId when personal)
+        // so personal blocks don't leak into company profile context
         const post = result.rows[0];
         if (userId) {
+            const activeActorId = companyId || userId;
             if (post.author_org_id) {
-                const isBlocked = await BlockModel.isOrgBlocked(post.author_org_id, userId);
+                const isBlocked = await BlockModel.isAnyBlocked(activeActorId, post.author_org_id);
                 if (isBlocked) {
                     return res.status(404).json({ message: "Post not found" });
                 }
             } else if (post.author_id && post.author_id !== userId) {
-                const isBlocked = await checkBlockStatus(userId, post.author_id);
+                const isBlocked = await BlockModel.isAnyBlocked(activeActorId, post.author_id);
                 if (isBlocked) {
                     return res.status(404).json({ message: "Post not found" });
                 }
@@ -1733,11 +1822,14 @@ WHERE p.post_id = $1 AND p.is_active = TRUE AND (p.is_removed IS FALSE OR p.is_r
             }
         }
 
+        const hydratedArray = await hydrateShareCounts([post]);
+        const finalPost = hydratedArray[0];
+
         const mappedPost = {
-            ...post,
-            id: post.post_id,
-            channelId: post.author_org_id,
-            created_by_user_id: post.author_id,
+            ...finalPost,
+            id: finalPost.post_id,
+            channelId: finalPost.author_org_id,
+            created_by_user_id: finalPost.author_id,
             coverImage: (post.media && post.media.length > 0) ? post.media[0].url : null,
             publishedAt: post.created_at,
             updatedAt: post.updated_at
@@ -2103,7 +2195,7 @@ exports.deletePost = async (req, res) => {
     let actorScope;
 
     try {
-        actorScope = getContentActorScope(req, req.body?.companyId || null);
+        actorScope = getContentActorScope(req, req.body?.companyId || req.query?.companyId || null);
     } catch (err) {
         return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
     }
@@ -2134,19 +2226,38 @@ exports.deletePost = async (req, res) => {
 
         // 2. Check Permissions
         if (author_org_id) {
+            // Case A: The request is made in the context of the org that owns the post.
+            // Any member with CREATE_CONTENT or MANAGE_CONTENT can delete; the original author always can.
             if (orgId && author_org_id === orgId) {
                 if (author_id === userId) {
                     canDelete = true;
                 } else {
                     const { checkOrgPermission } = require("../../core/utils/rbac");
-                    const hasPerm = await checkOrgPermission(client, orgId, userId, ["CREATE_CONTENT", "MANAGE_CONTENT"]);
+                    const hasPerm = await checkOrgPermission(client, orgId, userId, ["CREATE_CONTENT", "CREATE_POST", "MANAGE_CONTENT"]);
                     if (hasPerm) {
                         canDelete = true;
                     }
                 }
             }
+            // Case B: The request is NOT in the org context (e.g. user is browsing as personal,
+            // or is on the company profile page without the org actor header set).
+            // The human who originally authored the post can still delete it —
+            // they just aren't currently "acting as" the company.
+            else if (author_id === userId) {
+                // Verify the user really is a member (or owner) of that org so we don't let
+                // an outsider delete a post simply because their user_id happens to match.
+                const memberCheck = await client.query(
+                    `SELECT 1 FROM organization_members WHERE org_id = $1 AND user_id = $2 AND status = 'ACTIVE'
+                     UNION ALL
+                     SELECT 1 FROM organizations WHERE org_id = $1 AND created_by = $2`,
+                    [author_org_id, userId]
+                );
+                if (memberCheck.rowCount > 0) {
+                    canDelete = true;
+                }
+            }
         } else {
-            if (!orgId && author_id === userId) {
+            if (author_id === userId) {
                 canDelete = true;
             }
         }
@@ -2458,55 +2569,6 @@ exports.toggleLike = async (req, res) => {
 
             // 📝 Log Activity: Like Post
             logActivity(userId, 'like_post', 'post', postId);
-
-
-            // 🔔 Notify Author
-            // Fetch post author
-            const postRes = await pool.query("SELECT author_id, author_org_id FROM posts WHERE post_id = $1", [postId]);
-            if (postRes.rowCount > 0) {
-                const authorId = postRes.rows[0].author_id;
-                const authorCompanyId = postRes.rows[0].author_org_id;
-
-                // Don't notify if self (User liking own user post OR Company liking own company post)
-                let isSelf = (!companyId && !authorCompanyId && authorId === userId);
-                if (companyId && authorCompanyId && companyId === authorCompanyId) isSelf = true;
-
-                if (!isSelf) {
-                    let senderName, senderAvatar;
-
-                    if (companyId) {
-                        const companyRes = await pool.query("SELECT name, logo_url FROM organizations WHERE org_id = $1", [companyId]);
-                        senderName = companyRes.rows[0].name;
-                        senderAvatar = companyRes.rows[0].logo_url;
-                    } else {
-                        const userRes = await pool.query("SELECT full_name, avatar_url FROM users WHERE user_id = $1", [userId]);
-                        senderName = userRes.rows[0].full_name;
-                        senderAvatar = userRes.rows[0].avatar_url;
-                    }
-
-                    // Emit real-time
-                    socketService.notifyUser(authorId, "notification", {
-                        type: "like",
-                        text: `${senderName} liked your post`,
-                        from: userId,
-                        senderName: senderName,
-                        senderAvatar: senderAvatar,
-                        referenceId: postId,
-                        time: "Just now",
-                        metadata: { org_id: companyId }
-                    });
-
-                    // Persist notification
-                    await pool.query(
-                        `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata, recipient_org_id) 
-                         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-                        [authorId, userId, "like", `${senderName} liked your post`, postId, JSON.stringify({ org_id: companyId }), authorCompanyId]
-                    );
-                }
-            }
-
-            // 📝 Log Activity: Like Post
-            logActivity(userId, 'like_post', 'post', postId);
         }
 
 
@@ -2551,6 +2613,72 @@ exports.toggleLike = async (req, res) => {
                     fullName: user.full_name,
                     avatar: user.avatar_url
                 };
+            }
+        }
+
+        // 🔔 Notify Author (In-App unconditional, Push conditional)
+        if (liked) {
+            const postRes = await pool.query("SELECT author_id, author_org_id FROM posts WHERE post_id = $1", [postId]);
+            if (postRes.rowCount > 0) {
+                const authorId = postRes.rows[0].author_id;
+                const authorCompanyId = postRes.rows[0].author_org_id;
+
+                // Don't notify if self
+                let isSelf = (!companyId && !authorCompanyId && authorId === userId);
+                if (companyId && authorCompanyId && companyId === authorCompanyId) isSelf = true;
+
+                if (!isSelf) {
+                    const notificationText = `liked your post`;
+
+                    // Persist DB Notification unconditionally
+                    const notifRes = await pool.query(
+                        `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata, recipient_org_id) 
+                         VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING notification_id, created_at`,
+                        [
+                            authorId, 
+                            userId, 
+                            "like", 
+                            notificationText, 
+                            postId, 
+                            JSON.stringify({ org_id: companyId, post_id: postId }), 
+                            authorCompanyId
+                        ]
+                    );
+
+                    const dbNotification = notifRes.rows[0];
+
+                    const likeNotifPayload = {
+                        notification_id: dbNotification.notification_id,
+                        type: "like",
+                        text: notificationText,
+                        reference_id: postId,
+                        is_read: false,
+                        created_at: dbNotification.created_at.toISOString(),
+                        actor_name: actorInfo.fullName,
+                        actor_avatar: actorInfo.avatar,
+                        actor_slug: actorInfo.username,
+                        is_company_actor: !!companyId,
+                        metadata: { org_id: companyId, post_id: postId }
+                    };
+
+                    // Emit real-time to the post author unconditionally
+                    const ioService = require("../../core/infrastructure/socket.service");
+                    if (ioService && ioService.notifyUser) {
+                        ioService.notifyUser(authorId, "notification", likeNotifPayload);
+                    }
+                    
+                    // Also emit to org room if post belongs to an org
+                    if (authorCompanyId && ioService && ioService.notifyOrg) {
+                        ioService.notifyOrg(authorCompanyId, "notification", likeNotifPayload);
+                    }
+
+                    // Push notification conditionally based on thresholds EXACTLY as in image
+                    const likeThresholds = [6, 10, 40, 70, 100, 150, 200, 500, 750, 1000];
+                    if (likeThresholds.includes(likeCount)) {
+                        const pushText = `"${actorInfo.fullName}" and ${likeCount - 1} others liked your post`;
+                        sendPush(authorId, "New like on your post", pushText, { type: 'like', referenceId: postId }).catch(() => {});
+                    }
+                }
             }
         }
 
@@ -2634,7 +2762,8 @@ exports.addComment = async (req, res) => {
                      WHERE org_id = $1 AND created_by = $2`,
                     [postCompanyId, userId]
                 );
-                if (subscriptionCheck.rowCount === 0 && ownerCheck.rowCount === 0) {
+                const isCompanyCommentingOnOwnPost = companyId && (companyId === postCompanyId);
+                if (!isCompanyCommentingOnOwnPost && subscriptionCheck.rowCount === 0 && ownerCheck.rowCount === 0) {
                     return res.status(403).json({
                         message: "You must subscribe to the community to post thoughts"
                     });
@@ -2738,30 +2867,62 @@ exports.addComment = async (req, res) => {
         if (!companyId && postAuthorId === userId) shouldNotifyPostOwner = false;
 
         if (shouldNotifyPostOwner) {
-            const notificationText = `${actorName} commented on your post`;
+            // Count total comments on post
+            const countResult = await pool.query(
+                "SELECT COUNT(*) FROM active_post_comments WHERE post_id = $1",
+                [postId]
+            );
+            const commentCount = Number(countResult.rows[0].count);
+
+            let cleanedContent = content.replace(/@\w+\s*/g, '').trim();
+            let preview = cleanedContent.substring(0, 40);
+            if (cleanedContent.length > 40) preview += "...";
+            
+            let notificationText = `${actorName} commented: "${preview}"`;
 
             // Notification Metadata
             const meta = {
                 comment_id: newComment.comment_id,
-                org_id: companyId
+                org_id: companyId,
+                post_id: postId
             };
 
-            await pool.query(
+            const notifRes = await pool.query(
                 `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata, recipient_org_id) 
-                 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+                 VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING notification_id, created_at`,
                 [postAuthorId, userId, 'comment', notificationText, postId, JSON.stringify(meta), postCompanyId]
             );
 
-            socketService.notifyUser(postAuthorId, "notification", {
+            const dbNotification = notifRes.rows[0];
+
+            const commentNotifPayload = {
+                notification_id: dbNotification.notification_id,
                 type: 'comment',
                 text: notificationText,
-                from: userId,
-                senderName: actorName,
-                senderAvatar: actorAvatar,
-                referenceId: postId,
-                metadata: meta,
-                time: "Just now"
-            });
+                reference_id: postId,
+                is_read: false,
+                created_at: dbNotification.created_at.toISOString(),
+                actor_name: actorName,
+                actor_avatar: actorAvatar,
+                actor_slug: null, // Could fetch if needed
+                is_company_actor: !!companyId,
+                metadata: meta
+            };
+
+            // Notify the post author (personal) unconditionally
+            socketService.notifyUser(postAuthorId, "notification", commentNotifPayload);
+            
+            // Also notify org room if the post belongs to an org
+            if (postCompanyId) {
+                socketService.notifyOrg(postCompanyId, "notification", commentNotifPayload);
+            }
+
+            // Push notification conditionally based on thresholds EXACTLY as in image
+            const commentThresholds = [40, 55, 70, 85, 100, 150, 200, 500, 750, 1000];
+            if (commentThresholds.includes(commentCount)) {
+                let pushText = `${actorName} and ${commentCount - 1} others commented: "${preview}"`;
+                sendPush(postAuthorId, "New comment on your post", pushText, { type: 'comment', referenceId: postId }).catch(() => {});
+            }
         }
 
         if (parent_id) {
@@ -2788,20 +2949,26 @@ exports.addComment = async (req, res) => {
                 if (!companyId && !parentCompanyId && parentAuthorId === userId) isSelfReply = true;
 
                 if (!isSelfReply && !isPostOwner) {
-                    const replyText = `${actorName} replied to your comment`;
+                    let cleanedContent = content.replace(/@\w+\s*/g, '').trim();
+                    let preview = cleanedContent.substring(0, 40);
+                    if (cleanedContent.length > 40) preview += "...";
+                    const replyText = `${actorName} replied to your comment: "${preview}"`;
                     const meta = {
                         comment_id: newComment.comment_id,
                         parent_id,
                         org_id: companyId
                     };
 
-                    await pool.query(
+                    const notifRes = await pool.query(
                         `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata, recipient_org_id) 
-                         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+                         VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING notification_id, created_at`,
                         [parentAuthorId, userId, 'reply', replyText, postId, JSON.stringify(meta), parentCompanyId]
                     );
 
-                    socketService.notifyUser(parentAuthorId, "notification", {
+                    const dbNotification = notifRes.rows[0];
+
+                    const replyNotifPayload = {
+                        notification_id: dbNotification.notification_id,
                         type: 'reply',
                         text: replyText,
                         from: userId,
@@ -2810,8 +2977,19 @@ exports.addComment = async (req, res) => {
                         referenceId: postId,
                         metadata: meta,
                         time: "Just now",
-                        recipient_org_id: parentCompanyId // Helper for frontend if needed
-                    });
+                        created_at: dbNotification.created_at.toISOString(),
+                        recipient_org_id: parentCompanyId
+                    };
+
+                    // Notify the parent comment author (personal)
+                    socketService.notifyUser(parentAuthorId, "notification", replyNotifPayload);
+                    // Push notification for offline devices
+                    sendPush(parentAuthorId, actorName, replyNotifPayload.text, { type: 'reply', postId }).catch(() => {});
+
+                    // Also notify org room if the parent comment was from an org
+                    if (parentCompanyId) {
+                        socketService.notifyOrg(parentCompanyId, "notification", replyNotifPayload);
+                    }
                 }
             }
         }
@@ -2854,6 +3032,8 @@ exports.addComment = async (req, res) => {
                             metadata: meta,
                             time: "Just now"
                         });
+                        // Push notification for offline devices
+                        sendPush(mentionedUserId, actorName, notifText, { type: 'mention', postId }).catch(() => {});
                     }
                 }
             }
@@ -3214,15 +3394,21 @@ exports.toggleCommentLike = async (req, res) => {
                 );
 
                 // Emit real-time
-                socketService.notifyUser(authorId, "notification", {
+                const commentLikePayload = {
                     type: "like",
                     text: `${senderName} liked your comment`,
                     senderName: senderName,
                     senderAvatar: senderAvatar,
-                    referenceId: comment.post_id, // Link to post usually
+                    referenceId: comment.post_id, // Link to post
                     metadata: meta,
                     recipient_org_id: authorCompanyId
-                });
+                };
+                socketService.notifyUser(authorId, "notification", commentLikePayload);
+
+                // Also notify org room if comment was from an org
+                if (authorCompanyId) {
+                    socketService.notifyOrg(authorCompanyId, "notification", commentLikePayload);
+                }
             }
         }
 
@@ -3445,11 +3631,19 @@ exports.getComments = async (req, res) => {
       WHERE c.post_id = $1
       AND (c.author_org_id IS NULL OR comp.org_id IS NOT NULL)
       -- 1. Exclude blocked users
+      ${companyId ? `
       AND NOT EXISTS (
         SELECT 1 FROM blocks b 
-        WHERE (b.blocker_id = $2 AND b.blocked_id = c.author_id) 
-           OR (b.blocker_id = c.author_id AND b.blocked_id = $2)
+        WHERE (b.is_org_block = true AND ((b.blocker_id = $3 AND b.blocked_id = c.author_id) OR (b.blocker_id = c.author_id AND b.blocked_id = $3)))
+           OR (b.is_org_block = true AND c.author_org_id IS NOT NULL AND ((b.blocker_id = c.author_org_id AND b.blocked_id = $3) OR (b.blocker_id = $3 AND b.blocked_id = c.author_org_id)))
       )
+      ` : `
+      AND NOT EXISTS (
+        SELECT 1 FROM blocks b 
+        WHERE (b.is_org_block = false AND ((b.blocker_id = $2 AND b.blocked_id = c.author_id) OR (b.blocker_id = c.author_id AND b.blocked_id = $2)))
+           OR (b.is_org_block = true AND c.author_org_id IS NOT NULL AND ((b.blocker_id = c.author_org_id AND b.blocked_id = $2) OR (b.blocker_id = $2 AND b.blocked_id = c.author_org_id)))
+      )
+      `}
       -- 2. Exclude hidden comments (Hiding a comment or its parent hides the thread)
       AND NOT EXISTS (
         SELECT 1 FROM hidden_comments hc
@@ -4112,6 +4306,7 @@ exports.createStory = async (req, res) => {
                         'is_accessible', true,
                         'post_id', sp.post_id,
                         'content', sp.content,
+                        'location', sp.location,
                         'author', json_build_object(
                             'user_id', sp_u.user_id,
                             'full_name', sp_u.full_name,
@@ -4837,6 +5032,8 @@ exports.addStoryComment = async (req, res) => {
                 time: "Just now",
                 metadata: { org_id: authorCompanyId }
             });
+            // Push notification for offline devices
+            sendPush(authorId, commenterName, `${commenterName} commented on your story`, { type: 'story_comment', storyId }).catch(() => {});
 
             await pool.query(
                 `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata) 
@@ -5072,3 +5269,48 @@ exports.getPostLikes = async (req, res) => {
     }
 };
 
+// --- Enhance with AI (General Text Generator) ---
+exports.generateAIContent = async (req, res) => {
+    try {
+        const { prompt, tone, context, companyId } = req.body;
+        
+        const actorScope = getContentActorScope(req, companyId || null);
+        const userId = actorScope.userId;
+        const orgId = actorScope.orgId;
+
+        if (!prompt || typeof prompt !== "string" || prompt.trim().length === 0) {
+            return res.status(400).json({ success: false, message: "Prompt is required" });
+        }
+        
+        if (prompt.length > 500) {
+            return res.status(400).json({ success: false, message: "Prompt must be under 500 characters." });
+        }
+
+        const sourceIp = req.headers["x-forwarded-for"] || req.socket.remoteAddress;
+
+        const generatedText = await contentGenerationService.generateGeneralText(prompt, tone, context, userId, sourceIp, orgId);
+
+        return res.status(200).json({ success: true, text: generatedText });
+    } catch (err) {
+        console.error("Generate AI Content Error:", err);
+        return res.status(err.statusCode || 500).json({ success: false, message: err.message || "Failed to generate AI content" });
+    }
+};
+
+exports.getAIUsage = async (req, res) => {
+    try {
+        const companyId = req.query.companyId;
+        const actorScope = getContentActorScope(req, companyId || null);
+        const userId = actorScope.userId;
+        const orgId = actorScope.orgId;
+
+        if (!userId && !orgId) {
+            return res.status(401).json({ success: false, message: "Unauthorized" });
+        }
+        const stats = await contentGenerationService.getAIUsageStats(userId, orgId);
+        return res.status(200).json({ success: true, remainingMonthly: Math.max(0, 45 - stats.monthlyCount) });
+    } catch (err) {
+        console.error("Get AI Usage Error:", err);
+        return res.status(err.statusCode || 500).json({ success: false, message: err.message || "Failed to get AI usage" });
+    }
+};

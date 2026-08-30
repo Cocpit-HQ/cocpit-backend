@@ -2,18 +2,25 @@ const express = require("express");
 const router = express.Router();
 const userSettingsController = require("./userSettings.controller");
 const { requireAuth } = require("../../core/middlewares/auth.middleware");
+const { resolveActorContext } = require("../../core/middlewares/actor-context.middleware");
 
-// Protect all /api/user/* settings routes
+// Protect all /api/user/* settings routes & resolve active actor context (USER vs ORGANIZATION / INSTITUTION)
 router.use(requireAuth);
+router.use(resolveActorContext);
+
+const organizationController = require("../organization/organization.controller");
 
 // ─── 1. Account Settings ───────────────────────────────────────────────────────
+router.get("/organizations", organizationController.getUserOrganizationsSettings);
 router.get("/account", userSettingsController.getAccountDetails);
+router.post("/account/delete-otp", userSettingsController.requestDeleteOTP);
 router.put("/email", userSettingsController.updateEmail);
 router.delete("/email/recovery", userSettingsController.deleteRecoveryEmail);
 router.put("/password", userSettingsController.updatePassword);
 router.put("/phone", userSettingsController.updatePhone);
 router.delete("/phone", userSettingsController.removePhone);
 router.delete("/account", userSettingsController.deleteAccount);
+router.patch("/account/deactivate", userSettingsController.deactivateAccount);
 
 // ─── 2. Activity Settings ───────────────────────────────────────────────────────
 router.get("/activity", userSettingsController.getActivityLogs);

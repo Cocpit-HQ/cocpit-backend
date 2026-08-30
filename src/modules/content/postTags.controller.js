@@ -1,7 +1,12 @@
 const pool = require("../../core/db/pool");
 const socketService = require("../../core/infrastructure/socket.service");
 
-async function filterAllowedTaggedUserIds(client, actorUserId, targetUserIds) {
+// Ensure post_tags.tagged_user_id can store both user_id and org_id without strict FK restriction to users table
+pool.query(`ALTER TABLE post_tags DROP CONSTRAINT IF EXISTS post_tags_tagged_user_id_fkey;`).catch(err => {
+    console.error("[postTags] Migration: Error dropping post_tags FK constraint:", err?.message || err);
+});
+
+async function filterAllowedTaggedUserIds(client, actorUserId, actorOrgId, targetUserIds) {
     if (!targetUserIds || targetUserIds.length === 0) return [];
 
     const usersRes = await client.query(
@@ -12,9 +17,11 @@ async function filterAllowedTaggedUserIds(client, actorUserId, targetUserIds) {
     );
 
     const allowedUserIds = [];
+    const foundUserIds = new Set();
 
     for (const u of usersRes.rows) {
         const { user_id, tag_permission } = u;
+        foundUserIds.add(user_id);
 
         if (tag_permission === 'no_one') {
             continue;
@@ -53,6 +60,48 @@ async function filterAllowedTaggedUserIds(client, actorUserId, targetUserIds) {
         allowedUserIds.push(user_id);
     }
 
+    // Check Organization tag permissions for any IDs not found in users table
+    const remainingOrgIds = targetUserIds.filter(id => !foundUserIds.has(id));
+    if (remainingOrgIds.length > 0) {
+        const orgsRes = await client.query(
+            `SELECT o.org_id, COALESCE(ops.tag_permission, 'everyone') AS tag_permission
+             FROM organizations o
+             LEFT JOIN organization_privacy_settings ops ON o.org_id = ops.org_id
+             WHERE o.org_id = ANY($1::uuid[]) AND o.is_deleted = FALSE`,
+            [remainingOrgIds]
+        );
+
+        for (const o of orgsRes.rows) {
+            const { org_id, tag_permission } = o;
+
+            if (tag_permission === 'no_one') continue;
+            if (tag_permission === 'everyone' || (!actorUserId && !actorOrgId)) {
+                allowedUserIds.push(org_id);
+                continue;
+            }
+
+            if (tag_permission === 'followers_only') {
+                let followRes;
+                if (actorOrgId) {
+                    followRes = await client.query(
+                        `SELECT 1 FROM organization_org_follows WHERE follower_org_id = $1 AND following_org_id = $2`,
+                        [actorOrgId, org_id]
+                    );
+                } else {
+                    followRes = await client.query(
+                        `SELECT 1 FROM organization_followers WHERE user_id = $1 AND org_id = $2`,
+                        [actorUserId, org_id]
+                    );
+                }
+                if (followRes.rowCount > 0) {
+                    allowedUserIds.push(org_id);
+                }
+                continue;
+            }
+            allowedUserIds.push(org_id);
+        }
+    }
+
     return allowedUserIds;
 }
 
@@ -70,7 +119,7 @@ exports.syncPostTags = async (req, res) => {
         await client.query('BEGIN');
 
         // Filter requested tags based on target users' tag_permission settings
-        const allowedTags = await filterAllowedTaggedUserIds(client, actorUserId, uniqueValidTags);
+        const allowedTags = await filterAllowedTaggedUserIds(client, actorUserId, req.actor?.orgId, uniqueValidTags);
 
         // Capture currently active tags so we only notify for newly tagged users
         const existingTagsRes = await client.query(
@@ -135,39 +184,97 @@ exports.syncPostTags = async (req, res) => {
                 }
             }
 
-            const notificationText = `${senderName} tagged you in a post`;
+            const notificationText = "tagged you in a post";
 
             for (const taggedUserId of filteredNewlyTaggedUserIds) {
                 const metadata = { post_id: postId, org_id: companyId || null };
 
-                const notifRes = await client.query(
-                    `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata)
-                     VALUES ($1, $2, $3, $4, $5, $6)
-                     RETURNING notification_id`,
-                    [taggedUserId, actorUserId, "post_tag", notificationText, postId, JSON.stringify(metadata)]
-                );
+                // Check if target is an individual user or an organization
+                const userCheck = await client.query(`SELECT 1 FROM users WHERE user_id = $1`, [taggedUserId]);
 
-                notificationsToEmit.push({
-                    taggedUserId,
-                    payload: {
-                        notification_id: notifRes.rows[0].notification_id,
-                        type: "post_tag",
-                        text: notificationText,
-                        from: actorUserId,
-                        senderName,
-                        senderAvatar,
-                        referenceId: postId,
-                        metadata,
-                        time: "Just now"
+                if (userCheck.rowCount > 0) {
+                    const notifRes = await client.query(
+                        `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata)
+                         VALUES ($1, $2, $3, $4, $5, $6)
+                         RETURNING notification_id`,
+                        [taggedUserId, actorUserId, "post_tag", notificationText, postId, JSON.stringify(metadata)]
+                    );
+
+                    notificationsToEmit.push({
+                        targetId: taggedUserId,
+                        isOrg: false,
+                        payload: {
+                            notification_id: notifRes.rows[0].notification_id,
+                            type: "post_tag",
+                            text: notificationText,
+                            from: actorUserId,
+                            senderName,
+                            senderAvatar,
+                            referenceId: postId,
+                            metadata,
+                            time: "Just now"
+                        }
+                    });
+                } else {
+                    // Target is an Organization: create notifications for its active team members
+                    const membersRes = await client.query(
+                        `SELECT user_id FROM organization_members WHERE org_id = $1 AND status = 'ACTIVE'`,
+                        [taggedUserId]
+                    );
+
+                    for (const m of membersRes.rows) {
+                        const notifRes = await client.query(
+                            `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata)
+                             VALUES ($1, $2, $3, $4, $5, $6)
+                             RETURNING notification_id`,
+                            [m.user_id, actorUserId, "post_tag", notificationText, postId, JSON.stringify(metadata)]
+                        );
+
+                        notificationsToEmit.push({
+                            targetId: m.user_id,
+                            isOrg: false,
+                            payload: {
+                                notification_id: notifRes.rows[0].notification_id,
+                                type: "post_tag",
+                                text: notificationText,
+                                from: actorUserId,
+                                senderName,
+                                senderAvatar,
+                                referenceId: postId,
+                                metadata,
+                                time: "Just now"
+                            }
+                        });
                     }
-                });
+
+                    notificationsToEmit.push({
+                        targetId: taggedUserId,
+                        isOrg: true,
+                        payload: {
+                            type: "post_tag",
+                            text: notificationText,
+                            from: actorUserId,
+                            senderName,
+                            senderAvatar,
+                            referenceId: postId,
+                            metadata,
+                            time: "Just now"
+                        }
+                    });
+                }
             }
         }
 
         await client.query('COMMIT');
 
         for (const item of notificationsToEmit) {
-            socketService.notifyUser(item.taggedUserId, "notification", item.payload);
+            if (item.isOrg) {
+                socketService.notifyOrg(item.targetId, "notification", item.payload);
+                socketService.notifyOrg(item.targetId, "activity_updated", { type: "tags" });
+            } else {
+                socketService.notifyUser(item.targetId, "notification", item.payload);
+                socketService.notifyUser(item.targetId, "activity_updated", { type: "tags" });
+            }
         }
 
         return res.status(200).json({
@@ -209,7 +316,26 @@ exports.getActivePostTags = async (req, res) => {
             JOIN active_users u ON pt.tagged_user_id = u.user_id
             LEFT JOIN profiles p ON u.user_id = p.user_id
             WHERE pt.post_id = $1 AND pt.is_active_tag = true
-            ORDER BY pt.updated_at DESC
+
+            UNION ALL
+
+            SELECT
+                o.org_id AS id,
+                o.name AS full_name,
+                o.slug AS account_name,
+                o.headline AS headline,
+                o.logo_url AS avatar_url,
+                NULL::text AS account_type,
+                'COMPANY'::text as type,
+                o.slug as slug,
+                o.industry as industry,
+                pt.tag_id,
+                pt.updated_at AS tagged_at
+            FROM post_tags pt
+            JOIN organizations o ON pt.tagged_user_id = o.org_id
+            WHERE pt.post_id = $1 AND pt.is_active_tag = true AND o.is_deleted = FALSE
+
+            ORDER BY tagged_at DESC
         `;
         
         const { rows } = await pool.query(query, [postId]);

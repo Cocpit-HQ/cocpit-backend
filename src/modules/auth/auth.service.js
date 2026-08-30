@@ -145,6 +145,53 @@ const initializeUserSession = async (user, userAgent, ipAddress) => {
     };
 };
 
+const handleNewDeviceDetection = async (userId, userEmail, userAgent, ipAddress) => {
+    try {
+        const isKnownDevice = await authRepo.checkDeviceExists(userId, userAgent, ipAddress);
+        if (isKnownDevice) return;
+
+        const emailService = require("../../core/services/email.service");
+        const notificationService = require("../notification/notification.service");
+        const pool = require("../../core/db/pool");
+        const socketService = require("../../core/infrastructure/socket.service");
+
+        const locationStr = ipAddress || "Unknown Location";
+        const deviceStr = userAgent ? (userAgent.substring(0, 30) + '...') : "Unknown Device";
+
+        // DB Insert
+        await pool.query(
+            `INSERT INTO notifications (user_id, type, text, is_read, metadata)
+             VALUES ($1, 'new_device_login', $2, false, $3)`,
+            [userId, `A new login to your account was detected from ${locationStr}.`, JSON.stringify({ title: 'New login detected' })]
+        );
+
+        // Socket Emit
+        if (socketService.io) {
+            socketService.notifyUser(userId, {
+                type: 'new_device_login',
+                title: 'New login detected',
+                text: `A new login to your account was detected from ${locationStr}.`,
+                created_at: new Date().toISOString()
+            });
+        }
+
+        // Push Notification
+        notificationService.sendToUser(userId, {
+            notification: {
+                title: 'New login detected',
+                body: `A new login to your account was detected from ${locationStr}.`
+            },
+            data: { type: 'new_device_login' }
+        }).catch(e => console.error("[Auth] Push error:", e));
+
+        // Email
+        emailService.sendNewDeviceLoginEmail(userEmail, deviceStr, locationStr).catch(e => console.error("[Auth] Email error:", e));
+
+    } catch (e) {
+        console.error("[Auth] New device detection error:", e);
+    }
+};
+
 const waitForRefreshReplay = async (userId, sessionId, presentedTokenHash, maxAttempts = 12, delayMs = 50) => {
     for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
         const replay = await getRefreshReplay(userId, sessionId, presentedTokenHash);
@@ -232,7 +279,7 @@ const loginUser = async ({ email, password, userAgent, ipAddress }) => {
     // 1. Find user
     const user = await authRepo.findUserByEmail(normalizedEmail);
     if (!user) {
-        return { error: { status: 401, message: "User not found" } };
+        return { error: { status: 401, message: "Incorrect password. Try again." } };
     }
 
     // 2. Validate password
@@ -241,7 +288,7 @@ const loginUser = async ({ email, password, userAgent, ipAddress }) => {
     }
     const isValid = await comparePassword(password, user.password_hash);
     if (!isValid) {
-        return { error: { status: 401, message: "Invalid credentials" } };
+        return { error: { status: 401, message: "Incorrect password. Try again." } };
     }
 
     // 2.5 Block login if account is suspended
@@ -268,7 +315,33 @@ const loginUser = async ({ email, password, userAgent, ipAddress }) => {
         };
     }
 
-    // 4. Initialize session (Shared logic)
+    // 3.5 Auto-reactivate if deactivated & reset group unread messages
+    if (user.is_deactivated) {
+        const pool = require("../../core/db/pool");
+        await pool.query(`UPDATE users SET is_deactivated = FALSE, deactivated_at = NULL WHERE user_id = $1`, [user.user_id]);
+        await pool.query(`UPDATE organizations SET is_deactivated = FALSE, deactivated_at = NULL WHERE created_by = $1 AND is_deleted = FALSE`, [user.user_id]);
+        
+        // Reset unread count for group conversations by updating last_read_at to NOW()
+        await pool.query(`
+            UPDATE conversation_participants cp
+            SET last_read_at = NOW()
+            FROM conversations c
+            WHERE cp.conversation_id = c.conversation_id
+              AND c.is_group = TRUE
+              AND cp.user_id = $1
+              AND cp.left_at IS NULL
+        `, [user.user_id]);
+
+        if (socketService.io) {
+            socketService.io.emit('user_reactivated', { userId: user.user_id });
+            socketService.io.emit('USER_REACTIVATED', { userId: user.user_id });
+        }
+    }
+
+    // 4. New Device Detection
+    await handleNewDeviceDetection(user.user_id, user.email, userAgent, ipAddress);
+
+    // 5. Initialize session (Shared logic)
     return initializeUserSession(user, userAgent, ipAddress);
 };
 
@@ -365,6 +438,13 @@ const refreshTokens = async (refreshTokenValue) => {
 const logoutUser = async (accessTokenValue) => {
     const { sub: userId, sid: sessionId } = verifyAccessToken(accessTokenValue, { ignoreExpiration: true });
     await authRepo.deleteSessionForUser(userId, sessionId);
+    if (redisClient.isOpen && sessionId) {
+        try {
+            await redisClient.setEx(`revoked_session:${sessionId}`, 15 * 60, "1");
+        } catch (redisErr) {
+            console.warn("[Auth] Failed to set revoked_session in Redis on logout:", redisErr.message);
+        }
+    }
     const disconnectedSockets = await socketService.disconnectUserSession(userId, sessionId);
     return { userId, sessionId, disconnectedSockets };
 };
@@ -395,17 +475,20 @@ const getCurrentUser = async (userId, tokenRoles) => {
  * In ALL scenarios, we issue platform JWT tokens (access + refresh) using
  * the exact same session pipeline as email/password login.
  */
-const socialLogin = async ({ provider, idToken, accountType, userAgent, ipAddress }) => {
+const socialLogin = async ({ provider, idToken, accountType, fullName: clientFullName, userAgent, ipAddress, action }) => {
     // ── Step 1: Verify Social ID token ──
     let socialUser;
     try {
-        socialUser = await verifySocialToken(provider, idToken);
+        socialUser = await  verifySocialToken(provider, idToken);
     } catch (err) {
         return { error: { status: 401, message: `Invalid or expired ${provider} token` } };
     }
 
-    const { providerId, email, fullName, avatarUrl } = socialUser;
-    const normalizedEmail = email.toLowerCase();
+    const { providerId, email, avatarUrl } = socialUser;
+    const normalizedEmail = email ? email.toLowerCase() : `${providerId}@${provider}.placeholder.com`;
+    
+    // Fallback logic for full name: Token -> Client -> Email prefix
+    const fullName = socialUser.fullName || clientFullName || (email ? normalizedEmail.split('@')[0] : 'Apple User');
 
     // ── Step 2: Find or create the user ──
     let user;
@@ -435,7 +518,17 @@ const socialLogin = async ({ provider, idToken, accountType, userAgent, ipAddres
             await authRepo.linkSocialAccount(user.user_id, provider, providerId);
 
         } else {
-            // Case 3: Brand new user — accountType defaults to Student if not provided
+            // Case 3: Brand new user
+            if (action === "login") {
+                return {
+                    error: {
+                        status: 404,
+                        code: "ACCOUNT_NOT_FOUND",
+                        message: "No account found. This account isn't registered with cocpit. Create an account to continue.",
+                    },
+                };
+            }
+
             const flags = featureFlagsService.getFlags();
             if (flags["enableUserSignup"] === false) {
                 return {
@@ -446,6 +539,7 @@ const socialLogin = async ({ provider, idToken, accountType, userAgent, ipAddres
                 };
             }
 
+            // accountType defaults to Student if not provided
             const finalAccountType = accountType || "Student";
 
             const validTypes = ["Fresher", "Student", "Employer", "Admin"];
@@ -497,6 +591,30 @@ const socialLogin = async ({ provider, idToken, accountType, userAgent, ipAddres
         };
     }
 
+    // ── Step 3.5: Auto-reactivate if deactivated & reset group unread messages ──
+    if (user.is_deactivated) {
+        const pool = require("../../core/db/pool");
+        await pool.query(`UPDATE users SET is_deactivated = FALSE, deactivated_at = NULL WHERE user_id = $1`, [user.user_id]);
+        await pool.query(`UPDATE organizations SET is_deactivated = FALSE, deactivated_at = NULL WHERE created_by = $1 AND is_deleted = FALSE`, [user.user_id]);
+        
+        // Reset unread count for group conversations by updating last_read_at to NOW()
+        await pool.query(`
+            UPDATE conversation_participants cp
+            SET last_read_at = NOW()
+            FROM conversations c
+            WHERE cp.conversation_id = c.conversation_id
+              AND c.is_group = TRUE
+              AND cp.user_id = $1
+              AND cp.left_at IS NULL
+        `, [user.user_id]);
+
+        if (socketService.io) {
+            socketService.io.emit('user_reactivated', { userId: user.user_id });
+            socketService.io.emit('USER_REACTIVATED', { userId: user.user_id });
+        }
+>>>>>>> 2661dd912c7506b8ce587aea0103db9815a54baa
+    }
+
     // ── Step 4: Generate platform tokens (reuses existing JWT pipeline) ──
     const sessionId = crypto.randomUUID();
     const roles = await authRepo.getUserRoles(user.user_id);
@@ -517,6 +635,10 @@ const socialLogin = async ({ provider, idToken, accountType, userAgent, ipAddres
     const hashedRefresh = crypto.createHash("sha256").update(refreshToken).digest("hex");
 
     // ── Step 4: Store session (respects existing 10-device limit) ──
+    if (!isNewUser) {
+        await handleNewDeviceDetection(user.user_id, user.email || normalizedEmail, userAgent, ipAddress);
+    }
+
     await authRepo.beginTransaction();
     try {
         const activeSessions = await authRepo.getActiveSessions(user.user_id);

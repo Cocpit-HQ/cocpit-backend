@@ -28,6 +28,7 @@
 const { getSocialGraphCandidates } = require('./sources/socialGraphSource');
 const { getTrendingCandidates }    = require('./sources/trendingSource');
 const { getOpportunityCandidates } = require('./sources/opportunitySource');
+const BlockModel = require('../../../models/block.model');
 const { getExplorationCandidates } = require('./sources/explorationSource');
 const {
   getCandidatePool,
@@ -167,7 +168,14 @@ async function generateCandidates({
   // ── 3. Call all 4 sources in parallel (fault-tolerant) ───────────────────
   // Source priority order (first seen wins in contentId dedup):
   //   social graph > trending > opportunity > exploration
-  const sourceParams = { userId, limit, pool };
+  let blockedIds = new Set();
+  try {
+    blockedIds = await BlockModel.getBlockedAndBlockingIds(userId) ?? new Set();
+  } catch (e) {
+    console.warn('[candidateGenerator] Could not fetch blockedIds:', e.message);
+  }
+
+  const sourceParams = { userId, limit, pool, blockedIds };
 
   const [
     socialGraphResult,
@@ -230,7 +238,7 @@ async function generateCandidates({
       if (process.env.DEBUG_FEED === 'true') {
         console.log(`[candidateGenerator:DEBUG] Pool size is ${deduped.length} (< 5). Triggering trending fallback...`);
       }
-      const fallbackTrending = await getTrendingCandidates({ userId, limit, pool });
+      const fallbackTrending = await getTrendingCandidates({ userId, limit, pool, blockedIds });
       const currentContentIds = new Set(deduped.map(c => c.contentId));
       for (const candidate of fallbackTrending) {
         if (!currentContentIds.has(candidate.contentId)) {

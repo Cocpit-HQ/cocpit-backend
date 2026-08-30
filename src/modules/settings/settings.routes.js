@@ -6,6 +6,7 @@ const preferencesController = require("./preferences.controller");
 const supportController = require("./support.controller");
 
 const { requireAuth, requireActiveSession, optionalAuth } = require("../../core/middlewares/auth.middleware");
+const { resolveActorContext } = require("../../core/middlewares/actor-context.middleware");
 const { validate } = require("../../core/middlewares/validation.middleware");
 const { createRateLimit } = require("../../core/middlewares/rateLimit.middleware");
 const { uploadSupportAttachment } = require("../../core/middlewares/upload.middleware");
@@ -34,10 +35,21 @@ const sensitiveActionLimiter = createRateLimit({
     message: "Too many requests. Please try again later.",
 });
 
+// Resolve active actor context (USER vs ORGANIZATION / INSTITUTION) for all settings endpoints
+router.use(resolveActorContext);
+
 // ─── 1. Account Settings ───────────────────────────────────────────────────────
 
 // Password Change
 router.post("/account/password/change", requireAuth, requireActiveSession, sensitiveActionLimiter, validate(changePasswordSchema), accountController.changePassword);
+
+// Account Verification (Mock)
+router.post(
+    "/account/verify-identity",
+    requireAuth,
+    uploadSupportAttachment ? uploadSupportAttachment.fields([{ name: 'frontImage', maxCount: 1 }, { name: 'backImage', maxCount: 1 }]) : (req, res, next) => next(),
+    accountController.verifyIdentity
+);
 
 // Primary Email Change (4-Step OTP Flow)
 router.post("/account/email/verify-current", requireAuth, sensitiveActionLimiter, accountController.verifyCurrentEmail);
@@ -84,10 +96,10 @@ router.get("/reports/:reportId", requireAuth, supportController.getMyReportById)
 
 // ─── 4. Support, Feedback, FAQs, Legal ────────────────────────────────────────
 
-router.get("/support/version", optionalAuth, supportController.getVersion);
+router.get("/support/version", optionalAuth, resolveActorContext, supportController.getVersion);
 router.get("/support/faqs", supportController.getFaqs);
-router.post("/support/tickets", requireAuth, uploadSupportAttachment ? uploadSupportAttachment.single("attachment") : (req, res, next) => next(), validate(supportTicketSchema), supportController.createTicket);
-router.post("/support/feedback", requireAuth, validate(userFeedbackSchema), supportController.submitFeedback);
+router.post("/support/tickets", requireAuth, resolveActorContext, uploadSupportAttachment ? uploadSupportAttachment.single("attachment") : (req, res, next) => next(), validate(supportTicketSchema), supportController.createTicket);
+router.post("/support/feedback", requireAuth, resolveActorContext, validate(userFeedbackSchema), supportController.submitFeedback);
 router.get("/legal", supportController.getLegalDocs);
 
 module.exports = router;

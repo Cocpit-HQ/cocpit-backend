@@ -16,6 +16,7 @@ const pool = require('../../../core/db/pool');
 const { compareExperience, getLatestEducation, calculateTotalExperienceYears } = require('./application.utils');
 const { generateLocalSystemFallback, analyzeCandidate } = require('../../../services/candidateAnalysis.service');
 const { redisClient } = require('../../../core/db/redis');
+const socketService = require('../../../core/infrastructure/socket.service');
 
 // ─── Shared auth helper ───────────────────────────────────────────────────────
 // Asserts that the requesting user is either the direct recruiter or an org
@@ -184,6 +185,68 @@ exports.getApplicationDetail = async (req, res) => {
           [applicationId]
         );
         detail.status = 'in-review';
+
+        // 🎯 Trigger Notification: Application is Under Review
+        try {
+          const appDetailsRes = await pool.query(`
+            SELECT ja.applicant_id, j.title, j.job_id, o.name as company_name, o.org_id, o.logo_url as company_avatar, u.email as applicant_email
+            FROM job_applications ja
+            JOIN jobs j ON ja.job_id = j.job_id
+            LEFT JOIN organizations o ON j.org_id = o.org_id
+            JOIN users u ON ja.applicant_id = u.user_id
+            WHERE ja.application_id = $1
+          `, [applicationId]);
+
+          if (appDetailsRes.rowCount > 0) {
+            const { applicant_id, title, job_id, company_name, org_id, company_avatar, applicant_email } = appDetailsRes.rows[0];
+            const senderId = req.user.sub;
+            
+            const recruiterRes = await pool.query(`SELECT full_name, avatar_url FROM users WHERE user_id = $1`, [senderId]);
+            const recruiter = recruiterRes.rows[0];
+            
+            const senderName = company_name || recruiter?.full_name || 'Someone';
+            const senderAvatar = company_avatar || recruiter?.avatar_url || null;
+
+            const notificationType = 'application_under_review';
+            const notificationTitle = 'Your application is under review';
+            const notificationText = `"${senderName}" is reviewing your application for the role "${title}"`;
+
+            const { sendToUser } = require('../../../modules/notification/notification.service');
+
+            const notifRes = await pool.query(`
+              INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata)
+              VALUES ($1, $2, $3, $4, $5, $6)
+              RETURNING notification_id
+            `, [
+              applicant_id,
+              senderId,
+              notificationType,
+              notificationText,
+              job_id,
+              JSON.stringify({ job_id, application_id: applicationId, org_id })
+            ]);
+            const notificationId = notifRes.rows[0]?.notification_id;
+
+            socketService.notifyUser(applicant_id, "notification", {
+              notification_id: notificationId,
+              type: notificationType,
+              title: notificationTitle,
+              text: notificationText,
+              senderName: senderName,
+              senderAvatar: senderAvatar,
+              referenceId: job_id,
+              metadata: { job_id, application_id: applicationId, org_id }
+            });
+
+            sendToUser(applicant_id, notificationTitle, notificationText, {
+                type: notificationType,
+                referenceId: job_id
+            }).catch(() => {});
+          }
+        } catch (notifErr) {
+          console.error('[getApplicationDetail] failed to send in-review notification:', notifErr);
+        }
+
       } catch (err) {
         console.error('[getApplicationDetail] failed to update status to in-review:', err);
       }
@@ -272,6 +335,7 @@ exports.getApplicationDetail = async (req, res) => {
       email:         detail.email,
       phone:         detail.phone || null,
       avatarUrl:     detail.avatarUrl || null,
+      isDeactivated: detail.isDeactivated || false,
       headline:      detail.headline || '',
       location:      detail.location || '',
       about:         detail.about || null,
@@ -357,6 +421,76 @@ exports.updateApplicationStatus = async (req, res) => {
        VALUES ($1, $2)`,
       [applicationId, status]
     );
+
+    // Send notification to candidate if they are shortlisted or get an offer
+    if (status === 'Shortlisted' || status === 'Offer') {
+      const appDetailsRes = await pool.query(`
+        SELECT ja.applicant_id, j.title, j.job_id, o.name as company_name, o.org_id, o.logo_url as company_avatar, u.email as applicant_email
+        FROM job_applications ja
+        JOIN jobs j ON ja.job_id = j.job_id
+        LEFT JOIN organizations o ON j.org_id = o.org_id
+        JOIN users u ON ja.applicant_id = u.user_id
+        WHERE ja.application_id = $1
+      `, [applicationId]);
+
+      if (appDetailsRes.rowCount > 0) {
+        const { applicant_id, title, job_id, company_name, org_id, company_avatar, applicant_email } = appDetailsRes.rows[0];
+        const senderId = req.user.sub;
+        
+        const recruiterRes = await pool.query(`SELECT full_name, avatar_url FROM users WHERE user_id = $1`, [senderId]);
+        const recruiter = recruiterRes.rows[0];
+        
+        const senderName = company_name || recruiter?.full_name || 'Someone';
+        const senderAvatar = company_avatar || recruiter?.avatar_url || null;
+        
+        let notificationType;
+        let notificationText;
+        let notificationTitle;
+        const { sendToUser } = require('../../../modules/notification/notification.service');
+        const { sendShortlistedEmail } = require('../../../core/services/email.service');
+        
+        if (status === 'Shortlisted') {
+            notificationType = 'application_shortlisted';
+            notificationTitle = 'Your application has been shortlisted';
+            notificationText = `"${senderName}" has shortlisted your application for the role "${title}"`;
+            sendShortlistedEmail(applicant_email, senderName, title).catch(() => {});
+        } else if (status === 'Offer') {
+            notificationType = 'job_offer';
+            notificationTitle = "You've received an offer";
+            notificationText = `"${senderName}" has sent you an offer for the role "${title}". Review the details now`;
+        }
+        
+        const notifRes = await pool.query(`
+          INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata)
+          VALUES ($1, $2, $3, $4, $5, $6)
+          RETURNING notification_id
+        `, [
+          applicant_id,
+          senderId,
+          notificationType,
+          notificationText,
+          job_id,
+          JSON.stringify({ job_id, application_id: applicationId, org_id })
+        ]);
+        const notificationId = notifRes.rows[0]?.notification_id;
+        
+        socketService.notifyUser(applicant_id, "notification", {
+          notification_id: notificationId,
+          type: notificationType,
+          title: notificationTitle,
+          text: notificationText,
+          senderName: senderName,
+          senderAvatar: senderAvatar,
+          referenceId: job_id,
+          metadata: { job_id, application_id: applicationId, org_id }
+        });
+
+        sendToUser(applicant_id, notificationTitle, notificationText, {
+            type: notificationType,
+            referenceId: job_id
+        }).catch(() => {});
+      }
+    }
 
     res.json({ message: 'Status updated', status });
 

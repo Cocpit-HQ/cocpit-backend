@@ -4,8 +4,10 @@ const bcrypt = require("bcrypt");
 const pool = require('../../core/db/pool');
 const emailService = require("../../core/services/email.service");
 
-// Expiry in minutes (default 5)
-const OTP_EXPIRY_MINUTES = parseInt(process.env.OTP_EXPIRY_MINUTES) || 5;
+// Default OTP code expiry: 10 minutes
+const OTP_EXPIRY_MINUTES = parseInt(process.env.OTP_EXPIRY_MINUTES) || 10;
+// Post-verification session expiry: 10 minutes
+const SESSION_EXPIRY_MINUTES = parseInt(process.env.SESSION_EXPIRY_MINUTES) || 10;
 const MAX_ATTEMPTS = 5;
 
 /**
@@ -22,14 +24,10 @@ const generateSecureOTP = () => {
  * Generates, stores, and emails an OTP.
  * @param {string} email
  * @param {"signup"|"password_reset"} purpose
- *   - "signup": returns 409 immediately if email is already registered (no OTP sent)
- *   - "password_reset": always returns generic 200 but only sends OTP if account exists
- *     (prevents enumeration — attacker cannot tell if the account exists)
  */
-const requestOTP = async (email, purpose = "signup") => {
+const requestOTP = async (email, purpose = "signup", isResend = false) => {
     const normalizedEmail = email.toLowerCase().trim();
 
-    // ── Purpose-based pre-flight check ──────────────────────────────────────────
     const userResult = await pool.query(
         "SELECT 1 FROM users WHERE email = $1",
         [normalizedEmail]
@@ -37,78 +35,148 @@ const requestOTP = async (email, purpose = "signup") => {
     const userExists = userResult.rowCount > 0;
 
     if (purpose === "signup") {
-        // Block registration if email is already taken — tell the user so they can sign in
         if (userExists) {
             return {
                 error: {
                     status: 409,
-                    message: "An account with this email already exists. Please sign in instead.",
+                    message: "An account with this email already exists",
                 },
             };
         }
     } else if (purpose === "password_reset") {
-        // Silent no-op — never reveal whether the email exists
-        // Controller always responds with a generic 200 success message either way
         if (!userExists) {
-            return { success: true, silentNoOp: true };
+            return {
+                error: {
+                    status: 404,
+                    message: "We couldn't find an account with this email",
+                },
+            };
         }
     }
 
-    // ── Rate Limit Check (3 per email per 60 seconds) ────────────────────────────
+    // Check existing OTP record with database-calculated timezone-safe epoch seconds
     const existing = await pool.query(
-        `SELECT created_at, request_count FROM email_otps WHERE email = $1`,
-        [normalizedEmail]
+        `SELECT created_at, request_count, verified_at, session_expires_at, expires_at,
+                EXTRACT(EPOCH FROM (NOW() - created_at)) AS elapsed_seconds,
+                EXTRACT(EPOCH FROM (expires_at - NOW())) AS remaining_otp_seconds,
+                EXTRACT(EPOCH FROM (session_expires_at - NOW())) AS remaining_session_seconds
+         FROM email_otps WHERE email = $1 AND purpose = $2`,
+        [normalizedEmail, purpose]
     );
 
+    if (existing.rows.length > 0) {
+        const record = existing.rows[0];
+        const elapsedSeconds = Math.max(0, parseFloat(record.elapsed_seconds || 0));
+        const remainingOtpSeconds = parseFloat(record.remaining_otp_seconds || 0);
+        const remainingSessionSeconds = parseFloat(record.remaining_session_seconds || 0);
+
+        // 1. Clean up stale verified session
+        if (record.verified_at) {
+            console.log(`[OTP SERVICE] Stale verified session found for ${normalizedEmail}. Cleaning up.`);
+            await pool.query(`DELETE FROM email_otps WHERE email = $1 AND purpose = $2`, [normalizedEmail, purpose]);
+        }
+        // 2. Clean up expired OTP
+        else if (remainingOtpSeconds <= 0) {
+            await pool.query(`DELETE FROM email_otps WHERE email = $1 AND purpose = $2`, [normalizedEmail, purpose]);
+        } else if (!isResend && remainingOtpSeconds > 0) {
+            // 3. Edge Case 3: Unverified OTP already sent and not expired
+            const remainingExpiry = Math.min(OTP_EXPIRY_MINUTES * 60, Math.max(0, Math.floor(remainingOtpSeconds)));
+
+            if (elapsedSeconds < 60) {
+                // 3a. Cooldown still active (Clamped strictly between 1 and 60s)
+                const remainingCooldown = Math.min(60, Math.max(1, Math.ceil(60 - elapsedSeconds)));
+                const cooldownExpiresAt = new Date(Date.now() + remainingCooldown * 1000).toISOString();
+                console.log(`[OTP SERVICE] Active OTP with running cooldown found for ${normalizedEmail}. Cooldown: ${remainingCooldown}s.`);
+                return {
+                    success: true,
+                    otpActive: true,
+                    remainingCooldown,
+                    cooldownExpiresAt,
+                    remainingExpiry,
+                    serverTime: new Date().toISOString(),
+                    message: "A verification code was already sent to your email.",
+                };
+            } else {
+                // 3b. Cooldown ended, OTP still valid
+                console.log(`[OTP SERVICE] Active OTP with ended cooldown found for ${normalizedEmail}. Valid for ${remainingExpiry}s.`);
+                return {
+                    success: true,
+                    otpActive: true,
+                    remainingCooldown: 0,
+                    cooldownExpiresAt: new Date().toISOString(),
+                    remainingExpiry,
+                    serverTime: new Date().toISOString(),
+                    message: "A verification code was already sent to your email.",
+                };
+            }
+        }
+    }
+
+    // 4. Rate Limit Check on Fresh / Resend OTP requests (Max 3 per email per 60 seconds)
     let requestCount = 1;
     let shouldUpdateCreatedAt = true;
 
     if (existing.rows.length > 0) {
         const record = existing.rows[0];
-        const now = new Date();
-        const created = new Date(record.created_at);
-        const diffSeconds = (now - created) / 1000;
+        const elapsedSeconds = Math.max(0, parseFloat(record.elapsed_seconds || 0));
 
-        if (diffSeconds < 60) {
-            if (diffSeconds < 5) {
+        if (elapsedSeconds < 60) {
+            if (elapsedSeconds < 5) {
                 return { error: { status: 429, message: "A verification code was just requested. Please wait a few seconds before trying again." } };
             }
             if (record.request_count >= 3) {
-                // Return a structured error that the controller can handle
                 return { error: { status: 429, message: "Too many OTP requests. Please wait a minute before trying again." } };
             }
-            requestCount = record.request_count + 1;
-            shouldUpdateCreatedAt = false; // Keep the same window start
+            requestCount = (record.request_count || 1) + 1;
+            shouldUpdateCreatedAt = false;
         }
     }
 
     const otp = generateSecureOTP();
 
+    console.log("\n╔══════════════════════════════════════════════════╗");
+    console.log(`║ 🔑 OTP CODE: ${otp}                            ║`);
+    console.log(`║ 📧 Recipient: ${normalizedEmail.padEnd(34)} ║`);
+    console.log(`║ 🎯 Purpose:   ${purpose.padEnd(34)} ║`);
+    console.log(`║ ⏳ Valid For: ${`${OTP_EXPIRY_MINUTES} minutes`.padEnd(34)} ║`);
+    console.log("╚══════════════════════════════════════════════════╝\n");
+
     // Hash password strongly but quickly enough for OTP
     const otpHash = await bcrypt.hash(otp, 10);
 
-    // Calculate expiration
+    // Calculate expiration (10 minutes)
     const expiresAt = new Date(Date.now() + OTP_EXPIRY_MINUTES * 60000);
 
     const query = `
-        INSERT INTO email_otps (email, otp_hash, expires_at, attempts, created_at, request_count)
-        VALUES ($1, $2, $3, 0, NOW(), 1)
-        ON CONFLICT (email) 
+        INSERT INTO email_otps (email, otp_hash, expires_at, attempts, created_at, request_count, purpose, verified_at, session_expires_at)
+        VALUES ($1, $2, $3, 0, NOW(), $4, $5, NULL, NULL)
+        ON CONFLICT (email, purpose) 
         DO UPDATE SET 
             otp_hash = EXCLUDED.otp_hash,
             expires_at = EXCLUDED.expires_at,
             attempts = 0,
-            created_at = CASE WHEN $4 THEN NOW() ELSE email_otps.created_at END,
-            request_count = $5
+            created_at = CASE WHEN $6 THEN NOW() ELSE email_otps.created_at END,
+            request_count = EXCLUDED.request_count,
+            verified_at = NULL,
+            session_expires_at = NULL
     `;
 
     // Store in database
-    await pool.query(query, [normalizedEmail, otpHash, expiresAt, shouldUpdateCreatedAt, requestCount]);
+    await pool.query(query, [normalizedEmail, otpHash, expiresAt, requestCount, purpose, shouldUpdateCreatedAt]);
 
     // Send email using Resend with purpose
     try {
         await emailService.sendOTPEmail(normalizedEmail, otp, purpose);
-        return { success: true };
+        const cooldownExpiresAt = new Date(Date.now() + 60000).toISOString();
+        return {
+            success: true,
+            otpActive: false,
+            remainingCooldown: 60,
+            cooldownExpiresAt,
+            remainingExpiry: OTP_EXPIRY_MINUTES * 60,
+            serverTime: new Date().toISOString(),
+            message: "A new code has been sent.",
+        };
     } catch (emailErr) {
         console.error("Failed to send OTP email via provider:", emailErr);
         return {
@@ -127,13 +195,15 @@ const requestOTP = async (email, purpose = "signup") => {
  * @param {boolean} consume - Whether to delete the OTP record upon success
  * @returns {Promise<Object>} Result object with success or error
  */
-const verifyOTP = async (email, otp, consume = true) => {
+const verifyOTP = async (email, otp, consume = true, purpose = "signup") => {
     const normalizedEmail = email.toLowerCase().trim();
+
+    console.log(`[OTP SERVICE] Verifying OTP for: ${normalizedEmail} | Input code: ${otp} | Purpose: ${purpose}`);
 
     // 1. Fetch OTP record
     const result = await pool.query(
-        `SELECT * FROM email_otps WHERE email = $1`,
-        [normalizedEmail]
+        `SELECT * FROM email_otps WHERE email = $1 AND purpose = $2`,
+        [normalizedEmail, purpose]
     );
 
     if (result.rows.length === 0) {
@@ -142,42 +212,104 @@ const verifyOTP = async (email, otp, consume = true) => {
 
     const record = result.rows[0];
 
-    // 2. Check expiry
-    if (new Date() > record.expires_at) {
-        await pool.query(`DELETE FROM email_otps WHERE email = $1`, [normalizedEmail]);
-        return { error: { status: 400, message: "OTP has expired. Please request a new one." } };
+    if (!consume && record.verified_at) {
+        return { error: { status: 400, message: "This code has already been verified." } };
+    }
+
+    // 2. Check expiry (10-minute code expiry or 10-minute session expiry)
+    if (new Date() > new Date(record.expires_at) || (record.session_expires_at && new Date() > new Date(record.session_expires_at))) {
+        await pool.query(`DELETE FROM email_otps WHERE email = $1 AND purpose = $2`, [normalizedEmail, purpose]);
+        return { error: { status: 400, message: "This code has expired" } };
     }
 
     // 3. Check attempt count
     if (record.attempts >= MAX_ATTEMPTS) {
-        await pool.query(`DELETE FROM email_otps WHERE email = $1`, [normalizedEmail]);
-        return { error: { status: 429, message: "Maximum verification attempts exceeded. Please request a new OTP." } };
+        await pool.query(`DELETE FROM email_otps WHERE email = $1 AND purpose = $2`, [normalizedEmail, purpose]);
+        return { error: { status: 429, message: "Too many attempts" } };
     }
-
-    // Increment attempts immediately to prevent brute-force timing attacks
-    await pool.query(
-        `UPDATE email_otps SET attempts = attempts + 1 WHERE email = $1`,
-        [normalizedEmail]
-    );
 
     // 4. Compare bcrypt hash
     const isValid = await bcrypt.compare(otp.toString(), record.otp_hash);
     if (!isValid) {
-        return { error: { status: 400, message: "Invalid verification code." } };
+        const nextAttempts = (record.attempts || 0) + 1;
+        if (nextAttempts >= MAX_ATTEMPTS) {
+            // Invalidate current code immediately on 5th incorrect attempt
+            await pool.query(`DELETE FROM email_otps WHERE email = $1 AND purpose = $2`, [normalizedEmail, purpose]);
+            return { error: { status: 429, message: "Too many attempts" } };
+        }
+
+        await pool.query(
+            `UPDATE email_otps SET attempts = $1 WHERE email = $2 AND purpose = $3`,
+            [nextAttempts, normalizedEmail, purpose]
+        );
+        return { error: { status: 400, message: "Incorrect code" } };
     }
 
-    // 5. Delete OTP record after successful validation (single-use enforcement)
+    // 5. Success handling
+    let sessionExpiresAt = null;
     if (consume) {
-        await pool.query(`DELETE FROM email_otps WHERE email = $1`, [normalizedEmail]);
+        await pool.query(`DELETE FROM email_otps WHERE email = $1 AND purpose = $2`, [normalizedEmail, purpose]);
+    } else {
+        // Start 10-minute verified session upon successful verification
+        sessionExpiresAt = new Date(Date.now() + SESSION_EXPIRY_MINUTES * 60000);
+        await pool.query(
+            `UPDATE email_otps SET verified_at = NOW(), session_expires_at = $1 WHERE email = $2 AND purpose = $3`,
+            [sessionExpiresAt, normalizedEmail, purpose]
+        );
     }
 
-    // Return success. Marking an email verified in the actual user collection 
-    // happens ideally in the controller after validation, but we can return success here.
-    return { success: true, message: "Email successfully verified." };
+    return { success: true, message: "Account verified", sessionExpiresAt };
+};
+
+/**
+ * Checks if a verified OTP session is currently active and within 10-minute window
+ * @param {string} email
+ * @param {string} purpose
+ */
+const verifyOtpSession = async (email, purpose = "signup") => {
+    const normalizedEmail = email.toLowerCase().trim();
+    const result = await pool.query(
+        `SELECT * FROM email_otps WHERE email = $1 AND purpose = $2`,
+        [normalizedEmail, purpose]
+    );
+
+    if (result.rows.length === 0) {
+        return { valid: false, message: "No active verification session. Please request a new code." };
+    }
+
+    const record = result.rows[0];
+    if (!record.verified_at) {
+        return { valid: false, message: "Email has not been verified." };
+    }
+
+    if (record.session_expires_at && new Date() > new Date(record.session_expires_at)) {
+        await pool.query(`DELETE FROM email_otps WHERE email = $1 AND purpose = $2`, [normalizedEmail, purpose]);
+        return { valid: false, message: "This code has expired" };
+    }
+
+    return { valid: true, record };
+};
+
+/**
+ * Cancels an active OTP / verified session for a given email and purpose.
+ * Called when the user abandons the OTP or password step (clicks X).
+ * @param {string} email
+ * @param {string} purpose
+ */
+const cancelOTP = async (email, purpose = "signup") => {
+    const normalizedEmail = email.toLowerCase().trim();
+    console.log(`[OTP SERVICE] Cancelling OTP session for: ${normalizedEmail} | Purpose: ${purpose}`);
+    await pool.query(`DELETE FROM email_otps WHERE email = $1 AND purpose = $2`, [normalizedEmail, purpose]);
+    return { success: true };
 };
 
 module.exports = {
     generateSecureOTP,
     requestOTP,
-    verifyOTP
+    verifyOTP,
+    verifyOtpSession,
+    cancelOTP,
+    OTP_EXPIRY_MINUTES,
+    SESSION_EXPIRY_MINUTES,
 };
+

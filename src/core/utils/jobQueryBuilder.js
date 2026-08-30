@@ -262,20 +262,7 @@ const buildJobFilters = (params, paramCountStart = 1) => {
     }
 
     // ─── Enum filters (all multi-value) ───────────────────────────────────────
-    const rawJobType = employment_type || jobType;
-    if (rawJobType) {
-        const normalizedJobTypes = rawJobType.split(",").map(v => {
-            const trimmed = v.trim();
-            const lower = trimmed.toLowerCase();
-            if (lower === "full time" || lower === "full-time" || lower === "fulltime") return "Full-time";
-            if (lower === "part time" || lower === "part-time" || lower === "parttime") return "Part-time";
-            return trimmed;
-        }).filter(Boolean);
-        
-        if (normalizedJobTypes.length > 0) {
-            applyMultiValue(normalizedJobTypes.join(","), "j.job_type");
-        }
-    }
+    applyMultiValue(employment_type || jobType, "j.job_type");
     applyMultiValue(work_model || workMode, "j.work_mode");
     applyMultiValue(companyType, "j.company_type");
     const rawIndustry = industry;

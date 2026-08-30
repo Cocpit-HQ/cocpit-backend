@@ -173,6 +173,17 @@ exports.getOrganizationJobs = async (req, res) => {
                 return res.status(403).json({ message: "Organization is suspended" });
             }
 
+            if (req.user?.sub) {
+                const userId = req.user.sub;
+                conditions.push(`NOT EXISTS (
+                    SELECT 1 FROM blocks b
+                    WHERE (j.org_id IS NOT NULL AND ((b.blocker_id = $${paramCount} AND b.blocked_id = j.org_id) OR (b.blocker_id = j.org_id AND b.blocked_id = $${paramCount})))
+                       OR (j.recruiter_id IS NOT NULL AND ((b.blocker_id = $${paramCount} AND b.blocked_id = j.recruiter_id) OR (b.blocker_id = j.recruiter_id AND b.blocked_id = $${paramCount})))
+                )`);
+                params.push(userId);
+                paramCount++;
+            }
+
             conditions.push("j.status = 'ACTIVE'");
             conditions.push("(j.expires_at IS NULL OR j.expires_at > NOW())");
         } else if (scope === 'internal') {
@@ -318,6 +329,27 @@ exports.updateOrganizationJob = async (req, res) => {
             };
             if (!validTransitions[oldJobData.status]?.includes(status)) {
                 return res.status(400).json({ message: `Invalid status transition from ${oldJobData.status} to ${status}` });
+            }
+        }
+        
+        // 2c. Validation for Publishing (ACTIVE status)
+        const nextStatus = status || oldJobData.status;
+        if (nextStatus === 'ACTIVE') {
+            const nextJobType = job_type !== undefined ? job_type : oldJobData.job_type;
+            const nextExpLabel = experience_level !== undefined ? experience_level : oldJobData.experience_label;
+            const nextWorkMode = work_mode !== undefined ? work_mode : oldJobData.work_mode;
+            
+            if (!nextJobType) {
+                await client.query('ROLLBACK');
+                return res.status(400).json({ message: "Job type is required to publish a job." });
+            }
+            if (!nextExpLabel) {
+                await client.query('ROLLBACK');
+                return res.status(400).json({ message: "Experience level is required to publish a job." });
+            }
+            if (!nextWorkMode) {
+                await client.query('ROLLBACK');
+                return res.status(400).json({ message: "Work mode is required to publish a job." });
             }
         }
 

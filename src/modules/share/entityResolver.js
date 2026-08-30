@@ -16,6 +16,7 @@ const profileAdapter = require("./adapters/profileAdapter");
 const companyAdapter = require("./adapters/companyAdapter");
 const jobAdapter = require("./adapters/jobAdapter");
 const eventAdapter = require("./adapters/eventAdapter");
+const channelAdapter = require("./adapters/channelAdapter");
 
 const CACHE_TTL = 300; // seconds
 
@@ -27,6 +28,8 @@ const RESOLVERS = {
     company: companyAdapter.resolve,
     job: jobAdapter.resolve,
     event: eventAdapter.resolve,
+    channel: channelAdapter.resolve,
+    community: channelAdapter.resolve,
 };
 
 // ─── URL Generator ──────────────────────────────────────────
@@ -37,6 +40,8 @@ const URL_PATTERNS = {
     company: (id) => `/company/${id}`,
     job: (id) => `/jobs/${id}`,
     event: (id) => `/events/${id}`,
+    channel: (id) => `/channels/${id}`,
+    community: (id) => `/channels/${id}`,
 };
 
 function generateEntityUrl(entityType, entityId) {
