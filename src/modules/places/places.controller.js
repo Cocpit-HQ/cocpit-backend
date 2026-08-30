@@ -3,8 +3,8 @@ const crypto = require("crypto");
 const redis = require("../../core/db/redis"); // existing Redis client
 
 const GOOGLE_PLACES_BASE = "https://places.googleapis.com/v1";
-const ALLOWED_COUNTRIES = ["India", "United Arab Emirates", "Singapore", "Japan"];
-const INCLUDED_REGION_CODES = ["IN", "AE", "SG", "JP"];
+const ALLOWED_COUNTRIES = ["India", "United Arab Emirates"];
+const INCLUDED_REGION_CODES = ["IN", "AE"];
 const CACHE_TTL_AUTOCOMPLETE = 60;    // seconds
 const CACHE_TTL_DETAILS = 86400;      // 24 hours
 
@@ -178,7 +178,7 @@ exports.getPlaceDetails = async (req, res) => {
       if (!isGlobal && !ALLOWED_COUNTRIES.includes(result.country)) {
         return res.status(400).json({
           success: false,
-          message: "Location must be in India, UAE, Singapore, or Japan",
+          message: "Location must be in India or UAE",
           code: "INVALID_LOCATION_COUNTRY",
         });
       }
@@ -210,7 +210,7 @@ exports.getPlaceDetails = async (req, res) => {
     if (!isGlobal && !ALLOWED_COUNTRIES.includes(country)) {
       return res.status(400).json({
         success: false,
-        message: "Location must be in India, UAE, Singapore, or Japan",
+        message: "Location must be in India or UAE",
         code: "INVALID_LOCATION_COUNTRY",
       });
     }
@@ -326,7 +326,7 @@ exports.getReverseGeocode = async (req, res) => {
     if (!ALLOWED_COUNTRIES.includes(country)) {
       return res.status(400).json({
         success: false,
-        message: "Location must be in India, UAE, or Japan",
+        message: "Location must be in India or UAE",
         code: "UNSUPPORTED_COUNTRY",
       });
     }
