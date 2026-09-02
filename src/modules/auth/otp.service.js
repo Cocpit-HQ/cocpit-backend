@@ -217,7 +217,11 @@ const verifyOTP = async (email, otp, consume = true, purpose = "signup") => {
     }
 
     // 2. Check expiry (10-minute code expiry or 10-minute session expiry)
-    if (new Date() > new Date(record.expires_at) || (record.session_expires_at && new Date() > new Date(record.session_expires_at))) {
+    const isExpired = record.session_expires_at
+        ? new Date() > new Date(record.session_expires_at)
+        : new Date() > new Date(record.expires_at);
+
+    if (isExpired) {
         await pool.query(`DELETE FROM email_otps WHERE email = $1 AND purpose = $2`, [normalizedEmail, purpose]);
         return { error: { status: 400, message: "This code has expired" } };
     }
