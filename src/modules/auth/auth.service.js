@@ -290,7 +290,7 @@ const loginUser = async ({ email, password, userAgent, ipAddress }) => {
     // 1. Find user
     const user = await authRepo.findUserByEmail(normalizedEmail);
     if (!user) {
-        return { error: { status: 401, message: "Incorrect password. Try again." } };
+        return { error: { status: 401, message: "Incorrect email or password. Try again" } };
     }
 
     // 2. Validate password
@@ -299,7 +299,7 @@ const loginUser = async ({ email, password, userAgent, ipAddress }) => {
     }
     const isValid = await comparePassword(password, user.password_hash);
     if (!isValid) {
-        return { error: { status: 401, message: "Incorrect password. Try again." } };
+        return { error: { status: 401, message: "Incorrect email or password. Try again" } };
     }
 
     // 3. Block login if account is pending deletion
