@@ -2,7 +2,13 @@ const pool = require("../../core/db/pool");
 const { checkOrgPermission } = require("../../core/utils/rbac");
 const socketService = require("../../core/infrastructure/socket.service");
 const { sendOrgDocumentSubmittedEmail } = require("../../core/services/email.service");
-const { sendToUser } = require("../../services/notification.service");
+const { sendToUser } = require("../notification/notification.service");
+
+const MONTH_MAP = { 
+    "Jan": "01", "Feb": "02", "Mar": "03", "Apr": "04", 
+    "May": "05", "Jun": "06", "Jul": "07", "Aug": "08", 
+    "Sep": "09", "Oct": "10", "Nov": "11", "Dec": "12" 
+};
 
 // Helper for Audit Logging
 const logAudit = async (client, { entityId, actorId, action, metadata = {} }) => {
@@ -150,7 +156,7 @@ exports.verifyByEduEmail = async (req, res) => {
         await client.query("BEGIN");
 
         // RBAC Check (OWNER/ADMIN)
-        const canVerify = await checkOrgPermission(client, orgId, userId, 'MANAGE_VERIFICATION');
+        const canVerify = await checkOrgPermission(client, orgId, userId, 'MANAGE_SETTINGS');
         if (!canVerify) throw new Error("Forbidden: Insufficient permissions");
 
         if (otp) {
@@ -215,15 +221,14 @@ exports.verifyByEduEmail = async (req, res) => {
 exports.submitDocumentVerification = async (req, res) => {
     const { orgId } = req.params;
     const userId = req.user.sub;
-    const { documentUrls } = req.body; // Array of URLs (fallback)
+    const { documentUrls, legalName, incorporationDay, incorporationMonth, incorporationYear } = req.body; // Array of URLs (fallback)
     let finalUrls = [];
 
     if (req.files) {
-        if (req.files.frontImage && req.files.frontImage[0]) {
-            finalUrls.push(req.files.frontImage[0].path || req.files.frontImage[0].location);
-        }
-        if (req.files.backImage && req.files.backImage[0]) {
-            finalUrls.push(req.files.backImage[0].path || req.files.backImage[0].location);
+        if (req.files.document) {
+            req.files.document.forEach(doc => {
+                finalUrls.push(doc.path || doc.location);
+            });
         }
     }
 
@@ -231,33 +236,44 @@ exports.submitDocumentVerification = async (req, res) => {
         finalUrls = documentUrls;
     }
 
-    if (finalUrls.length < 2) {
-        return res.status(400).json({ message: "Both front and back images of the document are required" });
+    if (finalUrls.length < 1) {
+        return res.status(400).json({ message: "At least one verification document is required" });
     }
+
+    if (!legalName || !incorporationDay || !incorporationMonth || !incorporationYear) {
+        return res.status(400).json({ message: "Company Full Legal Name and Date of Incorporation are required" });
+    }
+
+    const monthNum = MONTH_MAP[incorporationMonth] || "01";
+    const incorpDateStr = `${incorporationYear}-${monthNum}-${String(incorporationDay).padStart(2, '0')}`;
 
     const client = await pool.connect();
     try {
         await client.query("BEGIN");
 
-        const canVerify = await checkOrgPermission(client, orgId, userId, 'MANAGE_VERIFICATION');
+        const canVerify = await checkOrgPermission(client, orgId, userId, 'MANAGE_SETTINGS');
         if (!canVerify) throw new Error("Forbidden");
 
         await client.query(
-            `UPDATE organizations SET verification_status = 'VERIFIED' WHERE org_id = $1`,
-            [orgId]
+            `UPDATE organizations 
+             SET verification_status = 'VERIFIED', 
+                 legal_name = $2, 
+                 incorporation_date = $3 
+             WHERE org_id = $1`,
+            [orgId, legalName, incorpDateStr]
         );
 
         await client.query(
-            `INSERT INTO organization_verifications (org_id, verification_type, document_urls, is_verified)
-             VALUES ($1, 'DOCUMENT', $2, TRUE)`,
-            [orgId, JSON.stringify(finalUrls)]
+            `INSERT INTO organization_verifications (org_id, verification_type, document_urls, is_verified, legal_name, incorporation_date)
+             VALUES ($1, 'DOCUMENT', $2, TRUE, $3, $4)`,
+            [orgId, JSON.stringify(finalUrls), legalName, incorpDateStr]
         );
 
         await logAudit(client, {
             entityId: orgId,
             actorId: userId,
             action: 'DOCUMENTS_SUBMITTED',
-            metadata: { count: finalUrls.length }
+            metadata: { count: finalUrls.length, legalName, incorporationDate: incorpDateStr }
         });
 
         // NOTIFICATION: Document Submitted
@@ -272,14 +288,14 @@ exports.submitDocumentVerification = async (req, res) => {
                 const ownerEmail = userRes.rows[0].email;
                 const type = "org_doc_verification_submitted";
                 const title = "Documents submitted";
-                const message = `Your documents for ${orgName} have been submitted and are under review.`;
+                const message = `Your documents for "${orgName}" have been submitted and are under review.`;
                 const timestamp = new Date().toISOString();
 
                 // Insert into DB
                 const notifRes = await client.query(
-                    `INSERT INTO notifications (user_id, sender_id, type, text, metadata)
-                     VALUES ($1, $2, $3, $4, $5) RETURNING notification_id, created_at`,
-                    [ownerId, ownerId, type, message, JSON.stringify({ title, orgId })]
+                    `INSERT INTO notifications (user_id, sender_id, type, text, metadata, recipient_org_id)
+                     VALUES ($1, $2, $3, $4, $5, $6) RETURNING notification_id, created_at`,
+                    [ownerId, ownerId, type, message, JSON.stringify({ title, orgId }), orgId]
                 );
 
                 // Socket notification (triggers toast in frontend)
@@ -289,7 +305,8 @@ exports.submitDocumentVerification = async (req, res) => {
                     message, 
                     timestamp,
                     notification_id: notifRes.rows[0].notification_id,
-                    created_at: notifRes.rows[0].created_at.toISOString()
+                    created_at: notifRes.rows[0].created_at.toISOString(),
+                    recipient_org_id: orgId
                 });
 
                 // Email notification

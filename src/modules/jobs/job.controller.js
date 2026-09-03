@@ -1289,11 +1289,24 @@ exports.applyJob = async (req, res) => {
     await client.query('COMMIT');
     
     // Notifications (Phase 1)
-    const orgRes = await pool.query(`SELECT name, logo_url FROM organizations WHERE org_id = $1`, [job.org_id]);
-    const companyName = orgRes.rowCount > 0 ? orgRes.rows[0].name : "the company";
-    const companyAvatar = orgRes.rowCount > 0 ? orgRes.rows[0].logo_url : null;
-    const text = `Your application for ${job.title} at ${companyName} has been submitted successfully.`;
+    let companyName = "the company";
+    let companyAvatar = null;
 
+    if (job.org_id) {
+      const orgRes = await pool.query(`SELECT name, logo_url FROM organizations WHERE org_id = $1`, [job.org_id]);
+      if (orgRes.rowCount > 0) {
+        companyName = orgRes.rows[0].name;
+        companyAvatar = orgRes.rows[0].logo_url;
+      }
+    } else if (job.recruiter_id) {
+      const userRes = await pool.query(`SELECT full_name as name, avatar_url as avatar FROM users WHERE user_id = $1`, [job.recruiter_id]);
+      if (userRes.rowCount > 0) {
+        companyName = userRes.rows[0].name || "the recruiter";
+        companyAvatar = userRes.rows[0].avatar;
+      }
+    }
+
+    const text = `Your application for ${job.title} at ${companyName} has been submitted successfully.`;
     try {
       const type = 'application_submitted';
       const notifRes = await pool.query(`

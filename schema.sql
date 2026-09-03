@@ -267,6 +267,8 @@ CREATE TABLE post_polls (
 CREATE TABLE organizations (
     org_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name VARCHAR(255) NOT NULL,
+    legal_name VARCHAR(255),
+    incorporation_date DATE,
     slug VARCHAR(255) NOT NULL UNIQUE,
     email VARCHAR(255),
     industry VARCHAR(100),
@@ -283,7 +285,7 @@ CREATE TABLE organizations (
     campus_location VARCHAR(255),
     verified_edu BOOLEAN DEFAULT FALSE,
     auto_verify_domains VARCHAR(255)[] DEFAULT '{}',
-    verification_status VARCHAR(20) DEFAULT 'UNVERIFIED' CHECK (verification_status IN ('UNVERIFIED', 'DOMAIN_PENDING', 'DOMAIN_VERIFIED', 'REJECTED')),
+    verification_status VARCHAR(20) DEFAULT 'UNVERIFIED' CHECK (verification_status IN ('UNVERIFIED', 'DOMAIN_PENDING', 'DOMAIN_VERIFIED', 'VERIFIED', 'REJECTED')),
     email_verified BOOLEAN DEFAULT FALSE,
     phone VARCHAR(20),
     phone_verified BOOLEAN DEFAULT FALSE,
@@ -1108,14 +1110,18 @@ CREATE TABLE IF NOT EXISTS organization_verifications (
     verification_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     org_id UUID REFERENCES organizations(org_id) ON DELETE CASCADE,
     user_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
-    otp VARCHAR(255) NOT NULL,
+    otp VARCHAR(255),
     attempts INTEGER DEFAULT 0,
-    expires_at TIMESTAMPTZ NOT NULL,
+    expires_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     is_verified BOOLEAN DEFAULT FALSE, -- To track if this specific OTP was used successfully
-    verification_type VARCHAR(20) DEFAULT 'EMAIL' CHECK (verification_type IN ('EMAIL', 'PHONE', 'EDU_EMAIL', 'DOCUMENT')),
+    verification_type VARCHAR(20) DEFAULT 'EMAIL' CHECK (verification_type IN ('EMAIL', 'PHONE', 'EDU_EMAIL', 'DOCUMENT', 'IDENTITY')),
     target_value VARCHAR(255),
-    request_count INTEGER DEFAULT 1
+    request_count INTEGER DEFAULT 1,
+    legal_name VARCHAR(255),
+    incorporation_date DATE,
+    document_urls TEXT,
+    document_type VARCHAR(100)
 );
 
 CREATE INDEX IF NOT EXISTS idx_org_verifications_lookup ON organization_verifications(org_id, verification_type, is_verified);

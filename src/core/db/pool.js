@@ -102,12 +102,12 @@ pool.on("error", (err) => {
  * Pool telemetry — log connection stats to spot exhaustion early.
  * Visible in the backend terminal under load.
  */
-pool.on("connect", () => {
+/**pool.on("connect", () => {
   console.log(`[pg-pool] client connected | total=${pool.totalCount} idle=${pool.idleCount} waiting=${pool.waitingCount}`);
 });
 
 pool.on("remove", () => {
   console.log(`[pg-pool] client removed   | total=${pool.totalCount} idle=${pool.idleCount} waiting=${pool.waitingCount}`);
-});
+});*/
 
 module.exports = pool;

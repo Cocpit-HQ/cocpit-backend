@@ -127,8 +127,8 @@ router.post("/companies/:orgId/enroll", requireAuth, institutionController.reque
 
 // --- VERIFICATION ---
 router.post("/organizations/:orgId/verify/domain", requireAuth, requireOrgPermission("MANAGE_SETTINGS"), otpGenerationLimiter, verifyController.verifyDomain);
-router.post("/organizations/:orgId/verify/edu-email", requireAuth, requireOrgPermission("MANAGE_VERIFICATION"), verifyController.verifyByEduEmail);
-router.post("/organizations/:orgId/verify/document", requireAuth, requireOrgPermission("MANAGE_VERIFICATION"), uploadSupportAttachment ? uploadSupportAttachment.fields([{ name: 'frontImage', maxCount: 1 }, { name: 'backImage', maxCount: 1 }]) : (req, res, next) => next(), verifyController.submitDocumentVerification);
+router.post("/organizations/:orgId/verify/edu-email", requireAuth, requireOrgPermission("MANAGE_SETTINGS"), verifyController.verifyByEduEmail);
+router.post("/organizations/:orgId/verify/document", requireAuth, requireOrgPermission("MANAGE_SETTINGS"), uploadSupportAttachment ? uploadSupportAttachment.fields([{ name: 'document', maxCount: 5 }]) : (req, res, next) => next(), verifyController.submitDocumentVerification);
 
 router.post("/companies/:orgId/verify/domain", requireAuth, requireOrgPermission("MANAGE_SETTINGS"), otpGenerationLimiter, verifyController.verifyDomain);
 

@@ -6,6 +6,7 @@ const { sendSMSOTP, verifySMSOTP } = require("../../core/services/sms.service");
 const emailService = require("../../core/services/email.service");
 const { revokeOtherSessions } = require("./account.service");
 const socketService = require("../../core/infrastructure/socket.service");
+const { notifyDocumentVerified, notifyOrgDocumentVerified } = require("../notification/notification.service");
 
 // ─── 1. Change Password ───────────────────────────────────────────────────────
 
@@ -822,13 +823,15 @@ exports.verifyIdentity = async (req, res) => {
                 'INSERT INTO organization_verifications (org_id, verification_type, document_type, document_urls, is_verified, legal_name, incorporation_date) VALUES ($1, $2, $3, $4, $5, $6, $7)',
                 [actorId, 'IDENTITY', documentType, JSON.stringify([frontImageUrl, backImageUrl].filter(Boolean)), true, legalName || null, incorporationDate]
             );
-            await pool.query('UPDATE organizations SET verification_status = $1 WHERE org_id = $2', ['VERIFIED', actorId]);
+            await pool.query('UPDATE organizations SET verification_status = $1, legal_name = $2, incorporation_date = $3 WHERE org_id = $4', ['VERIFIED', legalName || null, incorporationDate, actorId]);
+            await notifyOrgDocumentVerified(actorId);
         } else {
             await pool.query(
                 'INSERT INTO user_verifications (user_id, verification_type, document_type, front_image_url, back_image_url, is_verified, status) VALUES ($1, $2, $3, $4, $5, $6, $7)',
                 [actorId, 'IDENTITY', documentType, frontImageUrl, backImageUrl, true, 'VERIFIED']
             );
             await pool.query('UPDATE users SET is_identity_verified = true WHERE user_id = $1', [actorId]);
+            await notifyDocumentVerified(actorId);
         }
 
         return res.status(200).json({ success: true, message: 'Identity verified successfully' });

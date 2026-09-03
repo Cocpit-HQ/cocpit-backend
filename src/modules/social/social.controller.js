@@ -1786,12 +1786,16 @@ exports.handleConnectionRequest = async (req, res) => {
             );
 
             // Create Notification for Sender
+            const accepterRes = await client.query(`SELECT full_name, avatar_url FROM users WHERE user_id = $1`, [receiver_id]);
+            const accepterName = accepterRes.rows[0]?.full_name || "Someone";
+            const accepterAvatar = accepterRes.rows[0]?.avatar_url || accepterName.charAt(0).toUpperCase();
+
             const senderNotification = {
                 type: 'connection_accepted',
-                text: `${req.user.full_name} accepted your connection request.`,
+                text: `${accepterName} accepted your connection request.`,
                 from: receiver_id,
-                senderName: req.user.full_name, // I am the one accepting
-                senderAvatar: req.user.avatar_url,
+                senderName: accepterName, // I am the one accepting
+                senderAvatar: accepterAvatar,
                 referenceId: receiver_id,
                 time: "Just now"
             };
@@ -1814,14 +1818,7 @@ exports.handleConnectionRequest = async (req, res) => {
             // Notify Sender via Socket
             socketService.notifyUser(sender_id, "notification", senderNotification);
             // Push notification for offline devices
-            // Note: senderNotification.senderName comes from req.user.full_name which is not in the JWT.
-            // The accepter's name must be fetched from the DB. We query it here for the push title.
-            pool.query(`SELECT full_name FROM users WHERE user_id = $1`, [receiver_id])
-                .then(r => {
-                    const accepterName = r.rows[0]?.full_name || "Someone";
-                    sendPush(sender_id, accepterName, senderNotification.text, { type: 'connection_accepted', userId: receiver_id }).catch(() => {});
-                })
-                .catch(() => {});
+            sendPush(sender_id, accepterName, senderNotification.text, { type: 'connection_accepted', userId: receiver_id }).catch(() => {});
 
             // Emit relationship update to both
             socketService.notifyUser(sender_id, "relationshipUpdated", { userId: receiver_id, status: 'connected' });
@@ -5549,15 +5546,31 @@ exports.upsertReaction = async (req, res) => {
                 reaction
             });
 
-            // Notify the original message sender via push
+            // Notify the original message sender via push and in-app notification
             if (reaction.user_id !== sender_id) {
                 const msgText = text_content || 'an attachment';
                 const formattedPreview = msgText.length > 40 ? msgText.substring(0, 40) + '...' : msgText;
                 
+                const pushTitle = `${reaction.user_full_name} reacted to your message`;
+                const pushBody = `${reaction.user_full_name} reacted ${reaction.emoji} to: "${formattedPreview}"`;
+                
+                // 1. Emit socket notification for toast (do not save to DB)
+                socketService.notifyUser(sender_id, "notification", {
+                    type: 'message_reaction',
+                    from: reaction.user_id,
+                    senderName: reaction.user_full_name,
+                    senderAvatar: reaction.user_avatar,
+                    text: pushBody,
+                    reference_id: conversation_id,
+                    notification_id: `temp-${Date.now()}`,
+                    created_at: new Date().toISOString()
+                });
+
+                // 2. Send Push Notification for offline devices
                 sendPush(
                     sender_id,
-                    `${reaction.user_full_name} reacted to your message`,
-                    `${reaction.user_full_name} reacted ${reaction.emoji} to: "${formattedPreview}"`,
+                    pushTitle,
+                    pushBody,
                     { type: 'message_reaction', conversationId: conversation_id, messageId }
                 ).catch(() => {});
             }

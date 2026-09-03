@@ -946,7 +946,7 @@ exports.getOnboardingOptions = async (req, res) => {
     const query = q.toLowerCase().trim();
 
     try {
-        if (slug === "status" || slug === "roles") {
+        if (slug === "status") {
             const filtered = query
                 ? MASTER_STATUS_OPTIONS.filter(o => o.label.toLowerCase().includes(query))
                 : MASTER_STATUS_OPTIONS;
@@ -954,26 +954,35 @@ exports.getOnboardingOptions = async (req, res) => {
         }
 
         if (slug === "industries" || slug === "industry") {
-            let list = MASTER_INDUSTRIES;
-            // Try fetching distinct working industries from database if available
             try {
-                const dbRes = await pool.query(
-                    `SELECT DISTINCT working_industry FROM profiles WHERE working_industry IS NOT NULL AND working_industry != '' ORDER BY working_industry ASC LIMIT 100`
+                // 1. Query the clean industries_master table for official industries
+                const masterRes = await pool.query(
+                    `SELECT industry_name AS label 
+                     FROM industries_master 
+                     WHERE industry_name ILIKE $1 
+                     ORDER BY industry_name ASC LIMIT 50`,
+                    [`%${query}%`]
                 );
-                if (dbRes.rows.length > 0) {
-                    const dbIndustries = dbRes.rows.map(r => r.working_industry);
-                    list = Array.from(new Set([...list, ...dbIndustries]));
+                
+                // If the DB returned results, return them!
+                if (masterRes.rows.length > 0) {
+                    const formatted = masterRes.rows.map(r => ({ id: r.label, label: r.label }));
+                    return res.status(200).json({ success: true, data: formatted });
                 }
+                
+                // If DB query worked but returned 0 results, fall through to fallback below...
             } catch (dbErr) {
-                // fallback to static master list
+                console.error("Database error fetching industries, using fallback:", dbErr);
+                // Fall through to hardcoded list...
             }
 
-            const formatted = list
+            // 2. THE FALLBACK: Hardcoded MASTER_INDUSTRIES array
+            const formattedFallback = MASTER_INDUSTRIES
                 .filter(name => !query || name.toLowerCase().includes(query))
                 .slice(0, 50)
                 .map(name => ({ id: name, label: name }));
 
-            return res.status(200).json({ success: true, data: formatted });
+            return res.status(200).json({ success: true, data: formattedFallback });
         }
 
         return res.status(400).json({ success: false, message: `Invalid options slug: ${slug}` });

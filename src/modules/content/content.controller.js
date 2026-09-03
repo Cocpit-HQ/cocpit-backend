@@ -1233,6 +1233,80 @@ exports.createPost = async (req, res) => {
 
         await client.query('COMMIT');
 
+        // Mentions in post content (fire-and-forget, after commit)
+        if (content && typeof content === 'string') {
+            const mentionedUsernames = [];
+            const regex1 = /@\[[^\]]+\]\(([^)]+)\)/g;
+            let m;
+            while ((m = regex1.exec(content)) !== null) {
+                if (!mentionedUsernames.includes(m[1])) mentionedUsernames.push(m[1]);
+            }
+            const regex2 = /(?:^|\s)@(\w+)(?!\w)/g;
+            while ((m = regex2.exec(content)) !== null) {
+                if (!mentionedUsernames.includes(m[1])) mentionedUsernames.push(m[1]);
+            }
+
+            if (mentionedUsernames.length > 0) {
+                
+                // Fetch actor details
+                let actorName = "Someone";
+                let actorAvatar = null;
+                if (companyId) {
+                    const orgRes = await pool.query(`SELECT name, logo_url FROM organizations WHERE org_id = $1`, [companyId]);
+                    if (orgRes.rowCount > 0) {
+                        actorName = orgRes.rows[0].name;
+                        actorAvatar = orgRes.rows[0].logo_url;
+                    }
+                } else {
+                    const userRes = await pool.query(`SELECT full_name, avatar_url FROM users WHERE user_id = $1`, [userId]);
+                    if (userRes.rowCount > 0) {
+                        actorName = userRes.rows[0].full_name;
+                        actorAvatar = userRes.rows[0].avatar_url;
+                    }
+                }
+
+                for (const handle of mentionedUsernames) {
+                    const userRes = await pool.query(`SELECT user_id FROM users WHERE LOWER(account_name) = LOWER($1)`, [handle]);
+                    if (userRes.rowCount > 0) {
+                        const mentionedUserId = userRes.rows[0].user_id;
+                        let isSelf = (!companyId && mentionedUserId === userId);
+
+                        if (!isSelf) {
+                            if (!companyId) {
+                                const isBlockedByMentioned = await checkBlockStatus(mentionedUserId, userId);
+                                const hasBlockedMentioned = await checkBlockStatus(userId, mentionedUserId);
+                                if (isBlockedByMentioned || hasBlockedMentioned) continue;
+                            }
+
+                            const notifText = `${actorName} mentioned you in a post`;
+                            const meta = { post_id: postId, org_id: companyId };
+                            
+                            const mentionNotifRes = await pool.query(
+                                `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata) 
+                                 VALUES ($1, $2, $3, $4, $5, $6) RETURNING notification_id, created_at`,
+                                [mentionedUserId, userId, 'mention', notifText, postId, JSON.stringify(meta)]
+                            );
+
+                            socketService.notifyUser(mentionedUserId, "notification", {
+                                notification_id: mentionNotifRes.rows[0].notification_id,
+                                type: 'mention',
+                                text: notifText,
+                                from: userId,
+                                senderName: actorName,
+                                senderAvatar: actorAvatar,
+                                referenceId: postId,
+                                metadata: meta,
+                                time: "Just now",
+                                created_at: mentionNotifRes.rows[0].created_at.toISOString(),
+                                is_read: false
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+
         // Notify followers with 'posts' preference enabled (fire-and-forget, after commit)
         if (companyId) {
             // Real-time channel article update notification for subscribers
@@ -2772,9 +2846,17 @@ exports.addComment = async (req, res) => {
             actorAvatar = actor.avatar_url;
         }
 
-        // Regex for mentions: @Username (simple alphanumeric + underscore)
-        const mentionMatches = content.match(/@(\w+)/g);
-        const mentionedUsernames = mentionMatches ? mentionMatches.map(m => m.substring(1)) : [];
+        // Regex for mentions: @[Name](handle) or @Username
+        const mentionedUsernames = [];
+        const regex1 = /@\[[^\]]+\]\(([^)]+)\)/g;
+        let m;
+        while ((m = regex1.exec(content)) !== null) {
+            if (!mentionedUsernames.includes(m[1])) mentionedUsernames.push(m[1]);
+        }
+        const regex2 = /(?:^|\s)@(\w+)(?!\w)/g;
+        while ((m = regex2.exec(content)) !== null) {
+            if (!mentionedUsernames.includes(m[1])) mentionedUsernames.push(m[1]);
+        }
 
         // Notify Post Owner
         // If Company comments, we notify post owner (User). 
@@ -2785,6 +2867,14 @@ exports.addComment = async (req, res) => {
         let shouldNotifyPostOwner = true;
         if (!companyId && postAuthorId === userId) shouldNotifyPostOwner = false;
 
+        // Skip 'comment' notification if the post owner is explicitly mentioned (they will get 'mention' notification instead)
+        if (shouldNotifyPostOwner && mentionedUsernames.length > 0) {
+            const postOwnerHandleRes = await pool.query(`SELECT account_name FROM users WHERE user_id = $1`, [postAuthorId]);
+            if (postOwnerHandleRes.rowCount > 0 && mentionedUsernames.some(u => u.toLowerCase() === postOwnerHandleRes.rows[0].account_name.toLowerCase())) {
+                shouldNotifyPostOwner = false;
+            }
+        }
+
         if (shouldNotifyPostOwner) {
             // Count total comments on post
             const countResult = await pool.query(
@@ -2793,7 +2883,7 @@ exports.addComment = async (req, res) => {
             );
             const commentCount = Number(countResult.rows[0].count);
 
-            let cleanedContent = content.replace(/@\w+\s*/g, '').trim();
+            let cleanedContent = content.replace(/@\[([^\]]+)\]\(([^)]+)\)/g, '$1').replace(/@\w+\s*/g, '').trim();
             let preview = cleanedContent.substring(0, 40);
             if (cleanedContent.length > 40) preview += "...";
             
@@ -2919,10 +3009,10 @@ exports.addComment = async (req, res) => {
                 if (userRes.rowCount > 0) {
                     const mentionedUserId = userRes.rows[0].user_id;
 
-                    // Don't notify if self or post owner
+                    // Don't notify if self
                     let isSelf = (!companyId && mentionedUserId === userId);
 
-                    if (!isSelf && mentionedUserId !== postAuthorId) {
+                    if (!isSelf) {
                         if (!companyId) {
                             const isBlockedByMentioned = await checkBlockStatus(mentionedUserId, userId);
                             const hasBlockedMentioned = await checkBlockStatus(userId, mentionedUserId);
@@ -2935,13 +3025,14 @@ exports.addComment = async (req, res) => {
                             org_id: companyId
                         };
 
-                        await pool.query(
+                        const mentionNotifRes = await pool.query(
                             `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata) 
-                             VALUES ($1, $2, $3, $4, $5, $6)`,
+                             VALUES ($1, $2, $3, $4, $5, $6) RETURNING notification_id, created_at`,
                             [mentionedUserId, userId, 'mention', notifText, postId, JSON.stringify(meta)]
                         );
 
                         socketService.notifyUser(mentionedUserId, "notification", {
+                            notification_id: mentionNotifRes.rows[0].notification_id,
                             type: 'mention',
                             text: notifText,
                             from: userId,
@@ -2949,7 +3040,9 @@ exports.addComment = async (req, res) => {
                             senderAvatar: actorAvatar,
                             referenceId: postId,
                             metadata: meta,
-                            time: "Just now"
+                            time: "Just now",
+                            created_at: mentionNotifRes.rows[0].created_at.toISOString(),
+                            is_read: false
                         });
                         // Push notification for offline devices
                         sendPush(mentionedUserId, actorName, notifText, { type: 'mention', postId }).catch(() => {});

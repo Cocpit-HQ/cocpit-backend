@@ -1055,9 +1055,15 @@ class GroupChatService {
 
                 // If the user was mentioned, override default message notification with a mention one
                 const isMentioned = mentionedGroupMembers.some(m => m.user_id === member.user_id);
-                const notifText = isMentioned
-                    ? `${sender.full_name} mentioned you in a group chat`
-                    : (previewText || content);
+                const groupName = group?.name || 'a group';
+                
+                let notifText = previewText || content;
+                if (isMentioned) {
+                    notifText = `${sender.full_name} mentioned you in a group chat`;
+                } else {
+                    const formattedPreview = notifText.length > 40 ? notifText.substring(0, 40) + '...' : notifText;
+                    notifText = `"${sender.full_name}" in "${groupName}": "${formattedPreview}"`;
+                }
                 
                 socketService.notifyUser(member.user_id, 'notification', {
                     type: isMentioned ? 'mention' : 'message',
@@ -1069,15 +1075,8 @@ class GroupChatService {
                     text: notifText
                 });
 
-                let pushTitle = sender.full_name;
+                let pushTitle = isMentioned ? sender.full_name : `New message in ${groupName}`;
                 let pushBody = notifText;
-                
-                if (!isMentioned) {
-                    const groupName = group?.name || 'a group';
-                    pushTitle = `New message in ${groupName}`;
-                    const formattedPreview = notifText.length > 40 ? notifText.substring(0, 40) + '...' : notifText;
-                    pushBody = `${sender.full_name} in ${groupName}: "${formattedPreview}"`;
-                }
 
                 // Push notification for offline devices (respects mute, same as socket above)
                 sendPush(
