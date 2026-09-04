@@ -532,7 +532,7 @@ const socialLogin = async ({ provider, idToken, accountType, fullName: clientFul
             // accountType defaults to Student if not provided
             const finalAccountType = accountType || "Student";
 
-            const validTypes = ["Fresher", "Student", "Employer", "Admin"];
+            const validTypes = ["Employed", "Self-employed", "Student", "Fresher", "Intern", "Currently not working"];
             if (!validTypes.includes(finalAccountType)) {
                 return {
                     error: {
@@ -546,10 +546,7 @@ const socialLogin = async ({ provider, idToken, accountType, fullName: clientFul
             user = await authRepo.createSocialUser(normalizedEmail, fullName, provider, providerId, avatarUrl);
 
             // Assign role — same logic as standard registration
-            let roleName;
-            if (finalAccountType === "Admin") roleName = "Admin";
-            else if (finalAccountType === "Employer") roleName = "Employer";
-            else roleName = "Student";
+            let roleName = "Student";
 
             await authRepo.assignRole(user.user_id, roleName);
             await authRepo.createProfile(user.user_id, finalAccountType);

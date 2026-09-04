@@ -105,10 +105,27 @@ exports.saveDetails = async (req, res) => {
         await client.query('BEGIN');
 
         let profileId = await getProfileId(userId);
+
+        const mapRoleToAccountType = (r) => {
+            switch(r) {
+                case "fresher": return "Fresher";
+                case "self_employed": return "Self-employed";
+                case "employed": return "Employed";
+                case "intern": return "Intern";
+                case "student": return "Student";
+                case "unemployed": return "Currently not working";
+                default: return "Student";
+            }
+        };
+        const mappedAccountType = mapRoleToAccountType(role);
+
         if (!profileId) {
             console.log(`[Onboarding] Profile missing for user ${userId}. Auto-creating...`);
-            await authRepo.createProfile(userId, role, client);
+            await authRepo.createProfile(userId, mappedAccountType, client);
             profileId = await getProfileId(userId);
+        } else {
+            // Update the existing profile with the new mapped account_type
+            await client.query(`UPDATE profiles SET account_type = $1, updated_at = NOW() WHERE profile_id = $2`, [mappedAccountType, profileId]);
         }
 
         // Since this is the onboarding flow, if a user goes back and uploads a new resume,
@@ -200,12 +217,17 @@ exports.saveDetails = async (req, res) => {
         if (Array.isArray(educations) && educations.length > 0) {
             const extraEducations = isStudentRole ? educations.slice(1) : educations.slice(0);
             for (const edu of extraEducations) {
+                // Skip if completely empty
+                if (!edu.schoolName && !edu.degree && !edu.location) continue;
+                
                 const startDate = parseDate(edu.startDate);
                 const endDate = parseDate(edu.endDate);
+                const finalSchoolName = edu.schoolName || edu.location || "Unknown School";
+
                 await client.query(
                     `INSERT INTO educations (profile_id, school_name, degree, field_of_study, location, start_date, end_date)
                      VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-                    [profileId, edu.schoolName, edu.degree, edu.fieldOfStudy || null, edu.location || null, startDate, endDate]
+                    [profileId, finalSchoolName, edu.degree, edu.fieldOfStudy || null, edu.location || null, startDate, endDate]
                 );
             }
         }
@@ -216,12 +238,18 @@ exports.saveDetails = async (req, res) => {
         if (!isStudentRole && Array.isArray(experiences) && experiences.length > 0) {
             const extraExperiences = isEmployedRole ? experiences.slice(1) : experiences.slice(0);
             for (const exp of extraExperiences) {
+                // Skip if completely empty
+                if (!exp.companyName && !exp.jobTitle && !exp.location) continue;
+
                 const startDate = parseDate(exp.startDate);
                 const endDate = parseDate(exp.endDate);
+                const finalCompanyName = exp.companyName || exp.location || "Unknown Company";
+                const finalJobTitle = exp.jobTitle || "Unknown Role";
+
                 await client.query(
                     `INSERT INTO experiences (profile_id, title, company_name, location, description, start_date, end_date)
                      VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-                    [profileId, exp.jobTitle, exp.companyName, exp.location || null, exp.description || null, startDate, endDate]
+                    [profileId, finalJobTitle, finalCompanyName, exp.location || null, exp.description || null, startDate, endDate]
                 );
             }
         }

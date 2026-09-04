@@ -2,22 +2,18 @@
  * Helper utilities for Persona-Based Access
  */
 
-exports.isEmployer = (profile) => {
-    return profile?.accountType === 'Employer';
-};
-
 exports.isStudent = (profile) => {
-    return profile?.accountType === 'Student';
+    return profile?.accountType === 'Student' || profile?.accountType === 'Currently not working';
 };
 
 exports.isFresher = (profile) => {
-    return profile?.accountType === 'Fresher';
+    return profile?.accountType === 'Fresher' || profile?.accountType === 'Currently not working';
 };
 
 exports.isEmployee = (profile) => {
-    return profile?.accountType === 'Employee';
+    return profile?.accountType === 'Employed' || profile?.accountType === 'Intern';
 };
 
 exports.isFreelancer = (profile) => {
-    return profile?.accountType === 'Freelancer';
+    return profile?.accountType === 'Self-employed';
 };
