@@ -53,3 +53,9 @@ scripts/dev-only/
 
 # Planning and documentation (use Notion/Confluence instead)
 # plans/
+
+# Scratch and Logs
+flow_logs.md
+recover.txt
+scratch_*
+*.log
