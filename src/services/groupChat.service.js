@@ -123,6 +123,7 @@ class GroupChatService {
             is_blocked_by_me: false,
             is_blocked_by_other: false,
             other_user_name: group.conversation_name || 'Group Chat',
+            group_name: group.conversation_name || 'Group Chat',
             other_user_avatar: group.group_avatar || null,
             other_user_id: groupId,
             other_user_headline: inviter.full_name || null,
@@ -174,12 +175,12 @@ class GroupChatService {
             socketService.notifyUser(receiverId, 'group_invite', requestConversationPayload);
         }
 
-        const groupName = group?.name || 'a group';
+        const groupName = group?.conversation_name || group?.name || 'a group';
         const adderName = inviter.full_name || 'Someone';
         sendPush(
             receiverId,
-            'You were added to a group',
-            `${adderName} added you to ${groupName}.`,
+            'Group Invitation',
+            `${adderName} invited you to join ${groupName}.`,
             { type: 'group_invite', conversationId: groupId, senderId }
         ).catch(() => {});
 
@@ -1055,9 +1056,9 @@ class GroupChatService {
 
                 // If the user was mentioned, override default message notification with a mention one
                 const isMentioned = mentionedGroupMembers.some(m => m.user_id === member.user_id);
-                const groupName = group?.name || 'a group';
+                const groupName = group?.conversation_name || group?.name || 'Group Chat';
                 
-                let notifText = previewText || content;
+                let notifText = previewText || content || 'Message';
                 if (isMentioned) {
                     notifText = `${sender.full_name} mentioned you in a group chat`;
                 } else {
@@ -1072,6 +1073,7 @@ class GroupChatService {
                     senderAvatar: sender.avatar_url,
                     conversationId: groupId,
                     isGroup: true,
+                    groupName: groupName,
                     text: notifText
                 });
 
