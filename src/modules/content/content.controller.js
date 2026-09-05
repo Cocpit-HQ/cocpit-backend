@@ -4939,18 +4939,24 @@ exports.getPollAnalytics = async (req, res) => {
                     WHERE po.poll_id = pp.poll_id
                 ) as options,
 
-                -- All voters in a single list (anonymized choice)
+                -- All voters in a single list (handles both individual users and company actors)
                 (
                     SELECT COALESCE(json_agg(
                         json_build_object(
+                            'id', COALESCE(pv.org_id::text, u.user_id::text),
                             'user_id', u.user_id,
-                            'full_name', u.full_name,
-                            'avatar_url', u.avatar_url,
-                            'headline', u.headline
+                            'org_id', pv.org_id,
+                            'is_company', (pv.org_id IS NOT NULL),
+                            'full_name', COALESCE(o.name, u.full_name),
+                            'account_name', COALESCE(o.slug, u.account_name),
+                            'avatar_url', COALESCE(o.logo_url, u.avatar_url),
+                            'headline', COALESCE(o.headline, u.headline),
+                            'option_id', pv.option_id
                         )
                     ), '[]'::json)
                     FROM poll_votes pv
-                    JOIN active_users u ON u.user_id = pv.voter_id
+                    LEFT JOIN active_users u ON u.user_id = pv.voter_id
+                    LEFT JOIN organizations o ON o.org_id = pv.org_id
                     WHERE pv.poll_id = pp.poll_id
                 ) as voters
 

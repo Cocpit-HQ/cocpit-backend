@@ -445,7 +445,7 @@ const uploadPostMedia = multer({
     }
     cb(null, true);
   }
-}).fields([{ name: "media", maxCount: 10 }, { name: "cover_media", maxCount: 1 }]);
+}).fields([{ name: "media", maxCount: 20 }, { name: "cover_media", maxCount: 1 }]);
 
 // --- Profile Project Media Upload Configuration ---
 createDir(path.join(uploadsDir, 'project_media'));
