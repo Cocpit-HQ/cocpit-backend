@@ -198,7 +198,7 @@ async function resolveActorContextForRequest(req) {
 
     if (requestedActor.type === "USER") {
         if (requestedActor.id && requestedActor.id !== userId) {
-            console.warn(`[ActorContext] Stale USER actor ID detected (${requestedActor.id}). Falling back to current user (${userId}).`);
+            console.debug(`[ActorContext] Stale USER actor ID detected (${requestedActor.id}). Falling back to current user (${userId}).`);
         }
 
         return buildUserActor(userId, requestedActor.source);
