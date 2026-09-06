@@ -21,6 +21,7 @@ router.post("/post", requireAuth, uploadPostMedia, validate(createPostSchema), c
 router.get("/post/:id", requireAuth, contentController.getPostById);
 router.put("/post/:id", requireAuth, uploadPostMedia, contentController.updatePostById);
 router.delete("/post/:id", requireAuth, contentController.deletePost);
+router.delete("/post/:id/mentions", requireAuth, contentController.removeMention);
 
 // Achievement Images
 router.get("/achievement-images", requireAuth, achievementImageController.getAll);
