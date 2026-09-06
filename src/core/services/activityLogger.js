@@ -43,16 +43,6 @@ const logActivity = async (userId, actionType, entityType, entityId = null, meta
 
 const removeActivity = async (userId, actionType, entityId) => {
   try {
-    // 📝 Log Activity: Search Jobs
-    const searchText = req.query.q || req.query.title || req.query.search || req.query.keyword || "";
-
-    // DEBUG LOGGING
-    const fs = require('fs');
-    fs.appendFileSync('activity_debug.log', `[JobController] userId: ${userId}, searchText: ${searchText}\n`);
-
-    if (userId && searchText) {
-      logActivity(userId, 'search_job', 'job', null, { query: searchText });
-    }
     await pool.query(
       `DELETE FROM user_activity_log 
        WHERE user_id = $1 AND action_type = $2 AND entity_id = $3`,
