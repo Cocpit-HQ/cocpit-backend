@@ -37,8 +37,10 @@ const {
   getFeedSlice,
   setFeedSlice,
   addToSeenSet,
+  removeFromSeenSet,
   addToHiddenSet,
   getHiddenSet,
+  removeFromHiddenSet,
 } = require('./cache/feedCache');
 const { getSession, updateCursor, incrementSeenCount, createSession } = require('./session/feedSession.service');
 const { getPostHydrationSelect, getPostHydrationJoins, getPublicFeedWhere } = require('../../core/queries/postHydration.query');
@@ -112,17 +114,31 @@ async function _fetchChronologicalFeed(userId, cursor, limit, pool, orgActorId) 
         WHERE (b.is_org_block = true AND p.author_org_id IS NULL AND ((b.blocker_id = $2 AND b.blocked_id = p.author_id) OR (b.blocker_id = p.author_id AND b.blocked_id = $2)))
            OR (b.is_org_block = true AND p.author_org_id IS NOT NULL AND ((b.blocker_id = p.author_org_id AND b.blocked_id = $2) OR (b.blocker_id = $2 AND b.blocked_id = p.author_org_id)))
       )
+      AND NOT EXISTS (
+        SELECT 1 FROM reports r
+        WHERE r.target_id = p.post_id 
+          AND r.target_type = 'POST' 
+          AND r.reporter_id = $4
+          AND r.reporter_org_id = $2
+      )
       ` : `
       AND NOT EXISTS (
         SELECT 1 FROM blocks b
         WHERE (b.is_org_block = false AND p.author_org_id IS NULL AND ((b.blocker_id = $2 AND b.blocked_id = p.author_id) OR (b.blocker_id = p.author_id AND b.blocked_id = $2)))
            OR (b.is_org_block = true AND p.author_org_id IS NOT NULL AND ((b.blocker_id = p.author_org_id AND b.blocked_id = $2) OR (b.blocker_id = $2 AND b.blocked_id = p.author_org_id)))
       )
+      AND NOT EXISTS (
+        SELECT 1 FROM reports r
+        WHERE r.target_id = p.post_id 
+          AND r.target_type = 'POST' 
+          AND r.reporter_id = $4
+          AND r.reporter_org_id IS NULL
+      )
       `}
     ORDER BY p.created_at DESC
     LIMIT $3
   `;
-  const result = await pool.query(query, [cursorTs, orgActorId || userId, limit]);
+  const result = await pool.query(query, [cursorTs, orgActorId || userId, limit, userId]);
   let items = result.rows;
 
   // Filter explicitly hidden posts
@@ -488,9 +504,151 @@ async function hidePost({ userId, postId, sessionId, position, pool, orgActorId 
   return { ok: true };
 }
 
+/**
+ * unhidePost
+ * Reverses a "Not Interested" action:
+ * 1. Removes the post from seenSet and hiddenSet
+ * 2. Logs the analytics event
+ * 3. Reverses the negative penalty to user's hashtag score
+ */
+async function unhidePost({ userId, postId, sessionId, position, pool, orgActorId = null }) {
+  if (!userId || !postId) throw new Error('unhidePost: userId and postId are required');
+
+  const scopeId = buildCacheScopeId(userId, orgActorId);
+
+  // 1. Remove from seenSet and hiddenSet
+  try {
+    await Promise.all([
+      removeFromSeenSet(scopeId, [postId]),
+      removeFromHiddenSet(scopeId, [postId])
+    ]);
+  } catch (err) {
+    console.warn('[feedService] unhidePost Redis sets update failed:', err.message);
+  }
+
+  // 2. Track analytics event as 'unhide'
+  try {
+    await feedAnalytics.trackEvent({
+      event_type: 'unhide',
+      item_id: postId,
+      item_type: 'post',
+      user_id: userId,
+      session_id: sessionId || 'unknown_session',
+      position: position || 0,
+      context: 'home',
+      pool
+    });
+  } catch (err) {
+    console.warn('[feedService] unhidePost trackEvent failed:', err.message);
+  }
+
+  // 3. Reverse the negative penalty (+5) to the user's hashtag score
+  try {
+    await incrementUserHashtagScore(userId, 5, null, postId).catch(err => {
+      console.warn('[feedService] unhidePost score penalty failed:', err.message);
+    });
+  } catch (err) {
+    console.warn('[feedService] unhidePost incrementUserHashtagScore failed:', err.message);
+  }
+
+  return { ok: true };
+}
+
+/**
+ * submitFeedback
+ * Generic feedback mechanism for Interested / Not Interested
+ */
+async function submitFeedback({ userId, postId, feedbackType, sessionId, position, pool, orgActorId = null }) {
+  if (!userId || !postId || !feedbackType) {
+    throw new Error('submitFeedback: userId, postId, and feedbackType are required');
+  }
+
+  // 1. Upsert the permanent feedback to DB
+  try {
+    await pool.query(`
+      INSERT INTO user_post_feedback (user_id, post_id, feedback_type, updated_at)
+      VALUES ($1, $2, $3, NOW())
+      ON CONFLICT (user_id, post_id) 
+      DO UPDATE SET feedback_type = EXCLUDED.feedback_type, updated_at = NOW()
+    `, [userId, postId, feedbackType]);
+  } catch (err) {
+    console.error('[feedService] submitFeedback DB upsert failed:', err.message);
+    throw err;
+  }
+
+  const scopeId = buildCacheScopeId(userId, orgActorId);
+
+  if (feedbackType === 'INTERESTED') {
+    // 2a. Track analytics event
+    try {
+      await feedAnalytics.trackEvent({
+        event_type: 'interested',
+        item_id: postId,
+        item_type: 'post',
+        user_id: userId,
+        session_id: sessionId || 'unknown_session',
+        position: position || 0,
+        context: 'home',
+        pool
+      });
+    } catch (err) {
+      console.warn('[feedService] submitFeedback trackEvent interested failed:', err.message);
+    }
+
+    // 3a. Increment positive score (+5)
+    try {
+      await incrementUserHashtagScore(userId, 5, null, postId).catch(() => {});
+    } catch (err) {}
+
+    // 4a. If they were previously "NOT_INTERESTED", we should unhide it from Redis sets
+    try {
+      await Promise.all([
+        removeFromSeenSet(scopeId, [postId]),
+        removeFromHiddenSet(scopeId, [postId])
+      ]);
+    } catch (err) {}
+
+  } else if (feedbackType === 'NOT_INTERESTED') {
+    // 2b. Add to hiddenSet / seenSet
+    try {
+      await Promise.all([
+        addToSeenSet(scopeId, [postId]),
+        addToHiddenSet(scopeId, [postId])
+      ]);
+    } catch (err) {
+      console.warn('[feedService] submitFeedback NOT_INTERESTED Redis failed:', err.message);
+    }
+
+    // 3b. Track analytics event
+    try {
+      await feedAnalytics.trackEvent({
+        event_type: 'not_interested',
+        item_id: postId,
+        item_type: 'post',
+        user_id: userId,
+        session_id: sessionId || 'unknown_session',
+        position: position || 0,
+        context: 'home',
+        pool
+      });
+    } catch (err) {
+      console.warn('[feedService] submitFeedback trackEvent not_interested failed:', err.message);
+    }
+
+    // 4b. Decrement score (-5)
+    try {
+      await incrementUserHashtagScore(userId, -5, null, postId).catch(() => {});
+    } catch (err) {}
+  }
+
+  return { ok: true };
+}
+
 module.exports = {
   getFeed,
   hidePost,
+  unhidePost,
+  submitFeedback,
   buildCacheScopeId,
 
   // Exported for unit tests

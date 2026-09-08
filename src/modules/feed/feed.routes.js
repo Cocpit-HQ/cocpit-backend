@@ -60,4 +60,10 @@ router.delete("/session", requireAuth, feedSessionLimiter, feedController.resetS
 // POST /api/feed/hide — Hide a post and negatively affect recommendations
 router.post("/hide", requireAuth, feedEventLimiter, feedController.hidePost);
 
+// POST /api/feed/unhide — Unhide a post and reverse negative recommendations
+router.post("/unhide", requireAuth, feedEventLimiter, feedController.unhidePost);
+
+// POST /api/feed/postfeedback — Generic interested/not_interested feedback
+router.post("/postfeedback", requireAuth, feedEventLimiter, feedController.submitFeedback);
+
 module.exports = router;

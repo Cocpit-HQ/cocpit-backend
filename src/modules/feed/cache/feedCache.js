@@ -162,6 +162,20 @@ async function clearSeenSet(userId) {
   await redis.del(key);
 }
 
+/**
+ * Remove item IDs from the user's seen set.
+ * @param {string}   userId
+ * @param {string[]} itemIds - Array of item UUIDs
+ * @returns {Promise<void>}
+ */
+async function removeFromSeenSet(userId, itemIds) {
+  if (!userId) throw new Error("removeFromSeenSet: userId is required");
+  if (!Array.isArray(itemIds) || itemIds.length === 0) return;
+
+  const key = keys.seenSet(userId);
+  await redis.srem(key, ...itemIds);
+}
+
 // ─── Hidden Set Management ──────────────────────────────────────────────────
 /**
  * Add item IDs to the user's hidden set (explicitly "not interested").
@@ -179,6 +193,20 @@ async function addToHiddenSet(userId, itemIds) {
   pipeline.sadd(key, ...itemIds);
   pipeline.expire(key, TTL.SEEN_SET); // Use same TTL as seen set
   await pipeline.exec();
+}
+
+/**
+ * Remove item IDs from the user's hidden set.
+ * @param {string}   userId
+ * @param {string[]} itemIds - Array of item UUIDs
+ * @returns {Promise<void>}
+ */
+async function removeFromHiddenSet(userId, itemIds) {
+  if (!userId) throw new Error("removeFromHiddenSet: userId is required");
+  if (!Array.isArray(itemIds) || itemIds.length === 0) return;
+
+  const key = keys.hiddenSet(userId);
+  await redis.srem(key, ...itemIds);
 }
 
 /**
@@ -281,10 +309,12 @@ module.exports = {
   addToSeenSet,
   getSeenSet,
   clearSeenSet,
+  removeFromSeenSet,
   // Hidden set
   addToHiddenSet,
   getHiddenSet,
   clearHiddenSet,
+  removeFromHiddenSet,
   // Candidate pool (Day 2)
   setCandidatePool,
   getCandidatePool,

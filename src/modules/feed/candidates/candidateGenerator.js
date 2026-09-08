@@ -230,7 +230,18 @@ async function generateCandidates({
 
   // ── 5. Validate + deduplicate by contentId ────────────────────────────────
   const valid  = combined.filter(isCandidateValid);
-  const deduped = deduplicateByContentId(valid);
+  
+  let reportedIds = new Set();
+  if (pool) {
+    try {
+      const reportRes = await pool.query("SELECT target_id FROM reports WHERE reporter_id = $1 AND target_type = 'POST'", [userId]);
+      reportRes.rows.forEach(r => reportedIds.add(r.target_id));
+    } catch (e) {
+      console.warn('[candidateGenerator] Could not fetch reportedIds:', e.message);
+    }
+  }
+
+  const deduped = deduplicateByContentId(valid).filter(c => !reportedIds.has(c.contentId));
 
   // A11.3 Fallback logic: If generated candidates < 5, fill remaining feed slots using global trending candidates.
   if (deduped.length < 5) {

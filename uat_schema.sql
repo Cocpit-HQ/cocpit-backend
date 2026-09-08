@@ -44,4 +44,14 @@ ALTER TABLE blocks DROP CONSTRAINT IF EXISTS blocks_blocked_id_fkey;
 ALTER TABLE blocks DROP CONSTRAINT IF EXISTS blocks_blocker_id_fkey;
 CREATE OR REPLACE VIEW active_users AS SELECT * FROM users;
 
+-- 6. user_post_feedback: Feed interaction mechanism
+CREATE TABLE IF NOT EXISTS user_post_feedback (
+    user_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
+    post_id UUID REFERENCES posts(post_id) ON DELETE CASCADE,
+    feedback_type VARCHAR(20) NOT NULL CHECK (feedback_type IN ('INTERESTED', 'NOT_INTERESTED')),
+    created_at TIMESTAMPTZ DEFAULT now(),
+    updated_at TIMESTAMPTZ DEFAULT now(),
+    PRIMARY KEY (user_id, post_id)
+);
+
 COMMIT;

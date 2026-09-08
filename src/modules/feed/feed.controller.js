@@ -236,3 +236,74 @@ exports.hidePost = async (req, res, next) => {
     next(err);
   }
 };
+
+// ─── DELETE /api/feed/hide ────────────────────────────────────────────────────
+/**
+ * Unhides a post for the authenticated user and reverses negative intent scoring.
+ */
+exports.unhidePost = async (req, res, next) => {
+  try {
+    const userId = req.user?.sub;
+    if (!userId) return res.status(401).json({ ok: false, message: "Unauthenticated" });
+
+    const { item_id, session_id, position } = req.body;
+
+    if (!item_id) {
+      return res.status(400).json({ ok: false, message: "Missing required field: item_id" });
+    }
+
+    await feedService.unhidePost({
+      userId,
+      postId: item_id,
+      sessionId: session_id,
+      position: position,
+      pool,
+      orgActorId: getOrgActorId(req),
+    });
+
+    return res.status(200).json({
+      ok: true,
+      message: "Post unhidden successfully"
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+// ─── POST /api/feed/postfeedback ──────────────────────────────────────────────
+/**
+ * Generic endpoint to submit positive or negative feedback on a post.
+ */
+exports.submitFeedback = async (req, res, next) => {
+  try {
+    const userId = req.user?.sub;
+    if (!userId) return res.status(401).json({ ok: false, message: "Unauthenticated" });
+
+    const { item_id, type, session_id, position } = req.body;
+
+    if (!item_id || !type) {
+      return res.status(400).json({ ok: false, message: "Missing required fields: item_id, type" });
+    }
+
+    if (!['INTERESTED', 'NOT_INTERESTED'].includes(type)) {
+      return res.status(400).json({ ok: false, message: "Invalid feedback type" });
+    }
+
+    await feedService.submitFeedback({
+      userId,
+      postId: item_id,
+      feedbackType: type,
+      sessionId: session_id,
+      position: position,
+      pool,
+      orgActorId: getOrgActorId(req),
+    });
+
+    return res.status(200).json({
+      ok: true,
+      message: `Feedback ${type} recorded successfully`
+    });
+  } catch (err) {
+    next(err);
+  }
+};
