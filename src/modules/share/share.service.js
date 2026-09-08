@@ -42,8 +42,34 @@ async function trackShare(senderId, receiverId, entityType, entityId, shareMetho
         let tracked = false;
         if (result.rowCount > 0) {
             tracked = true;
-            if (entityType === 'post' && redisClient.isOpen) {
-                await redisClient.incr(`post:${entityId}:share_count`);
+            if (entityType === 'post') {
+                let currentCount = 0;
+                if (redisClient.isOpen) {
+                    const exists = await redisClient.exists(`post:${entityId}:share_count`);
+                    if (exists) {
+                        currentCount = await redisClient.incr(`post:${entityId}:share_count`);
+                    } else {
+                        const dbRes = await pool.query(
+                            `SELECT COUNT(*)::int AS count FROM shares WHERE entity_type = 'post' AND entity_id = $1`,
+                            [entityId]
+                        );
+                        currentCount = parseInt(dbRes.rows[0]?.count || 0, 10);
+                        await redisClient.set(`post:${entityId}:share_count`, currentCount);
+                    }
+                } else {
+                    const dbRes = await pool.query(
+                        `SELECT COUNT(*)::int AS count FROM shares WHERE entity_type = 'post' AND entity_id = $1`,
+                        [entityId]
+                    );
+                    currentCount = parseInt(dbRes.rows[0]?.count || 0, 10);
+                }
+
+                if (socketService && socketService.notifyPost) {
+                    socketService.notifyPost(entityId, "post_share_updated", {
+                        postId: entityId,
+                        externalShareCount: currentCount
+                    });
+                }
             }
         }
         return tracked;

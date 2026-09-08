@@ -51,7 +51,7 @@ async function hydrateShareCounts(posts) {
             const query = `
                 SELECT entity_id, COUNT(*) as count 
                 FROM shares 
-                WHERE entity_type = 'post' AND entity_id = ANY($1)
+                WHERE entity_type IN ('post', 'article') AND entity_id = ANY($1)
                 GROUP BY entity_id
             `;
             const dbResult = await pool.query(query, [missingPostIds]);
