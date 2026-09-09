@@ -198,6 +198,16 @@ exports.getOrganizationPosts = async (req, res) => {
                 AND sp_rep.is_active = TRUE
                 AND (sp_rep.is_removed IS FALSE OR sp_rep.is_removed IS NULL)
             ) AS is_reposted,
+        EXISTS(
+                SELECT 1 FROM posts sp_rep
+                WHERE sp_rep.shared_post_id = p.post_id
+                AND (
+                    ($${orgActorParamIdx}::uuid IS NOT NULL AND sp_rep.author_org_id = $${orgActorParamIdx}::uuid) OR ($${orgActorParamIdx}::uuid IS NULL AND sp_rep.author_id = $${userParamIdx} AND sp_rep.author_org_id IS NULL)
+                )
+                AND sp_rep.is_active = TRUE
+                AND (sp_rep.is_removed IS FALSE OR sp_rep.is_removed IS NULL)
+            AND sp_rep.content IS NOT NULL AND TRIM(sp_rep.content) != ''
+        ) AS is_reposted_with_thoughts,
             (
                 SELECT sp_rep.post_id FROM posts sp_rep
                 WHERE sp_rep.shared_post_id = p.post_id
@@ -270,6 +280,16 @@ exports.getOrganizationPosts = async (req, res) => {
                             AND sp_rep.is_active = TRUE
                             AND (sp_rep.is_removed IS FALSE OR sp_rep.is_removed IS NULL)
                         ),
+              'is_reposted_with_thoughts', EXISTS(
+                            SELECT 1 FROM posts sp_rep
+                            WHERE sp_rep.shared_post_id = sp.post_id
+                            AND (
+                                ($${orgActorParamIdx}::uuid IS NOT NULL AND sp_rep.author_org_id = $${orgActorParamIdx}::uuid) OR ($${orgActorParamIdx}::uuid IS NULL AND sp_rep.author_id = $${userParamIdx} AND sp_rep.author_org_id IS NULL)
+                            )
+                            AND sp_rep.is_active = TRUE
+                            AND (sp_rep.is_removed IS FALSE OR sp_rep.is_removed IS NULL)
+                        AND sp_rep.content IS NOT NULL AND TRIM(sp_rep.content) != ''
+              ),
                         'repost_id', (
                             SELECT sp_rep.post_id FROM posts sp_rep
                             WHERE sp_rep.shared_post_id = sp.post_id

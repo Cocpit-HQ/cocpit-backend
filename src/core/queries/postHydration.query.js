@@ -130,6 +130,21 @@ const getPostHydrationSelect = (companyParamIdx, userParamIdx) => `
     ) AS is_reposted,
 
     (
+        EXISTS(
+            SELECT 1 FROM posts sp_rep
+            WHERE sp_rep.shared_post_id = p.post_id 
+            AND (
+                ($${companyParamIdx}::uuid IS NOT NULL AND sp_rep.author_org_id = $${companyParamIdx}::uuid)
+                OR
+                ($${companyParamIdx}::uuid IS NULL AND sp_rep.author_id = $${userParamIdx} AND sp_rep.author_org_id IS NULL)
+            )
+            AND sp_rep.is_active = TRUE
+            AND (sp_rep.is_removed IS FALSE OR sp_rep.is_removed IS NULL)
+            AND sp_rep.content IS NOT NULL AND TRIM(sp_rep.content) != ''
+        )
+    ) AS is_reposted_with_thoughts,
+
+    (
         SELECT sp_rep.post_id FROM posts sp_rep
         WHERE sp_rep.shared_post_id = p.post_id 
         AND (
@@ -289,6 +304,43 @@ const getPostHydrationSelect = (companyParamIdx, userParamIdx) => `
                     'author_slug', COALESCE(sp_comp.slug, sp_u.account_name),
                     'is_organization_post', (sp.author_org_id IS NOT NULL)
                 ),
+                 'shared_post_data', CASE
+                     WHEN sp.shared_job_id IS NOT NULL THEN (
+                         SELECT json_build_object(
+                             'is_accessible', true,
+                             'job_id', sj_sp.job_id,
+                             'title', sj_sp.title,
+                             'company_name', sj_sp.company_name,
+                             'location', sj_sp.location,
+                             'company_logo', sj_sp_comp.logo_url
+                         )
+                         FROM jobs sj_sp
+                         LEFT JOIN organizations sj_sp_comp ON sj_sp.org_id = sj_sp_comp.org_id
+                         WHERE sj_sp.job_id = sp.shared_job_id
+                     )
+                     WHEN sp.shared_post_id IS NOT NULL THEN (
+                         SELECT json_build_object(
+                             'is_accessible', true,
+                             'post_id', sp_sp.post_id,
+                             'content', sp_sp.content,
+                             'created_at', sp_sp.created_at,
+                             'post_type', sp_sp.post_type,
+                             'author', json_build_object(
+                                 'user_id', COALESCE(sp_sp.author_org_id, sp_sp_u.user_id),
+                                 'full_name', COALESCE(sp_sp_comp.name, sp_sp_u.full_name),
+                                 'avatar_url', COALESCE(sp_sp_comp.logo_url, sp_sp_u.avatar_url),
+                                 'author_slug', COALESCE(sp_sp_comp.slug, sp_sp_u.account_name),
+                                 'is_organization_post', (sp_sp.author_org_id IS NOT NULL)
+                             ),
+                             'media', COALESCE((SELECT json_agg(json_build_object('url', pm.url, 'media_type', pm.media_type)) FROM post_media pm WHERE pm.post_id = sp_sp.post_id), '[]'::json)
+                         )
+                         FROM posts sp_sp
+                         LEFT JOIN active_users sp_sp_u ON sp_sp_u.user_id = sp_sp.author_id
+                         LEFT JOIN organizations sp_sp_comp ON sp_sp_comp.org_id = sp_sp.author_org_id
+                         WHERE sp_sp.post_id = sp.shared_post_id
+                     )
+                     ELSE NULL
+                 END,
                  'media', COALESCE((SELECT json_agg(json_build_object('url', pm.url, 'media_type', pm.media_type)) FROM post_media pm WHERE pm.post_id = sp.post_id), '[]'::json),
                  'achievement_image_url', sp_ai.cloudinary_url,
                  'like_count', (SELECT COUNT(*) FROM active_post_likes pl WHERE pl.post_id = sp.post_id)::int,
@@ -314,6 +366,18 @@ const getPostHydrationSelect = (companyParamIdx, userParamIdx) => `
                      )
                      AND sp_rep.is_active = TRUE
                      AND (sp_rep.is_removed IS FALSE OR sp_rep.is_removed IS NULL)
+                 ),
+                 'is_reposted_with_thoughts', EXISTS(
+                     SELECT 1 FROM posts sp_rep
+                     WHERE sp_rep.shared_post_id = sp.post_id 
+                     AND (
+                         ($${companyParamIdx}::uuid IS NOT NULL AND sp_rep.author_org_id = $${companyParamIdx}::uuid)
+                         OR
+                         ($${companyParamIdx}::uuid IS NULL AND sp_rep.author_id = $${userParamIdx} AND sp_rep.author_org_id IS NULL)
+                     )
+                     AND sp_rep.is_active = TRUE
+                     AND (sp_rep.is_removed IS FALSE OR sp_rep.is_removed IS NULL)
+                     AND sp_rep.content IS NOT NULL AND TRIM(sp_rep.content) != ''
                  ),
                  'repost_id', (
                      SELECT sp_rep.post_id FROM posts sp_rep

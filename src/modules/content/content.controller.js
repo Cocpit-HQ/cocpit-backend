@@ -913,8 +913,10 @@ exports.createPost = async (req, res) => {
                     return res.status(403).json({ message: "Personal posts cannot be reposted." });
                 }
                 if (originalPostCheck.rows[0].shared_post_id !== null) {
-                    await client.query('ROLLBACK');
-                    return res.status(403).json({ message: "Reposted posts cannot be reposted." });
+                    if (content && content.replace(/<[^>]*>?/gm, '').replace(/&nbsp;|\u200B|\u00A0|&#8203;|&#160;|&zwnj;/g, '').replace(/\s/g, '').trim() !== '') {
+                        await client.query('ROLLBACK');
+                        return res.status(403).json({ message: "Nested reposts with thoughts are not allowed." });
+                    }
                 }
             }
 
@@ -1490,6 +1492,18 @@ exports.getPostById = async (req, res) => {
         AND sp_rep.is_active = TRUE
         AND (sp_rep.is_removed IS FALSE OR sp_rep.is_removed IS NULL)
     ) AS is_reposted,
+        EXISTS(
+        SELECT 1 FROM posts sp_rep
+        WHERE sp_rep.shared_post_id = p.post_id 
+        AND (
+            ($3::uuid IS NOT NULL AND sp_rep.author_org_id = $3::uuid)
+            OR
+            ($3::uuid IS NULL AND sp_rep.author_id = $2 AND sp_rep.author_org_id IS NULL)
+        )
+        AND sp_rep.is_active = TRUE
+        AND (sp_rep.is_removed IS FALSE OR sp_rep.is_removed IS NULL)
+    AND sp_rep.content IS NOT NULL AND TRIM(sp_rep.content) != ''
+        ) AS is_reposted_with_thoughts,
 
     (
         SELECT sp_rep.post_id FROM posts sp_rep
@@ -1681,6 +1695,18 @@ exports.getPostById = async (req, res) => {
                     AND sp_rep.is_active = TRUE
                     AND (sp_rep.is_removed IS FALSE OR sp_rep.is_removed IS NULL)
                 ),
+              'is_reposted_with_thoughts', EXISTS(
+                    SELECT 1 FROM posts sp_rep
+                    WHERE sp_rep.shared_post_id = sp.post_id 
+                    AND (
+                        ($3::uuid IS NOT NULL AND sp_rep.author_org_id = $3::uuid)
+                        OR
+                        ($3::uuid IS NULL AND sp_rep.author_id = $2 AND sp_rep.author_org_id IS NULL)
+                    )
+                    AND sp_rep.is_active = TRUE
+                    AND (sp_rep.is_removed IS FALSE OR sp_rep.is_removed IS NULL)
+                AND sp_rep.content IS NOT NULL AND TRIM(sp_rep.content) != ''
+              ),
                 'repost_id', (
                     SELECT sp_rep.post_id FROM posts sp_rep
                     WHERE sp_rep.shared_post_id = sp.post_id 
