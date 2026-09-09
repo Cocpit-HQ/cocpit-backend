@@ -2752,10 +2752,15 @@ exports.addComment = async (req, res) => {
     }
 
     try {
-        const post = await pool.query(`select post_id, author_id, author_org_id, post_type, is_community_article from posts where post_id = $1`, [postId])
+        const post = await pool.query(`select post_id, shared_post_id, content, author_id, author_org_id, post_type, is_community_article from posts where post_id = $1`, [postId]);
 
         if (post.rowCount === 0) {
-            return res.status(404).json({ message: "Post not found" })
+            return res.status(404).json({ message: "Post not found" });
+        }
+
+        let effectivePostId = postId;
+        if (post.rows[0].shared_post_id && (!post.rows[0].content || post.rows[0].content.trim() === '')) {
+            effectivePostId = post.rows[0].shared_post_id;
         }
 
         const postAuthorId = post.rows[0].author_id;
@@ -2840,7 +2845,7 @@ exports.addComment = async (req, res) => {
             `INSERT INTO post_comments (post_id, author_id, content, parent_id, author_org_id)
              VALUES ($1, $2, $3, $4, $5)
              RETURNING comment_id, author_id, content, parent_id, author_org_id, created_at`,
-            [postId, userId, content.trim(), insertParentId, companyId || null]
+            [effectivePostId, userId, content.trim(), insertParentId, companyId || null]
         );
 
         const newComment = result.rows[0];
@@ -3566,9 +3571,15 @@ exports.getComments = async (req, res) => {
         const { userId, orgId: companyId } = getContentActorScope(req, requestedCompanyId || null);
         const targetCommentId = req.query.target_comment_id || null;
 
-        const post = await pool.query(`select post_id, author_org_id, post_type, is_community_article from posts where post_id = $1`, [postId])
+        const post = await pool.query(`select post_id, shared_post_id, content, author_org_id, post_type, is_community_article from posts where post_id = $1`, [postId]);
         if (post.rowCount === 0) {
-            return res.status(404).json({ message: "Post not found" })
+            return res.status(404).json({ message: "Post not found" });
+        }
+
+        // If this is a repost without additional thoughts, fetch comments of the original post
+        let effectivePostId = postId;
+        if (post.rows[0].shared_post_id && (!post.rows[0].content || post.rows[0].content.trim() === '')) {
+            effectivePostId = post.rows[0].shared_post_id;
         }
 
         const postCompanyId = post.rows[0].author_org_id;
@@ -3701,7 +3712,7 @@ exports.getComments = async (req, res) => {
         c.pinned_at DESC NULLS LAST,
         c.created_at DESC
       `,
-            [postId, userId, companyId || null, targetCommentId || null]
+            [effectivePostId, userId, companyId || null, targetCommentId || null]
         );
         const mappedComments = comments.rows.map(row => ({
             ...row,
