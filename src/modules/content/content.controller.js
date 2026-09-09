@@ -5270,6 +5270,10 @@ exports.moderatePost = async (req, res) => {
 
 exports.getPostLikes = async (req, res) => {
     const postId = req.params.id;
+    // Determine viewer context (personal account or company profile)
+    const actorScope = getContentActorScope(req, req.query.companyId || null);
+    const viewerUserId = actorScope.userId;
+    const viewerOrgId = actorScope.orgId;
 
     try {
         const likesRes = await pool.query(
@@ -5281,7 +5285,26 @@ exports.getPostLikes = async (req, res) => {
                 COALESCE(pl.org_id::text, pl.user_id::text) AS user_id,
                 COALESCE(comp.slug, u.account_name) AS username,
                 COALESCE(comp.name, u.full_name) AS full_name,
-                COALESCE(comp.logo_url, u.avatar_url) AS avatar
+                COALESCE(comp.logo_url, u.avatar_url) AS avatar,
+                -- Determine if the liked entity is the current viewer (self)
+                (
+                    $2::uuid IS NOT NULL AND pl.org_id = $2::uuid
+                    OR $2::uuid IS NULL AND $3::uuid IS NOT NULL AND pl.user_id = $3::uuid AND pl.org_id IS NULL
+                ) AS is_self,
+                -- Determine if current viewer is already following the liker (user->user, user->org, or org->org)
+                (
+                    $2::uuid IS NULL AND $3::uuid IS NOT NULL AND pl.user_id IS NOT NULL AND EXISTS(
+                        SELECT 1 FROM followers f WHERE f.follower_id = $3::uuid AND f.following_id = pl.user_id
+                    )
+                    OR
+                    $2::uuid IS NULL AND $3::uuid IS NOT NULL AND pl.org_id IS NOT NULL AND EXISTS(
+                        SELECT 1 FROM organization_followers ofol WHERE ofol.user_id = $3::uuid AND ofol.org_id = pl.org_id
+                    )
+                    OR
+                    $2::uuid IS NOT NULL AND pl.org_id IS NOT NULL AND EXISTS(
+                        SELECT 1 FROM organization_org_follows oof WHERE oof.follower_org_id = $2::uuid AND oof.following_org_id = pl.org_id
+                    )
+                ) AS is_following
             FROM active_post_likes pl
             LEFT JOIN active_users u ON u.user_id = pl.user_id
             LEFT JOIN active_organizations comp ON comp.org_id = pl.org_id
@@ -5291,7 +5314,7 @@ exports.getPostLikes = async (req, res) => {
                 (pl.org_id IS NOT NULL AND comp.org_id IS NOT NULL)
             )
             ORDER BY pl.created_at DESC`,
-            [postId]
+            [postId, viewerOrgId, viewerUserId]
         );
 
         return res.status(200).json({
@@ -5304,7 +5327,9 @@ exports.getPostLikes = async (req, res) => {
                 userId: row.user_id,
                 username: row.username,
                 fullName: row.full_name,
-                avatar: row.avatar
+                avatar: row.avatar,
+                isFollowing: row.is_following,
+                isSelf: row.is_self
             }))
         });
     } catch (err) {

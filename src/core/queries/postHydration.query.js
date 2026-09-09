@@ -70,7 +70,9 @@ const getPostHydrationSelect = (companyParamIdx, userParamIdx) => `
 
     (SELECT COUNT(*) FROM active_post_likes pl WHERE pl.post_id = p.post_id)::int AS like_count,
     (
-        SELECT COALESCE(comp_like.slug, u_like.account_name)
+        -- Resolve human-readable display name for the sample liker preview:
+        -- Use company name if liked by an organization, otherwise fall back to user's full name (instead of slugs/handles)
+        SELECT COALESCE(comp_like.name, u_like.full_name)
         FROM active_post_likes pl_sample
          LEFT JOIN active_users u_like ON u_like.user_id = pl_sample.user_id
         LEFT JOIN organizations comp_like ON comp_like.org_id = pl_sample.org_id
@@ -344,6 +346,59 @@ const getPostHydrationSelect = (companyParamIdx, userParamIdx) => `
                  'media', COALESCE((SELECT json_agg(json_build_object('url', pm.url, 'media_type', pm.media_type)) FROM post_media pm WHERE pm.post_id = sp.post_id), '[]'::json),
                  'achievement_image_url', sp_ai.cloudinary_url,
                  'like_count', (SELECT COUNT(*) FROM active_post_likes pl WHERE pl.post_id = sp.post_id)::int,
+                 'sample_liker_username', (
+                     SELECT COALESCE(comp_like.name, u_like.full_name)
+                     FROM active_post_likes pl_sample
+                     LEFT JOIN active_users u_like ON u_like.user_id = pl_sample.user_id
+                     LEFT JOIN organizations comp_like ON comp_like.org_id = pl_sample.org_id
+                     WHERE pl_sample.post_id = sp.post_id
+                     AND NOT (
+                         ($${companyParamIdx}::uuid IS NOT NULL AND pl_sample.org_id = $${companyParamIdx}::uuid)
+                         OR
+                         ($${companyParamIdx}::uuid IS NULL AND pl_sample.user_id = $${userParamIdx} AND pl_sample.org_id IS NULL)
+                     )
+                     ORDER BY 
+                         (
+                             $${userParamIdx}::uuid IS NOT NULL AND 
+                             (
+                                 (pl_sample.user_id IS NOT NULL AND EXISTS (
+                                     SELECT 1 FROM followers f 
+                                     WHERE f.follower_id = $${userParamIdx} AND f.following_id = pl_sample.user_id
+                                 ))
+                                 OR 
+                                 (pl_sample.org_id IS NOT NULL AND EXISTS (
+                                     SELECT 1 FROM organization_followers ofol 
+                                     WHERE ofol.user_id = $${userParamIdx} AND ofol.org_id = pl_sample.org_id
+                                 ))
+                             )
+                         ) DESC,
+                         pl_sample.created_at DESC
+                     LIMIT 1
+                 ),
+                 'liked_users', (
+                     SELECT COALESCE(
+                         json_agg(json_build_object(
+                             'username', COALESCE(comp_like.slug, u_like.account_name),
+                             'avatar_url', COALESCE(comp_like.logo_url, u_like.avatar_url)
+                         )),
+                         '[]'::json
+                     )
+                     FROM (
+                         SELECT pl_sample.user_id, pl_sample.org_id
+                         FROM active_post_likes pl_sample
+                         WHERE pl_sample.post_id = sp.post_id
+                           AND pl_sample.user_id IS NOT NULL
+                           AND NOT (
+                               ($${companyParamIdx}::uuid IS NOT NULL AND pl_sample.org_id = $${companyParamIdx}::uuid)
+                               OR
+                               ($${companyParamIdx}::uuid IS NULL AND pl_sample.user_id = $${userParamIdx}::uuid AND pl_sample.org_id IS NULL)
+                           )
+                         ORDER BY pl_sample.created_at DESC
+                         LIMIT 3
+                     ) sub
+                     LEFT JOIN active_users u_like ON u_like.user_id = sub.user_id
+                     LEFT JOIN organizations comp_like ON comp_like.org_id = sub.org_id
+                 ),
                  'comment_count', (SELECT COUNT(*) FROM active_post_comments pc WHERE pc.post_id = sp.post_id)::int,
                  'share_count', (SELECT COUNT(*) FROM posts sp_share2 WHERE sp_share2.shared_post_id = sp.post_id AND sp_share2.is_active = TRUE AND (sp_share2.is_removed IS FALSE OR sp_share2.is_removed IS NULL))::int,
                  'external_share_count', (SELECT COUNT(*) FROM shares s WHERE s.entity_type IN ('post', 'article') AND s.entity_id = sp.post_id::text)::int,
