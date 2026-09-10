@@ -26,6 +26,18 @@ const sanitizeArticleContent = (html) => {
       svg: ['xmlns', 'width', 'height', 'viewBox', 'viewbox', 'fill', 'stroke', 'stroke-width', 'stroke-linecap', 'stroke-linejoin', 'class'],
       path: ['d', 'fill', 'stroke', 'stroke-width', 'stroke-linecap', 'stroke-linejoin'],
       line: ['x1', 'x2', 'y1', 'y2'],
+      p: ['class'],
+      h1: ['class'],
+      h2: ['class'],
+      h3: ['class'],
+      li: ['class'],
+    },
+    allowedClasses: {
+      p: ['text-left', 'text-center', 'text-right', 'text-justify'],
+      h1: ['text-left', 'text-center', 'text-right', 'text-justify'],
+      h2: ['text-left', 'text-center', 'text-right', 'text-justify'],
+      h3: ['text-left', 'text-center', 'text-right', 'text-justify'],
+      li: ['text-left', 'text-center', 'text-right', 'text-justify'],
     },
     // No inline style anywhere: the toolbar's own generated markup uses Tailwind classes
     // (group/group-hover) instead of inline style/onmouseenter, so nothing legitimate is
