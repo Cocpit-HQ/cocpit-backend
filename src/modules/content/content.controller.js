@@ -844,6 +844,30 @@ exports.createPost = async (req, res) => {
         });
     }
 
+    // Image file size validation for post creation:
+    // - Per-image limit: 10MB max per single image file
+    // - Total post upload limit: 100MB max cumulative size across all uploaded images
+    const MAX_SINGLE_IMAGE_SIZE = 10 * 1024 * 1024; // 10MB per single image limit
+    const MAX_TOTAL_IMAGE_SIZE = 100 * 1024 * 1024; // 100MB total post images limit
+
+    // Reject any single image larger than 10MB
+    const oversizedImage = imageFiles.find(f => f.size > MAX_SINGLE_IMAGE_SIZE);
+    if (oversizedImage) {
+        cleanupFiles(uploadedFiles);
+        return res.status(400).json({
+            message: `Image "${oversizedImage.originalname || 'file'}" exceeds the 10MB limit.`
+        });
+    }
+
+    // Reject cumulative image upload size larger than 100MB
+    const totalImageSize = imageFiles.reduce((sum, f) => sum + (f.size || 0), 0);
+    if (totalImageSize > MAX_TOTAL_IMAGE_SIZE) {
+        cleanupFiles(uploadedFiles);
+        return res.status(400).json({
+            message: "Total image upload size cannot exceed 100MB."
+        });
+    }
+
     // Map uploaded files to media URLs directly (already streamed by Multer middleware)
     if (post_type === 'article') {
         // Cover comes unambiguously from the dedicated field when the caller sends one
