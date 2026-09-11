@@ -939,7 +939,7 @@ exports.createPost = async (req, res) => {
         if (req.body.shared_post_id) {
             // Check if Personal or already a repost
             const originalPostCheck = await client.query(
-                `SELECT pc.name, p.shared_post_id FROM posts p 
+                `SELECT pc.name, p.shared_post_id, p.content FROM posts p 
                  LEFT JOIN post_categories pc ON p.category_id = pc.category_id 
                  WHERE p.post_id = $1`,
                 [req.body.shared_post_id]
@@ -949,10 +949,31 @@ exports.createPost = async (req, res) => {
                     await client.query('ROLLBACK');
                     return res.status(403).json({ message: "Personal posts cannot be reposted." });
                 }
-                if (originalPostCheck.rows[0].shared_post_id !== null) {
-                    if (content && content.replace(/<[^>]*>?/gm, '').replace(/&nbsp;|\u200B|\u00A0|&#8203;|&#160;|&zwnj;/g, '').replace(/\s/g, '').trim() !== '') {
-                        await client.query('ROLLBACK');
-                        return res.status(403).json({ message: "Nested reposts with thoughts are not allowed." });
+                let currentTarget = originalPostCheck.rows[0];
+                while (currentTarget && currentTarget.shared_post_id !== null) {
+                    const targetContent = currentTarget.content;
+                    const targetHasThoughts = targetContent && targetContent.replace(/<[^>]*>?/gm, '').replace(/&nbsp;|\u200B|\u00A0|&#8203;|&#160;|&zwnj;/g, '').replace(/\s/g, '').trim() !== '';
+
+                    if (!targetHasThoughts) {
+                        // Automatically redirect/unwrap to parent post
+                        req.body.shared_post_id = currentTarget.shared_post_id;
+                        const nextCheck = await client.query(
+                            `SELECT pc.name, p.shared_post_id, p.content FROM posts p 
+                             LEFT JOIN post_categories pc ON p.category_id = pc.category_id 
+                             WHERE p.post_id = $1`,
+                            [req.body.shared_post_id]
+                        );
+                        currentTarget = nextCheck.rowCount > 0 ? nextCheck.rows[0] : null;
+                        if (currentTarget && currentTarget.name === 'Personal') {
+                            await client.query('ROLLBACK');
+                            return res.status(403).json({ message: "Personal posts cannot be reposted." });
+                        }
+                    } else {
+                        if (content && content.replace(/<[^>]*>?/gm, '').replace(/&nbsp;|\u200B|\u00A0|&#8203;|&#160;|&zwnj;/g, '').replace(/\s/g, '').trim() !== '') {
+                            await client.query('ROLLBACK');
+                            return res.status(403).json({ message: "Nested reposts with thoughts are not allowed." });
+                        }
+                        break;
                     }
                 }
             }
