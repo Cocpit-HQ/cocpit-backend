@@ -874,11 +874,24 @@ exports.createPost = async (req, res) => {
             media_urls = [];
         }
     } else if (uploadedFiles.length > 0) {
-        const urls = uploadedFiles.map(file => (file.path || file.secure_url || '').replace(/\\/g, "/"));
+        let parsedMediaMetadata = [];
+        if (req.body.media_metadata) {
+            try {
+                parsedMediaMetadata = typeof req.body.media_metadata === 'string' ? JSON.parse(req.body.media_metadata) : req.body.media_metadata;
+            } catch (e) {
+                console.error('Failed to parse media_metadata', e);
+            }
+        }
+        
+        const fileObjects = uploadedFiles.map((file, idx) => ({
+            url: (file.path || file.secure_url || '').replace(/\\/g, "/"),
+            width: (parsedMediaMetadata[idx] && parsedMediaMetadata[idx].width) || file.width || null,
+            height: (parsedMediaMetadata[idx] && parsedMediaMetadata[idx].height) || file.height || null
+        }));
         if (videoFiles.length > 0) {
-            media_urls = [urls[0]];
+            media_urls = [fileObjects[0]];
         } else if (imageFiles.length > 0) {
-            media_urls = urls;
+            media_urls = fileObjects;
         }
     }
 
@@ -1140,12 +1153,15 @@ exports.createPost = async (req, res) => {
         let type;
         // 3. Insert Media (Parallel Optimized)
         if (media_urls && Array.isArray(media_urls) && media_urls.length > 0) {
-            const mediaPromises = media_urls.filter(url => typeof url === 'string').map(url => {
+            const mediaPromises = media_urls.map(mediaItem => {
+                const url = typeof mediaItem === 'string' ? mediaItem : mediaItem.url;
+                const width = mediaItem.width || null;
+                const height = mediaItem.height || null;
                 let currentType = url.toLowerCase().match(/\.(mp4|webm|mov)(\?|#|$)/) ? 'video' : 'image';
                 type = currentType; // Keep a reference to one type for response (legacy behavior)
                 return client.query(
-                    `INSERT INTO post_media (post_id, url, media_type) VALUES ($1, $2, $3)`,
-                    [postId, url, currentType]
+                    `INSERT INTO post_media (post_id, url, media_type, width, height) VALUES ($1, $2, $3, $4, $5)`,
+                    [postId, url, currentType, width, height]
                 );
             });
             await Promise.all(mediaPromises);
@@ -2170,18 +2186,32 @@ exports.updatePostById = async (req, res) => {
 
 
         let type;
+        let parsedMediaMetadata = [];
+        if (req.body.media_metadata) {
+            try {
+                parsedMediaMetadata = typeof req.body.media_metadata === 'string' ? JSON.parse(req.body.media_metadata) : req.body.media_metadata;
+            } catch (e) {
+                console.error('Failed to parse media_metadata in update', e);
+            }
+        }
+
         // 5. Update Media: The "Sync" approach
         if (Array.isArray(media_urls)) {
             await client.query(`DELETE FROM post_media WHERE post_id = $1`, [postId]);
 
-            for (const item of media_urls) {
+            for (let i = 0; i < media_urls.length; i++) {
+                const item = media_urls[i];
                 const url = typeof item === 'object' && item !== null ? item.url : item;
                 if (!url) continue;
+                
+                const width = (parsedMediaMetadata[i] && parsedMediaMetadata[i].width) || (typeof item === 'object' && item !== null ? item.width : null);
+                const height = (parsedMediaMetadata[i] && parsedMediaMetadata[i].height) || (typeof item === 'object' && item !== null ? item.height : null);
+                
                 const type = url.match(/\.(mp4|webm|mov)(\?|#|$)/i) ? "video" : "image";
                 await client.query(
-                    `INSERT INTO post_media (post_id, url, media_type)
-       VALUES ($1, $2, $3)`,
-                    [postId, url, type]
+                    `INSERT INTO post_media (post_id, url, media_type, width, height)
+       VALUES ($1, $2, $3, $4, $5)`,
+                    [postId, url, type, width, height]
                 );
             }
         }

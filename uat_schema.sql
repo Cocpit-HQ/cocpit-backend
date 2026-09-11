@@ -54,4 +54,9 @@ CREATE TABLE IF NOT EXISTS user_post_feedback (
     PRIMARY KEY (user_id, post_id)
 );
 
+-- 7. post_media: Add width and height columns
+ALTER TABLE post_media 
+    ADD COLUMN IF NOT EXISTS width INT,
+    ADD COLUMN IF NOT EXISTS height INT;
+
 COMMIT;

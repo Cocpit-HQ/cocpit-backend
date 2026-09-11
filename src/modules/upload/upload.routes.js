@@ -15,7 +15,9 @@ router.post(
       console.log("[UploadRoute] File Mapping:", file.originalname, file.path);
       return {
         url: file.path,
-        media_type: file.resource_type
+        media_type: file.resource_type,
+        width: file.width,
+        height: file.height
       }
     });
 

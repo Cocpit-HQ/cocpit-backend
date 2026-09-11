@@ -63,7 +63,7 @@ const getPostHydrationSelect = (companyParamIdx, userParamIdx) => `
     ) AS tags,
 
     COALESCE(
-        (SELECT json_agg(json_build_object('url', pm.url, 'media_type', pm.media_type)) 
+        (SELECT json_agg(json_build_object('url', pm.url, 'media_type', pm.media_type, 'width', pm.width, 'height', pm.height)) 
          FROM post_media pm WHERE pm.post_id = p.post_id),
         '[]'::json
     ) AS media,
@@ -334,7 +334,7 @@ const getPostHydrationSelect = (companyParamIdx, userParamIdx) => `
                                  'author_slug', COALESCE(sp_sp_comp.slug, sp_sp_u.account_name),
                                  'is_organization_post', (sp_sp.author_org_id IS NOT NULL)
                              ),
-                             'media', COALESCE((SELECT json_agg(json_build_object('url', pm.url, 'media_type', pm.media_type)) FROM post_media pm WHERE pm.post_id = sp_sp.post_id), '[]'::json)
+                             'media', COALESCE((SELECT json_agg(json_build_object('url', pm.url, 'media_type', pm.media_type, 'width', pm.width, 'height', pm.height)) FROM post_media pm WHERE pm.post_id = sp_sp.post_id), '[]'::json)
                          )
                          FROM posts sp_sp
                          LEFT JOIN active_users sp_sp_u ON sp_sp_u.user_id = sp_sp.author_id
@@ -343,7 +343,7 @@ const getPostHydrationSelect = (companyParamIdx, userParamIdx) => `
                      )
                      ELSE NULL
                  END,
-                 'media', COALESCE((SELECT json_agg(json_build_object('url', pm.url, 'media_type', pm.media_type)) FROM post_media pm WHERE pm.post_id = sp.post_id), '[]'::json),
+                 'media', COALESCE((SELECT json_agg(json_build_object('url', pm.url, 'media_type', pm.media_type, 'width', pm.width, 'height', pm.height)) FROM post_media pm WHERE pm.post_id = sp.post_id), '[]'::json),
                  'achievement_image_url', sp_ai.cloudinary_url,
                  'like_count', (SELECT COUNT(*) FROM active_post_likes pl WHERE pl.post_id = sp.post_id)::int,
                  'sample_liker_username', (

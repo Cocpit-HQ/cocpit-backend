@@ -422,8 +422,8 @@ async function getFeed({ userId, cursor = null, limit = DEFAULT_PAGE_SIZE, pool 
   }
 
   // ── B7.4: Cache the assembled slice (TTL 5 min) ───────────────────────────
-  const nextCursor = uuidv4();
   const slicedItems = feedItems.slice(0, pageSize);
+  const nextCursor = slicedItems.length > 0 ? uuidv4() : null;
   try {
     const ttl = slicedItems.length > 0 ? FEED_SLICE_TTL : 15;
     await setFeedSlice(scopeId, effectiveCursor, slicedItems, ttl);

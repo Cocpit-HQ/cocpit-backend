@@ -468,8 +468,10 @@ CREATE TABLE post_media (
   media_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   post_id UUID REFERENCES posts(post_id) ON DELETE CASCADE,
   url TEXT NOT NULL,
- media_type TEXT CHECK (media_type IN ('image', 'video')),
-  aspect_ratio TEXT -- e.g., '4:5'
+  media_type TEXT CHECK (media_type IN ('image', 'video')),
+  aspect_ratio TEXT, -- e.g., '4:5'
+  width INT,
+  height INT
 );
 
 CREATE TABLE stories (
