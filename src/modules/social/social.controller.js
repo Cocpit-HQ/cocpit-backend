@@ -1445,12 +1445,17 @@ exports.getConnectionCounts = async (req, res) => {
 // ─── getConnectionSuggestions ───────────────────────────────────────────────
 exports.getConnectionSuggestions = async (req, res) => {
     const userId = req.user.sub;
-    const limit = Math.min(20, Math.max(1, parseInt(req.query.limit || '8')));
+    const limit = Math.min(30, Math.max(1, parseInt(req.query.limit || '12')));
+    const offset = Math.max(0, parseInt(req.query.offset || '0'));
+    const excludeParam = (req.query.exclude || '')
+        .split(',')
+        .map(s => s.trim())
+        .filter(Boolean);
 
     try {
         const result = await pool.query(`
             WITH
-                -- Users I already know (connected, sent/received request, blocked, or self)
+                -- Users I already know (connected, sent/received request, blocked, or self, or explicitly excluded)
                 excluded AS (
                     SELECT connected_user_id AS uid FROM connections WHERE user_id = $1
                     UNION
@@ -1458,16 +1463,18 @@ exports.getConnectionSuggestions = async (req, res) => {
                            WHERE sender_id = $1 AND status IN ('pending','blocked')
                     UNION
                     SELECT sender_id AS uid FROM connection_requests
-                           WHERE receiver_id = $1 AND status = 'blocked'
+                           WHERE receiver_id = $1 AND status IN ('pending','blocked')
                     UNION
                     SELECT $1::UUID AS uid
+                    UNION
+                    SELECT UNNEST($4::UUID[]) AS uid
                 ),
 
-                -- Signal 1: 2nd-degree connections (friend-of-a-friend), score = shared count
+                -- Priority 1: Mutual connections (2nd degree)
                 second_degree AS (
                     SELECT
                         c2.connected_user_id AS suggest_id,
-                        COUNT(*)             AS score,
+                        COUNT(*)::INT        AS score,
                         'mutual'::TEXT       AS reason
                     FROM connections c1
                     JOIN connections c2 ON c1.connected_user_id = c2.user_id
@@ -1476,27 +1483,47 @@ exports.getConnectionSuggestions = async (req, res) => {
                     GROUP BY c2.connected_user_id
                 ),
 
-                -- Signal 2: Same current company (from experiences table)
-                same_company AS (
+                -- Priority 2: Same Education
+                same_education AS (
                     SELECT
-                        p2.user_id     AS suggest_id,
-                        3              AS score,
-                        'company'::TEXT AS reason
-                    FROM experiences e1
-                    JOIN profiles p1 ON p1.profile_id = e1.profile_id AND p1.user_id = $1
-                    JOIN experiences e2 ON LOWER(TRIM(e2.company_name)) = LOWER(TRIM(e1.company_name))
-                                       AND e2.is_current = TRUE
-                                       AND e2.profile_id <> e1.profile_id
-                    JOIN profiles p2 ON p2.profile_id = e2.profile_id
-                    WHERE e1.is_current = TRUE
+                        p2.user_id        AS suggest_id,
+                        COUNT(*)::INT     AS score,
+                        'education'::TEXT AS reason
+                    FROM educations ed1
+                    JOIN profiles p1 ON p1.profile_id = ed1.profile_id AND p1.user_id = $1
+                    JOIN educations ed2 ON (
+                        (ed1.school_org_id IS NOT NULL AND ed2.school_org_id = ed1.school_org_id)
+                        OR LOWER(TRIM(ed2.school_name)) = LOWER(TRIM(ed1.school_name))
+                    ) AND ed2.profile_id <> ed1.profile_id
+                    JOIN profiles p2 ON p2.profile_id = ed2.profile_id
+                    WHERE ed1.school_name IS NOT NULL AND TRIM(ed1.school_name) <> ''
                       AND p2.user_id NOT IN (SELECT uid FROM excluded)
+                    GROUP BY p2.user_id
                 ),
 
-                -- Signal 3: Shared skills (via user_skills junction table)
+                -- Priority 3: Same Experience (Company)
+                same_company AS (
+                    SELECT
+                        p2.user_id        AS suggest_id,
+                        SUM(CASE WHEN e1.is_current = TRUE AND e2.is_current = TRUE THEN 3 ELSE 2 END)::INT AS score,
+                        'company'::TEXT   AS reason
+                    FROM experiences e1
+                    JOIN profiles p1 ON p1.profile_id = e1.profile_id AND p1.user_id = $1
+                    JOIN experiences e2 ON (
+                        (e1.org_id IS NOT NULL AND e2.org_id = e1.org_id)
+                        OR LOWER(TRIM(e2.company_name)) = LOWER(TRIM(e1.company_name))
+                    ) AND e2.profile_id <> e1.profile_id
+                    JOIN profiles p2 ON p2.profile_id = e2.profile_id
+                    WHERE e1.company_name IS NOT NULL AND TRIM(e1.company_name) <> ''
+                      AND p2.user_id NOT IN (SELECT uid FROM excluded)
+                    GROUP BY p2.user_id
+                ),
+
+                -- Priority 4: Shared skills
                 shared_skills AS (
                     SELECT
                         p2.user_id     AS suggest_id,
-                        COUNT(*)       AS score,
+                        COUNT(*)::INT  AS score,
                         'skill'::TEXT  AS reason
                     FROM user_skills us1
                     JOIN profiles pr1 ON pr1.profile_id = us1.profile_id AND pr1.user_id = $1
@@ -1507,11 +1534,11 @@ exports.getConnectionSuggestions = async (req, res) => {
                     GROUP BY p2.user_id
                 ),
 
-                -- Signal 4: Same city/location (from users.location_city)
+                -- Priority 4: Same city/location
                 same_city AS (
                     SELECT
                         u2.user_id     AS suggest_id,
-                        1              AS score,
+                        1::INT         AS score,
                         'city'::TEXT   AS reason
                     FROM users u1
                     JOIN active_users u2 ON LOWER(TRIM(u2.location_city)) = LOWER(TRIM(u1.location_city))
@@ -1521,21 +1548,32 @@ exports.getConnectionSuggestions = async (req, res) => {
                       AND u2.user_id NOT IN (SELECT uid FROM excluded)
                 ),
 
-                -- Union all signals, pick the highest score + best reason per user
+                -- Combine all signals for candidate weighted scoring
+                all_signals AS (
+                    SELECT suggest_id, score, 'mutual' AS reason, 1 AS tier FROM second_degree
+                    UNION ALL
+                    SELECT suggest_id, score, 'education' AS reason, 2 AS tier FROM same_education
+                    UNION ALL
+                    SELECT suggest_id, score, 'company' AS reason, 3 AS tier FROM same_company
+                    UNION ALL
+                    SELECT suggest_id, score, 'skill' AS reason, 4 AS tier FROM shared_skills
+                    UNION ALL
+                    SELECT suggest_id, score, 'city' AS reason, 4 AS tier FROM same_city
+                ),
+
+                -- Organic candidate weighted scoring + primary tier assignment
                 ranked AS (
                     SELECT
                         suggest_id,
-                        SUM(score) AS total_score,
-                        (ARRAY_AGG(reason ORDER BY score DESC))[1] AS top_reason
-                    FROM (
-                        SELECT suggest_id, score, reason FROM second_degree
-                        UNION ALL
-                        SELECT suggest_id, score, reason FROM same_company
-                        UNION ALL
-                        SELECT suggest_id, score, reason FROM shared_skills
-                        UNION ALL
-                        SELECT suggest_id, score, reason FROM same_city
-                    ) all_signals
+                        MIN(tier) AS priority_group,
+                        (ARRAY_AGG(reason ORDER BY tier ASC, score DESC))[1] AS top_reason,
+                        SUM(CASE
+                            WHEN tier = 1 THEN score * 10
+                            WHEN tier = 2 THEN score * 5
+                            WHEN tier = 3 THEN score * 3
+                            ELSE score * 1
+                        END) AS weighted_score
+                    FROM all_signals
                     GROUP BY suggest_id
                 )
 
@@ -1544,6 +1582,8 @@ exports.getConnectionSuggestions = async (req, res) => {
                 u.full_name,
                 u.avatar_url,
                 u.headline,
+                r.priority_group,
+                r.weighted_score            AS within_score,
                 r.top_reason                AS reason_signal,
                 -- Mutual count for display
                 (
@@ -1574,7 +1614,7 @@ exports.getConnectionSuggestions = async (req, res) => {
                     JOIN profiles p ON p.profile_id = ed.profile_id AND p.user_id = u.user_id
                     ORDER BY ed.created_at DESC LIMIT 1
                 ) AS studied_at,
-                -- Shared skill names (up to 3) when reason = skill
+                -- Shared skill names (up to 3)
                 ARRAY(
                     SELECT s.name
                     FROM user_skills us1
@@ -1583,7 +1623,8 @@ exports.getConnectionSuggestions = async (req, res) => {
                     JOIN profiles pr2 ON pr2.profile_id = us2.profile_id AND pr2.user_id = u.user_id
                     JOIN skills s ON s.skill_id = us1.skill_id
                     LIMIT 3
-                ) AS shared_skills
+                ) AS shared_skills,
+                COUNT(*) OVER() AS total_count
             FROM ranked r
             JOIN active_users u ON u.user_id = r.suggest_id
             WHERE NOT EXISTS (
@@ -1592,9 +1633,11 @@ exports.getConnectionSuggestions = async (req, res) => {
                   AND ((blocker_id = $1 AND blocked_id = u.user_id)
                     OR (blocker_id = u.user_id AND blocked_id = $1))
             )
-            ORDER BY r.total_score DESC
-            LIMIT $2
-        `, [userId, limit]);
+            ORDER BY r.weighted_score DESC, r.priority_group ASC, u.user_id ASC
+            LIMIT $2 OFFSET $3
+        `, [userId, limit, offset, excludeParam]);
+
+        const totalCount = result.rows.length > 0 ? parseInt(result.rows[0].total_count || '0') : 0;
 
         const suggestions = result.rows.map(row => ({
             id: row.user_id,
@@ -1602,6 +1645,7 @@ exports.getConnectionSuggestions = async (req, res) => {
             avatarUrl: row.avatar_url,
             headline: row.headline,
             reasonSignal: row.reason_signal || null,
+            priorityGroup: parseInt(row.priority_group),
             mutuals: {
                 count: parseInt(row.mutual_count || 0),
                 avatars: row.mutual_avatars || [],
@@ -1611,7 +1655,15 @@ exports.getConnectionSuggestions = async (req, res) => {
             sharedSkills: row.shared_skills || [],
         }));
 
-        return res.status(200).json({ data: suggestions });
+        return res.status(200).json({
+            data: suggestions,
+            pagination: {
+                offset,
+                limit,
+                total: totalCount,
+                hasMore: offset + suggestions.length < totalCount
+            }
+        });
 
     } catch (err) {
         console.error('Get connection suggestions error:', err);
