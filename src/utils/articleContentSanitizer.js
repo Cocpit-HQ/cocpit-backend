@@ -17,7 +17,7 @@ const sanitizeArticleContent = (html) => {
     allowedTags: ['b', 'strong', 'i', 'em', 'u', 'h1', 'h2', 'h3', 'p', 'br', 'ul', 'ol', 'li', 'a',
                   'span', 'img', 'video', 'div', 'button', 'svg', 'path', 'line'],
     allowedAttributes: {
-      a: ['href', 'target', 'rel'],
+      a: ['href', 'target', 'rel', 'class'],
       img: ['src', 'class'],
       video: ['src', 'controls', 'class'],
       div: ['class', 'contenteditable'],
