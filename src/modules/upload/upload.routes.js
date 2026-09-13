@@ -8,7 +8,7 @@ const router = express.Router();
 
 router.post(
   "/upload",
-  upload.array("files", 5),
+  upload.array("files", 12),
   (req, res) => {
     console.log("[UploadRoute] Uploaded files:", req.files?.length);
     const urls = req.files.map(file => {

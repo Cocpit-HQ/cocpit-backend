@@ -837,18 +837,18 @@ exports.createPost = async (req, res) => {
         });
     }
 
-    if (imageFiles.length > 10) {
+    if (imageFiles.length > 12) {
         cleanupFiles(uploadedFiles);
         return res.status(400).json({
-            message: "Maximum 10 images allowed"
+            message: "Maximum 12 images allowed"
         });
     }
 
     // Image file size validation for post creation:
     // - Per-image limit: 10MB max per single image file
-    // - Total post upload limit: 100MB max cumulative size across all uploaded images
+    // - Total post upload limit: 120MB max cumulative size across all uploaded images (up to 12 images x 10MB)
     const MAX_SINGLE_IMAGE_SIZE = 10 * 1024 * 1024; // 10MB per single image limit
-    const MAX_TOTAL_IMAGE_SIZE = 100 * 1024 * 1024; // 100MB total post images limit
+    const MAX_TOTAL_IMAGE_SIZE = 120 * 1024 * 1024; // 120MB total post images limit
 
     // Reject any single image larger than 10MB
     const oversizedImage = imageFiles.find(f => f.size > MAX_SINGLE_IMAGE_SIZE);
@@ -859,12 +859,12 @@ exports.createPost = async (req, res) => {
         });
     }
 
-    // Reject cumulative image upload size larger than 100MB
+    // Reject cumulative image upload size larger than 120MB
     const totalImageSize = imageFiles.reduce((sum, f) => sum + (f.size || 0), 0);
     if (totalImageSize > MAX_TOTAL_IMAGE_SIZE) {
         cleanupFiles(uploadedFiles);
         return res.status(400).json({
-            message: "Total image upload size cannot exceed 100MB."
+            message: "Total image upload size cannot exceed 120MB."
         });
     }
 
@@ -2065,14 +2065,28 @@ exports.updatePostById = async (req, res) => {
         }
 
         // 2. Fetch Post & Check Permissions (CRITICAL FIX)
-        const postCheck = await client.query(`SELECT author_id, author_org_id, post_type, shared_post_id, shared_job_id FROM posts WHERE post_id = $1`, [postId]);
+        const postCheck = await client.query(`SELECT author_id, author_org_id, post_type, shared_post_id, shared_job_id, content FROM posts WHERE post_id = $1`, [postId]);
         if (postCheck.rowCount === 0) {
             await client.query("ROLLBACK");
             return res.status(404).json({ message: "Post not found" });
         }
-        const { author_id, author_org_id, post_type: currentPostType, shared_post_id, shared_job_id } = postCheck.rows[0];
+        const { author_id, author_org_id, post_type: currentPostType, shared_post_id, shared_job_id, content: currentContent } = postCheck.rows[0];
 
-        const effectivePostType = post_type || currentPostType;
+        // Infer / resolve new post_type
+        let newPostType = post_type;
+        if (!newPostType && Array.isArray(media_urls) && currentPostType !== 'poll' && currentPostType !== 'article') {
+            if (media_urls.length === 0) {
+                newPostType = 'text';
+            } else {
+                const firstItem = media_urls[0];
+                const firstUrl = typeof firstItem === 'object' && firstItem !== null ? firstItem.url : firstItem;
+                if (firstUrl) {
+                    newPostType = firstUrl.toLowerCase().match(/\.(mp4|webm|mov)(\?|#|$)/i) ? 'video' : 'image';
+                }
+            }
+        }
+
+        const effectivePostType = newPostType || currentPostType;
         if (effectivePostType === 'article') {
             // Cover comes unambiguously from the dedicated field when the caller sends
             // one (the Channels article editor always does) - no more guessing, and no
@@ -2123,9 +2137,23 @@ exports.updatePostById = async (req, res) => {
         const values = [];
         let index = 1;
 
+        // post_type
+        if (newPostType !== undefined) {
+            // Prevent changing to or from poll or article via standard update
+            if (currentPostType !== 'poll' && currentPostType !== 'article') {
+                if (newPostType !== 'poll' && newPostType !== 'article') {
+                    let normalizedType = newPostType;
+                    if (normalizedType === 'carousel' || normalizedType === 'photo') {
+                        normalizedType = 'image';
+                    }
+                    updates.push(`post_type = $${index++}`);
+                    values.push(normalizedType);
+                }
+            }
+        }
+
         // title
         if (title !== undefined) {
-            const effectivePostType = post_type || currentPostType;
             // Prevent wiping out the poll question if title is empty string
             if (effectivePostType === 'poll' && title.trim() === '') {
                 // Ignore the empty title update for polls to preserve the question
@@ -2137,7 +2165,6 @@ exports.updatePostById = async (req, res) => {
 
         // content
         if (content !== undefined) {
-            const effectivePostType = post_type || currentPostType;
             if (effectivePostType === 'text' && !shared_post_id && !shared_job_id) {
                 if (!content || content.trim().length === 0) {
                     await client.query('ROLLBACK');
@@ -2146,6 +2173,11 @@ exports.updatePostById = async (req, res) => {
             }
             updates.push(`content = $${index++}`);
             values.push(content);
+        } else if (effectivePostType === 'text' && currentPostType !== 'text' && !shared_post_id && !shared_job_id) {
+            if (!currentContent || currentContent.trim().length === 0) {
+                await client.query('ROLLBACK');
+                return res.status(400).json({ message: "Post content cannot be empty" });
+            }
         }
 
         // location
