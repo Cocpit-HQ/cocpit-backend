@@ -445,6 +445,8 @@ CREATE TABLE post_comments (
   parent_id UUID NULL REFERENCES post_comments(comment_id) ON DELETE CASCADE,
   content TEXT NOT NULL,
   created_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ DEFAULT now(),
+  is_edited BOOLEAN DEFAULT false,
   is_pinned BOOLEAN DEFAULT false,
   pinned_at TIMESTAMPTZ NULL,
   pinned_by UUID NULL REFERENCES users(user_id) ON DELETE SET NULL

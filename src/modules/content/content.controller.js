@@ -3174,6 +3174,8 @@ exports.addComment = async (req, res) => {
         c.content,
         c.parent_id,
         c.created_at,
+        c.updated_at,
+        COALESCE(c.is_edited, false) AS is_edited,
         c.is_pinned,
         c.pinned_at,
         c.pinned_by,
@@ -3217,6 +3219,9 @@ exports.addComment = async (req, res) => {
             id: commentRow.comment_id,
             parentId: commentRow.parent_id,
             createdAt: commentRow.created_at,
+            updatedAt: commentRow.updated_at,
+            isEdited: Boolean(commentRow.is_edited),
+            is_edited: Boolean(commentRow.is_edited),
             authorId: commentRow.author_id,
             authorName: commentRow.full_name,
             authorAvatarUrl: commentRow.avatar_url,
@@ -3279,17 +3284,17 @@ exports.updateComment = async (req, res) => {
         if (companyId) {
             query = `
                 UPDATE post_comments
-                SET content = $1
+                SET content = $1, updated_at = NOW(), is_edited = TRUE
                 WHERE comment_id = $2 AND author_org_id = $3
-                RETURNING comment_id, content, created_at
+                RETURNING comment_id, post_id, author_id, author_org_id, parent_id, content, created_at, updated_at, is_edited
             `;
             params = [content.trim(), commentId, companyId];
         } else {
             query = `
                 UPDATE post_comments
-                SET content = $1
+                SET content = $1, updated_at = NOW(), is_edited = TRUE
                 WHERE comment_id = $2 AND author_id = $3 AND author_org_id IS NULL
-                RETURNING comment_id, content, created_at
+                RETURNING comment_id, post_id, author_id, author_org_id, parent_id, content, created_at, updated_at, is_edited
             `;
             params = [content.trim(), commentId, userId];
         }
@@ -3306,9 +3311,37 @@ exports.updateComment = async (req, res) => {
             return res.status(403).json({ message: "Not authorized to edit this comment" });
         }
 
+        const updatedRow = result.rows[0];
+        const mappedUpdatedComment = {
+            ...updatedRow,
+            id: updatedRow.comment_id,
+            postId: updatedRow.post_id,
+            parentId: updatedRow.parent_id,
+            authorId: updatedRow.author_id,
+            createdAt: updatedRow.created_at,
+            updatedAt: updatedRow.updated_at,
+            updated_at: updatedRow.updated_at,
+            isEdited: true,
+            is_edited: true
+        };
+
+        const ioService = require("../../core/infrastructure/socket.service");
+        if (ioService && ioService.notifyPost && updatedRow.post_id) {
+            ioService.notifyPost(updatedRow.post_id, "post_comment_updated", {
+                postId: updatedRow.post_id,
+                commentId: updatedRow.comment_id,
+                content: updatedRow.content,
+                updatedAt: updatedRow.updated_at,
+                updated_at: updatedRow.updated_at,
+                isEdited: true,
+                is_edited: true,
+                comment: mappedUpdatedComment
+            });
+        }
+
         return res.status(200).json({
             message: "Comment updated",
-            comment: result.rows[0]
+            comment: mappedUpdatedComment
         });
 
     } catch (err) {
@@ -3701,6 +3734,8 @@ exports.getComments = async (req, res) => {
         c.content,
         c.parent_id,
         c.created_at,
+        c.updated_at,
+        COALESCE(c.is_edited, false) AS is_edited,
         c.is_pinned,
         c.pinned_at,
         c.pinned_by,
@@ -3794,6 +3829,10 @@ exports.getComments = async (req, res) => {
             id: row.comment_id,
             parentId: row.parent_id,
             createdAt: row.created_at,
+            updatedAt: row.updated_at,
+            updated_at: row.updated_at,
+            isEdited: Boolean(row.is_edited),
+            is_edited: Boolean(row.is_edited),
             authorId: row.author_id,
             authorName: row.full_name,
             authorAvatarUrl: row.avatar_url,
