@@ -19,5 +19,6 @@ router.use('/reports', require('../modules/reports/report.routes'));
 router.use('/appeals', require('../modules/reports/appeal.routes'));
 router.use('/moderation', require('../modules/reports/moderation.routes'));
 router.use('/feature-flags', require('../modules/feature-flags/featureFlag.routes'));
+router.use('/support', require('../modules/support/support.routes'));
 
 module.exports = router;

@@ -2167,6 +2167,16 @@ CREATE TABLE IF NOT EXISTS support_tickets (
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- 5b. Ticket Replies (for Admin notes and user replies)
+CREATE TABLE IF NOT EXISTS ticket_replies (
+    reply_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    ticket_id UUID REFERENCES support_tickets(ticket_id) ON DELETE CASCADE,
+    admin_id UUID,
+    message TEXT NOT NULL,
+    is_internal_note BOOLEAN DEFAULT false,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
 -- 6. User feedback (one per user per app version)
 CREATE TABLE IF NOT EXISTS user_feedback (
     feedback_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
