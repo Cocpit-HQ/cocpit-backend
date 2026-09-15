@@ -1040,10 +1040,19 @@ exports.sendConnectionRequest = async (req, res) => {
         // We need to check if *I* am blocked or if *I* am in a cooldown to send to *THEM*
         // The constraint is: if I sent a request and they rejected it, I have a cooldown.
         // Or if they blocked me.
+        // OLD CODE (commented out for testing):
+        // const blockOrCooldown = await client.query(
+        //     `SELECT status, cooldown_until FROM connection_requests 
+        //      WHERE sender_id = $1 AND receiver_id = $2 
+        //      AND (status = 'blocked' OR (status = 'rejected' AND cooldown_until > NOW()))`,
+        //     [senderId, receiverId]
+        // );
+
+        // NEW CODE (testing mode: no 24hr rejection cooldown, check blocked status only):
         const blockOrCooldown = await client.query(
             `SELECT status, cooldown_until FROM connection_requests 
              WHERE sender_id = $1 AND receiver_id = $2 
-             AND (status = 'blocked' OR (status = 'rejected' AND cooldown_until > NOW()))`,
+             AND status = 'blocked'`,
             [senderId, receiverId]
         );
 
@@ -1075,10 +1084,19 @@ exports.sendConnectionRequest = async (req, res) => {
 
         // 5. Clean up any stale 'connected' or expired 'rejected' rows from previous cycles
         // These rows block the INSERT below due to the UNIQUE constraint on (sender_id, receiver_id)
+        // OLD CODE (commented out for testing):
+        // await client.query(
+        //     `DELETE FROM connection_requests 
+        //      WHERE ((sender_id = $1 AND receiver_id = $2) OR (sender_id = $2 AND receiver_id = $1))
+        //      AND (status = 'connected' OR (status = 'rejected' AND (cooldown_until IS NULL OR cooldown_until <= NOW())))`,
+        //     [senderId, receiverId]
+        // );
+
+        // NEW CODE (testing mode: delete all previous connected/rejected requests without waiting for 24h cooldown expiry):
         await client.query(
             `DELETE FROM connection_requests 
              WHERE ((sender_id = $1 AND receiver_id = $2) OR (sender_id = $2 AND receiver_id = $1))
-             AND (status = 'connected' OR (status = 'rejected' AND (cooldown_until IS NULL OR cooldown_until <= NOW())))`,
+             AND (status = 'connected' OR status = 'rejected')`,
             [senderId, receiverId]
         );
 
@@ -1805,10 +1823,18 @@ exports.handleConnectionRequest = async (req, res) => {
 
         // 2. REJECT
         if (status === 'rejected') {
-            // Set cooldown for 24 hours (1 day)
+            // OLD CODE (commented out for testing):
+            // await client.query(
+            //     `UPDATE connection_requests 
+            //      SET status = 'rejected', responded_at = NOW(), cooldown_until = NOW() + INTERVAL '24 hours' 
+            //      WHERE request_id = $1`,
+            //     [requestId]
+            // );
+
+            // NEW CODE (testing mode: set cooldown_until = NOW() to remove 24hr limit):
             await client.query(
                 `UPDATE connection_requests 
-                 SET status = 'rejected', responded_at = NOW(), cooldown_until = NOW() + INTERVAL '24 hours' 
+                 SET status = 'rejected', responded_at = NOW(), cooldown_until = NOW() 
                  WHERE request_id = $1`,
                 [requestId]
             );
@@ -4850,9 +4876,12 @@ exports.getRelationshipStatus = async (req, res) => {
                     }
                 } else if (req.status === 'rejected') {
                     // Check cooldown
-                    if (req.sender_id === userId && new Date(req.cooldown_until) > new Date()) {
-                        status = 'cooldown';
-                    }
+                    // OLD CODE (commented out for testing):
+                    // if (req.sender_id === userId && new Date(req.cooldown_until) > new Date()) {
+                    //     status = 'cooldown';
+                    // }
+                    // NEW CODE (testing mode: set status to 'none' instead of 'cooldown'):
+                    status = 'none';
                 }
             }
 
