@@ -327,6 +327,7 @@ const getPostHydrationSelect = (companyParamIdx, userParamIdx) => `
                              'content', sp_sp.content,
                              'created_at', sp_sp.created_at,
                              'post_type', sp_sp.post_type,
+                             'title', sp_sp.title,
                              'author', json_build_object(
                                  'user_id', COALESCE(sp_sp.author_org_id, sp_sp_u.user_id),
                                  'full_name', COALESCE(sp_sp_comp.name, sp_sp_u.full_name),
