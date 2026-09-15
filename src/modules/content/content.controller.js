@@ -3845,6 +3845,17 @@ exports.getComments = async (req, res) => {
             ($3::uuid IS NULL AND hc.user_id = $2 AND hc.org_id IS NULL)
         )
       )
+      -- 3. Exclude reported comments (Reporting a comment or its parent hides the thread for the reporter)
+      AND NOT EXISTS (
+        SELECT 1 FROM reports r
+        WHERE r.target_type = 'COMMENT'
+        AND (r.target_id::uuid = c.comment_id OR r.target_id::uuid = c.parent_id)
+        AND (
+            ($3::uuid IS NOT NULL AND r.reporter_org_id = $3::uuid)
+            OR
+            ($3::uuid IS NULL AND r.reporter_id = $2 AND r.reporter_org_id IS NULL)
+        )
+      )
       ORDER BY 
         CASE 
           WHEN $4::uuid IS NOT NULL AND (c.comment_id = (SELECT root_id FROM target_root) OR c.parent_id = (SELECT root_id FROM target_root)) THEN 0 
