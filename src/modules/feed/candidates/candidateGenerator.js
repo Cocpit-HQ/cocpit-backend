@@ -262,7 +262,19 @@ async function generateCandidates({
     }
   }
 
-  const deduped = deduplicateByContentId(valid).filter(c => !reportedIds.has(c.contentId));
+  const deduped = deduplicateByContentId(valid).filter(c => {
+    if (reportedIds.has(c.contentId)) return false;
+    
+    // Also filter out direct reposts if their original post is reported
+    if (c.metadata && c.metadata.sharedPostId) {
+      const isDirectRepost = !c.metadata.content || c.metadata.content.replace(/<[^>]*>?/gm, '').replace(/&nbsp;|\u200B|\u00A0|&#8203;|&#160;|&zwnj;/g, '').replace(/\s/g, '').trim() === '';
+      if (isDirectRepost && reportedIds.has(c.metadata.sharedPostId)) {
+        return false;
+      }
+    }
+    
+    return true;
+  });
 
   // A11.3 Fallback logic: If generated candidates < 5, fill remaining feed slots using global trending candidates.
   if (deduped.length < 5) {

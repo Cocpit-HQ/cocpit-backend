@@ -116,7 +116,14 @@ async function _fetchChronologicalFeed(userId, cursor, limit, pool, orgActorId) 
       )
       AND NOT EXISTS (
         SELECT 1 FROM reports r
-        WHERE r.target_id = p.post_id 
+        WHERE (
+            r.target_id = p.post_id 
+            OR (
+                p.shared_post_id IS NOT NULL 
+                AND (p.content IS NULL OR TRIM(regexp_replace(p.content, '<[^>]+>|&nbsp;|\u200B|\u00A0|&#8203;|&#160;|&zwnj;', '', 'gi')) = '') 
+                AND r.target_id = p.shared_post_id
+            )
+        )
           AND r.target_type = 'POST' 
           AND r.reporter_id = $4
           AND r.reporter_org_id = $2
@@ -129,7 +136,14 @@ async function _fetchChronologicalFeed(userId, cursor, limit, pool, orgActorId) 
       )
       AND NOT EXISTS (
         SELECT 1 FROM reports r
-        WHERE r.target_id = p.post_id 
+        WHERE (
+            r.target_id = p.post_id 
+            OR (
+                p.shared_post_id IS NOT NULL 
+                AND (p.content IS NULL OR TRIM(regexp_replace(p.content, '<[^>]+>|&nbsp;|\u200B|\u00A0|&#8203;|&#160;|&zwnj;', '', 'gi')) = '') 
+                AND r.target_id = p.shared_post_id
+            )
+        )
           AND r.target_type = 'POST' 
           AND r.reporter_id = $4
           AND r.reporter_org_id IS NULL
@@ -270,7 +284,7 @@ async function _hydrateFeedItems(items, userId, pool, orgActorId = null) {
     return items.map(item => ({
       ...item,
       post_data: rowMap.get(item.id) || null
-    }));
+    })).filter(item => item.post_data && item.post_data.is_reported !== true);
   } catch (err) {
     console.error('[feedService] Hydration failed:', err.message);
     return items;
