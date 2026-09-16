@@ -308,6 +308,12 @@ exports.getMyPosts = async (req, res) => {
                 whereClause += ` AND (p.shared_post_id IS NOT NULL OR p.shared_job_id IS NOT NULL) `;
             } else if (filter === 'Private post') {
                 whereClause += ` AND p.visibility = 'private' `;
+            } else if (filter === 'Articles' || filter === 'Article') {
+                whereClause += ` AND (p.post_type = 'article' OR pc.name = 'Article' OR p.is_community_article = TRUE) AND p.shared_post_id IS NULL AND p.shared_job_id IS NULL `;
+            } else if (filter === 'Video' || filter === 'Videos') {
+                whereClause += ` AND (p.post_type = 'video' OR EXISTS (SELECT 1 FROM post_media pm WHERE pm.post_id = p.post_id AND pm.media_type = 'video')) AND p.shared_post_id IS NULL AND p.shared_job_id IS NULL `;
+            } else if (filter === 'Poll' || filter === 'Polls') {
+                whereClause += ` AND (p.post_type = 'poll' OR EXISTS (SELECT 1 FROM post_polls pp WHERE pp.post_id = p.post_id)) AND p.shared_post_id IS NULL AND p.shared_job_id IS NULL `;
             }
         }
 
