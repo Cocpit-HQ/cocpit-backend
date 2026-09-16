@@ -1624,6 +1624,24 @@ exports.getPostById = async (req, res) => {
         )
     ) AS is_saved,
 
+    EXISTS(
+        SELECT 1 FROM reports r_rep 
+        WHERE r_rep.target_type = 'POST' 
+        AND (
+            r_rep.target_id = p.post_id 
+            OR (
+                p.shared_post_id IS NOT NULL 
+                AND (p.content IS NULL OR TRIM(p.content) = '') 
+                AND r_rep.target_id = p.shared_post_id
+            )
+        )
+        AND (
+            ($3::uuid IS NOT NULL AND r_rep.reporter_org_id = $3::uuid)
+            OR
+            ($3::uuid IS NULL AND r_rep.reporter_id = $2 AND r_rep.reporter_org_id IS NULL)
+        )
+    ) AS is_reported,
+
     -- Media (array)
     COALESCE(
         (
