@@ -216,7 +216,7 @@ const getPostHydrationSelect = (companyParamIdx, userParamIdx) => `
                 r_rep.target_id = p.post_id 
                 OR (
                     p.shared_post_id IS NOT NULL 
-                    AND (p.content IS NULL OR TRIM(p.content) = '') 
+                    AND (p.content IS NULL OR TRIM(regexp_replace(p.content, '<[^>]+>|&nbsp;|\u200B|\u00A0|&#8203;|&#160;|&zwnj;', '', 'gi')) = '') 
                     AND r_rep.target_id = p.shared_post_id
                 )
             )

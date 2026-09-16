@@ -48,6 +48,8 @@ async function _fetchFirstDegree(userId, pool) {
       'post'                          AS type,
       p.author_id,
       p.created_at,
+      p.shared_post_id,
+      p.content,
       (SELECT COUNT(*) FROM active_post_likes    pl WHERE pl.post_id = p.post_id)::float AS like_count,
       (SELECT COUNT(*) FROM active_post_comments pc WHERE pc.post_id = p.post_id)::float AS comment_count,
       ((SELECT COUNT(DISTINCT rp.author_id) FROM posts rp WHERE rp.shared_post_id = p.post_id AND rp.is_active = TRUE) + (SELECT COUNT(DISTINCT s.sender_id) FROM shares s WHERE s.entity_id = p.post_id::text AND s.entity_type = 'post'))::float AS share_count,
@@ -91,6 +93,8 @@ async function _fetchSecondDegree(userId, pool) {
       'post'                          AS type,
       p.author_id,
       p.created_at,
+      p.shared_post_id,
+      p.content,
       (SELECT COUNT(*) FROM active_post_likes    pl WHERE pl.post_id = p.post_id)::float AS like_count,
       (SELECT COUNT(*) FROM active_post_comments pc WHERE pc.post_id = p.post_id)::float AS comment_count,
       ((SELECT COUNT(DISTINCT rp.author_id) FROM posts rp WHERE rp.shared_post_id = p.post_id AND rp.is_active = TRUE) + (SELECT COUNT(DISTINCT s.sender_id) FROM shares s WHERE s.entity_id = p.post_id::text AND s.entity_type = 'post'))::float AS share_count,
@@ -155,6 +159,8 @@ function _mapRowToCandidate(row, relationshipScore) {
       comment_count: parseFloat(row.comment_count || 0),
       share_count:   parseFloat(row.share_count   || 0),
       report_count:  parseFloat(row.report_count  || 0),
+      sharedPostId:  row.shared_post_id,
+      content:       row.content,
     },
   });
 }
