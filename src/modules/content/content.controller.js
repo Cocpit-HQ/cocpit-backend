@@ -1684,7 +1684,9 @@ exports.getPostById = async (req, res) => {
                 json_build_object(
                     'media_id', pm.media_id,
                     'url', pm.url,
-                    'media_type', pm.media_type
+                    'media_type', pm.media_type,
+                    'width', pm.width,
+                    'height', pm.height
                 )
             )
             FROM post_media pm
@@ -2381,7 +2383,9 @@ SELECT
         (SELECT json_agg(json_build_object(
             'media_id', pm.media_id,
             'url', pm.url,
-            'media_type', pm.media_type
+            'media_type', pm.media_type,
+            'width', pm.width,
+            'height', pm.height
         )) FROM post_media pm WHERE pm.post_id = p.post_id),
         '[]'::json
     ) AS media,
