@@ -91,3 +91,16 @@ LEFT JOIN active_users au ON au.user_id = pc.author_id
 LEFT JOIN active_organizations ao ON ao.org_id = pc.author_org_id
 WHERE (pc.author_org_id IS NULL AND au.user_id IS NOT NULL)
    OR (pc.author_org_id IS NOT NULL AND ao.org_id IS NOT NULL);
+
+-- 11. user_search_history: Persistent recent search tracking
+CREATE TABLE IF NOT EXISTS user_search_history (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    query_text TEXT NOT NULL,
+    query_normalized TEXT NOT NULL,
+    profile_snapshot JSONB,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_search_history_user_created ON user_search_history(user_id, created_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_user_search_history_user_query ON user_search_history(user_id, query_normalized);

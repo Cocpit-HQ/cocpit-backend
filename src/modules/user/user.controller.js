@@ -119,9 +119,11 @@ exports.searchUsers = async (req, res) => {
       `;
     }
 
-    // Similarity param (raw term)
-    queryParams.push(searchTerm);
-    const simParamIdx = queryParams.length;
+
+
+    // Starts-with param for sorting
+    queryParams.push(`${searchTerm}%`);
+    const startsWithIdx = queryParams.length;
 
     const orgBlockFilter = `
       AND NOT EXISTS (
@@ -178,9 +180,9 @@ exports.searchUsers = async (req, res) => {
         )
       ) AS combined_results
       ORDER BY 
-        CASE WHEN account_name ILIKE $2 THEN 0 ELSE 1 END,
-        SIMILARITY(full_name, $${simParamIdx}) DESC
-      LIMIT 10
+        CASE WHEN full_name ILIKE $${startsWithIdx} THEN 0 ELSE 1 END,
+        full_name ASC
+      LIMIT 50
     `;
 
     const result = await pool.query(queryText, queryParams);
@@ -1919,5 +1921,114 @@ exports.getSuggestedUsers = async (req, res) => {
   } catch (err) {
     console.error("Get suggested users error:", err);
     res.status(500).json({ message: "Internal server error" });
+  }
+};
+
+/**
+ * GET /api/users/search-history
+ * Purpose: Fetch the top 6 recent searches for the authenticated user
+ */
+exports.getSearchHistory = async (req, res) => {
+  const userId = req.user.sub;
+  
+  try {
+    const query = `
+      SELECT 
+        id, 
+        query_text as query, 
+        profile_snapshot as "profileSnapshot",
+        created_at as "createdAt"
+      FROM user_search_history
+      WHERE user_id = $1
+      ORDER BY created_at DESC
+    `;
+    const result = await pool.query(query, [userId]);
+    res.status(200).json({ success: true, data: result.rows });
+  } catch (err) {
+    console.error("Get search history error:", err);
+    res.status(500).json({ success: false, message: "Internal server error" });
+  }
+};
+
+/**
+ * POST /api/users/search-history
+ * Purpose: Save or update a recent search query
+ */
+exports.saveSearchHistory = async (req, res) => {
+  const userId = req.user.sub;
+  const { query, profileSnapshot } = req.body;
+
+  if (!query || typeof query !== 'string' || !query.trim()) {
+    return res.status(400).json({ success: false, message: "Valid search query is required" });
+  }
+
+  const queryText = query.trim();
+  let queryNormalized = queryText.toLowerCase();
+  
+  const snapshotJson = profileSnapshot ? JSON.stringify(profileSnapshot) : null;
+  
+  // Make queryNormalized unique by profile ID to prevent collisions between users with identical names
+  if (profileSnapshot && profileSnapshot.id) {
+    queryNormalized = `user:${profileSnapshot.id}`;
+  } else {
+    queryNormalized = `query:${queryNormalized}`;
+  }
+
+  try {
+    // Upsert query: if it exists, update the timestamp to move it to the top
+    const upsertQuery = `
+      INSERT INTO user_search_history (user_id, query_text, query_normalized, profile_snapshot, created_at)
+      VALUES ($1, $2, $3, $4, now())
+      ON CONFLICT (user_id, query_normalized) 
+      DO UPDATE SET created_at = EXCLUDED.created_at, query_text = EXCLUDED.query_text, profile_snapshot = EXCLUDED.profile_snapshot
+      RETURNING id, query_text as query, profile_snapshot as "profileSnapshot", created_at as "createdAt"
+    `;
+    const saved = await pool.query(upsertQuery, [userId, queryText, queryNormalized, snapshotJson]);
+
+    res.status(201).json({ success: true, data: saved.rows[0] });
+  } catch (err) {
+    console.error("Save search history error:", err);
+    res.status(500).json({ success: false, message: "Internal server error" });
+  }
+};
+
+/**
+ * DELETE /api/users/search-history/:id
+ * Purpose: Remove a specific search history item
+ */
+exports.removeSearchHistory = async (req, res) => {
+  const userId = req.user.sub;
+  const { id } = req.params;
+
+  try {
+    const query = `
+      DELETE FROM user_search_history
+      WHERE id = $1 AND user_id = $2
+    `;
+    await pool.query(query, [id, userId]);
+    res.status(200).json({ success: true, message: "Search history item removed" });
+  } catch (err) {
+    console.error("Remove search history error:", err);
+    res.status(500).json({ success: false, message: "Internal server error" });
+  }
+};
+
+/**
+ * DELETE /api/users/search-history
+ * Purpose: Clear all search history for the user
+ */
+exports.clearSearchHistory = async (req, res) => {
+  const userId = req.user.sub;
+
+  try {
+    const query = `
+      DELETE FROM user_search_history
+      WHERE user_id = $1
+    `;
+    await pool.query(query, [userId]);
+    res.status(200).json({ success: true, message: "Search history cleared" });
+  } catch (err) {
+    console.error("Clear search history error:", err);
+    res.status(500).json({ success: false, message: "Internal server error" });
   }
 };
