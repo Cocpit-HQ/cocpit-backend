@@ -345,7 +345,19 @@ function _mapRowToCandidate(row, source, relevanceScore) {
  * @param {object}  params.pool    - pg Pool (read-only)
  * @returns {Promise<Array>}       - CandidateItem[], all with isOpportunity: true
  */
+// ===========================================================================
+// [CLEANUP - FEED REFACTOR] REASON FOR COMMENTING OUT:
+// - Status: DISCONNECTED / UNUSED
+// - Technical Reason: This function queried jobs and events from PostgreSQL.
+//   However, the feed hydration query (_hydrateFeedItems) exclusively queries the
+//   'posts' table. Opportunity candidates arrived at the client with post_data = null
+//   and were filtered out by frontend (feed.ts: if (!item.post_data) return null;),
+//   wasting DB query bandwidth and causing gaps in feed pagination.
+// - Active Replacement: Disabled to allow organic posts and exploration posts to fill all 20 feed slots.
+// ===========================================================================
 async function getOpportunityCandidates({ userId, limit, pool }) {
+  return [];
+  /*
   try {
     if (!userId) {
       console.warn('[opportunitySource] userId missing — returning []');
@@ -402,6 +414,7 @@ async function getOpportunityCandidates({ userId, limit, pool }) {
     console.error('[opportunitySource] Failed fetching opportunity candidates:', err.message);
     return [];
   }
+  */
 }
 
 // ---------------------------------------------------------------------------

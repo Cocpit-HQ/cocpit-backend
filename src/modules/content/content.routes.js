@@ -11,10 +11,25 @@ const { uploadPostMedia, uploadCover } = require("../../core/middlewares/upload.
 const achievementImageController = require("./achievementImage.controller");
 
 // Feed & Discovery
-router.get("/All/feeds", optionalAuth, contentController.getPublicFeed);
+// ===========================================================================
+// [CLEANUP - FEED REFACTOR] REASON FOR COMMENTING OUT:
+// - Status: DEPRECATED
+// - Technical Reason: Legacy unranked public feed route.
+// - Active Replacement: Replaced by algorithmic feed endpoint GET /api/feed (mounted in src/app.js).
+// ===========================================================================
+// router.get("/All/feeds", optionalAuth, contentController.getPublicFeed);
+
 router.get("/users/me/posts", requireAuth, contentController.getMyPosts);
-router.get("/users/me/posts/commented", requireAuth, contentController.getMyCommentedPosts);
-router.get("/users/me/posts/private", requireAuth, contentController.getMyPrivatePosts);
+
+// ===========================================================================
+// [CLEANUP - FEED REFACTOR] REASON FOR COMMENTING OUT:
+// - Status: UNUSED / REDUNDANT
+// - Technical Reason: The frontend does not call these dedicated routes.
+// - Active Replacement: User post filtering is unified under GET /users/me/posts (getMyPosts)
+//   using query parameters like ?filter=Comments and ?category=...
+// ===========================================================================
+// router.get("/users/me/posts/commented", requireAuth, contentController.getMyCommentedPosts);
+// router.get("/users/me/posts/private", requireAuth, contentController.getMyPrivatePosts);
 
 // Posts (Image, Video, Article, Poll)
 router.post("/post", requireAuth, uploadPostMedia, validate(createPostSchema), contentController.createPost);

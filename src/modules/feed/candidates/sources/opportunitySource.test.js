@@ -65,11 +65,12 @@ describe('opportunitySource', () => {
       jest.clearAllMocks();
     });
 
-    test('returns empty if userId or pool missing', async () => {
+    test('returns empty (opportunitySource candidate generation is unused and commented out)', async () => {
       expect(await getOpportunityCandidates({ pool: mockPool })).toEqual([]);
       expect(await getOpportunityCandidates({ userId: 'u1' })).toEqual([]);
+      expect(await getOpportunityCandidates({ userId: 'u1', pool: mockPool })).toEqual([]);
     });
-
+    /*
     test('filters items below relevance threshold', async () => {
       mockPool.query.mockImplementation(async (sql) => {
         if (sql.includes('user_intent_scores')) return { rows: [{ location: 'London', job_seeker_score: 100, event_score: 100 }] };
@@ -98,5 +99,6 @@ describe('opportunitySource', () => {
       expect(results.some(r => r.source === CANDIDATE_SOURCES.OPPORTUNITY_EVENT)).toBe(true);
       expect(results.every(r => r.isOpportunity)).toBe(true);
     });
+    */
   });
 });

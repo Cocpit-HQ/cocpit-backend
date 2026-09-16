@@ -48,17 +48,33 @@ const feedSessionLimiter = createRateLimit({
 // GET /api/feed — Fetch next feed page
 router.get("/", requireAuth, feedFetchLimiter, feedController.getFeed);
 
-// POST /api/feed/event — Track user interaction event
-router.post("/event", requireAuth, feedEventLimiter, feedController.trackEvent);
+// ===========================================================================
+// [CLEANUP - FEED REFACTOR] REASON FOR COMMENTING OUT:
+// - Status: UNUSED / DISCONNECTED
+// - Technical Reason: Frontend does not track interaction dwell/scroll events via POST /api/feed/event.
+// - Active Replacement: Active post interactions (likes, comments, feedback) are tracked through their
+//   respective dedicated APIs and POST /api/feed/postfeedback.
+// ===========================================================================
+// router.post("/event", requireAuth, feedEventLimiter, feedController.trackEvent);
 
-// GET /api/feed/session — Get current session state
-router.get("/session", requireAuth, feedSessionLimiter, feedController.getSession);
+// ===========================================================================
+// [CLEANUP - FEED REFACTOR] REASON FOR COMMENTING OUT:
+// - Status: UNUSED / REDUNDANT
+// - Technical Reason: Feed sessions are created, read, and maintained automatically inside GET /api/feed.
+// - Active Replacement: Frontend reads session state (session_id, cursor) directly from the GET / response data.
+// ===========================================================================
+// router.get("/session", requireAuth, feedSessionLimiter, feedController.getSession);
 
 // DELETE /api/feed/session — Reset feed session
 router.delete("/session", requireAuth, feedSessionLimiter, feedController.resetSession);
 
-// POST /api/feed/hide — Hide a post and negatively affect recommendations
-router.post("/hide", requireAuth, feedEventLimiter, feedController.hidePost);
+// ===========================================================================
+// [CLEANUP - FEED REFACTOR] REASON FOR COMMENTING OUT:
+// - Status: REDUNDANT
+// - Technical Reason: POST /api/feed/hide is legacy.
+// - Active Replacement: Frontend uses POST /api/feed/postfeedback with { type: 'NOT_INTERESTED' }.
+// ===========================================================================
+// router.post("/hide", requireAuth, feedEventLimiter, feedController.hidePost);
 
 // POST /api/feed/unhide — Unhide a post and reverse negative recommendations
 router.post("/unhide", requireAuth, feedEventLimiter, feedController.unhidePost);

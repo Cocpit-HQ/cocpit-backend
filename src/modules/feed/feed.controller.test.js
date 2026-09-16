@@ -224,6 +224,8 @@ describe('feed.controller', () => {
       context:    'home',
     };
 
+    /*
+    // UNUSED: Tests commented out as trackEvent is unused by frontend
     test('TC-C08: returns 401 when req.user is null', async () => {
       const req  = makeReq({ user: null, body: validBody });
       const res  = makeRes();
@@ -299,11 +301,14 @@ describe('feed.controller', () => {
         expect.objectContaining({ ok: true, duplicate: true })
       );
     });
+    */
   });
 
   // ===========================================================================
   // getSession — 2 tests
   // ===========================================================================
+  /*
+  // UNUSED: Tests commented out as getSession is unused by frontend
   describe('getSession', () => {
 
     test('TC-C12: returns 200 with correct contract shape when session exists', async () => {
@@ -359,6 +364,7 @@ describe('feed.controller', () => {
       );
     });
   });
+  */
 
   // ===========================================================================
   // resetSession — 1 test

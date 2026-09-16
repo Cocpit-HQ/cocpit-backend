@@ -203,11 +203,19 @@ async function _runPipeline({ userId, scopeId, limit, pool, session, isInitialPa
   ]);
 
   // ── Step 3: Extract opportunity candidates from ranked list ───────────────
-  // Opportunity candidates are already scored; extract them to pass separately
-  // to the reranker so it can inject them at correct slot positions [6,13,19].
-  const opportunityCandidates = rankedCandidates
-    .filter(item => item._candidate?.isOpportunity === true)
-    .map(item => item._candidate);  // pass raw CandidateItem to slot injector
+  // ===========================================================================
+  // [CLEANUP - FEED REFACTOR] REASON FOR COMMENTING OUT:
+  // - Status: DISCONNECTED / UNUSED
+  // - Technical Reason: Opportunity items (jobs, events) cannot be hydrated by
+  //   _hydrateFeedItems (which queries the 'posts' table). They arrived with post_data = null
+  //   and were filtered out by frontend (feed.ts).
+  // - Active Replacement: Passing [] allows rerankingEngine to fill all 20 feed slots
+  //   with fully-hydrated organic posts.
+  // ===========================================================================
+  // const opportunityCandidates = rankedCandidates
+  //   .filter(item => item._candidate?.isOpportunity === true)
+  //   .map(item => item._candidate);  // pass raw CandidateItem to slot injector
+  const opportunityCandidates = [];
 
   // ── Step 4: Rerank + slot injection ──────────────────────────────────────
   // scopeId (not userId) so the seen-set dedup matches whichever actor is
@@ -454,13 +462,14 @@ async function getFeed({ userId, cursor = null, limit = DEFAULT_PAGE_SIZE, pool 
 // Exports
 // ---------------------------------------------------------------------------
 
-/**
- * hidePost
- * Processes a "Not Interested" action:
- * 1. Permanently hides the post (addToSeenSet)
- * 2. Logs the analytics event
- * 3. Applies a negative penalty to user's hashtag score
- */
+// ===========================================================================
+// [CLEANUP - FEED REFACTOR] REASON FOR COMMENTING OUT:
+// - Status: REDUNDANT
+// - Technical Reason: Legacy hidePost function.
+// - Active Replacement: Post hiding and negative hashtag affinity adjustments (-5)
+//   are handled cleanly by submitFeedback with feedbackType = 'NOT_INTERESTED'.
+// ===========================================================================
+/*
 async function hidePost({ userId, postId, sessionId, position, pool, orgActorId = null }) {
   if (!userId || !postId) throw new Error('hidePost: userId and postId are required');
 
@@ -503,6 +512,7 @@ async function hidePost({ userId, postId, sessionId, position, pool, orgActorId 
 
   return { ok: true };
 }
+*/
 
 /**
  * unhidePost
@@ -646,7 +656,7 @@ async function submitFeedback({ userId, postId, feedbackType, sessionId, positio
 
 module.exports = {
   getFeed,
-  hidePost,
+  // hidePost, // UNUSED: Frontend uses submitFeedback with 'NOT_INTERESTED'
   unhidePost,
   submitFeedback,
   buildCacheScopeId,

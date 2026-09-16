@@ -27,9 +27,26 @@
 
 const { getSocialGraphCandidates } = require('./sources/socialGraphSource');
 const { getTrendingCandidates }    = require('./sources/trendingSource');
-const { getOpportunityCandidates } = require('./sources/opportunitySource');
+// ===========================================================================
+// [CLEANUP - FEED REFACTOR] REASON FOR COMMENTING OUT:
+// - Status: DISCONNECTED
+// - Technical Reason: opportunitySource queries jobs and events from DB. Because
+//   feed hydration query (_hydrateFeedItems) only queries the 'posts' table,
+//   opportunity candidates arrived with post_data = null and were filtered out by frontend.
+// - Active Replacement: Feed exclusively serves fully-hydrated organic/exploration posts.
+// ===========================================================================
+// const { getOpportunityCandidates } = require('./sources/opportunitySource');
+
 const BlockModel = require('../../../models/block.model');
-const { getExplorationCandidates } = require('./sources/explorationSource');
+
+// ===========================================================================
+// [CLEANUP - FEED REFACTOR] REASON FOR COMMENTING OUT:
+// - Status: UNUSED / STUB
+// - Technical Reason: explorationSource stub returns [] by design.
+// - Active Replacement: Real exploration candidates are generated via explorationPool.js
+//   using Redis sorted sets (feed:explore:pool).
+// ===========================================================================
+// const { getExplorationCandidates } = require('./sources/explorationSource');
 const {
   getCandidatePool,
   setCandidatePool,
@@ -180,21 +197,25 @@ async function generateCandidates({
   const [
     socialGraphResult,
     trendingResult,
-    opportunityResult,
-    explorationResult,
+    // [CLEANUP - FEED REFACTOR] opportunitySource disabled: cannot be hydrated by post table query
+    // opportunityResult,
+    // [CLEANUP - FEED REFACTOR] explorationSource stub disabled: handled by explorationPool.js
+    // explorationResult,
   ] = await Promise.allSettled([
     withTimeout(getSocialGraphCandidates(sourceParams), CANDIDATE_SOURCE_TIMEOUT_MS, 'socialGraph'),
     withTimeout(getTrendingCandidates(sourceParams), CANDIDATE_SOURCE_TIMEOUT_MS, 'trending'),
-    withTimeout(getOpportunityCandidates(sourceParams), CANDIDATE_SOURCE_TIMEOUT_MS, 'opportunity'),
-    withTimeout(getExplorationCandidates(sourceParams), CANDIDATE_SOURCE_TIMEOUT_MS, 'exploration'),
+    // withTimeout(getOpportunityCandidates(sourceParams), CANDIDATE_SOURCE_TIMEOUT_MS, 'opportunity'),
+    // withTimeout(getExplorationCandidates(sourceParams), CANDIDATE_SOURCE_TIMEOUT_MS, 'exploration'),
   ]);
 
   // ── 4. Collect with per-source error isolation ────────────────────────────
   const sourceOutcomes = [
     { name: 'socialGraph', result: socialGraphResult  },
     { name: 'trending',    result: trendingResult     },
-    { name: 'opportunity', result: opportunityResult  },
-    { name: 'exploration', result: explorationResult  },
+    // [CLEANUP - FEED REFACTOR] opportunity disabled (cannot hydrate)
+    // { name: 'opportunity', result: opportunityResult  },
+    // [CLEANUP - FEED REFACTOR] exploration stub disabled (handled by explorationPool)
+    // { name: 'exploration', result: explorationResult  },
   ];
 
   const combined = [];

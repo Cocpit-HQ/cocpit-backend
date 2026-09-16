@@ -135,6 +135,15 @@ const { getPostHydrationSelect, getPostHydrationJoins, getPublicFeedWhere } = re
 const { hydrateShareCounts } = require("../../utils/shareHydration");
 
 // --- Feed / Posts ---
+// ===========================================================================
+// [CLEANUP - FEED REFACTOR] REASON FOR COMMENTING OUT:
+// - Status: DEPRECATED
+// - Technical Reason: Legacy unranked public feed query (~122 lines). It fetched
+//   unranked public posts before the introduction of the Day 3 Feed Engine.
+// - Active Replacement: Replaced entirely by GET /api/feed handled by
+//   feed.controller.js and feed.service.js (providing caching, scoring, and diversity).
+// ===========================================================================
+/*
 exports.getPublicFeed = async (req, res) => {
     const { cursorCreatedAt, cursorPostId, companyId: requestedCompanyId } = req.query;
     const limit = 10;
@@ -257,6 +266,7 @@ exports.getPublicFeed = async (req, res) => {
         res.status(500).json({ message: "Internal server error" });
     }
 };
+*/
 
 exports.getMyPosts = async (req, res) => {
     const {
@@ -355,6 +365,15 @@ exports.getMyPosts = async (req, res) => {
         const { rows } = await pool.query(query, params);
         // Recommendation System Phase 1 Integration: Inject 1 random suggested post on Page 1
         let finalRows = rows;
+        // ===========================================================================
+        // [CLEANUP - FEED REFACTOR] REASON FOR COMMENTING OUT:
+        // - Status: IRRELEVANT / ERRONEOUS INJECTION
+        // - Technical Reason: This block was erroneously injecting stranger hashtag-recommended
+        //   posts into the user's personal profile posts list (getMyPosts).
+        // - Active Replacement: Recommendations belong in the main home feed (/api/feed),
+        //   while profile views must show strictly the user's/company's own authored posts.
+        // ===========================================================================
+        /*
         try {
             if (!cursorPostId && actorScope.userId) {
                 const redisClient = require("../../core/db/redis");
@@ -410,6 +429,7 @@ exports.getMyPosts = async (req, res) => {
         } catch (suggestionErr) {
             console.error("Feed suggestion error:", suggestionErr);
         }
+        */
 
         const last = rows[rows.length - 1];
 
@@ -434,6 +454,14 @@ exports.getMyPosts = async (req, res) => {
     }
 };
 
+// ===========================================================================
+// [CLEANUP - FEED REFACTOR] REASON FOR COMMENTING OUT:
+// - Status: UNUSED / REDUNDANT (~215 lines)
+// - Technical Reason: getMyCommentedPosts and getMyPrivatePosts are not called by frontend.
+// - Active Replacement: Frontend retrieves user's posts via GET /users/me/posts (getMyPosts)
+//   with query parameters (?filter=Comments and ?category=...).
+// ===========================================================================
+/*
 exports.getMyCommentedPosts = async (req, res) => {
     const {
         search,
@@ -650,6 +678,7 @@ exports.getMyPrivatePosts = async (req, res) => {
         res.status(500).json({ message: "Internal server error" });
     }
 };
+*/
 
 //   const userId = req.user.sub;
 //   const { category, cursorCreatedAt, cursorPostId } = req.query;
