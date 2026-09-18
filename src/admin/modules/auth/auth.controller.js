@@ -57,7 +57,7 @@ const login = async (req, res) => {
 
     res.cookie('refreshToken', refreshToken, {
       httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
+      secure: process.env.NODE_ENV === 'production' || process.env.NODE_ENV === 'staging',
       sameSite: 'strict',
       maxAge: 24 * 60 * 60 * 1000 // 24 hours
     });
@@ -127,7 +127,11 @@ const logout = async (req, res) => {
     const userId = dbTokenResult.rows[0]?.admin_user_id;
 
     await req.db.query('UPDATE admin_refresh_tokens SET revoked = true WHERE token_hash = $1', [tokenHash]);
-    res.clearCookie('refreshToken', { httpOnly: true, sameSite: 'strict' });
+    res.clearCookie('refreshToken', {
+      httpOnly: true,
+      sameSite: 'strict',
+      secure: process.env.NODE_ENV === 'production' || process.env.NODE_ENV === 'staging'
+    });
     res.status(200).json({ message: 'Logged out successfully' });
 
     if (userId) {
