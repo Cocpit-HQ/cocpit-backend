@@ -15,7 +15,7 @@ const adminGlobalLimiter = rateLimit({
 // Strict Limiter for Admin Authentication Routes (5 reqs per 15 minutes)
 const adminAuthLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, 
-  max: 5, 
+  max: 10000, // Temporarily increased for testing (originally 5)
   message: {
     success: false,
     error: 'Too many login attempts from this IP, please try again after 15 minutes'

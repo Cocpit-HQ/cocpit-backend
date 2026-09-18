@@ -27,6 +27,17 @@ const onboardingLimiter = createRateLimit({
 // Apply rate limiting to all onboarding routes
 router.use(onboardingLimiter);
 
+const featureFlagsService = require("../config/featureFlags.service");
+const blockIfOnboardingDisabled = (req, res, next) => {
+    const flags = featureFlagsService.getFlags();
+    if (flags["enableOnboardingModule"] === false) {
+        return res.status(403).json({ message: "Onboarding is currently disabled." });
+    }
+    next();
+};
+
+router.use(blockIfOnboardingDisabled);
+
 // Multi-step onboarding routes
 router.get("/check-account-name", requireAuth, onboardingController.checkAccountName);
 router.get("/options/:slug", requireAuth, onboardingController.getOnboardingOptions);

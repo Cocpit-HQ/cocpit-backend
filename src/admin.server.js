@@ -1,4 +1,5 @@
-require('dotenv').config(); // Trigger reload
+const path = require('path');
+require('dotenv').config({ path: path.resolve(__dirname, '../.env') });
 const app = require('./admin.app');
 const pool = require('./core/db/pool');
 

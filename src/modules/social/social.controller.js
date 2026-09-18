@@ -2907,7 +2907,7 @@ LEFT JOIN LATERAL (
                     'text_content', rm.text_content,
                     'sender_name', COALESCE(rc.name, ru.display_name, 'Deleted User'),
                     'message_type', rm.message_type,
-                    'media', (SELECT json_agg(json_build_object('url', rmm.url, 'media_type', rmm.media_type, 'filename', rmm.filename)) FROM message_media rmm WHERE rmm.message_id = rm.message_id)
+                    'media', (SELECT json_agg(json_build_object('url', rmm.url, 'media_type', rmm.media_type)) FROM message_media rmm WHERE rmm.message_id = rm.message_id)
                 ) 
                 FROM messages rm 
                 LEFT JOIN user_display_profiles ru ON rm.sender_id = ru.user_id

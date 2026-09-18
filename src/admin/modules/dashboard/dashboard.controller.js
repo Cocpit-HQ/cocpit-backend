@@ -1956,7 +1956,7 @@ exports.getAiAnalytics = async (req, res) => {
 
 exports.getAdminNotifications = async (req, res) => {
   try {
-    const appealsRes = await req.db.query("SELECT COUNT(*) FROM post_appeals WHERE status = 'pending'");
+    const appealsRes = await req.db.query("SELECT COUNT(*) FROM moderation_appeals WHERE status = 'PENDING'");
     const appealsCount = parseInt(appealsRes.rows[0].count, 10);
 
     const reportsRes = await req.db.query("SELECT COUNT(*) FROM reports WHERE status IN ('active', 'escalated')");

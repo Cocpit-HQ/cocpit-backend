@@ -1,3 +1,4 @@
+const featureFlagsService = require("../config/featureFlags.service");
 const pool = require("../../core/db/pool");
 const { hydrateShareCounts } = require("../../utils/shareHydration");
 const AppError = require("../../core/errors/AppError");
@@ -18,6 +19,11 @@ const { logAudit } = require("../../core/infrastructure/audit.service");
  * Purpose: Real-time user discovery and mention autocomplete
  */
 exports.searchUsers = async (req, res) => {
+  const flags = featureFlagsService.getFlags();
+  if (flags["enableGlobalSearch"] === false) {
+    return res.status(403).json({ message: "Search is currently disabled." });
+  }
+
   const { q, accountType, excludeJobId } = req.query;
   const currentUserId = req.user.sub;
 

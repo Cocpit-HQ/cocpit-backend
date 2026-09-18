@@ -31,9 +31,14 @@ const login = async (req, res) => {
       return res.status(401).json({ error: 'Invalid credentials' });
     }
 
-    const userRoles = [user.role];
-    const allowedRoles = ['Admin', 'Moderator', 'Developer'];
-    const hasAccess = userRoles.some(role => allowedRoles.includes(role));
+    // Convert DB role (e.g., 'DEVELOPER') to Title Case (e.g., 'Developer') for the frontend
+    const formattedRole = user.role.split('_')
+      .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+      .join('_');
+    const userRoles = [formattedRole];
+    
+    const allowedRoles = ['Admin', 'Moderator', 'Developer', 'Super_admin', 'SUPER_ADMIN', 'ADMIN', 'MODERATOR', 'SUPPORT', 'DEVELOPER'];
+    const hasAccess = userRoles.some(role => allowedRoles.includes(role.toUpperCase()) || allowedRoles.includes(role));
 
     if (!hasAccess) {
       return res.status(403).json({ error: 'Access denied. Authorized personnel only.' });
@@ -44,15 +49,13 @@ const login = async (req, res) => {
     const accessToken = jwt.sign(payload, process.env.JWT_ACCESS_SECRET, { expiresIn: '15m' });
     const refreshToken = jwt.sign(payload, process.env.JWT_REFRESH_SECRET, { expiresIn: '24h' });
 
-    const sessionId = crypto.randomUUID();
     const tokenHash = hashToken(refreshToken);
-    const userAgent = req.headers['user-agent'] || 'Unknown';
     const ipAddress = req.ip || req.socket.remoteAddress || '127.0.0.1';
 
     await req.db.query(
       `INSERT INTO admin_refresh_tokens (admin_user_id, session_id, token_hash, expires_at, user_agent, ip_address) 
-       VALUES ($1, $2, $3, NOW() + INTERVAL '24 hours', $4, $5)`,
-      [user.id, sessionId, tokenHash, userAgent, ipAddress]
+       VALUES ($1, gen_random_uuid(), $2, NOW() + INTERVAL '24 hours', $3, $4)`,
+      [user.id, tokenHash, req.headers['user-agent'] || null, ipAddress]
     );
 
     res.cookie('refreshToken', refreshToken, {
@@ -122,7 +125,7 @@ const logout = async (req, res) => {
   try {
     const tokenHash = hashToken(refreshToken);
     
-    // Get admin_user_id for logging before revocation
+    // Get admin_id for logging before revocation
     const dbTokenResult = await req.db.query('SELECT admin_user_id FROM admin_refresh_tokens WHERE token_hash = $1', [tokenHash]);
     const userId = dbTokenResult.rows[0]?.admin_user_id;
 
