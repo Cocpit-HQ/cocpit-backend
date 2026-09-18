@@ -530,6 +530,9 @@ exports.addExperience = async (req, res) => {
         const prevOrgIds = [endedExperience?.org_id, expData.org_id];
         await cleanupPreviousCompanyMemberships(client, req.user.sub, prevOrgIds);
 
+        // Sync skills
+        await profileRepo.syncExperienceSkillsInTx(client, profileId, experience.experience_id, req.body.skills);
+
         await client.query('COMMIT');
 
         res.status(201).json({
@@ -659,6 +662,9 @@ exports.updateExperience = async (req, res) => {
         // Clean up previous organization membership if applicable
         const prevOrgIds = [existing.org_id, experience.org_id];
         await cleanupPreviousCompanyMemberships(client, req.user.sub, prevOrgIds);
+
+        // Sync skills
+        await profileRepo.syncExperienceSkillsInTx(client, profileId, experience.experience_id, req.body.skills);
 
         await client.query('COMMIT');
         res.json({ message: "Experience updated successfully", experience, warning });
@@ -1605,6 +1611,7 @@ exports.batchUpdateExperiences = async (req, res) => {
                 affectedOrgIds.push(op.data.org_id);
             }
             await profileRepo.updateExperienceInTx(client, op.id, profileId, op.data);
+            await profileRepo.syncExperienceSkillsInTx(client, profileId, op.id, op.data.skills);
         }
         for (const op of createOps) {
             await handleExperienceOrgLink(client, userId, op.data);
@@ -1612,6 +1619,7 @@ exports.batchUpdateExperiences = async (req, res) => {
                 affectedOrgIds.push(op.data.org_id);
             }
             const newExp = await profileRepo.addExperienceInTx(client, profileId, op.data);
+            await profileRepo.syncExperienceSkillsInTx(client, profileId, newExp.experience_id, op.data.skills);
             idMap[op.tempId] = newExp.experience_id;
         }
 

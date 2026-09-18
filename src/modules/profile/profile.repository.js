@@ -181,7 +181,14 @@ const getExperiences = async (profileId) => {
                 COALESCE(o.org_id, o_fallback.org_id) AS org_id,
                 COALESCE(o.logo_url, o_fallback.logo_url) AS logo_url,
                 COALESCE(o.name, o_fallback.name, e.company_name) AS org_name,
-                COALESCE(o.slug, o_fallback.slug) AS org_slug
+                COALESCE(o.slug, o_fallback.slug) AS org_slug,
+                COALESCE(
+                    (SELECT json_agg(s.name) 
+                     FROM experience_skills es 
+                     JOIN skills s ON es.skill_id = s.skill_id 
+                     WHERE es.experience_id = e.experience_id), 
+                    '[]'::json
+                ) AS skills
          FROM experiences e 
          LEFT JOIN organizations o ON e.org_id = o.org_id AND o.is_deleted = FALSE
          LEFT JOIN (
@@ -200,7 +207,17 @@ const getExperiences = async (profileId) => {
 /** Returns flat (ungrouped) experience rows for a profile — used for validation checks */
 const getExperiencesByProfileId = async (profileId) => {
     const result = await pool.query(
-        `SELECT * FROM experiences WHERE profile_id = $1 ORDER BY is_current DESC, start_date DESC`,
+        `SELECT e.*,
+                COALESCE(
+                    (SELECT json_agg(s.name) 
+                     FROM experience_skills es 
+                     JOIN skills s ON es.skill_id = s.skill_id 
+                     WHERE es.experience_id = e.experience_id), 
+                    '[]'::json
+                ) AS skills
+         FROM experiences e 
+         WHERE e.profile_id = $1 
+         ORDER BY e.is_current DESC, e.start_date DESC`,
         [profileId]
     );
     return result.rows;
@@ -775,6 +792,41 @@ const syncProjectSkillsInTx = async (client, profileId, projectId, skillNames) =
     }
 };
 
+const syncExperienceSkillsInTx = async (client, profileId, experienceId, skillNames) => {
+    await client.query(`DELETE FROM experience_skills WHERE experience_id = $1`, [experienceId]);
+    if (!Array.isArray(skillNames) || skillNames.length === 0) return;
+    
+    const validNames = [...new Set(skillNames.map(s => (typeof s === 'string' ? s.trim() : '')).filter(Boolean))];
+    if (validNames.length === 0) return;
+
+    await client.query(
+        `INSERT INTO skills (name)
+         SELECT UNNEST($1::text[]) ON CONFLICT (lower(name)) DO NOTHING`,
+        [validNames]
+    );
+
+    const { rows: skills } = await client.query(
+        `SELECT skill_id FROM skills WHERE lower(name) IN (SELECT lower(s) FROM UNNEST($1::text[]) AS s)`,
+        [validNames]
+    );
+
+    if (skills.length > 0) {
+        // Insert into experience_skills
+        const values = skills.map((_, i) => `($1, $${i + 2})`).join(",");
+        await client.query(
+            `INSERT INTO experience_skills (experience_id, skill_id) VALUES ${values} ON CONFLICT DO NOTHING`,
+            [experienceId, ...skills.map(s => s.skill_id)]
+        );
+
+        // Sync to user_skills so the profile retains these skills
+        const userValues = skills.map((_, i) => `($1, $${i + 2})`).join(",");
+        await client.query(
+            `INSERT INTO user_skills (profile_id, skill_id) VALUES ${userValues} ON CONFLICT DO NOTHING`,
+            [profileId, ...skills.map(s => s.skill_id)]
+        );
+    }
+};
+
 const syncProjectMediaInTx = async (client, projectId, mediaList) => {
     await client.query(`DELETE FROM project_media WHERE project_id = $1`, [projectId]);
     if (!Array.isArray(mediaList) || mediaList.length === 0) return;
@@ -845,7 +897,7 @@ module.exports = {
     getUserRole,
     getUserInterests,
     getProjects, addProjectInTx, updateProjectInTx, deleteProjectInTx,
-    syncProjectSkillsInTx, syncProjectMediaInTx, touchProfileVersionInTx,
+    syncProjectSkillsInTx, syncExperienceSkillsInTx, syncProjectMediaInTx, touchProfileVersionInTx,
     getProfileScoreData,
     getClient,
 };
