@@ -63,6 +63,10 @@ async function _fetchFirstDegree(userId, pool) {
     WHERE f.follower_id = $1
       AND p.author_id  != $1
       AND p.created_at  > NOW() - INTERVAL '${FIRST_DEGREE_WINDOW_HOURS} hours'
+      AND p.visibility  = 'public'
+      AND (p.is_removed IS FALSE OR p.is_removed IS NULL)
+      AND p.is_active = TRUE
+      AND p.is_community_article IS NOT TRUE
       AND NOT EXISTS (
         SELECT 1 FROM blocks b
         WHERE
@@ -108,6 +112,7 @@ async function _fetchSecondDegree(userId, pool) {
       AND p.created_at    > NOW() - INTERVAL '${SECOND_DEGREE_WINDOW_HOURS} hours'
       AND p.visibility    = 'public'
       AND (p.is_removed IS FALSE OR p.is_removed IS NULL)
+      AND p.is_active = TRUE
       AND p.is_community_article IS NOT TRUE
       AND NOT EXISTS (
         SELECT 1 FROM followers direct
