@@ -55,7 +55,7 @@ const RESUME_JSON_SCHEMA = {
       items: {
         type: "string"
       },
-      description: "List of technical and soft skills extracted ONLY from dedicated skill sections (e.g., 'Skills', 'Core Competencies'). DO NOT extract inferred skills from work experience. IGNORE any text or skills enclosed in brackets. Return a maximum of 14 most relevant skills."
+      description: "List of technical and soft skills extracted ONLY from dedicated skill sections (e.g., 'Skills', 'Core Competencies'). DO NOT extract inferred skills from work experience. IGNORE any text or skills enclosed in brackets. Return a maximum of 7 most relevant skills."
     }
   },
   required: ["profile", "workExperience", "education", "skills"]

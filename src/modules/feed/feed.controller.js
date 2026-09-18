@@ -12,7 +12,14 @@
 
 const feedSessionService = require("./session/feedSession.service");
 const feedService        = require("./feed.service");
-const feedAnalytics      = require("./analytics/feedAnalytics.service");
+// ===========================================================================
+// [CLEANUP - FEED REFACTOR] REASON FOR COMMENTING OUT:
+// - Status: UNUSED
+// - Technical Reason: trackEvent controller is commented out. Active controllers
+//   (unhidePost, submitFeedback) delegate directly to feedService, which handles
+//   analytics events internally.
+// ===========================================================================
+// const feedAnalytics      = require("./analytics/feedAnalytics.service");
 const pool               = require("../../core/db/pool");
 
 // ID-160/D1 — see feed.service.js:buildCacheScopeId. Requests without
@@ -91,14 +98,14 @@ exports.getFeed = async (req, res, next) => {
   }
 };
 
-// ─── POST /api/feed/event ─────────────────────────────────────────────────────
-/**
- * Track a user interaction with a feed item.
- * Day 3: Wired to feedAnalytics.trackEvent() (A8).
- *
- * Required fields from api-contracts.md + event-types.md:
- *   event_type, item_id, item_type, session_id, position, context
- */
+// ===========================================================================
+// [CLEANUP - FEED REFACTOR] REASON FOR COMMENTING OUT:
+// - Status: UNUSED / DISCONNECTED
+// - Technical Reason: Frontend does not emit dwell/scroll tracking via POST /api/feed/event.
+// - Active Replacement: User post interactions (likes, shares, unhide, feedback) are tracked
+//   via their dedicated interaction endpoints and POST /api/feed/postfeedback.
+// ===========================================================================
+/*
 exports.trackEvent = async (req, res, next) => {
   try {
     const userId = req.user?.sub;
@@ -143,15 +150,16 @@ exports.trackEvent = async (req, res, next) => {
     next(err);
   }
 };
+*/
 
-// ─── GET /api/feed/session ────────────────────────────────────────────────────
-/**
- * Returns the current feed session state for the authenticated user.
- * Creates a new session if none exists.
- *
- * Response shape from api-contracts.md:
- *   { ok, data: { session_id, cursor, seen_count, started_at, expires_at } }
- */
+// ===========================================================================
+// [CLEANUP - FEED REFACTOR] REASON FOR COMMENTING OUT:
+// - Status: UNUSED / REDUNDANT
+// - Technical Reason: Frontend never calls GET /api/feed/session.
+// - Active Replacement: Session state (session_id, cursor, expires_at) is embedded
+//   directly in the GET /api/feed response payload.
+// ===========================================================================
+/*
 exports.getSession = async (req, res, next) => {
   try {
     const userId = req.user?.sub;
@@ -179,6 +187,7 @@ exports.getSession = async (req, res, next) => {
     next(err);
   }
 };
+*/
 
 // ─── DELETE /api/feed/session ─────────────────────────────────────────────────
 /**
@@ -204,10 +213,14 @@ exports.resetSession = async (req, res, next) => {
   }
 };
 
-// ─── POST /api/feed/hide ──────────────────────────────────────────────────────
-/**
- * Hides a post for the authenticated user and applies negative intent scoring.
- */
+// ===========================================================================
+// [CLEANUP - FEED REFACTOR] REASON FOR COMMENTING OUT:
+// - Status: REDUNDANT
+// - Technical Reason: Legacy hide post endpoint.
+// - Active Replacement: Frontend submits post feedback via submitFeedback
+//   (POST /api/feed/postfeedback) with { type: 'NOT_INTERESTED' }.
+// ===========================================================================
+/*
 exports.hidePost = async (req, res, next) => {
   try {
     const userId = req.user?.sub;
@@ -231,6 +244,78 @@ exports.hidePost = async (req, res, next) => {
     return res.status(200).json({
       ok: true,
       message: "Post hidden successfully"
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+*/
+
+// ─── DELETE /api/feed/hide ────────────────────────────────────────────────────
+/**
+ * Unhides a post for the authenticated user and reverses negative intent scoring.
+ */
+exports.unhidePost = async (req, res, next) => {
+  try {
+    const userId = req.user?.sub;
+    if (!userId) return res.status(401).json({ ok: false, message: "Unauthenticated" });
+
+    const { item_id, session_id, position } = req.body;
+
+    if (!item_id) {
+      return res.status(400).json({ ok: false, message: "Missing required field: item_id" });
+    }
+
+    await feedService.unhidePost({
+      userId,
+      postId: item_id,
+      sessionId: session_id,
+      position: position,
+      pool,
+      orgActorId: getOrgActorId(req),
+    });
+
+    return res.status(200).json({
+      ok: true,
+      message: "Post unhidden successfully"
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+// ─── POST /api/feed/postfeedback ──────────────────────────────────────────────
+/**
+ * Generic endpoint to submit positive or negative feedback on a post.
+ */
+exports.submitFeedback = async (req, res, next) => {
+  try {
+    const userId = req.user?.sub;
+    if (!userId) return res.status(401).json({ ok: false, message: "Unauthenticated" });
+
+    const { item_id, type, session_id, position } = req.body;
+
+    if (!item_id || !type) {
+      return res.status(400).json({ ok: false, message: "Missing required fields: item_id, type" });
+    }
+
+    if (!['INTERESTED', 'NOT_INTERESTED'].includes(type)) {
+      return res.status(400).json({ ok: false, message: "Invalid feedback type" });
+    }
+
+    await feedService.submitFeedback({
+      userId,
+      postId: item_id,
+      feedbackType: type,
+      sessionId: session_id,
+      position: position,
+      pool,
+      orgActorId: getOrgActorId(req),
+    });
+
+    return res.status(200).json({
+      ok: true,
+      message: `Feedback ${type} recorded successfully`
     });
   } catch (err) {
     next(err);

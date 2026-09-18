@@ -154,8 +154,20 @@ const handleNewDeviceDetection = async (userId, userEmail, userAgent, ipAddress)
         const notificationService = require("../notification/notification.service");
         const pool = require("../../core/db/pool");
         const socketService = require("../../core/infrastructure/socket.service");
+        const geoip = require('geoip-lite');
 
-        const locationStr = ipAddress || "Unknown Location";
+        let locationStr = ipAddress || "Unknown Location";
+        if (ipAddress) {
+            const geo = geoip.lookup(ipAddress);
+            if (geo) {
+                if (geo.city && geo.country) {
+                    locationStr = `${geo.city}, ${geo.country}`;
+                } else if (geo.country) {
+                    locationStr = geo.country;
+                }
+            }
+        }
+
         const deviceStr = userAgent ? (userAgent.substring(0, 30) + '...') : "Unknown Device";
 
         // DB Insert
@@ -279,7 +291,7 @@ const loginUser = async ({ email, password, userAgent, ipAddress }) => {
     // 1. Find user
     const user = await authRepo.findUserByEmail(normalizedEmail);
     if (!user) {
-        return { error: { status: 401, message: "Incorrect password. Try again." } };
+        return { error: { status: 401, message: "Incorrect email or password. Try again" } };
     }
 
     // 2. Validate password
@@ -288,7 +300,7 @@ const loginUser = async ({ email, password, userAgent, ipAddress }) => {
     }
     const isValid = await comparePassword(password, user.password_hash);
     if (!isValid) {
-        return { error: { status: 401, message: "Incorrect password. Try again." } };
+        return { error: { status: 401, message: "Incorrect email or password. Try again" } };
     }
 
     // 2.5 Block login if account is suspended
@@ -320,7 +332,7 @@ const loginUser = async ({ email, password, userAgent, ipAddress }) => {
         const pool = require("../../core/db/pool");
         await pool.query(`UPDATE users SET is_deactivated = FALSE, deactivated_at = NULL WHERE user_id = $1`, [user.user_id]);
         await pool.query(`UPDATE organizations SET is_deactivated = FALSE, deactivated_at = NULL WHERE created_by = $1 AND is_deleted = FALSE`, [user.user_id]);
-        
+
         // Reset unread count for group conversations by updating last_read_at to NOW()
         await pool.query(`
             UPDATE conversation_participants cp
@@ -479,14 +491,14 @@ const socialLogin = async ({ provider, idToken, accountType, fullName: clientFul
     // ── Step 1: Verify Social ID token ──
     let socialUser;
     try {
-        socialUser = await  verifySocialToken(provider, idToken);
+        socialUser = await verifySocialToken(provider, idToken);
     } catch (err) {
         return { error: { status: 401, message: `Invalid or expired ${provider} token` } };
     }
 
     const { providerId, email, avatarUrl } = socialUser;
     const normalizedEmail = email ? email.toLowerCase() : `${providerId}@${provider}.placeholder.com`;
-    
+
     // Fallback logic for full name: Token -> Client -> Email prefix
     const fullName = socialUser.fullName || clientFullName || (email ? normalizedEmail.split('@')[0] : 'Apple User');
 
@@ -542,7 +554,7 @@ const socialLogin = async ({ provider, idToken, accountType, fullName: clientFul
             // accountType defaults to Student if not provided
             const finalAccountType = accountType || "Student";
 
-            const validTypes = ["Fresher", "Student", "Employer", "Admin"];
+            const validTypes = ["Employed", "Self-employed", "Student", "Fresher", "Intern", "Currently not working"];
             if (!validTypes.includes(finalAccountType)) {
                 return {
                     error: {
@@ -556,10 +568,7 @@ const socialLogin = async ({ provider, idToken, accountType, fullName: clientFul
             user = await authRepo.createSocialUser(normalizedEmail, fullName, provider, providerId, avatarUrl);
 
             // Assign role — same logic as standard registration
-            let roleName;
-            if (finalAccountType === "Admin") roleName = "Admin";
-            else if (finalAccountType === "Employer") roleName = "Employer";
-            else roleName = "Student";
+            let roleName = "Student";
 
             await authRepo.assignRole(user.user_id, roleName);
             await authRepo.createProfile(user.user_id, finalAccountType);
@@ -596,7 +605,7 @@ const socialLogin = async ({ provider, idToken, accountType, fullName: clientFul
         const pool = require("../../core/db/pool");
         await pool.query(`UPDATE users SET is_deactivated = FALSE, deactivated_at = NULL WHERE user_id = $1`, [user.user_id]);
         await pool.query(`UPDATE organizations SET is_deactivated = FALSE, deactivated_at = NULL WHERE created_by = $1 AND is_deleted = FALSE`, [user.user_id]);
-        
+
         // Reset unread count for group conversations by updating last_read_at to NOW()
         await pool.query(`
             UPDATE conversation_participants cp

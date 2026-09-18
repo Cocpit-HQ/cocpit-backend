@@ -135,6 +135,15 @@ const { getPostHydrationSelect, getPostHydrationJoins, getPublicFeedWhere } = re
 const { hydrateShareCounts } = require("../../utils/shareHydration");
 
 // --- Feed / Posts ---
+// ===========================================================================
+// [CLEANUP - FEED REFACTOR] REASON FOR COMMENTING OUT:
+// - Status: DEPRECATED
+// - Technical Reason: Legacy unranked public feed query (~122 lines). It fetched
+//   unranked public posts before the introduction of the Day 3 Feed Engine.
+// - Active Replacement: Replaced entirely by GET /api/feed handled by
+//   feed.controller.js and feed.service.js (providing caching, scoring, and diversity).
+// ===========================================================================
+/*
 exports.getPublicFeed = async (req, res) => {
     const { cursorCreatedAt, cursorPostId, companyId: requestedCompanyId } = req.query;
     const limit = 10;
@@ -257,6 +266,7 @@ exports.getPublicFeed = async (req, res) => {
         res.status(500).json({ message: "Internal server error" });
     }
 };
+*/
 
 exports.getMyPosts = async (req, res) => {
     const {
@@ -298,6 +308,12 @@ exports.getMyPosts = async (req, res) => {
                 whereClause += ` AND (p.shared_post_id IS NOT NULL OR p.shared_job_id IS NOT NULL) `;
             } else if (filter === 'Private post') {
                 whereClause += ` AND p.visibility = 'private' `;
+            } else if (filter === 'Articles' || filter === 'Article') {
+                whereClause += ` AND (p.post_type = 'article' OR pc.name = 'Article' OR p.is_community_article = TRUE) AND p.shared_post_id IS NULL AND p.shared_job_id IS NULL `;
+            } else if (filter === 'Video' || filter === 'Videos') {
+                whereClause += ` AND (p.post_type = 'video' OR EXISTS (SELECT 1 FROM post_media pm WHERE pm.post_id = p.post_id AND pm.media_type = 'video')) AND p.shared_post_id IS NULL AND p.shared_job_id IS NULL `;
+            } else if (filter === 'Poll' || filter === 'Polls') {
+                whereClause += ` AND (p.post_type = 'poll' OR EXISTS (SELECT 1 FROM post_polls pp WHERE pp.post_id = p.post_id)) AND p.shared_post_id IS NULL AND p.shared_job_id IS NULL `;
             }
         }
 
@@ -355,6 +371,15 @@ exports.getMyPosts = async (req, res) => {
         const { rows } = await pool.query(query, params);
         // Recommendation System Phase 1 Integration: Inject 1 random suggested post on Page 1
         let finalRows = rows;
+        // ===========================================================================
+        // [CLEANUP - FEED REFACTOR] REASON FOR COMMENTING OUT:
+        // - Status: IRRELEVANT / ERRONEOUS INJECTION
+        // - Technical Reason: This block was erroneously injecting stranger hashtag-recommended
+        //   posts into the user's personal profile posts list (getMyPosts).
+        // - Active Replacement: Recommendations belong in the main home feed (/api/feed),
+        //   while profile views must show strictly the user's/company's own authored posts.
+        // ===========================================================================
+        /*
         try {
             if (!cursorPostId && actorScope.userId) {
                 const redisClient = require("../../core/db/redis");
@@ -410,6 +435,7 @@ exports.getMyPosts = async (req, res) => {
         } catch (suggestionErr) {
             console.error("Feed suggestion error:", suggestionErr);
         }
+        */
 
         const last = rows[rows.length - 1];
 
@@ -434,6 +460,14 @@ exports.getMyPosts = async (req, res) => {
     }
 };
 
+// ===========================================================================
+// [CLEANUP - FEED REFACTOR] REASON FOR COMMENTING OUT:
+// - Status: UNUSED / REDUNDANT (~215 lines)
+// - Technical Reason: getMyCommentedPosts and getMyPrivatePosts are not called by frontend.
+// - Active Replacement: Frontend retrieves user's posts via GET /users/me/posts (getMyPosts)
+//   with query parameters (?filter=Comments and ?category=...).
+// ===========================================================================
+/*
 exports.getMyCommentedPosts = async (req, res) => {
     const {
         search,
@@ -650,6 +684,7 @@ exports.getMyPrivatePosts = async (req, res) => {
         res.status(500).json({ message: "Internal server error" });
     }
 };
+*/
 
 //   const userId = req.user.sub;
 //   const { category, cursorCreatedAt, cursorPostId } = req.query;
@@ -837,10 +872,34 @@ exports.createPost = async (req, res) => {
         });
     }
 
-    if (imageFiles.length > 10) {
+    if (imageFiles.length > 12) {
         cleanupFiles(uploadedFiles);
         return res.status(400).json({
-            message: "Maximum 10 images allowed"
+            message: "Maximum 12 images allowed"
+        });
+    }
+
+    // Image file size validation for post creation:
+    // - Per-image limit: 10MB max per single image file
+    // - Total post upload limit: 120MB max cumulative size across all uploaded images (up to 12 images x 10MB)
+    const MAX_SINGLE_IMAGE_SIZE = 10 * 1024 * 1024; // 10MB per single image limit
+    const MAX_TOTAL_IMAGE_SIZE = 120 * 1024 * 1024; // 120MB total post images limit
+
+    // Reject any single image larger than 10MB
+    const oversizedImage = imageFiles.find(f => f.size > MAX_SINGLE_IMAGE_SIZE);
+    if (oversizedImage) {
+        cleanupFiles(uploadedFiles);
+        return res.status(400).json({
+            message: `Image "${oversizedImage.originalname || 'file'}" exceeds the 10MB limit.`
+        });
+    }
+
+    // Reject cumulative image upload size larger than 120MB
+    const totalImageSize = imageFiles.reduce((sum, f) => sum + (f.size || 0), 0);
+    if (totalImageSize > MAX_TOTAL_IMAGE_SIZE) {
+        cleanupFiles(uploadedFiles);
+        return res.status(400).json({
+            message: "Total image upload size cannot exceed 120MB."
         });
     }
 
@@ -874,11 +933,24 @@ exports.createPost = async (req, res) => {
             media_urls = [];
         }
     } else if (uploadedFiles.length > 0) {
-        const urls = uploadedFiles.map(file => (file.path || file.secure_url || '').replace(/\\/g, "/"));
+        let parsedMediaMetadata = [];
+        if (req.body.media_metadata) {
+            try {
+                parsedMediaMetadata = typeof req.body.media_metadata === 'string' ? JSON.parse(req.body.media_metadata) : req.body.media_metadata;
+            } catch (e) {
+                console.error('Failed to parse media_metadata', e);
+            }
+        }
+        
+        const fileObjects = uploadedFiles.map((file, idx) => ({
+            url: (file.path || file.secure_url || '').replace(/\\/g, "/"),
+            width: (parsedMediaMetadata[idx] && parsedMediaMetadata[idx].width) || file.width || null,
+            height: (parsedMediaMetadata[idx] && parsedMediaMetadata[idx].height) || file.height || null
+        }));
         if (videoFiles.length > 0) {
-            media_urls = [urls[0]];
+            media_urls = [fileObjects[0]];
         } else if (imageFiles.length > 0) {
-            media_urls = urls;
+            media_urls = fileObjects;
         }
     }
 
@@ -902,7 +974,7 @@ exports.createPost = async (req, res) => {
         if (req.body.shared_post_id) {
             // Check if Personal or already a repost
             const originalPostCheck = await client.query(
-                `SELECT pc.name, p.shared_post_id FROM posts p 
+                `SELECT pc.name, p.shared_post_id, p.content FROM posts p 
                  LEFT JOIN post_categories pc ON p.category_id = pc.category_id 
                  WHERE p.post_id = $1`,
                 [req.body.shared_post_id]
@@ -912,9 +984,32 @@ exports.createPost = async (req, res) => {
                     await client.query('ROLLBACK');
                     return res.status(403).json({ message: "Personal posts cannot be reposted." });
                 }
-                if (originalPostCheck.rows[0].shared_post_id !== null) {
-                    await client.query('ROLLBACK');
-                    return res.status(403).json({ message: "Reposted posts cannot be reposted." });
+                let currentTarget = originalPostCheck.rows[0];
+                while (currentTarget && currentTarget.shared_post_id !== null) {
+                    const targetContent = currentTarget.content;
+                    const targetHasThoughts = targetContent && targetContent.replace(/<[^>]*>?/gm, '').replace(/&nbsp;|\u200B|\u00A0|&#8203;|&#160;|&zwnj;/g, '').replace(/\s/g, '').trim() !== '';
+
+                    if (!targetHasThoughts) {
+                        // Automatically redirect/unwrap to parent post
+                        req.body.shared_post_id = currentTarget.shared_post_id;
+                        const nextCheck = await client.query(
+                            `SELECT pc.name, p.shared_post_id, p.content FROM posts p 
+                             LEFT JOIN post_categories pc ON p.category_id = pc.category_id 
+                             WHERE p.post_id = $1`,
+                            [req.body.shared_post_id]
+                        );
+                        currentTarget = nextCheck.rowCount > 0 ? nextCheck.rows[0] : null;
+                        if (currentTarget && currentTarget.name === 'Personal') {
+                            await client.query('ROLLBACK');
+                            return res.status(403).json({ message: "Personal posts cannot be reposted." });
+                        }
+                    } else {
+                        if (content && content.replace(/<[^>]*>?/gm, '').replace(/&nbsp;|\u200B|\u00A0|&#8203;|&#160;|&zwnj;/g, '').replace(/\s/g, '').trim() !== '') {
+                            await client.query('ROLLBACK');
+                            return res.status(403).json({ message: "Nested reposts with thoughts are not allowed." });
+                        }
+                        break;
+                    }
                 }
             }
 
@@ -1138,12 +1233,15 @@ exports.createPost = async (req, res) => {
         let type;
         // 3. Insert Media (Parallel Optimized)
         if (media_urls && Array.isArray(media_urls) && media_urls.length > 0) {
-            const mediaPromises = media_urls.filter(url => typeof url === 'string').map(url => {
+            const mediaPromises = media_urls.map(mediaItem => {
+                const url = typeof mediaItem === 'string' ? mediaItem : mediaItem.url;
+                const width = mediaItem.width || null;
+                const height = mediaItem.height || null;
                 let currentType = url.toLowerCase().match(/\.(mp4|webm|mov)(\?|#|$)/) ? 'video' : 'image';
                 type = currentType; // Keep a reference to one type for response (legacy behavior)
                 return client.query(
-                    `INSERT INTO post_media (post_id, url, media_type) VALUES ($1, $2, $3)`,
-                    [postId, url, currentType]
+                    `INSERT INTO post_media (post_id, url, media_type, width, height) VALUES ($1, $2, $3, $4, $5)`,
+                    [postId, url, currentType, width, height]
                 );
             });
             await Promise.all(mediaPromises);
@@ -1232,6 +1330,80 @@ exports.createPost = async (req, res) => {
         }
 
         await client.query('COMMIT');
+
+        // Mentions in post content (fire-and-forget, after commit)
+        if (content && typeof content === 'string') {
+            const mentionedUsernames = [];
+            const regex1 = /@\[[^\]]+\]\(([^)]+)\)/g;
+            let m;
+            while ((m = regex1.exec(content)) !== null) {
+                if (!mentionedUsernames.includes(m[1])) mentionedUsernames.push(m[1]);
+            }
+            const regex2 = /(?:^|\s)@(\w+)(?!\w)/g;
+            while ((m = regex2.exec(content)) !== null) {
+                if (!mentionedUsernames.includes(m[1])) mentionedUsernames.push(m[1]);
+            }
+
+            if (mentionedUsernames.length > 0) {
+                
+                // Fetch actor details
+                let actorName = "Someone";
+                let actorAvatar = null;
+                if (companyId) {
+                    const orgRes = await pool.query(`SELECT name, logo_url FROM organizations WHERE org_id = $1`, [companyId]);
+                    if (orgRes.rowCount > 0) {
+                        actorName = orgRes.rows[0].name;
+                        actorAvatar = orgRes.rows[0].logo_url;
+                    }
+                } else {
+                    const userRes = await pool.query(`SELECT full_name, avatar_url FROM users WHERE user_id = $1`, [userId]);
+                    if (userRes.rowCount > 0) {
+                        actorName = userRes.rows[0].full_name;
+                        actorAvatar = userRes.rows[0].avatar_url;
+                    }
+                }
+
+                for (const handle of mentionedUsernames) {
+                    const userRes = await pool.query(`SELECT user_id FROM users WHERE LOWER(account_name) = LOWER($1)`, [handle]);
+                    if (userRes.rowCount > 0) {
+                        const mentionedUserId = userRes.rows[0].user_id;
+                        let isSelf = (!companyId && mentionedUserId === userId);
+
+                        if (!isSelf) {
+                            if (!companyId) {
+                                const isBlockedByMentioned = await checkBlockStatus(mentionedUserId, userId);
+                                const hasBlockedMentioned = await checkBlockStatus(userId, mentionedUserId);
+                                if (isBlockedByMentioned || hasBlockedMentioned) continue;
+                            }
+
+                            const notifText = `${actorName} mentioned you in a post`;
+                            const meta = { post_id: postId, org_id: companyId };
+                            
+                            const mentionNotifRes = await pool.query(
+                                `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata) 
+                                 VALUES ($1, $2, $3, $4, $5, $6) RETURNING notification_id, created_at`,
+                                [mentionedUserId, userId, 'mention', notifText, postId, JSON.stringify(meta)]
+                            );
+
+                            socketService.notifyUser(mentionedUserId, "notification", {
+                                notification_id: mentionNotifRes.rows[0].notification_id,
+                                type: 'mention',
+                                text: notifText,
+                                from: userId,
+                                senderName: actorName,
+                                senderAvatar: actorAvatar,
+                                referenceId: postId,
+                                metadata: meta,
+                                time: "Just now",
+                                created_at: mentionNotifRes.rows[0].created_at.toISOString(),
+                                is_read: false
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
 
         // Notify followers with 'posts' preference enabled (fire-and-forget, after commit)
         if (companyId) {
@@ -1390,9 +1562,9 @@ exports.getPostById = async (req, res) => {
     -- Comment Count
     (SELECT COUNT(*) FROM active_post_comments pc WHERE pc.post_id = p.post_id)::int AS comment_count,
 
-    -- Share Count
-    (SELECT COUNT(*) FROM posts sp_share WHERE sp_share.shared_post_id = p.post_id AND sp_share.is_active = TRUE AND (sp_share.is_removed IS FALSE OR sp_share.is_removed IS NULL))::int AS share_count,
-    0::int AS external_share_count,
+    -- Repost & Share Counts
+    (SELECT COUNT(*) FROM posts sp_share WHERE sp_share.shared_post_id = p.post_id AND sp_share.is_active = TRUE AND (sp_share.is_removed IS FALSE OR sp_share.is_removed IS NULL))::int AS "rePostCount",
+    (SELECT COUNT(*) FROM shares s WHERE s.entity_type IN ('post', 'article') AND s.entity_id = p.post_id::text)::int AS "sharePostCount",
 
     -- Is Liked (Identity Aware)
     EXISTS(
@@ -1416,6 +1588,18 @@ exports.getPostById = async (req, res) => {
         AND sp_rep.is_active = TRUE
         AND (sp_rep.is_removed IS FALSE OR sp_rep.is_removed IS NULL)
     ) AS is_reposted,
+        EXISTS(
+        SELECT 1 FROM posts sp_rep
+        WHERE sp_rep.shared_post_id = p.post_id 
+        AND (
+            ($3::uuid IS NOT NULL AND sp_rep.author_org_id = $3::uuid)
+            OR
+            ($3::uuid IS NULL AND sp_rep.author_id = $2 AND sp_rep.author_org_id IS NULL)
+        )
+        AND sp_rep.is_active = TRUE
+        AND (sp_rep.is_removed IS FALSE OR sp_rep.is_removed IS NULL)
+    AND sp_rep.content IS NOT NULL AND TRIM(sp_rep.content) != ''
+        ) AS is_reposted_with_thoughts,
 
     (
         SELECT sp_rep.post_id FROM posts sp_rep
@@ -1475,6 +1659,24 @@ exports.getPostById = async (req, res) => {
         )
     ) AS is_saved,
 
+    EXISTS(
+        SELECT 1 FROM reports r_rep 
+        WHERE r_rep.target_type = 'POST' 
+        AND (
+            r_rep.target_id = p.post_id 
+            OR (
+                p.shared_post_id IS NOT NULL 
+                AND (p.content IS NULL OR TRIM(p.content) = '') 
+                AND r_rep.target_id = p.shared_post_id
+            )
+        )
+        AND (
+            ($3::uuid IS NOT NULL AND r_rep.reporter_org_id = $3::uuid)
+            OR
+            ($3::uuid IS NULL AND r_rep.reporter_id = $2 AND r_rep.reporter_org_id IS NULL)
+        )
+    ) AS is_reported,
+
     -- Media (array)
     COALESCE(
         (
@@ -1482,7 +1684,9 @@ exports.getPostById = async (req, res) => {
                 json_build_object(
                     'media_id', pm.media_id,
                     'url', pm.url,
-                    'media_type', pm.media_type
+                    'media_type', pm.media_type,
+                    'width', pm.width,
+                    'height', pm.height
                 )
             )
             FROM post_media pm
@@ -1585,8 +1789,8 @@ exports.getPostById = async (req, res) => {
                 'media', COALESCE(sp_media.media, '[]'::json),
                 'like_count', (SELECT COUNT(*) FROM active_post_likes pl WHERE pl.post_id = sp.post_id)::int,
                 'comment_count', (SELECT COUNT(*) FROM active_post_comments pc WHERE pc.post_id = sp.post_id)::int,
-                'share_count', (SELECT COUNT(*) FROM posts sp_share2 WHERE sp_share2.shared_post_id = sp.post_id AND sp_share2.is_active = TRUE AND (sp_share2.is_removed IS FALSE OR sp_share2.is_removed IS NULL))::int,
-                'external_share_count', 0::int,
+                'rePostCount', (SELECT COUNT(*) FROM posts sp_share2 WHERE sp_share2.shared_post_id = sp.post_id AND sp_share2.is_active = TRUE AND (sp_share2.is_removed IS FALSE OR sp_share2.is_removed IS NULL))::int,
+                'sharePostCount', (SELECT COUNT(*) FROM shares s WHERE s.entity_type IN ('post', 'article') AND s.entity_id = sp.post_id::text)::int,
                 'is_liked', EXISTS(
                     SELECT 1 FROM active_post_likes pl 
                     WHERE pl.post_id = sp.post_id 
@@ -1607,6 +1811,18 @@ exports.getPostById = async (req, res) => {
                     AND sp_rep.is_active = TRUE
                     AND (sp_rep.is_removed IS FALSE OR sp_rep.is_removed IS NULL)
                 ),
+              'is_reposted_with_thoughts', EXISTS(
+                    SELECT 1 FROM posts sp_rep
+                    WHERE sp_rep.shared_post_id = sp.post_id 
+                    AND (
+                        ($3::uuid IS NOT NULL AND sp_rep.author_org_id = $3::uuid)
+                        OR
+                        ($3::uuid IS NULL AND sp_rep.author_id = $2 AND sp_rep.author_org_id IS NULL)
+                    )
+                    AND sp_rep.is_active = TRUE
+                    AND (sp_rep.is_removed IS FALSE OR sp_rep.is_removed IS NULL)
+                AND sp_rep.content IS NOT NULL AND TRIM(sp_rep.content) != ''
+              ),
                 'repost_id', (
                     SELECT sp_rep.post_id FROM posts sp_rep
                     WHERE sp_rep.shared_post_id = sp.post_id 
@@ -1904,14 +2120,28 @@ exports.updatePostById = async (req, res) => {
         }
 
         // 2. Fetch Post & Check Permissions (CRITICAL FIX)
-        const postCheck = await client.query(`SELECT author_id, author_org_id, post_type, shared_post_id, shared_job_id, is_removed, is_deleted, is_unlisted FROM posts WHERE post_id = $1`, [postId]);
+        const postCheck = await client.query(`SELECT author_id, author_org_id, post_type, shared_post_id, shared_job_id, is_removed, is_deleted, is_unlisted, content FROM posts WHERE post_id = $1`, [postId]);
         if (postCheck.rowCount === 0) {
             await client.query("ROLLBACK");
             return res.status(404).json({ message: "Post not found" });
         }
-        const { author_id, author_org_id, post_type: currentPostType, shared_post_id, shared_job_id, is_removed, is_deleted, is_unlisted } = postCheck.rows[0];
+        const { author_id, author_org_id, post_type: currentPostType, shared_post_id, shared_job_id, is_removed, is_deleted, is_unlisted, content: currentContent } = postCheck.rows[0];
 
-        const effectivePostType = post_type || currentPostType;
+        // Infer / resolve new post_type
+        let newPostType = post_type;
+        if (!newPostType && Array.isArray(media_urls) && currentPostType !== 'poll' && currentPostType !== 'article') {
+            if (media_urls.length === 0) {
+                newPostType = 'text';
+            } else {
+                const firstItem = media_urls[0];
+                const firstUrl = typeof firstItem === 'object' && firstItem !== null ? firstItem.url : firstItem;
+                if (firstUrl) {
+                    newPostType = firstUrl.toLowerCase().match(/\.(mp4|webm|mov)(\?|#|$)/i) ? 'video' : 'image';
+                }
+            }
+        }
+
+        const effectivePostType = newPostType || currentPostType;
         if (effectivePostType === 'article') {
             // Cover comes unambiguously from the dedicated field when the caller sends
             // one (the Channels article editor always does) - no more guessing, and no
@@ -1968,9 +2198,23 @@ exports.updatePostById = async (req, res) => {
         const values = [];
         let index = 1;
 
+        // post_type
+        if (newPostType !== undefined) {
+            // Prevent changing to or from poll or article via standard update
+            if (currentPostType !== 'poll' && currentPostType !== 'article') {
+                if (newPostType !== 'poll' && newPostType !== 'article') {
+                    let normalizedType = newPostType;
+                    if (normalizedType === 'carousel' || normalizedType === 'photo') {
+                        normalizedType = 'image';
+                    }
+                    updates.push(`post_type = $${index++}`);
+                    values.push(normalizedType);
+                }
+            }
+        }
+
         // title
         if (title !== undefined) {
-            const effectivePostType = post_type || currentPostType;
             // Prevent wiping out the poll question if title is empty string
             if (effectivePostType === 'poll' && title.trim() === '') {
                 // Ignore the empty title update for polls to preserve the question
@@ -1982,7 +2226,6 @@ exports.updatePostById = async (req, res) => {
 
         // content
         if (content !== undefined) {
-            const effectivePostType = post_type || currentPostType;
             if (effectivePostType === 'text' && !shared_post_id && !shared_job_id) {
                 if (!content || content.trim().length === 0) {
                     await client.query('ROLLBACK');
@@ -1991,6 +2234,11 @@ exports.updatePostById = async (req, res) => {
             }
             updates.push(`content = $${index++}`);
             values.push(content);
+        } else if (effectivePostType === 'text' && currentPostType !== 'text' && !shared_post_id && !shared_job_id) {
+            if (!currentContent || currentContent.trim().length === 0) {
+                await client.query('ROLLBACK');
+                return res.status(400).json({ message: "Post content cannot be empty" });
+            }
         }
 
         // location
@@ -2076,18 +2324,32 @@ exports.updatePostById = async (req, res) => {
 
 
         let type;
+        let parsedMediaMetadata = [];
+        if (req.body.media_metadata) {
+            try {
+                parsedMediaMetadata = typeof req.body.media_metadata === 'string' ? JSON.parse(req.body.media_metadata) : req.body.media_metadata;
+            } catch (e) {
+                console.error('Failed to parse media_metadata in update', e);
+            }
+        }
+
         // 5. Update Media: The "Sync" approach
         if (Array.isArray(media_urls)) {
             await client.query(`DELETE FROM post_media WHERE post_id = $1`, [postId]);
 
-            for (const item of media_urls) {
+            for (let i = 0; i < media_urls.length; i++) {
+                const item = media_urls[i];
                 const url = typeof item === 'object' && item !== null ? item.url : item;
                 if (!url) continue;
+                
+                const width = (parsedMediaMetadata[i] && parsedMediaMetadata[i].width) || (typeof item === 'object' && item !== null ? item.width : null);
+                const height = (parsedMediaMetadata[i] && parsedMediaMetadata[i].height) || (typeof item === 'object' && item !== null ? item.height : null);
+                
                 const type = url.match(/\.(mp4|webm|mov)(\?|#|$)/i) ? "video" : "image";
                 await client.query(
-                    `INSERT INTO post_media (post_id, url, media_type)
-       VALUES ($1, $2, $3)`,
-                    [postId, url, type]
+                    `INSERT INTO post_media (post_id, url, media_type, width, height)
+       VALUES ($1, $2, $3, $4, $5)`,
+                    [postId, url, type, width, height]
                 );
             }
         }
@@ -2127,7 +2389,9 @@ SELECT
         (SELECT json_agg(json_build_object(
             'media_id', pm.media_id,
             'url', pm.url,
-            'media_type', pm.media_type
+            'media_type', pm.media_type,
+            'width', pm.width,
+            'height', pm.height
         )) FROM post_media pm WHERE pm.post_id = p.post_id),
         '[]'::json
     ) AS media,
@@ -2733,10 +2997,15 @@ exports.addComment = async (req, res) => {
     }
 
     try {
-        const post = await pool.query(`select post_id, author_id, author_org_id, post_type, is_community_article from posts where post_id = $1`, [postId])
+        const post = await pool.query(`select post_id, shared_post_id, content, author_id, author_org_id, post_type, is_community_article from posts where post_id = $1`, [postId]);
 
         if (post.rowCount === 0) {
-            return res.status(404).json({ message: "Post not found" })
+            return res.status(404).json({ message: "Post not found" });
+        }
+
+        let effectivePostId = postId;
+        if (post.rows[0].shared_post_id && (!post.rows[0].content || post.rows[0].content.trim() === '')) {
+            effectivePostId = post.rows[0].shared_post_id;
         }
 
         const postAuthorId = post.rows[0].author_id;
@@ -2821,7 +3090,7 @@ exports.addComment = async (req, res) => {
             `INSERT INTO post_comments (post_id, author_id, content, parent_id, author_org_id)
              VALUES ($1, $2, $3, $4, $5)
              RETURNING comment_id, author_id, content, parent_id, author_org_id, created_at`,
-            [postId, userId, content.trim(), insertParentId, companyId || null]
+            [effectivePostId, userId, content.trim(), insertParentId, companyId || null]
         );
 
         const newComment = result.rows[0];
@@ -2853,9 +3122,17 @@ exports.addComment = async (req, res) => {
             actorAvatar = actor.avatar_url;
         }
 
-        // Regex for mentions: @Username (simple alphanumeric + underscore)
-        const mentionMatches = content.match(/@(\w+)/g);
-        const mentionedUsernames = mentionMatches ? mentionMatches.map(m => m.substring(1)) : [];
+        // Regex for mentions: @[Name](handle) or @Username
+        const mentionedUsernames = [];
+        const regex1 = /@\[[^\]]+\]\(([^)]+)\)/g;
+        let m;
+        while ((m = regex1.exec(content)) !== null) {
+            if (!mentionedUsernames.includes(m[1])) mentionedUsernames.push(m[1]);
+        }
+        const regex2 = /(?:^|\s)@(\w+)(?!\w)/g;
+        while ((m = regex2.exec(content)) !== null) {
+            if (!mentionedUsernames.includes(m[1])) mentionedUsernames.push(m[1]);
+        }
 
         // Notify Post Owner
         // If Company comments, we notify post owner (User). 
@@ -2866,6 +3143,14 @@ exports.addComment = async (req, res) => {
         let shouldNotifyPostOwner = true;
         if (!companyId && postAuthorId === userId) shouldNotifyPostOwner = false;
 
+        // Skip 'comment' notification if the post owner is explicitly mentioned (they will get 'mention' notification instead)
+        if (shouldNotifyPostOwner && mentionedUsernames.length > 0) {
+            const postOwnerHandleRes = await pool.query(`SELECT account_name FROM users WHERE user_id = $1`, [postAuthorId]);
+            if (postOwnerHandleRes.rowCount > 0 && mentionedUsernames.some(u => u.toLowerCase() === postOwnerHandleRes.rows[0].account_name.toLowerCase())) {
+                shouldNotifyPostOwner = false;
+            }
+        }
+
         if (shouldNotifyPostOwner) {
             // Count total comments on post
             const countResult = await pool.query(
@@ -2874,7 +3159,7 @@ exports.addComment = async (req, res) => {
             );
             const commentCount = Number(countResult.rows[0].count);
 
-            let cleanedContent = content.replace(/@\w+\s*/g, '').trim();
+            let cleanedContent = content.replace(/@\[([^\]]+)\]\(([^)]+)\)/g, '$1').replace(/@\w+\s*/g, '').trim();
             let preview = cleanedContent.substring(0, 40);
             if (cleanedContent.length > 40) preview += "...";
             
@@ -3000,10 +3285,10 @@ exports.addComment = async (req, res) => {
                 if (userRes.rowCount > 0) {
                     const mentionedUserId = userRes.rows[0].user_id;
 
-                    // Don't notify if self or post owner
+                    // Don't notify if self
                     let isSelf = (!companyId && mentionedUserId === userId);
 
-                    if (!isSelf && mentionedUserId !== postAuthorId) {
+                    if (!isSelf) {
                         if (!companyId) {
                             const isBlockedByMentioned = await checkBlockStatus(mentionedUserId, userId);
                             const hasBlockedMentioned = await checkBlockStatus(userId, mentionedUserId);
@@ -3016,13 +3301,14 @@ exports.addComment = async (req, res) => {
                             org_id: companyId
                         };
 
-                        await pool.query(
+                        const mentionNotifRes = await pool.query(
                             `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata) 
-                             VALUES ($1, $2, $3, $4, $5, $6)`,
+                             VALUES ($1, $2, $3, $4, $5, $6) RETURNING notification_id, created_at`,
                             [mentionedUserId, userId, 'mention', notifText, postId, JSON.stringify(meta)]
                         );
 
                         socketService.notifyUser(mentionedUserId, "notification", {
+                            notification_id: mentionNotifRes.rows[0].notification_id,
                             type: 'mention',
                             text: notifText,
                             from: userId,
@@ -3030,7 +3316,9 @@ exports.addComment = async (req, res) => {
                             senderAvatar: actorAvatar,
                             referenceId: postId,
                             metadata: meta,
-                            time: "Just now"
+                            time: "Just now",
+                            created_at: mentionNotifRes.rows[0].created_at.toISOString(),
+                            is_read: false
                         });
                         // Push notification for offline devices
                         sendPush(mentionedUserId, actorName, notifText, { type: 'mention', postId }).catch(() => {});
@@ -3056,6 +3344,8 @@ exports.addComment = async (req, res) => {
         c.content,
         c.parent_id,
         c.created_at,
+        c.updated_at,
+        COALESCE(c.is_edited, false) AS is_edited,
         c.is_pinned,
         c.pinned_at,
         c.pinned_by,
@@ -3099,6 +3389,9 @@ exports.addComment = async (req, res) => {
             id: commentRow.comment_id,
             parentId: commentRow.parent_id,
             createdAt: commentRow.created_at,
+            updatedAt: commentRow.updated_at,
+            isEdited: Boolean(commentRow.is_edited),
+            is_edited: Boolean(commentRow.is_edited),
             authorId: commentRow.author_id,
             authorName: commentRow.full_name,
             authorAvatarUrl: commentRow.avatar_url,
@@ -3161,17 +3454,17 @@ exports.updateComment = async (req, res) => {
         if (companyId) {
             query = `
                 UPDATE post_comments
-                SET content = $1
+                SET content = $1, updated_at = NOW(), is_edited = TRUE
                 WHERE comment_id = $2 AND author_org_id = $3
-                RETURNING comment_id, content, created_at
+                RETURNING comment_id, post_id, author_id, author_org_id, parent_id, content, created_at, updated_at, is_edited
             `;
             params = [content.trim(), commentId, companyId];
         } else {
             query = `
                 UPDATE post_comments
-                SET content = $1
+                SET content = $1, updated_at = NOW(), is_edited = TRUE
                 WHERE comment_id = $2 AND author_id = $3 AND author_org_id IS NULL
-                RETURNING comment_id, content, created_at
+                RETURNING comment_id, post_id, author_id, author_org_id, parent_id, content, created_at, updated_at, is_edited
             `;
             params = [content.trim(), commentId, userId];
         }
@@ -3188,9 +3481,37 @@ exports.updateComment = async (req, res) => {
             return res.status(403).json({ message: "Not authorized to edit this comment" });
         }
 
+        const updatedRow = result.rows[0];
+        const mappedUpdatedComment = {
+            ...updatedRow,
+            id: updatedRow.comment_id,
+            postId: updatedRow.post_id,
+            parentId: updatedRow.parent_id,
+            authorId: updatedRow.author_id,
+            createdAt: updatedRow.created_at,
+            updatedAt: updatedRow.updated_at,
+            updated_at: updatedRow.updated_at,
+            isEdited: true,
+            is_edited: true
+        };
+
+        const ioService = require("../../core/infrastructure/socket.service");
+        if (ioService && ioService.notifyPost && updatedRow.post_id) {
+            ioService.notifyPost(updatedRow.post_id, "post_comment_updated", {
+                postId: updatedRow.post_id,
+                commentId: updatedRow.comment_id,
+                content: updatedRow.content,
+                updatedAt: updatedRow.updated_at,
+                updated_at: updatedRow.updated_at,
+                isEdited: true,
+                is_edited: true,
+                comment: mappedUpdatedComment
+            });
+        }
+
         return res.status(200).json({
             message: "Comment updated",
-            comment: result.rows[0]
+            comment: mappedUpdatedComment
         });
 
     } catch (err) {
@@ -3528,9 +3849,15 @@ exports.getComments = async (req, res) => {
         const { userId, orgId: companyId } = getContentActorScope(req, requestedCompanyId || null);
         const targetCommentId = req.query.target_comment_id || null;
 
-        const post = await pool.query(`select post_id, author_org_id, post_type, is_community_article from posts where post_id = $1`, [postId])
+        const post = await pool.query(`select post_id, shared_post_id, content, author_org_id, post_type, is_community_article from posts where post_id = $1`, [postId]);
         if (post.rowCount === 0) {
-            return res.status(404).json({ message: "Post not found" })
+            return res.status(404).json({ message: "Post not found" });
+        }
+
+        // If this is a repost without additional thoughts, fetch comments of the original post
+        let effectivePostId = postId;
+        if (post.rows[0].shared_post_id && (!post.rows[0].content || post.rows[0].content.trim() === '')) {
+            effectivePostId = post.rows[0].shared_post_id;
         }
 
         const postCompanyId = post.rows[0].author_org_id;
@@ -3577,6 +3904,8 @@ exports.getComments = async (req, res) => {
         c.content,
         c.parent_id,
         c.created_at,
+        c.updated_at,
+        COALESCE(c.is_edited, false) AS is_edited,
         c.is_pinned,
         c.pinned_at,
         c.pinned_by,
@@ -3654,6 +3983,17 @@ exports.getComments = async (req, res) => {
             ($3::uuid IS NULL AND hc.user_id = $2 AND hc.org_id IS NULL)
         )
       )
+      -- 3. Exclude reported comments (Reporting a comment or its parent hides the thread for the reporter)
+      AND NOT EXISTS (
+        SELECT 1 FROM reports r
+        WHERE r.target_type = 'COMMENT'
+        AND (r.target_id::uuid = c.comment_id OR r.target_id::uuid = c.parent_id)
+        AND (
+            ($3::uuid IS NOT NULL AND r.reporter_org_id = $3::uuid)
+            OR
+            ($3::uuid IS NULL AND r.reporter_id = $2 AND r.reporter_org_id IS NULL)
+        )
+      )
       ORDER BY 
         CASE 
           WHEN $4::uuid IS NOT NULL AND (c.comment_id = (SELECT root_id FROM target_root) OR c.parent_id = (SELECT root_id FROM target_root)) THEN 0 
@@ -3663,13 +4003,17 @@ exports.getComments = async (req, res) => {
         c.pinned_at DESC NULLS LAST,
         c.created_at DESC
       `,
-            [postId, userId, companyId || null, targetCommentId || null]
+            [effectivePostId, userId, companyId || null, targetCommentId || null]
         );
         const mappedComments = comments.rows.map(row => ({
             ...row,
             id: row.comment_id,
             parentId: row.parent_id,
             createdAt: row.created_at,
+            updatedAt: row.updated_at,
+            updated_at: row.updated_at,
+            isEdited: Boolean(row.is_edited),
+            is_edited: Boolean(row.is_edited),
             authorId: row.author_id,
             authorName: row.full_name,
             authorAvatarUrl: row.avatar_url,
@@ -4927,18 +5271,24 @@ exports.getPollAnalytics = async (req, res) => {
                     WHERE po.poll_id = pp.poll_id
                 ) as options,
 
-                -- All voters in a single list (anonymized choice)
+                -- All voters in a single list (handles both individual users and company actors)
                 (
                     SELECT COALESCE(json_agg(
                         json_build_object(
+                            'id', COALESCE(pv.org_id::text, u.user_id::text),
                             'user_id', u.user_id,
-                            'full_name', u.full_name,
-                            'avatar_url', u.avatar_url,
-                            'headline', u.headline
+                            'org_id', pv.org_id,
+                            'is_company', (pv.org_id IS NOT NULL),
+                            'full_name', COALESCE(o.name, u.full_name),
+                            'account_name', COALESCE(o.slug, u.account_name),
+                            'avatar_url', COALESCE(o.logo_url, u.avatar_url),
+                            'headline', COALESCE(o.headline, u.headline),
+                            'option_id', pv.option_id
                         )
                     ), '[]'::json)
                     FROM poll_votes pv
-                    JOIN active_users u ON u.user_id = pv.voter_id
+                    LEFT JOIN active_users u ON u.user_id = pv.voter_id
+                    LEFT JOIN organizations o ON o.org_id = pv.org_id
                     WHERE pv.poll_id = pp.poll_id
                 ) as voters
 
@@ -5226,6 +5576,10 @@ exports.moderatePost = async (req, res) => {
 
 exports.getPostLikes = async (req, res) => {
     const postId = req.params.id;
+    // Determine viewer context (personal account or company profile)
+    const actorScope = getContentActorScope(req, req.query.companyId || null);
+    const viewerUserId = actorScope.userId;
+    const viewerOrgId = actorScope.orgId;
 
     try {
         const likesRes = await pool.query(
@@ -5237,7 +5591,26 @@ exports.getPostLikes = async (req, res) => {
                 COALESCE(pl.org_id::text, pl.user_id::text) AS user_id,
                 COALESCE(comp.slug, u.account_name) AS username,
                 COALESCE(comp.name, u.full_name) AS full_name,
-                COALESCE(comp.logo_url, u.avatar_url) AS avatar
+                COALESCE(comp.logo_url, u.avatar_url) AS avatar,
+                -- Determine if the liked entity is the current viewer (self)
+                (
+                    $2::uuid IS NOT NULL AND pl.org_id = $2::uuid
+                    OR $2::uuid IS NULL AND $3::uuid IS NOT NULL AND pl.user_id = $3::uuid AND pl.org_id IS NULL
+                ) AS is_self,
+                -- Determine if current viewer is already following the liker (user->user, user->org, or org->org)
+                (
+                    $2::uuid IS NULL AND $3::uuid IS NOT NULL AND pl.user_id IS NOT NULL AND EXISTS(
+                        SELECT 1 FROM followers f WHERE f.follower_id = $3::uuid AND f.following_id = pl.user_id
+                    )
+                    OR
+                    $2::uuid IS NULL AND $3::uuid IS NOT NULL AND pl.org_id IS NOT NULL AND EXISTS(
+                        SELECT 1 FROM organization_followers ofol WHERE ofol.user_id = $3::uuid AND ofol.org_id = pl.org_id
+                    )
+                    OR
+                    $2::uuid IS NOT NULL AND pl.org_id IS NOT NULL AND EXISTS(
+                        SELECT 1 FROM organization_org_follows oof WHERE oof.follower_org_id = $2::uuid AND oof.following_org_id = pl.org_id
+                    )
+                ) AS is_following
             FROM active_post_likes pl
             LEFT JOIN active_users u ON u.user_id = pl.user_id
             LEFT JOIN active_organizations comp ON comp.org_id = pl.org_id
@@ -5247,7 +5620,7 @@ exports.getPostLikes = async (req, res) => {
                 (pl.org_id IS NOT NULL AND comp.org_id IS NOT NULL)
             )
             ORDER BY pl.created_at DESC`,
-            [postId]
+            [postId, viewerOrgId, viewerUserId]
         );
 
         return res.status(200).json({
@@ -5260,7 +5633,9 @@ exports.getPostLikes = async (req, res) => {
                 userId: row.user_id,
                 username: row.username,
                 fullName: row.full_name,
-                avatar: row.avatar
+                avatar: row.avatar,
+                isFollowing: row.is_following,
+                isSelf: row.is_self
             }))
         });
     } catch (err) {
@@ -5312,5 +5687,74 @@ exports.getAIUsage = async (req, res) => {
     } catch (err) {
         console.error("Get AI Usage Error:", err);
         return res.status(err.statusCode || 500).json({ success: false, message: err.message || "Failed to get AI usage" });
+    }
+};
+
+exports.removeMention = async (req, res) => {
+    const postId = req.params.id;
+    let actorScope;
+
+    try {
+        actorScope = getContentActorScope(req, req.body?.companyId || null);
+    } catch (err) {
+        return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
+    }
+
+    const { userId, orgId } = actorScope;
+
+    if (!postId || (!userId && !orgId)) {
+        return res.status(400).json({ message: "postId and actor context are required" });
+    }
+
+    try {
+        let actorHandle = '';
+        let actorName = '';
+
+        if (orgId) {
+            const orgResult = await pool.query("SELECT slug, name FROM organizations WHERE org_id = $1", [orgId]);
+            if (orgResult.rowCount === 0) {
+                return res.status(404).json({ message: "Organization not found" });
+            }
+            actorHandle = orgResult.rows[0].slug;
+            actorName = orgResult.rows[0].name;
+        } else {
+            const userResult = await pool.query("SELECT account_name, full_name FROM users WHERE user_id = $1", [userId]);
+            if (userResult.rowCount === 0) {
+                return res.status(404).json({ message: "User not found" });
+            }
+            actorHandle = userResult.rows[0].account_name;
+            actorName = userResult.rows[0].full_name;
+        }
+
+        const postResult = await pool.query("SELECT content FROM posts WHERE post_id = $1", [postId]);
+        if (postResult.rowCount === 0) {
+            return res.status(404).json({ message: "Post not found" });
+        }
+
+        let newContent = postResult.rows[0].content || '';
+
+        if (actorHandle) {
+            const escapeHandle = actorHandle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const structuredMatch = new RegExp(`@\\[([^\\]]+)\\]\\(${escapeHandle}\\)`, 'gi');
+            newContent = newContent.replace(structuredMatch, '$1');
+
+            const legacyMatch = new RegExp(`@(${escapeHandle})\\b`, 'gi');
+            newContent = newContent.replace(legacyMatch, '$1');
+        }
+
+        if (actorName) {
+            const escapeName = actorName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const structuredNameMatch = new RegExp(`@\\[(${escapeName})\\]\\([^)]+\\)`, 'gi');
+            newContent = newContent.replace(structuredNameMatch, '$1');
+        }
+
+        if (newContent !== postResult.rows[0].content) {
+            await pool.query("UPDATE posts SET content = $1, updated_at = now() WHERE post_id = $2", [newContent, postId]);
+        }
+
+        res.status(200).json({ message: "Mention removed successfully", content: newContent });
+    } catch (err) {
+        console.error("Error in removeMention:", err);
+        res.status(500).json({ message: "Internal server error", error: err.message });
     }
 };

@@ -51,7 +51,7 @@ async function hydrateShareCounts(posts) {
             const query = `
                 SELECT entity_id, COUNT(*) as count 
                 FROM shares 
-                WHERE entity_type = 'post' AND entity_id = ANY($1)
+                WHERE entity_type IN ('post', 'article') AND entity_id = ANY($1)
                 GROUP BY entity_id
             `;
             const dbResult = await pool.query(query, [missingPostIds]);
@@ -81,10 +81,10 @@ async function hydrateShareCounts(posts) {
         // 3. Hydrate the original posts array
         posts.forEach(p => {
             if (p.post_id) {
-                p.external_share_count = shareCountsMap.get(p.post_id) || 0;
+                p.sharePostCount = shareCountsMap.get(p.post_id) || 0;
             }
             if (p.shared_post && p.shared_post.post_id) {
-                p.shared_post.external_share_count = shareCountsMap.get(p.shared_post.post_id) || 0;
+                p.shared_post.sharePostCount = shareCountsMap.get(p.shared_post.post_id) || 0;
             }
         });
 

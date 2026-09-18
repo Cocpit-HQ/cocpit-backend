@@ -12,7 +12,8 @@
     "dev:admin": "nodemon src/admin.server.js",
     "build": "npm run lint && npm test",
     "lint": "eslint .",
-    "test": "jest --forceExit"
+    "test": "jest --forceExit",
+    "migrate:uat": "node uat_migrations/run_uat_migration.js"
   },
   "keywords": [],
   "author": "",

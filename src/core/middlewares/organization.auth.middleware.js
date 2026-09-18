@@ -21,6 +21,23 @@ const requireOrgPermission = (permission) => async (req, res, next) => {
         let orgId = req.params.orgId || req.params.companyId;
         if (!orgId) return next(new AppError("Organization ID missing", 400));
 
+        // Resolve slug to UUID if necessary
+        const uuidRegex = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+        if (!uuidRegex.test(orgId)) {
+            const slugRes = await pool.query(
+                "SELECT org_id FROM organizations WHERE slug = $1 LIMIT 1",
+                [orgId]
+            );
+            if (slugRes.rowCount === 0) {
+                return next(new AppError("Organization not found", 404));
+            }
+            orgId = slugRes.rows[0].org_id;
+            
+            // Overwrite the params so downstream controllers get the UUID instead of the slug
+            if (req.params.orgId) req.params.orgId = orgId;
+            if (req.params.companyId) req.params.companyId = orgId;
+        }
+
         // Fallback: If client mistakenly sends user ID instead of organization ID,
         // resolve it to their active organization ID.
         if (req.user && orgId === req.user.sub) {

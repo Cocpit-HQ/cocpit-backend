@@ -664,6 +664,82 @@ exports.getUserPendingTeamsInvites = async (req, res, next) => {
     }
 };
 
+exports.batchDeclineTeamInvites = async (req, res, next) => {
+    const { tokens } = req.body;
+    const userId = req.user.sub;
+
+    if (!Array.isArray(tokens) || tokens.length === 0) {
+        return next(new AppError("Tokens array is required", 400));
+    }
+
+    const client = await pool.connect();
+    try {
+        await client.query("BEGIN");
+        const userRes = await client.query(`SELECT email FROM users WHERE user_id = $1`, [userId]);
+        const userEmail = userRes.rows[0].email;
+
+        // Fetch valid invites
+        const inviteRes = await client.query(
+            `SELECT * FROM organization_invites WHERE token = ANY($1::text[]) AND status = 'PENDING' AND expires_at > NOW() AND email = $2`,
+            [tokens, userEmail]
+        );
+
+        if (inviteRes.rowCount === 0) {
+            await client.query("ROLLBACK");
+            return res.json({ message: "No valid pending invitations found" });
+        }
+
+        const validInvites = inviteRes.rows;
+        const validInviteIds = validInvites.map(i => i.invite_id);
+        const validOrgIds = validInvites.map(i => i.org_id);
+        const validInvitedUserIds = validInvites.map(i => i.invited_user_id).filter(id => id);
+
+        await client.query(
+            `UPDATE organization_invites SET status = 'DECLINED', updated_at = NOW() WHERE invite_id = ANY($1::uuid[])`,
+            [validInviteIds]
+        );
+
+        if (validInvitedUserIds.length > 0) {
+            // Delete from organization_members
+            await client.query(
+                `DELETE FROM organization_members WHERE user_id = $1 AND org_id = ANY($2::uuid[]) AND status = 'PENDING_INVITE'`,
+                [userId, validOrgIds]
+            );
+        }
+
+        // Bulk log audit - using UNNEST
+        const actorIds = Array(validInvites.length).fill(userId);
+        const actions = Array(validInvites.length).fill('DECLINE_INVITATION');
+        const metadataArray = validInvites.map(i => JSON.stringify({ inviteId: i.invite_id, role: i.role }));
+
+        await client.query(
+            `INSERT INTO organization_audit_logs (org_id, actor_id, action, metadata) 
+             SELECT o, a, act, m::jsonb FROM UNNEST($1::uuid[], $2::uuid[], $3::text[], $4::text[]) AS t(o, a, act, m)`,
+            [validOrgIds, actorIds, actions, metadataArray]
+        );
+
+        await client.query("COMMIT");
+
+        // Emit socket events
+        const socketService = require("../../core/infrastructure/socket.service");
+        for (const invite of validInvites) {
+            socketService.notifyOrg(invite.org_id, "member_sync", {
+                action: "DECLINE",
+                userId,
+                email: invite.email,
+                role: invite.role
+            });
+        }
+
+        res.json({ message: "Batch invitations declined successfully", processed: validInvites.length });
+    } catch (err) {
+        await client.query("ROLLBACK");
+        return next(new AppError(err.message || "Failed to decline batch invitations", err.status || 500));
+    } finally {
+        client.release();
+    }
+};
+
 exports.declineTeamsInvite = async (req, res, next) => {
     const { token } = req.body;
     const userId = req.user.sub;

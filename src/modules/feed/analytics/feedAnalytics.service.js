@@ -102,6 +102,9 @@ function _validateEvent(event) {
   if (!event.item_type)  errors.push('item_type is required');
   if (!event.user_id)    errors.push('user_id is required');
   if (!event.session_id) errors.push('session_id is required');
+  else if (!/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(event.session_id)) {
+    errors.push('session_id must be a valid UUID');
+  }
   if (event.position === undefined || event.position === null) errors.push('position is required');
   if (!event.context)    errors.push('context is required');
 

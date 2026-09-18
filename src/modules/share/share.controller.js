@@ -915,13 +915,11 @@ exports.getShareUsers = async (req, res) => {
         // Build query parameters
         const values = [userId];
         let userNameFilter = "";
-        let orgNameFilter = "";
         let groupNameFilter = "";
         if (searchTerm) {
             values.push(`%${searchTerm}%`);
             const likeTermIdx = values.length;
             userNameFilter = `AND (u.full_name ILIKE $${likeTermIdx} OR u.account_name ILIKE $${likeTermIdx})`;
-            orgNameFilter = `AND (org.name ILIKE $${likeTermIdx} OR org.slug ILIKE $${likeTermIdx})`;
             groupNameFilter = `AND conv.conversation_name ILIKE $${likeTermIdx}`;
         }
 
@@ -1024,52 +1022,6 @@ exports.getShareUsers = async (req, res) => {
                             AND req_conv.is_group = FALSE
                             AND req_conv.is_active = TRUE
                             AND req_conv.is_requesting = TRUE
-                      )
-
-                    UNION ALL
-
-                    -- Company / Organization accounts
-                    SELECT
-                        org.org_id AS user_id,
-                        org.name AS full_name,
-                        org.slug AS account_name,
-                        COALESCE(org.headline, org.industry, '') AS headline,
-                        org.logo_url AS avatar_url,
-                        org_chat.conversation_id,
-                        CASE
-                            -- 1. Recent Chat Companies
-                            WHEN org_chat.conversation_id IS NOT NULL THEN 1
-                            -- 2. Followed Companies
-                            WHEN EXISTS (SELECT 1 FROM organization_followers ofw WHERE ofw.org_id = org.org_id AND ofw.user_id = $1) THEN 3
-                            ELSE 5
-                        END AS priority,
-                        COALESCE(org_chat.last_message_at, org.created_at) AS sort_ts,
-                        'COMPANY' AS type,
-                        org.slug AS slug
-                    FROM organizations org
-                    LEFT JOIN LATERAL (
-                        SELECT conv.conversation_id, conv.last_message_at
-                        FROM conversation_participants cp1
-                        JOIN conversation_participants cp2 ON cp1.conversation_id = cp2.conversation_id
-                        JOIN conversations conv ON conv.conversation_id = cp1.conversation_id
-                        WHERE cp1.user_id = $1
-                          AND cp2.org_id = org.org_id
-                          AND conv.is_group = FALSE
-                          AND conv.is_active = TRUE
-                          AND conv.is_requesting = FALSE
-                          AND cp1.left_at IS NULL
-                          AND cp2.left_at IS NULL
-                        ORDER BY conv.last_message_at DESC NULLS LAST
-                        LIMIT 1
-                    ) org_chat ON TRUE
-                    WHERE org.is_deleted = FALSE
-                      AND COALESCE(org.is_deactivated, false) = FALSE
-                      AND org.name IS NOT NULL AND TRIM(org.name) <> ''
-                      ${orgNameFilter}
-                      AND NOT EXISTS (
-                          SELECT 1 FROM blocks b
-                          WHERE (b.blocker_id = org.org_id AND b.blocked_id = $1)
-                             OR (b.blocker_id = $1 AND b.blocked_id = org.org_id)
                       )
 
                     UNION ALL

@@ -119,9 +119,11 @@ exports.searchUsers = async (req, res) => {
       `;
     }
 
-    // Similarity param (raw term)
-    queryParams.push(searchTerm);
-    const simParamIdx = queryParams.length;
+
+
+    // Starts-with param for sorting
+    queryParams.push(`${searchTerm}%`);
+    const startsWithIdx = queryParams.length;
 
     const orgBlockFilter = `
       AND NOT EXISTS (
@@ -178,9 +180,9 @@ exports.searchUsers = async (req, res) => {
         )
       ) AS combined_results
       ORDER BY 
-        CASE WHEN account_name ILIKE $2 THEN 0 ELSE 1 END,
-        SIMILARITY(full_name, $${simParamIdx}) DESC
-      LIMIT 10
+        CASE WHEN full_name ILIKE $${startsWithIdx} THEN 0 ELSE 1 END,
+        full_name ASC
+      LIMIT 50
     `;
 
     const result = await pool.query(queryText, queryParams);
@@ -728,8 +730,8 @@ exports.getPublicProfilePosts = async (req, res) => {
         ) AS media,
 
         (SELECT COUNT(*) FROM active_post_likes pl WHERE pl.post_id = p.post_id)::int AS like_count,
-        (SELECT COUNT(*) FROM posts sp_share WHERE sp_share.shared_post_id = p.post_id AND sp_share.is_active = TRUE AND (sp_share.is_removed IS FALSE OR sp_share.is_removed IS NULL))::int AS share_count,
-        0::int AS external_share_count,
+        (SELECT COUNT(*) FROM posts sp_share WHERE sp_share.shared_post_id = p.post_id AND sp_share.is_active = TRUE AND (sp_share.is_removed IS FALSE OR sp_share.is_removed IS NULL))::int AS "rePostCount",
+        (SELECT COUNT(*) FROM shares s WHERE s.entity_type IN ('post', 'article') AND s.entity_id = p.post_id::text)::int AS "sharePostCount",
         (
             SELECT COALESCE(comp_like.slug, u_like.account_name)
             FROM active_post_likes pl_sample
@@ -750,6 +752,14 @@ exports.getPublicProfilePosts = async (req, res) => {
             AND sp_rep.is_active = TRUE
             AND (sp_rep.is_removed IS FALSE OR sp_rep.is_removed IS NULL)
         ) AS is_reposted,
+        EXISTS(
+            SELECT 1 FROM posts sp_rep
+            WHERE sp_rep.shared_post_id = p.post_id 
+            AND sp_rep.author_id = $${userParamIdx} AND sp_rep.author_org_id IS NULL
+            AND sp_rep.is_active = TRUE
+            AND (sp_rep.is_removed IS FALSE OR sp_rep.is_removed IS NULL)
+        AND sp_rep.content IS NOT NULL AND TRIM(sp_rep.content) != ''
+        ) AS is_reposted_with_thoughts,
         (
             SELECT sp_rep.post_id FROM posts sp_rep
             WHERE sp_rep.shared_post_id = p.post_id 
@@ -833,10 +843,281 @@ exports.getPublicProfilePosts = async (req, res) => {
               'media', COALESCE((SELECT json_agg(json_build_object('url', pm.url, 'media_type', pm.media_type)) FROM post_media pm WHERE pm.post_id = sp.post_id), '[]'::json),
               'like_count', (SELECT COUNT(*) FROM active_post_likes pl WHERE pl.post_id = sp.post_id)::int,
               'comment_count', (SELECT COUNT(*) FROM active_post_comments pc WHERE pc.post_id = sp.post_id)::int,
-              'share_count', (SELECT COUNT(*) FROM posts sp_share2 WHERE sp_share2.shared_post_id = sp.post_id AND sp_share2.is_active = TRUE AND (sp_share2.is_removed IS FALSE OR sp_share2.is_removed IS NULL))::int,
-              'external_share_count', 0::int,
+              'rePostCount', (SELECT COUNT(*) FROM posts sp_share2 WHERE sp_share2.shared_post_id = sp.post_id AND sp_share2.is_active = TRUE AND (sp_share2.is_removed IS FALSE OR sp_share2.is_removed IS NULL))::int,
+              'sharePostCount', (SELECT COUNT(*) FROM shares s WHERE s.entity_type IN ('post', 'article') AND s.entity_id = sp.post_id::text)::int,
               'is_liked', EXISTS(SELECT 1 FROM active_post_likes pl WHERE pl.post_id = sp.post_id AND pl.user_id = $${userParamIdx}),
               'is_reposted', EXISTS(
+                  SELECT 1 FROM posts sp_rep
+                  WHERE sp_rep.shared_post_id = sp.post_id 
+                  AND sp_rep.author_id = $${userParamIdx} AND sp_rep.author_org_id IS NULL
+                  AND sp_rep.is_active = TRUE
+                  AND (sp_rep.is_removed IS FALSE OR sp_rep.is_removed IS NULL)
+              ),
+              'is_reposted_with_thoughts', EXISTS(
+                  SELECT 1 FROM posts sp_rep
+                  WHERE sp_rep.shared_post_id = sp.post_id 
+                  AND sp_rep.author_id = $${userParamIdx} AND sp_rep.author_org_id IS NULL
+                  AND sp_rep.is_active = TRUE
+                  AND (sp_rep.is_removed IS FALSE OR sp_rep.is_removed IS NULL)
+              AND sp_rep.content IS NOT NULL AND TRIM(sp_rep.content) != ''
+              ),
+              'repost_id', (
+                  SELECT sp_rep.post_id FROM posts sp_rep
+                  WHERE sp_rep.shared_post_id = sp.post_id 
+                  AND sp_rep.author_id = $${userParamIdx} AND sp_rep.author_org_id IS NULL
+                  AND sp_rep.is_active = TRUE
+                  AND (sp_rep.is_removed IS FALSE OR sp_rep.is_removed IS NULL)
+                  LIMIT 1
+              ),
+              'liked_users', (
+                  SELECT COALESCE(
+                      json_agg(json_build_object(
+                          'username', COALESCE(comp_like.slug, u_like.account_name),
+                          'avatar_url', COALESCE(comp_like.logo_url, u_like.avatar_url)
+                      )),
+                      '[]'::json
+                  )
+                  FROM (
+                      SELECT pl_sample.user_id, pl_sample.org_id
+                      FROM active_post_likes pl_sample
+                      WHERE pl_sample.post_id = sp.post_id
+                        AND pl_sample.user_id IS NOT NULL
+                        AND pl_sample.user_id != $${userParamIdx}::uuid
+                      ORDER BY pl_sample.created_at DESC
+                      LIMIT 3
+                  ) sub
+                  LEFT JOIN active_users u_like ON u_like.user_id = sub.user_id
+                  LEFT JOIN organizations comp_like ON comp_like.org_id = sub.org_id
+              ),
+              'poll', (
+                SELECT json_build_object(
+                  'poll_id', pp.poll_id,
+                  'duration', COALESCE(pp.duration, '1 day'),
+                  'total_votes', (SELECT COUNT(*) FROM poll_votes pv WHERE pv.poll_id = pp.poll_id)::int,
+                  'user_vote', (SELECT pv_u.option_id FROM poll_votes pv_u WHERE pv_u.poll_id = pp.poll_id AND pv_u.voter_id = $${userParamIdx} LIMIT 1),
+                  'is_active', (pp.created_at + COALESCE(pp.duration, '1 day')::interval > NOW()),
+                  'options', COALESCE(
+                    (SELECT json_agg(json_build_object('option_id', po.option_id, 'option_text', po.option_text, 'vote_count', (SELECT COUNT(*) FROM poll_votes pv WHERE pv.option_id = po.option_id))) FROM poll_options po WHERE po.poll_id = pp.poll_id),
+                    '[]'::json
+                  )
+                )
+                FROM post_polls pp WHERE pp.post_id = sp.post_id LIMIT 1
+              )
+            )
+          --Failure Analysis
+          WHEN sp.visibility = 'private' THEN json_build_object(
+            'is_accessible', false,
+            'reason', 'private',
+            'author', json_build_object(
+              'user_id', sp_u.user_id,
+              'full_name', sp_u.full_name,
+              'avatar_url', sp_u.avatar_url
+            )
+          )
+          WHEN (sp.visibility = 'public' AND sp_cat.name = 'Personal') THEN json_build_object(
+            'is_accessible', false,
+            'reason', 'personal_connection',
+            'author', json_build_object(
+              'user_id', sp_u.user_id,
+              'full_name', sp_u.full_name,
+              'avatar_url', sp_u.avatar_url
+            )
+          )
+          ELSE
+            json_build_object('is_accessible', false, 'reason', 'unknown')
+        END AS shared_post
+
+      FROM posts p
+      JOIN active_users u ON u.user_id = p.author_id
+      LEFT JOIN post_categories pc ON pc.category_id = p.category_id
+      LEFT JOIN posts sp ON p.shared_post_id = sp.post_id
+      LEFT JOIN active_users sp_u ON sp.author_id = sp_u.user_id
+      LEFT JOIN organizations sp_comp ON sp_comp.org_id = sp.author_org_id
+      LEFT JOIN post_categories sp_cat ON sp.category_id = sp_cat.category_id
+
+      ${whereClause}
+
+      ${isPreview
+        ? `-- Preview mode: only plain (non-poll, non-repost) posts, UNLESS the
+        -- author has none at all, in which case fall back to any type.
+        AND (
+            NOT EXISTS (
+                SELECT 1 FROM posts p_plain
+                WHERE p_plain.author_id = $1
+                  AND p_plain.author_org_id IS NULL
+                  AND p_plain.visibility = 'public'
+                  AND p_plain.is_active = TRUE
+                  AND (p_plain.is_removed IS FALSE OR p_plain.is_removed IS NULL)
+                  AND p_plain.shared_post_id IS NULL
+                  AND NOT EXISTS (SELECT 1 FROM post_polls pp_plain WHERE pp_plain.post_id = p_plain.post_id)
+            )
+            OR (
+                p.shared_post_id IS NULL
+                AND NOT EXISTS (SELECT 1 FROM post_polls pp_cur WHERE pp_cur.post_id = p.post_id)
+            )
+        )`
+        : ''
+      }
+
+      -- Strict Block Logic: Exclude reposts if original author is blocked
+      AND (
+          p.shared_post_id IS NULL 
+          OR NOT EXISTS (
+              SELECT 1 FROM blocks b 
+              WHERE (b.is_org_block = false AND sp.author_org_id IS NULL AND ((b.blocker_id = $${userParamIdx} AND b.blocked_id = sp.author_id) OR (b.blocker_id = sp.author_id AND b.blocked_id = $${userParamIdx})))
+                 OR (b.is_org_block = true AND sp.author_org_id IS NOT NULL AND ((b.blocker_id = sp.author_org_id AND b.blocked_id = $${userParamIdx}) OR (b.blocker_id = $${userParamIdx} AND b.blocked_id = sp.author_org_id)))
+          )
+      )
+
+      -- Privacy Escalation: Hide reposts if original post's privacy tightened
+      AND (
+          p.shared_post_id IS NULL 
+          OR sp.post_id IS NULL -- Still show if deleted (but with 'deleted' reason above)
+          OR (
+              -- Accessible if:
+              -- 1. Original is Public + Not personal
+              (sp.visibility = 'public' AND (sp_cat.name != 'Personal' OR sp_cat.name IS NULL))
+              -- 2. Original is Public + Personal and connected
+              OR (sp.visibility = 'public' AND sp_cat.name = 'Personal' AND (
+                  sp.author_id = $${userParamIdx}
+                  OR EXISTS(
+                      SELECT 1 FROM followers f1 
+                      JOIN followers f2 ON f1.follower_id = f2.following_id AND f1.following_id = f2.follower_id 
+                      WHERE f1.follower_id = $${userParamIdx} AND f1.following_id = sp.author_id
+                  )
+              ))
+              -- 3. Original is Private and viewer is author
+              OR (sp.visibility = 'private' AND sp.author_id = $${userParamIdx})
+          )
+      )
+
+      ORDER BY p.created_at DESC, p.post_id DESC
+      LIMIT $${idx};
+    `;
+
+    // Add current user ID to params for is_liked check and user_vote check
+    params.push(req.user.sub);
+
+    const { rows } = await pool.query(query, params);
+    const last = rows[rows.length - 1];
+
+    const hydratedRows = await hydrateShareCounts(rows);
+
+    res.json({
+      posts: hydratedRows,
+      nextCursor: last
+        ? {
+          cursorCreatedAt: last.created_at,
+          cursorPostId: last.post_id,
+        }
+        : null,
+    });
+  } catch (err) {
+    console.error("Get public profile posts error:", err);
+    res.status(500).json({ message: "Internal server error" });
+  }
+};
+
+/**
+ * GET /api/users/:id/posts/commented
+ * Purpose: Public view of posts a user has commented on (only public posts)
+ */
+exports.getPublicProfileCommentedPosts = async (req, res) => {
+  const { id: userId } = req.params;
+  const {
+    cursorCreatedAt,
+    cursorPostId,
+    limit = 10,
+  } = req.query;
+
+  // Validate / resolve UUID or account_name
+  const uuidRegex =
+    /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+
+  let targetUserId = userId;
+
+  if (!uuidRegex.test(userId)) {
+    try {
+      const resolveResult = await pool.query(
+        "SELECT user_id FROM active_users WHERE LOWER(account_name) = LOWER($1) AND is_deactivated = FALSE",
+        [userId]
+      );
+      if (resolveResult.rowCount === 0) {
+        return res.status(404).json({ message: "User handle not found" });
+      }
+      targetUserId = resolveResult.rows[0].user_id;
+    } catch (err) {
+      console.error("Handle resolution error in commented posts:", err);
+      return res.status(500).json({ message: "Internal server error during handle resolution" });
+    }
+  }
+
+  // Block check
+  const currentUserId = req.user.sub;
+  if (targetUserId !== currentUserId) {
+
+    const isBlocked = await checkActorBlockStatus(req, targetUserId);
+    if (isBlocked) {
+      return res.status(404).json({ message: "User not found" });
+    }
+  }
+
+  try {
+    const params = [targetUserId];
+    let idx = 2;
+
+    // Only public posts the target user has commented on (excluding their own posts)
+    let whereClause = `WHERE EXISTS (
+      SELECT 1 FROM active_post_comments pc_filter
+      WHERE pc_filter.post_id = p.post_id
+        AND pc_filter.author_id = $1
+        AND pc_filter.author_org_id IS NULL
+    )
+    AND p.visibility = 'public'
+    AND p.author_id != $1`;
+
+    if (cursorCreatedAt && cursorPostId) {
+      whereClause += ` AND (p.created_at, p.post_id) < ($${idx}, $${idx + 1})`;
+      params.push(cursorCreatedAt, cursorPostId);
+      idx += 2;
+    }
+
+    params.push(limit);
+    const limitIdx = idx;
+
+    const userParamIdx = params.length + 1;
+    params.push(currentUserId);
+
+    const query = `
+      SELECT
+        p.post_id,
+        p.content,
+        p.created_at,
+        p.visibility,
+        p.post_type,
+
+        COALESCE(p.author_org_id, u.user_id) AS author_id,
+        COALESCE(comp.name, u.full_name) AS author_name,
+        COALESCE(comp.logo_url, u.avatar_url) AS author_avatar,
+        COALESCE(comp.slug, u.account_name) AS author_slug,
+        (p.author_org_id IS NOT NULL) AS is_organization_post,
+        CASE WHEN p.author_org_id IS NOT NULL THEN comp.headline ELSE u.headline END AS author_headline,
+
+        pc.name AS category_name,
+        p.location,
+
+        COALESCE(pm.media, '[]'::json) AS media,
+        COALESCE(lc.like_count, 0) AS like_count,
+
+        EXISTS(SELECT 1 FROM active_post_likes pl_me WHERE pl_me.post_id = p.post_id AND pl_me.user_id = $${userParamIdx} AND pl_me.org_id IS NULL) AS is_liked,
+        EXISTS(
+            SELECT 1 FROM posts sp_rep
+            WHERE sp_rep.shared_post_id = p.post_id 
+            AND sp_rep.author_id = $${userParamIdx} AND sp_rep.author_org_id IS NULL
+            AND sp_rep.is_active = TRUE
+            AND (sp_rep.is_removed IS FALSE OR sp_rep.is_removed IS NULL)
+        ) AS is_reposted,
+        EXISTS(
                   SELECT 1 FROM posts sp_rep
                   WHERE sp_rep.shared_post_id = sp.post_id 
                   AND sp_rep.author_id = $${userParamIdx} AND sp_rep.author_org_id IS NULL
@@ -1098,7 +1379,8 @@ exports.getPublicProfileCommentedPosts = async (req, res) => {
             AND sp_rep.author_id = $${userParamIdx} AND sp_rep.author_org_id IS NULL
             AND sp_rep.is_active = TRUE
             AND (sp_rep.is_removed IS FALSE OR sp_rep.is_removed IS NULL)
-        ) AS is_reposted,
+        AND sp_rep.content IS NOT NULL AND TRIM(sp_rep.content) != ''
+        ) AS is_reposted_with_thoughts,
         (
             SELECT sp_rep.post_id FROM posts sp_rep
             WHERE sp_rep.shared_post_id = p.post_id 
@@ -1639,5 +1921,114 @@ exports.getSuggestedUsers = async (req, res) => {
   } catch (err) {
     console.error("Get suggested users error:", err);
     res.status(500).json({ message: "Internal server error" });
+  }
+};
+
+/**
+ * GET /api/users/search-history
+ * Purpose: Fetch the top 6 recent searches for the authenticated user
+ */
+exports.getSearchHistory = async (req, res) => {
+  const userId = req.user.sub;
+  
+  try {
+    const query = `
+      SELECT 
+        id, 
+        query_text as query, 
+        profile_snapshot as "profileSnapshot",
+        created_at as "createdAt"
+      FROM user_search_history
+      WHERE user_id = $1
+      ORDER BY created_at DESC
+    `;
+    const result = await pool.query(query, [userId]);
+    res.status(200).json({ success: true, data: result.rows });
+  } catch (err) {
+    console.error("Get search history error:", err);
+    res.status(500).json({ success: false, message: "Internal server error" });
+  }
+};
+
+/**
+ * POST /api/users/search-history
+ * Purpose: Save or update a recent search query
+ */
+exports.saveSearchHistory = async (req, res) => {
+  const userId = req.user.sub;
+  const { query, profileSnapshot } = req.body;
+
+  if (!query || typeof query !== 'string' || !query.trim()) {
+    return res.status(400).json({ success: false, message: "Valid search query is required" });
+  }
+
+  const queryText = query.trim();
+  let queryNormalized = queryText.toLowerCase();
+  
+  const snapshotJson = profileSnapshot ? JSON.stringify(profileSnapshot) : null;
+  
+  // Make queryNormalized unique by profile ID to prevent collisions between users with identical names
+  if (profileSnapshot && profileSnapshot.id) {
+    queryNormalized = `user:${profileSnapshot.id}`;
+  } else {
+    queryNormalized = `query:${queryNormalized}`;
+  }
+
+  try {
+    // Upsert query: if it exists, update the timestamp to move it to the top
+    const upsertQuery = `
+      INSERT INTO user_search_history (user_id, query_text, query_normalized, profile_snapshot, created_at)
+      VALUES ($1, $2, $3, $4, now())
+      ON CONFLICT (user_id, query_normalized) 
+      DO UPDATE SET created_at = EXCLUDED.created_at, query_text = EXCLUDED.query_text, profile_snapshot = EXCLUDED.profile_snapshot
+      RETURNING id, query_text as query, profile_snapshot as "profileSnapshot", created_at as "createdAt"
+    `;
+    const saved = await pool.query(upsertQuery, [userId, queryText, queryNormalized, snapshotJson]);
+
+    res.status(201).json({ success: true, data: saved.rows[0] });
+  } catch (err) {
+    console.error("Save search history error:", err);
+    res.status(500).json({ success: false, message: "Internal server error" });
+  }
+};
+
+/**
+ * DELETE /api/users/search-history/:id
+ * Purpose: Remove a specific search history item
+ */
+exports.removeSearchHistory = async (req, res) => {
+  const userId = req.user.sub;
+  const { id } = req.params;
+
+  try {
+    const query = `
+      DELETE FROM user_search_history
+      WHERE id = $1 AND user_id = $2
+    `;
+    await pool.query(query, [id, userId]);
+    res.status(200).json({ success: true, message: "Search history item removed" });
+  } catch (err) {
+    console.error("Remove search history error:", err);
+    res.status(500).json({ success: false, message: "Internal server error" });
+  }
+};
+
+/**
+ * DELETE /api/users/search-history
+ * Purpose: Clear all search history for the user
+ */
+exports.clearSearchHistory = async (req, res) => {
+  const userId = req.user.sub;
+
+  try {
+    const query = `
+      DELETE FROM user_search_history
+      WHERE user_id = $1
+    `;
+    await pool.query(query, [userId]);
+    res.status(200).json({ success: true, message: "Search history cleared" });
+  } catch (err) {
+    console.error("Clear search history error:", err);
+    res.status(500).json({ success: false, message: "Internal server error" });
   }
 };

@@ -155,11 +155,35 @@ async function getSeenSet(userId) {
  * @param {string} userId
  * @returns {Promise<void>}
  */
+// ===========================================================================
+// [CLEANUP - FEED REFACTOR] REASON FOR COMMENTING OUT:
+// - Status: UNUSED / ORPHANED
+// - Technical Reason: clearSeenSet was an isolated Day 1 helper. Session reset
+//   in feedSession.service.js:_deleteSession directly executes an atomic Redis pipeline:
+//   pipeline.del(keys.session(userId)), pipeline.del(keys.cursor(userId)), pipeline.del(keys.seenSet(userId)).
+// - Active Replacement: Handled atomically by feedSession.service.js:_deleteSession.
+// ===========================================================================
+/*
 async function clearSeenSet(userId) {
   if (!userId) throw new Error("clearSeenSet: userId is required");
 
   const key = keys.seenSet(userId);
   await redis.del(key);
+}
+*/
+
+/**
+ * Remove item IDs from the user's seen set.
+ * @param {string}   userId
+ * @param {string[]} itemIds - Array of item UUIDs
+ * @returns {Promise<void>}
+ */
+async function removeFromSeenSet(userId, itemIds) {
+  if (!userId) throw new Error("removeFromSeenSet: userId is required");
+  if (!Array.isArray(itemIds) || itemIds.length === 0) return;
+
+  const key = keys.seenSet(userId);
+  await redis.srem(key, ...itemIds);
 }
 
 // ─── Hidden Set Management ──────────────────────────────────────────────────
@@ -182,6 +206,20 @@ async function addToHiddenSet(userId, itemIds) {
 }
 
 /**
+ * Remove item IDs from the user's hidden set.
+ * @param {string}   userId
+ * @param {string[]} itemIds - Array of item UUIDs
+ * @returns {Promise<void>}
+ */
+async function removeFromHiddenSet(userId, itemIds) {
+  if (!userId) throw new Error("removeFromHiddenSet: userId is required");
+  if (!Array.isArray(itemIds) || itemIds.length === 0) return;
+
+  const key = keys.hiddenSet(userId);
+  await redis.srem(key, ...itemIds);
+}
+
+/**
  * Get all item IDs in the user's hidden set.
  * @param {string} userId
  * @returns {Promise<string[]>}
@@ -199,12 +237,20 @@ async function getHiddenSet(userId) {
  * @param {string} userId
  * @returns {Promise<void>}
  */
+// ===========================================================================
+// [CLEANUP - FEED REFACTOR] REASON FOR COMMENTING OUT:
+// - Status: UNUSED / ORPHANED
+// - Technical Reason: clearHiddenSet is never called anywhere in runtime application code.
+// - Active Replacement: Hidden post filtering persists across user sessions as designed.
+// ===========================================================================
+/*
 async function clearHiddenSet(userId) {
   if (!userId) throw new Error("clearHiddenSet: userId is required");
 
   const key = keys.hiddenSet(userId);
   await redis.del(key);
 }
+*/
 
 // ─── B1.7: Key pattern verification helper ────────────────────────────────────
 /**
@@ -280,11 +326,13 @@ module.exports = {
   // Seen set
   addToSeenSet,
   getSeenSet,
-  clearSeenSet,
+  // clearSeenSet, // UNUSED
+  removeFromSeenSet,
   // Hidden set
   addToHiddenSet,
   getHiddenSet,
-  clearHiddenSet,
+  // clearHiddenSet, // UNUSED
+  removeFromHiddenSet,
   // Candidate pool (Day 2)
   setCandidatePool,
   getCandidatePool,

@@ -16,7 +16,7 @@ const {
   getFeedSlice,
   addToSeenSet,
   getSeenSet,
-  clearSeenSet,
+  // clearSeenSet, // UNUSED
   setCandidatePool,
   getCandidatePool,
   getRegisteredKeyPatterns,
@@ -131,10 +131,12 @@ describe("Feed Cache Service - Unit Tests", () => {
       expect(result).toEqual(expectedMembers);
     });
 
+    /*
     test("clearSeenSet removes the seen set key", async () => {
       await clearSeenSet(TEST_USER);
       expect(redis.del).toHaveBeenCalledWith(_keys.seenSet(TEST_USER));
     });
+    */
   });
 
   // ---------------------------------------------------------------------------

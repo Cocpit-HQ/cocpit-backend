@@ -11,7 +11,8 @@ const {
     saveInterestsSchema,
     saveSkillsSchema,
     updateProfileSchema,
-    updateLocationSchema
+    updateLocationSchema,
+    saveSituationSchema,
 } = require("./onboarding.schema");
 const { uploadAvatar, uploadResumeMemory } = require("../../core/middlewares/upload.middleware");
 const { createRateLimit } = require("../../core/middlewares/rateLimit.middleware");
@@ -28,7 +29,9 @@ router.use(onboardingLimiter);
 
 // Multi-step onboarding routes
 router.get("/check-account-name", requireAuth, onboardingController.checkAccountName);
+router.get("/options/:slug", requireAuth, onboardingController.getOnboardingOptions);
 router.patch("/role", requireAuth, validate(saveRoleSchema), onboardingController.saveRole);
+router.patch("/situation", requireAuth, validate(saveSituationSchema), onboardingController.saveSituation);
 
 // Reference Data Routes (GET)
 router.get("/interests", requireAuth, onboardingController.getInterests);

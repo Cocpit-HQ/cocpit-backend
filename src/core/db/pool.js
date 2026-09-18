@@ -13,6 +13,12 @@ const poolConfig = (process.env.DATABASE_URL && process.env.DATABASE_URL.trim().
     ssl: isProduction
       ? { rejectUnauthorized: false }
       : false,
+    // Connection limits & timeouts
+    max: 30,                          // max clients in pool (was 15 — too low under load)
+    idleTimeoutMillis: 20000,         // release idle clients after 20s
+    connectionTimeoutMillis: 5000,    // fail fast if pool is exhausted
+    statement_timeout: 60000,         // kill any query running > 60s
+    query_timeout: 60000,             // node-postgres client-side query timeout
   }
   : {
     host: process.env.DB_HOST || "localhost",
@@ -20,9 +26,13 @@ const poolConfig = (process.env.DATABASE_URL && process.env.DATABASE_URL.trim().
     user: process.env.DB_USER,
     password: process.env.DB_PASSWORD,
     database: process.env.DB_NAME,
-    max: 15, // max clients in pool
-    idleTimeoutMillis: 30000,
-    connectionTimeoutMillis: 5000,
+    // ─── Connection pool limits ───────────────────────────────────────────────
+    max: 30,                          // max clients (was 15 — too low under load)
+    idleTimeoutMillis: 20000,         // release idle clients after 20s
+    connectionTimeoutMillis: 5000,    // fail fast if pool is exhausted
+    // ─── Server-side timeouts (sent to Postgres on every new connection) ──────
+    statement_timeout: 60000,         // kill any query running > 60s
+    query_timeout: 60000,             // node-postgres client-side query timeout
     ssl: false,
   };
 
@@ -47,6 +57,8 @@ async function checkDbConnection() {
       pool.query(`
         ALTER TABLE blocks DROP CONSTRAINT IF EXISTS blocks_blocked_id_fkey;
         ALTER TABLE blocks DROP CONSTRAINT IF EXISTS blocks_blocker_id_fkey;
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS dob DATE;
+        CREATE OR REPLACE VIEW active_users AS SELECT * FROM users;
 
         CREATE TABLE IF NOT EXISTS password_reset_tokens (
           token_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -58,7 +70,7 @@ async function checkDbConnection() {
         );
         CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_user_id ON password_reset_tokens(user_id);
         CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_hash ON password_reset_tokens(token_hash);
-      `).catch(err => console.warn("Blocks schema constraint drop notice:", err.message));
+      `).catch(err => console.warn("Database schema update notice:", err.message));
     }
     return true;
   } catch (err) {
@@ -85,5 +97,17 @@ pool.on("error", (err) => {
   // Do NOT exit process. attempts to reconnect/recover.
   // process.exit(1); 
 });
+
+/**
+ * Pool telemetry — log connection stats to spot exhaustion early.
+ * Visible in the backend terminal under load.
+ */
+/**pool.on("connect", () => {
+  console.log(`[pg-pool] client connected | total=${pool.totalCount} idle=${pool.idleCount} waiting=${pool.waitingCount}`);
+});
+
+pool.on("remove", () => {
+  console.log(`[pg-pool] client removed   | total=${pool.totalCount} idle=${pool.idleCount} waiting=${pool.waitingCount}`);
+});*/
 
 module.exports = pool;

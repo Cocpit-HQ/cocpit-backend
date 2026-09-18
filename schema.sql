@@ -17,6 +17,7 @@ CREATE TABLE users (
   email TEXT UNIQUE NOT NULL,
   password_hash TEXT NOT NULL,       -- Hashed via bcrypt/argon2 in app
   full_name TEXT NOT NULL,
+  dob DATE,
   mobile_number TEXT,
   headline TEXT,
   avatar_url TEXT,
@@ -96,7 +97,7 @@ CREATE TABLE profiles (
   profile_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id UUID UNIQUE REFERENCES users(user_id) ON DELETE CASCADE,
   -- Identity Chips
-  account_type TEXT NOT NULL CHECK (account_type IN ('Fresher', 'Employee', 'Student', 'Freelancer', 'Employer', 'Admin')),
+  account_type TEXT NOT NULL CHECK (account_type IN ('Employed', 'Self-employed', 'Student', 'Fresher', 'Intern', 'Currently not working')),
   open_to TEXT, -- e.g., 'Full-time', 'Freelance'
   availability TEXT, -- e.g., 'Immediate'
   work_preference TEXT, -- e.g., 'Remote', 'Hybrid'
@@ -267,6 +268,8 @@ CREATE TABLE post_polls (
 CREATE TABLE organizations (
     org_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name VARCHAR(255) NOT NULL,
+    legal_name VARCHAR(255),
+    incorporation_date DATE,
     slug VARCHAR(255) NOT NULL UNIQUE,
     email VARCHAR(255),
     industry VARCHAR(100),
@@ -283,7 +286,7 @@ CREATE TABLE organizations (
     campus_location VARCHAR(255),
     verified_edu BOOLEAN DEFAULT FALSE,
     auto_verify_domains VARCHAR(255)[] DEFAULT '{}',
-    verification_status VARCHAR(20) DEFAULT 'UNVERIFIED' CHECK (verification_status IN ('UNVERIFIED', 'DOMAIN_PENDING', 'DOMAIN_VERIFIED', 'REJECTED')),
+    verification_status VARCHAR(20) DEFAULT 'UNVERIFIED' CHECK (verification_status IN ('UNVERIFIED', 'DOMAIN_PENDING', 'DOMAIN_VERIFIED', 'VERIFIED', 'REJECTED')),
     email_verified BOOLEAN DEFAULT FALSE,
     phone VARCHAR(20),
     phone_verified BOOLEAN DEFAULT FALSE,
@@ -443,6 +446,8 @@ CREATE TABLE post_comments (
   parent_id UUID NULL REFERENCES post_comments(comment_id) ON DELETE CASCADE,
   content TEXT NOT NULL,
   created_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ DEFAULT now(),
+  is_edited BOOLEAN DEFAULT false,
   is_pinned BOOLEAN DEFAULT false,
   pinned_at TIMESTAMPTZ NULL,
   pinned_by UUID NULL REFERENCES users(user_id) ON DELETE SET NULL
@@ -466,8 +471,10 @@ CREATE TABLE post_media (
   media_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   post_id UUID REFERENCES posts(post_id) ON DELETE CASCADE,
   url TEXT NOT NULL,
- media_type TEXT CHECK (media_type IN ('image', 'video')),
-  aspect_ratio TEXT -- e.g., '4:5'
+  media_type TEXT CHECK (media_type IN ('image', 'video')),
+  aspect_ratio TEXT, -- e.g., '4:5'
+  width INT,
+  height INT
 );
 
 CREATE TABLE stories (
@@ -1108,14 +1115,18 @@ CREATE TABLE IF NOT EXISTS organization_verifications (
     verification_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     org_id UUID REFERENCES organizations(org_id) ON DELETE CASCADE,
     user_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
-    otp VARCHAR(255) NOT NULL,
+    otp VARCHAR(255),
     attempts INTEGER DEFAULT 0,
-    expires_at TIMESTAMPTZ NOT NULL,
+    expires_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     is_verified BOOLEAN DEFAULT FALSE, -- To track if this specific OTP was used successfully
-    verification_type VARCHAR(20) DEFAULT 'EMAIL' CHECK (verification_type IN ('EMAIL', 'PHONE', 'EDU_EMAIL', 'DOCUMENT')),
+    verification_type VARCHAR(20) DEFAULT 'EMAIL' CHECK (verification_type IN ('EMAIL', 'PHONE', 'EDU_EMAIL', 'DOCUMENT', 'IDENTITY')),
     target_value VARCHAR(255),
-    request_count INTEGER DEFAULT 1
+    request_count INTEGER DEFAULT 1,
+    legal_name VARCHAR(255),
+    incorporation_date DATE,
+    document_urls TEXT,
+    document_type VARCHAR(100)
 );
 
 CREATE INDEX IF NOT EXISTS idx_org_verifications_lookup ON organization_verifications(org_id, verification_type, is_verified);
@@ -2366,6 +2377,28 @@ CREATE TABLE user_verifications (
   updated_at TIMESTAMPTZ DEFAULT now()
 );
 
+-- 6. user_post_feedback: Feed interaction mechanism
+CREATE TABLE IF NOT EXISTS user_post_feedback (
+    user_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
+    post_id UUID REFERENCES posts(post_id) ON DELETE CASCADE,
+    feedback_type VARCHAR(20) NOT NULL CHECK (feedback_type IN ('INTERESTED', 'NOT_INTERESTED')),
+    created_at TIMESTAMPTZ DEFAULT now(),
+    updated_at TIMESTAMPTZ DEFAULT now(),
+    PRIMARY KEY (user_id, post_id)
+);
+
+-- 7. user_search_history: Persistent recent search tracking
+CREATE TABLE IF NOT EXISTS user_search_history (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    query_text TEXT NOT NULL,
+    query_normalized TEXT NOT NULL,
+    profile_snapshot JSONB,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_search_history_user_created ON user_search_history(user_id, created_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_user_search_history_user_query ON user_search_history(user_id, query_normalized);
 
 
 -- Migration: Add missing community_invitations table

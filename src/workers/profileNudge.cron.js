@@ -24,16 +24,14 @@ const processProfileNudges = async () => {
 
         logger.info("[ProfileNudgeCron] Starting profile incomplete nudge check...");
         
-        await client.query("BEGIN");
-
         // 1. Fetch active professionals who might need a nudge
         // Optimization: We could filter users who already got this notification today
-        const usersResult = await client.query(`
-            SELECT u.user_id, p.account_type 
-            FROM active_users u
-            LEFT JOIN profiles p ON u.user_id = p.user_id
-            WHERE p.account_type != 'Organization' OR p.account_type IS NULL
-        `);
+            const usersResult = await client.query(`
+                SELECT u.user_id, p.account_type 
+                FROM active_users u
+                LEFT JOIN profiles p ON u.user_id = p.user_id
+                WHERE p.account_type != 'Organization' OR p.account_type IS NULL
+            `);
         
         const users = usersResult.rows;
         let nudgedCount = 0;
@@ -56,6 +54,7 @@ const processProfileNudges = async () => {
             // 3. Calculate full profile score
             const fullProfile = await profileRepo.getFullProfile(userId);
             if (!fullProfile) continue; // Profile not set up yet fully to even have a record
+
             
             const profileId = fullProfile.profile_id;
             const skills = await profileRepo.getSkills(profileId);
@@ -116,11 +115,9 @@ const processProfileNudges = async () => {
             }
         }
 
-        await client.query("COMMIT");
         logger.info(`[ProfileNudgeCron] Completed successfully. Nudged ${nudgedCount} users.`);
 
     } catch (error) {
-        if (client) await client.query("ROLLBACK");
         logger.error("[ProfileNudgeCron] Critical error during execution:", error);
     } finally {
         if (client) {

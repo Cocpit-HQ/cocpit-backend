@@ -108,6 +108,12 @@ exports.getOrganizationPosts = async (req, res) => {
                 return res.json({ posts: [], nextCursor: null });
             }
             whereClause += ` AND p.visibility = 'private' `;
+        } else if (filter === 'Articles' || filter === 'Article') {
+            whereClause += ` AND (p.post_type = 'article' OR pc.name = 'Article' OR p.is_community_article = TRUE) AND p.shared_post_id IS NULL AND p.shared_job_id IS NULL `;
+        } else if (filter === 'Video' || filter === 'Videos') {
+            whereClause += ` AND (p.post_type = 'video' OR EXISTS (SELECT 1 FROM post_media pm WHERE pm.post_id = p.post_id AND pm.media_type = 'video')) AND p.shared_post_id IS NULL AND p.shared_job_id IS NULL `;
+        } else if (filter === 'Poll' || filter === 'Polls') {
+            whereClause += ` AND (p.post_type = 'poll' OR EXISTS (SELECT 1 FROM post_polls pp WHERE pp.post_id = p.post_id)) AND p.shared_post_id IS NULL AND p.shared_job_id IS NULL `;
         }
 
         if (filter !== 'Private post') {
@@ -172,8 +178,8 @@ exports.getOrganizationPosts = async (req, res) => {
             COALESCE(pm.media, '[]'::json) AS media,
             COALESCE(lc.like_count, 0)::int AS like_count,
             COALESCE(cc.comment_count, 0)::int AS comment_count,
-            (SELECT COUNT(*) FROM posts sp_share WHERE sp_share.shared_post_id = p.post_id AND sp_share.is_active = TRUE AND (sp_share.is_removed IS FALSE OR sp_share.is_removed IS NULL))::int AS share_count,
-            0::int AS external_share_count,
+            (SELECT COUNT(*) FROM posts sp_share WHERE sp_share.shared_post_id = p.post_id AND sp_share.is_active = TRUE AND (sp_share.is_removed IS FALSE OR sp_share.is_removed IS NULL))::int AS "rePostCount",
+            (SELECT COUNT(*) FROM shares s WHERE s.entity_type IN ('post', 'article') AND s.entity_id = p.post_id::text)::int AS "sharePostCount",
             (
                 SELECT COALESCE(comp_like.slug, u_like.account_name)
                 FROM active_post_likes pl_sample
@@ -198,6 +204,16 @@ exports.getOrganizationPosts = async (req, res) => {
                 AND sp_rep.is_active = TRUE
                 AND (sp_rep.is_removed IS FALSE OR sp_rep.is_removed IS NULL)
             ) AS is_reposted,
+        EXISTS(
+                SELECT 1 FROM posts sp_rep
+                WHERE sp_rep.shared_post_id = p.post_id
+                AND (
+                    ($${orgActorParamIdx}::uuid IS NOT NULL AND sp_rep.author_org_id = $${orgActorParamIdx}::uuid) OR ($${orgActorParamIdx}::uuid IS NULL AND sp_rep.author_id = $${userParamIdx} AND sp_rep.author_org_id IS NULL)
+                )
+                AND sp_rep.is_active = TRUE
+                AND (sp_rep.is_removed IS FALSE OR sp_rep.is_removed IS NULL)
+            AND sp_rep.content IS NOT NULL AND TRIM(sp_rep.content) != ''
+        ) AS is_reposted_with_thoughts,
             (
                 SELECT sp_rep.post_id FROM posts sp_rep
                 WHERE sp_rep.shared_post_id = p.post_id
@@ -254,8 +270,8 @@ exports.getOrganizationPosts = async (req, res) => {
                         'media', COALESCE(sp_media.media, '[]'::json),
                         'like_count', (SELECT COUNT(*) FROM active_post_likes pl WHERE pl.post_id = sp.post_id)::int,
                         'comment_count', (SELECT COUNT(*) FROM active_post_comments pc WHERE pc.post_id = sp.post_id)::int,
-                        'share_count', (SELECT COUNT(*) FROM posts sp_share2 WHERE sp_share2.shared_post_id = sp.post_id AND sp_share2.is_active = TRUE AND (sp_share2.is_removed IS FALSE OR sp_share2.is_removed IS NULL))::int,
-                        'external_share_count', 0::int,
+                        'rePostCount', (SELECT COUNT(*) FROM posts sp_share2 WHERE sp_share2.shared_post_id = sp.post_id AND sp_share2.is_active = TRUE AND (sp_share2.is_removed IS FALSE OR sp_share2.is_removed IS NULL))::int,
+                        'sharePostCount', (SELECT COUNT(*) FROM shares s WHERE s.entity_type IN ('post', 'article') AND s.entity_id = sp.post_id::text)::int,
                         'is_liked', EXISTS(
                             SELECT 1 FROM active_post_likes pl WHERE pl.post_id = sp.post_id AND (
                                 ($${orgActorParamIdx}::uuid IS NOT NULL AND pl.org_id = $${orgActorParamIdx}::uuid) OR ($${orgActorParamIdx}::uuid IS NULL AND pl.user_id = $${userParamIdx} AND pl.org_id IS NULL)
@@ -270,6 +286,16 @@ exports.getOrganizationPosts = async (req, res) => {
                             AND sp_rep.is_active = TRUE
                             AND (sp_rep.is_removed IS FALSE OR sp_rep.is_removed IS NULL)
                         ),
+              'is_reposted_with_thoughts', EXISTS(
+                            SELECT 1 FROM posts sp_rep
+                            WHERE sp_rep.shared_post_id = sp.post_id
+                            AND (
+                                ($${orgActorParamIdx}::uuid IS NOT NULL AND sp_rep.author_org_id = $${orgActorParamIdx}::uuid) OR ($${orgActorParamIdx}::uuid IS NULL AND sp_rep.author_id = $${userParamIdx} AND sp_rep.author_org_id IS NULL)
+                            )
+                            AND sp_rep.is_active = TRUE
+                            AND (sp_rep.is_removed IS FALSE OR sp_rep.is_removed IS NULL)
+                        AND sp_rep.content IS NOT NULL AND TRIM(sp_rep.content) != ''
+              ),
                         'repost_id', (
                             SELECT sp_rep.post_id FROM posts sp_rep
                             WHERE sp_rep.shared_post_id = sp.post_id

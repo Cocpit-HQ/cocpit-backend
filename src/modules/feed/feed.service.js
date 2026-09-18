@@ -37,8 +37,10 @@ const {
   getFeedSlice,
   setFeedSlice,
   addToSeenSet,
+  removeFromSeenSet,
   addToHiddenSet,
   getHiddenSet,
+  removeFromHiddenSet,
 } = require('./cache/feedCache');
 const { getSession, updateCursor, incrementSeenCount, createSession } = require('./session/feedSession.service');
 const { getPostHydrationSelect, getPostHydrationJoins, getPublicFeedWhere } = require('../../core/queries/postHydration.query');
@@ -104,6 +106,7 @@ async function _fetchChronologicalFeed(userId, cursor, limit, pool, orgActorId) 
     FROM posts p
     WHERE p.visibility = 'public'
       AND (p.is_removed IS FALSE OR p.is_removed IS NULL)
+      AND p.is_active = TRUE
       AND p.is_community_article IS NOT TRUE
       AND p.created_at < $1
       ${orgActorId ? `
@@ -112,17 +115,45 @@ async function _fetchChronologicalFeed(userId, cursor, limit, pool, orgActorId) 
         WHERE (b.is_org_block = true AND p.author_org_id IS NULL AND ((b.blocker_id = $2 AND b.blocked_id = p.author_id) OR (b.blocker_id = p.author_id AND b.blocked_id = $2)))
            OR (b.is_org_block = true AND p.author_org_id IS NOT NULL AND ((b.blocker_id = p.author_org_id AND b.blocked_id = $2) OR (b.blocker_id = $2 AND b.blocked_id = p.author_org_id)))
       )
+      AND NOT EXISTS (
+        SELECT 1 FROM reports r
+        WHERE (
+            r.target_id = p.post_id 
+            OR (
+                p.shared_post_id IS NOT NULL 
+                AND (p.content IS NULL OR TRIM(regexp_replace(p.content, '<[^>]+>|&nbsp;|\u200B|\u00A0|&#8203;|&#160;|&zwnj;', '', 'gi')) = '') 
+                AND r.target_id = p.shared_post_id
+            )
+        )
+          AND r.target_type = 'POST' 
+          AND r.reporter_id = $4
+          AND r.reporter_org_id = $2
+      )
       ` : `
       AND NOT EXISTS (
         SELECT 1 FROM blocks b
         WHERE (b.is_org_block = false AND p.author_org_id IS NULL AND ((b.blocker_id = $2 AND b.blocked_id = p.author_id) OR (b.blocker_id = p.author_id AND b.blocked_id = $2)))
            OR (b.is_org_block = true AND p.author_org_id IS NOT NULL AND ((b.blocker_id = p.author_org_id AND b.blocked_id = $2) OR (b.blocker_id = $2 AND b.blocked_id = p.author_org_id)))
       )
+      AND NOT EXISTS (
+        SELECT 1 FROM reports r
+        WHERE (
+            r.target_id = p.post_id 
+            OR (
+                p.shared_post_id IS NOT NULL 
+                AND (p.content IS NULL OR TRIM(regexp_replace(p.content, '<[^>]+>|&nbsp;|\u200B|\u00A0|&#8203;|&#160;|&zwnj;', '', 'gi')) = '') 
+                AND r.target_id = p.shared_post_id
+            )
+        )
+          AND r.target_type = 'POST' 
+          AND r.reporter_id = $4
+          AND r.reporter_org_id IS NULL
+      )
       `}
     ORDER BY p.created_at DESC
     LIMIT $3
   `;
-  const result = await pool.query(query, [cursorTs, orgActorId || userId, limit]);
+  const result = await pool.query(query, [cursorTs, orgActorId || userId, limit, userId]);
   let items = result.rows;
 
   // Filter explicitly hidden posts
@@ -187,11 +218,19 @@ async function _runPipeline({ userId, scopeId, limit, pool, session, isInitialPa
   ]);
 
   // ── Step 3: Extract opportunity candidates from ranked list ───────────────
-  // Opportunity candidates are already scored; extract them to pass separately
-  // to the reranker so it can inject them at correct slot positions [6,13,19].
-  const opportunityCandidates = rankedCandidates
-    .filter(item => item._candidate?.isOpportunity === true)
-    .map(item => item._candidate);  // pass raw CandidateItem to slot injector
+  // ===========================================================================
+  // [CLEANUP - FEED REFACTOR] REASON FOR COMMENTING OUT:
+  // - Status: DISCONNECTED / UNUSED
+  // - Technical Reason: Opportunity items (jobs, events) cannot be hydrated by
+  //   _hydrateFeedItems (which queries the 'posts' table). They arrived with post_data = null
+  //   and were filtered out by frontend (feed.ts).
+  // - Active Replacement: Passing [] allows rerankingEngine to fill all 20 feed slots
+  //   with fully-hydrated organic posts.
+  // ===========================================================================
+  // const opportunityCandidates = rankedCandidates
+  //   .filter(item => item._candidate?.isOpportunity === true)
+  //   .map(item => item._candidate);  // pass raw CandidateItem to slot injector
+  const opportunityCandidates = [];
 
   // ── Step 4: Rerank + slot injection ──────────────────────────────────────
   // scopeId (not userId) so the seen-set dedup matches whichever actor is
@@ -246,7 +285,7 @@ async function _hydrateFeedItems(items, userId, pool, orgActorId = null) {
     return items.map(item => ({
       ...item,
       post_data: rowMap.get(item.id) || null
-    }));
+    })).filter(item => item.post_data && item.post_data.is_reported !== true);
   } catch (err) {
     console.error('[feedService] Hydration failed:', err.message);
     return items;
@@ -462,8 +501,8 @@ async function getFeed({ userId, cursor = null, limit = DEFAULT_PAGE_SIZE, pool 
   }
 
   // ── B7.4: Cache the assembled slice (TTL 5 min) ───────────────────────────
-  const nextCursor = uuidv4();
   const slicedItems = feedItems.slice(0, pageSize);
+  const nextCursor = slicedItems.length > 0 ? uuidv4() : null;
   try {
     const ttl = slicedItems.length > 0 ? FEED_SLICE_TTL : 15;
     await setFeedSlice(scopeId, effectiveCursor, slicedItems, ttl);
@@ -494,13 +533,14 @@ async function getFeed({ userId, cursor = null, limit = DEFAULT_PAGE_SIZE, pool 
 // Exports
 // ---------------------------------------------------------------------------
 
-/**
- * hidePost
- * Processes a "Not Interested" action:
- * 1. Permanently hides the post (addToSeenSet)
- * 2. Logs the analytics event
- * 3. Applies a negative penalty to user's hashtag score
- */
+// ===========================================================================
+// [CLEANUP - FEED REFACTOR] REASON FOR COMMENTING OUT:
+// - Status: REDUNDANT
+// - Technical Reason: Legacy hidePost function.
+// - Active Replacement: Post hiding and negative hashtag affinity adjustments (-5)
+//   are handled cleanly by submitFeedback with feedbackType = 'NOT_INTERESTED'.
+// ===========================================================================
+/*
 async function hidePost({ userId, postId, sessionId, position, pool, orgActorId = null }) {
   if (!userId || !postId) throw new Error('hidePost: userId and postId are required');
 
@@ -543,10 +583,153 @@ async function hidePost({ userId, postId, sessionId, position, pool, orgActorId 
 
   return { ok: true };
 }
+*/
+
+/**
+ * unhidePost
+ * Reverses a "Not Interested" action:
+ * 1. Removes the post from seenSet and hiddenSet
+ * 2. Logs the analytics event
+ * 3. Reverses the negative penalty to user's hashtag score
+ */
+async function unhidePost({ userId, postId, sessionId, position, pool, orgActorId = null }) {
+  if (!userId || !postId) throw new Error('unhidePost: userId and postId are required');
+
+  const scopeId = buildCacheScopeId(userId, orgActorId);
+
+  // 1. Remove from seenSet and hiddenSet
+  try {
+    await Promise.all([
+      removeFromSeenSet(scopeId, [postId]),
+      removeFromHiddenSet(scopeId, [postId])
+    ]);
+  } catch (err) {
+    console.warn('[feedService] unhidePost Redis sets update failed:', err.message);
+  }
+
+  // 2. Track analytics event as 'unhide'
+  try {
+    await feedAnalytics.trackEvent({
+      event_type: 'unhide',
+      item_id: postId,
+      item_type: 'post',
+      user_id: userId,
+      session_id: sessionId || 'unknown_session',
+      position: position || 0,
+      context: 'home',
+      pool
+    });
+  } catch (err) {
+    console.warn('[feedService] unhidePost trackEvent failed:', err.message);
+  }
+
+  // 3. Reverse the negative penalty (+5) to the user's hashtag score
+  try {
+    await incrementUserHashtagScore(userId, 5, null, postId).catch(err => {
+      console.warn('[feedService] unhidePost score penalty failed:', err.message);
+    });
+  } catch (err) {
+    console.warn('[feedService] unhidePost incrementUserHashtagScore failed:', err.message);
+  }
+
+  return { ok: true };
+}
+
+/**
+ * submitFeedback
+ * Generic feedback mechanism for Interested / Not Interested
+ */
+async function submitFeedback({ userId, postId, feedbackType, sessionId, position, pool, orgActorId = null }) {
+  if (!userId || !postId || !feedbackType) {
+    throw new Error('submitFeedback: userId, postId, and feedbackType are required');
+  }
+
+  // 1. Upsert the permanent feedback to DB
+  try {
+    await pool.query(`
+      INSERT INTO user_post_feedback (user_id, post_id, feedback_type, updated_at)
+      VALUES ($1, $2, $3, NOW())
+      ON CONFLICT (user_id, post_id) 
+      DO UPDATE SET feedback_type = EXCLUDED.feedback_type, updated_at = NOW()
+    `, [userId, postId, feedbackType]);
+  } catch (err) {
+    console.error('[feedService] submitFeedback DB upsert failed:', err.message);
+    throw err;
+  }
+
+  const scopeId = buildCacheScopeId(userId, orgActorId);
+
+  if (feedbackType === 'INTERESTED') {
+    // 2a. Track analytics event
+    try {
+      await feedAnalytics.trackEvent({
+        event_type: 'interested',
+        item_id: postId,
+        item_type: 'post',
+        user_id: userId,
+        session_id: sessionId || 'unknown_session',
+        position: position || 0,
+        context: 'home',
+        pool
+      });
+    } catch (err) {
+      console.warn('[feedService] submitFeedback trackEvent interested failed:', err.message);
+    }
+
+    // 3a. Increment positive score (+5)
+    try {
+      await incrementUserHashtagScore(userId, 5, null, postId).catch(() => {});
+    } catch (err) {}
+
+    // 4a. If they were previously "NOT_INTERESTED", we should unhide it from Redis sets
+    try {
+      await Promise.all([
+        removeFromSeenSet(scopeId, [postId]),
+        removeFromHiddenSet(scopeId, [postId])
+      ]);
+    } catch (err) {}
+
+  } else if (feedbackType === 'NOT_INTERESTED') {
+    // 2b. Add to hiddenSet / seenSet
+    try {
+      await Promise.all([
+        addToSeenSet(scopeId, [postId]),
+        addToHiddenSet(scopeId, [postId])
+      ]);
+    } catch (err) {
+      console.warn('[feedService] submitFeedback NOT_INTERESTED Redis failed:', err.message);
+    }
+
+    // 3b. Track analytics event
+    try {
+      await feedAnalytics.trackEvent({
+        event_type: 'not_interested',
+        item_id: postId,
+        item_type: 'post',
+        user_id: userId,
+        session_id: sessionId || 'unknown_session',
+        position: position || 0,
+        context: 'home',
+        pool
+      });
+    } catch (err) {
+      console.warn('[feedService] submitFeedback trackEvent not_interested failed:', err.message);
+    }
+
+    // 4b. Decrement score (-5)
+    try {
+      await incrementUserHashtagScore(userId, -5, null, postId).catch(() => {});
+    } catch (err) {}
+  }
+
+  return { ok: true };
+}
 
 module.exports = {
   getFeed,
-  hidePost,
+  // hidePost, // UNUSED: Frontend uses submitFeedback with 'NOT_INTERESTED'
+  unhidePost,
+  submitFeedback,
   buildCacheScopeId,
 
   // Exported for unit tests

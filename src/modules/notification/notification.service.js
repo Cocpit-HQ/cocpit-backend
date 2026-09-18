@@ -164,19 +164,21 @@ const sendSilentPushToUser = async (userId, data = {}) => {
 const notifyDocumentVerified = async (userId) => {
     const type = "doc_verification_success";
     const title = "Document verification completed";
-    const message = "Your documents have been reviewed and verified successfully. Your profile is now verified.";
     const timestamp = new Date().toISOString();
 
     try {
-        const userRes = await pool.query("SELECT email, full_name FROM active_users WHERE user_id = $1", [userId]);
+        const userRes = await pool.query("SELECT email, full_name, account_name FROM active_users WHERE user_id = $1", [userId]);
         if (userRes.rowCount === 0) return;
-        const { email, full_name } = userRes.rows[0];
+        const { email, full_name, account_name } = userRes.rows[0];
 
-        // 1. Insert into notifications DB
+        const username = account_name || full_name || "user";
+        const message = `Congratulations ${username}, we have successfully reviewed and verified your documents. Your profile is now verified.`;
+
+        // 1. Insert into notifications DB (system notification, sender_id is null)
         await pool.query(
             `INSERT INTO notifications (user_id, sender_id, type, text, metadata)
              VALUES ($1, $2, $3, $4, $5)`,
-            [userId, userId, type, message, JSON.stringify({ title })]
+            [userId, null, type, message, JSON.stringify({ title })]
         );
 
         // 2. Socket Notification

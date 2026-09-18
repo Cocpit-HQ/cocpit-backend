@@ -1040,10 +1040,19 @@ exports.sendConnectionRequest = async (req, res) => {
         // We need to check if *I* am blocked or if *I* am in a cooldown to send to *THEM*
         // The constraint is: if I sent a request and they rejected it, I have a cooldown.
         // Or if they blocked me.
+        // OLD CODE (commented out for testing):
+        // const blockOrCooldown = await client.query(
+        //     `SELECT status, cooldown_until FROM connection_requests 
+        //      WHERE sender_id = $1 AND receiver_id = $2 
+        //      AND (status = 'blocked' OR (status = 'rejected' AND cooldown_until > NOW()))`,
+        //     [senderId, receiverId]
+        // );
+
+        // NEW CODE (testing mode: no 24hr rejection cooldown, check blocked status only):
         const blockOrCooldown = await client.query(
             `SELECT status, cooldown_until FROM connection_requests 
              WHERE sender_id = $1 AND receiver_id = $2 
-             AND (status = 'blocked' OR (status = 'rejected' AND cooldown_until > NOW()))`,
+             AND status = 'blocked'`,
             [senderId, receiverId]
         );
 
@@ -1075,10 +1084,19 @@ exports.sendConnectionRequest = async (req, res) => {
 
         // 5. Clean up any stale 'connected' or expired 'rejected' rows from previous cycles
         // These rows block the INSERT below due to the UNIQUE constraint on (sender_id, receiver_id)
+        // OLD CODE (commented out for testing):
+        // await client.query(
+        //     `DELETE FROM connection_requests 
+        //      WHERE ((sender_id = $1 AND receiver_id = $2) OR (sender_id = $2 AND receiver_id = $1))
+        //      AND (status = 'connected' OR (status = 'rejected' AND (cooldown_until IS NULL OR cooldown_until <= NOW())))`,
+        //     [senderId, receiverId]
+        // );
+
+        // NEW CODE (testing mode: delete all previous connected/rejected requests without waiting for 24h cooldown expiry):
         await client.query(
             `DELETE FROM connection_requests 
              WHERE ((sender_id = $1 AND receiver_id = $2) OR (sender_id = $2 AND receiver_id = $1))
-             AND (status = 'connected' OR (status = 'rejected' AND (cooldown_until IS NULL OR cooldown_until <= NOW())))`,
+             AND (status = 'connected' OR status = 'rejected')`,
             [senderId, receiverId]
         );
 
@@ -1445,12 +1463,17 @@ exports.getConnectionCounts = async (req, res) => {
 // ─── getConnectionSuggestions ───────────────────────────────────────────────
 exports.getConnectionSuggestions = async (req, res) => {
     const userId = req.user.sub;
-    const limit = Math.min(20, Math.max(1, parseInt(req.query.limit || '8')));
+    const limit = Math.min(30, Math.max(1, parseInt(req.query.limit || '12')));
+    const offset = Math.max(0, parseInt(req.query.offset || '0'));
+    const excludeParam = (req.query.exclude || '')
+        .split(',')
+        .map(s => s.trim())
+        .filter(Boolean);
 
     try {
         const result = await pool.query(`
             WITH
-                -- Users I already know (connected, sent/received request, blocked, or self)
+                -- Users I already know (connected, sent/received request, blocked, or self, or explicitly excluded)
                 excluded AS (
                     SELECT connected_user_id AS uid FROM connections WHERE user_id = $1
                     UNION
@@ -1458,16 +1481,18 @@ exports.getConnectionSuggestions = async (req, res) => {
                            WHERE sender_id = $1 AND status IN ('pending','blocked')
                     UNION
                     SELECT sender_id AS uid FROM connection_requests
-                           WHERE receiver_id = $1 AND status = 'blocked'
+                           WHERE receiver_id = $1 AND status IN ('pending','blocked')
                     UNION
                     SELECT $1::UUID AS uid
+                    UNION
+                    SELECT UNNEST($4::UUID[]) AS uid
                 ),
 
-                -- Signal 1: 2nd-degree connections (friend-of-a-friend), score = shared count
+                -- Priority 1: Mutual connections (2nd degree)
                 second_degree AS (
                     SELECT
                         c2.connected_user_id AS suggest_id,
-                        COUNT(*)             AS score,
+                        COUNT(*)::INT        AS score,
                         'mutual'::TEXT       AS reason
                     FROM connections c1
                     JOIN connections c2 ON c1.connected_user_id = c2.user_id
@@ -1476,27 +1501,47 @@ exports.getConnectionSuggestions = async (req, res) => {
                     GROUP BY c2.connected_user_id
                 ),
 
-                -- Signal 2: Same current company (from experiences table)
-                same_company AS (
+                -- Priority 2: Same Education
+                same_education AS (
                     SELECT
-                        p2.user_id     AS suggest_id,
-                        3              AS score,
-                        'company'::TEXT AS reason
-                    FROM experiences e1
-                    JOIN profiles p1 ON p1.profile_id = e1.profile_id AND p1.user_id = $1
-                    JOIN experiences e2 ON LOWER(TRIM(e2.company_name)) = LOWER(TRIM(e1.company_name))
-                                       AND e2.is_current = TRUE
-                                       AND e2.profile_id <> e1.profile_id
-                    JOIN profiles p2 ON p2.profile_id = e2.profile_id
-                    WHERE e1.is_current = TRUE
+                        p2.user_id        AS suggest_id,
+                        COUNT(*)::INT     AS score,
+                        'education'::TEXT AS reason
+                    FROM educations ed1
+                    JOIN profiles p1 ON p1.profile_id = ed1.profile_id AND p1.user_id = $1
+                    JOIN educations ed2 ON (
+                        (ed1.school_org_id IS NOT NULL AND ed2.school_org_id = ed1.school_org_id)
+                        OR LOWER(TRIM(ed2.school_name)) = LOWER(TRIM(ed1.school_name))
+                    ) AND ed2.profile_id <> ed1.profile_id
+                    JOIN profiles p2 ON p2.profile_id = ed2.profile_id
+                    WHERE ed1.school_name IS NOT NULL AND TRIM(ed1.school_name) <> ''
                       AND p2.user_id NOT IN (SELECT uid FROM excluded)
+                    GROUP BY p2.user_id
                 ),
 
-                -- Signal 3: Shared skills (via user_skills junction table)
+                -- Priority 3: Same Experience (Company)
+                same_company AS (
+                    SELECT
+                        p2.user_id        AS suggest_id,
+                        SUM(CASE WHEN e1.is_current = TRUE AND e2.is_current = TRUE THEN 3 ELSE 2 END)::INT AS score,
+                        'company'::TEXT   AS reason
+                    FROM experiences e1
+                    JOIN profiles p1 ON p1.profile_id = e1.profile_id AND p1.user_id = $1
+                    JOIN experiences e2 ON (
+                        (e1.org_id IS NOT NULL AND e2.org_id = e1.org_id)
+                        OR LOWER(TRIM(e2.company_name)) = LOWER(TRIM(e1.company_name))
+                    ) AND e2.profile_id <> e1.profile_id
+                    JOIN profiles p2 ON p2.profile_id = e2.profile_id
+                    WHERE e1.company_name IS NOT NULL AND TRIM(e1.company_name) <> ''
+                      AND p2.user_id NOT IN (SELECT uid FROM excluded)
+                    GROUP BY p2.user_id
+                ),
+
+                -- Priority 4: Shared skills
                 shared_skills AS (
                     SELECT
                         p2.user_id     AS suggest_id,
-                        COUNT(*)       AS score,
+                        COUNT(*)::INT  AS score,
                         'skill'::TEXT  AS reason
                     FROM user_skills us1
                     JOIN profiles pr1 ON pr1.profile_id = us1.profile_id AND pr1.user_id = $1
@@ -1507,11 +1552,11 @@ exports.getConnectionSuggestions = async (req, res) => {
                     GROUP BY p2.user_id
                 ),
 
-                -- Signal 4: Same city/location (from users.location_city)
+                -- Priority 4: Same city/location
                 same_city AS (
                     SELECT
                         u2.user_id     AS suggest_id,
-                        1              AS score,
+                        1::INT         AS score,
                         'city'::TEXT   AS reason
                     FROM users u1
                     JOIN active_users u2 ON LOWER(TRIM(u2.location_city)) = LOWER(TRIM(u1.location_city))
@@ -1521,21 +1566,32 @@ exports.getConnectionSuggestions = async (req, res) => {
                       AND u2.user_id NOT IN (SELECT uid FROM excluded)
                 ),
 
-                -- Union all signals, pick the highest score + best reason per user
+                -- Combine all signals for candidate weighted scoring
+                all_signals AS (
+                    SELECT suggest_id, score, 'mutual' AS reason, 1 AS tier FROM second_degree
+                    UNION ALL
+                    SELECT suggest_id, score, 'education' AS reason, 2 AS tier FROM same_education
+                    UNION ALL
+                    SELECT suggest_id, score, 'company' AS reason, 3 AS tier FROM same_company
+                    UNION ALL
+                    SELECT suggest_id, score, 'skill' AS reason, 4 AS tier FROM shared_skills
+                    UNION ALL
+                    SELECT suggest_id, score, 'city' AS reason, 4 AS tier FROM same_city
+                ),
+
+                -- Organic candidate weighted scoring + primary tier assignment
                 ranked AS (
                     SELECT
                         suggest_id,
-                        SUM(score) AS total_score,
-                        (ARRAY_AGG(reason ORDER BY score DESC))[1] AS top_reason
-                    FROM (
-                        SELECT suggest_id, score, reason FROM second_degree
-                        UNION ALL
-                        SELECT suggest_id, score, reason FROM same_company
-                        UNION ALL
-                        SELECT suggest_id, score, reason FROM shared_skills
-                        UNION ALL
-                        SELECT suggest_id, score, reason FROM same_city
-                    ) all_signals
+                        MIN(tier) AS priority_group,
+                        (ARRAY_AGG(reason ORDER BY tier ASC, score DESC))[1] AS top_reason,
+                        SUM(CASE
+                            WHEN tier = 1 THEN score * 10
+                            WHEN tier = 2 THEN score * 5
+                            WHEN tier = 3 THEN score * 3
+                            ELSE score * 1
+                        END) AS weighted_score
+                    FROM all_signals
                     GROUP BY suggest_id
                 )
 
@@ -1544,6 +1600,8 @@ exports.getConnectionSuggestions = async (req, res) => {
                 u.full_name,
                 u.avatar_url,
                 u.headline,
+                r.priority_group,
+                r.weighted_score            AS within_score,
                 r.top_reason                AS reason_signal,
                 -- Mutual count for display
                 (
@@ -1574,7 +1632,7 @@ exports.getConnectionSuggestions = async (req, res) => {
                     JOIN profiles p ON p.profile_id = ed.profile_id AND p.user_id = u.user_id
                     ORDER BY ed.created_at DESC LIMIT 1
                 ) AS studied_at,
-                -- Shared skill names (up to 3) when reason = skill
+                -- Shared skill names (up to 3)
                 ARRAY(
                     SELECT s.name
                     FROM user_skills us1
@@ -1583,7 +1641,8 @@ exports.getConnectionSuggestions = async (req, res) => {
                     JOIN profiles pr2 ON pr2.profile_id = us2.profile_id AND pr2.user_id = u.user_id
                     JOIN skills s ON s.skill_id = us1.skill_id
                     LIMIT 3
-                ) AS shared_skills
+                ) AS shared_skills,
+                COUNT(*) OVER() AS total_count
             FROM ranked r
             JOIN active_users u ON u.user_id = r.suggest_id
             WHERE NOT EXISTS (
@@ -1592,9 +1651,11 @@ exports.getConnectionSuggestions = async (req, res) => {
                   AND ((blocker_id = $1 AND blocked_id = u.user_id)
                     OR (blocker_id = u.user_id AND blocked_id = $1))
             )
-            ORDER BY r.total_score DESC
-            LIMIT $2
-        `, [userId, limit]);
+            ORDER BY r.weighted_score DESC, r.priority_group ASC, u.user_id ASC
+            LIMIT $2 OFFSET $3
+        `, [userId, limit, offset, excludeParam]);
+
+        const totalCount = result.rows.length > 0 ? parseInt(result.rows[0].total_count || '0') : 0;
 
         const suggestions = result.rows.map(row => ({
             id: row.user_id,
@@ -1602,6 +1663,7 @@ exports.getConnectionSuggestions = async (req, res) => {
             avatarUrl: row.avatar_url,
             headline: row.headline,
             reasonSignal: row.reason_signal || null,
+            priorityGroup: parseInt(row.priority_group),
             mutuals: {
                 count: parseInt(row.mutual_count || 0),
                 avatars: row.mutual_avatars || [],
@@ -1611,7 +1673,15 @@ exports.getConnectionSuggestions = async (req, res) => {
             sharedSkills: row.shared_skills || [],
         }));
 
-        return res.status(200).json({ data: suggestions });
+        return res.status(200).json({
+            data: suggestions,
+            pagination: {
+                offset,
+                limit,
+                total: totalCount,
+                hasMore: offset + suggestions.length < totalCount
+            }
+        });
 
     } catch (err) {
         console.error('Get connection suggestions error:', err);
@@ -1694,6 +1764,370 @@ exports.getConnectionRequestHistory = async (req, res) => {
     }
 };
 
+exports.batchAcceptConnectionRequests = async (req, res) => {
+    const { requestIds } = req.body;
+    const userId = req.user.sub;
+
+    if (!Array.isArray(requestIds) || requestIds.length === 0) {
+        return res.status(400).json({ message: "Invalid requestIds array" });
+    }
+
+    const client = await pool.connect();
+    try {
+        await client.query("BEGIN");
+
+        const validReqsRes = await client.query(
+            "SELECT request_id, sender_id FROM connection_requests WHERE request_id = ANY($1::uuid[]) AND receiver_id = $2 AND status = 'pending'",
+            [requestIds, userId]
+        );
+
+        const validOrgReqsRes = await client.query(
+            "SELECT request_id, org_id FROM organization_connection_requests WHERE request_id = ANY($1::uuid[]) AND user_id = $2 AND status = 'pending' FOR UPDATE",
+            [requestIds, userId]
+        );
+
+        if (validReqsRes.rowCount === 0 && validOrgReqsRes.rowCount === 0) {
+            await client.query("ROLLBACK");
+            return res.status(400).json({ message: "No valid pending requests found" });
+        }
+
+        const validUserRequests = validReqsRes.rows;
+        const validUserRequestIds = validUserRequests.map(r => r.request_id);
+        const validUserSenderIds = validUserRequests.map(r => r.sender_id);
+
+        const validOrgRequests = validOrgReqsRes.rows;
+        const validOrgRequestIds = validOrgRequests.map(r => r.request_id);
+        const validOrgIds = validOrgRequests.map(r => r.org_id);
+
+        let totalProcessed = 0;
+
+        // Fetch accepter details for notifications
+        const accepterRes = await client.query(`SELECT full_name, avatar_url FROM users WHERE user_id = $1`, [userId]);
+        const accepterName = accepterRes.rows[0]?.full_name || "Someone";
+        const accepterAvatar = accepterRes.rows[0]?.avatar_url || accepterName.charAt(0).toUpperCase();
+
+        // --- Process User Requests ---
+        if (validUserRequestIds.length > 0) {
+            totalProcessed += validUserRequestIds.length;
+
+            // Bulk UPDATE connection_requests
+            await client.query(
+                "UPDATE connection_requests SET status = 'connected', responded_at = NOW(), updated_at = NOW() WHERE request_id = ANY($1::uuid[])",
+                [validUserRequestIds]
+            );
+
+            // Bulk INSERT mutual connections
+            const userIds = Array(validUserRequests.length).fill(userId);
+            
+            await client.query(
+                `INSERT INTO connections (user_id, connected_user_id) 
+                 SELECT * FROM UNNEST($1::uuid[], $2::uuid[]) ON CONFLICT DO NOTHING`,
+                [userIds, validUserSenderIds]
+            );
+            await client.query(
+                `INSERT INTO connections (user_id, connected_user_id) 
+                 SELECT * FROM UNNEST($1::uuid[], $2::uuid[]) ON CONFLICT DO NOTHING`,
+                [validUserSenderIds, userIds]
+            );
+
+            // Bulk INSERT mutual follows
+            await client.query(
+                `INSERT INTO followers (follower_id, following_id) 
+                 SELECT * FROM UNNEST($1::uuid[], $2::uuid[]) ON CONFLICT DO NOTHING`,
+                [userIds, validUserSenderIds]
+            );
+            await client.query(
+                `INSERT INTO followers (follower_id, following_id) 
+                 SELECT * FROM UNNEST($1::uuid[], $2::uuid[]) ON CONFLICT DO NOTHING`,
+                [validUserSenderIds, userIds]
+            );
+
+            const notificationTexts = validUserSenderIds.map(() => `${accepterName} accepted your connection request.`);
+            
+            // Notifications to senders
+            await client.query(
+                `INSERT INTO notifications (user_id, sender_id, type, text, reference_id) 
+                 SELECT u, s, 'connection_accepted', t, r FROM UNNEST($1::uuid[], $2::uuid[], $3::text[], $4::uuid[]) as t1(u, s, t, r)`,
+                [validUserSenderIds, userIds, notificationTexts, userIds]
+            );
+
+            // Notifications to receiver
+            const newConnTexts = validUserSenderIds.map(() => 'You are now connected with a new user');
+            await client.query(
+                `INSERT INTO notifications (user_id, sender_id, type, text, reference_id) 
+                 SELECT u, s, 'new_connection', t, r FROM UNNEST($1::uuid[], $2::uuid[], $3::text[], $4::uuid[]) as t1(u, s, t, r)`,
+                [userIds, validUserSenderIds, newConnTexts, validUserSenderIds]
+            );
+        }
+
+        // --- Process Organization Requests ---
+        if (validOrgRequestIds.length > 0) {
+            totalProcessed += validOrgRequestIds.length;
+
+            // Bulk UPDATE organization_connection_requests
+            await client.query(
+                "UPDATE organization_connection_requests SET status = 'accepted', updated_at = NOW() WHERE request_id = ANY($1::uuid[])",
+                [validOrgRequestIds]
+            );
+
+            // Bulk INSERT organization_connections
+            const userIds = Array(validOrgRequests.length).fill(userId);
+
+            await client.query(
+                `INSERT INTO organization_connections (org_id, user_id) 
+                 SELECT * FROM UNNEST($1::uuid[], $2::uuid[]) ON CONFLICT DO NOTHING`,
+                [validOrgIds, userIds]
+            );
+
+            // Auto-follow the organizations
+            await client.query(
+                `INSERT INTO organization_followers (user_id, org_id) 
+                 SELECT * FROM UNNEST($1::uuid[], $2::uuid[]) ON CONFLICT DO NOTHING`,
+                [userIds, validOrgIds]
+            );
+
+            // Fetch all company details in one query
+            const companiesRes = await client.query(
+                "SELECT org_id, name, logo_url FROM organizations WHERE org_id = ANY($1::uuid[])",
+                [validOrgIds]
+            );
+            const companiesMap = new Map(companiesRes.rows.map(c => [c.org_id, c]));
+
+            // Fetch all admins for all these companies in one query
+            const adminsRes = await client.query(
+                "SELECT org_id, user_id FROM organization_members WHERE org_id = ANY($1::uuid[]) AND role IN ('ADMIN', 'OWNER')",
+                [validOrgIds]
+            );
+            const orgAdminsMap = new Map();
+            for (const row of adminsRes.rows) {
+                if (!orgAdminsMap.has(row.org_id)) orgAdminsMap.set(row.org_id, []);
+                orgAdminsMap.get(row.org_id).push(row.user_id);
+            }
+
+            const userNotifUserIds = [];
+            const userNotifSenderIds = [];
+            const userNotifTypes = [];
+            const userNotifTexts = [];
+            const userNotifReferenceIds = [];
+            const userNotifMetadatas = [];
+
+            const adminNotifUserIds = [];
+            const adminNotifSenderIds = [];
+            const adminNotifTypes = [];
+            const adminNotifTexts = [];
+            const adminNotifReferenceIds = [];
+            const adminNotifRecipientOrgIds = [];
+            const adminNotifMetadatas = [];
+
+            for (const orgId of validOrgIds) {
+                const company = companiesMap.get(orgId);
+                if (!company) continue;
+
+                // Accepting user notification data
+                userNotifUserIds.push(userId);
+                userNotifSenderIds.push(userId);
+                userNotifTypes.push("company_connection_accepted");
+                userNotifTexts.push(`You are now connected with ${company.name}`);
+                userNotifReferenceIds.push(orgId);
+                userNotifMetadatas.push(JSON.stringify({ org_id: orgId }));
+
+                // Company admins notification data
+                const admins = orgAdminsMap.get(orgId) || [];
+                for (const adminId of admins) {
+                    adminNotifUserIds.push(adminId);
+                    adminNotifSenderIds.push(userId);
+                    adminNotifTypes.push("company_connection_accepted");
+                    adminNotifTexts.push(`${accepterName} accepted the company's connection request`);
+                    adminNotifReferenceIds.push(orgId);
+                    adminNotifRecipientOrgIds.push(orgId);
+                    adminNotifMetadatas.push(JSON.stringify({ org_id: orgId }));
+                }
+            }
+
+            // Bulk insert accepting user notifications
+            let userNotifRes = { rows: [] };
+            if (userNotifUserIds.length > 0) {
+                userNotifRes = await client.query(
+                    `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata)
+                     SELECT u, s, t, txt, r, m::jsonb FROM UNNEST($1::uuid[], $2::uuid[], $3::text[], $4::text[], $5::uuid[], $6::text[]) as t1(u, s, t, txt, r, m) RETURNING *`,
+                    [userNotifUserIds, userNotifSenderIds, userNotifTypes, userNotifTexts, userNotifReferenceIds, userNotifMetadatas]
+                );
+            }
+
+            // Bulk insert admin notifications
+            let adminNotifRes = { rows: [] };
+            if (adminNotifUserIds.length > 0) {
+                adminNotifRes = await client.query(
+                    `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, recipient_org_id, metadata)
+                     SELECT u, s, t, txt, r, ro, m::jsonb FROM UNNEST($1::uuid[], $2::uuid[], $3::text[], $4::text[], $5::uuid[], $6::uuid[], $7::text[]) as t1(u, s, t, txt, r, ro, m) RETURNING *`,
+                    [adminNotifUserIds, adminNotifSenderIds, adminNotifTypes, adminNotifTexts, adminNotifReferenceIds, adminNotifRecipientOrgIds, adminNotifMetadatas]
+                );
+            }
+
+            // Dispatch socket events
+            for (const notif of userNotifRes.rows) {
+                const orgId = notif.reference_id;
+                const company = companiesMap.get(orgId);
+                if (company) {
+                    socketService.notifyUser(userId, "notification", {
+                        type: "company_connection_accepted",
+                        text: "and you are now connected!",
+                        from: orgId,
+                        senderName: company.name,
+                        senderAvatar: company.logo_url,
+                        referenceId: orgId,
+                        isCompanyRequest: true,
+                        notification_id: notif.notification_id,
+                        created_at: notif.created_at.toISOString(),
+                        time: "Just now"
+                    });
+                }
+            }
+
+            for (const notif of adminNotifRes.rows) {
+                const orgId = notif.reference_id;
+                const adminId = notif.user_id;
+                socketService.notifyUser(adminId, "notification", {
+                    type: "company_connection_accepted",
+                    text: "accepted the company's connection request",
+                    from: userId,
+                    senderName: accepterName,
+                    senderAvatar: accepterAvatar,
+                    referenceId: orgId,
+                    notification_id: notif.notification_id,
+                    created_at: notif.created_at.toISOString(),
+                    time: "Just now"
+                });
+                socketService.notifyUser(adminId, "relationshipUpdated", { userId: userId, status: 'connected', type: 'company_connection' });
+            }
+
+            for (const orgId of validOrgIds) {
+                socketService.notifyUser(userId, "relationshipUpdated", { userId: orgId, status: 'connected', type: 'company' });
+            }
+        }
+
+        await client.query("COMMIT");
+
+        // Non-blocking side effects for user requests
+        if (validUserSenderIds.length > 0) {
+            for (const sender_id of validUserSenderIds) {
+                const senderNotification = {
+                    type: 'connection_accepted',
+                    text: `${accepterName} accepted your connection request.`,
+                    from: userId,
+                    senderName: accepterName,
+                    senderAvatar: accepterAvatar,
+                    referenceId: userId,
+                    time: "Just now"
+                };
+                socketService.notifyUser(sender_id, "notification", senderNotification);
+                sendPush(sender_id, accepterName, senderNotification.text, { type: 'connection_accepted', userId: userId }).catch(() => {});
+                socketService.notifyUser(sender_id, "relationshipUpdated", { userId: userId, status: 'connected' });
+                socketService.notifyUser(userId, "relationshipUpdated", { userId: sender_id, status: 'connected' });
+            }
+        }
+
+        return res.status(200).json({ message: "Batch connections established", processed: totalProcessed });
+
+
+    } catch (err) {
+        await client.query("ROLLBACK");
+        console.error("Batch accept connection error:", err);
+        return res.status(500).json({ message: "Internal server error" });
+    } finally {
+        client.release();
+    }
+};
+
+exports.batchDeclineConnectionRequests = async (req, res) => {
+    const { requestIds } = req.body;
+    const userId = req.user.sub;
+
+    if (!Array.isArray(requestIds) || requestIds.length === 0) {
+        return res.status(400).json({ message: "Invalid requestIds array" });
+    }
+
+    const client = await pool.connect();
+    try {
+        await client.query("BEGIN");
+
+        const validReqsRes = await client.query(
+            "SELECT request_id FROM connection_requests WHERE request_id = ANY($1::uuid[]) AND receiver_id = $2 AND status = 'pending'",
+            [requestIds, userId]
+        );
+
+        const validOrgReqsRes = await client.query(
+            "SELECT request_id, org_id FROM organization_connection_requests WHERE request_id = ANY($1::uuid[]) AND user_id = $2 AND status = 'pending' FOR UPDATE",
+            [requestIds, userId]
+        );
+
+        if (validReqsRes.rowCount === 0 && validOrgReqsRes.rowCount === 0) {
+            await client.query("ROLLBACK");
+            return res.status(400).json({ message: "No valid pending requests found" });
+        }
+
+        const validRequestIds = validReqsRes.rows.map(r => r.request_id);
+        const validOrgRequestIds = validOrgReqsRes.rows.map(r => r.request_id);
+        const validOrgIds = validOrgReqsRes.rows.map(r => r.org_id);
+        
+        let totalProcessed = 0;
+
+        if (validRequestIds.length > 0) {
+            totalProcessed += validRequestIds.length;
+            await client.query(
+                `UPDATE connection_requests 
+                 SET status = 'rejected', responded_at = NOW(), cooldown_until = NOW() 
+                 WHERE request_id = ANY($1::uuid[])`,
+                [validRequestIds]
+            );
+        }
+
+        if (validOrgRequestIds.length > 0) {
+            totalProcessed += validOrgRequestIds.length;
+            await client.query(
+                "UPDATE organization_connection_requests SET status = 'rejected', updated_at = NOW() WHERE request_id = ANY($1::uuid[])",
+                [validOrgRequestIds]
+            );
+
+            // Notify relationships for sockets
+            for (const orgId of validOrgIds) {
+                socketService.notifyUser(userId, "relationshipUpdated", { userId: orgId, status: 'none', type: 'company' });
+            }
+        }
+        
+        await client.query("COMMIT");
+        return res.status(200).json({ message: "Batch connection requests rejected", processed: totalProcessed });
+    } catch (err) {
+        await client.query("ROLLBACK");
+        console.error("Batch decline connection error:", err);
+        return res.status(500).json({ message: "Internal server error" });
+    } finally {
+        client.release();
+    }
+};
+
+exports.batchWithdrawConnectionRequests = async (req, res) => {
+    const { requestIds } = req.body;
+    const userId = req.user.sub;
+
+    if (!Array.isArray(requestIds) || requestIds.length === 0) {
+        return res.status(400).json({ message: "Invalid requestIds array" });
+    }
+
+    try {
+        const result = await pool.query(
+            `DELETE FROM connection_requests 
+             WHERE request_id = ANY($1::uuid[]) AND sender_id = $2 AND status = 'pending'
+             RETURNING request_id`,
+            [requestIds, userId]
+        );
+        return res.status(200).json({ message: "Batch connection requests canceled", processed: result.rowCount });
+    } catch (err) {
+        console.error("Batch cancel connection error:", err);
+        return res.status(500).json({ message: "Internal server error" });
+    }
+};
+
 exports.handleConnectionRequest = async (req, res) => {
     const requestId = req.params.requestId;
     const { status } = req.body; // 'connected', 'rejected', 'blocked'
@@ -1714,9 +2148,31 @@ exports.handleConnectionRequest = async (req, res) => {
             [requestId]
         );
 
+        let isCompanyRequest = false;
+        let companyId = null;
+
         if (reqRes.rowCount === 0) {
-            await client.query("ROLLBACK");
-            return res.status(404).json({ message: "Request not found" });
+            // Fallback: check if it's a company connection request
+            const orgReqRes = await client.query(
+                "SELECT org_id, user_id, status FROM organization_connection_requests WHERE request_id = $1 FOR UPDATE",
+                [requestId]
+            );
+
+            if (orgReqRes.rowCount === 0) {
+                await client.query("ROLLBACK");
+                return res.status(404).json({ message: "Request not found" });
+            }
+
+            isCompanyRequest = true;
+            const invite = orgReqRes.rows[0];
+            companyId = invite.org_id;
+            
+            // Re-map variables to match the user flow
+            reqRes.rows = [{
+                sender_id: companyId,
+                receiver_id: invite.user_id,
+                status: invite.status
+            }];
         }
 
         const { sender_id, receiver_id, status: currentStatus } = reqRes.rows[0];
@@ -1753,13 +2209,20 @@ exports.handleConnectionRequest = async (req, res) => {
 
         // 2. REJECT
         if (status === 'rejected') {
-            // Set cooldown for 24 hours (1 day)
-            await client.query(
-                `UPDATE connection_requests 
-                 SET status = 'rejected', responded_at = NOW(), cooldown_until = NOW() + INTERVAL '24 hours' 
-                 WHERE request_id = $1`,
-                [requestId]
-            );
+            if (isCompanyRequest) {
+                await client.query(
+                    "UPDATE organization_connection_requests SET status = 'rejected', updated_at = NOW() WHERE request_id = $1",
+                    [requestId]
+                );
+                socketService.notifyUser(userId, "relationshipUpdated", { userId: companyId, status: 'none', type: 'company' });
+            } else {
+                await client.query(
+                    `UPDATE connection_requests 
+                     SET status = 'rejected', responded_at = NOW(), cooldown_until = NOW() 
+                     WHERE request_id = $1`,
+                    [requestId]
+                );
+            }
 
             await client.query("COMMIT");
             return res.status(200).json({ message: "Connection request rejected", connected: false });
@@ -1767,6 +2230,101 @@ exports.handleConnectionRequest = async (req, res) => {
 
         // 3. ACCEPT (Connected)
         if (status === 'connected') {
+            if (isCompanyRequest) {
+                // Create mutual connections
+                await client.query(
+                    "INSERT INTO organization_connections (org_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+                    [companyId, userId]
+                );
+
+                // Auto-follow the company
+                await client.query(
+                    "INSERT INTO organization_followers (user_id, org_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+                    [userId, companyId]
+                );
+
+                await client.query(
+                    "UPDATE organization_connection_requests SET status = 'accepted', updated_at = NOW() WHERE request_id = $1",
+                    [requestId]
+                );
+
+                const userRes = await client.query("SELECT full_name, avatar_url FROM users WHERE user_id = $1", [userId]);
+                const user = userRes.rows[0];
+
+                const companyRes = await client.query("SELECT name, logo_url FROM organizations WHERE org_id = $1", [companyId]);
+                const company = companyRes.rows[0];
+
+                // Persistent notification for accepting user
+                const userNotifRes = await client.query(
+                    `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata)
+                     VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+                    [
+                        userId,
+                        userId, // self-action
+                        "company_connection_accepted",
+                        `You are now connected with ${company.name}`,
+                        companyId,
+                        JSON.stringify({ org_id: companyId })
+                    ]
+                );
+
+                socketService.notifyUser(userId, "notification", {
+                    type: "company_connection_accepted",
+                    text: "and you are now connected!",
+                    from: companyId,
+                    senderName: company.name,
+                    senderAvatar: company.logo_url,
+                    referenceId: companyId,
+                    isCompanyRequest: true,
+                    notification_id: userNotifRes.rows[0].notification_id,
+                    created_at: userNotifRes.rows[0].created_at.toISOString(),
+                    time: "Just now"
+                });
+
+                // Persistent notification for company admins
+                const adminsRes = await client.query(
+                    "SELECT user_id FROM organization_members WHERE org_id = $1 AND (role = 'ADMIN' OR role = 'OWNER')",
+                    [companyId]
+                );
+
+                for (const admin of adminsRes.rows) {
+                    const adminNotifRes = await client.query(
+                        `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, recipient_org_id, metadata)
+                         VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
+                        [
+                            admin.user_id,
+                            userId,
+                            "company_connection_accepted",
+                            `${user.full_name} accepted the company's connection request`,
+                            companyId,
+                            companyId,
+                            JSON.stringify({ org_id: companyId })
+                        ]
+                    );
+
+                    socketService.notifyUser(admin.user_id, "notification", {
+                        type: "company_connection_accepted",
+                        text: "accepted the company's connection request",
+                        from: userId,
+                        senderName: user.full_name,
+                        senderAvatar: user.avatar_url,
+                        referenceId: companyId,
+                        notification_id: adminNotifRes.rows[0].notification_id,
+                        created_at: adminNotifRes.rows[0].created_at.toISOString(),
+                        time: "Just now"
+                    });
+                }
+
+                socketService.notifyUser(userId, "relationshipUpdated", { userId: companyId, status: 'connected', type: 'company' });
+                for (const admin of adminsRes.rows) {
+                    socketService.notifyUser(admin.user_id, "relationshipUpdated", { userId: userId, status: 'connected', type: 'company_connection' });
+                }
+
+                await client.query("COMMIT");
+                return res.status(200).json({ message: "Connection established", connected: true, relationship: "connected" });
+            }
+
+            // --- User Connection Request ---
             // Create mutual connections
             await client.query(
                 "INSERT INTO connections (user_id, connected_user_id) VALUES ($1, $2), ($2, $1) ON CONFLICT DO NOTHING",
@@ -1786,12 +2344,16 @@ exports.handleConnectionRequest = async (req, res) => {
             );
 
             // Create Notification for Sender
+            const accepterRes = await client.query(`SELECT full_name, avatar_url FROM users WHERE user_id = $1`, [receiver_id]);
+            const accepterName = accepterRes.rows[0]?.full_name || "Someone";
+            const accepterAvatar = accepterRes.rows[0]?.avatar_url || accepterName.charAt(0).toUpperCase();
+
             const senderNotification = {
                 type: 'connection_accepted',
-                text: `${req.user.full_name} accepted your connection request.`,
+                text: `${accepterName} accepted your connection request.`,
                 from: receiver_id,
-                senderName: req.user.full_name, // I am the one accepting
-                senderAvatar: req.user.avatar_url,
+                senderName: accepterName, // I am the one accepting
+                senderAvatar: accepterAvatar,
                 referenceId: receiver_id,
                 time: "Just now"
             };
@@ -1814,14 +2376,7 @@ exports.handleConnectionRequest = async (req, res) => {
             // Notify Sender via Socket
             socketService.notifyUser(sender_id, "notification", senderNotification);
             // Push notification for offline devices
-            // Note: senderNotification.senderName comes from req.user.full_name which is not in the JWT.
-            // The accepter's name must be fetched from the DB. We query it here for the push title.
-            pool.query(`SELECT full_name FROM users WHERE user_id = $1`, [receiver_id])
-                .then(r => {
-                    const accepterName = r.rows[0]?.full_name || "Someone";
-                    sendPush(sender_id, accepterName, senderNotification.text, { type: 'connection_accepted', userId: receiver_id }).catch(() => {});
-                })
-                .catch(() => {});
+            sendPush(sender_id, accepterName, senderNotification.text, { type: 'connection_accepted', userId: receiver_id }).catch(() => {});
 
             // Emit relationship update to both
             socketService.notifyUser(sender_id, "relationshipUpdated", { userId: receiver_id, status: 'connected' });
@@ -4801,9 +5356,12 @@ exports.getRelationshipStatus = async (req, res) => {
                     }
                 } else if (req.status === 'rejected') {
                     // Check cooldown
-                    if (req.sender_id === userId && new Date(req.cooldown_until) > new Date()) {
-                        status = 'cooldown';
-                    }
+                    // OLD CODE (commented out for testing):
+                    // if (req.sender_id === userId && new Date(req.cooldown_until) > new Date()) {
+                    //     status = 'cooldown';
+                    // }
+                    // NEW CODE (testing mode: set status to 'none' instead of 'cooldown'):
+                    status = 'none';
                 }
             }
 
@@ -5549,15 +6107,31 @@ exports.upsertReaction = async (req, res) => {
                 reaction
             });
 
-            // Notify the original message sender via push
+            // Notify the original message sender via push and in-app notification
             if (reaction.user_id !== sender_id) {
                 const msgText = text_content || 'an attachment';
                 const formattedPreview = msgText.length > 40 ? msgText.substring(0, 40) + '...' : msgText;
                 
+                const pushTitle = `${reaction.user_full_name} reacted to your message`;
+                const pushBody = `${reaction.user_full_name} reacted ${reaction.emoji} to: "${formattedPreview}"`;
+                
+                // 1. Emit socket notification for toast (do not save to DB)
+                socketService.notifyUser(sender_id, "notification", {
+                    type: 'message_reaction',
+                    from: reaction.user_id,
+                    senderName: reaction.user_full_name,
+                    senderAvatar: reaction.user_avatar,
+                    text: pushBody,
+                    reference_id: conversation_id,
+                    notification_id: `temp-${Date.now()}`,
+                    created_at: new Date().toISOString()
+                });
+
+                // 2. Send Push Notification for offline devices
                 sendPush(
                     sender_id,
-                    `${reaction.user_full_name} reacted to your message`,
-                    `${reaction.user_full_name} reacted ${reaction.emoji} to: "${formattedPreview}"`,
+                    pushTitle,
+                    pushBody,
                     { type: 'message_reaction', conversationId: conversation_id, messageId }
                 ).catch(() => {});
             }

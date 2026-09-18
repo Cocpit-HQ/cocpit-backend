@@ -28,6 +28,12 @@ const { resolveActorContext } = require("../../core/middlewares/actor-context.mi
 // Search users (real-time)
 router.get("/search", resolveActorContext, userController.searchUsers);
 
+// Search History (Persistent)
+router.get("/search-history", resolveActorContext, userController.getSearchHistory);
+router.post("/search-history", resolveActorContext, userController.saveSearchHistory);
+router.delete("/search-history", resolveActorContext, userController.clearSearchHistory);
+router.delete("/search-history/:id", resolveActorContext, userController.removeSearchHistory);
+
 // Get suggested users
 router.get("/suggested", resolveActorContext, userController.getSuggestedUsers);
 

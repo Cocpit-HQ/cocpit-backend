@@ -189,6 +189,7 @@ exports.getProfile = async (req, res) => {
                 created_at: u.created_at,
                 version: u.version || 0,
                 onboarding_step: u.onboarding_step || null,
+                dob: u.dob ? (u.dob instanceof Date ? u.dob.toISOString().split("T")[0] : String(u.dob).split("T")[0]) : null,
                 // Structured location fields (for onboarding state rehydration on refresh)
                 location_formatted: u.location_formatted || null,
                 location_country: u.location_country || null,

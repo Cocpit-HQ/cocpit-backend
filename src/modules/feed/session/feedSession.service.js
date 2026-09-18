@@ -136,6 +136,15 @@ async function resetSession(userId) {
  * @param {string} userId
  * @returns {Promise<boolean>} true if session existed and was touched, false if no session
  */
+// ===========================================================================
+// [CLEANUP - FEED REFACTOR] REASON FOR COMMENTING OUT:
+// - Status: UNUSED / ORPHANED
+// - Technical Reason: touchSession was only invoked by feedController.trackEvent,
+//   which was commented out. Feed sessions expire naturally via Redis TTL (1800s)
+//   and are updated on every read in getSession().
+// - Active Replacement: Session expiry and extension handled automatically by Redis TTL.
+// ===========================================================================
+/*
 async function touchSession(userId) {
   if (!userId) throw new Error("touchSession: userId is required");
 
@@ -152,6 +161,7 @@ async function touchSession(userId) {
 
   return true;
 }
+*/
 
 /**
  * Increment the seen_count on the session hash.
@@ -203,7 +213,7 @@ module.exports = {
   getSession,
   updateCursor,
   resetSession,
-  touchSession,
+  // touchSession, // UNUSED
   incrementSeenCount,
   // Exported for unit tests
   _keys: keys,

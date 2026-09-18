@@ -227,7 +227,8 @@ const processAnalyticsAggregations = async () => {
                     WHERE DATE(saved_at) = DATE(${dateStr})
                     GROUP BY post_id, DATE(saved_at)
                 ) subquery
-                WHERE p_id IS NOT NULL
+                WHERE p_id IS NOT NULL 
+                  AND EXISTS (SELECT 1 FROM posts WHERE posts.post_id = p_id)
                 GROUP BY p_id, agg_date
                 ON CONFLICT (post_id, date) DO UPDATE SET
                     impressions = EXCLUDED.impressions,
