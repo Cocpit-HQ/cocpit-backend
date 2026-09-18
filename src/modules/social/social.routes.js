@@ -50,6 +50,9 @@ router.get("/users/:id/relationship", requireAuth, socialController.getRelations
 router.get("/connections/counts", requireAuth, socialController.getConnectionCounts);
 router.get("/connections/suggestions", requireAuth, socialController.getConnectionSuggestions);
 router.get("/connections/requests", requireAuth, socialController.getPendingRequests);
+router.patch("/connections/batch-accept", requireAuth, socialController.batchAcceptConnectionRequests);
+router.patch("/connections/batch-decline", requireAuth, socialController.batchDeclineConnectionRequests);
+router.delete("/connections/batch-withdraw", requireAuth, socialController.batchWithdrawConnectionRequests);
 router.patch("/connections/:requestId", requireAuth, socialController.handleConnectionRequest);
 router.get("/connections/history", requireAuth, socialController.getConnectionRequestHistory);
 

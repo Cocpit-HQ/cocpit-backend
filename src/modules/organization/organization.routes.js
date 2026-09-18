@@ -72,6 +72,7 @@ router.post("/companies", requireAuth, organizationActionLimiter, organizationCo
 
 router.post("/organizations/teams/invites/accept", requireAuth, membersController.acceptTeamsInvite);
 router.get("/organizations/teams/invites/pending", requireAuth, membersController.getUserPendingTeamsInvites);
+router.post("/organizations/teams/invites/batch-decline", requireAuth, membersController.batchDeclineTeamInvites);
 router.post("/organizations/teams/invites/decline", requireAuth, membersController.declineTeamsInvite);
 
 // --- MEMBERSHIP ---

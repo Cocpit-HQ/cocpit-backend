@@ -1764,6 +1764,370 @@ exports.getConnectionRequestHistory = async (req, res) => {
     }
 };
 
+exports.batchAcceptConnectionRequests = async (req, res) => {
+    const { requestIds } = req.body;
+    const userId = req.user.sub;
+
+    if (!Array.isArray(requestIds) || requestIds.length === 0) {
+        return res.status(400).json({ message: "Invalid requestIds array" });
+    }
+
+    const client = await pool.connect();
+    try {
+        await client.query("BEGIN");
+
+        const validReqsRes = await client.query(
+            "SELECT request_id, sender_id FROM connection_requests WHERE request_id = ANY($1::uuid[]) AND receiver_id = $2 AND status = 'pending'",
+            [requestIds, userId]
+        );
+
+        const validOrgReqsRes = await client.query(
+            "SELECT request_id, org_id FROM organization_connection_requests WHERE request_id = ANY($1::uuid[]) AND user_id = $2 AND status = 'pending' FOR UPDATE",
+            [requestIds, userId]
+        );
+
+        if (validReqsRes.rowCount === 0 && validOrgReqsRes.rowCount === 0) {
+            await client.query("ROLLBACK");
+            return res.status(400).json({ message: "No valid pending requests found" });
+        }
+
+        const validUserRequests = validReqsRes.rows;
+        const validUserRequestIds = validUserRequests.map(r => r.request_id);
+        const validUserSenderIds = validUserRequests.map(r => r.sender_id);
+
+        const validOrgRequests = validOrgReqsRes.rows;
+        const validOrgRequestIds = validOrgRequests.map(r => r.request_id);
+        const validOrgIds = validOrgRequests.map(r => r.org_id);
+
+        let totalProcessed = 0;
+
+        // Fetch accepter details for notifications
+        const accepterRes = await client.query(`SELECT full_name, avatar_url FROM users WHERE user_id = $1`, [userId]);
+        const accepterName = accepterRes.rows[0]?.full_name || "Someone";
+        const accepterAvatar = accepterRes.rows[0]?.avatar_url || accepterName.charAt(0).toUpperCase();
+
+        // --- Process User Requests ---
+        if (validUserRequestIds.length > 0) {
+            totalProcessed += validUserRequestIds.length;
+
+            // Bulk UPDATE connection_requests
+            await client.query(
+                "UPDATE connection_requests SET status = 'connected', responded_at = NOW(), updated_at = NOW() WHERE request_id = ANY($1::uuid[])",
+                [validUserRequestIds]
+            );
+
+            // Bulk INSERT mutual connections
+            const userIds = Array(validUserRequests.length).fill(userId);
+            
+            await client.query(
+                `INSERT INTO connections (user_id, connected_user_id) 
+                 SELECT * FROM UNNEST($1::uuid[], $2::uuid[]) ON CONFLICT DO NOTHING`,
+                [userIds, validUserSenderIds]
+            );
+            await client.query(
+                `INSERT INTO connections (user_id, connected_user_id) 
+                 SELECT * FROM UNNEST($1::uuid[], $2::uuid[]) ON CONFLICT DO NOTHING`,
+                [validUserSenderIds, userIds]
+            );
+
+            // Bulk INSERT mutual follows
+            await client.query(
+                `INSERT INTO followers (follower_id, following_id) 
+                 SELECT * FROM UNNEST($1::uuid[], $2::uuid[]) ON CONFLICT DO NOTHING`,
+                [userIds, validUserSenderIds]
+            );
+            await client.query(
+                `INSERT INTO followers (follower_id, following_id) 
+                 SELECT * FROM UNNEST($1::uuid[], $2::uuid[]) ON CONFLICT DO NOTHING`,
+                [validUserSenderIds, userIds]
+            );
+
+            const notificationTexts = validUserSenderIds.map(() => `${accepterName} accepted your connection request.`);
+            
+            // Notifications to senders
+            await client.query(
+                `INSERT INTO notifications (user_id, sender_id, type, text, reference_id) 
+                 SELECT u, s, 'connection_accepted', t, r FROM UNNEST($1::uuid[], $2::uuid[], $3::text[], $4::uuid[]) as t1(u, s, t, r)`,
+                [validUserSenderIds, userIds, notificationTexts, userIds]
+            );
+
+            // Notifications to receiver
+            const newConnTexts = validUserSenderIds.map(() => 'You are now connected with a new user');
+            await client.query(
+                `INSERT INTO notifications (user_id, sender_id, type, text, reference_id) 
+                 SELECT u, s, 'new_connection', t, r FROM UNNEST($1::uuid[], $2::uuid[], $3::text[], $4::uuid[]) as t1(u, s, t, r)`,
+                [userIds, validUserSenderIds, newConnTexts, validUserSenderIds]
+            );
+        }
+
+        // --- Process Organization Requests ---
+        if (validOrgRequestIds.length > 0) {
+            totalProcessed += validOrgRequestIds.length;
+
+            // Bulk UPDATE organization_connection_requests
+            await client.query(
+                "UPDATE organization_connection_requests SET status = 'accepted', updated_at = NOW() WHERE request_id = ANY($1::uuid[])",
+                [validOrgRequestIds]
+            );
+
+            // Bulk INSERT organization_connections
+            const userIds = Array(validOrgRequests.length).fill(userId);
+
+            await client.query(
+                `INSERT INTO organization_connections (org_id, user_id) 
+                 SELECT * FROM UNNEST($1::uuid[], $2::uuid[]) ON CONFLICT DO NOTHING`,
+                [validOrgIds, userIds]
+            );
+
+            // Auto-follow the organizations
+            await client.query(
+                `INSERT INTO organization_followers (user_id, org_id) 
+                 SELECT * FROM UNNEST($1::uuid[], $2::uuid[]) ON CONFLICT DO NOTHING`,
+                [userIds, validOrgIds]
+            );
+
+            // Fetch all company details in one query
+            const companiesRes = await client.query(
+                "SELECT org_id, name, logo_url FROM organizations WHERE org_id = ANY($1::uuid[])",
+                [validOrgIds]
+            );
+            const companiesMap = new Map(companiesRes.rows.map(c => [c.org_id, c]));
+
+            // Fetch all admins for all these companies in one query
+            const adminsRes = await client.query(
+                "SELECT org_id, user_id FROM organization_members WHERE org_id = ANY($1::uuid[]) AND role IN ('ADMIN', 'OWNER')",
+                [validOrgIds]
+            );
+            const orgAdminsMap = new Map();
+            for (const row of adminsRes.rows) {
+                if (!orgAdminsMap.has(row.org_id)) orgAdminsMap.set(row.org_id, []);
+                orgAdminsMap.get(row.org_id).push(row.user_id);
+            }
+
+            const userNotifUserIds = [];
+            const userNotifSenderIds = [];
+            const userNotifTypes = [];
+            const userNotifTexts = [];
+            const userNotifReferenceIds = [];
+            const userNotifMetadatas = [];
+
+            const adminNotifUserIds = [];
+            const adminNotifSenderIds = [];
+            const adminNotifTypes = [];
+            const adminNotifTexts = [];
+            const adminNotifReferenceIds = [];
+            const adminNotifRecipientOrgIds = [];
+            const adminNotifMetadatas = [];
+
+            for (const orgId of validOrgIds) {
+                const company = companiesMap.get(orgId);
+                if (!company) continue;
+
+                // Accepting user notification data
+                userNotifUserIds.push(userId);
+                userNotifSenderIds.push(userId);
+                userNotifTypes.push("company_connection_accepted");
+                userNotifTexts.push(`You are now connected with ${company.name}`);
+                userNotifReferenceIds.push(orgId);
+                userNotifMetadatas.push(JSON.stringify({ org_id: orgId }));
+
+                // Company admins notification data
+                const admins = orgAdminsMap.get(orgId) || [];
+                for (const adminId of admins) {
+                    adminNotifUserIds.push(adminId);
+                    adminNotifSenderIds.push(userId);
+                    adminNotifTypes.push("company_connection_accepted");
+                    adminNotifTexts.push(`${accepterName} accepted the company's connection request`);
+                    adminNotifReferenceIds.push(orgId);
+                    adminNotifRecipientOrgIds.push(orgId);
+                    adminNotifMetadatas.push(JSON.stringify({ org_id: orgId }));
+                }
+            }
+
+            // Bulk insert accepting user notifications
+            let userNotifRes = { rows: [] };
+            if (userNotifUserIds.length > 0) {
+                userNotifRes = await client.query(
+                    `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata)
+                     SELECT u, s, t, txt, r, m::jsonb FROM UNNEST($1::uuid[], $2::uuid[], $3::text[], $4::text[], $5::uuid[], $6::text[]) as t1(u, s, t, txt, r, m) RETURNING *`,
+                    [userNotifUserIds, userNotifSenderIds, userNotifTypes, userNotifTexts, userNotifReferenceIds, userNotifMetadatas]
+                );
+            }
+
+            // Bulk insert admin notifications
+            let adminNotifRes = { rows: [] };
+            if (adminNotifUserIds.length > 0) {
+                adminNotifRes = await client.query(
+                    `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, recipient_org_id, metadata)
+                     SELECT u, s, t, txt, r, ro, m::jsonb FROM UNNEST($1::uuid[], $2::uuid[], $3::text[], $4::text[], $5::uuid[], $6::uuid[], $7::text[]) as t1(u, s, t, txt, r, ro, m) RETURNING *`,
+                    [adminNotifUserIds, adminNotifSenderIds, adminNotifTypes, adminNotifTexts, adminNotifReferenceIds, adminNotifRecipientOrgIds, adminNotifMetadatas]
+                );
+            }
+
+            // Dispatch socket events
+            for (const notif of userNotifRes.rows) {
+                const orgId = notif.reference_id;
+                const company = companiesMap.get(orgId);
+                if (company) {
+                    socketService.notifyUser(userId, "notification", {
+                        type: "company_connection_accepted",
+                        text: "and you are now connected!",
+                        from: orgId,
+                        senderName: company.name,
+                        senderAvatar: company.logo_url,
+                        referenceId: orgId,
+                        isCompanyRequest: true,
+                        notification_id: notif.notification_id,
+                        created_at: notif.created_at.toISOString(),
+                        time: "Just now"
+                    });
+                }
+            }
+
+            for (const notif of adminNotifRes.rows) {
+                const orgId = notif.reference_id;
+                const adminId = notif.user_id;
+                socketService.notifyUser(adminId, "notification", {
+                    type: "company_connection_accepted",
+                    text: "accepted the company's connection request",
+                    from: userId,
+                    senderName: accepterName,
+                    senderAvatar: accepterAvatar,
+                    referenceId: orgId,
+                    notification_id: notif.notification_id,
+                    created_at: notif.created_at.toISOString(),
+                    time: "Just now"
+                });
+                socketService.notifyUser(adminId, "relationshipUpdated", { userId: userId, status: 'connected', type: 'company_connection' });
+            }
+
+            for (const orgId of validOrgIds) {
+                socketService.notifyUser(userId, "relationshipUpdated", { userId: orgId, status: 'connected', type: 'company' });
+            }
+        }
+
+        await client.query("COMMIT");
+
+        // Non-blocking side effects for user requests
+        if (validUserSenderIds.length > 0) {
+            for (const sender_id of validUserSenderIds) {
+                const senderNotification = {
+                    type: 'connection_accepted',
+                    text: `${accepterName} accepted your connection request.`,
+                    from: userId,
+                    senderName: accepterName,
+                    senderAvatar: accepterAvatar,
+                    referenceId: userId,
+                    time: "Just now"
+                };
+                socketService.notifyUser(sender_id, "notification", senderNotification);
+                sendPush(sender_id, accepterName, senderNotification.text, { type: 'connection_accepted', userId: userId }).catch(() => {});
+                socketService.notifyUser(sender_id, "relationshipUpdated", { userId: userId, status: 'connected' });
+                socketService.notifyUser(userId, "relationshipUpdated", { userId: sender_id, status: 'connected' });
+            }
+        }
+
+        return res.status(200).json({ message: "Batch connections established", processed: totalProcessed });
+
+
+    } catch (err) {
+        await client.query("ROLLBACK");
+        console.error("Batch accept connection error:", err);
+        return res.status(500).json({ message: "Internal server error" });
+    } finally {
+        client.release();
+    }
+};
+
+exports.batchDeclineConnectionRequests = async (req, res) => {
+    const { requestIds } = req.body;
+    const userId = req.user.sub;
+
+    if (!Array.isArray(requestIds) || requestIds.length === 0) {
+        return res.status(400).json({ message: "Invalid requestIds array" });
+    }
+
+    const client = await pool.connect();
+    try {
+        await client.query("BEGIN");
+
+        const validReqsRes = await client.query(
+            "SELECT request_id FROM connection_requests WHERE request_id = ANY($1::uuid[]) AND receiver_id = $2 AND status = 'pending'",
+            [requestIds, userId]
+        );
+
+        const validOrgReqsRes = await client.query(
+            "SELECT request_id, org_id FROM organization_connection_requests WHERE request_id = ANY($1::uuid[]) AND user_id = $2 AND status = 'pending' FOR UPDATE",
+            [requestIds, userId]
+        );
+
+        if (validReqsRes.rowCount === 0 && validOrgReqsRes.rowCount === 0) {
+            await client.query("ROLLBACK");
+            return res.status(400).json({ message: "No valid pending requests found" });
+        }
+
+        const validRequestIds = validReqsRes.rows.map(r => r.request_id);
+        const validOrgRequestIds = validOrgReqsRes.rows.map(r => r.request_id);
+        const validOrgIds = validOrgReqsRes.rows.map(r => r.org_id);
+        
+        let totalProcessed = 0;
+
+        if (validRequestIds.length > 0) {
+            totalProcessed += validRequestIds.length;
+            await client.query(
+                `UPDATE connection_requests 
+                 SET status = 'rejected', responded_at = NOW(), cooldown_until = NOW() 
+                 WHERE request_id = ANY($1::uuid[])`,
+                [validRequestIds]
+            );
+        }
+
+        if (validOrgRequestIds.length > 0) {
+            totalProcessed += validOrgRequestIds.length;
+            await client.query(
+                "UPDATE organization_connection_requests SET status = 'rejected', updated_at = NOW() WHERE request_id = ANY($1::uuid[])",
+                [validOrgRequestIds]
+            );
+
+            // Notify relationships for sockets
+            for (const orgId of validOrgIds) {
+                socketService.notifyUser(userId, "relationshipUpdated", { userId: orgId, status: 'none', type: 'company' });
+            }
+        }
+        
+        await client.query("COMMIT");
+        return res.status(200).json({ message: "Batch connection requests rejected", processed: totalProcessed });
+    } catch (err) {
+        await client.query("ROLLBACK");
+        console.error("Batch decline connection error:", err);
+        return res.status(500).json({ message: "Internal server error" });
+    } finally {
+        client.release();
+    }
+};
+
+exports.batchWithdrawConnectionRequests = async (req, res) => {
+    const { requestIds } = req.body;
+    const userId = req.user.sub;
+
+    if (!Array.isArray(requestIds) || requestIds.length === 0) {
+        return res.status(400).json({ message: "Invalid requestIds array" });
+    }
+
+    try {
+        const result = await pool.query(
+            `DELETE FROM connection_requests 
+             WHERE request_id = ANY($1::uuid[]) AND sender_id = $2 AND status = 'pending'
+             RETURNING request_id`,
+            [requestIds, userId]
+        );
+        return res.status(200).json({ message: "Batch connection requests canceled", processed: result.rowCount });
+    } catch (err) {
+        console.error("Batch cancel connection error:", err);
+        return res.status(500).json({ message: "Internal server error" });
+    }
+};
+
 exports.handleConnectionRequest = async (req, res) => {
     const requestId = req.params.requestId;
     const { status } = req.body; // 'connected', 'rejected', 'blocked'
@@ -1784,9 +2148,31 @@ exports.handleConnectionRequest = async (req, res) => {
             [requestId]
         );
 
+        let isCompanyRequest = false;
+        let companyId = null;
+
         if (reqRes.rowCount === 0) {
-            await client.query("ROLLBACK");
-            return res.status(404).json({ message: "Request not found" });
+            // Fallback: check if it's a company connection request
+            const orgReqRes = await client.query(
+                "SELECT org_id, user_id, status FROM organization_connection_requests WHERE request_id = $1 FOR UPDATE",
+                [requestId]
+            );
+
+            if (orgReqRes.rowCount === 0) {
+                await client.query("ROLLBACK");
+                return res.status(404).json({ message: "Request not found" });
+            }
+
+            isCompanyRequest = true;
+            const invite = orgReqRes.rows[0];
+            companyId = invite.org_id;
+            
+            // Re-map variables to match the user flow
+            reqRes.rows = [{
+                sender_id: companyId,
+                receiver_id: invite.user_id,
+                status: invite.status
+            }];
         }
 
         const { sender_id, receiver_id, status: currentStatus } = reqRes.rows[0];
@@ -1823,21 +2209,20 @@ exports.handleConnectionRequest = async (req, res) => {
 
         // 2. REJECT
         if (status === 'rejected') {
-            // OLD CODE (commented out for testing):
-            // await client.query(
-            //     `UPDATE connection_requests 
-            //      SET status = 'rejected', responded_at = NOW(), cooldown_until = NOW() + INTERVAL '24 hours' 
-            //      WHERE request_id = $1`,
-            //     [requestId]
-            // );
-
-            // NEW CODE (testing mode: set cooldown_until = NOW() to remove 24hr limit):
-            await client.query(
-                `UPDATE connection_requests 
-                 SET status = 'rejected', responded_at = NOW(), cooldown_until = NOW() 
-                 WHERE request_id = $1`,
-                [requestId]
-            );
+            if (isCompanyRequest) {
+                await client.query(
+                    "UPDATE organization_connection_requests SET status = 'rejected', updated_at = NOW() WHERE request_id = $1",
+                    [requestId]
+                );
+                socketService.notifyUser(userId, "relationshipUpdated", { userId: companyId, status: 'none', type: 'company' });
+            } else {
+                await client.query(
+                    `UPDATE connection_requests 
+                     SET status = 'rejected', responded_at = NOW(), cooldown_until = NOW() 
+                     WHERE request_id = $1`,
+                    [requestId]
+                );
+            }
 
             await client.query("COMMIT");
             return res.status(200).json({ message: "Connection request rejected", connected: false });
@@ -1845,6 +2230,101 @@ exports.handleConnectionRequest = async (req, res) => {
 
         // 3. ACCEPT (Connected)
         if (status === 'connected') {
+            if (isCompanyRequest) {
+                // Create mutual connections
+                await client.query(
+                    "INSERT INTO organization_connections (org_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+                    [companyId, userId]
+                );
+
+                // Auto-follow the company
+                await client.query(
+                    "INSERT INTO organization_followers (user_id, org_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+                    [userId, companyId]
+                );
+
+                await client.query(
+                    "UPDATE organization_connection_requests SET status = 'accepted', updated_at = NOW() WHERE request_id = $1",
+                    [requestId]
+                );
+
+                const userRes = await client.query("SELECT full_name, avatar_url FROM users WHERE user_id = $1", [userId]);
+                const user = userRes.rows[0];
+
+                const companyRes = await client.query("SELECT name, logo_url FROM organizations WHERE org_id = $1", [companyId]);
+                const company = companyRes.rows[0];
+
+                // Persistent notification for accepting user
+                const userNotifRes = await client.query(
+                    `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata)
+                     VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+                    [
+                        userId,
+                        userId, // self-action
+                        "company_connection_accepted",
+                        `You are now connected with ${company.name}`,
+                        companyId,
+                        JSON.stringify({ org_id: companyId })
+                    ]
+                );
+
+                socketService.notifyUser(userId, "notification", {
+                    type: "company_connection_accepted",
+                    text: "and you are now connected!",
+                    from: companyId,
+                    senderName: company.name,
+                    senderAvatar: company.logo_url,
+                    referenceId: companyId,
+                    isCompanyRequest: true,
+                    notification_id: userNotifRes.rows[0].notification_id,
+                    created_at: userNotifRes.rows[0].created_at.toISOString(),
+                    time: "Just now"
+                });
+
+                // Persistent notification for company admins
+                const adminsRes = await client.query(
+                    "SELECT user_id FROM organization_members WHERE org_id = $1 AND (role = 'ADMIN' OR role = 'OWNER')",
+                    [companyId]
+                );
+
+                for (const admin of adminsRes.rows) {
+                    const adminNotifRes = await client.query(
+                        `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, recipient_org_id, metadata)
+                         VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
+                        [
+                            admin.user_id,
+                            userId,
+                            "company_connection_accepted",
+                            `${user.full_name} accepted the company's connection request`,
+                            companyId,
+                            companyId,
+                            JSON.stringify({ org_id: companyId })
+                        ]
+                    );
+
+                    socketService.notifyUser(admin.user_id, "notification", {
+                        type: "company_connection_accepted",
+                        text: "accepted the company's connection request",
+                        from: userId,
+                        senderName: user.full_name,
+                        senderAvatar: user.avatar_url,
+                        referenceId: companyId,
+                        notification_id: adminNotifRes.rows[0].notification_id,
+                        created_at: adminNotifRes.rows[0].created_at.toISOString(),
+                        time: "Just now"
+                    });
+                }
+
+                socketService.notifyUser(userId, "relationshipUpdated", { userId: companyId, status: 'connected', type: 'company' });
+                for (const admin of adminsRes.rows) {
+                    socketService.notifyUser(admin.user_id, "relationshipUpdated", { userId: userId, status: 'connected', type: 'company_connection' });
+                }
+
+                await client.query("COMMIT");
+                return res.status(200).json({ message: "Connection established", connected: true, relationship: "connected" });
+            }
+
+            // --- User Connection Request ---
             // Create mutual connections
             await client.query(
                 "INSERT INTO connections (user_id, connected_user_id) VALUES ($1, $2), ($2, $1) ON CONFLICT DO NOTHING",
