@@ -28,14 +28,7 @@ subscriber.on('message', async (channel, message) => {
   try {
     const payload = JSON.parse(message);
     
-    if (channel === 'admin:feature_flags') {
-      if (payload.action_taken === 'updated' && payload.key) {
-        updateFlagInMemory(payload.key, payload.value);
-        // Broadcast the real-time update to all connected frontend clients
-        socketService.broadcastGlobal('feature_flags_updated', { [payload.key]: payload.value });
-      }
-    } 
-    else if (channel === 'admin:users') {
+    if (channel === 'admin:users') {
       if (payload.action === 'suspended' && payload.userId) {
         console.log(`[Admin Event] User ${payload.userId} suspended. Force disconnecting sockets...`);
         const disconnectedCount = await socketService.disconnectUser(payload.userId);

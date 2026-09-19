@@ -70,6 +70,23 @@ async function checkDbConnection() {
         );
         CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_user_id ON password_reset_tokens(user_id);
         CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_hash ON password_reset_tokens(token_hash);
+
+        -- Feature flag PostgreSQL LISTEN/NOTIFY trigger
+        CREATE OR REPLACE FUNCTION notify_feature_flag_update()
+        RETURNS trigger AS $$
+        BEGIN
+          PERFORM pg_notify('feature_flags_updated', json_build_object(
+            'key', NEW.flag_key,
+            'value', NEW.is_enabled
+          )::text);
+          RETURN NEW;
+        END;
+        $$ LANGUAGE plpgsql;
+
+        DROP TRIGGER IF EXISTS feature_flags_update_trigger ON feature_flags;
+        CREATE TRIGGER feature_flags_update_trigger
+        AFTER INSERT OR UPDATE ON feature_flags
+        FOR EACH ROW EXECUTE FUNCTION notify_feature_flag_update();
       `).catch(err => console.warn("Database schema update notice:", err.message));
     }
     return true;

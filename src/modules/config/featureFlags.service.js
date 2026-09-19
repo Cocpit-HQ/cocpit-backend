@@ -50,6 +50,41 @@ const initFlagsFromRedis = async () => {
     } catch (err) {
         console.error('🔥 Failed to load feature flags:', err.message);
     }
+    
+    // Start listening for real-time PostgreSQL updates
+    listenForDatabaseUpdates();
+};
+
+const listenForDatabaseUpdates = async () => {
+    try {
+        const client = await pool.connect();
+        await client.query('LISTEN feature_flags_updated');
+        
+        client.on('notification', (msg) => {
+            if (msg.channel === 'feature_flags_updated') {
+                try {
+                    const payload = JSON.parse(msg.payload);
+                    updateFlagInMemory(payload.key, payload.value);
+                    
+                    // Broadcast to frontend clients via WebSockets
+                    const socketService = require('../../core/infrastructure/socket.service');
+                    socketService.broadcastGlobal('feature_flags_updated', { [payload.key]: payload.value });
+                } catch (err) {
+                    console.error('🔥 Failed to process PostgreSQL feature flag notification:', err.message);
+                }
+            }
+        });
+        
+        client.on('end', () => {
+            console.warn('⚠️ PostgreSQL LISTEN client disconnected. Reconnecting in 5 seconds...');
+            setTimeout(listenForDatabaseUpdates, 5000);
+        });
+
+        console.log('✅ Listening to PostgreSQL feature_flags_updated channel');
+    } catch (err) {
+        console.error('🔥 Failed to setup PostgreSQL LISTEN for feature flags:', err.message);
+        setTimeout(listenForDatabaseUpdates, 5000);
+    }
 };
 
 module.exports = {
