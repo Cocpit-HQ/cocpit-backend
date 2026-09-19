@@ -44,7 +44,7 @@ const login = async (req, res) => {
       return res.status(403).json({ error: 'Access denied. Authorized personnel only.' });
     }
 
-    const payload = { userId: user.id, roles: userRoles };
+    const payload = { userId: user.admin_id, roles: userRoles };
     
     const accessToken = jwt.sign(payload, process.env.JWT_ACCESS_SECRET, { expiresIn: '15m' });
     const refreshToken = jwt.sign(payload, process.env.JWT_REFRESH_SECRET, { expiresIn: '24h' });
@@ -53,9 +53,9 @@ const login = async (req, res) => {
     const ipAddress = req.ip || req.socket.remoteAddress || '127.0.0.1';
 
     await req.db.query(
-      `INSERT INTO admin_refresh_tokens (admin_user_id, session_id, token_hash, expires_at, user_agent, ip_address) 
-       VALUES ($1, gen_random_uuid(), $2, NOW() + INTERVAL '24 hours', $3, $4)`,
-      [user.id, tokenHash, req.headers['user-agent'] || null, ipAddress]
+      `INSERT INTO admin_refresh_tokens (admin_id, token_hash, expires_at) 
+       VALUES ($1, $2, NOW() + INTERVAL '24 hours')`,
+      [user.admin_id, tokenHash]
     );
 
     res.cookie('refreshToken', refreshToken, {
@@ -69,14 +69,14 @@ const login = async (req, res) => {
       message: 'Login successful',
       accessToken,
       user: {
-        id: user.id,
+        id: user.admin_id,
         email: user.email,
         roles: userRoles
       }
     });
 
     // Fire-and-forget audit log
-    logAdminActivity(req.db, user.id, 'LOGIN', 'Successful administrator login', ipAddress);
+    logAdminActivity(req.db, user.admin_id, 'LOGIN', 'Successful administrator login', ipAddress);
 
   } catch (error) {
     console.error('Login error:', error);
@@ -99,9 +99,9 @@ const refresh = async (req, res) => {
     const dbToken = dbTokenResult.rows[0];
 
     // Token Reuse Detection
-    if (dbToken.revoked) {
-      console.warn(`Token reuse detected for admin user ${dbToken.admin_user_id}. Revoking all tokens.`);
-      await req.db.query('UPDATE admin_refresh_tokens SET revoked = true WHERE admin_user_id = $1', [dbToken.admin_user_id]);
+    if (dbToken.is_revoked) {
+      console.warn(`Token reuse detected for admin user ${dbToken.admin_id}. Revoking all tokens.`);
+      await req.db.query('UPDATE admin_refresh_tokens SET is_revoked = true WHERE admin_id = $1', [dbToken.admin_id]);
       return res.status(403).json({ error: 'Security alert: Token reuse detected. All sessions revoked.' });
     }
 
@@ -126,10 +126,10 @@ const logout = async (req, res) => {
     const tokenHash = hashToken(refreshToken);
     
     // Get admin_id for logging before revocation
-    const dbTokenResult = await req.db.query('SELECT admin_user_id FROM admin_refresh_tokens WHERE token_hash = $1', [tokenHash]);
-    const userId = dbTokenResult.rows[0]?.admin_user_id;
+    const dbTokenResult = await req.db.query('SELECT admin_id FROM admin_refresh_tokens WHERE token_hash = $1', [tokenHash]);
+    const userId = dbTokenResult.rows[0]?.admin_id;
 
-    await req.db.query('UPDATE admin_refresh_tokens SET revoked = true WHERE token_hash = $1', [tokenHash]);
+    await req.db.query('UPDATE admin_refresh_tokens SET is_revoked = true WHERE token_hash = $1', [tokenHash]);
     res.clearCookie('refreshToken', {
       httpOnly: true,
       sameSite: 'strict',
