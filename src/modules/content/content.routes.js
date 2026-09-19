@@ -36,7 +36,6 @@ router.post("/post", requireAuth, uploadPostMedia, validate(createPostSchema), c
 router.get("/post/:id", requireAuth, contentController.getPostById);
 router.put("/post/:id", requireAuth, uploadPostMedia, contentController.updatePostById);
 router.delete("/post/:id", requireAuth, contentController.deletePost);
-router.delete("/post/:id/mentions", requireAuth, contentController.removeMention);
 
 // Achievement Images
 router.get("/achievement-images", requireAuth, achievementImageController.getAll);
@@ -71,6 +70,8 @@ router.get("/post/:id/poll/analytics", requireAuth, contentController.getPollAna
 // Social Engagement
 router.post("/post/:id/like", requireAuth, contentController.toggleLike);
 router.get("/post/:id/likes", requireAuth, contentController.getPostLikes);
+router.post("/post/:id/appeal", requireAuth, contentController.submitPostAppeal);
+router.delete("/post/:id/mentions", requireAuth, contentController.removeMention);
 router.post("/post/:id/comments", requireAuth, contentController.addComment);
 router.post("/comments/:commentId/like", requireAuth, contentController.toggleCommentLike);
 router.post("/comments/:commentId/pin", requireAuth, contentController.toggleCommentPin);
@@ -113,5 +114,6 @@ router.get("/debug-db", async (req, res) => {
 // AI Enhancement
 router.get("/ai/usage", requireAuth, contentController.getAIUsage);
 router.post("/ai/generate", requireAuth, contentController.generateAIContent);
+
 
 module.exports = router;

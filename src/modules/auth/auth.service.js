@@ -12,6 +12,7 @@ const authRepo = require("./auth.repository");
 const redisClient = require("../../core/db/redis");
 const pool = require("../../core/db/pool");
 const socketService = require("../../core/infrastructure/socket.service");
+const featureFlagsService = require("../config/featureFlags.service");
 
 const MAX_DEVICES = 10;
 const REFRESH_REPLAY_WINDOW_SECONDS = Math.max(1, Number(process.env.REFRESH_REPLAY_WINDOW_SECONDS || 15));
@@ -302,6 +303,17 @@ const loginUser = async ({ email, password, userAgent, ipAddress }) => {
         return { error: { status: 401, message: "Incorrect email or password. Try again" } };
     }
 
+    // 2.5 Block login if account is suspended
+    if (user.is_suspended) {
+        return {
+            error: {
+                status: 403,
+                code: "ACCOUNT_SUSPENDED",
+                message: "Your account has been suspended by an administrator. Please contact support.",
+            }
+        };
+    }
+
     // 3. Block login if account is pending deletion
     if (user.deletion_execute_at) {
         return {
@@ -529,6 +541,16 @@ const socialLogin = async ({ provider, idToken, accountType, fullName: clientFul
                 };
             }
 
+            const flags = featureFlagsService.getFlags();
+            if (flags["enableUserSignup"] === false) {
+                return {
+                    error: {
+                        status: 403,
+                        message: "User registration is currently disabled.",
+                    },
+                };
+            }
+
             // accountType defaults to Student if not provided
             const finalAccountType = accountType || "Student";
 
@@ -555,7 +577,7 @@ const socialLogin = async ({ provider, idToken, accountType, fullName: clientFul
         }
     }
 
-    // ── Step 3: Block login if account is pending deletion ──
+    // ── Step 3: Block login if account is pending deletion or suspended ──
     if (user.deletion_execute_at) {
         return {
             error: {
@@ -565,6 +587,16 @@ const socialLogin = async ({ provider, idToken, accountType, fullName: clientFul
                 deletionDate: user.deletion_execute_at,
                 email: user.email,
             },
+        };
+    }
+
+    if (user.is_suspended) {
+        return {
+            error: {
+                status: 403,
+                code: "ACCOUNT_SUSPENDED",
+                message: "Your account has been suspended by an administrator. Please contact support.",
+            }
         };
     }
 

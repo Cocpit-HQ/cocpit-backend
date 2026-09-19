@@ -1,5 +1,6 @@
 const { sanitizeContent } = require("../../utils/contentSanitizer");
 const pool = require("../../core/db/pool");
+const { getFlags } = require('../config/featureFlags.service');
 const { buildJobFilters } = require("../../core/utils/jobQueryBuilder");
 const { logAudit } = require("../../core/infrastructure/audit.service");
 const { checkOrgPermission } = require("../../core/utils/rbac");
@@ -1287,7 +1288,6 @@ exports.applyJob = async (req, res) => {
 
     // 11. COMMIT and return
     await client.query('COMMIT');
-    
     // Notifications (Phase 1)
     let companyName = "the company";
     let companyAvatar = null;
@@ -1348,9 +1348,9 @@ exports.applyJob = async (req, res) => {
     }
 
     res.status(201).json({ message: text, applicationId: appId });
-
     // 🎯 Intent Layer: Log Apply Job
     logIntentActivity({ userId, action: "apply_job", metadata: { jobId: id, applicationId: appId } });
+    logActivity(userId, 'apply_job', 'job', id);
   } catch (err) {
     await client.query("ROLLBACK");
     console.error("Apply job error:", err);
@@ -1419,6 +1419,11 @@ exports.getJobOffers = async (req, res) => {
 };
 
 exports.saveJob = async (req, res) => {
+  const flags = getFlags();
+  if (!flags.saved_jobs) {
+    return res.status(403).json({ message: "Job saving is currently disabled by administrators." });
+  }
+
   const userId = req.user.sub;
   const jobId = req.params.id;
 

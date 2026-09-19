@@ -31,6 +31,8 @@ jest.mock('../../../core/db/pool', () => ({
 jest.mock('../../../core/cache/redis', () => ({
   get: jest.fn().mockResolvedValue(null),   // Cache miss by default
   setEx: jest.fn().mockResolvedValue('OK'),
+  incr: jest.fn().mockResolvedValue(1),
+  expire: jest.fn().mockResolvedValue(1),
 }));
 
 // ─── Mock: Gemini SDK ─────────────────────────────────────────────────────────

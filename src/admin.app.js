@@ -1,0 +1,42 @@
+const express = require('express');
+const cors = require('cors');
+const helmet = require('helmet');
+const cookieParser = require('cookie-parser');
+
+const adminRoutes = require('./admin/routes/admin.routes');
+const { adminGlobalLimiter } = require('./admin/middlewares/rateLimiter');
+const environmentMiddleware = require('./core/middlewares/environment.middleware');
+const errorHandler = require('./core/middlewares/error.middleware');
+
+const app = express();
+
+app.set('trust proxy', 1);
+
+app.use(helmet());
+app.use(cors({
+  origin: true,
+  credentials: true
+}));
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+app.use(cookieParser());
+
+// Health Check
+app.get('/health', (req, res) => {
+  res.status(200).json({ status: 'OK', service: 'admin' });
+});
+
+const authRoutes = require('./admin/modules/auth/auth.routes');
+app.use('/api/auth', environmentMiddleware, authRoutes);
+
+// Public Config Endpoint (Feature Flags)
+const configRoutes = require('./modules/config/config.routes');
+app.use('/api/config', configRoutes);
+
+// Admin Routes
+app.use('/api/admin', adminGlobalLimiter, environmentMiddleware, adminRoutes);
+
+// Error Handling
+app.use(errorHandler);
+
+module.exports = app;

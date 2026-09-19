@@ -1,9 +1,16 @@
-require("dotenv").config();
+const path = require('path');
+require("dotenv").config({ path: path.resolve(__dirname, '../.env') });
 require("newrelic");
 const express = require("express");
 
 // Server Entry Point
 const app = require("./app");
+
+// Health check endpoint for Gateway
+app.get('/health', (req, res) => {
+  res.status(200).json({ status: 'ok', service: 'main-api' });
+});
+
 const http = require("http");
 const { initSocket } = require("./utils/socket");
 const { processJobExpirations } = require("./workers/jobExpiryWorker");
@@ -33,6 +40,12 @@ if (process.env.NEW_RELIC_LICENSE_KEY) {
 // Redundant app.set("trust proxy", true) removed to prevent overwriting app.js settings
 // Initialize Socket.IO (backgrounded to avoid hanging on Redis connect)
 initSocket(server);
+
+// Initialize Redis Subscriber and Feature Flags
+require('./core/cache/redisSubscriber');
+require('./modules/config/featureFlags.service').initFlagsFromRedis();
+
+// startSessionTimeoutWorker();
 
 // Start simple job expiry worker (Every 15 minutes)
 setInterval(() => {
@@ -92,8 +105,30 @@ startAiAnalysisWorker().catch(e => console.error("AI Worker crashed:", e));
 
 // Event Outbox Processor disabled
 
-server.listen(PORT, '0.0.0.0', () => {
-  console.log('Server running on port ' + PORT);
+server.listen(PORT, () => {
+  console.log('[Main API] Server running on port ' + PORT);
 });
 
-console.log(`CICD Deployment Successful - Version ${require('../package.json').version}`);
+console.log("CICD Deployment Successful - Version 1.0.1");
+
+// Graceful Shutdown
+const pool = require('./core/db/pool');
+const gracefulShutdown = () => {
+  console.log('\n[Main API] Shutting down gracefully...');
+  server.close(async () => {
+    console.log('[Main API] Closed out remaining HTTP connections.');
+    try {
+      if (pool) {
+        await pool.end();
+        console.log('[Main API] Database pool closed.');
+      }
+    } catch (err) {
+      console.error('[Main API] Error closing DB pool:', err);
+    }
+    process.exit(0);
+  });
+};
+
+process.on('SIGINT', gracefulShutdown);
+process.on('SIGTERM', gracefulShutdown);
+// Trigger nodemon restart

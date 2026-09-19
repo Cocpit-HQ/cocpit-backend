@@ -93,6 +93,17 @@ router.patch("/conversations/:conversationId/read", requireAuth, socialControlle
 router.get("/messages/:messageId/seen-by", requireAuth, socialController.getMessageSeenBy);
 
 // Notifications
+const featureFlagsService = require("../config/featureFlags.service");
+const blockIfNotificationsDisabled = (req, res, next) => {
+    const flags = featureFlagsService.getFlags();
+    if (flags["enableNotificationsModule"] === false) {
+        return res.status(403).json({ message: "Notifications are currently disabled." });
+    }
+    next();
+};
+
+router.use("/notifications", blockIfNotificationsDisabled);
+
 router.get("/notifications", requireAuth, socialController.getNotifications);
 router.patch("/notifications/:id/read", requireAuth, socialController.markNotificationRead);
 router.patch("/notifications/read-all", requireAuth, socialController.markAllNotificationsRead);

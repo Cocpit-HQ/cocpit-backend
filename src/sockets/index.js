@@ -88,6 +88,16 @@ module.exports.initSocket = async (httpServer) => {
 
     try {
       const decoded = await verifyAccessToken(token);
+      
+      // Check for suspended user
+      const redisClient = require("../core/cache/redis");
+      if (redisClient.status === 'ready' || redisClient.isOpen) {
+        const isSuspended = await redisClient.get(`suspended_user:${decoded.sub}`);
+        if (isSuspended) {
+          return next(new Error("Authentication error: User account is suspended"));
+        }
+      }
+
       socket.userId = decoded.sub;
       socket.sessionId = decoded.sid;
       socket.roles = decoded.roles || [];

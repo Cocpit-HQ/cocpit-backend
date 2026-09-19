@@ -263,11 +263,22 @@ exports.submitDocumentVerification = async (req, res) => {
             [orgId, legalName, incorpDateStr]
         );
 
-        await client.query(
-            `INSERT INTO organization_verifications (org_id, verification_type, document_urls, is_verified, legal_name, incorporation_date)
-             VALUES ($1, 'DOCUMENT', $2, TRUE, $3, $4)`,
-            [orgId, JSON.stringify(finalUrls), legalName, incorpDateStr]
-        );
+        const existing = await client.query(`SELECT verification_id FROM organization_verifications WHERE org_id = $1 AND is_verified = FALSE`, [orgId]);
+
+        if (existing.rowCount > 0) {
+            await client.query(
+                `UPDATE organization_verifications 
+                 SET document_urls = $1, verification_type = 'DOCUMENT', review_notes = NULL, reviewed_by = NULL, is_verified = TRUE, legal_name = $3, incorporation_date = $4
+                 WHERE org_id = $2 AND is_verified = FALSE`,
+                [JSON.stringify(finalUrls), orgId, legalName, incorpDateStr]
+            );
+        } else {
+            await client.query(
+                `INSERT INTO organization_verifications (org_id, verification_type, document_urls, is_verified, legal_name, incorporation_date)
+                 VALUES ($1, 'DOCUMENT', $2, TRUE, $3, $4)`,
+                [orgId, JSON.stringify(finalUrls), legalName, incorpDateStr]
+            );
+        }
 
         await logAudit(client, {
             entityId: orgId,

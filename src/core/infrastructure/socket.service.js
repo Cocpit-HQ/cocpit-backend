@@ -199,6 +199,34 @@ class SocketService {
   }
 
   /**
+   * Forcefully disconnect all active socket connections for a given user.
+   * Useful when an admin suspends a user.
+   * @param {string} userId
+   * @returns {Promise<number>} Number of disconnected sockets
+   */
+  async disconnectUser(userId) {
+    if (!this.io) {
+      this._warnUninitialized();
+      return 0;
+    }
+    const userRoom = getUserRoom(userId);
+    const sockets = await this.io.in(userRoom).fetchSockets();
+    let disconnectedCount = 0;
+    sockets.forEach((socket) => {
+      // Notify the frontend client so they can clear tokens and redirect to login
+      socket.emit('auth:suspended');
+      
+      // Give the event 500ms to reach the client before severing the connection
+      setTimeout(() => {
+        socket.disconnect(true);
+      }, 500);
+      
+      disconnectedCount += 1;
+    });
+    return disconnectedCount;
+  }
+
+  /**
    * Force a user's sockets to leave a conversation room
    * @param {string} userId
    * @param {string} conversationId
@@ -335,6 +363,19 @@ class SocketService {
     const room = getUserRoom(userId);
     // io.sockets.adapter.rooms is a Map where key is room name and value is Set of socket IDs
     return this.io.sockets.adapter.rooms.has(room);
+  }
+
+  /**
+   * Broadcast an event to all connected clients globally
+   * @param {string} event
+   * @param {object} payload
+   */
+  broadcastGlobal(event, payload) {
+    if (!this.io) {
+      this._warnUninitialized();
+      return;
+    }
+    this.io.emit(event, payload);
   }
 }
 

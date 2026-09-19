@@ -127,7 +127,7 @@ BEGIN
     -- This prevents true duplicates at the DB level using a date-truncated unique index.
     EXECUTE $idx$
       CREATE UNIQUE INDEX IF NOT EXISTS uq_org_profile_view_daily
-      ON organization_profile_views (organization_id, profile_owner_id, profile_type, DATE(viewed_at));
+      ON organization_profile_views (organization_id, profile_owner_id, profile_type, ((viewed_at AT TIME ZONE 'UTC')::date));
     $idx$;
   END IF;
 END $$;

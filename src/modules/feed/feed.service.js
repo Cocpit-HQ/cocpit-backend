@@ -341,6 +341,62 @@ function _buildResponse(items, session, cacheHit, nextCursor, totalCandidates = 
 }
 
 // ---------------------------------------------------------------------------
+// Internal: fetch chronological feed (when algorithm = false)
+// ---------------------------------------------------------------------------
+
+async function _fetchChronologicalFeed(userId, cursor, limit, pool, orgActorId = null) {
+  if (!pool) return { items: [], nextCursor: null };
+
+  const scopeId = buildCacheScopeId(userId, orgActorId);
+
+  let hiddenSet = new Set();
+  try {
+    const hiddenArray = await getHiddenSet(scopeId);
+    hiddenSet = new Set(hiddenArray || []);
+  } catch (err) {
+    console.warn('[feedService] _fetchChronologicalFeed getHiddenSet failed:', err.message);
+  }
+
+  const fetchLimit = limit + 5;
+  const params = [fetchLimit];
+  let cursorCondition = '';
+
+  if (cursor && cursor !== 'initial') {
+    params.push(cursor);
+    cursorCondition = `AND p.created_at < $2`;
+  }
+
+  const query = `
+    SELECT p.post_id AS id, 'post' AS type, 'organic' AS slot_type, p.created_at
+    FROM posts p
+    WHERE (p.is_removed IS FALSE OR p.is_removed IS NULL)
+      AND (p.is_active IS TRUE OR p.is_active IS NULL)
+      AND (p.is_deleted IS FALSE OR p.is_deleted IS NULL)
+      AND (p.is_unlisted IS FALSE OR p.is_unlisted IS NULL)
+      ${cursorCondition}
+    ORDER BY p.created_at DESC, p.post_id DESC
+    LIMIT $1;
+  `;
+
+  try {
+    const { rows } = await pool.query(query, params);
+    
+    const rawItems = (rows || []).filter(r => !hiddenSet.has(r.id));
+    const items = rawItems.slice(0, limit);
+
+    const lastItem = items[items.length - 1];
+    const nextCursor = items.length >= limit && lastItem && lastItem.created_at
+      ? new Date(lastItem.created_at).toISOString()
+      : null;
+
+    return { items, nextCursor };
+  } catch (err) {
+    console.error('[feedService] _fetchChronologicalFeed failed:', err.message);
+    return { items: [], nextCursor: null };
+  }
+}
+
+// ---------------------------------------------------------------------------
 // B7 — Public API: getFeed
 // ---------------------------------------------------------------------------
 

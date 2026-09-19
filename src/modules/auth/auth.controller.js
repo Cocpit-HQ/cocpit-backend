@@ -5,6 +5,7 @@
 const authService = require("./auth.service");
 const otpService = require("./otp.service");
 const actorContextService = require("./actorContext.service");
+const featureFlagsService = require("../config/featureFlags.service");
 const pool = require("../../core/db/pool");
 const { logAudit } = require("../../core/infrastructure/audit.service");
 
@@ -15,10 +16,20 @@ exports.register = async (req, res) => {
     const userAgent = req.headers["user-agent"] || "unknown";
     const ipAddress = req.ip || "unknown";
 
+    const flags = featureFlagsService.getFlags();
+    if (flags["enableAuthModule"] === false) {
+        return res.status(403).json({ message: "Authentication is currently disabled." });
+    }
+    if (flags["enableUserSignup"] === false) {
+        return res.status(403).json({ message: "User registration is currently disabled." });
+    }
+
     try {
-        const otpResult = await otpService.verifyOTP(email, otp, true, "signup");
-        if (otpResult.error) {
-            return res.status(otpResult.error.status).json({ message: otpResult.error.message });
+        if (flags["requireOtpVerification"] !== false) {
+            const otpResult = await otpService.verifyOTP(email, otp, true, "signup");
+            if (otpResult.error) {
+                return res.status(otpResult.error.status).json({ message: otpResult.error.message });
+            }
         }
 
         const result = await authService.registerUser({ email, password, userAgent, ipAddress });
@@ -54,6 +65,14 @@ exports.login = async (req, res) => {
     const { email, password } = req.body;
     const userAgent = req.headers["user-agent"] || "unknown";
     const ipAddress = req.ip || "unknown";
+
+    const flags = featureFlagsService.getFlags();
+    if (flags["enableAuthModule"] === false) {
+        return res.status(403).json({ message: "Authentication is currently disabled." });
+    }
+    if (flags["enableUserLogin"] === false) {
+        return res.status(403).json({ message: "User login is currently disabled." });
+    }
 
     try {
         const result = await authService.loginUser({ email, password, userAgent, ipAddress });
@@ -249,6 +268,11 @@ const handleSocialLogin = async (req, res, provider) => {
     const { idToken, accountType, fullName, action } = req.body;
     const userAgent = req.headers["user-agent"] || "unknown";
     const ipAddress = req.ip || "unknown";
+
+    const flags = featureFlagsService.getFlags();
+    if (flags["enableAuthModule"] === false) {
+        return res.status(403).json({ message: "Authentication is currently disabled." });
+    }
 
     if (!idToken) {
         return res.status(400).json({ message: "idToken is required" });

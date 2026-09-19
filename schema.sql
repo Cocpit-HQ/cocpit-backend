@@ -37,6 +37,7 @@ CREATE TABLE users (
     about_text TEXT,
   created_at TIMESTAMPTZ DEFAULT now(),
   updated_at TIMESTAMPTZ DEFAULT now(),
+  last_login_at TIMESTAMPTZ,
   deletion_scheduled_at TIMESTAMPTZ,
   deletion_execute_at TIMESTAMPTZ,
   is_deactivated BOOLEAN DEFAULT false,
@@ -1456,6 +1457,7 @@ CREATE TABLE IF NOT EXISTS job_offers (
                CHECK (status IN ('pending', 'accepted', 'declined', 'withdrawn', 'expired')),
   responded_at TIMESTAMPTZ,
   expires_at   TIMESTAMPTZ DEFAULT (now() + INTERVAL '30 days'),
+  context_sent BOOLEAN DEFAULT FALSE,
   created_at   TIMESTAMPTZ DEFAULT now(),
   updated_at   TIMESTAMPTZ DEFAULT now()
 );
@@ -2056,8 +2058,9 @@ CREATE TABLE IF NOT EXISTS organization_key_offerings (
 CREATE INDEX IF NOT EXISTS idx_org_key_offerings_org_id ON organization_key_offerings(org_id);
 CREATE INDEX IF NOT EXISTS idx_org_key_offerings_active ON organization_key_offerings(org_id) WHERE is_deleted = FALSE;
 
--- 07/16/2026 Migration: Community Article Indicator
+-- 07/16/2026 Migration: Community Article Indicator and Post Status
 ALTER TABLE posts ADD COLUMN IF NOT EXISTS is_community_article BOOLEAN DEFAULT FALSE;
+ALTER TABLE posts ADD COLUMN IF NOT EXISTS status VARCHAR(50) DEFAULT 'published';
 
 -- ==========================================================================
 -- PROFILE PROJECTS FEATURE (2026-07-28)
@@ -2173,6 +2176,16 @@ CREATE TABLE IF NOT EXISTS support_tickets (
         CHECK (status IN ('OPEN', 'IN_PROGRESS', 'RESOLVED', 'CLOSED')),
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 5b. Ticket Replies (for Admin notes and user replies)
+CREATE TABLE IF NOT EXISTS ticket_replies (
+    reply_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    ticket_id UUID REFERENCES support_tickets(ticket_id) ON DELETE CASCADE,
+    admin_id UUID,
+    message TEXT NOT NULL,
+    is_internal_note BOOLEAN DEFAULT false,
+    created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
 -- 6. User feedback (one per user per app version)
@@ -2387,3 +2400,15 @@ CREATE TABLE IF NOT EXISTS user_search_history (
 CREATE INDEX IF NOT EXISTS idx_user_search_history_user_created ON user_search_history(user_id, created_at DESC);
 CREATE UNIQUE INDEX IF NOT EXISTS uq_user_search_history_user_query ON user_search_history(user_id, query_normalized);
 
+
+-- Migration: Add missing community_invitations table
+CREATE TABLE IF NOT EXISTS community_invitations (
+    invitation_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    community_id UUID REFERENCES communities(community_id) ON DELETE CASCADE,
+    inviter_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
+    invitee_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
+    status VARCHAR(20) DEFAULT 'pending',
+    is_active BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);

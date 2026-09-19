@@ -35,9 +35,21 @@ const sensitiveActionLimiter = createRateLimit({
     message: "Too many requests. Please try again later.",
 });
 
+const featureFlagsService = require("../config/featureFlags.service");
+
 // Resolve active actor context (USER vs ORGANIZATION / INSTITUTION) for all settings endpoints
 router.use(resolveActorContext);
 
+// Block all settings routes if enableSettingsModule is false
+const blockIfSettingsDisabled = (req, res, next) => {
+    const flags = featureFlagsService.getFlags();
+    if (flags["enableSettingsModule"] === false) {
+        return res.status(403).json({ message: "Settings are currently disabled." });
+    }
+    next();
+};
+
+router.use(blockIfSettingsDisabled);
 // ─── 1. Account Settings ───────────────────────────────────────────────────────
 
 // Password Change

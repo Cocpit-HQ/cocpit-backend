@@ -19,8 +19,8 @@
 
 const pool = require('../../core/db/pool');
 const { checkOrgPermission } = require('../../core/utils/rbac');
-const { logAudit } = require('../../core/infrastructure/audit.service');
-const { checkActorBlockStatus } = require('../../core/utils/blockCheck');
+const { logAudit } = require("../../core/infrastructure/audit.service");
+const featureFlagsService = require("../config/featureFlags.service");
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -82,6 +82,14 @@ async function getViewerMembership(orgId, userId) {
 // ---------------------------------------------------------------------------
 
 exports.getOrgProfile = async (req, res) => {
+    const flags = featureFlagsService.getFlags();
+    if (flags["enableOrganizationsModule"] === false) {
+        return res.status(403).json({ message: "Organizations module is currently disabled." });
+    }
+    if (flags["enableOrganizations"] === false) {
+        return res.status(403).json({ message: "Organization profiles are currently disabled." });
+    }
+
     const { orgId } = req.params;
     const viewerId = req.user?.sub || null;
 
@@ -726,7 +734,7 @@ async function calculateOrgDemographics(client, orgId, type, search, graduationY
         WITH matching_users AS (${cteQuery})
         SELECT COUNT(*)::int AS count FROM matching_users
     `, params);
-    
+
     const totalAssociates = countRes.rows[0]?.count || 0;
 
     if (totalAssociates === 0) {
@@ -1345,12 +1353,12 @@ exports.updateOrgProfile = async (req, res) => {
 
                 const icon = (off.icon || '').trim();
                 const label = (off.label || '').trim();
-                
+
                 if (!KEY_OFFERING_ICONS_MAP[icon]) {
                     await client.query('ROLLBACK');
                     return res.status(400).json({ message: `Invalid icon '${icon}' provided for Key Offerings.` });
                 }
-                
+
                 if (KEY_OFFERING_ICONS_MAP[icon] !== label) {
                     await client.query('ROLLBACK');
                     return res.status(400).json({ message: `Invalid label '${label}' for icon '${icon}'. Expected label is '${KEY_OFFERING_ICONS_MAP[icon]}'.` });
@@ -1487,7 +1495,7 @@ exports.updateOrgAbout = async (req, res) => {
             for (const office of offices) {
                 if (!office.city || !office.country) continue;
                 const cleanAddress = office.address ? office.address.trim() : '';
-                
+
                 if (office.office_id && existingOfficeIds.has(office.office_id)) {
                     // Update existing active office
                     await client.query(

@@ -9,10 +9,19 @@ const { logAudit } = require("../../core/infrastructure/audit.service");
 
 // --- Updated Permissions Helper ---
 const { requireOrgPermission } = require("../../core/middlewares/organization.auth.middleware");
+const featureFlagsService = require("../config/featureFlags.service");
 
 exports.createOrganization = async (req, res) => {
     const userId = req.user.sub;
     const { name, slug, email, industry, size, website, location, description, parent_org_id } = req.body;
+
+    const flags = featureFlagsService.getFlags();
+    if (flags["enableOrganizationsModule"] === false) {
+        return res.status(403).json({ message: "Organizations module is currently disabled." });
+    }
+    if (flags["enableOrgCreation"] === false) {
+        return res.status(403).json({ message: "Organization creation is currently disabled." });
+    }
 
     // 1. Validation
     if (!name || !slug) {
@@ -210,7 +219,8 @@ exports.getOrganization = async (req, res) => {
                 'entity_type', p.entity_type
             )
         ELSE NULL END AS parent_org,
-        (SELECT COUNT(*) FROM organizations ch WHERE ch.parent_org_id = c.org_id AND ch.is_deleted = FALSE) AS children_count
+        (SELECT COUNT(*) FROM organizations ch WHERE ch.parent_org_id = c.org_id AND ch.is_deleted = FALSE) AS children_count,
+        (SELECT document_urls FROM organization_verifications WHERE org_id = c.org_id ORDER BY created_at DESC LIMIT 1) as verification_documents
        FROM organizations c
        LEFT JOIN organizations p ON c.parent_org_id = p.org_id
        WHERE (c.slug = $1 OR (
@@ -1392,7 +1402,7 @@ const generateUniqueSlug = async (client, name, orgId) => {
     let slug = baseSlug;
     let count = 1;
     while (true) {
-        const query = orgId 
+        const query = orgId
             ? `SELECT 1 FROM organizations WHERE slug = $1 AND org_id != $2`
             : `SELECT 1 FROM organizations WHERE slug = $1`;
         const params = orgId ? [slug, orgId] : [slug];
@@ -1456,7 +1466,7 @@ exports.createDraftType = async (req, res) => {
             RETURNING *
         `;
         const result = await client.query(insertText, [draftId, tempName, tempSlug, type, userId]);
-        
+
         await logAudit(client, {
             entityId: draftId,
             actorId: userId,
@@ -2009,14 +2019,27 @@ exports.completeOnboardingFlow = async (req, res) => {
             throw new AppError("Organization phone number must be verified before completing onboarding", 400);
         }
 
+        const docsRes = await client.query(`SELECT document_url FROM organization_documents WHERE org_id = $1`, [orgId]);
+        let finalVerificationStatus = 'DOMAIN_VERIFIED';
+        
+        if (docsRes.rowCount > 0) {
+            finalVerificationStatus = 'DOCUMENT_PENDING';
+            const docUrls = docsRes.rows.map(row => row.document_url);
+            await client.query(
+                `INSERT INTO organization_verifications (org_id, verification_type, document_urls, is_verified, otp, expires_at)
+                 VALUES ($1, 'DOCUMENT', $2, FALSE, 'N/A', NOW() + INTERVAL '1 day')`,
+                [orgId, JSON.stringify(docUrls)]
+            );
+        }
+
         await client.query(
             `UPDATE organizations 
              SET onboarding_completed = TRUE,
                  onboarding_step = NULL,
-                 verification_status = 'DOMAIN_VERIFIED',
+                 verification_status = $1,
                  updated_at = NOW()
-             WHERE org_id = $1`,
-            [orgId]
+             WHERE org_id = $2`,
+            [finalVerificationStatus, orgId]
         );
 
         let roles;
@@ -2173,11 +2196,9 @@ exports.publishNewOrganization = async (req, res) => {
             isInstitution ? (industry || null) : null,
             logoUrl,
             email ? email.toLowerCase().trim() : null,
-            phone ? phone.trim() : null,
             website || null,
             size || null,
-            country || null,
-            city || null,
+            locationStr,
             headline || null,
             description || null,
             userId,
@@ -2191,10 +2212,21 @@ exports.publishNewOrganization = async (req, res) => {
         const entityType = newOrg.entity_type;
         let ownerRoleName, roles;
 
-        ownerRoleName = 'Admin';
-        roles = [
-            { name: 'Admin', color: '#FFD700', permissions: ['*'], priority: 100 }
-        ];
+        if (entityType === 'INSTITUTION') {
+            ownerRoleName = 'Admin';
+            roles = [
+                { name: 'Admin', color: '#FFD700', permissions: ['*'], priority: 100 },
+                { name: 'Faculty', color: '#FF5733', permissions: ['CREATE_ACADEMIC_CONTENT', 'MODERATE_STUDENTS', 'VIEW_MEMBERS'], priority: 80 },
+                { name: 'Student Moderator', color: '#28B463', permissions: ['CREATE_GENERAL_CONTENT', 'MODERATE_GENERAL', 'VIEW_MEMBERS'], priority: 60 },
+                { name: 'Student', color: '#3498DB', permissions: ['CREATE_GENERAL_CONTENT', 'VIEW_MEMBERS'], priority: 10 }
+            ];
+        } else {
+            ownerRoleName = 'Owner';
+            roles = [
+                { name: 'Owner',     color: '#FFD700', permissions: ['*'],                                                                                                                priority: 100 },
+                { name: 'Admin',     color: '#FF5733', permissions: ['MANAGE_COMPANY', 'MANAGE_SETTINGS', 'MANAGE_ROLES', 'MANAGE_MEMBERS', 'INVITE_MEMBERS', 'POST_JOBS', 'VIEW_JOBS', 'MANAGE_JOBS', 'VIEW_APPLICANTS', 'MANAGE_APPLICANTS', 'CREATE_CONTENT', 'VIEW_ANALYTICS'], priority: 90  },
+            ];
+        }
 
         let ownerRoleId;
         for (const r of roles) {
