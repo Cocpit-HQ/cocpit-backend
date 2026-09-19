@@ -5315,13 +5315,32 @@ exports.getRelationshipStatus = async (req, res) => {
         });
     }
 
+    let resolvedTargetId = targetUserId;
+    const uuidRegex = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+
+    if (!uuidRegex.test(targetUserId)) {
+        try {
+            const resolveResult = await pool.query(
+                "SELECT user_id FROM active_users WHERE LOWER(account_name) = LOWER($1) AND is_deactivated = FALSE",
+                [targetUserId]
+            );
+            if (resolveResult.rowCount === 0) {
+                return res.status(404).json({ message: "User handle not found" });
+            }
+            resolvedTargetId = resolveResult.rows[0].user_id;
+        } catch (err) {
+            console.error("Handle resolution error in getRelationshipStatus:", err);
+            return res.status(500).json({ message: "Internal server error during handle resolution" });
+        }
+    }
+
     try {
         const client = await pool.connect();
         try {
             // Check connection (Bidirectional for safety)
             const connectedRes = await client.query(
                 "SELECT 1 FROM connections WHERE (user_id = $1 AND connected_user_id = $2) OR (user_id = $2 AND connected_user_id = $1)",
-                [userId, targetUserId]
+                [userId, resolvedTargetId]
             );
             const isConnected = connectedRes.rowCount > 0;
 
@@ -5336,7 +5355,7 @@ exports.getRelationshipStatus = async (req, res) => {
             // Check pending requests ONLY — connections table is the sole authority for 'connected'
             const requestRes = await client.query(
                 "SELECT request_id, sender_id, status, cooldown_until FROM connection_requests WHERE ((sender_id = $1 AND receiver_id = $2) OR (sender_id = $2 AND receiver_id = $1)) AND status IN ('pending', 'rejected', 'blocked')",
-                [userId, targetUserId]
+                [userId, resolvedTargetId]
             );
 
             let status = 'none';
@@ -5368,11 +5387,11 @@ exports.getRelationshipStatus = async (req, res) => {
             // Check specific follows if not connected (should strictly not happen if connected)
             const followingRes = await client.query(
                 "SELECT 1 FROM followers WHERE follower_id = $1 AND following_id = $2",
-                [userId, targetUserId]
+                [userId, resolvedTargetId]
             );
             const followedByRes = await client.query(
                 "SELECT 1 FROM followers WHERE follower_id = $1 AND following_id = $2",
-                [targetUserId, userId]
+                [resolvedTargetId, userId]
             );
 
 
