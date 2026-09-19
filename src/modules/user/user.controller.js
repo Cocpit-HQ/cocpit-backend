@@ -616,6 +616,7 @@ exports.getPublicProfilePosts = async (req, res) => {
   const { id: userId } = req.params;
   const {
     category,
+    filter: queryFilter,
     cursorCreatedAt,
     cursorPostId,
     limit = 10,
@@ -654,8 +655,8 @@ exports.getPublicProfilePosts = async (req, res) => {
   }
 
   // --- Block Check Implementation ---
-  const currentUserId = req.user.sub;
-  if (targetUserId !== currentUserId) {
+  const currentUserId = req.user ? req.user.sub : null;
+  if (currentUserId && targetUserId !== currentUserId) {
 
     const isBlocked = await checkActorBlockStatus(req, targetUserId);
     if (isBlocked) {
@@ -669,17 +670,48 @@ exports.getPublicProfilePosts = async (req, res) => {
     const params = [targetUserId];
     let idx = 2;
     let whereClause = "";
-    if (category === 'Comments') {
+
+    // Support both ?filter=... and legacy ?category=... (if category matches a filter name)
+    const filterTabs = ['Repost', 'Articles', 'Article', 'Video', 'Videos', 'Poll', 'Polls', 'Post', 'Comments'];
+    let filter = queryFilter;
+    let effectiveCategory = category;
+
+    if (!filter && category && filterTabs.includes(category)) {
+      filter = category;
+      effectiveCategory = 'All';
+    }
+
+    if (effectiveCategory === 'Comments' || filter === 'Comments') {
       whereClause = `WHERE EXISTS (SELECT 1 FROM active_post_comments pc_filter WHERE pc_filter.post_id = p.post_id AND pc_filter.author_id = $1) AND p.visibility = 'public' AND p.is_active = TRUE AND (p.is_removed IS FALSE OR p.is_removed IS NULL) `;
     } else {
       whereClause = `WHERE p.author_id = $1 AND p.author_org_id IS NULL AND p.visibility = 'public' AND p.is_active = TRUE AND (p.is_removed IS FALSE OR p.is_removed IS NULL) `;
     }
 
     // ✅ Category filter (skip "All")
-    if (category && category !== "All") {
+    if (effectiveCategory && effectiveCategory !== "All") {
       whereClause += ` AND pc.name = $${idx}`;
-      params.push(category);
+      params.push(effectiveCategory);
       idx++;
+    }
+
+    // ✅ Filter key handling (Post, Repost, Articles, Video, Poll, Private post)
+    if (filter) {
+      if (filter === 'Post') {
+        whereClause += ` AND p.shared_post_id IS NULL AND p.shared_job_id IS NULL `;
+      } else if (filter === 'Repost') {
+        whereClause += ` AND (p.shared_post_id IS NOT NULL OR p.shared_job_id IS NOT NULL) `;
+      } else if (filter === 'Private post') {
+        if (targetUserId !== currentUserId) {
+          return res.json({ posts: [], nextCursor: null });
+        }
+        whereClause = `WHERE p.author_id = $1 AND p.author_org_id IS NULL AND p.visibility = 'private' AND p.is_active = TRUE AND (p.is_removed IS FALSE OR p.is_removed IS NULL) `;
+      } else if (filter === 'Articles' || filter === 'Article') {
+        whereClause += ` AND (p.post_type = 'article' OR pc.name = 'Article' OR p.is_community_article = TRUE) AND p.shared_post_id IS NULL AND p.shared_job_id IS NULL `;
+      } else if (filter === 'Video' || filter === 'Videos') {
+        whereClause += ` AND (p.post_type = 'video' OR EXISTS (SELECT 1 FROM post_media pm WHERE pm.post_id = p.post_id AND pm.media_type = 'video')) AND p.shared_post_id IS NULL AND p.shared_job_id IS NULL `;
+      } else if (filter === 'Poll' || filter === 'Polls') {
+        whereClause += ` AND (p.post_type = 'poll' OR EXISTS (SELECT 1 FROM post_polls pp WHERE pp.post_id = p.post_id)) AND p.shared_post_id IS NULL AND p.shared_job_id IS NULL `;
+      }
     }
 
     // ✅ Cursor-based pagination (stable ordering)
@@ -812,6 +844,23 @@ exports.getPublicProfilePosts = async (req, res) => {
 
         --Shared Post Data
         CASE 
+          WHEN p.shared_job_id IS NOT NULL THEN
+            json_build_object(
+                 'is_accessible', true,
+                 'job_id', sj.job_id,
+                 'title', sj.title,
+                 'company_name', sj.company_name,
+                 'location', sj.location,
+                 'job_type', sj.job_type,
+                 'work_mode', sj.work_mode,
+                 'salary_min', sj.salary_min,
+                 'salary_max', sj.salary_max,
+                 'company_logo', sj_comp.logo_url,
+                 'created_at', sj.created_at,
+                 'is_active', sj.is_active,
+                 'company_slug', sj_comp.slug,
+                 'shared_entity_type', 'job'
+            )
           WHEN p.shared_post_id IS NULL THEN NULL
           WHEN sp.post_id IS NULL THEN 
             json_build_object('is_accessible', false, 'reason', 'deleted')
@@ -940,6 +989,8 @@ exports.getPublicProfilePosts = async (req, res) => {
       LEFT JOIN active_users sp_u ON sp.author_id = sp_u.user_id
       LEFT JOIN organizations sp_comp ON sp_comp.org_id = sp.author_org_id
       LEFT JOIN post_categories sp_cat ON sp.category_id = sp_cat.category_id
+      LEFT JOIN jobs sj ON p.shared_job_id = sj.job_id
+      LEFT JOIN organizations sj_comp ON sj.org_id = sj_comp.org_id
 
       ${whereClause}
 
@@ -1002,7 +1053,7 @@ exports.getPublicProfilePosts = async (req, res) => {
     `;
 
     // Add current user ID to params for is_liked check and user_vote check
-    params.push(req.user.sub);
+    params.push(currentUserId);
 
     const { rows } = await pool.query(query, params);
     const last = rows[rows.length - 1];
@@ -1059,8 +1110,8 @@ exports.getPublicProfileCommentedPosts = async (req, res) => {
   }
 
   // Block check
-  const currentUserId = req.user.sub;
-  if (targetUserId !== currentUserId) {
+  const currentUserId = req.user ? req.user.sub : null;
+  if (currentUserId && targetUserId !== currentUserId) {
 
     const isBlocked = await checkActorBlockStatus(req, targetUserId);
     if (isBlocked) {
@@ -1092,7 +1143,7 @@ exports.getPublicProfileCommentedPosts = async (req, res) => {
     const limitIdx = idx;
 
     const userParamIdx = params.length + 1;
-    params.push(currentUserId);
+    params.push(currentUserId || null);
 
     const query = `
       SELECT
