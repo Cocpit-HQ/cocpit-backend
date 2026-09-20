@@ -779,10 +779,41 @@ exports.getFollowers = async (req, res) => {
             userId = resolveResult.rows[0].user_id;
         }
 
+        const params = [userId];
+        let requesterIdx = null;
+        let searchIdx = null;
+
+        if (requesterId) {
+            params.push(requesterId);
+            requesterIdx = params.length;
+        }
+
+        if (search) {
+            params.push(`%${search}%`);
+            searchIdx = params.length;
+        }
+
         // Build UNION query: users following this user + companies following this user
         let userQuery = `
             SELECT u.user_id, u.full_name, u.avatar_url, u.headline, f.created_at, 'user' as type, NULL as slug,
-                   (EXISTS (SELECT 1 FROM followers WHERE follower_id = $2 AND following_id = u.user_id)) as is_following_back
+            ${requesterIdx ? `
+                   (EXISTS (SELECT 1 FROM followers WHERE follower_id = $${requesterIdx} AND following_id = u.user_id)) as is_following_back,
+                   (EXISTS (SELECT 1 FROM connections c_chk WHERE c_chk.user_id = $${requesterIdx} AND c_chk.connected_user_id = u.user_id)) as is_connected,
+                   (
+                       SELECT CASE 
+                           WHEN sender_id = $${requesterIdx} THEN 'pending_sent'
+                           ELSE 'pending_received'
+                       END
+                       FROM connection_requests cr
+                       WHERE ((cr.sender_id = $${requesterIdx} AND cr.receiver_id = u.user_id) OR (cr.sender_id = u.user_id AND cr.receiver_id = $${requesterIdx}))
+                         AND cr.status = 'pending'
+                       LIMIT 1
+                   ) as connection_status
+            ` : `
+                   FALSE as is_following_back,
+                   FALSE as is_connected,
+                   'none' as connection_status
+            `}
             FROM followers f 
             JOIN active_users u ON f.follower_id = u.user_id 
             WHERE f.following_id = $1
@@ -790,29 +821,45 @@ exports.getFollowers = async (req, res) => {
 
         let companyQuery = `
             SELECT o.org_id as user_id, o.name as full_name, o.logo_url as avatar_url, o.slogan as headline, ouf.created_at, 'company' as type, o.slug,
-                   (EXISTS (SELECT 1 FROM organization_followers WHERE user_id = $2 AND org_id = o.org_id)) as is_following_back
+            ${requesterIdx ? `
+                   (EXISTS (SELECT 1 FROM organization_followers WHERE user_id = $${requesterIdx} AND org_id = o.org_id)) as is_following_back,
+                   (EXISTS (SELECT 1 FROM organization_connections oc_chk WHERE oc_chk.user_id = $${requesterIdx} AND oc_chk.org_id = o.org_id)) as is_connected,
+                   (
+                       SELECT CASE 
+                           WHEN user_id = $${requesterIdx} THEN 'pending_sent'
+                           ELSE 'pending_received'
+                       END
+                       FROM organization_connection_requests ocr
+                       WHERE ocr.user_id = $${requesterIdx} AND ocr.org_id = o.org_id
+                         AND ocr.status = 'pending'
+                       LIMIT 1
+                   ) as connection_status
+            ` : `
+                   FALSE as is_following_back,
+                   FALSE as is_connected,
+                   'none' as connection_status
+            `}
             FROM organization_user_follows ouf
             JOIN organizations o ON ouf.org_id = o.org_id
             WHERE ouf.user_id = $1 AND o.is_deleted = FALSE
         `;
 
-        const params = [userId, requesterId];
-
-        if (search) {
-            userQuery += ` AND (u.full_name ILIKE $3 OR u.headline ILIKE $3)`;
-            companyQuery += ` AND (o.name ILIKE $3 OR o.slogan ILIKE $3)`;
-            params.push(`%${search}%`);
+        if (searchIdx) {
+            userQuery += ` AND (u.full_name ILIKE $${searchIdx} OR u.headline ILIKE $${searchIdx})`;
+            companyQuery += ` AND (o.name ILIKE $${searchIdx} OR o.slogan ILIKE $${searchIdx})`;
         }
 
         // Apply block filtering to user followers
-        userQuery += ` 
-            AND NOT EXISTS (
-                SELECT 1 FROM blocks b 
-                WHERE b.is_org_block = false
-                  AND ((b.blocker_id = $2 AND b.blocked_id = u.user_id)
-                    OR (b.blocker_id = u.user_id AND b.blocked_id = $2))
-            )
-        `;
+        if (requesterIdx) {
+            userQuery += ` 
+                AND NOT EXISTS (
+                    SELECT 1 FROM blocks b 
+                    WHERE b.is_org_block = false
+                      AND ((b.blocker_id = $${requesterIdx} AND b.blocked_id = u.user_id)
+                        OR (b.blocker_id = u.user_id AND b.blocked_id = $${requesterIdx}))
+                )
+            `;
+        }
 
         const fullQuery = `(${userQuery}) UNION ALL (${companyQuery}) ORDER BY created_at DESC`;
 
@@ -853,47 +900,89 @@ exports.getFollowing = async (req, res) => {
             userId = resolveResult.rows[0].user_id;
         }
 
+        const params = [userId];
+        const viewerId = req.user.sub;
+        let searchIdx = null;
+        let viewerIdx = null;
+
+        if (viewerId) {
+            params.push(viewerId);
+            viewerIdx = params.length;
+        }
+
+        if (search) {
+            params.push(`%${search}%`);
+            searchIdx = params.length;
+        }
+
         // Build UNION query: users the person follows + companies the person follows
         let userQuery = `
-            SELECT u.user_id, u.full_name, u.avatar_url, u.headline, f.created_at, 'user' as type, NULL as slug
+            SELECT u.user_id, u.full_name, u.avatar_url, u.headline, f.created_at, 'user' as type, NULL as slug,
+            ${viewerIdx ? `
+                   (EXISTS (SELECT 1 FROM connections c_chk WHERE c_chk.user_id = $${viewerIdx} AND c_chk.connected_user_id = u.user_id)) as is_connected,
+                   (
+                       SELECT CASE 
+                           WHEN sender_id = $${viewerIdx} THEN 'pending_sent'
+                           ELSE 'pending_received'
+                       END
+                       FROM connection_requests cr
+                       WHERE ((cr.sender_id = $${viewerIdx} AND cr.receiver_id = u.user_id) OR (cr.sender_id = u.user_id AND cr.receiver_id = $${viewerIdx}))
+                         AND cr.status = 'pending'
+                       LIMIT 1
+                   ) as connection_status
+            ` : `
+                   FALSE as is_connected,
+                   'none' as connection_status
+            `}
             FROM followers f
             JOIN active_users u ON f.following_id = u.user_id
             WHERE f.follower_id = $1
         `;
 
         let companyQuery = `
-            SELECT c.org_id as user_id, c.name as full_name, c.logo_url as avatar_url, c.industry as headline, cf.created_at, 'company' as type, c.slug
+            SELECT c.org_id as user_id, c.name as full_name, c.logo_url as avatar_url, c.industry as headline, cf.created_at, 'company' as type, c.slug,
+            ${viewerIdx ? `
+                   (EXISTS (SELECT 1 FROM organization_connections oc_chk WHERE oc_chk.user_id = $${viewerIdx} AND oc_chk.org_id = c.org_id)) as is_connected,
+                   (
+                       SELECT CASE 
+                           WHEN user_id = $${viewerIdx} THEN 'pending_sent'
+                           ELSE 'pending_received'
+                       END
+                       FROM organization_connection_requests ocr
+                       WHERE ocr.user_id = $${viewerIdx} AND ocr.org_id = c.org_id
+                         AND ocr.status = 'pending'
+                       LIMIT 1
+                   ) as connection_status
+            ` : `
+                   FALSE as is_connected,
+                   'none' as connection_status
+            `}
             FROM organization_followers cf
             JOIN organizations c ON cf.org_id = c.org_id
             WHERE cf.user_id = $1
               AND c.is_deleted = FALSE
         `;
 
-        const params = [userId];
-
-        if (search) {
-            userQuery += ` AND (u.full_name ILIKE $2 OR u.headline ILIKE $2)`;
-            companyQuery += ` AND (c.name ILIKE $2 OR c.industry ILIKE $2)`;
-            params.push(`%${search}%`);
+        if (searchIdx) {
+            userQuery += ` AND (u.full_name ILIKE $${searchIdx} OR u.headline ILIKE $${searchIdx})`;
+            companyQuery += ` AND (c.name ILIKE $${searchIdx} OR c.industry ILIKE $${searchIdx})`;
         }
 
-        const viewerId = req.user.sub;
-        const queryParams = [...params, viewerId];
-        const viewerIdx = queryParams.length;
-
         // Apply block filtering to user follows
-        userQuery += `
-            AND NOT EXISTS (
-                SELECT 1 FROM blocks b 
-                WHERE b.is_org_block = false
-                  AND ((b.blocker_id = $${viewerIdx} AND b.blocked_id = u.user_id)
-                    OR (b.blocker_id = u.user_id AND b.blocked_id = $${viewerIdx}))
-            )
-        `;
+        if (viewerIdx) {
+            userQuery += `
+                AND NOT EXISTS (
+                    SELECT 1 FROM blocks b 
+                    WHERE b.is_org_block = false
+                      AND ((b.blocker_id = $${viewerIdx} AND b.blocked_id = u.user_id)
+                        OR (b.blocker_id = u.user_id AND b.blocked_id = $${viewerIdx}))
+                )
+            `;
+        }
 
         const fullQuery = `(${userQuery}) UNION ALL (${companyQuery}) ORDER BY created_at DESC`;
 
-        const result = await pool.query(fullQuery, queryParams);
+        const result = await pool.query(fullQuery, params);
 
         const formattedConnections = result.rows.map(row => {
             const timeAgoVal = formatDistanceToNow(new Date(row.created_at), {
@@ -2514,38 +2603,78 @@ exports.getConnections = async (req, res) => {
             targetUserId = resolveResult.rows[0].user_id;
         }
 
+        const params = [targetUserId];
+        let searchIdx = null;
+        let requesterIdx = null;
+
+        if (search) {
+            params.push(`%${search}%`);
+            searchIdx = params.length;
+        }
+
+        if (requesterId) {
+            params.push(requesterId);
+            requesterIdx = params.length;
+        }
+
         let userQuery = `
-            SELECT u.user_id, u.full_name, u.avatar_url, u.headline, c.created_at, 'user' as type, NULL as slug
+            SELECT u.user_id, u.full_name, u.avatar_url, u.headline, c.created_at, 'user' as type, NULL as slug,
+            ${requesterIdx ? `
+                   (EXISTS (SELECT 1 FROM connections c_chk WHERE c_chk.user_id = $${requesterIdx} AND c_chk.connected_user_id = u.user_id)) as is_connected,
+                   (
+                       SELECT CASE 
+                           WHEN sender_id = $${requesterIdx} THEN 'pending_sent'
+                           ELSE 'pending_received'
+                       END
+                       FROM connection_requests cr
+                       WHERE ((cr.sender_id = $${requesterIdx} AND cr.receiver_id = u.user_id) OR (cr.sender_id = u.user_id AND cr.receiver_id = $${requesterIdx}))
+                         AND cr.status = 'pending'
+                       LIMIT 1
+                   ) as connection_status
+            ` : `
+                   FALSE as is_connected,
+                   'none' as connection_status
+            `}
             FROM connections c 
             JOIN active_users u ON c.connected_user_id = u.user_id 
             WHERE c.user_id = $1
         `;
 
         let companyQuery = `
-            SELECT c.org_id as user_id, c.name as full_name, c.logo_url as avatar_url, c.industry as headline, cc.created_at, 'company' as type, c.slug
+            SELECT c.org_id as user_id, c.name as full_name, c.logo_url as avatar_url, c.industry as headline, cc.created_at, 'company' as type, c.slug,
+            ${requesterIdx ? `
+                   (EXISTS (SELECT 1 FROM organization_connections oc_chk WHERE oc_chk.user_id = $${requesterIdx} AND oc_chk.org_id = c.org_id)) as is_connected,
+                   (
+                       SELECT CASE 
+                           WHEN user_id = $${requesterIdx} THEN 'pending_sent'
+                           ELSE 'pending_received'
+                       END
+                       FROM organization_connection_requests ocr
+                       WHERE ocr.user_id = $${requesterIdx} AND ocr.org_id = c.org_id
+                         AND ocr.status = 'pending'
+                       LIMIT 1
+                   ) as connection_status
+            ` : `
+                   FALSE as is_connected,
+                   'none' as connection_status
+            `}
             FROM organization_connections cc
             JOIN organizations c ON cc.org_id = c.org_id
             WHERE cc.user_id = $1
               AND c.is_deleted = FALSE
         `;
 
-        const params = [targetUserId];
-        let paramIdx = 2;
-
-        if (search) {
-            userQuery += ` AND (u.full_name ILIKE $${paramIdx} OR u.headline ILIKE $${paramIdx})`;
-            companyQuery += ` AND (c.name ILIKE $${paramIdx} OR c.industry ILIKE $${paramIdx})`;
-            params.push(`%${search}%`);
-            paramIdx++;
+        if (searchIdx) {
+            userQuery += ` AND (u.full_name ILIKE $${searchIdx} OR u.headline ILIKE $${searchIdx})`;
+            companyQuery += ` AND (c.name ILIKE $${searchIdx} OR c.industry ILIKE $${searchIdx})`;
         }
 
-        if (requesterId) {
-            params.push(requesterId);
+        if (requesterIdx) {
             userQuery += `
                 AND NOT EXISTS (
                     SELECT 1 FROM blocks b 
-                    WHERE (b.blocker_id = $${paramIdx} AND b.blocked_id = u.user_id)
-                       OR (b.blocker_id = u.user_id AND b.blocked_id = $${paramIdx})
+                    WHERE (b.blocker_id = $${requesterIdx} AND b.blocked_id = u.user_id)
+                       OR (b.blocker_id = u.user_id AND b.blocked_id = $${requesterIdx})
                 )
             `;
         }
