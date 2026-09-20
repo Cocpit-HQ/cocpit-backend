@@ -226,7 +226,10 @@ exports.updateProfile = async (req, res) => {
     const { full_name, headline, job_title, company_name, school, degree, location, about_text, mobile_number,
         account_name, website, industry } = req.body;
 
-    if (full_name && full_name.trim().length < 3) return res.status(400).json({ message: "Full name must be at least 3 characters" });
+    if (full_name) {
+        if (full_name.trim().length < 3) return res.status(400).json({ message: "Full name must be at least 3 characters" });
+        if (full_name.length > 40) return res.status(400).json({ message: "Full name cannot exceed 40 characters" });
+    }
     if (headline && headline.length > 120) return res.status(400).json({ message: "Headline cannot exceed 120 characters" });
     if (job_title && job_title.length > 80) return res.status(400).json({ message: "Job title cannot exceed 80 characters" });
     if (company_name && company_name.length > 80) return res.status(400).json({ message: "Company name cannot exceed 80 characters" });
@@ -237,9 +240,9 @@ exports.updateProfile = async (req, res) => {
     if (website && website.length > 255) return res.status(400).json({ message: "Website cannot exceed 255 characters" });
     // Validate account_name (username) if provided
     if (account_name !== undefined) {
-        const usernameRegex = /^[a-z0-9_.]{3,20}$/;
+        const usernameRegex = /^[a-z0-9_.]{3,25}$/;
         if (!usernameRegex.test(account_name)) {
-            return res.status(400).json({ message: "Username must be 3-20 characters and contain only lowercase letters, numbers, underscores, or dots" });
+            return res.status(400).json({ message: "Username must be 3-25 characters and contain only lowercase letters, numbers, underscores, or dots" });
         }
 
         // Check case-insensitive uniqueness
@@ -428,6 +431,7 @@ exports.addExperience = async (req, res) => {
     }
 
     // ── Basic validation ──────────────────────────────────────────────────────────
+    if (title && title.length > 100) return res.status(400).json({ message: "Role cannot exceed 100 characters" });
     if (!start_date) {
         return res.status(422).json({ message: "Start date is required" });
     }
@@ -585,6 +589,7 @@ exports.updateExperience = async (req, res) => {
         const resolvedWMode   = work_mode    !== undefined ? work_mode    : existing.work_mode;
 
         // ── Basic validation ──────────────────────────────────────────────────────
+        if (title && title.length > 100) return res.status(400).json({ message: "Role cannot exceed 100 characters" });
         if (!resolvedCurrent && !resolvedEnd) {
             return res.status(422).json({ message: "End date is required when not currently working" });
         }
@@ -729,6 +734,12 @@ exports.addEducation = async (req, res) => {
         if (!profileId) return res.status(404).json({ message: "Profile not found" });
 
         const { school_name, school_org_id, degree, field_of_study, location, start_date, end_date, description } = req.body;
+        
+        if (school_name && school_name.length > 255) {
+            client.release();
+            return res.status(400).json({ message: "School/University cannot exceed 255 characters" });
+        }
+
         const data = { school_name, school_org_id, degree, field_of_study, location, start_date, end_date, description };
 
         await client.query('BEGIN');
@@ -762,6 +773,11 @@ exports.updateEducation = async (req, res) => {
         const existing = existingRes.rows[0];
 
         const { school_name, school_org_id, degree, field_of_study, location, start_date, end_date, description } = req.body;
+
+        if (school_name && school_name.length > 255) {
+            client.release();
+            return res.status(400).json({ message: "School/University cannot exceed 255 characters" });
+        }
 
         const resolvedSchoolName = school_name !== undefined ? school_name : existing.school_name;
         const resolvedSchoolOrgId = school_org_id !== undefined ? school_org_id : existing.school_org_id;
@@ -1700,6 +1716,7 @@ exports.addProject = async (req, res) => {
     } = req.body;
 
     if (!title || !title.trim()) return res.status(400).json({ message: "Project title is required" });
+    if (title && title.length > 255) return res.status(400).json({ message: "Project title cannot exceed 255 characters" });
     if (!organization || !organization.trim()) return res.status(400).json({ message: "Organization is required" });
     if (!start_month || !start_year) return res.status(400).json({ message: "Start month and year are required" });
     if (!is_current && (!end_month || !end_year)) {
@@ -1722,8 +1739,8 @@ exports.addProject = async (req, res) => {
         }
     }
 
-    if (Array.isArray(media) && media.length > 3) {
-        return res.status(400).json({ message: "A project can have at most 3 media items" });
+    if (Array.isArray(media) && media.length > 5) {
+        return res.status(400).json({ message: "A project can have at most 5 media items" });
     }
 
     const client = await pool.connect();
@@ -1781,6 +1798,8 @@ exports.updateProject = async (req, res) => {
         skills, media, org_id
     } = req.body;
 
+    if (title && title.length > 255) return res.status(400).json({ message: "Project title cannot exceed 255 characters" });
+
     if (end_year && start_year && !is_current) {
         const startVal = parseInt(start_year, 10);
         const endVal = parseInt(end_year, 10);
@@ -1789,8 +1808,8 @@ exports.updateProject = async (req, res) => {
         }
     }
 
-    if (Array.isArray(media) && media.length > 3) {
-        return res.status(400).json({ message: "A project can have at most 3 media items" });
+    if (Array.isArray(media) && media.length > 5) {
+        return res.status(400).json({ message: "A project can have at most 5 media items" });
     }
 
     const client = await pool.connect();
