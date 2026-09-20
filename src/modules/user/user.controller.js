@@ -279,6 +279,8 @@ exports.getUserProfile = async (req, res) => {
            u.account_name,
            u.full_name AS name,
            u.headline,
+           u.about_text AS about,
+           u.location,
            u.avatar_url AS avatar,
            u.cover_image_url AS cover_image
          FROM active_users u
@@ -292,7 +294,6 @@ exports.getUserProfile = async (req, res) => {
       return res.status(200).json({
         user: {
           ...user,
-          about: "",
           followers_count: 0,
           following_count: 0,
           connections_count: 0,
