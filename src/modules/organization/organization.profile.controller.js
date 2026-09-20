@@ -18,6 +18,7 @@
 'use strict';
 
 const pool = require('../../core/db/pool');
+const { checkActorBlockStatus } = require("../../core/utils/blockCheck");
 const { checkOrgPermission } = require('../../core/utils/rbac');
 const { logAudit } = require("../../core/infrastructure/audit.service");
 const featureFlagsService = require("../config/featureFlags.service");

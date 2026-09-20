@@ -2,6 +2,7 @@ const pool = require("../../core/db/pool");
 const AppError = require("../../core/errors/AppError");
 const { checkOrgPermission } = require("../../core/utils/rbac");
 const { wouldCreateCycle } = require("./organization.hierarchy.controller");
+const { checkActorBlockStatus } = require("../../core/utils/blockCheck");
 
 const { logAudit } = require("../../core/infrastructure/audit.service");
 
@@ -235,6 +236,14 @@ exports.getOrganization = async (req, res) => {
         }
 
         const company = result.rows[0];
+
+        // 1.5 Bi-directional Block Check (User <-> Org, Org <-> Org)
+        if (req.user || req.actor) {
+            const isBlocked = await checkActorBlockStatus(req, company.org_id);
+            if (isBlocked) {
+                return res.status(404).json({ message: "Organization not found" });
+            }
+        }
 
         // Unified Profile View Tracking (Redis + Atomic DB)
         if (userId && company.org_id) {
