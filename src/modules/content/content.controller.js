@@ -1787,6 +1787,44 @@ exports.getPostById = async (req, res) => {
                     'is_organization_post', (sp.author_org_id IS NOT NULL)
                 ),
                 'media', COALESCE(sp_media.media, '[]'::json),
+                'shared_post_data', CASE
+                     WHEN sp.shared_job_id IS NOT NULL THEN (
+                         SELECT json_build_object(
+                             'is_accessible', true,
+                             'job_id', sj_sp.job_id,
+                             'title', sj_sp.title,
+                             'company_name', sj_sp.company_name,
+                             'location', sj_sp.location,
+                             'company_logo', sj_sp_comp.logo_url
+                         )
+                         FROM jobs sj_sp
+                         LEFT JOIN organizations sj_sp_comp ON sj_sp.org_id = sj_sp_comp.org_id
+                         WHERE sj_sp.job_id = sp.shared_job_id
+                     )
+                     WHEN sp.shared_post_id IS NOT NULL THEN (
+                         SELECT json_build_object(
+                             'is_accessible', true,
+                             'post_id', sp_sp.post_id,
+                             'content', sp_sp.content,
+                             'created_at', sp_sp.created_at,
+                             'post_type', sp_sp.post_type,
+                             'title', sp_sp.title,
+                             'author', json_build_object(
+                                 'user_id', COALESCE(sp_sp.author_org_id, sp_sp_u.user_id),
+                                 'full_name', COALESCE(sp_sp_comp.name, sp_sp_u.full_name),
+                                 'avatar_url', COALESCE(sp_sp_comp.logo_url, sp_sp_u.avatar_url),
+                                 'author_slug', COALESCE(sp_sp_comp.slug, sp_sp_u.account_name),
+                                 'is_organization_post', (sp_sp.author_org_id IS NOT NULL)
+                             ),
+                             'media', COALESCE((SELECT json_agg(json_build_object('url', pm.url, 'media_type', pm.media_type, 'width', pm.width, 'height', pm.height)) FROM post_media pm WHERE pm.post_id = sp_sp.post_id), '[]'::json)
+                         )
+                         FROM posts sp_sp
+                         LEFT JOIN active_users sp_sp_u ON sp_sp_u.user_id = sp_sp.author_id
+                         LEFT JOIN organizations sp_sp_comp ON sp_sp_comp.org_id = sp_sp.author_org_id
+                         WHERE sp_sp.post_id = sp.shared_post_id
+                     )
+                     ELSE NULL
+                 END,
                 'like_count', (SELECT COUNT(*) FROM active_post_likes pl WHERE pl.post_id = sp.post_id)::int,
                 'comment_count', (SELECT COUNT(*) FROM active_post_comments pc WHERE pc.post_id = sp.post_id)::int,
                 'rePostCount', (SELECT COUNT(*) FROM posts sp_share2 WHERE sp_share2.shared_post_id = sp.post_id AND sp_share2.is_active = TRUE AND (sp_share2.is_removed IS FALSE OR sp_share2.is_removed IS NULL))::int,
@@ -2553,7 +2591,7 @@ exports.deletePost = async (req, res) => {
         }
 
         await client.query(
-            `UPDATE posts SET is_active = FALSE WHERE post_id = $1`,
+            `UPDATE posts SET is_active = FALSE WHERE post_id = $1 OR shared_post_id = $1`,
             [postId]
         );
 
