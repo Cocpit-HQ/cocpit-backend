@@ -39,7 +39,7 @@ async function renderResumePdf(mappedData, templateName = 'default') {
 
         // Generate PDF
         const pdfBuffer = await page.pdf({
-            format: 'Letter',
+            format: 'A4',
             printBackground: true,
             tagged: true, // Enhances ATS parsing by embedding semantic tags
             margin: {

@@ -1986,7 +1986,10 @@ exports.downloadResume = async (req, res) => {
         ]);
 
         const profileScoreData = profileCalc.calculateFullProfileScore(u, skills, flatExperiencesForScore, projects, educations);
-        if (profileScoreData.score < 100) {
+        // Only enforce the 100% score requirement when viewing someone else's profile.
+        // The profile owner can always download their own resume regardless of completion.
+        const isOwnProfile = userId === req.user.sub;
+        if (!isOwnProfile && profileScoreData.score < 100) {
             return res.status(403).json({ message: "Profile must be 100% complete to generate a resume." });
         }
 

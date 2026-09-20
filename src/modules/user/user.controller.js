@@ -5,6 +5,7 @@ const AppError = require("../../core/errors/AppError");
 const current_user = require("../profile/profile.controller");
 const profileRepo = require("../profile/profile.repository");
 const dashboardService = require("../dashboard/dashboard.service");
+const profileCalc = require("../profile/profile.calculator");
 const crypto = require("crypto");
 const redisClient = require("../../core/db/redis");
 const socketService = require("../../core/infrastructure/socket.service");
@@ -592,6 +593,36 @@ exports.getUserProfile = async (req, res) => {
       [targetUserId]
     );
 
+    // Calculate profile score
+    const userProfileForScore = {
+      full_name: user.name,
+      headline: user.headline,
+      location: user.location,
+      account_type: user.account_type,
+      about_text: user.about,
+      open_to: user.open_to,
+      availability: user.availability,
+      work_preference: user.work_preference,
+      avatar_url: user.avatar,
+      cover_image_url: user.cover_image
+    };
+
+    const flatExperiencesForScore = (experiences || []).flatMap(group => 
+      Array.isArray(group.experiences) ? group.experiences.map(exp => ({
+        company_name: exp.company_name || group.company_name,
+        title: exp.title,
+        start_date: exp.start_date,
+        description: exp.description
+      })) : []
+    );
+
+    const profileScore = profileCalc.calculateFullProfileScore(
+      userProfileForScore, 
+      skillsResult.rows, 
+      flatExperiencesForScore, 
+      projects, 
+      educations
+    );
 
     // Assemble response
     const responseData = {
@@ -602,6 +633,7 @@ exports.getUserProfile = async (req, res) => {
       skills: skillsResult.rows,
       organization_roles: companyRoles.rows,
       resume: resume,
+      profile_score: profileScore,
     };
 
     console.log("SENDING USER PROFILE RESPONSE FOR", targetUserId, "PROJECTS COUNT:", projects ? projects.length : 0);

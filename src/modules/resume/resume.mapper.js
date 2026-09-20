@@ -1,27 +1,54 @@
 const { format, parseISO, isValid } = require('date-fns');
 
 /**
- * Parses and formats a date string to "MMM yyyy" (e.g., "Aug. 2019")
+ * Parses and formats a date string to "MMM yyyy" (e.g., "Jan 2021")
  */
 function formatDate(dateString) {
     if (!dateString) return '';
     try {
         const date = typeof dateString === 'string' ? parseISO(dateString) : new Date(dateString);
         if (!isValid(date)) return '';
-        return format(date, 'MMM. yyyy');
+        return format(date, 'MMM yyyy');
     } catch (err) {
         return '';
     }
 }
 
 /**
+ * Formats month (numeric "01", "02", or string "January", "Jan.") and year into "Jan 2021"
+ */
+function formatMonthYear(monthStr, yearStr) {
+    if (!yearStr && !monthStr) return '';
+    if (!monthStr) return yearStr ? String(yearStr).trim() : '';
+    
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    let formattedMonth = String(monthStr).trim();
+    
+    const numericMonth = parseInt(formattedMonth, 10);
+    if (!isNaN(numericMonth) && numericMonth >= 1 && numericMonth <= 12) {
+        formattedMonth = months[numericMonth - 1];
+    } else {
+        const cleanStr = formattedMonth.replace(/\./g, '').trim();
+        const foundIdx = months.findIndex(m => m.toLowerCase() === cleanStr.toLowerCase() || cleanStr.toLowerCase().startsWith(m.toLowerCase()));
+        if (foundIdx !== -1) {
+            formattedMonth = months[foundIdx];
+        }
+    }
+    
+    return yearStr ? `${formattedMonth} ${yearStr}` : formattedMonth;
+}
+
+/**
  * Creates a "Start Date - End Date" or "Start Date - Present" string
  */
 function formatDateRange(startDate, endDate, isCurrent = false) {
-    if (!startDate && !endDate && !isCurrent) return '';
-    const startStr = formatDate(startDate) || 'Unknown';
-    const endStr = isCurrent ? 'Present' : (formatDate(endDate) || 'Present');
-    return `${startStr} -- ${endStr}`;
+    const startStr = formatDate(startDate);
+    const endStr = isCurrent ? 'Present' : formatDate(endDate);
+    
+    if (startStr && endStr) return `${startStr} - ${endStr}`;
+    if (startStr) return startStr;
+    if (endStr) return endStr;
+    return '';
 }
 
 /**
@@ -135,9 +162,9 @@ function mapProfileToResumeTemplate(profileData) {
     const templateProjects = projects
         .filter(proj => proj)
         .map(proj => {
-            let startStr = (proj.start_month && proj.start_year) ? `${proj.start_month} ${proj.start_year}` : '';
-            let endStr = proj.is_current ? 'Present' : ((proj.end_month && proj.end_year) ? `${proj.end_month} ${proj.end_year}` : '');
-            let date_range = (startStr || endStr) ? `${startStr} -- ${endStr}` : '';
+            let startStr = formatMonthYear(proj.start_month, proj.start_year);
+            let endStr = proj.is_current ? 'Present' : formatMonthYear(proj.end_month, proj.end_year);
+            let date_range = (startStr && endStr) ? `${startStr} - ${endStr}` : (startStr || endStr || '');
             
             const bp = extractBulletPoints(proj.details);
             if (proj.role) bp.unshift(`Role: ${proj.role}`);
@@ -159,7 +186,7 @@ function mapProfileToResumeTemplate(profileData) {
             degree: edu.degree || 'Degree',
             field_of_study: edu.field_of_study || '',
             location: edu.location || '',
-            date_range: formatDateRange(edu.start_date, edu.end_date, false),
+            date_range: formatDateRange(edu.start_date, edu.end_date, Boolean(edu.is_current || !edu.end_date)),
             bullet_points: extractBulletPoints(edu.description)
         }));
 
