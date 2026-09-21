@@ -2531,14 +2531,18 @@ exports.getMyConnections = async (req, res) => {
 
     try {
         let userQuery = `
-            SELECT u.user_id, u.full_name, u.avatar_url, u.headline, c.created_at, 'user' as type, NULL as slug
+            SELECT u.user_id, u.full_name, u.avatar_url, u.headline, c.created_at, 'user' as type, NULL as slug,
+                   TRUE as is_connected,
+                   'connected' as connection_status
             FROM connections c 
             JOIN active_users u ON c.connected_user_id = u.user_id 
             WHERE c.user_id = $1
         `;
 
         let companyQuery = `
-            SELECT c.org_id as user_id, c.name as full_name, c.logo_url as avatar_url, c.industry as headline, cc.created_at, 'company' as type, c.slug
+            SELECT c.org_id as user_id, c.name as full_name, c.logo_url as avatar_url, c.industry as headline, cc.created_at, 'company' as type, c.slug,
+                   TRUE as is_connected,
+                   'connected' as connection_status
             FROM organization_connections cc
             JOIN organizations c ON cc.org_id = c.org_id
             WHERE cc.user_id = $1
@@ -3543,10 +3547,45 @@ exports.sendMessage = async (req, res) => {
             const convCreatedAt = convMeta.rows[0]?.created_at ?? null;
             const convCreatedBy = convMeta.rows[0]?.created_by || null;
 
+            const isUUID = (str) => typeof str === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(str.trim());
+
+            let finalSharedPostId = shared_post_id ? String(shared_post_id).trim() : null;
+            if (finalSharedPostId) {
+                if (!isUUID(finalSharedPostId)) {
+                    finalSharedPostId = null;
+                } else {
+                    const postCheck = await client.query("SELECT 1 FROM posts WHERE post_id = $1", [finalSharedPostId]);
+                    if (postCheck.rowCount === 0) {
+                        finalSharedPostId = null;
+                    }
+                }
+            }
+
+            let finalSharedProfileId = shared_profile_id ? String(shared_profile_id).trim() : null;
             let finalSharedProfileType = shared_profile_type || null;
-            if (shared_profile_id && !finalSharedProfileType) {
-                const orgCheck = await client.query("SELECT 1 FROM organizations WHERE org_id = $1", [shared_profile_id]);
-                finalSharedProfileType = orgCheck.rowCount > 0 ? 'company' : 'user';
+
+            if (finalSharedProfileId) {
+                if (!isUUID(finalSharedProfileId)) {
+                    // Try looking up by account_name in users
+                    const uSlugRes = await client.query("SELECT user_id FROM users WHERE account_name = $1", [finalSharedProfileId]);
+                    if (uSlugRes.rowCount > 0) {
+                        finalSharedProfileId = uSlugRes.rows[0].user_id;
+                        finalSharedProfileType = 'user';
+                    } else {
+                        // Try looking up by slug in organizations
+                        const oSlugRes = await client.query("SELECT org_id FROM organizations WHERE slug = $1 AND is_deleted = FALSE", [finalSharedProfileId]);
+                        if (oSlugRes.rowCount > 0) {
+                            finalSharedProfileId = oSlugRes.rows[0].org_id;
+                            finalSharedProfileType = 'company';
+                        } else {
+                            finalSharedProfileId = null;
+                            finalSharedProfileType = null;
+                        }
+                    }
+                } else if (!finalSharedProfileType) {
+                    const orgCheck = await client.query("SELECT 1 FROM organizations WHERE org_id = $1", [finalSharedProfileId]);
+                    finalSharedProfileType = orgCheck.rowCount > 0 ? 'company' : 'user';
+                }
             }
 
             // Determine message text for notifications/preview
@@ -3558,7 +3597,7 @@ exports.sendMessage = async (req, res) => {
                 ? trimmedText
                 : (images && images.length > 0
                     ? (images.length > 1 ? `${images.length} attachments` : (images[0].mimetype.startsWith('video/') ? 'Sent a video' : (isDocumentMimetype(images[0].mimetype) ? 'Sent a document' : 'Sent a photo')))
-                    : (shared_post_id ? 'Shared a post' : (shared_profile_id ? 'Shared a profile' : 'Attachment')));
+                    : (finalSharedPostId ? 'Shared a post' : (finalSharedProfileId ? 'Shared a profile' : 'Attachment')));
 
             const sessionId = null;
 
@@ -3569,12 +3608,12 @@ exports.sendMessage = async (req, res) => {
                     conversationId,
                     senderId,
                     trimmedText || '',
-                    shared_post_id || null,
+                    finalSharedPostId,
                     authorCompanyId || null,
                     authorCompanyId ? 'COMPANY' : 'USER',
                     sessionId,
                     replyMessageId || null,
-                    shared_profile_id || null,
+                    finalSharedProfileId,
                     finalSharedProfileType,
                     entity_type || null,
                     entity_id || null
@@ -3718,12 +3757,12 @@ exports.sendMessage = async (req, res) => {
             }
 
             let sharedProfileData = null;
-            if (shared_profile_id) {
+            if (finalSharedProfileId) {
                 if (finalSharedProfileType === 'user') {
                     const uRes = await client.query(
                         `SELECT full_name as name, avatar_url as avatar, headline, location, account_name as username 
                          FROM users WHERE user_id = $1`,
-                        [shared_profile_id]
+                        [finalSharedProfileId]
                     );
                     if (uRes.rowCount > 0) {
                         sharedProfileData = uRes.rows[0];
@@ -3732,7 +3771,7 @@ exports.sendMessage = async (req, res) => {
                     const cRes = await client.query(
                         `SELECT name, logo_url as avatar, industry as headline, industry, slug 
                          FROM organizations WHERE org_id = $1 AND is_deleted = FALSE`,
-                        [shared_profile_id]
+                        [finalSharedProfileId]
                     );
                     if (cRes.rowCount > 0) {
                         sharedProfileData = cRes.rows[0];
@@ -3742,7 +3781,7 @@ exports.sendMessage = async (req, res) => {
 
             let isMessageUnavailable = false;
             // RULE 1: Shared post: null/not-found means deleted → both sides see unavailable
-            if (shared_post_id && !sharedPostData) {
+            if (finalSharedPostId && !sharedPostData) {
                 isMessageUnavailable = true;
             }
             // RULE 1 + 2 + 3: Org URL in text — org deleted/deactivated OR that org blocked the sender

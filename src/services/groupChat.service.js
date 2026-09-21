@@ -850,11 +850,44 @@ class GroupChatService {
             mentionedUsernames = mentionMatches ? mentionMatches.map(m => m.substring(1)) : [];
         }
 
-        // Resolve shared profile type if not provided
-        let finalSharedProfileType = shared_profile_type;
-        if (shared_profile_id && !finalSharedProfileType) {
-            const orgCheck = await pool.query("SELECT 1 FROM organizations WHERE org_id = $1", [shared_profile_id]);
-            finalSharedProfileType = orgCheck.rowCount > 0 ? 'company' : 'user';
+        const isUUID = (str) => typeof str === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(str.trim());
+
+        let finalSharedPostId = shared_post_id ? String(shared_post_id).trim() : null;
+        if (finalSharedPostId) {
+            if (!isUUID(finalSharedPostId)) {
+                finalSharedPostId = null;
+            } else {
+                const postCheck = await pool.query("SELECT 1 FROM posts WHERE post_id = $1", [finalSharedPostId]);
+                if (postCheck.rowCount === 0) {
+                    finalSharedPostId = null;
+                }
+            }
+        }
+
+        // Resolve shared profile type and id if not provided or passed as slug
+        let finalSharedProfileId = shared_profile_id ? String(shared_profile_id).trim() : null;
+        let finalSharedProfileType = shared_profile_type || null;
+
+        if (finalSharedProfileId) {
+            if (!isUUID(finalSharedProfileId)) {
+                const uSlugRes = await pool.query("SELECT user_id FROM users WHERE account_name = $1", [finalSharedProfileId]);
+                if (uSlugRes.rowCount > 0) {
+                    finalSharedProfileId = uSlugRes.rows[0].user_id;
+                    finalSharedProfileType = 'user';
+                } else {
+                    const oSlugRes = await pool.query("SELECT org_id FROM organizations WHERE slug = $1 AND is_deleted = FALSE", [finalSharedProfileId]);
+                    if (oSlugRes.rowCount > 0) {
+                        finalSharedProfileId = oSlugRes.rows[0].org_id;
+                        finalSharedProfileType = 'company';
+                    } else {
+                        finalSharedProfileId = null;
+                        finalSharedProfileType = null;
+                    }
+                }
+            } else if (!finalSharedProfileType) {
+                const orgCheck = await pool.query("SELECT 1 FROM organizations WHERE org_id = $1", [finalSharedProfileId]);
+                finalSharedProfileType = orgCheck.rowCount > 0 ? 'company' : 'user';
+            }
         }
 
         // 2. Create message
@@ -865,8 +898,8 @@ class GroupChatService {
             type,
             previewText,
             replyMessageId,
-            shared_post_id,
-            shared_profile_id,
+            shared_post_id: finalSharedPostId,
+            shared_profile_id: finalSharedProfileId,
             shared_profile_type: finalSharedProfileType,
             entity_type,
             entity_id
@@ -910,26 +943,26 @@ class GroupChatService {
                 LEFT JOIN user_display_profiles u ON p.author_id = u.user_id
                 LEFT JOIN organization_display_profiles org ON p.author_org_id = org.org_id
                 WHERE p.post_id = $1
-            `, [shared_post_id]);
+            `, [finalSharedPostId]);
             if (spRes.rowCount > 0) sharedPostData = spRes.rows[0];
         }
 
         // Fetch shared profile details if applicable
         let sharedProfileData = null;
-        if (shared_profile_id) {
+        if (finalSharedProfileId) {
             if (finalSharedProfileType === 'user') {
                 const uRes = await pool.query(`
                     SELECT display_name AS name, display_avatar AS avatar, display_headline AS headline, location, display_username AS username 
                     FROM user_display_profiles 
                     WHERE user_id = $1
-                `, [shared_profile_id]);
+                `, [finalSharedProfileId]);
                 if (uRes.rowCount > 0) sharedProfileData = uRes.rows[0];
             } else if (finalSharedProfileType === 'company') {
                 const cRes = await pool.query(`
                     SELECT name, logo_url as avatar, industry as headline, industry, slug 
                     FROM organizations 
                     WHERE org_id = $1 AND is_deleted = FALSE
-                `, [shared_profile_id]);
+                `, [finalSharedProfileId]);
                 if (cRes.rowCount > 0) sharedProfileData = cRes.rows[0];
             }
         }
