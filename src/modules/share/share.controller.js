@@ -1013,16 +1013,7 @@ exports.getShareUsers = async (req, res) => {
                           WHERE (b.blocker_id = $1 AND b.blocked_id = u.user_id)
                              OR (b.blocker_id = u.user_id AND b.blocked_id = $1)
                       )
-                      AND NOT EXISTS (
-                          SELECT 1 FROM conversations req_conv
-                          JOIN conversation_participants cp_r1 ON req_conv.conversation_id = cp_r1.conversation_id
-                          JOIN conversation_participants cp_r2 ON req_conv.conversation_id = cp_r2.conversation_id
-                          WHERE cp_r1.user_id = $1
-                            AND cp_r2.user_id = u.user_id
-                            AND req_conv.is_group = FALSE
-                            AND req_conv.is_active = TRUE
-                            AND req_conv.is_requesting = TRUE
-                      )
+
 
                     UNION ALL
 
