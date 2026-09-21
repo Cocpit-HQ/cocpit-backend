@@ -2885,7 +2885,7 @@ SELECT
         WHEN cp_other.org_id IS NOT NULL THEN 
             CASE WHEN (raw_comp.org_id IS NULL OR raw_comp.is_deleted = TRUE OR raw_comp.deletion_execute_at IS NOT NULL) THEN true ELSE false END
         ELSE 
-            CASE WHEN (raw_u.user_id IS NULL OR raw_u.deletion_execute_at IS NOT NULL) THEN true ELSE false END
+            CASE WHEN (raw_u.user_id IS NULL OR raw_u.deletion_execute_at IS NOT NULL OR raw_u.is_suspended = TRUE) THEN true ELSE false END
     END AS is_deleted_user,
 
     -- Flag for deactivated users/orgs
@@ -3038,7 +3038,7 @@ LEFT JOIN LATERAL (
                 (SELECT json_build_object(
                     'message_id', rm.message_id,
                     'text_content', rm.text_content,
-                    'sender_name', COALESCE(rc.name, ru.display_name, 'Deleted User'),
+                    'sender_name', COALESCE(rc.name, ru.display_name, 'Unknown User'),
                     'message_type', rm.message_type,
                     'media', (SELECT json_agg(json_build_object('url', rmm.url, 'media_type', rmm.media_type)) FROM message_media rmm WHERE rmm.message_id = rm.message_id)
                 ) 
@@ -3746,7 +3746,7 @@ exports.sendMessage = async (req, res) => {
                         rm.message_id, 
                         rm.text_content, 
                         rm.message_type,
-                        COALESCE(rc.name, ru.display_name, 'Deleted User') as sender_name,
+                        COALESCE(rc.name, ru.display_name, 'Unknown User') as sender_name,
                         (SELECT json_agg(json_build_object('url', rmm.url, 'media_type', rmm.media_type, 'filename', rmm.filename)) FROM message_media rmm WHERE rmm.message_id = rm.message_id) as media
                     FROM messages rm
                     LEFT JOIN user_display_profiles ru ON rm.sender_id = ru.user_id
@@ -4737,7 +4737,7 @@ exports.getMessages = async (req, res) => {
                         (SELECT json_build_object(
                             'message_id', rm.message_id,
                             'text_content', rm.text_content,
-                            'sender_name', COALESCE(rc.name, ru.display_name, 'Deleted User'),
+                            'sender_name', COALESCE(rc.name, ru.display_name, 'Unknown User'),
                             'message_type', rm.message_type,
                             'media', (SELECT json_agg(json_build_object('url', rmm.url, 'media_type', rmm.media_type, 'filename', rmm.filename)) FROM message_media rmm WHERE rmm.message_id = rm.message_id)
                         ) 

@@ -918,7 +918,7 @@ class GroupChatService {
                     rm.message_id, 
                     rm.text_content, 
                     rm.message_type,
-                    COALESCE(rc.name, ru.full_name, 'Deleted User') as sender_name,
+                    COALESCE(rc.name, ru.full_name, 'Unknown User') as sender_name,
                     (SELECT json_agg(json_build_object('url', rmm.url, 'media_type', rmm.media_type, 'filename', rmm.filename)) FROM message_media rmm WHERE rmm.message_id = rm.message_id) as media
                 FROM messages rm
                 LEFT JOIN users ru ON rm.sender_id = ru.user_id

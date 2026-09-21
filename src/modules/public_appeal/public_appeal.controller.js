@@ -21,8 +21,8 @@ exports.verifyToken = async (req, res) => {
         u.full_name as user_name
       FROM appeal_tokens at
       JOIN moderation_actions ma ON at.action_id = ma.action_id
-      JOIN users u ON at.user_id = u.user_id
-      WHERE at.token_string = $1
+      JOIN users u ON ma.target_id = u.user_id AND ma.target_type = 'USER'
+      WHERE at.token_hash = $1
     `;
 
     const result = await pool.query(query, [token]);
@@ -72,9 +72,9 @@ exports.submitAppeal = async (req, res) => {
 
     // 1. Validate token again and lock row
     const tokenQuery = `
-      SELECT token_id, action_id, user_id, is_used, expires_at
+      SELECT token_id, action_id, is_used, expires_at
       FROM appeal_tokens
-      WHERE token_string = $1
+      WHERE token_hash = $1
       FOR UPDATE
     `;
     const tokenRes = await pool.query(tokenQuery, [token]);
@@ -98,14 +98,17 @@ exports.submitAppeal = async (req, res) => {
       return res.status(400).json({ error: 'An appeal has already been submitted for this action.' });
     }
 
+    const actionRes = await pool.query('SELECT target_id FROM moderation_actions WHERE action_id = $1', [tokenData.action_id]);
+    const userId = actionRes.rows[0].target_id;
+
     // 3. Insert the appeal
     await pool.query(
-      'INSERT INTO moderation_appeals (action_id, user_id, appeal_reason) VALUES ($1, $2, $3)',
-      [tokenData.action_id, tokenData.user_id, appealReason]
+      'INSERT INTO moderation_appeals (token_id, action_id, user_id, appeal_reason) VALUES ($1, $2, $3, $4)',
+      [tokenData.token_id, tokenData.action_id, userId, appealReason]
     );
 
     // 4. Mark token as used
-    await pool.query('UPDATE appeal_tokens SET is_used = true WHERE token_string = $1', [token]);
+    await pool.query('UPDATE appeal_tokens SET is_used = true WHERE token_hash = $1', [token]);
 
     await pool.query('COMMIT');
     res.json({ success: true, message: 'Appeal submitted successfully.' });

@@ -126,7 +126,7 @@ exports.getProfile = async (req, res) => {
 
     try {
         const u = await profileRepo.getFullProfile(userId);
-        if (!u) return res.status(404).json({ message: "User not found" });
+        if (!u || (u.is_suspended && userId !== req.user?.sub)) return res.status(404).json({ message: "User not found" });
 
         const profileId = u.profile_id;
         userId = u.user_id;

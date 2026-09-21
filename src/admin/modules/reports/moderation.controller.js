@@ -59,7 +59,7 @@ exports.approveAppeal = async (req, res) => {
     // 1. Update appeal status
     const appealRes = await req.db.query(
       `UPDATE moderation_appeals 
-       SET status = 'APPROVED', reviewer_id = $1, reviewer_notes = $2, reviewed_at = NOW() 
+       SET status = 'APPROVED', reviewed_by = $1, review_notes = $2, updated_at = NOW() 
        WHERE appeal_id = $3 AND status = 'PENDING'
        RETURNING user_id, action_id`,
       [adminId, notes, id]
@@ -72,10 +72,10 @@ exports.approveAppeal = async (req, res) => {
 
     const { user_id, action_id } = appealRes.rows[0];
 
-    // 2. Mark action as inactive
+    // 2. Insert RESTORE action instead of updating is_active
     await req.db.query(
-      `UPDATE moderation_actions SET is_active = false WHERE action_id = $1`,
-      [action_id]
+      `INSERT INTO moderation_actions (target_type, target_id, action_type, reason, performed_by) VALUES ($1, $2, $3, $4, $5)`,
+      ['USER', user_id, 'RESTORE', 'Appeal approved by admin', adminId]
     );
 
     // 3. Unsuspend the user
@@ -113,7 +113,7 @@ exports.rejectAppeal = async (req, res) => {
 
     const appealRes = await req.db.query(
       `UPDATE moderation_appeals 
-       SET status = 'REJECTED', reviewer_id = $1, reviewer_notes = $2, reviewed_at = NOW() 
+       SET status = 'REJECTED', reviewed_by = $1, review_notes = $2, updated_at = NOW() 
        WHERE appeal_id = $3 AND status = 'PENDING'
        RETURNING user_id`,
       [adminId, notes, id]

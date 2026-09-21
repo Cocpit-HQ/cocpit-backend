@@ -13,7 +13,7 @@ const getFullProfile = async (userId) => {
                 u.onboarding_step, u.profile_show_email, u.profile_show_phone,
                 u.dob,
                 u.location_formatted, u.location_country, u.location_state, u.location_city,
-                u.location_lat, u.location_lng, u.location_place_id, u.is_identity_verified,
+                u.location_lat, u.location_lng, u.location_place_id, u.is_identity_verified, u.is_suspended,
                 p.profile_id, p.account_type, p.open_to, p.availability, p.work_preference,
                 p.working_industry AS industry,
                 p.profile_views_count, p.search_appearances_count, p.version

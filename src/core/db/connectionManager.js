@@ -35,21 +35,21 @@ function getPool(environment) {
   let config;
   if (environment === 'production') {
     config = getPoolConfig(
-      process.env.PROD_DATABASE_URL,
-      process.env.PROD_DB_HOST,
-      process.env.PROD_DB_PORT,
-      process.env.PROD_DB_USER,
-      process.env.PROD_DB_PASSWORD,
-      process.env.PROD_DB_NAME
+      process.env.PROD_DATABASE_URL || process.env.DATABASE_URL,
+      process.env.PROD_DB_HOST || process.env.DB_HOST,
+      process.env.PROD_DB_PORT || process.env.DB_PORT,
+      process.env.PROD_DB_USER || process.env.DB_USER,
+      process.env.PROD_DB_PASSWORD || process.env.DB_PASSWORD,
+      process.env.PROD_DB_NAME || process.env.DB_NAME
     );
   } else if (environment === 'uat') {
     config = getPoolConfig(
-      process.env.UAT_DATABASE_URL,
-      process.env.UAT_DB_HOST,
-      process.env.UAT_DB_PORT,
-      process.env.UAT_DB_USER,
-      process.env.UAT_DB_PASSWORD,
-      process.env.UAT_DB_NAME
+      process.env.UAT_DATABASE_URL || process.env.DATABASE_URL,
+      process.env.UAT_DB_HOST || process.env.DB_HOST,
+      process.env.UAT_DB_PORT || process.env.DB_PORT,
+      process.env.UAT_DB_USER || process.env.DB_USER,
+      process.env.UAT_DB_PASSWORD || process.env.DB_PASSWORD,
+      process.env.UAT_DB_NAME || process.env.DB_NAME
     );
   } else {
     // staging or fallback

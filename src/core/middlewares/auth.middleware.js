@@ -25,7 +25,7 @@ exports.requireAuth = async (req, res, next) => {
       // Check 1.5: Account Suspended
       const isSuspended = await redisClient.get(`suspended_user:${req.user.sub}`);
       if (isSuspended) {
-        return res.status(403).json({ message: "User account is suspended. Please contact support." });
+        return res.status(401).json({ message: "YOUR ACCOUNT HAS BEEN SUSPENDED." });
       }
 
       // Check 2: Specific session revoked (e.g. removed from another device)
@@ -40,7 +40,7 @@ exports.requireAuth = async (req, res, next) => {
         return res.status(401).json({ message: "User account no longer exists. Please log in again." });
       }
       if (userCheck.rows[0].is_suspended) {
-        return res.status(403).json({ message: "User account is suspended. Please contact support." });
+        return res.status(401).json({ message: "YOUR ACCOUNT HAS BEEN SUSPENDED." });
       }
     }
 

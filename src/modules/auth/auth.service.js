@@ -307,9 +307,9 @@ const loginUser = async ({ email, password, userAgent, ipAddress }) => {
     if (user.is_suspended) {
         return {
             error: {
-                status: 403,
+                status: 401,
                 code: "ACCOUNT_SUSPENDED",
-                message: "Your account has been suspended by an administrator. Please contact support.",
+                message: "YOUR ACCOUNT HAS BEEN SUSPENDED.",
             }
         };
     }

@@ -55,7 +55,7 @@ exports.getUsers = async (req, res) => {
     if (search) {
       queryParams.push(`%${search}%`);
       const searchParamIndex = queryParams.length;
-      baseQuery += ` AND (u.email ILIKE $${searchParamIndex} OR u.full_name ILIKE $${searchParamIndex})`;
+      baseQuery += ` AND (u.email ILIKE $${searchParamIndex} OR u.full_name ILIKE $${searchParamIndex} OR u.user_id::text ILIKE $${searchParamIndex})`;
     }
 
     // Get Total Count for Pagination
@@ -215,7 +215,7 @@ exports.getUserDetails = async (req, res) => {
 
     // 5. Action History (Warnings)
     const warningsQuery = `
-      SELECT id, reason, message, is_severe, created_at 
+      SELECT warning_id as id, reason, message, is_severe, created_at 
       FROM user_warnings 
       WHERE user_id = $1 
       ORDER BY created_at DESC
@@ -291,8 +291,8 @@ exports.warnUser = async (req, res) => {
     );
 
     await req.db.query(
-      'INSERT INTO moderation_actions (user_id, action_type, reason, message, created_by) VALUES ($1, $2, $3, $4, $5)',
-      [id, 'WARNING', reason, message, req.user.userId]
+      'INSERT INTO moderation_actions (target_type, target_id, action_type, reason, duration_days, performed_by) VALUES ($1, $2, $3, $4, $5, $6)',
+      ['USER', id, 'WARNING', `${reason}. ${message}`, null, req.user.userId]
     );
 
     // Increment moderation flags
@@ -327,8 +327,8 @@ exports.warnUser = async (req, res) => {
       );
 
       await req.db.query(
-        'INSERT INTO moderation_actions (user_id, action_type, reason, message, duration_days, created_by) VALUES ($1, $2, $3, $4, $5, $6)',
-        [id, 'SUSPENSION', `Auto-suspension for exceeding 7 moderation flags`, `Your account has been automatically suspended due to repeated violations.`, 7, adminId]
+        'INSERT INTO moderation_actions (target_type, target_id, action_type, reason, duration_days, performed_by) VALUES ($1, $2, $3, $4, $5, $6)',
+        ['USER', id, 'SUSPENSION', `Auto-suspension for exceeding 7 moderation flags. Your account has been automatically suspended due to repeated violations.`, 7, adminId]
       );
 
       // Notify Main API to kill active sessions and blacklist token
@@ -414,8 +414,8 @@ exports.suspendUser = async (req, res) => {
     );
 
     const actionRes = await req.db.query(
-      'INSERT INTO moderation_actions (user_id, action_type, reason, message, duration_days, created_by) VALUES ($1, $2, $3, $4, $5, $6) RETURNING action_id',
-      [id, 'SUSPENSION', `Manual suspension by admin`, `Your account has been suspended. Duration: ${suspensionDuration}.`, durationDays, adminId]
+      'INSERT INTO moderation_actions (target_type, target_id, action_type, reason, duration_days, performed_by) VALUES ($1, $2, $3, $4, $5, $6) RETURNING action_id',
+      ['USER', id, 'SUSPENSION', `Manual suspension by admin. Your account has been suspended. Duration: ${suspensionDuration}.`, durationDays, adminId]
     );
 
     const actionId = actionRes.rows[0].action_id;
@@ -424,8 +424,8 @@ exports.suspendUser = async (req, res) => {
     expiresAt.setDate(expiresAt.getDate() + 7);
 
     await req.db.query(
-      'INSERT INTO appeal_tokens (action_id, user_id, token_string, expires_at) VALUES ($1, $2, $3, $4)',
-      [actionId, id, appealToken, expiresAt]
+      'INSERT INTO appeal_tokens (action_id, token_hash, expires_at) VALUES ($1, $2, $3)',
+      [actionId, appealToken, expiresAt]
     );
 
     try {
@@ -539,8 +539,8 @@ exports.bulkWarnUsers = async (req, res) => {
       );
 
       await req.db.query(
-        'INSERT INTO moderation_actions (user_id, action_type, reason, message, created_by) VALUES ($1, $2, $3, $4, $5)',
-        [id, 'WARNING', reason, message, adminId]
+        'INSERT INTO moderation_actions (target_type, target_id, action_type, reason, duration_days, performed_by) VALUES ($1, $2, $3, $4, $5, $6)',
+        ['USER', id, 'WARNING', `${reason}. ${message}`, null, adminId]
       );
 
       // 2. Increment flags
@@ -572,8 +572,8 @@ exports.bulkWarnUsers = async (req, res) => {
         );
 
         const actionRes = await req.db.query(
-          'INSERT INTO moderation_actions (user_id, action_type, reason, message, duration_days, created_by) VALUES ($1, $2, $3, $4, $5, $6) RETURNING action_id',
-          [id, 'SUSPENSION', `Auto-suspension for exceeding 7 moderation flags`, `Your account has been automatically suspended due to repeated violations.`, 7, adminId]
+          'INSERT INTO moderation_actions (target_type, target_id, action_type, reason, duration_days, performed_by) VALUES ($1, $2, $3, $4, $5, $6) RETURNING action_id',
+          ['USER', id, 'SUSPENSION', `Auto-suspension for exceeding 7 moderation flags. Your account has been automatically suspended due to repeated violations.`, 7, adminId]
         );
 
         const actionId = actionRes.rows[0].action_id;
@@ -582,8 +582,8 @@ exports.bulkWarnUsers = async (req, res) => {
         expiresAt.setDate(expiresAt.getDate() + 7);
 
         await req.db.query(
-          'INSERT INTO appeal_tokens (action_id, user_id, token_string, expires_at) VALUES ($1, $2, $3, $4)',
-          [actionId, id, appealToken, expiresAt]
+          'INSERT INTO appeal_tokens (action_id, token_hash, expires_at) VALUES ($1, $2, $3)',
+          [actionId, appealToken, expiresAt]
         );
 
         try {
@@ -665,8 +665,8 @@ exports.bulkSuspendUsers = async (req, res) => {
       );
 
       const actionRes = await req.db.query(
-        'INSERT INTO moderation_actions (user_id, action_type, reason, message, created_by) VALUES ($1, $2, $3, $4, $5) RETURNING action_id',
-        [id, 'SUSPENSION', `Bulk manual suspension by admin`, `Your account has been suspended for violating community guidelines.`, adminId]
+        'INSERT INTO moderation_actions (target_type, target_id, action_type, reason, duration_days, performed_by) VALUES ($1, $2, $3, $4, $5, $6) RETURNING action_id',
+        ['USER', id, 'SUSPENSION', `Bulk manual suspension by admin. Your account has been suspended for violating community guidelines.`, null, adminId]
       );
 
       const actionId = actionRes.rows[0].action_id;
@@ -675,8 +675,8 @@ exports.bulkSuspendUsers = async (req, res) => {
       expiresAt.setDate(expiresAt.getDate() + 7);
 
       await req.db.query(
-        'INSERT INTO appeal_tokens (action_id, user_id, token_string, expires_at) VALUES ($1, $2, $3, $4)',
-        [actionId, id, appealToken, expiresAt]
+        'INSERT INTO appeal_tokens (action_id, token_hash, expires_at) VALUES ($1, $2, $3)',
+        [actionId, appealToken, expiresAt]
       );
 
       try {
@@ -774,8 +774,8 @@ exports.deleteUser = async (req, res) => {
     );
 
     await req.db.query(
-      'INSERT INTO moderation_actions (user_id, action_type, reason, message, created_by) VALUES ($1, $2, $3, $4, $5)',
-      [id, 'BAN', `Manual soft deletion by admin`, `Your account has been deleted.`, adminId]
+      'INSERT INTO moderation_actions (target_type, target_id, action_type, reason, duration_days, performed_by) VALUES ($1, $2, $3, $4, $5, $6)',
+      ['USER', id, 'BAN', `Manual soft deletion by admin. Your account has been deleted.`, null, adminId]
     );
 
     res.json({ success: true, message: 'User deleted successfully' });
@@ -813,8 +813,8 @@ exports.bulkDeleteUsers = async (req, res) => {
       );
 
       await req.db.query(
-        'INSERT INTO moderation_actions (user_id, action_type, reason, message, created_by) VALUES ($1, $2, $3, $4, $5)',
-        [id, 'BAN', `Bulk manual soft deletion by admin`, `Your account has been deleted.`, adminId]
+        'INSERT INTO moderation_actions (target_type, target_id, action_type, reason, duration_days, performed_by) VALUES ($1, $2, $3, $4, $5, $6)',
+        ['USER', id, 'BAN', `Bulk manual soft deletion by admin. Your account has been deleted.`, null, adminId]
       );
 
       results.push({ id, name: targetName, status: 'Deleted' });
