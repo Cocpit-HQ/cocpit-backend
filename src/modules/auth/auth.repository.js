@@ -10,7 +10,7 @@ const pool = require("../../core/db/pool");
 const findUserByEmail = async (email) => {
     const result = await pool.query(
         `SELECT user_id, email, password_hash, is_onboarding_complete, account_name, full_name, avatar_url,
-                deletion_execute_at, is_deactivated
+                deletion_execute_at, is_deactivated, is_deleted, is_suspended
          FROM users WHERE email = $1`,
         [email]
     );

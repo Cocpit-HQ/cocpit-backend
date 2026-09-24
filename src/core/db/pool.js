@@ -58,7 +58,16 @@ async function checkDbConnection() {
         ALTER TABLE blocks DROP CONSTRAINT IF EXISTS blocks_blocked_id_fkey;
         ALTER TABLE blocks DROP CONSTRAINT IF EXISTS blocks_blocker_id_fkey;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS dob DATE;
-        CREATE OR REPLACE VIEW active_users AS SELECT * FROM users;
+        CREATE OR REPLACE VIEW active_users AS 
+        SELECT * FROM users 
+        WHERE (is_deleted IS FALSE OR is_deleted IS NULL) 
+          AND (is_suspended IS FALSE OR is_suspended IS NULL);
+
+        CREATE OR REPLACE VIEW active_organizations AS 
+        SELECT * FROM organizations 
+        WHERE (is_deleted IS FALSE OR is_deleted IS NULL) 
+          AND (is_suspended IS FALSE OR is_suspended IS NULL) 
+          AND (is_deactivated IS FALSE OR is_deactivated IS NULL);
 
         CREATE TABLE IF NOT EXISTS password_reset_tokens (
           token_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

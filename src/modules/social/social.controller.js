@@ -2116,7 +2116,7 @@ exports.batchAcceptConnectionRequests = async (req, res) => {
             }
         }
 
-        return res.status(200).json({ message: "Batch connections established", processed: totalProcessed });
+        return res.status(200).json({ message: "Accepted all connection requests!", processed: totalProcessed });
 
 
     } catch (err) {
@@ -2185,7 +2185,7 @@ exports.batchDeclineConnectionRequests = async (req, res) => {
         }
         
         await client.query("COMMIT");
-        return res.status(200).json({ message: "Batch connection requests rejected", processed: totalProcessed });
+        return res.status(200).json({ message: "Declined all requests.", processed: totalProcessed });
     } catch (err) {
         await client.query("ROLLBACK");
         console.error("Batch decline connection error:", err);
@@ -2210,7 +2210,7 @@ exports.batchWithdrawConnectionRequests = async (req, res) => {
              RETURNING request_id`,
             [requestIds, userId]
         );
-        return res.status(200).json({ message: "Batch connection requests canceled", processed: result.rowCount });
+        return res.status(200).json({ message: "All sent invitations withdrawn.", processed: result.rowCount });
     } catch (err) {
         console.error("Batch cancel connection error:", err);
         return res.status(500).json({ message: "Internal server error" });

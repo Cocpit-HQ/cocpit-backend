@@ -303,7 +303,17 @@ const loginUser = async ({ email, password, userAgent, ipAddress }) => {
         return { error: { status: 401, message: "Incorrect email or password. Try again" } };
     }
 
-    // 2.5 Block login if account is suspended
+    // 2.5 Block login if account is suspended or deleted
+    if (user.is_deleted) {
+        return {
+            error: {
+                status: 403,
+                code: "ACCOUNT_DELETED",
+                message: "Your account has been deleted for security reasons. If you believe this was done in error, please contact support.",
+            }
+        };
+    }
+
     if (user.is_suspended) {
         return {
             error: {
@@ -587,6 +597,16 @@ const socialLogin = async ({ provider, idToken, accountType, fullName: clientFul
                 deletionDate: user.deletion_execute_at,
                 email: user.email,
             },
+        };
+    }
+
+    if (user.is_deleted) {
+        return {
+            error: {
+                status: 403,
+                code: "ACCOUNT_DELETED",
+                message: "Your account has been deleted for security reasons. If you believe this was done in error, please contact support.",
+            }
         };
     }
 

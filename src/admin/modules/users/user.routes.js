@@ -14,6 +14,7 @@ router.post('/:id/unsuspend', requireRoles(['Admin', 'Moderator']), userControll
 router.post('/bulk-unsuspend', requireRoles(['Admin', 'Moderator']), userController.bulkUnsuspendUsers);
 router.get('/:id/thoughts', requireRoles(['Admin', 'Developer', 'Moderator']), userController.getUserThoughts);
 router.patch('/:id', requireRoles(['Admin']), userController.updateUser);
+router.post('/:id/restore', requireRoles(['Admin']), userController.restoreUser);
 router.delete('/:id', requireRoles(['Admin']), userController.deleteUser);
 router.post('/bulk-delete', requireRoles(['Admin']), userController.bulkDeleteUsers);
 

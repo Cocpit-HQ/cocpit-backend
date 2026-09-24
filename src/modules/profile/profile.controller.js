@@ -63,8 +63,8 @@ const getMultipleCurrentSeverity = (activeRoles, newWorkType, newWorkMode) => {
         const eIsOnsite     = eMode  === 'on site'  || eMode  === 'onsite';
 
         // ── BLOCK ───────────────────────────────────────────────────────────────
-        // Two full-time on-site roles simultaneously is physically impossible.
-        if (newIsFullTime && newIsOnsite && eIsFullTime && eIsOnsite) return 'block';
+        // Two full-time on-site roles simultaneously — downgraded from block to warn per product requirement.
+        if (newIsFullTime && newIsOnsite && eIsFullTime && eIsOnsite) return 'warn';
 
         // ── ALLOW ───────────────────────────────────────────────────────────────
         // Freelance, Contract, Part-time, Internship can coexist with anything.
@@ -489,22 +489,6 @@ exports.addExperience = async (req, res) => {
         const companyNorm = (company_name || "").trim().toLowerCase();
         const newEnd = is_current ? null : end_date;
 
-        // ── Same-company date overlap (hard block) ────────────────────────────────
-        const sameCompany = allExperiences.filter(e => {
-            if (!companyNorm) return false;
-            if (end_current_role && e.experience_id === end_current_role_id) return false; // being ended
-            return (org_id && e.org_id === org_id) ||
-                   (!org_id && !e.org_id && (e.company_name || "").trim().toLowerCase() === companyNorm);
-        });
-        for (const e of sameCompany) {
-            if (datesOverlap(start_date, newEnd, e.start_date, e.end_date)) {
-                return res.status(422).json({
-                    message: `Date range overlaps with your existing "${e.title}" role at "${e.company_name}". Adjust your dates or edit the existing record first.`,
-                    code: 'DATE_OVERLAP',
-                });
-            }
-        }
-
         // ── Multiple is_current check (work_type × work_mode matrix) ─────────────
         let warning = undefined;
         if (is_current) {
@@ -626,21 +610,6 @@ exports.updateExperience = async (req, res) => {
         const otherExperiences = allExperiences.filter(e => e.experience_id !== req.params.id);
         const companyNorm = (resolvedCompany || "").trim().toLowerCase();
         const resolvedNewEnd = resolvedCurrent ? null : resolvedEnd;
-
-        // ── Same-company date overlap (hard block) ────────────────────────────────
-        const sameCompanyOthers = otherExperiences.filter(e => {
-            if (!companyNorm) return false;
-            return (resolvedOrgId && e.org_id === resolvedOrgId) ||
-                   (!resolvedOrgId && !e.org_id && (e.company_name || "").trim().toLowerCase() === companyNorm);
-        });
-        for (const e of sameCompanyOthers) {
-            if (datesOverlap(resolvedStart, resolvedNewEnd, e.start_date, e.end_date)) {
-                return res.status(422).json({
-                    message: `Date range overlaps with your existing "${e.title}" role at "${e.company_name}". Adjust your dates or edit the existing record first.`,
-                    code: 'DATE_OVERLAP',
-                });
-            }
-        }
 
         // ── Multiple is_current check (work_type × work_mode matrix) ─────────────
         // Only run this check when transitioning a role from non-current → current.

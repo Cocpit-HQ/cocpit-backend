@@ -58,6 +58,20 @@ exports.getUsers = async (req, res) => {
       baseQuery += ` AND (u.email ILIKE $${searchParamIndex} OR u.full_name ILIKE $${searchParamIndex} OR u.user_id::text ILIKE $${searchParamIndex})`;
     }
 
+    // Date Range Filter
+    const startDate = req.query.startDate;
+    const endDate = req.query.endDate;
+    if (startDate) {
+      queryParams.push(startDate);
+      const startParamIndex = queryParams.length;
+      baseQuery += ` AND u.created_at >= $${startParamIndex}`;
+    }
+    if (endDate) {
+      queryParams.push(endDate);
+      const endParamIndex = queryParams.length;
+      baseQuery += ` AND u.created_at <= $${endParamIndex}`;
+    }
+
     // Get Total Count for Pagination
     const countQuery = `SELECT COUNT(*) ${baseQuery}`;
     const countResult = await req.db.query(countQuery, queryParams);
@@ -89,7 +103,8 @@ exports.getUsers = async (req, res) => {
         p.account_type,
         u.is_suspended,
         u.is_deleted,
-        u.avatar_url
+        u.avatar_url,
+        u.created_at
       ${baseQuery}
       ORDER BY u.created_at DESC
       LIMIT $${queryParams.length + 1} OFFSET $${queryParams.length + 2}
@@ -128,7 +143,8 @@ exports.getUsers = async (req, res) => {
         email: user.email,
         role: role,
         status: userStatus,
-        avatar: user.avatar_url
+        avatar: user.avatar_url,
+        joined: user.created_at
       };
     });
 
@@ -760,7 +776,7 @@ exports.deleteUser = async (req, res) => {
     const adminId = req.user.userId;
 
     const result = await req.db.query(
-      'UPDATE users SET is_deleted = true WHERE user_id = $1 RETURNING full_name',
+      'UPDATE users SET is_deleted = true, deleted_at = NOW() WHERE user_id = $1 RETURNING full_name',
       [id]
     );
 
@@ -778,10 +794,41 @@ exports.deleteUser = async (req, res) => {
       ['USER', id, 'BAN', `Manual soft deletion by admin. Your account has been deleted.`, null, adminId]
     );
 
+    await redis.publish('admin:users', JSON.stringify({ action: 'deleted', userId: id }));
+    await redis.setex(`deleted_user:${id}`, 30 * 24 * 60 * 60, 'true'); // 30 days TTL
+
     res.json({ success: true, message: 'User deleted successfully' });
   } catch (error) {
     console.error('Error deleting user:', error);
     res.status(500).json({ error: 'Failed to delete user' });
+  }
+};
+
+exports.restoreUser = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const adminId = req.user.userId;
+
+    const result = await req.db.query(
+      'UPDATE users SET is_deleted = false, deleted_at = NULL WHERE user_id = $1 RETURNING full_name',
+      [id]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    await req.db.query(
+      'INSERT INTO admin_audit_logs (user_id, action_type, description) VALUES ($1, $2, $3)',
+      [adminId, 'USER_RESTORED', `Restored deleted user ${result.rows[0].full_name}`]
+    );
+
+    await redis.del(`deleted_user:${id}`);
+
+    res.json({ success: true, message: 'User restored successfully' });
+  } catch (error) {
+    console.error('Error restoring user:', error);
+    res.status(500).json({ error: 'Failed to restore user' });
   }
 };
 
@@ -797,7 +844,7 @@ exports.bulkDeleteUsers = async (req, res) => {
 
     for (const id of userIds) {
       const updateResult = await req.db.query(
-        'UPDATE users SET is_deleted = true WHERE user_id = $1 RETURNING full_name',
+        'UPDATE users SET is_deleted = true, deleted_at = NOW() WHERE user_id = $1 RETURNING full_name',
         [id]
       );
 
@@ -816,6 +863,9 @@ exports.bulkDeleteUsers = async (req, res) => {
         'INSERT INTO moderation_actions (target_type, target_id, action_type, reason, duration_days, performed_by) VALUES ($1, $2, $3, $4, $5, $6)',
         ['USER', id, 'BAN', `Bulk manual soft deletion by admin. Your account has been deleted.`, null, adminId]
       );
+
+      await redis.publish('admin:users', JSON.stringify({ action: 'deleted', userId: id }));
+      await redis.setex(`deleted_user:${id}`, 30 * 24 * 60 * 60, 'true'); // 30 days TTL
 
       results.push({ id, name: targetName, status: 'Deleted' });
     }

@@ -22,5 +22,6 @@ router.get('/organization-growth', requireRoles(['Admin', 'Moderator', 'Develope
 router.get('/jobs-metrics', requireRoles(['Developer', 'Admin', 'Moderator']), dashboardController.getJobsMetrics);
 router.get('/ai-analytics', requireRoles(['Admin', 'Moderator', 'Developer']), dashboardController.getAiAnalytics);
 router.get('/notifications', requireRoles(['Admin', 'Moderator', 'Developer']), dashboardController.getAdminNotifications);
+router.get('/daily-signups', requireRoles(['Admin', 'Moderator', 'Developer']), dashboardController.getDailySignups);
 
 module.exports = router;

@@ -731,7 +731,7 @@ exports.batchDeclineTeamInvites = async (req, res, next) => {
             });
         }
 
-        res.json({ message: "Batch invitations declined successfully", processed: validInvites.length });
+        res.json({ message: "Declined all page invitations.", processed: validInvites.length });
     } catch (err) {
         await client.query("ROLLBACK");
         return next(new AppError(err.message || "Failed to decline batch invitations", err.status || 500));

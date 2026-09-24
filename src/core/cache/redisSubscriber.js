@@ -29,8 +29,8 @@ subscriber.on('message', async (channel, message) => {
     const payload = JSON.parse(message);
     
     if (channel === 'admin:users') {
-      if (payload.action === 'suspended' && payload.userId) {
-        console.log(`[Admin Event] User ${payload.userId} suspended. Force disconnecting sockets...`);
+      if ((payload.action === 'suspended' || payload.action === 'deleted') && payload.userId) {
+        console.log(`[Admin Event] User ${payload.userId} ${payload.action}. Force disconnecting sockets...`);
         const disconnectedCount = await socketService.disconnectUser(payload.userId);
         console.log(`[Admin Event] Disconnected ${disconnectedCount} socket(s) for user ${payload.userId}`);
       }

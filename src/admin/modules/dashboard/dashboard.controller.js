@@ -1975,3 +1975,46 @@ exports.getAdminNotifications = async (req, res) => {
     res.status(500).json({ error: 'Failed to fetch admin notifications' });
   }
 };
+
+exports.getDailySignups = async (req, res) => {
+  try {
+    const { date } = req.query;
+    
+    // Parse start and end of day based on supplied date parameter or current date
+    let targetDate = date ? new Date(date) : new Date();
+    if (isNaN(targetDate.getTime())) {
+      targetDate = new Date();
+    }
+
+    const startOfDay = new Date(targetDate);
+    startOfDay.setHours(0, 0, 0, 0);
+
+    const endOfDay = new Date(targetDate);
+    endOfDay.setHours(23, 59, 59, 999);
+
+    const query = `
+      SELECT 
+        id,
+        full_name AS name,
+        email,
+        COALESCE(user_type, 'Professional') AS role,
+        created_at,
+        COALESCE(is_suspended, FALSE) AS is_suspended
+      FROM users
+      WHERE created_at >= $1 AND created_at <= $2
+      ORDER BY created_at DESC
+    `;
+
+    const result = await req.db.query(query, [startOfDay.toISOString(), endOfDay.toISOString()]);
+
+    res.json({
+      date: startOfDay.toISOString().split('T')[0],
+      count: result.rows.length,
+      users: result.rows
+    });
+  } catch (error) {
+    console.error('Error fetching daily signups:', error);
+    res.status(500).json({ error: 'Failed to fetch daily signups' });
+  }
+};
+
