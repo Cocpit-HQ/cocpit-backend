@@ -340,12 +340,34 @@ exports.getIdentity = async (req, res) => {
 };
 
 
+const normalizeAccountType = (type) => {
+    if (!type) return type;
+    const lower = String(type).toLowerCase().trim().replace(/[-_ ]+/g, "_");
+    switch (lower) {
+        case "student": return "Student";
+        case "fresher": return "Fresher";
+        case "intern": return "Intern";
+        case "self_employed": return "Self-employed";
+        case "employed":
+        case "employee": return "Employed";
+        case "unemployed":
+        case "currently_not_working": return "Currently not working";
+        case "employer": return "Employer";
+        case "admin": return "Admin";
+        default: return type;
+    }
+};
+
 exports.updateIdentity = async (req, res) => {
     const { open_to, availability, work_preference, account_type } = req.body;
     const allowedOpenTo = ["Full-time", "Part-time", "Internship", "Freelance", "Connections"];
     const allowedAvailability = ["Immediately", "Weekdays", "Weekends", "15 to 30 days", "Flexible", "On-demand", "Immediate", "30 Days"];
     const allowedWorkPreference = ["Remote", "Hybrid", "On-site"];
-    const allowedAccountTypes = ["student", "fresher", "intern", "self_employed", "employed", "unemployed", "Student", "Fresher", "Intern", "Self Employed", "Employee", "Employer", "Admin"];
+    const allowedAccountTypes = [
+        "student", "fresher", "intern", "self_employed", "employed", "unemployed",
+        "Student", "Fresher", "Intern", "Self Employed", "Self-employed", "Employee", "Employed",
+        "Employer", "Admin", "Currently not working"
+    ];
 
     if (open_to && !allowedOpenTo.includes(open_to)) {
         return res.status(400).json({ message: "Invalid open_to value" });
@@ -360,12 +382,14 @@ exports.updateIdentity = async (req, res) => {
         return res.status(400).json({ message: "Invalid account type" });
     }
 
+    const normalizedAccountType = account_type ? normalizeAccountType(account_type) : undefined;
+
     try {
         const identity = await profileRepo.updateIdentity(req.user.sub, { 
             open_to: open_to || null, 
             availability: availability || null, 
             work_preference: work_preference || null, 
-            account_type 
+            account_type: normalizedAccountType
         });
         if (!identity) return res.status(404).json({ message: "Profile not found" });
         res.json({ message: "Professional identity updated successfully", identity });

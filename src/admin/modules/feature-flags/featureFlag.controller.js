@@ -27,6 +27,13 @@ const updateFlag = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Invalid payload: key/value or features object required' });
     }
 
+    // Ensure notification flag aliases are kept in sync
+    if (itemsToUpdate.enableNotifications !== undefined && itemsToUpdate.enableNotificationsModule === undefined) {
+      itemsToUpdate.enableNotificationsModule = itemsToUpdate.enableNotifications;
+    } else if (itemsToUpdate.enableNotificationsModule !== undefined && itemsToUpdate.enableNotifications === undefined) {
+      itemsToUpdate.enableNotifications = itemsToUpdate.enableNotificationsModule;
+    }
+
     let redisFailed = false;
     const updated = [];
     const broadcastPayload = {};

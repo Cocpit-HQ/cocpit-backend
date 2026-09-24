@@ -20,6 +20,72 @@ const ONBOARDING_STEPS = {
 
 const getClient = async () => pool.connect();
 
+const isValidDateParts = (year, month, day) => {
+    const y = parseInt(year, 10);
+    const m = parseInt(month, 10);
+    const d = parseInt(day, 10);
+    if (isNaN(y) || isNaN(m) || isNaN(d)) return false;
+    if (y < 1900 || y > 2100) return false;
+    if (m < 1 || m > 12) return false;
+    if (d < 1 || d > 31) return false;
+
+    const daysInMonth = new Date(y, m, 0).getDate();
+    if (d > daysInMonth) return false;
+
+    return true;
+};
+
+// Helper to parse and validate diverse date formats from AI or user input
+const parseDate = (d) => {
+    if (!d || typeof d !== 'string') return null;
+    let trimmed = d.trim();
+    if (!trimmed) return null;
+
+    if (trimmed.includes('T')) {
+        trimmed = trimmed.split('T')[0];
+    }
+
+    // YYYY-MM-DD
+    const ymdMatch = trimmed.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (ymdMatch) {
+        const [, y, m, day] = ymdMatch;
+        return isValidDateParts(y, m, day) ? `${y}-${m}-${day}` : null;
+    }
+
+    // YYYY-MM
+    const ymMatch = trimmed.match(/^(\d{4})-(\d{2})$/);
+    if (ymMatch) {
+        const [, y, m] = ymMatch;
+        return isValidDateParts(y, m, '01') ? `${y}-${m}-01` : null;
+    }
+
+    // MM/YYYY
+    const myMatch = trimmed.match(/^(\d{2})\/(\d{4})$/);
+    if (myMatch) {
+        const [, m, y] = myMatch;
+        return isValidDateParts(y, m, '01') ? `${y}-${m}-01` : null;
+    }
+
+    // YYYY
+    const yMatch = trimmed.match(/^(\d{4})$/);
+    if (yMatch) {
+        const y = yMatch[1];
+        return isValidDateParts(y, '01', '01') ? `${y}-01-01` : null;
+    }
+
+    // Fallback to JS Date parser for text dates (e.g. "Jan 2024")
+    const dateObj = new Date(trimmed);
+    if (!isNaN(dateObj.getTime())) {
+        const yyyy = dateObj.getFullYear();
+        const mm = String(dateObj.getMonth() + 1).padStart(2, '0');
+        const dd = String(dateObj.getDate()).padStart(2, '0');
+        if (isValidDateParts(yyyy, mm, dd)) {
+            return `${yyyy}-${mm}-${dd}`;
+        }
+    }
+    return null;
+};
+
 exports.saveRole = async (req, res) => {
     const userId = req.user?.sub;
     const { role } = req.body;
@@ -132,29 +198,6 @@ exports.saveDetails = async (req, res) => {
         // we must clear out any previously saved educations/experiences to prevent duplication.
         await client.query(`DELETE FROM educations WHERE profile_id = $1`, [profileId]);
         await client.query(`DELETE FROM experiences WHERE profile_id = $1`, [profileId]);
-
-        // Helper to parse diverse date formats from AI
-        const parseDate = (d) => {
-            if (!d) return null;
-            if (typeof d !== 'string') return null;
-            if (d.match(/^\d{4}-\d{2}-\d{2}$/)) return d;
-            if (d.match(/^\d{4}-\d{2}$/)) return d + '-01';
-            if (d.match(/^\d{2}\/\d{4}$/)) {
-                const [m, y] = d.split('/');
-                return `${y}-${m}-01`;
-            }
-            if (d.match(/^\d{4}$/)) return `${d}-01-01`;
-
-            // Fallback to JS Date parser for text dates (e.g. "Jan 2024")
-            const dateObj = new Date(d);
-            if (!isNaN(dateObj.getTime())) {
-                const yyyy = dateObj.getFullYear();
-                const mm = String(dateObj.getMonth() + 1).padStart(2, '0');
-                const dd = String(dateObj.getDate()).padStart(2, '0');
-                return `${yyyy}-${mm}-${dd}`;
-            }
-            return null;
-        };
 
         const isStudentRole = ["student", "fresher", "unemployed"].includes(role);
         const isEmployedRole = ["self_employed", "employed", "intern"].includes(role);
@@ -852,19 +895,7 @@ exports.parseResumeUpload = async (req, res) => {
             if (!dateStr || typeof dateStr !== 'string') return null;
             let date = dateStr.trim();
             if (date.toLowerCase() === 'present' || date.toLowerCase() === 'current') return 'Present';
-            if (date.includes("T") && date.endsWith("Z")) {
-                date = date.split("T")[0];
-            }
-            // Scenario 4: Default bare year to January 1st
-            if (date.match(/^\d{4}$/)) {
-                date = `${date}-01-01`;
-            } else if (date.match(/^\d{4}-\d{2}$/)) {
-                date = `${date}-01`;
-            } else if (date.match(/^\d{2}\/\d{4}$/)) {
-                const [m, y] = date.split('/');
-                date = `${y}-${m}-01`;
-            }
-            return date;
+            return parseDate(date);
         };
 
         const processDates = (item) => {

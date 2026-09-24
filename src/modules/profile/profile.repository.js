@@ -72,14 +72,33 @@ const getIdentity = async (userId) => {
     return result.rows[0] || null;
 };
 
+const normalizeAccountType = (type) => {
+    if (!type) return type;
+    const lower = String(type).toLowerCase().trim().replace(/[-_ ]+/g, "_");
+    switch (lower) {
+        case "student": return "Student";
+        case "fresher": return "Fresher";
+        case "intern": return "Intern";
+        case "self_employed": return "Self-employed";
+        case "employed":
+        case "employee": return "Employed";
+        case "unemployed":
+        case "currently_not_working": return "Currently not working";
+        case "employer": return "Employer";
+        case "admin": return "Admin";
+        default: return type;
+    }
+};
+
 const updateIdentity = async (userId, { open_to, availability, work_preference, account_type }) => {
-    await ensureProfileId(userId, account_type || "Student");
+    const normalizedAccountType = account_type ? normalizeAccountType(account_type) : undefined;
+    await ensureProfileId(userId, normalizedAccountType || "Student");
     let query = `UPDATE profiles SET open_to = $1, availability = $2, work_preference = $3`;
     let params = [open_to, availability, work_preference];
     let idx = 4;
-    if (account_type !== undefined) {
+    if (normalizedAccountType !== undefined) {
         query += `, account_type = $${idx}`;
-        params.push(account_type);
+        params.push(normalizedAccountType);
         idx++;
     }
     query += `, updated_at = now() WHERE user_id = $${idx} RETURNING *`;

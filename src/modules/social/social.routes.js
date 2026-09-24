@@ -96,7 +96,14 @@ router.get("/messages/:messageId/seen-by", requireAuth, socialController.getMess
 const featureFlagsService = require("../config/featureFlags.service");
 const blockIfNotificationsDisabled = (req, res, next) => {
     const flags = featureFlagsService.getFlags();
-    if (flags["enableNotificationsModule"] === false) {
+    const isNotificationsDisabled = 
+        flags["enableNotificationsModule"] === false ||
+        flags["enableNotifications"] === false ||
+        flags["enable_notifications"] === false ||
+        flags["enable_notifications_module"] === false ||
+        flags["notifications"] === false;
+
+    if (isNotificationsDisabled) {
         return res.status(403).json({ message: "Notifications are currently disabled." });
     }
     next();
