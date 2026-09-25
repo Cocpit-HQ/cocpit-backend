@@ -119,6 +119,7 @@ const gracefulShutdown = () => {
     console.log('[Main API] Closed out remaining HTTP connections.');
     try {
       if (pool) {
+        if (pool.stopHealthCheck) pool.stopHealthCheck();
         await pool.end();
         console.log('[Main API] Database pool closed.');
       }

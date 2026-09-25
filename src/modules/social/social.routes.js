@@ -112,8 +112,8 @@ const blockIfNotificationsDisabled = (req, res, next) => {
 router.use("/notifications", blockIfNotificationsDisabled);
 
 router.get("/notifications", requireAuth, socialController.getNotifications);
-router.patch("/notifications/:id/read", requireAuth, socialController.markNotificationRead);
 router.patch("/notifications/read-all", requireAuth, socialController.markAllNotificationsRead);
+router.patch("/notifications/:id/read", requireAuth, socialController.markNotificationRead);
 router.delete("/notifications/bulk", requireAuth, socialController.deleteNotificationsBulk);
 router.delete("/notifications/:id", requireAuth, socialController.deleteNotification);
 

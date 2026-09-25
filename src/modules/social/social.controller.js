@@ -5050,6 +5050,16 @@ exports.getNotifications = async (req, res) => {
 // Mark a notification as read
 exports.markNotificationRead = async (req, res) => {
     const { id } = req.params;
+
+    if (id === "read-all") {
+        return exports.markAllNotificationsRead(req, res);
+    }
+
+    const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (!UUID_REGEX.test(id)) {
+        return res.status(400).json({ message: "Invalid notification id format" });
+    }
+
     let actorScope;
 
     try {
@@ -5124,6 +5134,12 @@ exports.markAllNotificationsRead = async (req, res) => {
 // Delete a single notification
 exports.deleteNotification = async (req, res) => {
     const { id } = req.params;
+
+    const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (!UUID_REGEX.test(id)) {
+        return res.status(400).json({ message: "Invalid notification id format" });
+    }
+
     let actorScope;
 
     try {
