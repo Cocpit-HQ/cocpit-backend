@@ -1659,7 +1659,7 @@ exports.deleteAccount = async (req, res) => {
     const deletionExecuteAt = new Date(Date.now() + 40 * 24 * 60 * 60 * 1000);
     await client.query(
       `UPDATE users
-       SET deletion_scheduled_at = NOW(), deletion_execute_at = $1, deletion_batch_id = $2
+       SET is_deleted = TRUE, deleted_at = NOW(), deletion_scheduled_at = NOW(), deletion_execute_at = $1, deletion_batch_id = $2
        WHERE user_id = $3`,
       [deletionExecuteAt, batchId, userId]
     );
@@ -1805,9 +1805,8 @@ exports.restoreAccount = async (req, res) => {
     );
     const batchId = userRes.rowCount > 0 ? userRes.rows[0].deletion_batch_id : null;
 
-    // Clear deletion schedule on the user
     await client.query(
-      `UPDATE users SET deletion_scheduled_at = NULL, deletion_execute_at = NULL, deletion_batch_id = NULL WHERE user_id = $1`,
+      `UPDATE users SET is_deleted = FALSE, deleted_at = NULL, deletion_scheduled_at = NULL, deletion_execute_at = NULL, deletion_batch_id = NULL WHERE user_id = $1`,
       [tokenRow.user_id]
     );
 
@@ -2016,7 +2015,7 @@ exports.getSuggestedUsers = async (req, res) => {
 
 /**
  * GET /api/users/search-history
- * Purpose: Fetch the top 6 recent searches for the authenticated user
+ * Purpose: Fetch the top 6 recent searches for the authenticated user with live profile data
  */
 exports.getSearchHistory = async (req, res) => {
   const userId = req.user.sub;
@@ -2024,13 +2023,35 @@ exports.getSearchHistory = async (req, res) => {
   try {
     const query = `
       SELECT 
-        id, 
-        query_text as query, 
-        profile_snapshot as "profileSnapshot",
-        created_at as "createdAt"
-      FROM user_search_history
-      WHERE user_id = $1
-      ORDER BY created_at DESC
+        sh.id, 
+        CASE 
+          WHEN u.user_id IS NOT NULL THEN u.full_name
+          ELSE sh.query_text
+        END as query, 
+        CASE 
+          WHEN u.user_id IS NOT NULL THEN
+            jsonb_build_object(
+              'id', u.user_id,
+              'full_name', u.full_name,
+              'name', u.full_name,
+              'account_name', u.account_name,
+              'username', u.account_name,
+              'avatar_url', u.avatar_url,
+              'avatar', u.avatar_url,
+              'headline', u.headline,
+              'account_type', COALESCE(u.user_type, 'USER')
+            )::text
+          ELSE sh.profile_snapshot::text
+
+
+        END as "profileSnapshot",
+        sh.created_at as "createdAt"
+      FROM user_search_history sh
+      LEFT JOIN active_users u ON sh.query_normalized = ('user:' || u.user_id::text)
+      LEFT JOIN active_organizations o ON sh.query_normalized = ('user:' || o.org_id::text)
+      WHERE sh.user_id = $1
+        AND (sh.query_normalized NOT LIKE 'user:%' OR u.user_id IS NOT NULL OR o.org_id IS NOT NULL)
+      ORDER BY sh.created_at DESC
     `;
     const result = await pool.query(query, [userId]);
     res.status(200).json({ success: true, data: result.rows });
@@ -2039,6 +2060,7 @@ exports.getSearchHistory = async (req, res) => {
     res.status(500).json({ success: false, message: "Internal server error" });
   }
 };
+
 
 /**
  * POST /api/users/search-history

@@ -525,7 +525,7 @@ exports.deleteAccount = async (req, res) => {
         await client.query("BEGIN");
 
         await client.query(
-            `UPDATE users SET deletion_execute_at = $1, updated_at = NOW() WHERE user_id = $2`,
+            `UPDATE users SET is_deleted = TRUE, deleted_at = NOW(), deletion_scheduled_at = NOW(), deletion_execute_at = $1, updated_at = NOW() WHERE user_id = $2`,
             [deletionDate, userId]
         );
 

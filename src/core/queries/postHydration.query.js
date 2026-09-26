@@ -64,6 +64,18 @@ const getPostHydrationSelect = (companyParamIdx, userParamIdx) => `
         '[]'::json
     ) AS tags,
 
+    (
+        SELECT COALESCE(json_agg(json_build_object(
+            'user_id', u_mention.user_id,
+            'full_name', u_mention.full_name,
+            'account_name', u_mention.account_name
+        )), '[]'::json)
+        FROM (
+            SELECT DISTINCT (regexp_matches(COALESCE(p.content, ''), '@\\[[^\\]]+\\]\\(([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\\)', 'g'))[1]::uuid AS mentioned_id
+        ) mentions
+        JOIN active_users u_mention ON u_mention.user_id = mentions.mentioned_id
+    ) AS mentioned_users,
+
     COALESCE(
         (SELECT json_agg(json_build_object('url', pm.url, 'media_type', pm.media_type, 'width', pm.width, 'height', pm.height)) 
          FROM post_media pm WHERE pm.post_id = p.post_id),
@@ -366,6 +378,17 @@ const getPostHydrationSelect = (companyParamIdx, userParamIdx) => `
                      )
                      ELSE NULL
                  END,
+                 'mentioned_users', (
+                     SELECT COALESCE(json_agg(json_build_object(
+                         'user_id', u_mention.user_id,
+                         'full_name', u_mention.full_name,
+                         'account_name', u_mention.account_name
+                     )), '[]'::json)
+                     FROM (
+                         SELECT DISTINCT (regexp_matches(COALESCE(sp.content, ''), '@\\[[^\\]]+\\]\\(([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\\)', 'g'))[1]::uuid AS mentioned_id
+                     ) mentions
+                     JOIN active_users u_mention ON u_mention.user_id = mentions.mentioned_id
+                 ),
                  'media', COALESCE((SELECT json_agg(json_build_object('url', pm.url, 'media_type', pm.media_type, 'width', pm.width, 'height', pm.height)) FROM post_media pm WHERE pm.post_id = sp.post_id), '[]'::json),
                  'achievement_image_url', sp_ai.cloudinary_url,
                  'like_count', (SELECT COUNT(*) FROM active_post_likes pl WHERE pl.post_id = sp.post_id)::int,

@@ -374,7 +374,7 @@ async function _fetchChronologicalFeed(userId, cursor, limit, pool, orgActorId =
       AND (p.is_deleted IS FALSE OR p.is_deleted IS NULL)
       AND (p.is_unlisted IS FALSE OR p.is_unlisted IS NULL)
       AND NOT EXISTS (
-        SELECT 1 FROM users u WHERE u.user_id = p.author_id AND (u.is_deleted = true OR u.is_suspended = true)
+        SELECT 1 FROM users u WHERE u.user_id = p.author_id AND (u.is_deleted = true OR u.is_suspended = true OR u.deletion_execute_at IS NOT NULL)
       )
       AND NOT EXISTS (
         SELECT 1 FROM organizations o WHERE o.org_id = p.author_org_id AND (o.is_deleted = true OR o.is_deactivated = true OR o.is_suspended = true)

@@ -4053,6 +4053,18 @@ exports.getComments = async (req, res) => {
         END AS headline,
 
         c.author_org_id,
+        
+        (
+            SELECT COALESCE(json_agg(json_build_object(
+                'user_id', u_mention.user_id,
+                'full_name', u_mention.full_name,
+                'account_name', u_mention.account_name
+            )), '[]'::json)
+            FROM (
+                SELECT DISTINCT (regexp_matches(COALESCE(c.content, ''), '@\\[[^\\]]+\\]\\(([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\\)', 'g'))[1]::uuid AS mentioned_id
+            ) mentions
+            JOIN active_users u_mention ON u_mention.user_id = mentions.mentioned_id
+        ) AS mentioned_users,
 
         COALESCE(
           (SELECT COUNT(*)::int FROM active_comment_likes cl WHERE cl.comment_id = c.comment_id),

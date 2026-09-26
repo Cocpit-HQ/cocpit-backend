@@ -4762,7 +4762,18 @@ exports.getMessages = async (req, res) => {
                     JOIN user_display_profiles rru ON rru.user_id = mr.user_id
                     WHERE mr.message_id = m.message_id),
                     '[]'::json
-                ) AS reactions
+                ) AS reactions,
+                (
+                    SELECT COALESCE(json_agg(json_build_object(
+                        'user_id', u_mention.user_id,
+                        'full_name', u_mention.full_name,
+                        'account_name', u_mention.account_name
+                    )), '[]'::json)
+                    FROM (
+                        SELECT DISTINCT (regexp_matches(COALESCE(m.text_content, ''), '@\\[[^\\]]+\\]\\(([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\\)', 'g'))[1]::uuid AS mentioned_id
+                    ) mentions
+                    JOIN active_users u_mention ON u_mention.user_id = mentions.mentioned_id
+                ) AS mentioned_users
              FROM messages m
              LEFT JOIN user_display_profiles u ON m.sender_id = u.user_id
              LEFT JOIN users raw_u_msg ON m.sender_id = raw_u_msg.user_id
