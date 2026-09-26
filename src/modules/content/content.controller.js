@@ -3090,6 +3090,7 @@ exports.toggleLike = async (req, res) => {
 };
 
 exports.addComment = async (req, res) => {
+    const fs = require('fs');
     const postId = req.params.id;
     let { content, parent_id } = req.body; // Added companyId
 
@@ -3353,7 +3354,7 @@ exports.addComment = async (req, res) => {
                 if (!companyId && !parentCompanyId && parentAuthorId === userId) isSelfReply = true;
 
                 if (!isSelfReply && !isPostOwner) {
-                    let cleanedContent = content.replace(/@\w+\s*/g, '').trim();
+                    let cleanedContent = content.replace(/@\[[^\]]+\](?:\([^)]*\))?\s*/g, '').replace(/@\w+\s*/g, '').trim();
                     let preview = cleanedContent.substring(0, 40);
                     if (cleanedContent.length > 40) preview += "...";
                     const replyText = `${actorName} replied to your comment: "${preview}"`;
