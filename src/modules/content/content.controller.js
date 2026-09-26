@@ -2469,6 +2469,87 @@ WHERE p.post_id = $1;
             }).catch(err => console.error("Error in broadcastChannelArticlePublished:", err));
         }
 
+        // Mentions in post content (fire-and-forget, after commit)
+        if (content && typeof content === 'string') {
+            const mentionedUsernames = [];
+            const regex1 = /@\[[^\]]+\]\(([^)]+)\)/g;
+            let m;
+            while ((m = regex1.exec(content)) !== null) {
+                if (!mentionedUsernames.includes(m[1])) mentionedUsernames.push(m[1]);
+            }
+            const regex2 = /(?:^|\s)@(\w+)(?!\w)/g;
+            while ((m = regex2.exec(content)) !== null) {
+                if (!mentionedUsernames.includes(m[1])) mentionedUsernames.push(m[1]);
+            }
+
+            if (mentionedUsernames.length > 0) {
+                console.log("[updatePostById] Mentions detected:", mentionedUsernames);
+                // Fetch actor details
+                let actorName = "Someone";
+                let actorAvatar = null;
+                if (orgId) {
+                    const orgRes = await pool.query(`SELECT name, logo_url FROM organizations WHERE org_id = $1`, [orgId]);
+                    if (orgRes.rowCount > 0) {
+                        actorName = orgRes.rows[0].name;
+                        actorAvatar = orgRes.rows[0].logo_url;
+                    }
+                } else {
+                    const userRes = await pool.query(`SELECT full_name, avatar_url FROM users WHERE user_id = $1`, [userId]);
+                    if (userRes.rowCount > 0) {
+                        actorName = userRes.rows[0].full_name;
+                        actorAvatar = userRes.rows[0].avatar_url;
+                    }
+                }
+
+                for (const handle of mentionedUsernames) {
+                    const userRes = await pool.query(`SELECT user_id FROM users WHERE LOWER(account_name) = LOWER($1)`, [handle]);
+                    if (userRes.rowCount > 0) {
+                        const mentionedUserId = userRes.rows[0].user_id;
+                        let isSelf = (!orgId && mentionedUserId === userId);
+
+                        if (!isSelf) {
+                            if (!orgId) {
+                                const isBlockedByMentioned = await checkBlockStatus(mentionedUserId, userId);
+                                const hasBlockedMentioned = await checkBlockStatus(userId, mentionedUserId);
+                                if (isBlockedByMentioned || hasBlockedMentioned) continue;
+                            }
+
+                            // Check if a notification already exists for this mention in this post
+                            const existingNotif = await pool.query(
+                                `SELECT notification_id FROM notifications WHERE user_id = $1 AND reference_id = $2 AND type = 'mention'`,
+                                [mentionedUserId, postId]
+                            );
+
+                            if (existingNotif.rowCount === 0) {
+                                const notifText = `${actorName} mentioned you in a post`;
+                                const meta = { post_id: postId, org_id: orgId || null };
+                                
+                                const mentionNotifRes = await pool.query(
+                                    `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata) 
+                                     VALUES ($1, $2, $3, $4, $5, $6) RETURNING notification_id, created_at`,
+                                    [mentionedUserId, userId, 'mention', notifText, postId, JSON.stringify(meta)]
+                                );
+
+                                socketService.notifyUser(mentionedUserId, "notification", {
+                                    notification_id: mentionNotifRes.rows[0].notification_id,
+                                    type: 'mention',
+                                    text: notifText,
+                                    from: userId,
+                                    senderName: actorName,
+                                    senderAvatar: actorAvatar,
+                                    referenceId: postId,
+                                    metadata: meta,
+                                    time: "Just now",
+                                    created_at: mentionNotifRes.rows[0].created_at.toISOString(),
+                                    is_read: false
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         const mappedPost = {
             ...post,
             id: post.post_id,
