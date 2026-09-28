@@ -653,7 +653,7 @@ exports.getUserPendingTeamsInvites = async (req, res, next) => {
              JOIN organizations o ON oi.org_id = o.org_id
              LEFT JOIN users u ON oi.inviter_id = u.user_id
              WHERE (oi.invited_user_id = $1 OR LOWER(oi.email) = LOWER($2)) 
-               AND oi.status = 'PENDING' 
+               AND LOWER(oi.status::text) = 'pending' 
                AND oi.expires_at > NOW()
              ORDER BY oi.created_at DESC`,
             [userId, email]

@@ -863,9 +863,9 @@ exports.getPendingInvitations = async (req, res, next) => {
              JOIN communities c ON ci.community_id = c.community_id
              JOIN organizations o ON c.org_id = o.org_id
              WHERE ci.invitee_id = $1 
-               AND ci.status = 'PENDING' 
-               AND ci.is_active = TRUE 
-               AND c.is_active = TRUE`,
+               AND LOWER(ci.status::text) = 'pending' 
+               AND COALESCE(ci.is_active, TRUE) = TRUE 
+               AND COALESCE(c.is_active, TRUE) = TRUE`,
             [userId]
         );
 

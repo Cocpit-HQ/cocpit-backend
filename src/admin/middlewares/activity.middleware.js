@@ -4,7 +4,6 @@ const pool = require('../../core/db/pool');
 const activityCache = new Map();
 
 const trackActivity = (req, res, next) => {
-  // Let the request continue immediately (non-blocking)
   next();
 
   if (req.user && req.user.userId) {
