@@ -230,6 +230,7 @@ exports.updateProfile = async (req, res) => {
         if (full_name.trim().length < 3) return res.status(400).json({ message: "Full name must be at least 3 characters" });
         if (full_name.length > 40) return res.status(400).json({ message: "Full name cannot exceed 40 characters" });
     }
+    if (!headline || headline.trim() === '') return res.status(400).json({ message: "Headline is required" });
     if (headline && headline.length > 120) return res.status(400).json({ message: "Headline cannot exceed 120 characters" });
     if (job_title && job_title.length > 80) return res.status(400).json({ message: "Job title cannot exceed 80 characters" });
     if (company_name && company_name.length > 80) return res.status(400).json({ message: "Company name cannot exceed 80 characters" });
@@ -1711,6 +1712,7 @@ exports.addProject = async (req, res) => {
     if (!title || !title.trim()) return res.status(400).json({ message: "Project title is required" });
     if (title && title.length > 255) return res.status(400).json({ message: "Project title cannot exceed 255 characters" });
     if (!organization || !organization.trim()) return res.status(400).json({ message: "Organization is required" });
+    if (organization && organization.length > 255) return res.status(400).json({ message: "Organization cannot exceed 255 characters" });
     if (!start_month || !start_year) return res.status(400).json({ message: "Start month and year are required" });
     if (!is_current && (!end_month || !end_year)) {
         return res.status(400).json({ message: "End month and year are required when project is not ongoing" });
@@ -1792,6 +1794,7 @@ exports.updateProject = async (req, res) => {
     } = req.body;
 
     if (title && title.length > 255) return res.status(400).json({ message: "Project title cannot exceed 255 characters" });
+    if (organization && organization.length > 255) return res.status(400).json({ message: "Organization cannot exceed 255 characters" });
 
     if (end_year && start_year && !is_current) {
         const startVal = parseInt(start_year, 10);

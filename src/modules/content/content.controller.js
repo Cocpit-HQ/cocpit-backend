@@ -3330,6 +3330,7 @@ exports.addComment = async (req, res) => {
             }
         }
 
+        const notifiedReplyUserIds = new Set();
         if (parent_id) {
             // Get parent comment author AND company
             const parentAuthorRes = await pool.query(
@@ -3395,6 +3396,8 @@ exports.addComment = async (req, res) => {
                     if (parentCompanyId) {
                         socketService.notifyOrg(parentCompanyId, "notification", replyNotifPayload);
                     }
+
+                    notifiedReplyUserIds.add(parentAuthorId);
                 }
             }
         }
@@ -3408,7 +3411,7 @@ exports.addComment = async (req, res) => {
                     // Don't notify if self
                     let isSelf = (!companyId && mentionedUserId === userId);
 
-                    if (!isSelf) {
+                    if (!isSelf && !notifiedReplyUserIds.has(mentionedUserId)) {
                         if (!companyId) {
                             const isBlockedByMentioned = await checkBlockStatus(mentionedUserId, userId);
                             const hasBlockedMentioned = await checkBlockStatus(userId, mentionedUserId);

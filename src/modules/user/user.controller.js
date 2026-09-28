@@ -2026,6 +2026,7 @@ exports.getSearchHistory = async (req, res) => {
         sh.id, 
         CASE 
           WHEN u.user_id IS NOT NULL THEN u.full_name
+          WHEN o.org_id IS NOT NULL THEN o.name
           ELSE sh.query_text
         END as query, 
         CASE 
@@ -2039,11 +2040,29 @@ exports.getSearchHistory = async (req, res) => {
               'avatar_url', u.avatar_url,
               'avatar', u.avatar_url,
               'headline', u.headline,
-              'account_type', COALESCE(u.user_type, 'USER')
-            )::text
-          ELSE sh.profile_snapshot::text
-
-
+              'account_type', COALESCE(u.user_type, 'USER'),
+              'type', 'USER',
+              'slug', NULL,
+              'industry', NULL,
+              'tag_permission', COALESCE(u.tag_permission, 'everyone')
+            )
+          WHEN o.org_id IS NOT NULL THEN
+            jsonb_build_object(
+              'id', o.org_id,
+              'full_name', o.name,
+              'name', o.name,
+              'account_name', o.slug,
+              'username', o.slug,
+              'avatar_url', o.logo_url,
+              'avatar', o.logo_url,
+              'headline', o.headline,
+              'account_type', 'COMPANY',
+              'type', 'COMPANY',
+              'slug', o.slug,
+              'industry', o.industry,
+              'tag_permission', 'everyone'
+            )
+          ELSE sh.profile_snapshot
         END as "profileSnapshot",
         sh.created_at as "createdAt"
       FROM user_search_history sh
@@ -2054,7 +2073,21 @@ exports.getSearchHistory = async (req, res) => {
       ORDER BY sh.created_at DESC
     `;
     const result = await pool.query(query, [userId]);
-    res.status(200).json({ success: true, data: result.rows });
+    
+    // Defensive parsing for legacy stringified snapshots
+    const processedRows = result.rows.map(row => {
+      let profileSnapshot = row.profileSnapshot;
+      if (typeof profileSnapshot === 'string') {
+        try {
+          profileSnapshot = JSON.parse(profileSnapshot);
+        } catch (e) {
+          console.error("Error parsing profileSnapshot string:", e);
+        }
+      }
+      return { ...row, profileSnapshot };
+    });
+
+    res.status(200).json({ success: true, data: processedRows });
   } catch (err) {
     console.error("Get search history error:", err);
     res.status(500).json({ success: false, message: "Internal server error" });
