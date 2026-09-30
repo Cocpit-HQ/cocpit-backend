@@ -1364,7 +1364,13 @@ exports.createPost = async (req, res) => {
                 }
 
                 for (const handle of mentionedUsernames) {
-                    const userRes = await pool.query(`SELECT user_id FROM users WHERE LOWER(account_name) = LOWER($1)`, [handle]);
+                    let userRes;
+                    const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+                    if (UUID_REGEX.test(handle)) {
+                        userRes = await pool.query(`SELECT user_id FROM users WHERE user_id = $1`, [handle]);
+                    } else {
+                        userRes = await pool.query(`SELECT user_id FROM users WHERE LOWER(account_name) = LOWER($1)`, [handle]);
+                    }
                     if (userRes.rowCount > 0) {
                         const mentionedUserId = userRes.rows[0].user_id;
                         let isSelf = (!companyId && mentionedUserId === userId);
@@ -1398,6 +1404,8 @@ exports.createPost = async (req, res) => {
                                 created_at: mentionNotifRes.rows[0].created_at.toISOString(),
                                 is_read: false
                             });
+
+                            sendPush(mentionedUserId, actorName, notifText, { type: 'mention', referenceId: postId, postId }).catch(() => {});
                         }
                     }
                 }
@@ -2542,7 +2550,13 @@ WHERE p.post_id = $1;
                 }
 
                 for (const handle of mentionedUsernames) {
-                    const userRes = await pool.query(`SELECT user_id FROM users WHERE LOWER(account_name) = LOWER($1)`, [handle]);
+                    let userRes;
+                    const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+                    if (UUID_REGEX.test(handle)) {
+                        userRes = await pool.query(`SELECT user_id FROM users WHERE user_id = $1`, [handle]);
+                    } else {
+                        userRes = await pool.query(`SELECT user_id FROM users WHERE LOWER(account_name) = LOWER($1)`, [handle]);
+                    }
                     if (userRes.rowCount > 0) {
                         const mentionedUserId = userRes.rows[0].user_id;
                         let isSelf = (!orgId && mentionedUserId === userId);
@@ -2583,6 +2597,8 @@ WHERE p.post_id = $1;
                                     created_at: mentionNotifRes.rows[0].created_at.toISOString(),
                                     is_read: false
                                 });
+
+                                sendPush(mentionedUserId, actorName, notifText, { type: 'mention', referenceId: postId, postId }).catch(() => {});
                             }
                         }
                     }

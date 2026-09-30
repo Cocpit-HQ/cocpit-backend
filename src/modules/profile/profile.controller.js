@@ -731,7 +731,7 @@ exports.addEducation = async (req, res) => {
         
         if (school_name && school_name.length > 255) {
             client.release();
-            return res.status(400).json({ message: "School/University cannot exceed 255 characters" });
+            return res.status(422).json({ message: "Validation failed", errors: [{ path: "school_name", message: "School/University cannot exceed 255 characters" }] });
         }
 
         const data = { school_name, school_org_id, degree, field_of_study, location, start_date, end_date, description };
@@ -770,7 +770,7 @@ exports.updateEducation = async (req, res) => {
 
         if (school_name && school_name.length > 255) {
             client.release();
-            return res.status(400).json({ message: "School/University cannot exceed 255 characters" });
+            return res.status(422).json({ message: "Validation failed", errors: [{ path: "school_name", message: "School/University cannot exceed 255 characters" }] });
         }
 
         const resolvedSchoolName = school_name !== undefined ? school_name : existing.school_name;
@@ -1709,19 +1709,20 @@ exports.addProject = async (req, res) => {
         skills, media, org_id
     } = req.body;
 
-    if (!title || !title.trim()) return res.status(400).json({ message: "Project title is required" });
-    if (title && title.length > 255) return res.status(400).json({ message: "Project title cannot exceed 255 characters" });
-    if (!organization || !organization.trim()) return res.status(400).json({ message: "Organization is required" });
-    if (organization && organization.length > 255) return res.status(400).json({ message: "Organization cannot exceed 255 characters" });
-    if (!start_month || !start_year) return res.status(400).json({ message: "Start month and year are required" });
+    const errors = [];
+    if (!title || !title.trim()) errors.push({ path: "title", message: "Project title is required" });
+    if (title && title.length > 255) errors.push({ path: "title", message: "Project title cannot exceed 255 characters" });
+    if (!organization || !organization.trim()) errors.push({ path: "organization", message: "Organization is required" });
+    if (organization && organization.length > 255) errors.push({ path: "organization", message: "Organization cannot exceed 255 characters" });
+    if (!start_month || !start_year) errors.push({ path: "start_date", message: "Start month and year are required" });
     if (!is_current && (!end_month || !end_year)) {
-        return res.status(400).json({ message: "End month and year are required when project is not ongoing" });
+        errors.push({ path: "end_date", message: "End month and year are required when project is not ongoing" });
     }
     if (!is_current && end_year && start_year) {
         const startVal = parseInt(start_year, 10);
         const endVal = parseInt(end_year, 10);
         if (endVal < startVal) {
-            return res.status(400).json({ message: "End year cannot be before start year" });
+            errors.push({ path: "end_date", message: "End year cannot be before start year" });
         }
     }
 
@@ -1730,12 +1731,16 @@ exports.addProject = async (req, res) => {
     if (team_size !== undefined && team_size !== null && String(team_size).trim() !== "") {
         parsedTeamSize = parseInt(String(team_size).trim(), 10);
         if (isNaN(parsedTeamSize) || parsedTeamSize < 1 || parsedTeamSize > 9999 || String(parsedTeamSize) !== String(team_size).trim()) {
-            return res.status(400).json({ message: "Team size must be a positive whole number between 1 and 9999" });
+            errors.push({ path: "team_size", message: "Team size must be a positive whole number between 1 and 9999" });
         }
     }
 
     if (Array.isArray(media) && media.length > 5) {
-        return res.status(400).json({ message: "A project can have at most 5 media items" });
+        errors.push({ path: "media", message: "A project can have at most 5 media items" });
+    }
+
+    if (errors.length > 0) {
+        return res.status(422).json({ message: "Validation failed", errors });
     }
 
     const client = await pool.connect();
@@ -1793,19 +1798,31 @@ exports.updateProject = async (req, res) => {
         skills, media, org_id
     } = req.body;
 
-    if (title && title.length > 255) return res.status(400).json({ message: "Project title cannot exceed 255 characters" });
-    if (organization && organization.length > 255) return res.status(400).json({ message: "Organization cannot exceed 255 characters" });
+    const errors = [];
+    if (title && title.length > 255) errors.push({ path: "title", message: "Project title cannot exceed 255 characters" });
+    if (organization && organization.length > 255) errors.push({ path: "organization", message: "Organization cannot exceed 255 characters" });
 
     if (end_year && start_year && !is_current) {
         const startVal = parseInt(start_year, 10);
         const endVal = parseInt(end_year, 10);
         if (endVal < startVal) {
-            return res.status(400).json({ message: "End year cannot be before start year" });
+            errors.push({ path: "end_date", message: "End year cannot be before start year" });
         }
     }
 
     if (Array.isArray(media) && media.length > 5) {
-        return res.status(400).json({ message: "A project can have at most 5 media items" });
+        errors.push({ path: "media", message: "A project can have at most 5 media items" });
+    }
+
+    if (team_size !== undefined && team_size !== null && String(team_size).trim() !== "") {
+        const parsedTeamSize = parseInt(String(team_size).trim(), 10);
+        if (isNaN(parsedTeamSize) || parsedTeamSize < 1 || parsedTeamSize > 9999 || String(parsedTeamSize) !== String(team_size).trim()) {
+            errors.push({ path: "team_size", message: "Team size must be a positive whole number between 1 and 9999" });
+        }
+    }
+
+    if (errors.length > 0) {
+        return res.status(422).json({ message: "Validation failed", errors });
     }
 
     const client = await pool.connect();
@@ -1839,13 +1856,8 @@ exports.updateProject = async (req, res) => {
         if (end_year !== undefined && !updateData.is_current) updateData.end_year = String(end_year);
         if (role !== undefined) updateData.role = role ? role.trim() : null;
         if (team_size !== undefined) {
-            // Validate team_size if provided and non-empty
             if (team_size !== null && String(team_size).trim() !== "") {
-                const parsedTeamSize = parseInt(String(team_size).trim(), 10);
-                if (isNaN(parsedTeamSize) || parsedTeamSize < 1 || parsedTeamSize > 9999 || String(parsedTeamSize) !== String(team_size).trim()) {
-                    return res.status(400).json({ message: "Team size must be a positive whole number between 1 and 9999" });
-                }
-                updateData.team_size = parsedTeamSize;
+                updateData.team_size = parseInt(String(team_size).trim(), 10);
             } else {
                 updateData.team_size = null;
             }
