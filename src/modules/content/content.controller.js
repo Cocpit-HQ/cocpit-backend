@@ -3339,7 +3339,7 @@ exports.addComment = async (req, res) => {
             let preview = cleanedContent.substring(0, 40);
             if (cleanedContent.length > 40) preview += "...";
             
-            let notificationText = `${actorName} commented: "${preview}"`;
+            let notificationText = `${actorName} commented: ${preview}`;
 
             // Notification Metadata
             const meta = {
@@ -3381,7 +3381,7 @@ exports.addComment = async (req, res) => {
             // Push notification conditionally based on thresholds EXACTLY as in image
             const commentThresholds = [40, 55, 70, 85, 100, 150, 200, 500, 750, 1000];
             if (commentThresholds.includes(commentCount)) {
-                let pushText = `${actorName} and ${commentCount - 1} others commented: "${preview}"`;
+                let pushText = `${actorName} and ${commentCount - 1} others commented: ${preview}`;
                 sendPush(postAuthorId, "New comment on your post", pushText, { type: 'comment', referenceId: postId }).catch(() => {});
             }
         }
@@ -3414,7 +3414,7 @@ exports.addComment = async (req, res) => {
                     let cleanedContent = content.replace(/@\[[^\]]+\](?:\([^)]*\))?\s*/g, '').replace(/@\w+\s*/g, '').trim();
                     let preview = cleanedContent.substring(0, 40);
                     if (cleanedContent.length > 40) preview += "...";
-                    const replyText = `${actorName} replied to your comment: "${preview}"`;
+                    const replyText = `${actorName} replied to your comment: ${preview}`;
                     const meta = {
                         comment_id: newComment.comment_id,
                         parent_id,

@@ -161,8 +161,8 @@ async function shareViaMessage(senderId, { entityType, entityId, targetId, targe
         // 5. Update conversation timestamp
         const previewText = `Shared a ${entityType}`;
         await client.query(
-            `UPDATE conversations SET updated_at = NOW() WHERE conversation_id = $1`,
-            [conversationId]
+            `UPDATE conversations SET last_message = $1, last_message_at = NOW(), updated_at = NOW() WHERE conversation_id = $2`,
+            [previewText, conversationId]
         );
 
         await client.query("COMMIT");
@@ -444,6 +444,10 @@ async function shareEntity(senderId, payload) {
  * Handles: user↔user, company↔user, company↔company, user↔company
  */
 async function findOrCreateConversation(client, senderId, targetId, targetType, senderOrgId) {
+    if (targetType === "group") {
+        return targetId;
+    }
+
     let existingConv;
 
     if (senderOrgId && targetType === "company") {
