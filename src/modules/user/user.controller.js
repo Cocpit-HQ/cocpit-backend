@@ -785,6 +785,19 @@ exports.getPublicProfilePosts = async (req, res) => {
         p.created_at,
         p.visibility,
         p.location,
+        (
+            SELECT COALESCE(json_agg(json_build_object(
+                'user_id', COALESCE(u_mention.user_id, o_mention.org_id),
+                'full_name', COALESCE(u_mention.full_name, o_mention.name),
+                'account_name', COALESCE(u_mention.account_name, o_mention.slug)
+            )), '[]'::json)
+            FROM (
+                SELECT DISTINCT (regexp_matches(COALESCE(p.content, ''), '@\\[[^\\]]+\\]\\(([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\\)', 'g'))[1]::uuid AS mentioned_id
+            ) mentions
+            LEFT JOIN active_users u_mention ON u_mention.user_id = mentions.mentioned_id
+            LEFT JOIN organizations o_mention ON o_mention.org_id = mentions.mentioned_id AND o_mention.is_deleted = FALSE
+            WHERE u_mention.user_id IS NOT NULL OR o_mention.org_id IS NOT NULL
+        ) AS mentioned_users,
 
         u.user_id AS author_id,
         u.full_name AS author_name,
@@ -990,6 +1003,19 @@ exports.getPublicProfilePosts = async (req, res) => {
                   )
                 )
                 FROM post_polls pp WHERE pp.post_id = sp.post_id LIMIT 1
+              ),
+              'mentioned_users', (
+                  SELECT COALESCE(json_agg(json_build_object(
+                      'user_id', COALESCE(u_mention.user_id, o_mention.org_id),
+                      'full_name', COALESCE(u_mention.full_name, o_mention.name),
+                      'account_name', COALESCE(u_mention.account_name, o_mention.slug)
+                  )), '[]'::json)
+                  FROM (
+                      SELECT DISTINCT (regexp_matches(COALESCE(sp.content, ''), '@\\[[^\\]]+\\]\\(([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\\)', 'g'))[1]::uuid AS mentioned_id
+                  ) mentions
+                  LEFT JOIN active_users u_mention ON u_mention.user_id = mentions.mentioned_id
+                  LEFT JOIN organizations o_mention ON o_mention.org_id = mentions.mentioned_id AND o_mention.is_deleted = FALSE
+                  WHERE u_mention.user_id IS NOT NULL OR o_mention.org_id IS NOT NULL
               )
             )
           --Failure Analysis

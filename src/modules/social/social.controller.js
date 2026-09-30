@@ -690,12 +690,17 @@ exports.getCompanyFollowers = async (req, res) => {
         const params = [companyId];
 
         if (search && search.trim()) {
-            userQuery += ` AND (u.full_name ILIKE $2 OR u.headline ILIKE $2)`;
-            companyQuery += ` AND (c.name ILIKE $2 OR c.industry ILIKE $2)`;
-            params.push(`%${search.trim()}%`);
+            userQuery += ` AND (u.full_name ILIKE '%' || $2 || '%' OR u.headline ILIKE '%' || $2 || '%')`;
+            companyQuery += ` AND (c.name ILIKE '%' || $2 || '%' OR c.industry ILIKE '%' || $2 || '%')`;
+            params.push(search.trim());
         }
 
-        const fullQuery = `(${userQuery}) UNION ALL (${companyQuery}) ORDER BY followed_at DESC`;
+        let fullQuery = `SELECT * FROM ((${userQuery}) UNION ALL (${companyQuery})) as t`;
+        if (search && search.trim()) {
+            fullQuery += ` ORDER BY (CASE WHEN full_name ILIKE $2 || '%' THEN 0 ELSE 1 END), followed_at DESC`;
+        } else {
+            fullQuery += ` ORDER BY followed_at DESC`;
+        }
         const result = await pool.query(fullQuery, params);
 
         res.json(result.rows);
@@ -789,7 +794,7 @@ exports.getFollowers = async (req, res) => {
         }
 
         if (search) {
-            params.push(`%${search}%`);
+            params.push(search);
             searchIdx = params.length;
         }
 
@@ -845,8 +850,8 @@ exports.getFollowers = async (req, res) => {
         `;
 
         if (searchIdx) {
-            userQuery += ` AND (u.full_name ILIKE $${searchIdx} OR u.headline ILIKE $${searchIdx})`;
-            companyQuery += ` AND (o.name ILIKE $${searchIdx} OR o.slogan ILIKE $${searchIdx})`;
+            userQuery += ` AND (u.full_name ILIKE '%' || $${searchIdx} || '%' OR u.headline ILIKE '%' || $${searchIdx} || '%')`;
+            companyQuery += ` AND (o.name ILIKE '%' || $${searchIdx} || '%' OR o.slogan ILIKE '%' || $${searchIdx} || '%')`;
         }
 
         // Apply block filtering to user followers
@@ -861,7 +866,12 @@ exports.getFollowers = async (req, res) => {
             `;
         }
 
-        const fullQuery = `(${userQuery}) UNION ALL (${companyQuery}) ORDER BY created_at DESC`;
+        let fullQuery = `SELECT * FROM ((${userQuery}) UNION ALL (${companyQuery})) as t`;
+        if (searchIdx) {
+            fullQuery += ` ORDER BY (CASE WHEN full_name ILIKE $${searchIdx} || '%' THEN 0 ELSE 1 END), created_at DESC`;
+        } else {
+            fullQuery += ` ORDER BY created_at DESC`;
+        }
 
         const result = await pool.query(fullQuery, params);
 
@@ -911,7 +921,7 @@ exports.getFollowing = async (req, res) => {
         }
 
         if (search) {
-            params.push(`%${search}%`);
+            params.push(search);
             searchIdx = params.length;
         }
 
@@ -964,8 +974,8 @@ exports.getFollowing = async (req, res) => {
         `;
 
         if (searchIdx) {
-            userQuery += ` AND (u.full_name ILIKE $${searchIdx} OR u.headline ILIKE $${searchIdx})`;
-            companyQuery += ` AND (c.name ILIKE $${searchIdx} OR c.industry ILIKE $${searchIdx})`;
+            userQuery += ` AND (u.full_name ILIKE '%' || $${searchIdx} || '%' OR u.headline ILIKE '%' || $${searchIdx} || '%')`;
+            companyQuery += ` AND (c.name ILIKE '%' || $${searchIdx} || '%' OR c.industry ILIKE '%' || $${searchIdx} || '%')`;
         }
 
         // Apply block filtering to user follows
@@ -980,7 +990,12 @@ exports.getFollowing = async (req, res) => {
             `;
         }
 
-        const fullQuery = `(${userQuery}) UNION ALL (${companyQuery}) ORDER BY created_at DESC`;
+        let fullQuery = `SELECT * FROM ((${userQuery}) UNION ALL (${companyQuery})) as t`;
+        if (searchIdx) {
+            fullQuery += ` ORDER BY (CASE WHEN full_name ILIKE $${searchIdx} || '%' THEN 0 ELSE 1 END), created_at DESC`;
+        } else {
+            fullQuery += ` ORDER BY created_at DESC`;
+        }
 
         const result = await pool.query(fullQuery, params);
 
@@ -2551,9 +2566,9 @@ exports.getMyConnections = async (req, res) => {
 
         const params = [userId];
         if (search) {
-            userQuery += ` AND (u.full_name ILIKE $2 OR u.headline ILIKE $2)`;
-            companyQuery += ` AND (c.name ILIKE $2 OR c.industry ILIKE $2)`;
-            params.push(`%${search}%`);
+            userQuery += ` AND (u.full_name ILIKE '%' || $2 || '%' OR u.headline ILIKE '%' || $2 || '%')`;
+            companyQuery += ` AND (c.name ILIKE '%' || $2 || '%' OR c.industry ILIKE '%' || $2 || '%')`;
+            params.push(search);
         }
 
         // Apply block filtering to connections
@@ -2568,7 +2583,12 @@ exports.getMyConnections = async (req, res) => {
             )
         `;
 
-        const fullQuery = `(${userQuery}) UNION ALL (${companyQuery}) ORDER BY created_at DESC`;
+        let fullQuery = `SELECT * FROM ((${userQuery}) UNION ALL (${companyQuery})) as t`;
+        if (search) {
+            fullQuery += ` ORDER BY (CASE WHEN full_name ILIKE $2 || '%' THEN 0 ELSE 1 END), created_at DESC`;
+        } else {
+            fullQuery += ` ORDER BY created_at DESC`;
+        }
         const result = await pool.query(fullQuery, params);
 
         const formattedConnections = result.rows.map(row => {
@@ -2612,7 +2632,7 @@ exports.getConnections = async (req, res) => {
         let requesterIdx = null;
 
         if (search) {
-            params.push(`%${search}%`);
+            params.push(search);
             searchIdx = params.length;
         }
 
@@ -2669,8 +2689,8 @@ exports.getConnections = async (req, res) => {
         `;
 
         if (searchIdx) {
-            userQuery += ` AND (u.full_name ILIKE $${searchIdx} OR u.headline ILIKE $${searchIdx})`;
-            companyQuery += ` AND (c.name ILIKE $${searchIdx} OR c.industry ILIKE $${searchIdx})`;
+            userQuery += ` AND (u.full_name ILIKE '%' || $${searchIdx} || '%' OR u.headline ILIKE '%' || $${searchIdx} || '%')`;
+            companyQuery += ` AND (c.name ILIKE '%' || $${searchIdx} || '%' OR c.industry ILIKE '%' || $${searchIdx} || '%')`;
         }
 
         if (requesterIdx) {
@@ -2683,7 +2703,12 @@ exports.getConnections = async (req, res) => {
             `;
         }
 
-        const fullQuery = `(${userQuery}) UNION ALL (${companyQuery}) ORDER BY created_at DESC`;
+        let fullQuery = `SELECT * FROM ((${userQuery}) UNION ALL (${companyQuery})) as t`;
+        if (searchIdx) {
+            fullQuery += ` ORDER BY (CASE WHEN full_name ILIKE $${searchIdx} || '%' THEN 0 ELSE 1 END), created_at DESC`;
+        } else {
+            fullQuery += ` ORDER BY created_at DESC`;
+        }
         const result = await pool.query(fullQuery, params);
 
         const formattedConnections = result.rows.map(row => {
