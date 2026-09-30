@@ -690,8 +690,8 @@ exports.getCompanyFollowers = async (req, res) => {
         const params = [companyId];
 
         if (search && search.trim()) {
-            userQuery += ` AND (u.full_name ILIKE '%' || $2 || '%' OR u.headline ILIKE '%' || $2 || '%')`;
-            companyQuery += ` AND (c.name ILIKE '%' || $2 || '%' OR c.industry ILIKE '%' || $2 || '%')`;
+            userQuery += ` AND (u.full_name ILIKE '%' || $2 || '%')`;
+            companyQuery += ` AND (c.name ILIKE '%' || $2 || '%')`;
             params.push(search.trim());
         }
 
@@ -850,8 +850,8 @@ exports.getFollowers = async (req, res) => {
         `;
 
         if (searchIdx) {
-            userQuery += ` AND (u.full_name ILIKE '%' || $${searchIdx} || '%' OR u.headline ILIKE '%' || $${searchIdx} || '%')`;
-            companyQuery += ` AND (o.name ILIKE '%' || $${searchIdx} || '%' OR o.slogan ILIKE '%' || $${searchIdx} || '%')`;
+            userQuery += ` AND (u.full_name ILIKE '%' || $${searchIdx} || '%')`;
+            companyQuery += ` AND (o.name ILIKE '%' || $${searchIdx} || '%')`;
         }
 
         // Apply block filtering to user followers
@@ -974,8 +974,8 @@ exports.getFollowing = async (req, res) => {
         `;
 
         if (searchIdx) {
-            userQuery += ` AND (u.full_name ILIKE '%' || $${searchIdx} || '%' OR u.headline ILIKE '%' || $${searchIdx} || '%')`;
-            companyQuery += ` AND (c.name ILIKE '%' || $${searchIdx} || '%' OR c.industry ILIKE '%' || $${searchIdx} || '%')`;
+            userQuery += ` AND (u.full_name ILIKE '%' || $${searchIdx} || '%')`;
+            companyQuery += ` AND (c.name ILIKE '%' || $${searchIdx} || '%')`;
         }
 
         // Apply block filtering to user follows
