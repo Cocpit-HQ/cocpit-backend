@@ -2504,10 +2504,13 @@ exports.cancelConnectionRequest = async (req, res) => {
     const userId = req.user.sub;
 
     try {
-        // Fetch request & ensure it is pending
+        // The parameter might be the exact request_id OR the target user's ID
         const reqRes = await pool.query(
-            "SELECT sender_id, receiver_id FROM connection_requests WHERE request_id = $1 AND status = 'pending'",
-            [requestId]
+            `SELECT request_id, sender_id, receiver_id 
+             FROM connection_requests 
+             WHERE (request_id = $1 OR (sender_id = $2 AND receiver_id = $1))
+               AND status = 'pending'`,
+            [requestId, userId]
         );
 
         if (reqRes.rowCount === 0) {
@@ -2516,6 +2519,8 @@ exports.cancelConnectionRequest = async (req, res) => {
                 .json({ message: "Pending connection request not found" });
         }
 
+        const actualRequestId = reqRes.rows[0].request_id;
+
         // Only sender can cancel
         if (reqRes.rows[0].sender_id !== userId) {
             return res.status(403).json({ message: "Not authorized" });
@@ -2523,11 +2528,9 @@ exports.cancelConnectionRequest = async (req, res) => {
 
         // Delete request
         await pool.query(
-            `
-      DELETE FROM connection_requests
-      WHERE request_id = $1
-      `,
-            [requestId]
+            `DELETE FROM connection_requests 
+             WHERE request_id = $1`,
+            [actualRequestId]
         );
 
         return res.status(200).json({ message: "Connection request canceled" });
@@ -5498,10 +5501,9 @@ exports.removeConnection = async (req, res) => {
             [userId, targetUserId]
         );
 
-        // Delete follows (uni-directional removal) - Only I stop following them
-        // They continue to follow me unless they unfollow
+        // Delete follows (bi-directional removal) - Both users stop following each other
         await client.query(
-            "DELETE FROM followers WHERE follower_id = $1 AND following_id = $2",
+            "DELETE FROM followers WHERE (follower_id = $1 AND following_id = $2) OR (follower_id = $2 AND following_id = $1)",
             [userId, targetUserId]
         );
 

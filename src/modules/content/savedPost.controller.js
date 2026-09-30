@@ -69,6 +69,9 @@ exports.createFolder = async (req, res) => {
     if (!name || name.trim() === "") {
         return res.status(400).json({ success: false, message: "Folder name is required" });
     }
+    if (name.trim().length > 25) {
+        return res.status(400).json({ success: false, message: "Folder name cannot exceed 25 characters" });
+    }
 
     try {
         const { userId, orgId, isOrgActor } = getSavedPostActorScope(req, companyId || null);
@@ -131,6 +134,9 @@ exports.renameFolder = async (req, res) => {
 
     if (!name || name.trim() === "") {
         return res.status(400).json({ success: false, message: "New name is required" });
+    }
+    if (name.trim().length > 25) {
+        return res.status(400).json({ success: false, message: "New name cannot exceed 25 characters" });
     }
 
     try {
