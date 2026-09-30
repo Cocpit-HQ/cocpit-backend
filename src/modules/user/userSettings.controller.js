@@ -871,7 +871,7 @@ exports.getActivityLogs = async (req, res) => {
  */
 exports.removeActivity = async (req, res) => {
     try {
-        const actorOrgId = req.actor?.type === "ORGANIZATION" ? req.actor.orgId : (req.headers["x-actor-id"] || req.query.companyId || null);
+        const actorOrgId = req.actor?.type === "ORGANIZATION" ? (req.actor.orgId || req.headers["x-actor-id"]) : null;
         const isOrgActor = !!actorOrgId;
         const targetId = isOrgActor ? actorOrgId : req.user.sub;
         const { type, id } = req.params;
@@ -1423,7 +1423,7 @@ exports.getUserReports = async (req, res) => {
         const limit = parseInt(req.query.limit) || 20;
         const offset = (page - 1) * limit;
 
-        const actorOrgId = req.actor?.type === "ORGANIZATION" ? req.actor.orgId : (req.headers["x-actor-id"] || req.query.companyId || null);
+        const actorOrgId = req.actor?.type === "ORGANIZATION" ? (req.actor.orgId || req.headers["x-actor-id"]) : null;
         const isOrgActor = !!actorOrgId;
 
         let whereClause = "WHERE r.reporter_id = $1 AND r.reporter_org_id IS NULL";
