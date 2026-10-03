@@ -147,10 +147,7 @@ CREATE TABLE experiences (
 -- Index for organization linking performance
 CREATE INDEX IF NOT EXISTS idx_experiences_org_id ON experiences(org_id);
 
--- Enforce only one active role per company at a time
-CREATE UNIQUE INDEX IF NOT EXISTS idx_one_current_role_per_company
-    ON experiences (profile_id, LOWER(TRIM(company_name)))
-    WHERE is_current = true;
+
 
 CREATE TABLE experience_skills (
   experience_id UUID REFERENCES experiences(experience_id) ON DELETE CASCADE,

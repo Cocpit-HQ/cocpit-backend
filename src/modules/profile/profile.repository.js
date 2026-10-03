@@ -217,10 +217,10 @@ const getExperiences = async (profileId) => {
              ORDER BY LOWER(TRIM(name)), created_at ASC
          ) o_fallback ON e.org_id IS NULL AND LOWER(TRIM(e.company_name)) = LOWER(TRIM(o_fallback.name))
          WHERE e.profile_id = $1 
-         ORDER BY e.is_current DESC, e.start_date DESC`,
+         ORDER BY e.is_current DESC, e.start_date DESC, e.end_date DESC, e.experience_id DESC`,
         [profileId]
     );
-    return groupByCompany(result.rows);
+    return result.rows;
 };
 
 /** Returns flat (ungrouped) experience rows for a profile — used for validation checks */
@@ -236,51 +236,12 @@ const getExperiencesByProfileId = async (profileId) => {
                 ) AS skills
          FROM experiences e 
          WHERE e.profile_id = $1 
-         ORDER BY e.is_current DESC, e.start_date DESC`,
+         ORDER BY e.is_current DESC, e.start_date DESC, e.end_date DESC, e.experience_id DESC`,
         [profileId]
     );
     return result.rows;
 };
 
-const groupByCompany = (rows) => {
-    if (!rows || rows.length === 0) return [];
-
-    // Step 1: Sort experiences by latest start_date first
-    const sortedRows = [...rows].sort(
-        (a, b) => new Date(b.start_date) - new Date(a.start_date)
-    );
-
-    const grouped = [];
-    let currentGroup = null;
-
-    for (const exp of sortedRows) {
-        const normalizedName = exp.company_name.toLowerCase().trim();
-        const orgId = exp.org_id;
-
-        // Group only if previous consecutive company is same (by org_id or by name)
-        const isSameGroup = currentGroup && (
-            (orgId && currentGroup.org_id === orgId) ||
-            (!orgId && !currentGroup.org_id && currentGroup.normalized_company === normalizedName)
-        );
-
-        if (isSameGroup) {
-            currentGroup.experiences.push(exp);
-        } else {
-            currentGroup = {
-                company_name: exp.company_name, 
-                logo_url: exp.logo_url,
-                org_id: orgId,
-                normalized_company: normalizedName,
-                experiences: [exp],
-            };
-
-            grouped.push(currentGroup);
-        }
-    }
-
-    // Remove helper field before returning response
-    return grouped.map(({ normalized_company, org_id, ...rest }) => rest);
-};
 
 const addExperience = async (profileId, data) => {
     const { title, company_name, location, work_type, work_mode, start_date, end_date, is_current, description, org_id } = data;

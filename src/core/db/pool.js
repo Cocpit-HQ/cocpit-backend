@@ -1,4 +1,10 @@
-const { Pool } = require("pg");
+const { Pool, types } = require("pg");
+
+// OID 1082 is for PostgreSQL DATE type. 
+// By default, pg parses it as a JS Date in local time, which causes month-shifting bugs 
+// when the browser is in a different timezone than the server. 
+// Returning the raw string prevents time zone shifting entirely.
+types.setTypeParser(1082, (val) => val);
 
 const isProduction = process.env.NODE_ENV === "production";
 
