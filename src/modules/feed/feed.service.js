@@ -124,6 +124,15 @@ async function _fetchChronologicalFeed(userId, cursor, limit, pool, orgActorId) 
                 AND (p.content IS NULL OR TRIM(regexp_replace(p.content, '<[^>]+>|&nbsp;|\u200B|\u00A0|&#8203;|&#160;|&zwnj;', '', 'gi')) = '') 
                 AND r.target_id = p.shared_post_id
             )
+            OR (
+                EXISTS (
+                    SELECT 1 FROM posts rp 
+                    WHERE rp.post_id = r.target_id 
+                      AND rp.shared_post_id = COALESCE(p.shared_post_id, p.post_id)
+                      AND rp.content IS NOT NULL 
+                      AND TRIM(regexp_replace(rp.content, '<[^>]+>|&nbsp;|\u200B|\u00A0|&#8203;|&#160;|&zwnj;', '', 'gi')) != ''
+                )
+            )
         )
           AND r.target_type = 'POST' 
           AND r.reporter_id = $4
@@ -143,6 +152,15 @@ async function _fetchChronologicalFeed(userId, cursor, limit, pool, orgActorId) 
                 p.shared_post_id IS NOT NULL 
                 AND (p.content IS NULL OR TRIM(regexp_replace(p.content, '<[^>]+>|&nbsp;|\u200B|\u00A0|&#8203;|&#160;|&zwnj;', '', 'gi')) = '') 
                 AND r.target_id = p.shared_post_id
+            )
+            OR (
+                EXISTS (
+                    SELECT 1 FROM posts rp 
+                    WHERE rp.post_id = r.target_id 
+                      AND rp.shared_post_id = COALESCE(p.shared_post_id, p.post_id)
+                      AND rp.content IS NOT NULL 
+                      AND TRIM(regexp_replace(rp.content, '<[^>]+>|&nbsp;|\u200B|\u00A0|&#8203;|&#160;|&zwnj;', '', 'gi')) != ''
+                )
             )
         )
           AND r.target_type = 'POST' 

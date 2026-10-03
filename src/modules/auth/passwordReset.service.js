@@ -83,6 +83,39 @@ const resetPassword = async (email, newPassword, logoutOtherDevices = true) => {
             );
         }
 
+        // ─── Trigger Password Changed Notification (Row 2) ───
+        try {
+            const now = new Date();
+            const dateStr = now.toLocaleDateString();
+            const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            const msgText = `Your password was changed on ${dateStr}, ${timeStr}. If this wasn't you, secure your account.`;
+
+            await pool.query(
+                `INSERT INTO notifications (user_id, type, text, is_read, metadata)
+                 VALUES ($1, 'password_changed', $2, false, $3)`,
+                [userId, msgText, JSON.stringify({ title: 'Your password was changed' })]
+            );
+            console.log(`[PasswordReset] ✅ Notification inserted for userId=${userId}`);
+
+            if (socketService.io) {
+                socketService.notifyUser(userId, {
+                    type: 'password_changed',
+                    title: 'Your password was changed',
+                    text: msgText,
+                    created_at: now.toISOString()
+                });
+                console.log(`[PasswordReset] ✅ Socket notification sent`);
+            }
+
+            if (normalizedEmail) {
+                emailService.sendPasswordChangedEmail(normalizedEmail, `${dateStr}, ${timeStr}`)
+                    .then(() => console.log(`[PasswordReset] ✅ Email sent to ${normalizedEmail}`))
+                    .catch(e => console.error(`[PasswordReset] ❌ Email failed:`, e));
+            }
+        } catch (e) {
+            console.error("[PasswordReset] ❌ Failed to trigger password changed notification:", e);
+        }
+
         return {
             success: true,
             message: "Password reset successful",

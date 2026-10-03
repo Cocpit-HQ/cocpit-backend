@@ -351,6 +351,14 @@ exports.getMyPosts = async (req, res) => {
             )
         )
         `}
+
+        -- Exclude posts reported by the current user
+        AND NOT EXISTS (
+            SELECT 1 FROM reports r 
+            WHERE r.target_type IN ('POST', 'ARTICLE', 'JOB', 'THOUGHT')
+              AND (r.target_id = p.post_id OR r.target_id = p.shared_post_id OR r.target_id = p.shared_job_id)
+              AND r.reporter_id = $${userParamIdx}::uuid
+        )
         `;
 
         // If org actor, $1 is the org_id. We might need the userId for block checks if they are personal blocks,

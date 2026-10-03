@@ -232,8 +232,15 @@ const getPostHydrationSelect = (companyParamIdx, userParamIdx) => `
                 r_rep.target_id = p.post_id 
                 OR (
                     p.shared_post_id IS NOT NULL 
-                    AND (p.content IS NULL OR TRIM(regexp_replace(p.content, '<[^>]+>|&nbsp;|\u200B|\u00A0|&#8203;|&#160;|&zwnj;', '', 'gi')) = '') 
                     AND r_rep.target_id = p.shared_post_id
+                )
+                OR (
+                    EXISTS (
+                        SELECT 1 FROM posts rp 
+                        WHERE rp.post_id = r_rep.target_id 
+                          AND rp.shared_post_id = COALESCE(p.shared_post_id, p.post_id)
+                          AND (rp.content IS NULL OR TRIM(regexp_replace(rp.content, '<[^>]+>|&nbsp;|\u200B|\u00A0|&#8203;|&#160;|&zwnj;', '', 'gi')) = '')
+                    )
                 )
             )
             AND (
@@ -521,8 +528,15 @@ const getPostHydrationSelect = (companyParamIdx, userParamIdx) => `
                          r_rep.target_id = sp.post_id 
                          OR (
                              sp.shared_post_id IS NOT NULL 
-                             AND (sp.content IS NULL OR TRIM(sp.content) = '') 
                              AND r_rep.target_id = sp.shared_post_id
+                         )
+                         OR (
+                             EXISTS (
+                                 SELECT 1 FROM posts rp 
+                                 WHERE rp.post_id = r_rep.target_id 
+                                   AND rp.shared_post_id = COALESCE(sp.shared_post_id, sp.post_id)
+                                   AND (rp.content IS NULL OR TRIM(regexp_replace(rp.content, '<[^>]+>|&nbsp;|\u200B|\u00A0|&#8203;|&#160;|&zwnj;', '', 'gi')) = '')
+                             )
                          )
                      )
                      AND (

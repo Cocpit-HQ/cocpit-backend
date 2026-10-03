@@ -1085,6 +1085,14 @@ exports.getPublicProfilePosts = async (req, res) => {
           )
       )
 
+      -- Hide posts (and reposts of posts) reported by the current user
+      AND ($${userParamIdx}::uuid IS NULL OR NOT EXISTS (
+          SELECT 1 FROM reports r 
+          WHERE r.target_type IN ('POST', 'ARTICLE', 'JOB', 'THOUGHT')
+            AND (r.target_id = p.post_id OR r.target_id = p.shared_post_id OR r.target_id = p.shared_job_id)
+            AND r.reporter_id = $${userParamIdx}::uuid
+      ))
+
       -- Privacy Escalation: Hide reposts if original post's privacy tightened
       AND (
           p.shared_post_id IS NULL 
@@ -1347,6 +1355,14 @@ exports.getPublicProfileCommentedPosts = async (req, res) => {
                  OR (b.is_org_block = true AND sp.author_org_id IS NOT NULL AND ((b.blocker_id = sp.author_org_id AND b.blocked_id = $${userParamIdx}) OR (b.blocker_id = $${userParamIdx} AND b.blocked_id = sp.author_org_id)))
           )
       )
+
+      -- Hide posts (and reposts of posts) reported by the current user
+      AND ($${userParamIdx}::uuid IS NULL OR NOT EXISTS (
+          SELECT 1 FROM reports r 
+          WHERE r.target_type IN ('POST', 'ARTICLE', 'JOB', 'THOUGHT')
+            AND (r.target_id = p.post_id OR r.target_id = p.shared_post_id OR r.target_id = p.shared_job_id)
+            AND r.reporter_id = $${userParamIdx}::uuid
+      ))
 
       -- Privacy Escalation: Hide reposts if original post's privacy tightened
       AND (

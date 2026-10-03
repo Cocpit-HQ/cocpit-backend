@@ -119,8 +119,15 @@ exports.getOrganizationPosts = async (req, res) => {
         if (filter !== 'Private post') {
             whereClause += ` AND (p.visibility IS NULL OR p.visibility != 'private') `;
         }
-        
         whereClause += ` AND p.is_community_article IS NOT TRUE `;
+
+        // Exclude posts reported by the current user
+        whereClause += ` AND ($${userParamIdx}::uuid IS NULL OR NOT EXISTS (
+            SELECT 1 FROM reports r 
+            WHERE r.target_type IN ('POST', 'ARTICLE', 'JOB', 'THOUGHT')
+              AND (r.target_id = p.post_id OR r.target_id = p.shared_post_id OR r.target_id = p.shared_job_id)
+              AND r.reporter_id = $${userParamIdx}::uuid
+        )) `;
 
         // We can expose a userId param for "is_liked" check even if public
         // For now, let's assume req.user is populated if authenticated
