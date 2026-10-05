@@ -30,20 +30,19 @@ exports.changePassword = async (req, res) => {
         }
 
         const user = userRes.rows[0];
-        if (!user.password_hash) {
-            return res.status(400).json({
-                success: false,
-                message: "No password is set on this account (OAuth login). Please use password reset instead.",
-            });
-        }
+        const hasExistingPassword = Boolean(user.password_hash && user.password_hash.trim() !== "");
 
-        const isMatch = await comparePassword(currentPassword, user.password_hash);
-        if (!isMatch) {
-            return res.status(400).json({ success: false, message: "Current password is incorrect" });
-        }
-
-        if (currentPassword === newPassword) {
-            return res.status(400).json({ success: false, message: "New password must be different from current password" });
+        if (hasExistingPassword) {
+            if (!currentPassword) {
+                return res.status(400).json({ success: false, message: "Current password is required" });
+            }
+            const isMatch = await comparePassword(currentPassword, user.password_hash);
+            if (!isMatch) {
+                return res.status(400).json({ success: false, message: "Current password is incorrect" });
+            }
+            if (currentPassword === newPassword) {
+                return res.status(400).json({ success: false, message: "New password must be different from current password" });
+            }
         }
 
         const newHash = await hashPassword(newPassword);

@@ -284,8 +284,8 @@ exports.updatePassword = async (req, res) => {
 
 
         
-        if (!currentPassword || !newPassword) {
-            return res.status(400).json({ success: false, message: "currentPassword and newPassword are required" });
+        if (!newPassword) {
+            return res.status(400).json({ success: false, message: "newPassword is required" });
         }
 
         const userRes = await pool.query(
@@ -298,20 +298,20 @@ exports.updatePassword = async (req, res) => {
         }
 
         const user = userRes.rows[0];
-        if (!user.password_hash) {
-            return res.status(400).json({
-                success: false,
-                message: "No password set on this account (OAuth login).",
-            });
-        }
+        const hasExistingPassword = Boolean(user.password_hash && user.password_hash.trim() !== "");
 
-        const isMatch = await comparePassword(currentPassword, user.password_hash);
-        if (!isMatch) {
-            return res.status(400).json({ success: false, message: "Current password is incorrect" });
-        }
-
-        if (currentPassword === newPassword) {
-            return res.status(400).json({ success: false, message: "New password must be different from current password" });
+        // If user already has a password, verify old password
+        if (hasExistingPassword) {
+            if (!currentPassword) {
+                return res.status(400).json({ success: false, message: "Current password is required" });
+            }
+            const isMatch = await comparePassword(currentPassword, user.password_hash);
+            if (!isMatch) {
+                return res.status(400).json({ success: false, message: "Current password is incorrect" });
+            }
+            if (currentPassword === newPassword) {
+                return res.status(400).json({ success: false, message: "New password must be different from current password" });
+            }
         }
 
         const newHash = await hashPassword(newPassword);

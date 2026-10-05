@@ -3,9 +3,7 @@ const { z } = require("zod");
 // Password change schema (matching onboarding rules in auth.schema.js)
 const changePasswordSchema = z.object({
   body: z.object({
-    currentPassword: z.string({
-      required_error: "Current password is required",
-    }),
+    currentPassword: z.string().optional(),
     newPassword: z.string({
       required_error: "New password is required",
     })
