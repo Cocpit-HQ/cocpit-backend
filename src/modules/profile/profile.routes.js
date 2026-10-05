@@ -54,6 +54,9 @@ router.get("/interests", requireAuth, profileController.getInterests);
 router.get("/educations", requireAuth, profileController.getEducationList);
 router.get("/companies", requireAuth, profileController.getCompanyList);
 
+// Dropdown Options
+router.get("/dropdowns", requireAuth, profileController.getProfileDropdowns);
+
 // Projects
 router.post("/projects/media", requireAuth, requireActiveSession, uploadProjectMedia.single("file"), profileController.uploadProjectMediaFile);
 router.post("/projects", requireAuth, requireActiveSession, profileController.addProject);

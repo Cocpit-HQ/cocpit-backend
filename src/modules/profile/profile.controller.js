@@ -341,6 +341,51 @@ exports.getIdentity = async (req, res) => {
 };
 
 
+// ─── Profile Dropdown Options ───────────────────────────────────────────────────
+
+const PROFILE_DROPDOWN_OPTIONS = {
+    status: [
+        { id: 1, label: "Student" },
+        { id: 2, label: "Fresher" },
+        { id: 3, label: "Intern" },
+        { id: 4, label: "Self-employed" },
+        { id: 5, label: "Employed" },
+        { id: 6, label: "Currently not working" },
+    ],
+    looking_for: [
+        { id: 1, label: "Full-time" },
+        { id: 2, label: "Part-time" },
+        { id: 3, label: "Internship" },
+        { id: 4, label: "Freelance" },
+        { id: 5, label: "Connections" },
+    ],
+    work_setup: [
+        { id: 1, label: "Remote" },
+        { id: 2, label: "Hybrid" },
+        { id: 3, label: "On-site" },
+    ],
+    availability: [
+        { id: 1, label: "Immediately" },
+        { id: 2, label: "Weekdays" },
+        { id: 3, label: "Weekends" },
+        { id: 4, label: "15 to 30 days" },
+        { id: 5, label: "Flexible" },
+        { id: 6, label: "On-demand" },
+    ],
+};
+
+exports.getProfileDropdowns = async (req, res) => {
+    try {
+        res.status(200).json({
+            success: true,
+            data: PROFILE_DROPDOWN_OPTIONS,
+        });
+    } catch (err) {
+        console.error("Get profile dropdowns error:", err);
+        res.status(500).json({ success: false, message: "Internal server error" });
+    }
+};
+
 const normalizeAccountType = (type) => {
     if (!type) return type;
     const lower = String(type).toLowerCase().trim().replace(/[-_ ]+/g, "_");
@@ -359,37 +404,60 @@ const normalizeAccountType = (type) => {
     }
 };
 
+// Helper: Resolves a dropdown value — accepts both numeric ID and string label
+// If numeric ID is received, looks up the label from PROFILE_DROPDOWN_OPTIONS
+// If string label is received, returns it as-is (backward compatible)
+const resolveDropdownValue = (field, value) => {
+    if (value === null || value === undefined || value === "") return null;
+    const numId = Number(value);
+    if (!isNaN(numId) && PROFILE_DROPDOWN_OPTIONS[field]) {
+        const option = PROFILE_DROPDOWN_OPTIONS[field].find(o => o.id === numId);
+        return option ? option.label : null;
+    }
+    return String(value);
+};
+
 exports.updateIdentity = async (req, res) => {
     const { open_to, availability, work_preference, account_type } = req.body;
-    const allowedOpenTo = ["Full-time", "Part-time", "Internship", "Freelance", "Connections"];
-    const allowedAvailability = ["Immediately", "Weekdays", "Weekends", "15 to 30 days", "Flexible", "On-demand", "Immediate", "30 Days"];
-    const allowedWorkPreference = ["Remote", "Hybrid", "On-site"];
+
+    // Resolve values: accept both numeric IDs and string labels
+    const resolvedOpenTo = resolveDropdownValue("looking_for", open_to);
+    const resolvedAvailability = resolveDropdownValue("availability", availability);
+    const resolvedWorkPreference = resolveDropdownValue("work_setup", work_preference);
+    const resolvedAccountType = resolveDropdownValue("status", account_type);
+
+    // Validate resolved values against allowed labels
+    const allowedOpenTo = PROFILE_DROPDOWN_OPTIONS.looking_for.map(o => o.label);
+    const allowedAvailability = [...PROFILE_DROPDOWN_OPTIONS.availability.map(o => o.label), "Immediate", "30 Days"];
+    const allowedWorkPreference = PROFILE_DROPDOWN_OPTIONS.work_setup.map(o => o.label);
     const allowedAccountTypes = [
+        ...PROFILE_DROPDOWN_OPTIONS.status.map(o => o.label),
+        // Backward compatibility: also accept old string formats
         "student", "fresher", "intern", "self_employed", "employed", "unemployed",
         "Student", "Fresher", "Intern", "Self Employed", "Self-employed", "Employee", "Employed",
-        "Employer", "Admin", "Currently not working"
+        "Employer", "Admin"
     ];
 
-    if (open_to && !allowedOpenTo.includes(open_to)) {
+    if (resolvedOpenTo && !allowedOpenTo.includes(resolvedOpenTo)) {
         return res.status(400).json({ message: "Invalid open_to value" });
     }
-    if (availability && !allowedAvailability.includes(availability)) {
+    if (resolvedAvailability && !allowedAvailability.includes(resolvedAvailability)) {
         return res.status(400).json({ message: "Invalid availability value" });
     }
-    if (work_preference && !allowedWorkPreference.includes(work_preference)) {
+    if (resolvedWorkPreference && !allowedWorkPreference.includes(resolvedWorkPreference)) {
         return res.status(400).json({ message: "Invalid work_preference value" });
     }
-    if (account_type && !allowedAccountTypes.includes(account_type)) {
+    if (resolvedAccountType && !allowedAccountTypes.includes(resolvedAccountType)) {
         return res.status(400).json({ message: "Invalid account type" });
     }
 
-    const normalizedAccountType = account_type ? normalizeAccountType(account_type) : undefined;
+    const normalizedAccountType = resolvedAccountType ? normalizeAccountType(resolvedAccountType) : undefined;
 
     try {
         const identity = await profileRepo.updateIdentity(req.user.sub, { 
-            open_to: open_to || null, 
-            availability: availability || null, 
-            work_preference: work_preference || null, 
+            open_to: resolvedOpenTo || null, 
+            availability: resolvedAvailability || null, 
+            work_preference: resolvedWorkPreference || null, 
             account_type: normalizedAccountType
         });
         if (!identity) return res.status(404).json({ message: "Profile not found" });
