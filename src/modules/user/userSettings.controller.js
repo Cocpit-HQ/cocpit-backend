@@ -61,7 +61,7 @@ exports.getAccountDetails = async (req, res) => {
         const userId = req.user.sub;
 
         const userRes = await pool.query(
-            `SELECT user_id, email, recovery_email, mobile_number, is_deactivated
+            `SELECT user_id, email, recovery_email, mobile_number, is_deactivated, password_hash
              FROM users WHERE user_id = $1`,
             [userId]
         );
@@ -78,6 +78,8 @@ exports.getAccountDetails = async (req, res) => {
         );
         const hasCompanyAccount = parseInt(companyRes.rows[0].count, 10) > 0;
 
+        const hasPassword = Boolean(user.password_hash && user.password_hash.trim() !== "");
+
         return res.status(200).json({
             id: user.user_id,
             email: user.email || "",
@@ -86,6 +88,7 @@ exports.getAccountDetails = async (req, res) => {
             phone: user.mobile_number || "",
             hasCompanyAccount: hasCompanyAccount,
             isDeactivated: user.is_deactivated || false,
+            hasPassword,
         });
     } catch (error) {
         console.error("Get account details error:", error);
