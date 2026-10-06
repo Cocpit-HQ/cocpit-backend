@@ -29,7 +29,7 @@ exports.getAccountDetails = async (req, res) => {
         if (req.actor && req.actor.type === "ORGANIZATION") {
             const orgId = req.actor.orgId;
             const orgRes = await pool.query(
-                `SELECT o.org_id, o.email, o.phone, o.is_deactivated, o.deactivated_at,
+                `SELECT o.org_id, o.email, o.phone, o.country_code, o.is_deactivated, o.deactivated_at,
                         o.entity_type, o.name, o.created_by, u.full_name AS owner_name
                  FROM organizations o
                  LEFT JOIN users u ON o.created_by = u.user_id
@@ -47,6 +47,7 @@ exports.getAccountDetails = async (req, res) => {
                 email: org.email || "",
                 primaryEmail: org.email || "",
                 phone: org.phone || "",
+                countryCode: org.country_code || "",
                 isDeactivated: org.is_deactivated || false,
                 deactivatedAt: org.deactivated_at || null,
                 entityType: org.entity_type || "COMPANY",
@@ -61,7 +62,7 @@ exports.getAccountDetails = async (req, res) => {
         const userId = req.user.sub;
 
         const userRes = await pool.query(
-            `SELECT user_id, email, recovery_email, mobile_number, is_deactivated, password_hash
+            `SELECT user_id, email, recovery_email, mobile_number, country_code, is_deactivated, password_hash
              FROM users WHERE user_id = $1`,
             [userId]
         );
@@ -86,6 +87,7 @@ exports.getAccountDetails = async (req, res) => {
             primaryEmail: user.email || "",
             recoveryEmail: user.recovery_email || "",
             phone: user.mobile_number || "",
+            countryCode: user.country_code || "",
             hasCompanyAccount: hasCompanyAccount,
             isDeactivated: user.is_deactivated || false,
             hasPassword,
@@ -423,7 +425,7 @@ exports.removePhone = async (req, res) => {
         if (isOrgActor) {
             const orgId = req.actor.orgId;
             await pool.query(
-                `UPDATE organizations SET phone = NULL, updated_at = NOW() WHERE org_id = $1`,
+                `UPDATE organizations SET phone = NULL, country_code = NULL, updated_at = NOW() WHERE org_id = $1`,
                 [orgId]
             );
             return res.status(200).json({ success: true, message: "Phone number removed successfully." });
@@ -432,7 +434,7 @@ exports.removePhone = async (req, res) => {
         const userId = req.user.sub;
 
         await pool.query(
-            `UPDATE users SET mobile_number = NULL, updated_at = NOW() WHERE user_id = $1`,
+            `UPDATE users SET mobile_number = NULL, country_code = NULL, updated_at = NOW() WHERE user_id = $1`,
             [userId]
         );
 

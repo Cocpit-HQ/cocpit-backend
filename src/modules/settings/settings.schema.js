@@ -68,6 +68,7 @@ const confirmRecoveryEmailSchema = z.object({
 // Phone schemas
 const phoneSchema = z.object({
   body: z.object({
+    countryCode: z.enum(['+91', '+971'], { required_error: "Country code is required" }),
     phone: z.string({
       required_error: "Phone number is required",
     }).min(10, { message: "Phone number must be at least 10 digits" }),

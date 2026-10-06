@@ -104,3 +104,10 @@ CREATE TABLE IF NOT EXISTS user_search_history (
 
 CREATE INDEX IF NOT EXISTS idx_user_search_history_user_created ON user_search_history(user_id, created_at DESC);
 CREATE UNIQUE INDEX IF NOT EXISTS uq_user_search_history_user_query ON user_search_history(user_id, query_normalized);
+
+-- 12. Add country_code for international phone numbers
+ALTER TABLE users 
+    ADD COLUMN IF NOT EXISTS country_code VARCHAR(10);
+
+ALTER TABLE organizations 
+    ADD COLUMN IF NOT EXISTS country_code VARCHAR(10);

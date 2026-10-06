@@ -481,15 +481,15 @@ exports.setPhone = async (req, res) => {
         const isOrgActor = req.actor && req.actor.type === "ORGANIZATION";
         const actorKey = isOrgActor ? `org:${req.actor.orgId}` : `user:${req.user.sub}`;
         const userId = req.user.sub;
-        const { phone } = req.body;
+        const { countryCode, phone } = req.body;
 
         const generatedOtp = Math.floor(100000 + Math.random() * 900000).toString();
-        await sendSMSOTP(phone, generatedOtp);
+        await sendSMSOTP(`${countryCode}${phone}`, generatedOtp);
 
         if (redisClient.isOpen) {
-            await redisClient.setEx(`pending_phone:${actorKey}`, 600, JSON.stringify({ phone, otp: generatedOtp }));
+            await redisClient.setEx(`pending_phone:${actorKey}`, 600, JSON.stringify({ countryCode, phone, otp: generatedOtp }));
             if (!isOrgActor) {
-                await redisClient.setEx(`pending_phone:${userId}`, 600, JSON.stringify({ phone, otp: generatedOtp }));
+                await redisClient.setEx(`pending_phone:${userId}`, 600, JSON.stringify({ countryCode, phone, otp: generatedOtp }));
             }
         }
 
@@ -523,20 +523,20 @@ exports.confirmPhone = async (req, res) => {
             return res.status(400).json({ success: false, message: "No pending phone verification request found or expired." });
         }
 
-        const isValid = await verifySMSOTP(pendingData.phone, otp, pendingData.otp);
+        const isValid = await verifySMSOTP(`${pendingData.countryCode}${pendingData.phone}`, otp, pendingData.otp);
         if (!isValid) {
             return res.status(400).json({ success: false, message: "Invalid verification code" });
         }
 
         if (isOrgActor) {
             await pool.query(
-                "UPDATE organizations SET phone = $1, updated_at = NOW() WHERE org_id = $2",
-                [pendingData.phone, req.actor.orgId]
+                "UPDATE organizations SET country_code = $1, phone = $2, updated_at = NOW() WHERE org_id = $3",
+                [pendingData.countryCode, pendingData.phone, req.actor.orgId]
             );
         } else {
             await pool.query(
-                "UPDATE users SET mobile_number = $1, updated_at = NOW() WHERE user_id = $2",
-                [pendingData.phone, userId]
+                "UPDATE users SET country_code = $1, mobile_number = $2, updated_at = NOW() WHERE user_id = $3",
+                [pendingData.countryCode, pendingData.phone, userId]
             );
         }
 
@@ -551,6 +551,7 @@ exports.confirmPhone = async (req, res) => {
             success: true,
             message: "Phone number updated successfully.",
             phone: pendingData.phone,
+            countryCode: pendingData.countryCode,
         });
     } catch (error) {
         console.error("Confirm phone error:", error);

@@ -41,6 +41,7 @@ CREATE TABLE users (
   deletion_scheduled_at TIMESTAMPTZ,
   deletion_execute_at TIMESTAMPTZ,
   is_deactivated BOOLEAN DEFAULT false,
+  country_code VARCHAR(10) DEFAULT '+91',
   CONSTRAINT mobile_format CHECK (mobile_number ~ '^[0-9]{10}$')
 );
 
@@ -297,6 +298,7 @@ CREATE TABLE organizations (
     deleted_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW(),
+    country_code VARCHAR(10) DEFAULT '+91',
     CONSTRAINT valid_slug_format CHECK (slug ~ '^[a-z0-9]+(?:-[a-z0-9]+)*$')
 );
 
