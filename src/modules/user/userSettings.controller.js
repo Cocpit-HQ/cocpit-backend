@@ -1461,11 +1461,15 @@ exports.getUserReports = async (req, res) => {
                     WHEN 'COMPANY' THEN CONCAT('Reported company: ', COALESCE(o.name, 'unknown'))
                     ELSE 'Reported content'
                 END AS title,
-                COALESCE(u.account_name, po.name, pu.account_name, cu.account_name) AS reported_username
+                COALESCE(u.account_name, po.name, pu.account_name, cu.account_name) AS reported_username,
+                CASE WHEN p.post_type = 'article' OR pc_cat.name = 'Article' OR p.is_community_article = TRUE THEN 'article' WHEN p.post_type = 'poll' THEN 'poll' ELSE p.post_type END AS post_type,
+                (SELECT pm.url FROM post_media pm WHERE pm.post_id = p.post_id LIMIT 1) AS media_url,
+                (SELECT pm.media_type FROM post_media pm WHERE pm.post_id = p.post_id LIMIT 1) AS media_type
             FROM reports r
             LEFT JOIN report_reasons rr ON r.reason_id = rr.id
             LEFT JOIN users u           ON r.target_type = 'USER'    AND r.target_id = u.user_id
             LEFT JOIN posts p           ON r.target_type = 'POST'    AND r.target_id = p.post_id
+            LEFT JOIN post_categories pc_cat ON pc_cat.category_id = p.category_id
             LEFT JOIN users pu          ON p.author_id = pu.user_id
             LEFT JOIN organizations po  ON p.author_org_id = po.org_id
             LEFT JOIN post_comments pc  ON r.target_type IN ('COMMENT', 'THOUGHT') AND r.target_id = pc.comment_id
@@ -1490,6 +1494,10 @@ exports.getUserReports = async (req, res) => {
             title:       row.title,
             status:      row.status || 'pending',
             statusLabel: REPORT_STATUS_LABELS[row.status] || 'Submitted',
+            postType:    row.post_type || null,
+            mediaType:   (row.post_type || row.media_type || '').toLowerCase() || null,
+            imageUrl:    (row.media_type?.toLowerCase() === 'image' || (!row.media_type && row.media_url)) ? row.media_url : null,
+            videoUrl:    row.media_type?.toLowerCase() === 'video' ? row.media_url : null,
         }));
 
         return res.status(200).json({
@@ -1532,11 +1540,15 @@ exports.getUserReportById = async (req, res) => {
                     WHEN 'COMPANY' THEN CONCAT('Reported company: ', COALESCE(o.name, 'unknown'))
                     ELSE 'Reported content'
                 END AS title,
-                COALESCE(u.account_name, po.name, pu.account_name, cu.account_name) AS reported_username
+                COALESCE(u.account_name, po.name, pu.account_name, cu.account_name) AS reported_username,
+                CASE WHEN p.post_type = 'article' OR pc_cat.name = 'Article' OR p.is_community_article = TRUE THEN 'article' WHEN p.post_type = 'poll' THEN 'poll' ELSE p.post_type END AS post_type,
+                (SELECT pm.url FROM post_media pm WHERE pm.post_id = p.post_id LIMIT 1) AS media_url,
+                (SELECT pm.media_type FROM post_media pm WHERE pm.post_id = p.post_id LIMIT 1) AS media_type
             FROM reports r
             LEFT JOIN report_reasons rr ON r.reason_id = rr.id
             LEFT JOIN users u           ON r.target_type = 'USER'    AND r.target_id = u.user_id
             LEFT JOIN posts p           ON r.target_type = 'POST'    AND r.target_id = p.post_id
+            LEFT JOIN post_categories pc_cat ON pc_cat.category_id = p.category_id
             LEFT JOIN users pu          ON p.author_id = pu.user_id
             LEFT JOIN organizations po  ON p.author_org_id = po.org_id
             LEFT JOIN post_comments pc  ON r.target_type IN ('COMMENT', 'THOUGHT') AND r.target_id = pc.comment_id
@@ -1572,6 +1584,10 @@ exports.getUserReportById = async (req, res) => {
             title:       row.title,
             status:      row.status || 'pending',
             statusLabel: REPORT_STATUS_LABELS[row.status] || 'Submitted',
+            postType:    row.post_type || null,
+            mediaType:   (row.post_type || row.media_type || '').toLowerCase() || null,
+            imageUrl:    (row.media_type?.toLowerCase() === 'image' || (!row.media_type && row.media_url)) ? row.media_url : null,
+            videoUrl:    row.media_type?.toLowerCase() === 'video' ? row.media_url : null,
             reviewNotes: notesRes.rows.map((n) => ({
                 id:        n.id,
                 message:   n.message,
