@@ -303,7 +303,20 @@ const loginUser = async ({ email, password, userAgent, ipAddress }) => {
         return { error: { status: 401, message: "Incorrect email or password. Try again" } };
     }
 
-    // 2.5 Block login if account is suspended or deleted
+    // 2.5 Block login if account is pending deletion
+    if (user.deletion_execute_at) {
+        return {
+            error: {
+                status: 403,
+                code: "ACCOUNT_PENDING_DELETION",
+                message: "Restoration link is sent to your email",
+                deletionDate: user.deletion_execute_at,
+                email: user.email,
+            },
+        };
+    }
+
+    // 3. Block login if account is suspended or deleted
     if (user.is_deleted) {
         return {
             error: {
@@ -321,19 +334,6 @@ const loginUser = async ({ email, password, userAgent, ipAddress }) => {
                 code: "ACCOUNT_SUSPENDED",
                 message: "YOUR ACCOUNT HAS BEEN SUSPENDED.",
             }
-        };
-    }
-
-    // 3. Block login if account is pending deletion
-    if (user.deletion_execute_at) {
-        return {
-            error: {
-                status: 403,
-                code: "ACCOUNT_PENDING_DELETION",
-                message: "Your account is scheduled for deletion. Check your email to restore it.",
-                deletionDate: user.deletion_execute_at,
-                email: user.email,
-            },
         };
     }
 
@@ -530,7 +530,7 @@ const socialLogin = async ({ provider, idToken, accountType, fullName: clientFul
                     error: {
                         status: 403,
                         code: "ACCOUNT_PENDING_DELETION",
-                        message: "Your account is scheduled for deletion. Check your email to restore it.",
+                        message: "Restoration link is sent to your email",
                         deletionDate: user.deletion_execute_at,
                         email: user.email,
                     },
@@ -593,7 +593,7 @@ const socialLogin = async ({ provider, idToken, accountType, fullName: clientFul
             error: {
                 status: 403,
                 code: "ACCOUNT_PENDING_DELETION",
-                message: "Your account is scheduled for deletion. Check your email to restore it.",
+                message: "Restoration link is sent to your email",
                 deletionDate: user.deletion_execute_at,
                 email: user.email,
             },

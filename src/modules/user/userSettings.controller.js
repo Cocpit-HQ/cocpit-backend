@@ -764,7 +764,7 @@ exports.getActivityLogs = async (req, res) => {
         } else if (type === "tags") {
             const query = isOrgActor
                 ? `SELECT 
-                    pt.tag_id AS id,
+                    COALESCE(pt.tag_id::text, p.post_id::text) AS id,
                     p.post_id AS "postId",
                     COALESCE(o.name, u.full_name) AS user,
                     COALESCE(o.logo_url, u.avatar_url) AS "avatarUrl",
@@ -777,15 +777,16 @@ exports.getActivityLogs = async (req, res) => {
                     (SELECT (pp.created_at + COALESCE(pp.duration, '1 day')::interval > NOW()) FROM post_polls pp WHERE pp.post_id = p.post_id LIMIT 1) AS "isPollActive",
                     (p.post_id IS NULL) AS "isDeleted",
                     (p.post_id IS NULL) AS is_deleted
-                 FROM post_tags pt
-                 LEFT JOIN posts p ON pt.post_id = p.post_id
+                 FROM posts p
+                 LEFT JOIN post_tags pt ON pt.post_id = p.post_id AND pt.tagged_user_id = $1::uuid AND pt.is_active_tag = true
                  LEFT JOIN active_users u ON p.author_id = u.user_id
                  LEFT JOIN organizations o ON p.author_org_id = o.org_id
-                 WHERE pt.tagged_user_id = $1::uuid AND pt.is_active_tag = true
-                 ORDER BY pt.updated_at DESC
+                 WHERE (pt.tag_id IS NOT NULL OR p.content ~ ('@\\[[^\\]]+\\]\\(' || $1::text || '\\)'))
+                   AND p.is_active = true AND (p.is_removed IS FALSE OR p.is_removed IS NULL)
+                 ORDER BY COALESCE(pt.updated_at, p.updated_at) DESC
                  LIMIT 50`
                 : `SELECT 
-                    pt.tag_id AS id,
+                    COALESCE(pt.tag_id::text, p.post_id::text) AS id,
                     p.post_id AS "postId",
                     COALESCE(o.name, u.full_name) AS user,
                     COALESCE(o.logo_url, u.avatar_url) AS "avatarUrl",
@@ -798,12 +799,13 @@ exports.getActivityLogs = async (req, res) => {
                     (SELECT (pp.created_at + COALESCE(pp.duration, '1 day')::interval > NOW()) FROM post_polls pp WHERE pp.post_id = p.post_id LIMIT 1) AS "isPollActive",
                     (p.post_id IS NULL) AS "isDeleted",
                     (p.post_id IS NULL) AS is_deleted
-                 FROM post_tags pt
-                 LEFT JOIN posts p ON pt.post_id = p.post_id
+                 FROM posts p
+                 LEFT JOIN post_tags pt ON pt.post_id = p.post_id AND pt.tagged_user_id = $1 AND pt.is_active_tag = true
                  LEFT JOIN active_users u ON p.author_id = u.user_id
                  LEFT JOIN organizations o ON p.author_org_id = o.org_id
-                 WHERE pt.tagged_user_id = $1 AND pt.is_active_tag = true
-                 ORDER BY pt.updated_at DESC
+                 WHERE (pt.tag_id IS NOT NULL OR p.content ~ ('@\\[[^\\]]+\\]\\(' || $1::text || '\\)'))
+                   AND p.is_active = true AND (p.is_removed IS FALSE OR p.is_removed IS NULL)
+                 ORDER BY COALESCE(pt.updated_at, p.updated_at) DESC
                  LIMIT 50`;
 
             const result = await pool.query(query, [targetId]);
