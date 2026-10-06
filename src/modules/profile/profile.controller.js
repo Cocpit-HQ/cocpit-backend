@@ -670,7 +670,7 @@ exports.updateExperience = async (req, res) => {
         if (!resolvedCurrent && !resolvedEnd) {
             return res.status(422).json({ message: "End date is required when not currently working" });
         }
-        if (resolvedEnd && new Date(resolvedEnd) <= new Date(resolvedStart)) {
+        if (resolvedEnd && new Date(resolvedEnd) < new Date(resolvedStart)) {
             return res.status(422).json({ message: "End date must be after start date" });
         }
 
