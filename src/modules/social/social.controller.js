@@ -768,7 +768,7 @@ exports.removeCompanyFollower = async (req, res) => {
 
 exports.getFollowers = async (req, res) => {
     let userId = req.params.id;
-    const requesterId = req.user.sub;
+    const requesterId = req.user?.sub;
     const { search } = req.query;
     const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -802,6 +802,7 @@ exports.getFollowers = async (req, res) => {
         let userQuery = `
             SELECT u.user_id, u.full_name, u.avatar_url, u.headline, f.created_at, 'user' as type, NULL as slug,
             ${requesterIdx ? `
+                   (EXISTS (SELECT 1 FROM followers WHERE follower_id = $${requesterIdx} AND following_id = u.user_id)) as is_following,
                    (EXISTS (SELECT 1 FROM followers WHERE follower_id = $${requesterIdx} AND following_id = u.user_id)) as is_following_back,
                    (EXISTS (SELECT 1 FROM connections c_chk WHERE c_chk.user_id = $${requesterIdx} AND c_chk.connected_user_id = u.user_id)) as is_connected,
                    (
@@ -815,9 +816,10 @@ exports.getFollowers = async (req, res) => {
                        LIMIT 1
                    ) as connection_status
             ` : `
+                   FALSE as is_following,
                    FALSE as is_following_back,
                    FALSE as is_connected,
-                   'none' as connection_status
+                   NULL as connection_status
             `}
             FROM followers f 
             JOIN active_users u ON f.follower_id = u.user_id 
@@ -827,6 +829,7 @@ exports.getFollowers = async (req, res) => {
         let companyQuery = `
             SELECT o.org_id as user_id, o.name as full_name, o.logo_url as avatar_url, o.slogan as headline, ouf.created_at, 'company' as type, o.slug,
             ${requesterIdx ? `
+                   (EXISTS (SELECT 1 FROM organization_followers WHERE user_id = $${requesterIdx} AND org_id = o.org_id)) as is_following,
                    (EXISTS (SELECT 1 FROM organization_followers WHERE user_id = $${requesterIdx} AND org_id = o.org_id)) as is_following_back,
                    (EXISTS (SELECT 1 FROM organization_connections oc_chk WHERE oc_chk.user_id = $${requesterIdx} AND oc_chk.org_id = o.org_id)) as is_connected,
                    (
@@ -840,9 +843,10 @@ exports.getFollowers = async (req, res) => {
                        LIMIT 1
                    ) as connection_status
             ` : `
+                   FALSE as is_following,
                    FALSE as is_following_back,
                    FALSE as is_connected,
-                   'none' as connection_status
+                   NULL as connection_status
             `}
             FROM organization_user_follows ouf
             JOIN organizations o ON ouf.org_id = o.org_id
@@ -911,7 +915,7 @@ exports.getFollowing = async (req, res) => {
         }
 
         const params = [userId];
-        const viewerId = req.user.sub;
+        const viewerId = req.user?.sub;
         let searchIdx = null;
         let viewerIdx = null;
 
@@ -929,6 +933,8 @@ exports.getFollowing = async (req, res) => {
         let userQuery = `
             SELECT u.user_id, u.full_name, u.avatar_url, u.headline, f.created_at, 'user' as type, NULL as slug,
             ${viewerIdx ? `
+                   (EXISTS (SELECT 1 FROM followers WHERE follower_id = $${viewerIdx} AND following_id = u.user_id)) as is_following,
+                   (EXISTS (SELECT 1 FROM followers WHERE follower_id = $${viewerIdx} AND following_id = u.user_id)) as is_following_back,
                    (EXISTS (SELECT 1 FROM connections c_chk WHERE c_chk.user_id = $${viewerIdx} AND c_chk.connected_user_id = u.user_id)) as is_connected,
                    (
                        SELECT CASE 
@@ -941,8 +947,10 @@ exports.getFollowing = async (req, res) => {
                        LIMIT 1
                    ) as connection_status
             ` : `
+                   FALSE as is_following,
+                   FALSE as is_following_back,
                    FALSE as is_connected,
-                   'none' as connection_status
+                   NULL as connection_status
             `}
             FROM followers f
             JOIN active_users u ON f.following_id = u.user_id
@@ -952,6 +960,8 @@ exports.getFollowing = async (req, res) => {
         let companyQuery = `
             SELECT c.org_id as user_id, c.name as full_name, c.logo_url as avatar_url, c.industry as headline, cf.created_at, 'company' as type, c.slug,
             ${viewerIdx ? `
+                   (EXISTS (SELECT 1 FROM organization_followers WHERE user_id = $${viewerIdx} AND org_id = c.org_id)) as is_following,
+                   (EXISTS (SELECT 1 FROM organization_followers WHERE user_id = $${viewerIdx} AND org_id = c.org_id)) as is_following_back,
                    (EXISTS (SELECT 1 FROM organization_connections oc_chk WHERE oc_chk.user_id = $${viewerIdx} AND oc_chk.org_id = c.org_id)) as is_connected,
                    (
                        SELECT CASE 
@@ -964,8 +974,10 @@ exports.getFollowing = async (req, res) => {
                        LIMIT 1
                    ) as connection_status
             ` : `
+                   FALSE as is_following,
+                   FALSE as is_following_back,
                    FALSE as is_connected,
-                   'none' as connection_status
+                   NULL as connection_status
             `}
             FROM organization_followers cf
             JOIN organizations c ON cf.org_id = c.org_id
