@@ -354,6 +354,8 @@ exports.getSavedPosts = async (req, res) => {
             (SELECT COUNT(*) FROM active_post_likes pl WHERE pl.post_id = p.post_id)::int AS like_count,
             (SELECT COUNT(*) FROM active_post_comments pc WHERE pc.post_id = p.post_id)::int AS comment_count,
             (SELECT COUNT(*) FROM saved_post sp_cnt WHERE sp_cnt.post_id = p.post_id)::int AS save_count,
+            (SELECT COUNT(*) FROM poll_votes pv WHERE pv.poll_id = (SELECT poll_id FROM post_polls pp WHERE pp.post_id = p.post_id LIMIT 1))::int AS votes,
+            (SELECT (pp.created_at + COALESCE(pp.duration, '1 day')::interval > NOW()) FROM post_polls pp WHERE pp.post_id = p.post_id LIMIT 1) AS "isPollActive",
 
             -- Identity Aware states
             EXISTS(
