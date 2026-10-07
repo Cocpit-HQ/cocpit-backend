@@ -1488,9 +1488,11 @@ exports.getUserReports = async (req, res) => {
             targetType:       row.target_type,
             targetId:         row.target_id,
             reportedUsername: row.reported_username || null,
-            type:             row.target_type
-                ? row.target_type.charAt(0).toUpperCase() + row.target_type.slice(1).toLowerCase()
-                : 'Profile',
+            type:             row.target_type === 'USER'
+                ? 'Profile'
+                : (row.target_type
+                    ? row.target_type.charAt(0).toUpperCase() + row.target_type.slice(1).toLowerCase()
+                    : 'Profile'),
             date:        formatDate(row.created_at),
             reason:      row.reason_label,
             title:       row.title,
@@ -1578,9 +1580,11 @@ exports.getUserReportById = async (req, res) => {
             targetType:       row.target_type,
             targetId:         row.target_id,
             reportedUsername: row.reported_username || null,
-            type:             row.target_type
-                ? row.target_type.charAt(0).toUpperCase() + row.target_type.slice(1).toLowerCase()
-                : 'Profile',
+            type:             row.target_type === 'USER'
+                ? 'Profile'
+                : (row.target_type
+                    ? row.target_type.charAt(0).toUpperCase() + row.target_type.slice(1).toLowerCase()
+                    : 'Profile'),
             date:        formatDate(row.created_at),
             reason:      row.reason_label,
             title:       row.title,
