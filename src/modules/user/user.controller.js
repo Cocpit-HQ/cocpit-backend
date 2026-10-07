@@ -608,19 +608,20 @@ exports.getUserProfile = async (req, res) => {
       cover_image_url: user.cover_image
     };
 
-    const flatExperiencesForScore = (experiences || []).flatMap(group => 
-      Array.isArray(group.experiences) ? group.experiences.map(exp => ({
-        company_name: exp.company_name || group.company_name,
-        title: exp.title,
-        start_date: exp.start_date,
-        description: exp.description
-      })) : []
-    );
+    // Commented out broken experience flattening logic by previous developer
+    // const flatExperiencesForScore = (experiences || []).flatMap(group => 
+    //   Array.isArray(group.experiences) ? group.experiences.map(exp => ({
+    //     company_name: exp.company_name || group.company_name,
+    //     title: exp.title,
+    //     start_date: exp.start_date,
+    //     description: exp.description
+    //   })) : []
+    // );
 
     const profileScore = profileCalc.calculateFullProfileScore(
       userProfileForScore, 
       skillsResult.rows, 
-      flatExperiencesForScore, 
+      experiences, 
       projects, 
       educations
     );
