@@ -351,6 +351,13 @@ exports.getMyPosts = async (req, res) => {
             )
         )
         `}
+        AND (
+            p.shared_post_id IS NULL 
+            OR (
+                (sp.author_org_id IS NOT NULL OR (sp_u.is_deactivated = FALSE AND (sp_u.is_deleted IS NULL OR sp_u.is_deleted = FALSE)))
+                AND (sp.author_org_id IS NULL OR (sp_comp.is_deleted = FALSE AND sp_comp.is_deactivated = FALSE))
+            )
+        )
 
         -- Exclude posts reported by the current user
         AND NOT EXISTS (
@@ -2034,7 +2041,19 @@ LEFT JOIN (
 WHERE p.post_id = $1 
   AND p.is_active = TRUE 
   AND (p.is_removed IS FALSE OR p.is_removed IS NULL)
-  AND (p.author_org_id IS NULL OR (comp.is_deleted = FALSE AND comp.deletion_execute_at IS NULL AND comp.is_deactivated = FALSE));
+  AND (
+      (p.author_org_id IS NULL AND u.is_deactivated = FALSE AND (u.is_deleted IS NULL OR u.is_deleted = FALSE))
+      OR 
+      (p.author_org_id IS NOT NULL AND comp.is_deleted = FALSE AND comp.deletion_execute_at IS NULL AND comp.is_deactivated = FALSE)
+  )
+  AND (
+      p.shared_post_id IS NULL 
+      OR (
+          (sp.author_org_id IS NULL AND sp_u.is_deactivated = FALSE AND (sp_u.is_deleted IS NULL OR sp_u.is_deleted = FALSE))
+          OR
+          (sp.author_org_id IS NOT NULL AND sp_comp.is_deleted = FALSE AND sp_comp.is_deactivated = FALSE)
+      )
+  );
 `
 
         const result = await pool.query(query, [postId, userId, companyId || null]);

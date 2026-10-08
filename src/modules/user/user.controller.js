@@ -748,6 +748,17 @@ exports.getPublicProfilePosts = async (req, res) => {
       }
     }
 
+    whereClause += `
+      AND (
+          p.shared_post_id IS NULL 
+          OR (
+              (sp.author_org_id IS NOT NULL OR (sp_u.is_deactivated = FALSE AND (sp_u.is_deleted IS NULL OR sp_u.is_deleted = FALSE)))
+              AND (sp.author_org_id IS NULL OR (sp_comp.is_deleted = FALSE AND sp_comp.is_deactivated = FALSE))
+          )
+      )
+    `;
+
+
     // ✅ Cursor-based pagination (stable ordering)
     if (cursorCreatedAt && cursorPostId) {
       whereClause += `
@@ -1199,7 +1210,14 @@ exports.getPublicProfileCommentedPosts = async (req, res) => {
         AND pc_filter.author_org_id IS NULL
     )
     AND p.visibility = 'public'
-    AND p.author_id != $1`;
+    AND p.author_id != $1
+    AND (
+        p.shared_post_id IS NULL 
+        OR (
+            (sp.author_org_id IS NOT NULL OR (sp_u.is_deactivated = FALSE AND (sp_u.is_deleted IS NULL OR sp_u.is_deleted = FALSE)))
+            AND (sp.author_org_id IS NULL OR (sp_comp.is_deleted = FALSE AND sp_comp.is_deactivated = FALSE))
+        )
+    )`;
 
     if (cursorCreatedAt && cursorPostId) {
       whereClause += ` AND (p.created_at, p.post_id) < ($${idx}, $${idx + 1})`;
