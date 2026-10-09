@@ -95,8 +95,28 @@ exports.getOrganizationPosts = async (req, res) => {
             }
         }
 
-        const params = [companyId];
+        const params = [companyId]; // $1
         let idx = 2;
+
+        const userParamIdx = 2; // Fixed index for user_id in this specific query construction
+        if (userId) {
+            params.push(userId); // $2
+            idx++;
+        } else {
+            params.push(null); // $2 dummy
+            idx++;
+        }
+
+        // Is the viewer currently acting as THIS company? If so, "my" likes/votes/reposts
+        // should reflect the company's shared identity, not just this individual's clicks.
+        const rawType = req.headers["x-actor-type"];
+        const type = typeof rawType === "string" ? rawType.trim().toUpperCase() : null;
+        const isOrgType = type === "ORGANIZATION" || type === "COMPANY" || type === "ORG";
+        const actorOrgId = isOrgType ? req.headers["x-actor-id"] : null;
+        params.push(actorOrgId); // $3
+        const orgActorParamIdx = idx;
+        idx++;
+
         let whereClause = `WHERE p.author_org_id = $1`;
 
         if (filter === 'Post') {
@@ -128,28 +148,6 @@ exports.getOrganizationPosts = async (req, res) => {
               AND (r.target_id = p.post_id OR r.target_id = p.shared_post_id OR r.target_id = p.shared_job_id)
               AND r.reporter_id = $${userParamIdx}::uuid
         )) `;
-
-        // We can expose a userId param for "is_liked" check even if public
-        // For now, let's assume req.user is populated if authenticated
-
-        if (userId) {
-            params.push(userId); // $2
-            idx++;
-        } else {
-            params.push(null); // $2 dummy
-            idx++;
-        }
-        const userParamIdx = 2; // Fixed index for user_id in this specific query construction
-
-        // Is the viewer currently acting as THIS company? If so, "my" likes/votes/reposts
-        // should reflect the company's shared identity, not just this individual's clicks.
-                const rawType = req.headers["x-actor-type"];
-        const type = typeof rawType === "string" ? rawType.trim().toUpperCase() : null;
-        const isOrgType = type === "ORGANIZATION" || type === "COMPANY" || type === "ORG";
-        const actorOrgId = isOrgType ? req.headers["x-actor-id"] : null;
-        params.push(actorOrgId); // $3
-        const orgActorParamIdx = idx;
-        idx++;
 
         // 1. Cursor handling
         if (cursorCreatedAt && cursorPostId) {

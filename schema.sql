@@ -290,6 +290,10 @@ CREATE TABLE organizations (
     phone_verified BOOLEAN DEFAULT FALSE,
     country VARCHAR(100),
     city VARCHAR(100),
+    location_formatted TEXT,
+    location_lat DOUBLE PRECISION,
+    location_lng DOUBLE PRECISION,
+    location_place_id TEXT,
     headline VARCHAR(200),
     created_by UUID REFERENCES users(user_id) ON DELETE SET NULL,
     onboarding_step VARCHAR(50) DEFAULT 'IDENTITY',
@@ -307,6 +311,7 @@ CREATE INDEX idx_companies_website ON organizations(website);
 CREATE INDEX IF NOT EXISTS idx_companies_name_trgm ON organizations USING GIN (name gin_trgm_ops);
 CREATE INDEX IF NOT EXISTS idx_organizations_created_by ON organizations(created_by);
 CREATE INDEX IF NOT EXISTS idx_organizations_onboarding_completed ON organizations(onboarding_completed) WHERE onboarding_completed = FALSE;
+CREATE INDEX IF NOT EXISTS idx_organizations_location_coords ON organizations(location_lat, location_lng) WHERE location_lat IS NOT NULL AND location_lng IS NOT NULL;
 
 -- Dynamic Roles & Members
 CREATE TABLE organization_roles (

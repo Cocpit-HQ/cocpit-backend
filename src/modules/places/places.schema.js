@@ -5,7 +5,9 @@ const autocompleteSchema = z.object({
     q: z.string().min(2, "Query must be at least 2 characters").max(200),
     sessionToken: z.string().uuid("sessionToken must be a valid UUID"),
     country: z.string().optional(),
+    allowedCountryCodes: z.string().optional(),
     global: z.string().optional(),
+    types: z.string().optional(),
   }),
 });
 

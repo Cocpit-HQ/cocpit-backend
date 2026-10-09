@@ -380,7 +380,24 @@ exports.getOrganization = async (req, res) => {
 exports.updateOrganization = async (req, res) => {
     const { orgId } = req.params;
     const userId = req.user.sub;
-    const { name, slogan, industry, size, website, location, description, logo_url, cover_url, headline } = req.body;
+    const {
+        name,
+        slogan,
+        industry,
+        size,
+        website,
+        location,
+        formattedAddress,
+        country,
+        city,
+        latitude,
+        longitude,
+        placeId,
+        description,
+        logo_url,
+        cover_url,
+        headline
+    } = req.body;
 
     // Basic validation
     if (!name || name.trim().length < 2) {
@@ -394,6 +411,18 @@ exports.updateOrganization = async (req, res) => {
             return res.status(400).json({ message: "Headline must be 120 characters or less" });
         }
     }
+
+    const locationStr =
+        formattedAddress ||
+        (typeof location === 'string' ? location : location?.formattedAddress || location?.description) ||
+        (city && country ? `${city}, ${country}` : null) ||
+        null;
+
+    const locCountry = country || (typeof location === 'object' ? location?.country : null) || null;
+    const locCity = city || (typeof location === 'object' ? location?.city : null) || null;
+    const locLat = latitude !== undefined && latitude !== null ? Number(latitude) : (typeof location === 'object' && location?.latitude !== undefined ? Number(location.latitude) : null);
+    const locLng = longitude !== undefined && longitude !== null ? Number(longitude) : (typeof location === 'object' && location?.longitude !== undefined ? Number(location.longitude) : null);
+    const locPlaceId = placeId || (typeof location === 'object' ? location?.placeId : null) || null;
 
     const client = await pool.connect();
     try {
@@ -411,18 +440,39 @@ exports.updateOrganization = async (req, res) => {
                 industry = $3, 
                 size = $4, 
                 website = $5, 
-                location = $6, 
-                description = $7, 
-                logo_url = COALESCE($8, logo_url), 
-                cover_url = COALESCE($9, cover_url),
-                headline = $10,
+                location = COALESCE($6, location), 
+                location_formatted = COALESCE($6, location_formatted),
+                location_lat = COALESCE($7, location_lat),
+                location_lng = COALESCE($8, location_lng),
+                location_place_id = COALESCE($9, location_place_id),
+                country = COALESCE($10, country),
+                city = COALESCE($11, city),
+                description = $12, 
+                logo_url = COALESCE($13, logo_url), 
+                cover_url = COALESCE($14, cover_url),
+                headline = $15,
                 updated_at = NOW()
-            WHERE org_id = $11
+            WHERE org_id = $16
             RETURNING *
         `;
 
         const result = await client.query(updateQuery, [
-            name, slogan, industry, size, website, location, description, logo_url, cover_url, headline ? headline.trim() : null, orgId
+            name,
+            slogan,
+            industry,
+            size,
+            website,
+            locationStr,
+            locLat,
+            locLng,
+            locPlaceId,
+            locCountry,
+            locCity,
+            description,
+            logo_url,
+            cover_url,
+            headline ? headline.trim() : null,
+            orgId
         ]);
 
         const updatedCompany = result.rows[0];
@@ -1541,8 +1591,9 @@ exports.getProfilePreview = async (req, res) => {
     const client = await pool.connect();
     try {
         const orgRes = await client.query(
-            `SELECT name, logo_url, headline, email, phone, website, size, country, city, description, 
-                    email_verified, phone_verified, verification_status
+            `SELECT name, logo_url, headline, email, phone, website, size, country, city, 
+                    location, location_formatted, location_lat, location_lng, location_place_id,
+                    description, email_verified, phone_verified, verification_status
              FROM organizations 
              WHERE org_id = $1 AND created_by = $2 AND is_deleted = FALSE`,
             [orgId, userId]
@@ -1644,7 +1695,21 @@ exports.saveDraftIdentity = async (req, res) => {
 exports.saveDraftPresence = async (req, res) => {
     const { orgId } = req.params;
     const userId = req.user.sub;
-    const { email, phone, website, size, country, city, headline, description } = req.body;
+    const {
+        email,
+        phone,
+        website,
+        size,
+        location,
+        formattedAddress,
+        country,
+        city,
+        latitude,
+        longitude,
+        placeId,
+        headline,
+        description
+    } = req.body;
 
     if (phone) {
         const p = phone.trim();
@@ -1658,6 +1723,18 @@ exports.saveDraftPresence = async (req, res) => {
             return res.status(400).json({ success: false, message: "Japan phone numbers must be exactly 10 digits." });
         }
     }
+
+    const locationStr =
+        formattedAddress ||
+        (typeof location === 'string' ? location : location?.formattedAddress || location?.description) ||
+        [city, country].filter(Boolean).join(', ') ||
+        null;
+
+    const locCountry = country || (typeof location === 'object' ? location?.country : null) || null;
+    const locCity = city || (typeof location === 'object' ? location?.city : null) || null;
+    const locLat = latitude !== undefined && latitude !== null ? Number(latitude) : (typeof location === 'object' && location?.latitude !== undefined ? Number(location.latitude) : null);
+    const locLng = longitude !== undefined && longitude !== null ? Number(longitude) : (typeof location === 'object' && location?.longitude !== undefined ? Number(location.longitude) : null);
+    const locPlaceId = placeId || (typeof location === 'object' ? location?.placeId : null) || null;
 
     const client = await pool.connect();
     try {
@@ -1680,16 +1757,21 @@ exports.saveDraftPresence = async (req, res) => {
                 size = $4,
                 country = $5,
                 city = $6,
-                headline = $7,
-                description = $8,
+                location = COALESCE($7, location),
+                location_formatted = COALESCE($7, location_formatted),
+                location_lat = COALESCE($8, location_lat),
+                location_lng = COALESCE($9, location_lng),
+                location_place_id = COALESCE($10, location_place_id),
+                headline = $11,
+                description = $12,
                 onboarding_step = 'VERIFICATION',
                 updated_at = NOW()
-            WHERE org_id = $9
+            WHERE org_id = $13
             RETURNING *
         `;
 
         await client.query(updateText, [
-            email, phone, website || null, size, country, city, headline, description || null, orgId
+            email, phone, website || null, size, locCountry, locCity, locationStr, locLat, locLng, locPlaceId, headline, description || null, orgId
         ]);
 
         await client.query("COMMIT");
@@ -2133,13 +2215,30 @@ exports.publishNewOrganization = async (req, res) => {
         phone,
         website,
         size,
+        location,
+        formattedAddress,
         country,
         city,
+        latitude,
+        longitude,
+        placeId,
         headline,
         description,
         type,
         country_of_operation
     } = req.body;
+
+    const locationStr =
+        formattedAddress ||
+        (typeof location === 'string' ? location : location?.formattedAddress || location?.description) ||
+        [city, country || country_of_operation].filter(Boolean).join(', ') ||
+        null;
+
+    const locCountry = country || (typeof location === 'object' ? location?.country : null) || country_of_operation || null;
+    const locCity = city || (typeof location === 'object' ? location?.city : null) || null;
+    const locLat = latitude !== undefined && latitude !== null ? Number(latitude) : (typeof location === 'object' && location?.latitude !== undefined ? Number(location.latitude) : null);
+    const locLng = longitude !== undefined && longitude !== null ? Number(longitude) : (typeof location === 'object' && location?.longitude !== undefined ? Number(location.longitude) : null);
+    const locPlaceId = placeId || (typeof location === 'object' ? location?.placeId : null) || null;
 
     const client = await pool.connect();
     try {
@@ -2188,11 +2287,13 @@ exports.publishNewOrganization = async (req, res) => {
         const insertQuery = `
             INSERT INTO organizations (
                 name, slug, entity_type, established_year, industry, institution_type,
-                logo_url, email, phone, website, size, country, city,
+                logo_url, email, phone, website, size,
+                location, location_formatted, location_lat, location_lng, location_place_id,
+                country, city,
                 headline, description, created_by, onboarding_step, onboarding_completed, email_verified, phone_verified,
                 verification_status
             ) VALUES (
-                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, 'COMPLETED', TRUE, TRUE, TRUE, $17
+                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, 'COMPLETED', TRUE, TRUE, TRUE, $22
             ) RETURNING *
         `;
 
@@ -2205,9 +2306,16 @@ exports.publishNewOrganization = async (req, res) => {
             isInstitution ? (industry || null) : null,
             logoUrl,
             email ? email.toLowerCase().trim() : null,
+            phone ? phone.trim() : null,
             website || null,
             size || null,
             locationStr,
+            locationStr,
+            locLat,
+            locLng,
+            locPlaceId,
+            locCountry,
+            locCity,
             headline || null,
             description || null,
             userId,

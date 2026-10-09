@@ -8,39 +8,76 @@ const INCLUDED_REGION_CODES = ["IN", "AE"];
 const CACHE_TTL_AUTOCOMPLETE = 60;    // seconds
 const CACHE_TTL_DETAILS = 86400;      // 24 hours
 
-// ─── Address Component Parser ─────────────────────────────────────────────────
+// ─── Address Component Parser ───────────────────────────────────────────────
 
 function parseAddressComponents(components = []) {
-  let country = null, state = null, city = null;
+  let country = null;
+  let state = null;
+  let city = null;
+  let street = null;
+  let sublocality = null;
+  let village = null;
+  let postalCode = null;
   
   for (const comp of components) {
     const types = comp.types || [];
-    const name = comp.longText || comp.shortText || "";
+    const name = comp.longText || comp.shortText || comp.long_name || comp.short_name || "";
     
     if (types.includes("country")) {
       country = name;
     } else if (types.includes("administrative_area_level_1")) {
-      // Normalize UAE emirate names: "Emirate of Dubai" → "Dubai"
+      // Normalize UAE emirate names: "Emirate of Dubai" -> "Dubai"
       state = name.replace(/^Emirate of /i, "").trim();
     } else if (
       types.includes("locality") ||
-      types.includes("postal_town") ||
-      types.includes("administrative_area_level_2")
+      types.includes("postal_town")
     ) {
-      if (!city) city = name; // prefer locality, fallback to others
+      if (!city) city = name; // prefer locality
+    } else if (
+      types.includes("sublocality") ||
+      types.includes("sublocality_level_1") ||
+      types.includes("sublocality_level_2") ||
+      types.includes("sublocality_level_3") ||
+      types.includes("neighborhood")
+    ) {
+      if (!sublocality) sublocality = name;
+    } else if (
+      types.includes("village") ||
+      types.includes("administrative_area_level_4") ||
+      types.includes("administrative_area_level_5")
+    ) {
+      if (!village) village = name;
+    } else if (
+      types.includes("route") ||
+      types.includes("street_address") ||
+      types.includes("premise") ||
+      types.includes("street_number")
+    ) {
+      if (!street) street = name;
+    } else if (types.includes("postal_code")) {
+      postalCode = name;
+    } else if (types.includes("administrative_area_level_3")) {
+      // Tehsil / taluka / subdistrict in rural India
+      if (!village && !city) village = name;
+    } else if (types.includes("administrative_area_level_2")) {
+      if (!city) city = name;
     }
   }
 
-  return { country, state: state || null, city };
+  // If city is missing (e.g. for rural villages or specific sublocalities), fallback
+  const resolvedCity = city || village || sublocality || null;
+
+  return { country, state: state || null, city: resolvedCity, street, sublocality, village, postalCode };
 }
 
-// ─── Autocomplete ─────────────────────────────────────────────────────────────
+// ─── Autocomplete ──────────────────────────────────────────────────────────
 
 exports.getAutocomplete = async (req, res) => {
-  const { q, sessionToken, country, allowedCountryCodes, global } = req.query;
+  const { q, sessionToken, country, allowedCountryCodes, global, types } = req.query;
   const isGlobal = global === 'true';
   const filterKey = isGlobal ? 'GLOBAL' : (allowedCountryCodes || country || 'ALL');
-  const cacheKey = `places:ac:${crypto.createHash("sha256").update(`${q.toLowerCase().trim()}:${filterKey}`).digest("hex")}`;
+  const typesKey = types || 'ALL';
+  const cacheKey = `places:ac:${crypto.createHash("sha256").update(`${q.toLowerCase().trim()}:${filterKey}:${typesKey}`).digest("hex")}`;
   const startTime = Date.now();
 
   try {
@@ -78,9 +115,15 @@ exports.getAutocomplete = async (req, res) => {
     const requestBody = {
       input: q,
       sessionToken,
-      includedPrimaryTypes: ["locality", "administrative_area_level_1"],
       languageCode: "en",
     };
+
+    // If specific types are requested (e.g., city-only), restrict primary types;
+    // otherwise allow full granularity (streets, villages, sublocalities, cities)
+    if (types) {
+      requestBody.includedPrimaryTypes = types.split(",").map(t => t.trim());
+    }
+
     if (regionCodes && regionCodes.length > 0) {
       requestBody.includedRegionCodes = regionCodes;
     }
@@ -152,7 +195,7 @@ exports.getAutocomplete = async (req, res) => {
   }
 };
 
-// ─── Place Details ─────────────────────────────────────────────────────────────
+// ─── Place Details ──────────────────────────────────────────────────────────
 
 exports.getPlaceDetails = async (req, res) => {
   const { placeId, sessionToken, global } = req.query;
@@ -188,13 +231,13 @@ exports.getPlaceDetails = async (req, res) => {
         .json({ success: true, data: result });
     }
 
-    // Call Google Places Details (New)
+    // Call Google Places Details (New) with formattedAddress included
     const response = await axios.get(
       `${GOOGLE_PLACES_BASE}/places/${placeId}`,
       {
         headers: {
           "X-Goog-Api-Key": process.env.GOOGLE_MAPS_API_KEY,
-          "X-Goog-FieldMask": "id,displayName,addressComponents,location",
+          "X-Goog-FieldMask": "id,displayName,formattedAddress,addressComponents,location",
           "X-Goog-SessionToken": sessionToken,
         },
         timeout: 5000,
@@ -202,7 +245,7 @@ exports.getPlaceDetails = async (req, res) => {
     );
 
     const place = response.data;
-    const { country, state, city } = parseAddressComponents(
+    const { country, state, city, street, sublocality, village, postalCode } = parseAddressComponents(
       place.addressComponents || []
     );
 
@@ -215,12 +258,19 @@ exports.getPlaceDetails = async (req, res) => {
       });
     }
 
+    // Preserve granular formatted address (streets, villages, sublocalities)
+    const formattedAddress = place.formattedAddress || [street, sublocality || village, city, state, country].filter(Boolean).join(", ");
+
     const result = {
       placeId,
       country,
       state: state || null,
       city: city || place.displayName?.text || null,
-      formattedAddress: [city, state, country].filter(Boolean).join(", "),
+      street: street || null,
+      sublocality: sublocality || village || null,
+      village: village || null,
+      postalCode: postalCode || null,
+      formattedAddress,
       latitude: place.location?.latitude || null,
       longitude: place.location?.longitude || null,
     };
@@ -261,7 +311,7 @@ exports.getPlaceDetails = async (req, res) => {
   }
 };
 
-// ─── Reverse Geocoding ────────────────────────────────────────────────────────
+// ─── Reverse Geocoding ───────────────────────────────────────────────────────
 
 exports.getReverseGeocode = async (req, res) => {
   const { lat, lng } = req.query;
@@ -302,26 +352,9 @@ exports.getReverseGeocode = async (req, res) => {
 
     // Use the most specific result
     const place = results[0];
-    
-    // Geocoding API uses long_name and short_name in address_components
-    let country = null, state = null, city = null;
-    
-    for (const comp of place.address_components || []) {
-      const types = comp.types || [];
-      const name = comp.long_name || comp.short_name || "";
-      
-      if (types.includes("country")) {
-        country = name;
-      } else if (types.includes("administrative_area_level_1")) {
-        state = name.replace(/^Emirate of /i, "").trim();
-      } else if (
-        types.includes("locality") ||
-        types.includes("postal_town") ||
-        types.includes("administrative_area_level_2")
-      ) {
-        if (!city) city = name;
-      }
-    }
+    const { country, state, city, street, sublocality, village, postalCode } = parseAddressComponents(
+      place.address_components || []
+    );
 
     if (!ALLOWED_COUNTRIES.includes(country)) {
       return res.status(400).json({
@@ -331,12 +364,18 @@ exports.getReverseGeocode = async (req, res) => {
       });
     }
 
+    const formattedAddress = place.formatted_address || [street, sublocality || village, city, state, country].filter(Boolean).join(", ");
+
     const result = {
       placeId: place.place_id,
       country,
       state: state || null,
       city: city || null,
-      formattedAddress: [city, state, country].filter(Boolean).join(", "),
+      street: street || null,
+      sublocality: sublocality || village || null,
+      village: village || null,
+      postalCode: postalCode || null,
+      formattedAddress,
       latitude: latNum,
       longitude: lngNum,
     };

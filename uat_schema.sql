@@ -111,3 +111,12 @@ ALTER TABLE users
 
 ALTER TABLE organizations 
     ADD COLUMN IF NOT EXISTS country_code VARCHAR(10);
+
+-- 13. organizations: Add location coordinates & details for mapping support
+ALTER TABLE organizations 
+    ADD COLUMN IF NOT EXISTS location_formatted TEXT,
+    ADD COLUMN IF NOT EXISTS location_lat DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS location_lng DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS location_place_id TEXT;
+
+CREATE INDEX IF NOT EXISTS idx_organizations_location_coords ON organizations(location_lat, location_lng) WHERE location_lat IS NOT NULL AND location_lng IS NOT NULL;

@@ -18,3 +18,23 @@ ALTER TABLE organizations
 COMMIT;
 
 
+-- ==============================================================================
+-- UAT Migration v1.5.0 (Organizations Location & Mapping Support)
+-- Target Database: cocpit_backend_uat
+-- Description: Adds location coordinates, formatted address, and Google Place ID
+--              to organizations table to support map rendering and geospatial features.
+-- ==============================================================================
+
+BEGIN;
+
+ALTER TABLE organizations 
+    ADD COLUMN IF NOT EXISTS location_formatted TEXT,
+    ADD COLUMN IF NOT EXISTS location_lat DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS location_lng DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS location_place_id TEXT;
+
+CREATE INDEX IF NOT EXISTS idx_organizations_location_coords 
+    ON organizations(location_lat, location_lng) 
+    WHERE location_lat IS NOT NULL AND location_lng IS NOT NULL;
+
+COMMIT;
