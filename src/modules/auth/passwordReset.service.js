@@ -133,7 +133,7 @@ const resetPassword = async (email, newPassword, logoutOtherDevices = true) => {
  * Generates secure token, stores in DB, sends email link to logged-in user.
  * @param {string} userId
  */
-const requestPasswordResetLink = async (userId) => {
+const requestPasswordResetLink = async (userId, clientOrigin) => {
     const user = await authRepo.getUserById(userId);
     if (!user || !user.email) {
         throw new Error("User not found");
@@ -162,7 +162,7 @@ const requestPasswordResetLink = async (userId) => {
         [userId, tokenHash, expiresAt]
     );
 
-    await emailService.sendPasswordResetLinkEmail(user.email, user.full_name, rawToken);
+    await emailService.sendPasswordResetLinkEmail(user.email, user.full_name, rawToken, clientOrigin);
 
     return {
         success: true,

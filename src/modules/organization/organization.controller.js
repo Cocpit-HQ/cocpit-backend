@@ -583,11 +583,13 @@ exports.deleteOrganization = async (req, res) => {
         // Send recovery email (non-blocking)
         const userEmailRes = await client.query("SELECT email FROM users WHERE user_id = $1", [userId]);
         const emailService = require("../../core/services/email.service");
+        const baseUrl = req.get('origin') || req.headers.referer || process.env.CLIENT_URL || 'http://localhost:3000';
         emailService.sendOrganizationDeletionEmail(
             userEmailRes.rows[0].email,
             orgName,
             rawToken,
-            deletionExecuteAt
+            deletionExecuteAt,
+            baseUrl
         ).catch(err => console.error("[DeleteOrg] Failed to send recovery email:", err));
 
         await client.query("COMMIT");

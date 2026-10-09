@@ -841,6 +841,7 @@ exports.getPublicProfilePosts = async (req, res) => {
         (SELECT COUNT(*) FROM active_post_comments pc WHERE pc.post_id = p.post_id)::int AS comment_count,
 
         EXISTS(SELECT 1 FROM active_post_likes pl WHERE pl.post_id = p.post_id AND pl.user_id = $${userParamIdx}) AS is_liked,
+        EXISTS(SELECT 1 FROM saved_post sp_me WHERE sp_me.post_id = p.post_id AND sp_me.user_id = $${userParamIdx} AND sp_me.org_id IS NULL) AS is_saved,
         EXISTS(
             SELECT 1 FROM posts sp_rep
             WHERE sp_rep.shared_post_id = p.post_id 
@@ -959,6 +960,7 @@ exports.getPublicProfilePosts = async (req, res) => {
               'rePostCount', (SELECT COUNT(*) FROM posts sp_share2 WHERE sp_share2.shared_post_id = sp.post_id AND sp_share2.is_active = TRUE AND (sp_share2.is_removed IS FALSE OR sp_share2.is_removed IS NULL))::int,
               'sharePostCount', (SELECT COUNT(*) FROM shares s WHERE s.entity_type IN ('post', 'article') AND s.entity_id = sp.post_id::text)::int,
               'is_liked', EXISTS(SELECT 1 FROM active_post_likes pl WHERE pl.post_id = sp.post_id AND pl.user_id = $${userParamIdx}),
+              'is_saved', EXISTS(SELECT 1 FROM saved_post sp_me WHERE sp_me.post_id = sp.post_id AND sp_me.user_id = $${userParamIdx} AND sp_me.org_id IS NULL),
               'is_reposted', EXISTS(
                   SELECT 1 FROM posts sp_rep
                   WHERE sp_rep.shared_post_id = sp.post_id 
@@ -1786,8 +1788,10 @@ exports.deleteAccount = async (req, res) => {
       new Set([user.recovery_email, user.email].filter((e) => Boolean(e) && typeof e === "string" && e.trim() !== ""))
     );
 
+    const baseUrl = req.get('origin') || req.headers.referer || process.env.CLIENT_URL || user.client_origin || 'http://localhost:3000';
+
     for (const recipientEmail of recipientEmails) {
-      sendAccountDeletionEmail(recipientEmail, user.full_name, rawToken, deletionExecuteAt).catch((err) => {
+      sendAccountDeletionEmail(recipientEmail, user.full_name, rawToken, deletionExecuteAt, baseUrl).catch((err) => {
         console.error(`[deleteAccount] Failed to send recovery email to ${recipientEmail}:`, err.message || err);
       });
     }
@@ -1973,8 +1977,10 @@ exports.resendRecoveryEmail = async (req, res) => {
         new Set([user.recovery_email, user.email].filter((e) => Boolean(e) && typeof e === "string" && e.trim() !== ""))
       );
 
+      const baseUrl = req.get('origin') || req.headers.referer || process.env.CLIENT_URL || user.client_origin || 'http://localhost:3000';
+
       for (const recipientEmail of recipientEmails) {
-        await sendAccountDeletionEmail(recipientEmail, user.full_name, rawToken, user.deletion_execute_at).catch((err) => {
+        await sendAccountDeletionEmail(recipientEmail, user.full_name, rawToken, user.deletion_execute_at, baseUrl).catch((err) => {
           console.error(`[resendRecoveryEmail] Failed to send recovery email to ${recipientEmail}:`, err.message || err);
         });
       }

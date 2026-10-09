@@ -81,7 +81,8 @@ exports.requestPasswordResetLink = async (req, res) => {
             return res.status(401).json({ success: false, message: "Unauthorized" });
         }
 
-        const result = await passwordResetService.requestPasswordResetLink(userId);
+        const baseUrl = req.get('origin') || req.headers.referer || process.env.CLIENT_URL || 'http://localhost:3000';
+        const result = await passwordResetService.requestPasswordResetLink(userId, baseUrl);
         return res.status(200).json(result);
     } catch (err) {
         console.error("Request password reset link error:", err);

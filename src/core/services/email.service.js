@@ -86,12 +86,13 @@ const sendOTPEmail = async (email, otp, purpose = "signup") => {
  * @param {string} restoreToken - Raw restore token (embedded in link, not stored)
  * @param {Date}   deletionDate - The scheduled permanent deletion date
  */
-const sendAccountDeletionEmail = async (email, fullName, restoreToken, deletionDate) => {
+const sendAccountDeletionEmail = async (email, fullName, restoreToken, deletionDate, clientOrigin) => {
     if (!resend) {
         throw new Error("Email service is not configured (RESEND_API_KEY missing).");
     }
 
-    const frontendUrl = process.env.FRONTEND_URL || (process.env.NODE_ENV === "staging" ? "https://staging.cocpit.in" : "http://localhost:3000");
+    const fallbackUrl = process.env.FRONTEND_URL || (process.env.NODE_ENV === "staging" ? "https://staging.cocpit.in" : "http://localhost:3000");
+    const frontendUrl = clientOrigin || fallbackUrl;
     const restoreLink = restoreToken ? `${frontendUrl}/restore-account?token=${restoreToken}` : `${frontendUrl}/restore-account`;
     const deletionDateStr = new Date(deletionDate).toLocaleDateString("en-US", {
         year: "numeric", month: "long", day: "numeric",
@@ -146,12 +147,13 @@ const sendAccountDeletionEmail = async (email, fullName, restoreToken, deletionD
  * @param {string} restoreToken - Raw restore token
  * @param {Date}   deletionDate - The scheduled permanent deletion date
  */
-const sendOrganizationDeletionEmail = async (email, orgName, restoreToken, deletionDate) => {
+const sendOrganizationDeletionEmail = async (email, orgName, restoreToken, deletionDate, clientOrigin) => {
     if (!resend) {
         throw new Error("Email service is not configured (RESEND_API_KEY missing).");
     }
 
-    const frontendUrl = process.env.FRONTEND_URL || (process.env.NODE_ENV === "staging" ? "https://staging.cocpit.in" : "http://localhost:3000");
+    const fallbackUrl = process.env.FRONTEND_URL || (process.env.NODE_ENV === "staging" ? "https://staging.cocpit.in" : "http://localhost:3000");
+    const frontendUrl = clientOrigin || fallbackUrl;
     const restoreLink = `${frontendUrl}/company/restore?token=${restoreToken}`;
     const deletionDateStr = new Date(deletionDate).toLocaleDateString("en-US", {
         year: "numeric", month: "long", day: "numeric",
@@ -205,12 +207,13 @@ const sendOrganizationDeletionEmail = async (email, orgName, restoreToken, delet
  * @param {string} fullName - The user's display name
  * @param {string} resetToken - Raw reset token
  */
-const sendPasswordResetLinkEmail = async (email, fullName, resetToken) => {
+const sendPasswordResetLinkEmail = async (email, fullName, resetToken, clientOrigin) => {
     if (!resend) {
         throw new Error("Email service is not configured (RESEND_API_KEY missing).");
     }
 
-    const frontendUrl = process.env.FRONTEND_URL || (process.env.NODE_ENV === "staging" ? "https://staging.cocpit.in" : "http://localhost:3000");
+    const fallbackUrl = process.env.FRONTEND_URL || (process.env.NODE_ENV === "staging" ? "https://staging.cocpit.in" : "http://localhost:3000");
+    const frontendUrl = clientOrigin || fallbackUrl;
     const resetLink = `${frontendUrl}/reset-password?token=${resetToken}`;
 
     try {
