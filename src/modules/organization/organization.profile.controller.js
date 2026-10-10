@@ -1243,8 +1243,8 @@ exports.updateOrgProfile = async (req, res) => {
         return res.status(400).json({ message: 'Organization name must be at least 2 characters' });
     }
     // Validate headline length
-    if (headline !== undefined && headline !== null && headline.trim().length > 120) {
-        return res.status(400).json({ message: 'Headline must be 120 characters or less' });
+    if (headline !== undefined && headline !== null && headline.trim().length > 255) {
+        return res.status(400).json({ message: 'Headline must be 255 characters or less' });
     }
     // Validate website format (basic)
     if (website && !/^https?:\/\/.+/.test(website)) {
@@ -1253,6 +1253,13 @@ exports.updateOrgProfile = async (req, res) => {
     // Validate keyOfferings if provided
     if (keyOfferings !== undefined && !Array.isArray(keyOfferings)) {
         return res.status(400).json({ message: 'keyOfferings must be an array of objects' });
+    }
+    // Validate established_year
+    if (established_year !== undefined && established_year !== null && established_year !== '') {
+        const yearInt = parseInt(established_year, 10);
+        if (!isNaN(yearInt) && yearInt > new Date().getFullYear()) {
+            return res.status(400).json({ message: 'Founded year cannot be in the future' });
+        }
     }
 
     const client = await pool.connect();

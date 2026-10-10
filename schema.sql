@@ -294,7 +294,7 @@ CREATE TABLE organizations (
     location_lat DOUBLE PRECISION,
     location_lng DOUBLE PRECISION,
     location_place_id TEXT,
-    headline VARCHAR(200),
+    headline VARCHAR(255),
     created_by UUID REFERENCES users(user_id) ON DELETE SET NULL,
     onboarding_step VARCHAR(50) DEFAULT 'IDENTITY',
     onboarding_completed BOOLEAN DEFAULT FALSE,

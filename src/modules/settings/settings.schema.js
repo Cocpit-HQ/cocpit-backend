@@ -71,7 +71,21 @@ const phoneSchema = z.object({
     countryCode: z.enum(['+91', '+971'], { required_error: "Country code is required" }),
     phone: z.string({
       required_error: "Phone number is required",
-    }).min(10, { message: "Phone number must be at least 10 digits" }),
+    }).min(9, { message: "Phone number must be at least 9 digits" }).max(10, { message: "Phone number must be at most 10 digits" }),
+  }).superRefine((data, ctx) => {
+    if (data.countryCode === '+971' && data.phone.length !== 9) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "UAE phone numbers must be exactly 9 digits",
+        path: ["phone"],
+      });
+    } else if (data.countryCode === '+91' && data.phone.length !== 10) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "India phone numbers must be exactly 10 digits",
+        path: ["phone"],
+      });
+    }
   }),
 });
 

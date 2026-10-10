@@ -19,7 +19,11 @@ const saveIdentitySchema = z.object({
         if (!val) return null;
         const parsed = parseInt(val, 10);
         return isNaN(parsed) ? null : parsed;
-      }),
+      })
+      .refine((val) => {
+        if (val === null) return true;
+        return val <= new Date().getFullYear();
+      }, { message: "Founded year cannot be in the future" }),
     industry: z.string().trim().optional(),
     institution_type: z.string().trim().optional(),
     campus_location: z.string().trim().optional(),
@@ -48,7 +52,7 @@ const savePresenceSchema = z.object({
     size: z.string({ required_error: "Size is required" }).trim(),
     country: z.string({ required_error: "Country is required" }).trim(),
     city: z.string({ required_error: "City is required" }).trim(),
-    headline: z.string({ required_error: "Headline is required" }).trim().max(200, "Headline must not exceed 200 characters"),
+    headline: z.string({ required_error: "Headline is required" }).trim().max(255, "Headline must not exceed 255 characters"),
     description: z.string().trim().optional().nullable(),
   }),
 });

@@ -407,8 +407,8 @@ exports.updateOrganization = async (req, res) => {
     // Headline validation
     if (headline !== undefined && headline !== null) {
         const trimmedHeadline = headline.trim();
-        if (trimmedHeadline.length > 120) {
-            return res.status(400).json({ message: "Headline must be 120 characters or less" });
+        if (trimmedHeadline.length > 255) {
+            return res.status(400).json({ message: "Headline must be 255 characters or less" });
         }
     }
 
@@ -2242,6 +2242,12 @@ exports.publishNewOrganization = async (req, res) => {
     const locLng = longitude !== undefined && longitude !== null ? Number(longitude) : (typeof location === 'object' && location?.longitude !== undefined ? Number(location.longitude) : null);
     const locPlaceId = placeId || (typeof location === 'object' ? location?.placeId : null) || null;
 
+    // Headline validation & sanitization
+    if (headline !== undefined && headline !== null && typeof headline === 'string' && headline.trim().length > 255) {
+        return res.status(400).json({ message: "Headline must be 255 characters or less" });
+    }
+    const cleanHeadline = (typeof headline === 'string' && headline.trim().length > 0) ? headline.trim().slice(0, 255) : null;
+
     const client = await pool.connect();
     try {
         await client.query("BEGIN");
@@ -2318,7 +2324,7 @@ exports.publishNewOrganization = async (req, res) => {
             locPlaceId,
             locCountry,
             locCity,
-            headline || null,
+            cleanHeadline,
             description || null,
             userId,
             initialVerificationStatus
