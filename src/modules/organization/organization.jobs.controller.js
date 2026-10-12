@@ -2,6 +2,7 @@ const pool = require("../../core/db/pool");
 const { buildJobFilters } = require("../../core/utils/jobQueryBuilder");
 const { v4: uuidv4 } = require("uuid"); // Ensure unique ID generation for idempotency checks
 const { notifyCompanyFollowers } = require("../../services/notification.service");
+const { resolveOrg } = require("./organization.profile.controller");
 
 exports.createOrganizationJob = async (req, res) => {
     const { orgId: companyId } = req.params;
@@ -159,17 +160,19 @@ exports.getOrganizationJobs = async (req, res) => {
     // We enforce the query filter.
 
     try {
+        const org = await resolveOrg(companyId);
+        if (!org) {
+            return res.status(404).json({ message: "Organization not found" });
+        }
+        const resolvedOrgId = org.org_id;
+
         let conditions = ["j.org_id = $1", "j.is_active = TRUE"];
-        let params = [companyId];
+        let params = [resolvedOrgId];
         let paramCount = 2;
 
         if (scope === 'public') {
             // Public fetching requires company to be verified and not suspended
-            const companyCheck = await pool.query("SELECT verification_status FROM organizations WHERE org_id = $1 AND is_deleted = FALSE", [companyId]);
-            if (companyCheck.rowCount === 0) {
-                return res.status(404).json({ message: "Organization not found" });
-            }
-            if (companyCheck.rows[0].verification_status === 'SUSPENDED') {
+            if (org.verification_status === 'SUSPENDED') {
                 return res.status(403).json({ message: "Organization is suspended" });
             }
 
@@ -193,7 +196,7 @@ exports.getOrganizationJobs = async (req, res) => {
             }
             const memberCheck = await pool.query(
                 "SELECT 1 FROM organization_members WHERE org_id = $1 AND user_id = $2 AND status = 'ACTIVE'",
-                [companyId, req.user.sub]
+                [resolvedOrgId, req.user.sub]
             );
             if (memberCheck.rowCount === 0) {
                 return res.status(403).json({ message: "Forbidden: You are not a member of this organization" });
@@ -257,7 +260,7 @@ exports.getOrganizationJobs = async (req, res) => {
 
             const [result, countsResult] = await Promise.all([
                 pool.query(query, params),
-                pool.query(countsQuery, [companyId])
+                pool.query(countsQuery, [resolvedOrgId])
             ]);
 
             const rows = result.rows;

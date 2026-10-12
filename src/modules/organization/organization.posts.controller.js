@@ -3,6 +3,7 @@ const { hydrateShareCounts } = require("../../utils/shareHydration");
 const BlockModel = require("../../models/block.model");
 const { checkOrgPermission } = require("../../core/utils/rbac");
 const { checkActorBlockStatus } = require("../../core/utils/blockCheck");
+const { resolveOrg } = require("./organization.profile.controller");
 
 // Is the viewer currently "acting as" the given org (via x-actor-type/x-actor-id headers)?
 // Needed so that a like/vote/repost made by ANY team member while acting as this company
@@ -30,17 +31,20 @@ exports.notifyEmployees = async (req, res) => {
     const client = await pool.connect();
     try {
         await client.query("BEGIN");
-        const canNotify = await checkOrgPermission(client, companyId, userId, 'MANAGE_COMPANY');
+        const org = await resolveOrg(companyId);
+        if (!org) throw new Error("Organization not found");
+        const resolvedOrgId = org.org_id;
+
+        const canNotify = await checkOrgPermission(client, resolvedOrgId, userId, 'MANAGE_COMPANY');
         if (!canNotify) throw new Error("Forbidden: You cannot notify members");
 
         // 1. Get Organization Name
-        const companyRes = await client.query('SELECT name FROM organizations WHERE org_id = $1', [companyId]);
-        const companyName = companyRes.rows[0].name;
+        const companyName = org.name;
 
         // 2. Get all members (excluding the sender)
         const employeesRes = await client.query(
             `SELECT user_id FROM organization_members WHERE org_id = $1 AND user_id != $2`,
-            [companyId, userId]
+            [resolvedOrgId, userId]
         );
         const employees = employeesRes.rows;
 
@@ -57,7 +61,7 @@ exports.notifyEmployees = async (req, res) => {
             await client.query(
                 `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata)
                  VALUES ($1, $2, $3, $4, $5, $6)`,
-                [emp.user_id, userId, notificationType, notificationText, postId, { companyId }]
+                [emp.user_id, userId, notificationType, notificationText, postId, { companyId: resolvedOrgId }]
             );
         }
 
@@ -67,6 +71,7 @@ exports.notifyEmployees = async (req, res) => {
         await client.query("ROLLBACK");
         console.error("Notify members error:", err);
         if (err.message.startsWith("Forbidden")) return res.status(403).json({ message: err.message });
+        if (err.message === "Organization not found") return res.status(404).json({ message: err.message });
         res.status(500).json({ message: "Internal server error" });
     } finally {
         client.release();
@@ -84,28 +89,26 @@ exports.getOrganizationPosts = async (req, res) => {
     } = req.query;
 
     try {
+        const org = await resolveOrg(companyId);
+        if (!org) {
+            return res.status(404).json({ message: "Organization not found" });
+        }
+        const resolvedOrgId = org.org_id;
+
         let hasPrivateAccess = false;
         if (req.user || req.actor) {
-            const isBlocked = await checkActorBlockStatus(req, companyId);
+            const isBlocked = await checkActorBlockStatus(req, resolvedOrgId);
             if (isBlocked) {
                 return res.status(404).json({ message: "Organization not found" });
             }
             if (userId) {
-                hasPrivateAccess = await checkOrgPermission(pool, companyId, userId, ['MANAGE_COMPANY', 'SWITCH_TO_COMPANY', 'MANAGE_ORGANIZATION', 'SWITCH_TO_ORGANIZATION']);
+                hasPrivateAccess = await checkOrgPermission(pool, resolvedOrgId, userId, ['MANAGE_COMPANY', 'SWITCH_TO_COMPANY', 'MANAGE_ORGANIZATION', 'SWITCH_TO_ORGANIZATION']);
             }
         }
 
-        const params = [companyId]; // $1
-        let idx = 2;
-
-        const userParamIdx = 2; // Fixed index for user_id in this specific query construction
-        if (userId) {
-            params.push(userId); // $2
-            idx++;
-        } else {
-            params.push(null); // $2 dummy
-            idx++;
-        }
+        const params = [resolvedOrgId];
+        const userParamIdx = 2; // Fixed index for user_id in this specific query construction ($2)
+        params.push(userId || null); // $2
 
         // Is the viewer currently acting as THIS company? If so, "my" likes/votes/reposts
         // should reflect the company's shared identity, not just this individual's clicks.
@@ -113,10 +116,10 @@ exports.getOrganizationPosts = async (req, res) => {
         const type = typeof rawType === "string" ? rawType.trim().toUpperCase() : null;
         const isOrgType = type === "ORGANIZATION" || type === "COMPANY" || type === "ORG";
         const actorOrgId = isOrgType ? req.headers["x-actor-id"] : null;
-        params.push(actorOrgId); // $3
-        const orgActorParamIdx = idx;
-        idx++;
+        const orgActorParamIdx = 3; // Fixed index for actorOrgId ($3)
+        params.push(actorOrgId || null); // $3
 
+        let idx = 4;
         let whereClause = `WHERE p.author_org_id = $1`;
 
         if (filter === 'Post') {

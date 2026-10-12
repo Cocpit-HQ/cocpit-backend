@@ -50,6 +50,8 @@ async function resolveOrg(orgIdOrSlug) {
     return result.rows[0] || null;
 }
 
+exports.resolveOrg = resolveOrg;
+
 /**
  * Check if a user is an ACTIVE member of the org.
  * Returns { role_name, permissions, priority } or null.

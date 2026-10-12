@@ -435,11 +435,11 @@ exports.updateOrganization = async (req, res) => {
         // 2. Update
         const updateQuery = `
             UPDATE organizations 
-            SET name = $1, 
-                slogan = $2,
-                industry = $3, 
-                size = $4, 
-                website = $5, 
+            SET name = COALESCE($1, name), 
+                slogan = COALESCE($2, slogan),
+                industry = COALESCE($3, industry), 
+                size = COALESCE($4, size), 
+                website = COALESCE($5, website), 
                 location = COALESCE($6, location), 
                 location_formatted = COALESCE($6, location_formatted),
                 location_lat = COALESCE($7, location_lat),
@@ -447,10 +447,10 @@ exports.updateOrganization = async (req, res) => {
                 location_place_id = COALESCE($9, location_place_id),
                 country = COALESCE($10, country),
                 city = COALESCE($11, city),
-                description = $12, 
+                description = COALESCE($12, description), 
                 logo_url = COALESCE($13, logo_url), 
                 cover_url = COALESCE($14, cover_url),
-                headline = $15,
+                headline = COALESCE($15, headline),
                 updated_at = NOW()
             WHERE org_id = $16
             RETURNING *
