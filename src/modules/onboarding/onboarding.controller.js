@@ -688,6 +688,8 @@ exports.updateProfile = async (req, res) => {
 
     if (req.file) {
         avatar_url = req.file.path.replace(/\\/g, "/");
+    } else if (avatar_url && (avatar_url.includes("googleusercontent.com") || avatar_url.includes("ggpht.com"))) {
+        avatar_url = null;
     }
 
     // Validate account_name if present

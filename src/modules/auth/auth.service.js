@@ -479,6 +479,10 @@ const getCurrentUser = async (userId, tokenRoles) => {
         return { error: { status: 404, message: "User not found" } };
     }
     user.roles = tokenRoles;
+    if (user.avatar_url && (user.avatar_url.includes("googleusercontent.com") || user.avatar_url.includes("ggpht.com"))) {
+        user.avatar_url = null;
+        pool.query("UPDATE users SET avatar_url = NULL WHERE user_id = $1", [userId]).catch(() => {});
+    }
 
     const profile = await authRepo.getUserProfile(userId);
     return { user, profile };
@@ -575,7 +579,8 @@ const socialLogin = async ({ provider, idToken, accountType, fullName: clientFul
             }
 
             // Create user with Social identity (password_hash is NULL)
-            user = await authRepo.createSocialUser(normalizedEmail, fullName, provider, providerId, avatarUrl);
+            // SCRUM-998: Google profile picture should not be used automatically in Cocpit
+            user = await authRepo.createSocialUser(normalizedEmail, fullName, provider, providerId, null);
 
             // Assign role — same logic as standard registration
             let roleName = "Student";
@@ -691,7 +696,7 @@ const socialLogin = async ({ provider, idToken, accountType, fullName: clientFul
             id: user.user_id,
             email: user.email || normalizedEmail,
             full_name: user.full_name || fullName,
-            avatar_url: user.avatar_url || avatarUrl,
+            avatar_url: (user.avatar_url && !user.avatar_url.includes("googleusercontent.com") && !user.avatar_url.includes("ggpht.com")) ? user.avatar_url : null,
             roles,
             onboarding_complete: onboardingComplete,
             account_name: user.account_name || null,

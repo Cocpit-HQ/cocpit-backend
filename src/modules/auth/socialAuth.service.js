@@ -18,7 +18,8 @@ const verifySocialToken = async (provider, idToken, nonce) => {
                 providerId: payload.googleId,
                 email: payload.email,
                 fullName: payload.fullName,
-                avatarUrl: payload.avatarUrl
+                // SCRUM-998: Do not use Google profile picture automatically in Cocpit
+                avatarUrl: null
             };
         }
         case 'apple': {

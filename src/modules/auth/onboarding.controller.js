@@ -46,8 +46,11 @@ exports.completeOnboarding = async (req, res) => {
       });
     }
 
-    // 2. Avatar logic: Use new file if uploaded, otherwise keep existing
+    // 2. Avatar logic: Use new file if uploaded, otherwise keep existing (ignoring legacy Google avatar)
     let finalAvatarUrl = currentUser.avatar_url;
+    if (finalAvatarUrl && (finalAvatarUrl.includes("googleusercontent.com") || finalAvatarUrl.includes("ggpht.com"))) {
+      finalAvatarUrl = null;
+    }
     if (req.files && req.files.length > 0) {
       finalAvatarUrl = req.files[0].path.replace(/\\/g, "/");
     }

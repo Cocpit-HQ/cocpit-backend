@@ -120,7 +120,7 @@ const findUserBySocialId = async (provider, providerId) => {
  * Creates a new user via Social OAuth.
  * password_hash is NULL because the user authenticated through a social provider.
  */
-const createSocialUser = async (email, fullName, provider, providerId, avatarUrl) => {
+const createSocialUser = async (email, fullName, provider, providerId, avatarUrl = null) => {
     const client = await pool.connect();
     try {
         await client.query("BEGIN");
@@ -131,7 +131,7 @@ const createSocialUser = async (email, fullName, provider, providerId, avatarUrl
             `INSERT INTO users (email, full_name, password_hash, avatar_url, auth_provider, google_id)
              VALUES ($1, $2, NULL, $3, $4, $5)
              RETURNING user_id, email, full_name, avatar_url`,
-            [email, fullName, avatarUrl, normalizedProvider || "google", isGoogle ? providerId : null]
+            [email, fullName, avatarUrl || null, normalizedProvider || "google", isGoogle ? providerId : null]
         );
         const user = result.rows[0];
         
