@@ -275,8 +275,11 @@ exports.getMyPosts = async (req, res) => {
         cursorCreatedAt,
         cursorPostId,
         limit = 10,
-        companyId: requestedCompanyId
+        companyId: requestedCompanyId,
+        preview
     } = req.query;
+
+    const isPreview = preview === 'true' || preview === true;
 
     try {
         const actorScope = getContentActorScope(req, requestedCompanyId || null);
@@ -371,15 +374,48 @@ exports.getMyPosts = async (req, res) => {
         // If org actor, $1 is the org_id. We might need the userId for block checks if they are personal blocks,
         // but typically blocks are user-level. For now, assuming $1 is the actor.
 
-        // ✅ LIMIT
-        params.push(limit);
+        // ✅ LIMIT (provide a buffer for preview mode so frontend can filter hidden posts)
+        params.push(isPreview ? Math.max(Number(limit) || 10, 10) : limit);
 
         const query = `
         SELECT
             ${getPostHydrationSelect(orgParamIdx, userParamIdx)}
         ${getPostHydrationJoins()}
         ${whereClause}
-        ORDER BY p.created_at DESC, p.post_id DESC
+        ORDER BY
+        ${isPreview ? `
+            CASE
+                -- Tier 1: Original media posts (image/video)
+                WHEN p.shared_post_id IS NULL AND p.shared_job_id IS NULL
+                     AND (
+                         p.post_type::text IN ('video', 'image')
+                         OR EXISTS (
+                             SELECT 1 FROM post_media pm
+                             WHERE pm.post_id = p.post_id
+                               AND pm.media_type IN ('image', 'video')
+                         )
+                     )
+                THEN 1
+
+                -- Tier 2: Original text/article posts (no media, no poll)
+                WHEN p.shared_post_id IS NULL AND p.shared_job_id IS NULL
+                     AND NOT EXISTS (SELECT 1 FROM post_media pm WHERE pm.post_id = p.post_id)
+                     AND NOT EXISTS (SELECT 1 FROM post_polls pp WHERE pp.post_id = p.post_id)
+                     AND (p.post_type IS NULL OR p.post_type::text NOT IN ('poll', 'video', 'image'))
+                THEN 2
+
+                -- Tier 3: Reposts (shared post or shared job)
+                WHEN (p.shared_post_id IS NOT NULL OR p.shared_job_id IS NOT NULL)
+                THEN 3
+
+                -- Tier 4: Polls
+                WHEN (p.post_type::text = 'poll' OR EXISTS (SELECT 1 FROM post_polls pp WHERE pp.post_id = p.post_id))
+                THEN 4
+
+                ELSE 5
+            END ASC,
+        ` : ''}
+        p.created_at DESC, p.post_id DESC
         LIMIT $${idx}
         `;
 
