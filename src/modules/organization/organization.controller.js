@@ -2227,6 +2227,7 @@ exports.publishNewOrganization = async (req, res) => {
         headline,
         description,
         type,
+        entity_type,
         country_of_operation
     } = req.body;
 
@@ -2284,7 +2285,8 @@ exports.publishNewOrganization = async (req, res) => {
 
         const slug = await generateUniqueSlug(client, name);
         const establishedYearInt = established_year ? parseInt(established_year, 10) : null;
-        const isInstitution = type === 'INSTITUTION';
+        const effectiveType = (entity_type || type || 'COMPANY').toUpperCase();
+        const isInstitution = effectiveType === 'INSTITUTION';
 
         // TODO(admin-verification): institutions are auto-marked VERIFIED because the
         // admin document/domain review flow isn't wired up yet. Once it exists, institutions
@@ -2308,7 +2310,7 @@ exports.publishNewOrganization = async (req, res) => {
         const orgRes = await client.query(insertQuery, [
             name,
             slug,
-            type || 'COMPANY',
+            isInstitution ? 'INSTITUTION' : (effectiveType || 'COMPANY'),
             establishedYearInt,
             isInstitution ? null : (industry || null),
             isInstitution ? (industry || null) : null,

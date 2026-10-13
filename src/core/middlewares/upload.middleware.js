@@ -526,12 +526,74 @@ const uploadSupportAttachment = multer({
   storage: supportStorage,
   limits: { fileSize: 5 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
-    const allowed = ["image/jpeg", "image/jpg", "image/png", "image/webp"];
-    if (!allowed.includes(file.mimetype)) {
-      return cb(new Error("Invalid format. Allowed formats: JPG, PNG, WEBP."));
+    const allowed = [
+      "image/jpeg", "image/jpg", "image/png", "image/webp",
+      "application/pdf"
+    ];
+    const ext = path.extname(file.originalname).toLowerCase();
+    if (!allowed.includes(file.mimetype) && ext !== ".pdf") {
+      const err = new Error("Invalid format. Allowed formats: JPG, PNG, WEBP, PDF.");
+      err.statusCode = 400;
+      return cb(err);
     }
     cb(null, true);
   },
+});
+
+// --- Organization Verification Document Upload ---
+createDir(path.join(uploadsDir, 'verifications'));
+
+let verificationDocumentStorage;
+if (hasCloudinary) {
+  verificationDocumentStorage = new CloudinaryStorage({
+    cloudinary,
+    params: async (req, file) => {
+      const isDoc = file.mimetype === "application/pdf" || 
+                    file.mimetype.startsWith("application/") || 
+                    file.mimetype === "text/plain";
+      const cleanName = file.originalname.replace(/[^a-zA-Z0-9.]/g, '_');
+      return {
+        folder: "verifications",
+        resource_type: isDoc ? "raw" : "image",
+        public_id: `verify-${req.user?.sub || 'org'}-${Date.now()}-${cleanName}`,
+      };
+    }
+  });
+} else {
+  verificationDocumentStorage = multer.diskStorage({
+    destination: (req, file, cb) => {
+      cb(null, 'uploads/verifications/');
+    },
+    filename: (req, file, cb) => {
+      const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+      const ext = path.extname(file.originalname);
+      cb(null, 'verify-' + uniqueSuffix + ext);
+    }
+  });
+}
+
+const uploadVerificationDocument = multer({
+  storage: verificationDocumentStorage,
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB limit
+  fileFilter: (req, file, cb) => {
+    const allowedMimes = [
+      "image/jpeg",
+      "image/png",
+      "image/webp",
+      "image/jpg",
+      "application/pdf",
+      "application/msword",
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    ];
+    const allowedExts = [".pdf", ".png", ".jpg", ".jpeg", ".webp", ".doc", ".docx"];
+    const ext = path.extname(file.originalname).toLowerCase();
+    if (!allowedMimes.includes(file.mimetype) && !allowedExts.includes(ext)) {
+      const err = new Error("Invalid document format. Allowed: PDF, PNG, JPG, JPEG, WEBP, DOC, DOCX.");
+      err.statusCode = 400;
+      return cb(err);
+    }
+    cb(null, true);
+  }
 });
 
 module.exports = {
@@ -548,5 +610,8 @@ module.exports = {
   uploadChatMedia,
   uploadPostMedia,
   uploadProjectMedia,
-  uploadSupportAttachment
+  uploadSupportAttachment,
+  uploadVerificationDocument,
+  uploadOrgVerificationDocument: uploadVerificationDocument
 };
+

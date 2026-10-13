@@ -10,7 +10,7 @@ const analyticsController = require("./organization.analytics.controller");
 const { requireAuth, optionalAuth } = require("../../core/middlewares/auth.middleware");
 const { requireOrgPermission } = require("../../core/middlewares/organization.auth.middleware");
 const { organizationActionLimiter, otpGenerationLimiter } = require("../../core/middlewares/rateLimit.middleware");
-const { uploadAvatar, uploadCover, uploadChatMedia, uploadSupportAttachment } = require("../../core/middlewares/upload.middleware");
+const { uploadAvatar, uploadCover, uploadChatMedia, uploadSupportAttachment, uploadVerificationDocument } = require("../../core/middlewares/upload.middleware");
 const { requireRoles } = require("../../core/middlewares/role.middleware");
 const { validate } = require("../../core/middlewares/validation.middleware");
 const {
@@ -129,9 +129,10 @@ router.post("/companies/:orgId/enroll", requireAuth, institutionController.reque
 // --- VERIFICATION ---
 router.post("/organizations/:orgId/verify/domain", requireAuth, requireOrgPermission("MANAGE_SETTINGS"), otpGenerationLimiter, verifyController.verifyDomain);
 router.post("/organizations/:orgId/verify/edu-email", requireAuth, requireOrgPermission("MANAGE_SETTINGS"), verifyController.verifyByEduEmail);
-router.post("/organizations/:orgId/verify/document", requireAuth, requireOrgPermission("MANAGE_SETTINGS"), uploadSupportAttachment ? uploadSupportAttachment.fields([{ name: 'document', maxCount: 5 }]) : (req, res, next) => next(), verifyController.submitDocumentVerification);
+router.post("/organizations/:orgId/verify/document", requireAuth, requireOrgPermission("MANAGE_SETTINGS"), uploadVerificationDocument ? uploadVerificationDocument.fields([{ name: 'document', maxCount: 5 }]) : (req, res, next) => next(), verifyController.submitDocumentVerification);
 
 router.post("/companies/:orgId/verify/domain", requireAuth, requireOrgPermission("MANAGE_SETTINGS"), otpGenerationLimiter, verifyController.verifyDomain);
+router.post("/companies/:orgId/verify/document", requireAuth, requireOrgPermission("MANAGE_SETTINGS"), uploadVerificationDocument ? uploadVerificationDocument.fields([{ name: 'document', maxCount: 5 }]) : (req, res, next) => next(), verifyController.submitDocumentVerification);
 
 // --- MANAGEMENT ---
 router.put("/organizations/:orgId", requireAuth, requireOrgPermission("MANAGE_COMPANY_DETAILS"), organizationController.updateOrganization);

@@ -221,31 +221,87 @@ exports.verifyByEduEmail = async (req, res) => {
 exports.submitDocumentVerification = async (req, res) => {
     const { orgId } = req.params;
     const userId = req.user.sub;
-    const { documentUrls, legalName, incorporationDay, incorporationMonth, incorporationYear } = req.body; // Array of URLs (fallback)
+    const { documentUrls, legalName, incorporationDay, incorporationMonth, incorporationYear } = req.body;
     let finalUrls = [];
 
+    const addDocUrl = (doc) => {
+        if (!doc) return;
+        const rawUrl = doc.path || doc.location || doc.secure_url || doc.url;
+        if (rawUrl) {
+            finalUrls.push(rawUrl.replace(/\\/g, "/"));
+        }
+    };
+
     if (req.files) {
-        if (req.files.document) {
-            req.files.document.forEach(doc => {
-                finalUrls.push(doc.path || doc.location);
+        if (Array.isArray(req.files)) {
+            req.files.forEach(addDocUrl);
+        } else if (typeof req.files === "object") {
+            if (Array.isArray(req.files.document)) {
+                req.files.document.forEach(addDocUrl);
+            }
+            if (Array.isArray(req.files.documents)) {
+                req.files.documents.forEach(addDocUrl);
+            }
+            Object.keys(req.files).forEach(key => {
+                if (key !== "document" && key !== "documents" && Array.isArray(req.files[key])) {
+                    req.files[key].forEach(addDocUrl);
+                }
             });
         }
     }
 
-    if (finalUrls.length === 0 && documentUrls && Array.isArray(documentUrls)) {
-        finalUrls = documentUrls;
+    if (req.file) {
+        addDocUrl(req.file);
+    }
+
+    if (finalUrls.length === 0 && documentUrls) {
+        if (Array.isArray(documentUrls)) {
+            finalUrls = documentUrls;
+        } else if (typeof documentUrls === "string") {
+            try {
+                const parsed = JSON.parse(documentUrls);
+                if (Array.isArray(parsed)) finalUrls = parsed;
+                else finalUrls = [documentUrls];
+            } catch {
+                finalUrls = [documentUrls];
+            }
+        }
     }
 
     if (finalUrls.length < 1) {
         return res.status(400).json({ message: "At least one verification document is required" });
     }
 
-    if (!legalName || !incorporationDay || !incorporationMonth || !incorporationYear) {
+    const effectiveLegalName = (legalName || req.body.legal_name || req.body.companyLegalName || req.body.company_legal_name || req.body.name || "").trim();
+
+    let incorpDay = incorporationDay || req.body.incorpDay;
+    let incorpMonth = incorporationMonth || req.body.incorpMonth;
+    let incorpYear = incorporationYear || req.body.incorpYear;
+
+    if (!incorpDay || !incorpMonth || !incorpYear) {
+        const fullDateStr = req.body.incorporationDate || req.body.incorporation_date || req.body.dateOfIncorporation;
+        if (fullDateStr) {
+            const parts = String(fullDateStr).split('-');
+            if (parts.length === 3) {
+                incorpYear = parts[0];
+                incorpMonth = parts[1];
+                incorpDay = parts[2];
+            }
+        }
+    }
+
+    if (!effectiveLegalName || !incorpDay || !incorpMonth || !incorpYear) {
         return res.status(400).json({ message: "Company Full Legal Name and Date of Incorporation are required" });
     }
 
-    const monthNum = MONTH_MAP[incorporationMonth] || "01";
-    const incorpDateStr = `${incorporationYear}-${monthNum}-${String(incorporationDay).padStart(2, '0')}`;
+    const fullMonthMap = {
+        ...MONTH_MAP,
+        "January": "01", "February": "02", "March": "03", "April": "04",
+        "May": "05", "June": "06", "July": "07", "August": "08",
+        "September": "09", "October": "10", "November": "11", "December": "12"
+    };
+    const monthNum = fullMonthMap[incorpMonth] || (String(incorpMonth).length <= 2 ? String(incorpMonth).padStart(2, '0') : "01");
+    const incorpDateStr = `${incorpYear}-${monthNum}-${String(incorpDay).padStart(2, '0')}`;
 
     const client = await pool.connect();
     try {
@@ -260,7 +316,7 @@ exports.submitDocumentVerification = async (req, res) => {
                  legal_name = $2, 
                  incorporation_date = $3 
              WHERE org_id = $1`,
-            [orgId, legalName, incorpDateStr]
+            [orgId, effectiveLegalName, incorpDateStr]
         );
 
         const existing = await client.query(`SELECT verification_id FROM organization_verifications WHERE org_id = $1 AND is_verified = FALSE`, [orgId]);
@@ -270,13 +326,13 @@ exports.submitDocumentVerification = async (req, res) => {
                 `UPDATE organization_verifications 
                  SET document_urls = $1, verification_type = 'DOCUMENT', review_notes = NULL, reviewed_by = NULL, is_verified = TRUE, legal_name = $3, incorporation_date = $4
                  WHERE org_id = $2 AND is_verified = FALSE`,
-                [JSON.stringify(finalUrls), orgId, legalName, incorpDateStr]
+                [JSON.stringify(finalUrls), orgId, effectiveLegalName, incorpDateStr]
             );
         } else {
             await client.query(
                 `INSERT INTO organization_verifications (org_id, verification_type, document_urls, is_verified, legal_name, incorporation_date)
                  VALUES ($1, 'DOCUMENT', $2, TRUE, $3, $4)`,
-                [orgId, JSON.stringify(finalUrls), legalName, incorpDateStr]
+                [orgId, JSON.stringify(finalUrls), effectiveLegalName, incorpDateStr]
             );
         }
 
@@ -284,7 +340,7 @@ exports.submitDocumentVerification = async (req, res) => {
             entityId: orgId,
             actorId: userId,
             action: 'DOCUMENTS_SUBMITTED',
-            metadata: { count: finalUrls.length, legalName, incorporationDate: incorpDateStr }
+            metadata: { count: finalUrls.length, legalName: effectiveLegalName, incorporationDate: incorpDateStr }
         });
 
         // NOTIFICATION: Document Submitted
@@ -332,7 +388,9 @@ exports.submitDocumentVerification = async (req, res) => {
         res.json({ message: `Your documents for ${orgName} have been submitted and are under review.` });
     } catch (err) {
         await client.query("ROLLBACK");
-        res.status(err.message === "Forbidden" ? 403 : 500).json({ message: err.message });
+        console.error("submitDocumentVerification error:", err);
+        const status = err.message === "Forbidden" ? 403 : (err.statusCode || 500);
+        res.status(status).json({ message: err.message || "Failed to submit document verification" });
     } finally {
         client.release();
     }
