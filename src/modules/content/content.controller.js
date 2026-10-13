@@ -3655,6 +3655,7 @@ exports.addComment = async (req, res) => {
             isEdited: Boolean(commentRow.is_edited),
             is_edited: Boolean(commentRow.is_edited),
             authorId: commentRow.author_id,
+            authorOrgId: commentRow.author_org_id,
             authorName: commentRow.full_name,
             authorAvatarUrl: commentRow.avatar_url,
             isPinned: commentRow.is_pinned,

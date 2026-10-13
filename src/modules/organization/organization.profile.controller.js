@@ -178,14 +178,45 @@ exports.getOrgProfile = async (req, res) => {
                      SELECT post_id, COUNT(*)::int AS comment_count FROM active_post_comments GROUP BY post_id
                  ) cc ON cc.post_id = p.post_id
                  LEFT JOIN (
-                     SELECT post_id, json_agg(json_build_object('url', url, 'media_type', media_type)) AS media
+                     SELECT post_id, json_agg(json_build_object('url', url, 'media_type', media_type, 'width', width, 'height', height)) AS media
                      FROM post_media GROUP BY post_id
                  ) pm ON pm.post_id = p.post_id
                  WHERE p.author_org_id = $1
                    AND p.is_community_article IS NOT TRUE
                    AND (p.is_removed IS FALSE OR p.is_removed IS NULL)
                    AND p.is_active = TRUE
-                 ORDER BY p.created_at DESC
+                 ORDER BY
+                     CASE
+                         -- Tier 1: Original media posts (image/video)
+                         WHEN p.shared_post_id IS NULL AND p.shared_job_id IS NULL
+                              AND (
+                                  p.post_type::text IN ('video', 'image')
+                                  OR EXISTS (
+                                      SELECT 1 FROM post_media pm
+                                      WHERE pm.post_id = p.post_id
+                                        AND pm.media_type IN ('image', 'video')
+                                  )
+                              )
+                         THEN 1
+
+                         -- Tier 2: Original text/article posts (no media, no poll)
+                         WHEN p.shared_post_id IS NULL AND p.shared_job_id IS NULL
+                              AND NOT EXISTS (SELECT 1 FROM post_media pm WHERE pm.post_id = p.post_id)
+                              AND NOT EXISTS (SELECT 1 FROM post_polls pp WHERE pp.post_id = p.post_id)
+                              AND (p.post_type IS NULL OR p.post_type::text NOT IN ('poll', 'video', 'image'))
+                         THEN 2
+
+                         -- Tier 3: Reposts (shared post or shared job)
+                         WHEN (p.shared_post_id IS NOT NULL OR p.shared_job_id IS NOT NULL)
+                         THEN 3
+
+                         -- Tier 4: Polls
+                         WHEN (p.post_type::text = 'poll' OR EXISTS (SELECT 1 FROM post_polls pp WHERE pp.post_id = p.post_id))
+                         THEN 4
+
+                         ELSE 5
+                     END ASC,
+                     p.created_at DESC
                  LIMIT 3`,
                 [org.org_id, viewerId || null]
             ),
@@ -1361,6 +1392,11 @@ exports.updateOrgProfile = async (req, res) => {
                 const off = keyOfferings[i];
                 if (!off.content || !off.content.trim()) continue; // will be filtered out anyway
 
+                if (off.content.trim().length > 40) {
+                    await client.query('ROLLBACK');
+                    return res.status(400).json({ message: 'Key offering content must not exceed 60 characters.' });
+                }
+
                 const icon = (off.icon || '').trim();
                 const label = (off.label || '').trim();
 
@@ -1384,7 +1420,7 @@ exports.updateOrgProfile = async (req, res) => {
                 .map(off => ({
                     icon: (off.icon || '').trim(),
                     label: (off.label || '').trim(),
-                    content: (off.content || '').trim()
+                    content: (off.content || '').trim().slice(0, 60)
                 }))
                 .filter(off => off.content); // require at least content
 

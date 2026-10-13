@@ -2371,6 +2371,12 @@ exports.publishNewOrganization = async (req, res) => {
             [orgId, userId, ownerRoleId]
         );
 
+        // Add creator as a follower automatically
+        await client.query(
+            `INSERT INTO organization_followers (org_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+            [orgId, userId]
+        );
+
         if (req.files && req.files.documents && req.files.documents.length > 0) {
             for (let doc of req.files.documents) {
                 const docUrl = doc.path.replace(/\\/g, "/");

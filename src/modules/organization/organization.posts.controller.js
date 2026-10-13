@@ -86,7 +86,10 @@ exports.getOrganizationPosts = async (req, res) => {
         cursorPostId,
         limit = 10,
         filter,
+        preview,
     } = req.query;
+
+    const isPreview = preview === 'true' || preview === true;
 
     try {
         const org = await resolveOrg(companyId);
@@ -343,7 +346,7 @@ exports.getOrganizationPosts = async (req, res) => {
 
          -- Media
         LEFT JOIN (
-            SELECT post_id, json_agg(json_build_object('url', url, 'media_type', media_type)) as media
+            SELECT post_id, json_agg(json_build_object('url', url, 'media_type', media_type, 'width', width, 'height', height)) as media
             FROM post_media GROUP BY post_id
         ) pm ON pm.post_id = p.post_id
 
@@ -389,12 +392,45 @@ exports.getOrganizationPosts = async (req, res) => {
         LEFT JOIN active_users sp_u ON sp.author_id = sp_u.user_id
         LEFT JOIN organizations sp_comp ON sp_comp.org_id = sp.author_org_id
         LEFT JOIN (
-             SELECT post_id, json_agg(json_build_object('url', url, 'media_type', media_type)) as media
+             SELECT post_id, json_agg(json_build_object('url', url, 'media_type', media_type, 'width', width, 'height', height)) as media
              FROM post_media GROUP BY post_id
         ) sp_media ON sp.post_id = sp_media.post_id
         
         ${whereClause} AND (p.is_removed IS FALSE OR p.is_removed IS NULL) AND p.is_active = TRUE
-        ORDER BY p.created_at DESC, p.post_id DESC
+        ORDER BY
+        ${isPreview ? `
+            CASE
+                -- Tier 1: Original media posts (image/video)
+                WHEN p.shared_post_id IS NULL AND p.shared_job_id IS NULL
+                     AND (
+                         p.post_type::text IN ('video', 'image')
+                         OR EXISTS (
+                             SELECT 1 FROM post_media pm
+                             WHERE pm.post_id = p.post_id
+                               AND pm.media_type IN ('image', 'video')
+                         )
+                     )
+                THEN 1
+
+                -- Tier 2: Original text/article posts (no media, no poll)
+                WHEN p.shared_post_id IS NULL AND p.shared_job_id IS NULL
+                     AND NOT EXISTS (SELECT 1 FROM post_media pm WHERE pm.post_id = p.post_id)
+                     AND NOT EXISTS (SELECT 1 FROM post_polls pp WHERE pp.post_id = p.post_id)
+                     AND (p.post_type IS NULL OR p.post_type::text NOT IN ('poll', 'video', 'image'))
+                THEN 2
+
+                -- Tier 3: Reposts (shared post or shared job)
+                WHEN (p.shared_post_id IS NOT NULL OR p.shared_job_id IS NOT NULL)
+                THEN 3
+
+                -- Tier 4: Polls
+                WHEN (p.post_type::text = 'poll' OR EXISTS (SELECT 1 FROM post_polls pp WHERE pp.post_id = p.post_id))
+                THEN 4
+
+                ELSE 5
+            END ASC,
+        ` : ''}
+        p.created_at DESC, p.post_id DESC
         LIMIT $${idx}
         `;
 
