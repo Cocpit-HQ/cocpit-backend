@@ -2110,10 +2110,12 @@ exports.getSuggestedUsers = async (req, res) => {
 
 /**
  * GET /api/users/search-history
- * Purpose: Fetch the top 6 recent searches for the authenticated user with live profile data
+ * Purpose: Fetch recent searches for the authenticated user within the active actor scope (personal vs business) with live profile data
  */
 exports.getSearchHistory = async (req, res) => {
   const userId = req.user.sub;
+  const isOrgActor = req.actor?.type === 'ORGANIZATION';
+  const orgId = isOrgActor ? req.actor.orgId : null;
   
   try {
     const query = `
@@ -2164,10 +2166,11 @@ exports.getSearchHistory = async (req, res) => {
       LEFT JOIN active_users u ON sh.query_normalized = ('user:' || u.user_id::text)
       LEFT JOIN active_organizations o ON sh.query_normalized = ('user:' || o.org_id::text)
       WHERE sh.user_id = $1
+        AND (($2::uuid IS NULL AND sh.org_id IS NULL) OR (sh.org_id = $2::uuid))
         AND (sh.query_normalized NOT LIKE 'user:%' OR u.user_id IS NOT NULL OR o.org_id IS NOT NULL)
       ORDER BY sh.created_at DESC
     `;
-    const result = await pool.query(query, [userId]);
+    const result = await pool.query(query, [userId, orgId]);
     
     // Defensive parsing for legacy stringified snapshots
     const processedRows = result.rows.map(row => {
@@ -2192,10 +2195,12 @@ exports.getSearchHistory = async (req, res) => {
 
 /**
  * POST /api/users/search-history
- * Purpose: Save or update a recent search query
+ * Purpose: Save or update a recent search query scoped by actor (personal vs business)
  */
 exports.saveSearchHistory = async (req, res) => {
   const userId = req.user.sub;
+  const isOrgActor = req.actor?.type === 'ORGANIZATION';
+  const orgId = isOrgActor ? req.actor.orgId : null;
   const { query, profileSnapshot } = req.body;
 
   if (!query || typeof query !== 'string' || !query.trim()) {
@@ -2215,15 +2220,15 @@ exports.saveSearchHistory = async (req, res) => {
   }
 
   try {
-    // Upsert query: if it exists, update the timestamp to move it to the top
+    // Upsert query: if it exists for this user + org context, update the timestamp to move it to the top
     const upsertQuery = `
-      INSERT INTO user_search_history (user_id, query_text, query_normalized, profile_snapshot, created_at)
-      VALUES ($1, $2, $3, $4, now())
-      ON CONFLICT (user_id, query_normalized) 
+      INSERT INTO user_search_history (user_id, org_id, query_text, query_normalized, profile_snapshot, created_at)
+      VALUES ($1, $2, $3, $4, $5, now())
+      ON CONFLICT (user_id, COALESCE(org_id, '00000000-0000-0000-0000-000000000000'::uuid), query_normalized) 
       DO UPDATE SET created_at = EXCLUDED.created_at, query_text = EXCLUDED.query_text, profile_snapshot = EXCLUDED.profile_snapshot
       RETURNING id, query_text as query, profile_snapshot as "profileSnapshot", created_at as "createdAt"
     `;
-    const saved = await pool.query(upsertQuery, [userId, queryText, queryNormalized, snapshotJson]);
+    const saved = await pool.query(upsertQuery, [userId, orgId, queryText, queryNormalized, snapshotJson]);
 
     res.status(201).json({ success: true, data: saved.rows[0] });
   } catch (err) {
@@ -2234,18 +2239,21 @@ exports.saveSearchHistory = async (req, res) => {
 
 /**
  * DELETE /api/users/search-history/:id
- * Purpose: Remove a specific search history item
+ * Purpose: Remove a specific search history item within the active actor scope
  */
 exports.removeSearchHistory = async (req, res) => {
   const userId = req.user.sub;
+  const isOrgActor = req.actor?.type === 'ORGANIZATION';
+  const orgId = isOrgActor ? req.actor.orgId : null;
   const { id } = req.params;
 
   try {
     const query = `
       DELETE FROM user_search_history
       WHERE id = $1 AND user_id = $2
+        AND (($3::uuid IS NULL AND org_id IS NULL) OR (org_id = $3::uuid))
     `;
-    await pool.query(query, [id, userId]);
+    await pool.query(query, [id, userId, orgId]);
     res.status(200).json({ success: true, message: "Search history item removed" });
   } catch (err) {
     console.error("Remove search history error:", err);
@@ -2255,20 +2263,23 @@ exports.removeSearchHistory = async (req, res) => {
 
 /**
  * DELETE /api/users/search-history
- * Purpose: Clear all search history for the user
+ * Purpose: Clear all search history for the user within the active actor scope
  */
 exports.clearSearchHistory = async (req, res) => {
   const userId = req.user.sub;
+  const isOrgActor = req.actor?.type === 'ORGANIZATION';
+  const orgId = isOrgActor ? req.actor.orgId : null;
 
   try {
     const query = `
       DELETE FROM user_search_history
       WHERE user_id = $1
+        AND (($2::uuid IS NULL AND org_id IS NULL) OR (org_id = $2::uuid))
     `;
-    await pool.query(query, [userId]);
+    await pool.query(query, [userId, orgId]);
     res.status(200).json({ success: true, message: "Search history cleared" });
   } catch (err) {
     console.error("Clear search history error:", err);
     res.status(500).json({ success: false, message: "Internal server error" });
   }
-};
+};

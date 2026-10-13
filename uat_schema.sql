@@ -96,14 +96,18 @@ WHERE (pc.author_org_id IS NULL AND au.user_id IS NOT NULL)
 CREATE TABLE IF NOT EXISTS user_search_history (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    org_id UUID REFERENCES organizations(org_id) ON DELETE CASCADE,
     query_text TEXT NOT NULL,
     query_normalized TEXT NOT NULL,
     profile_snapshot JSONB,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX IF NOT EXISTS idx_user_search_history_user_created ON user_search_history(user_id, created_at DESC);
-CREATE UNIQUE INDEX IF NOT EXISTS uq_user_search_history_user_query ON user_search_history(user_id, query_normalized);
+ALTER TABLE user_search_history 
+    ADD COLUMN IF NOT EXISTS org_id UUID REFERENCES organizations(org_id) ON DELETE CASCADE;
+DROP INDEX IF EXISTS uq_user_search_history_user_query;
+CREATE INDEX IF NOT EXISTS idx_user_search_history_user_created ON user_search_history(user_id, org_id, created_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_user_search_history_actor_query ON user_search_history(user_id, COALESCE(org_id, '00000000-0000-0000-0000-000000000000'::uuid), query_normalized);
 
 -- 12. Add country_code for international phone numbers
 ALTER TABLE users 
