@@ -16,13 +16,28 @@ async function isTargetOwner(client, orgId, userId) {
     return res.rowCount > 0 && res.rows[0].created_by === userId;
 }
 
+// Helper to check if actor is an Admin or Owner
+async function isActorAdminOrOwner(client, orgId, userId) {
+    const isOwner = await isTargetOwner(client, orgId, userId);
+    if (isOwner) return true;
+
+    const adminRes = await client.query(
+        `SELECT 1 
+         FROM organization_members om 
+         JOIN organization_roles r ON om.role_id = r.role_id 
+         WHERE om.org_id = $1 AND om.user_id = $2 AND om.status = 'ACTIVE' AND LOWER(r.name) = 'admin'`,
+        [orgId, userId]
+    );
+    return adminRes.rowCount > 0;
+}
+
 // 1. Get all roles in the organization
 // 1. Get all roles in the organization
 exports.getRoles = async (req, res, next) => {
     const orgId = req.params.orgId;
     try {
         const result = await pool.query(
-            `SELECT r.*, r.is_active AS "isActive", COUNT(DISTINCT m.user_id)::int AS member_count,
+            `SELECT r.*, r.is_active AS "isActive", COUNT(DISTINCT u.user_id)::int AS member_count,
                     COALESCE(
                         json_agg(
                             json_build_object(
@@ -62,7 +77,7 @@ exports.getRoleById = async (req, res, next) => {
     const { orgId, roleId } = req.params;
     try {
         const result = await pool.query(
-            `SELECT r.*, r.is_active AS "isActive", COUNT(DISTINCT m.user_id)::int AS member_count,
+            `SELECT r.*, r.is_active AS "isActive", COUNT(DISTINCT u.user_id)::int AS member_count,
                     COALESCE(
                         json_agg(
                             json_build_object(
@@ -299,7 +314,22 @@ exports.deleteRole = async (req, res, next) => {
 
 
 
-        // Soft delete members who were in this role by setting status = 'REMOVED' and role_id = NULL
+        // 1. Cancel pending invites belonging to this deleted role
+        await client.query(
+            `UPDATE organization_invites 
+             SET status = 'CANCELLED', updated_at = NOW() 
+             WHERE org_id = $1 AND role_id = $2 AND status = 'PENDING'`,
+            [orgId, roleId]
+        );
+
+        // 2. Remove pending invite entries from organization_members for this deleted role
+        await client.query(
+            `DELETE FROM organization_members 
+             WHERE org_id = $1 AND role_id = $2 AND status = 'PENDING_INVITE'`,
+            [orgId, roleId]
+        );
+
+        // 3. Soft delete active/suspended members who were in this role by setting status = 'REMOVED' and role_id = NULL
         await client.query(
             `UPDATE organization_members 
              SET status = 'REMOVED', role_id = NULL, updated_at = NOW() 
@@ -581,6 +611,14 @@ exports.updateMemberRole = async (req, res, next) => {
             throw new AppError("Cannot invite or assign directly to the Owner role. Use Transfer Ownership.", 400);
         }
 
+        // Only Admin role members or the Owner can assign someone to the Admin role
+        if (targetRole.name?.toLowerCase() === 'admin') {
+            const canAssignAdmin = await isActorAdminOrOwner(client, orgId, actorId);
+            if (!canAssignAdmin) {
+                throw new AppError("Only Admin members can assign users to the Admin role", 403);
+            }
+        }
+
 
 
         // Verify user is member and not Owner
@@ -643,6 +681,21 @@ exports.removeMember = async (req, res, next) => {
         const targetOwner = await isTargetOwner(client, orgId, userId);
         if (targetOwner) {
             throw new AppError("The organization Owner cannot be removed", 403);
+        }
+
+        // On Admin role, removing member is restricted strictly to the organization Owner
+        const targetRoleRes = await client.query(
+            `SELECT r.name as role_name 
+             FROM organization_members om 
+             JOIN organization_roles r ON om.role_id = r.role_id 
+             WHERE om.org_id = $1 AND om.user_id = $2`,
+            [orgId, userId]
+        );
+        if (targetRoleRes.rowCount > 0 && targetRoleRes.rows[0].role_name?.toLowerCase() === 'admin') {
+            const actorIsOwner = await isTargetOwner(client, orgId, actorId);
+            if (!actorIsOwner) {
+                throw new AppError("Only the organization Owner can remove an Admin member", 403);
+            }
         }
 
         const deleteRes = await client.query(
@@ -798,8 +851,9 @@ exports.getInviteCandidates = async (req, res, next) => {
                   WHERE org_id = $1 AND status IN ('ACTIVE', 'SUSPENDED')
               )
               AND u.user_id NOT IN (
-                  SELECT invited_user_id FROM organization_invites 
-                  WHERE org_id = $1 AND status = 'PENDING' AND invited_user_id IS NOT NULL
+                  SELECT oi.invited_user_id FROM organization_invites oi
+                  JOIN organization_roles r ON oi.role_id = r.role_id
+                  WHERE oi.org_id = $1 AND oi.status = 'PENDING' AND oi.invited_user_id IS NOT NULL AND r.is_active = TRUE
               )
         `;
         const params = [orgId];
@@ -874,6 +928,14 @@ exports.sendInvite = async (req, res, next) => {
             throw new AppError("Cannot invite users to the Owner role", 400);
         }
 
+        // Only Admin role members or the Owner can invite users to the Admin role
+        if (targetRole.name?.toLowerCase() === 'admin') {
+            const canInviteAdmin = await isActorAdminOrOwner(client, orgId, actorId);
+            if (!canInviteAdmin) {
+                throw new AppError("Only Admin members can invite users to the Admin role", 403);
+            }
+        }
+
 
 
         // 2. Verify target user follows the organization
@@ -897,13 +959,25 @@ exports.sendInvite = async (req, res, next) => {
             }
         }
 
-        // 4. Verify no pending invite exists
+        // 4. Verify no pending invite exists for an active role
         const inviteRes = await client.query(
-            `SELECT 1 FROM organization_invites WHERE org_id = $1 AND invited_user_id = $2 AND status = 'PENDING'`,
+            `SELECT oi.invite_id, r.is_active 
+             FROM organization_invites oi 
+             LEFT JOIN organization_roles r ON oi.role_id = r.role_id 
+             WHERE oi.org_id = $1 AND oi.invited_user_id = $2 AND oi.status = 'PENDING'`,
             [orgId, userId]
         );
         if (inviteRes.rowCount > 0) {
-            throw new AppError("User already has a pending invitation", 400);
+            const hasActivePending = inviteRes.rows.some(r => r.is_active !== false);
+            if (hasActivePending) {
+                throw new AppError("User already has a pending invitation", 400);
+            }
+            // Auto-cancel orphaned invites for deleted roles
+            await client.query(
+                `UPDATE organization_invites SET status = 'CANCELLED', updated_at = NOW() 
+                 WHERE org_id = $1 AND invited_user_id = $2 AND status = 'PENDING'`,
+                [orgId, userId]
+            );
         }
 
         // 5. Insert member with PENDING_INVITE status

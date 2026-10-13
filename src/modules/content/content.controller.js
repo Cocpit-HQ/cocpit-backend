@@ -2328,7 +2328,26 @@ exports.updatePostById = async (req, res) => {
 
         if (author_org_id) {
             if (orgId && author_org_id === orgId) {
-                canEdit = true;
+                if (author_id === userId) {
+                    canEdit = true;
+                } else {
+                    const { checkOrgPermission } = require("../../core/utils/rbac");
+                    const hasPerm = await checkOrgPermission(client, orgId, userId, ["MANAGE_CONTENT", "MANAGE_ORGANIZATION", "MANAGE_ORGANIZATION_DETAILS", "MANAGE_COMPANY", "MANAGE_COMPANY_DETAILS"]);
+                    const isOrgOwner = await client.query(`SELECT 1 FROM organizations WHERE org_id = $1 AND created_by = $2`, [orgId, userId]);
+                    if (hasPerm || isOrgOwner.rowCount > 0) {
+                        canEdit = true;
+                    }
+                }
+            } else if (author_id === userId) {
+                const memberCheck = await client.query(
+                    `SELECT 1 FROM organization_members WHERE org_id = $1 AND user_id = $2 AND status = 'ACTIVE'
+                     UNION ALL
+                     SELECT 1 FROM organizations WHERE org_id = $1 AND created_by = $2`,
+                    [author_org_id, userId]
+                );
+                if (memberCheck.rowCount > 0) {
+                    canEdit = true;
+                }
             }
         } else {
             if (!orgId && author_id === userId) {
@@ -2735,8 +2754,9 @@ exports.deletePost = async (req, res) => {
                     canDelete = true;
                 } else {
                     const { checkOrgPermission } = require("../../core/utils/rbac");
-                    const hasPerm = await checkOrgPermission(client, orgId, userId, ["CREATE_CONTENT", "CREATE_POST", "MANAGE_CONTENT"]);
-                    if (hasPerm) {
+                    const hasPerm = await checkOrgPermission(client, orgId, userId, ["MANAGE_CONTENT", "MANAGE_ORGANIZATION", "MANAGE_ORGANIZATION_DETAILS", "MANAGE_COMPANY", "MANAGE_COMPANY_DETAILS"]);
+                    const isOrgOwner = await client.query(`SELECT 1 FROM organizations WHERE org_id = $1 AND created_by = $2`, [orgId, userId]);
+                    if (hasPerm || isOrgOwner.rowCount > 0) {
                         canDelete = true;
                     }
                 }

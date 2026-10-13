@@ -107,8 +107,10 @@ async function getOrganizationMembership(orgId, userId, queryable = pool) {
             cr.name AS role_name,
             cr.permissions,
             cr.priority,
+            cr.is_active AS role_is_active,
             o.is_deactivated,
-            o.is_deleted
+            o.is_deleted,
+            o.created_by
          FROM organization_members cm
          LEFT JOIN organization_roles cr ON cm.role_id = cr.role_id
          JOIN organizations o ON cm.org_id = o.org_id
@@ -144,6 +146,10 @@ function assertActiveMembership(member) {
 
     if (member.expires_at && new Date(member.expires_at) < new Date()) {
         throw new AppError("Access denied. Your role has expired.", 403);
+    }
+
+    if (member.user_id !== member.created_by && (member.role_is_active === false || !member.role_id)) {
+        throw new AppError("Access denied. Your role in this organization has been removed or deleted.", 403);
     }
 }
 

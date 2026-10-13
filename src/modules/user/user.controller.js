@@ -1745,6 +1745,14 @@ exports.deleteAccount = async (req, res) => {
       );
     }
 
+    // 7. Update organization memberships status to REMOVED
+    await client.query(
+      `UPDATE organization_members
+       SET status = 'REMOVED', updated_at = NOW()
+       WHERE user_id = $1 AND status = 'ACTIVE'`,
+      [userId]
+    );
+
     // 5. Revoke all active sessions from DB and collect session IDs for blacklisting
     const sessionsRes = await client.query(
       "DELETE FROM refresh_tokens WHERE user_id = $1 RETURNING session_id",
@@ -1892,6 +1900,18 @@ exports.restoreAccount = async (req, res) => {
         [batchId]
       );
     }
+
+    // Restore organization memberships if org is not deleted
+    await client.query(
+      `UPDATE organization_members om
+       SET status = 'ACTIVE', updated_at = NOW()
+       FROM organizations o
+       WHERE om.org_id = o.org_id
+         AND o.is_deleted = FALSE
+         AND om.user_id = $1
+         AND om.status = 'REMOVED'`,
+      [tokenRow.user_id]
+    );
 
     // Mark token as used
     await client.query(

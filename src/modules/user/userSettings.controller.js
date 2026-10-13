@@ -535,6 +535,11 @@ exports.deleteAccount = async (req, res) => {
         );
 
         await client.query(
+            `UPDATE organization_members SET status = 'REMOVED', updated_at = NOW() WHERE user_id = $1 AND status = 'ACTIVE'`,
+            [userId]
+        );
+
+        await client.query(
             `DELETE FROM refresh_tokens WHERE user_id = $1`,
             [userId]
         );
@@ -620,6 +625,12 @@ exports.deactivateAccount = async (req, res) => {
             [userId]
         );
         const deactivatedOrgIds = orgsRes.rows.map((r) => r.org_id);
+
+        // 3. Mark organization memberships as REMOVED
+        await client.query(
+            `UPDATE organization_members SET status = 'REMOVED', updated_at = NOW() WHERE user_id = $1 AND status = 'ACTIVE'`,
+            [userId]
+        );
 
         // 3. Transfer group chat admin roles if this user was a group admin
         const GroupChatService = require("../../services/groupChat.service");
