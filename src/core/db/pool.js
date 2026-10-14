@@ -68,6 +68,7 @@ async function checkDbConnection() {
         SELECT * FROM users 
         WHERE (is_deleted IS FALSE OR is_deleted IS NULL) 
           AND (is_suspended IS FALSE OR is_suspended IS NULL)
+          AND (is_deactivated IS FALSE OR is_deactivated IS NULL)
           AND deletion_execute_at IS NULL;
 
         CREATE OR REPLACE VIEW active_organizations AS 

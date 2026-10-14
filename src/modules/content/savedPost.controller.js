@@ -240,28 +240,22 @@ exports.toggleSavePost = async (req, res) => {
         const existing = await pool.query(existingQuery, existingParams);
 
         if (folderId !== undefined) {
-            if (existing.rows.length > 0) {
-                // Move to folder
-                const updateQuery = isOrgActor
-                    ? `UPDATE saved_post SET folder_id = $1, saved_at = NOW() WHERE post_id = $2 AND org_id = $3::uuid`
-                    : `UPDATE saved_post SET folder_id = $1, saved_at = NOW() WHERE user_id = $2 AND post_id = $3 AND org_id IS NULL`;
-                const updateParams = isOrgActor ? [folderId, postId, orgId] : [folderId, userId, postId];
-                await pool.query(updateQuery, updateParams);
+            // Atomic UPSERT - handles concurrent requests and folder changes safely without duplicate key violations
+            const upsertQuery = `
+                INSERT INTO saved_post (user_id, org_id, post_id, folder_id, saved_at)
+                VALUES ($1, $2, $3, $4, NOW())
+                ON CONFLICT (user_id, post_id)
+                DO UPDATE SET
+                    folder_id = EXCLUDED.folder_id,
+                    org_id = EXCLUDED.org_id,
+                    saved_at = NOW()
+            `;
+            await pool.query(upsertQuery, [userId, orgId, postId, folderId]);
 
-                await notifySavedUpdate(isOrgActor ? orgId : null, userId, "saved_posts_updated", { postId, folderId, saved: true });
+            await notifySavedUpdate(isOrgActor ? orgId : null, userId, "saved_posts_updated", { postId, folderId, saved: true });
 
-                return res.status(200).json({ success: true, saved: true, message: "Post moved to folder" });
-            } else {
-                // Insert with folder
-                await pool.query(
-                    `INSERT INTO saved_post (user_id, org_id, post_id, folder_id) VALUES ($1, $2, $3, $4)`,
-                    [userId, orgId, postId, folderId]
-                );
-
-                await notifySavedUpdate(isOrgActor ? orgId : null, userId, "saved_posts_updated", { postId, folderId, saved: true });
-
-                return res.status(200).json({ success: true, saved: true, message: "Post saved to folder" });
-            }
+            const message = existing.rows.length > 0 ? "Post moved to folder" : "Post saved to folder";
+            return res.status(200).json({ success: true, saved: true, message });
         }
 
         // Legacy Toggle Behavior
@@ -278,9 +272,11 @@ exports.toggleSavePost = async (req, res) => {
             return res.status(200).json({ success: true, saved: false, message: "Post unsaved" });
         }
 
-        // Save (Default NULL folder)
+        // Save (Default NULL folder) with ON CONFLICT DO NOTHING to prevent race conditions
         await pool.query(
-            `INSERT INTO saved_post (user_id, org_id, post_id) VALUES ($1, $2, $3)`,
+            `INSERT INTO saved_post (user_id, org_id, post_id, saved_at)
+             VALUES ($1, $2, $3, NOW())
+             ON CONFLICT (user_id, post_id) DO NOTHING`,
             [userId, orgId, postId]
         );
 

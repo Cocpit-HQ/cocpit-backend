@@ -481,15 +481,63 @@ exports.setPhone = async (req, res) => {
         const isOrgActor = req.actor && req.actor.type === "ORGANIZATION";
         const actorKey = isOrgActor ? `org:${req.actor.orgId}` : `user:${req.user.sub}`;
         const userId = req.user.sub;
+        const actorId = isOrgActor ? req.actor.orgId : req.user.sub;
         const { countryCode, phone } = req.body;
+        const cleanPhone = (phone || "").trim();
+
+        // 1. Check if phone number is already linked to the current account
+        if (isOrgActor) {
+            const orgRes = await pool.query(
+                "SELECT phone, country_code FROM organizations WHERE org_id = $1 AND is_deleted = FALSE",
+                [actorId]
+            );
+            const currentPhone = orgRes.rows[0]?.phone?.trim() || "";
+            const currentCountryCode = orgRes.rows[0]?.country_code?.trim() || "";
+            if (currentPhone && currentPhone === cleanPhone && (!currentCountryCode || currentCountryCode === countryCode)) {
+                return res.status(400).json({
+                    success: false,
+                    message: "This phone number is already linked to your account. Please try adding a different number."
+                });
+            }
+        } else {
+            const userRes = await pool.query(
+                "SELECT mobile_number, country_code FROM users WHERE user_id = $1",
+                [actorId]
+            );
+            const currentPhone = userRes.rows[0]?.mobile_number?.trim() || "";
+            const currentCountryCode = userRes.rows[0]?.country_code?.trim() || "";
+            if (currentPhone && currentPhone === cleanPhone && (!currentCountryCode || currentCountryCode === countryCode)) {
+                return res.status(400).json({
+                    success: false,
+                    message: "This phone number is already linked to your account. Please try adding a different number."
+                });
+            }
+        }
+
+        // 2. Check if phone number is already linked to another account
+        const otherUserCheck = await pool.query(
+            "SELECT 1 FROM users WHERE mobile_number = $1 AND user_id != $2",
+            [cleanPhone, isOrgActor ? '00000000-0000-0000-0000-000000000000' : actorId]
+        );
+        const otherOrgCheck = await pool.query(
+            "SELECT 1 FROM organizations WHERE phone = $1 AND is_deleted = FALSE AND org_id != $2",
+            [cleanPhone, isOrgActor ? actorId : '00000000-0000-0000-0000-000000000000']
+        );
+
+        if (otherUserCheck.rowCount > 0 || otherOrgCheck.rowCount > 0) {
+            return res.status(400).json({
+                success: false,
+                message: "This phone number is already linked to another account. Please use a different number"
+            });
+        }
 
         const generatedOtp = Math.floor(100000 + Math.random() * 900000).toString();
-        await sendSMSOTP(`${countryCode}${phone}`, generatedOtp);
+        await sendSMSOTP(`${countryCode}${cleanPhone}`, generatedOtp);
 
         if (redisClient.isOpen) {
-            await redisClient.setEx(`pending_phone:${actorKey}`, 600, JSON.stringify({ countryCode, phone, otp: generatedOtp }));
+            await redisClient.setEx(`pending_phone:${actorKey}`, 600, JSON.stringify({ countryCode, phone: cleanPhone, otp: generatedOtp }));
             if (!isOrgActor) {
-                await redisClient.setEx(`pending_phone:${userId}`, 600, JSON.stringify({ countryCode, phone, otp: generatedOtp }));
+                await redisClient.setEx(`pending_phone:${userId}`, 600, JSON.stringify({ countryCode, phone: cleanPhone, otp: generatedOtp }));
             }
         }
 
@@ -529,11 +577,41 @@ exports.confirmPhone = async (req, res) => {
         }
 
         if (isOrgActor) {
+            const conflictCheck = await pool.query(
+                "SELECT 1 FROM organizations WHERE phone = $1 AND is_deleted = FALSE AND org_id != $2",
+                [pendingData.phone, req.actor.orgId]
+            );
+            const conflictUserCheck = await pool.query(
+                "SELECT 1 FROM users WHERE mobile_number = $1",
+                [pendingData.phone]
+            );
+            if (conflictCheck.rowCount > 0 || conflictUserCheck.rowCount > 0) {
+                return res.status(400).json({
+                    success: false,
+                    message: "This phone number is already linked to another account. Please use a different number"
+                });
+            }
+
             await pool.query(
                 "UPDATE organizations SET country_code = $1, phone = $2, updated_at = NOW() WHERE org_id = $3",
                 [pendingData.countryCode, pendingData.phone, req.actor.orgId]
             );
         } else {
+            const conflictCheck = await pool.query(
+                "SELECT 1 FROM users WHERE mobile_number = $1 AND user_id != $2",
+                [pendingData.phone, userId]
+            );
+            const conflictOrgCheck = await pool.query(
+                "SELECT 1 FROM organizations WHERE phone = $1 AND is_deleted = FALSE",
+                [pendingData.phone]
+            );
+            if (conflictCheck.rowCount > 0 || conflictOrgCheck.rowCount > 0) {
+                return res.status(400).json({
+                    success: false,
+                    message: "This phone number is already linked to another account. Please use a different number"
+                });
+            }
+
             await pool.query(
                 "UPDATE users SET country_code = $1, mobile_number = $2, updated_at = NOW() WHERE user_id = $3",
                 [pendingData.countryCode, pendingData.phone, userId]

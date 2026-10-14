@@ -1216,15 +1216,17 @@ exports.getBlockedUsers = async (req, res) => {
                         COALESCE(u.full_name, u.account_name, o.name, 'Blocked Account') AS name,
                         COALESCE(u.avatar_url, o.logo_url, '') AS avatar
                  FROM organization_blocked_accounts oba
-                 LEFT JOIN users u ON oba.blocked_type = 'user' AND oba.blocked_id = u.user_id
-                 LEFT JOIN organizations o ON oba.blocked_type = 'company' AND oba.blocked_id = o.org_id
+                 LEFT JOIN active_users u ON oba.blocked_type = 'user' AND oba.blocked_id = u.user_id AND (u.is_deactivated IS FALSE OR u.is_deactivated IS NULL)
+                 LEFT JOIN active_organizations o ON oba.blocked_type = 'company' AND oba.blocked_id = o.org_id
                  WHERE oba.org_id = $1
+                   AND (u.user_id IS NOT NULL OR o.org_id IS NOT NULL)
                  ORDER BY oba.created_at DESC`,
                 [orgId]
             );
 
             const map = new Map();
             for (const item of orgBlockedList) {
+                if (!item || !item.user_id) continue;
                 map.set(item.user_id, {
                     id: item.user_id,
                     type: item.entity_type === 'COMPANY' ? 'company' : 'user',
@@ -1253,13 +1255,15 @@ exports.getBlockedUsers = async (req, res) => {
 
         const blockedList = await BlockModel.getBlockedUsersDetails(userId);
 
-        const formatted = blockedList.map((item) => ({
-            id: item.user_id,
-            type: "user",
-            name: item.full_name || item.account_name || "User",
-            created_at: item.created_at || new Date().toISOString(),
-            avatar: item.avatar_url || "",
-        }));
+        const formatted = blockedList
+            .filter((item) => item && item.user_id)
+            .map((item) => ({
+                id: item.user_id,
+                type: item.entity_type === 'COMPANY' ? 'company' : 'user',
+                name: item.full_name || item.account_name || "User",
+                created_at: item.created_at || new Date().toISOString(),
+                avatar: item.avatar_url || "",
+            }));
 
         return res.status(200).json(formatted);
     } catch (error) {

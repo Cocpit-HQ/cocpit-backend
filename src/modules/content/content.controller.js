@@ -3211,18 +3211,19 @@ exports.toggleLike = async (req, res) => {
                         actor_avatar: actorInfo.avatar,
                         actor_slug: actorInfo.username,
                         is_company_actor: !!companyId,
+                        targetProfileType: authorCompanyId ? 'COMPANY' : 'USER',
+                        targetCompanyId: authorCompanyId || null,
+                        recipient_org_id: authorCompanyId || null,
+                        from: userId,
                         metadata: { org_id: companyId, post_id: postId }
                     };
 
-                    // Emit real-time to the post author unconditionally
+                    // Emit real-time: notify org room if post belongs to an org, else notify user
                     const ioService = require("../../core/infrastructure/socket.service");
-                    if (ioService && ioService.notifyUser) {
-                        ioService.notifyUser(authorId, "notification", likeNotifPayload);
-                    }
-                    
-                    // Also emit to org room if post belongs to an org
                     if (authorCompanyId && ioService && ioService.notifyOrg) {
                         ioService.notifyOrg(authorCompanyId, "notification", likeNotifPayload);
+                    } else if (ioService && ioService.notifyUser) {
+                        ioService.notifyUser(authorId, "notification", likeNotifPayload);
                     }
 
                     // Push notification conditionally based on thresholds EXACTLY as in image
@@ -3481,15 +3482,18 @@ exports.addComment = async (req, res) => {
                 actor_avatar: actorAvatar,
                 actor_slug: null, // Could fetch if needed
                 is_company_actor: !!companyId,
+                targetProfileType: postCompanyId ? 'COMPANY' : 'USER',
+                targetCompanyId: postCompanyId || null,
+                recipient_org_id: postCompanyId || null,
+                from: userId,
                 metadata: meta
             };
 
-            // Notify the post author (personal) unconditionally
-            socketService.notifyUser(postAuthorId, "notification", commentNotifPayload);
-            
-            // Also notify org room if the post belongs to an org
+            // Emit real-time: notify org room if post belongs to an org, else notify user
             if (postCompanyId) {
                 socketService.notifyOrg(postCompanyId, "notification", commentNotifPayload);
+            } else {
+                socketService.notifyUser(postAuthorId, "notification", commentNotifPayload);
             }
 
             // Push notification conditionally based on thresholds EXACTLY as in image
@@ -3554,17 +3558,19 @@ exports.addComment = async (req, res) => {
                         metadata: meta,
                         time: "Just now",
                         created_at: dbNotification.created_at.toISOString(),
-                        recipient_org_id: parentCompanyId
+                        targetProfileType: parentCompanyId ? 'COMPANY' : 'USER',
+                        targetCompanyId: parentCompanyId || null,
+                        recipient_org_id: parentCompanyId || null
                     };
 
-                    // Notify the parent comment author (personal)
-                    socketService.notifyUser(parentAuthorId, "notification", replyNotifPayload);
                     // Push notification for offline devices
                     sendPush(parentAuthorId, actorName, replyNotifPayload.text, { type: 'reply', postId }).catch(() => {});
 
-                    // Also notify org room if the parent comment was from an org
+                    // Emit real-time: notify org room if parent comment was from an org, else notify user
                     if (parentCompanyId) {
                         socketService.notifyOrg(parentCompanyId, "notification", replyNotifPayload);
+                    } else {
+                        socketService.notifyUser(parentAuthorId, "notification", replyNotifPayload);
                     }
 
                     notifiedReplyUserIds.add(parentAuthorId);
@@ -4016,13 +4022,17 @@ exports.toggleCommentLike = async (req, res) => {
                     senderAvatar: senderAvatar,
                     referenceId: comment.post_id, // Link to post
                     metadata: meta,
-                    recipient_org_id: authorCompanyId
+                    targetProfileType: authorCompanyId ? 'COMPANY' : 'USER',
+                    targetCompanyId: authorCompanyId || null,
+                    recipient_org_id: authorCompanyId || null,
+                    from: userId
                 };
-                socketService.notifyUser(authorId, "notification", commentLikePayload);
 
-                // Also notify org room if comment was from an org
+                // Emit real-time: notify org room if comment was from an org, else notify user
                 if (authorCompanyId) {
                     socketService.notifyOrg(authorCompanyId, "notification", commentLikePayload);
+                } else {
+                    socketService.notifyUser(authorId, "notification", commentLikePayload);
                 }
             }
         }

@@ -119,9 +119,10 @@ class BlockModel {
                 b.created_at,
                 CASE WHEN o.org_id IS NOT NULL THEN 'COMPANY' ELSE 'USER' END AS entity_type
              FROM blocks b
-             LEFT JOIN active_users u ON b.blocked_id = u.user_id
-             LEFT JOIN organizations o ON b.blocked_id = o.org_id
+             LEFT JOIN active_users u ON b.blocked_id = u.user_id AND (u.is_deactivated IS FALSE OR u.is_deactivated IS NULL)
+             LEFT JOIN active_organizations o ON b.blocked_id = o.org_id
              WHERE b.blocker_id = $1 AND b.is_org_block = false
+               AND (u.user_id IS NOT NULL OR o.org_id IS NOT NULL)
              ORDER BY b.created_at DESC`,
             [userId]
         );
@@ -143,9 +144,10 @@ class BlockModel {
                 b.created_at,
                 CASE WHEN o.org_id IS NOT NULL THEN 'COMPANY' ELSE 'USER' END AS entity_type
              FROM blocks b
-             LEFT JOIN active_users u ON b.blocked_id = u.user_id
-             LEFT JOIN organizations o ON b.blocked_id = o.org_id
+             LEFT JOIN active_users u ON b.blocked_id = u.user_id AND (u.is_deactivated IS FALSE OR u.is_deactivated IS NULL)
+             LEFT JOIN active_organizations o ON b.blocked_id = o.org_id
              WHERE b.blocker_id = $1 AND b.is_org_block = true
+               AND (u.user_id IS NOT NULL OR o.org_id IS NOT NULL)
              ORDER BY b.created_at DESC`,
             [orgId]
         );
