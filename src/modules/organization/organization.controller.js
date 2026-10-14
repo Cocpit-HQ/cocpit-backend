@@ -110,7 +110,7 @@ exports.createOrganization = async (req, res) => {
 
         ownerRoleName = 'Admin';
         roles = [
-            { name: 'Admin', color: '#FFD700', permissions: ["*"], priority: 100, is_system: true }
+            { name: 'Admin', color: '#06B6D4', permissions: ["*"], priority: 100, is_system: true }
         ];
 
         let ownerRoleId;
@@ -140,7 +140,7 @@ exports.createOrganization = async (req, res) => {
             entityId: company.org_id,
             actorId: userId,
             actorRole: ownerRoleName,
-            action: 'CREATE_PAGE',
+            action: 'CREATE_ORGANIZATION',
             metadata: { name, slug, targetType: 'organization', targetId: company.org_id, targetName: name }
         });
 
@@ -2140,7 +2140,7 @@ exports.completeOnboardingFlow = async (req, res) => {
 
         ownerRoleName = 'Admin';
         roles = [
-            { name: 'Admin', color: '#FFD700', permissions: ["*"], priority: 100, is_system: true }
+            { name: 'Admin', color: '#06B6D4', permissions: ["*"], priority: 100, is_system: true }
         ];
 
         let ownerRoleId;
@@ -2184,8 +2184,9 @@ exports.completeOnboardingFlow = async (req, res) => {
         await logAudit(client, {
             entityId: orgId,
             actorId: userId,
-            action: 'ONBOARDING_COMPLETED',
-            metadata: { name: org.name, slug: org.slug }
+            actorRole: 'Owner',
+            action: 'CREATE_ORGANIZATION',
+            metadata: { name: org.name, slug: org.slug, targetType: 'organization', targetId: orgId, targetName: org.name }
         });
 
         await client.query("COMMIT");
@@ -2342,16 +2343,16 @@ exports.publishNewOrganization = async (req, res) => {
         if (entityType === 'INSTITUTION') {
             ownerRoleName = 'Admin';
             roles = [
-                { name: 'Admin', color: '#FFD700', permissions: ['*'], priority: 100 },
+                { name: 'Admin', color: '#06B6D4', permissions: ['*'], priority: 100 },
                 { name: 'Faculty', color: '#FF5733', permissions: ['CREATE_ACADEMIC_CONTENT', 'MODERATE_STUDENTS', 'VIEW_MEMBERS'], priority: 80 },
                 { name: 'Student Moderator', color: '#28B463', permissions: ['CREATE_GENERAL_CONTENT', 'MODERATE_GENERAL', 'VIEW_MEMBERS'], priority: 60 },
                 { name: 'Student', color: '#3498DB', permissions: ['CREATE_GENERAL_CONTENT', 'VIEW_MEMBERS'], priority: 10 }
             ];
         } else {
-            ownerRoleName = 'Owner';
+            ownerRoleName = 'Admin';
             roles = [
-                { name: 'Owner',     color: '#FFD700', permissions: ['*'],                                                                                                                priority: 100 },
-                { name: 'Admin',     color: '#FF5733', permissions: ['MANAGE_COMPANY', 'MANAGE_SETTINGS', 'MANAGE_ROLES', 'MANAGE_MEMBERS', 'INVITE_MEMBERS', 'POST_JOBS', 'VIEW_JOBS', 'MANAGE_JOBS', 'VIEW_APPLICANTS', 'MANAGE_APPLICANTS', 'CREATE_CONTENT', 'VIEW_ANALYTICS'], priority: 90  },
+                // { name: 'Owner', color: '#06B6D4', permissions: ['*'], priority: 100 },
+                { name: 'Admin', color: '#06B6D4', permissions: ['*'], priority: 100 },
             ];
         }
 
@@ -2389,6 +2390,21 @@ exports.publishNewOrganization = async (req, res) => {
                 );
             }
         }
+
+        // Audit Log for organization creation
+        await logAudit(client, {
+            entityId: orgId,
+            actorId: userId,
+            actorRole: ownerRoleName || 'Admin',
+            action: 'CREATE_ORGANIZATION',
+            metadata: {
+                name,
+                slug,
+                targetType: 'organization',
+                targetId: orgId,
+                targetName: name
+            }
+        });
 
         await client.query("COMMIT");
 

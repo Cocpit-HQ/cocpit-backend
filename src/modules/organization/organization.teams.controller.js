@@ -62,10 +62,17 @@ exports.getRoles = async (req, res, next) => {
              ORDER BY r.priority DESC, r.created_at ASC`,
             [orgId]
         );
-        const roles = result.rows.map(r => ({
-            ...r,
-            color: r.name.toLowerCase() === 'admin' ? '#06B6D4' : r.color
-        }));
+        const roles = result.rows.map(r => {
+            const rawPerms = Array.isArray(r.permissions)
+                ? r.permissions
+                : (typeof r.permissions === 'string' ? JSON.parse(r.permissions || '[]') : []);
+            const cleanPerms = rawPerms.filter(p => typeof p === 'string' && p.toUpperCase().trim() !== 'CHANNEL' && p.toUpperCase().trim() !== 'CHANNELS');
+            return {
+                ...r,
+                permissions: cleanPerms,
+                color: r.name.toLowerCase() === 'admin' ? '#06B6D4' : r.color
+            };
+        });
         res.json(roles);
     } catch (err) {
         next(err);
@@ -111,6 +118,10 @@ exports.getRoleById = async (req, res, next) => {
             return next(new AppError("Role not found", 404));
         }
         const role = result.rows[0];
+        const rawPerms = Array.isArray(role.permissions)
+            ? role.permissions
+            : (typeof role.permissions === 'string' ? JSON.parse(role.permissions || '[]') : []);
+        role.permissions = rawPerms.filter(p => typeof p === 'string' && p.toUpperCase().trim() !== 'CHANNEL' && p.toUpperCase().trim() !== 'CHANNELS');
         role.color = role.name.toLowerCase() === 'admin' ? '#06B6D4' : role.color;
         res.json(role);
     } catch (err) {
@@ -126,7 +137,8 @@ exports.createRole = async (req, res, next) => {
     const actorPriority = req.actor.rolePriority || 0;
     const { name, color, description, permissions = [] } = req.body;
     const upperPermissions = (Array.isArray(permissions) ? permissions : [])
-        .map(p => typeof p === 'string' ? p.toUpperCase().trim() : p);
+        .map(p => typeof p === 'string' ? p.toUpperCase().trim() : p)
+        .filter(p => p !== 'CHANNEL' && p !== 'CHANNELS');
 
     if (!name) {
         return next(new AppError("Role name is required", 400));
@@ -203,7 +215,8 @@ exports.updateRole = async (req, res, next) => {
     const actorPriority = req.actor.rolePriority || 0;
     const { name, color, description, permissions = [] } = req.body;
     const upperPermissions = (Array.isArray(permissions) ? permissions : [])
-        .map(p => typeof p === 'string' ? p.toUpperCase().trim() : p);
+        .map(p => typeof p === 'string' ? p.toUpperCase().trim() : p)
+        .filter(p => p !== 'CHANNEL' && p !== 'CHANNELS');
 
     // Validation: ACTIVITY_LOGS requires TEAMS
     if (upperPermissions.includes('ACTIVITY_LOGS') && !upperPermissions.includes('TEAMS')) {
@@ -442,7 +455,7 @@ exports.getPermissionKeys = async (req, res, next) => {
     try {
         const result = await pool.query(
             `SELECT * FROM organization_permission_keys 
-             WHERE sort_order > 0 
+             WHERE sort_order > 0 AND permission_key NOT IN ('CHANNEL', 'CHANNELS')
              ORDER BY sort_order ASC`
         );
         res.json(result.rows);
@@ -644,13 +657,23 @@ exports.updateMemberRole = async (req, res, next) => {
             throw new AppError("Member not found", 404);
         }
 
+        const targetUserRes = await client.query(`SELECT full_name FROM users WHERE user_id = $1`, [userId]);
+        const targetUserName = targetUserRes.rows[0]?.full_name || 'team member';
+
         // Audit Log
         await logAudit(client, {
             entityId: orgId,
             actorId,
             actorRole,
             action: 'ASSIGN_ROLE',
-            metadata: { targetUserId: userId, roleId, roleName: targetRole.name }
+            metadata: {
+                targetUserId: userId,
+                targetName: targetUserName,
+                targetUserName,
+                targetType: 'user',
+                roleId,
+                roleName: targetRole.name
+            }
         });
 
         await client.query("COMMIT");
@@ -685,13 +708,14 @@ exports.removeMember = async (req, res, next) => {
 
         // On Admin role, removing member is restricted strictly to the organization Owner
         const targetRoleRes = await client.query(
-            `SELECT r.name as role_name 
+            `SELECT r.role_id, r.name as role_name 
              FROM organization_members om 
              JOIN organization_roles r ON om.role_id = r.role_id 
              WHERE om.org_id = $1 AND om.user_id = $2`,
             [orgId, userId]
         );
-        if (targetRoleRes.rowCount > 0 && targetRoleRes.rows[0].role_name?.toLowerCase() === 'admin') {
+        const targetRoleData = targetRoleRes.rows[0];
+        if (targetRoleData && targetRoleData.role_name?.toLowerCase() === 'admin') {
             const actorIsOwner = await isTargetOwner(client, orgId, actorId);
             if (!actorIsOwner) {
                 throw new AppError("Only the organization Owner can remove an Admin member", 403);
@@ -707,13 +731,24 @@ exports.removeMember = async (req, res, next) => {
             throw new AppError("Member not found", 404);
         }
 
+        const targetUserRes = await client.query(`SELECT full_name FROM users WHERE user_id = $1`, [userId]);
+        const targetUserName = targetUserRes.rows[0]?.full_name || 'team member';
+
         // Audit Log
         await logAudit(client, {
             entityId: orgId,
             actorId,
             actorRole,
             action: 'REMOVE_MEMBER',
-            metadata: { targetUserId: userId }
+            metadata: {
+                targetUserId: userId,
+                removedUserId: userId,
+                targetName: targetUserName,
+                targetUserName,
+                targetType: 'user',
+                roleId: targetRoleData?.role_id,
+                roleName: targetRoleData?.role_name
+            }
         });
 
         await client.query("COMMIT");
@@ -771,7 +806,7 @@ exports.transferOwnership = async (req, res, next) => {
         } else {
             const adminCreate = await client.query(
                 `INSERT INTO organization_roles (org_id, name, color, permissions, priority, is_system_role)
-                 VALUES ($1, 'Admin', '#FFD700', '["*"]', 100, TRUE) RETURNING role_id`,
+                 VALUES ($1, 'Admin', '#06B6D4', '["*"]', 100, TRUE) RETURNING role_id`,
                 [orgId]
             );
             adminRoleId = adminCreate.rows[0].role_id;
@@ -989,9 +1024,10 @@ exports.sendInvite = async (req, res, next) => {
             [orgId, userId, roleId]
         );
 
-        // Fetch user email for organization_invites record
-        const userRes = await client.query(`SELECT email FROM users WHERE user_id = $1`, [userId]);
-        const email = userRes.rows[0].email;
+        // Fetch user email and full_name for organization_invites record and audit log
+        const userRes = await client.query(`SELECT email, full_name FROM users WHERE user_id = $1`, [userId]);
+        const email = userRes.rows[0]?.email;
+        const targetUserName = userRes.rows[0]?.full_name || email || 'team member';
 
         // 6. Insert invite record
         const token = require("crypto").randomBytes(32).toString('hex');
@@ -1010,7 +1046,14 @@ exports.sendInvite = async (req, res, next) => {
             actorId,
             actorRole,
             action: 'INVITE_MEMBER',
-            metadata: { targetUserId: userId, roleId, roleName: targetRole.name }
+            metadata: {
+                targetUserId: userId,
+                targetName: targetUserName,
+                targetUserName,
+                targetType: 'user',
+                roleId,
+                roleName: targetRole.name
+            }
         });
 
         // 8. Persistent Notification and Real-time push
@@ -1096,13 +1139,17 @@ exports.withdrawInvite = async (req, res, next) => {
         await client.query("BEGIN");
 
         const inviteRes = await client.query(
-            `SELECT * FROM organization_invites WHERE org_id = $1 AND invite_id = $2 AND status = 'PENDING'`,
+            `SELECT oi.*, u.full_name AS target_name 
+             FROM organization_invites oi
+             LEFT JOIN users u ON oi.invited_user_id = u.user_id
+             WHERE oi.org_id = $1 AND oi.invite_id = $2 AND oi.status = 'PENDING'`,
             [orgId, inviteId]
         );
         if (inviteRes.rowCount === 0) {
             throw new AppError("Pending invitation not found", 404);
         }
         const invite = inviteRes.rows[0];
+        const targetUserName = invite.target_name || invite.email || 'team member';
 
         // 1. Cancel the invite
         await client.query(
@@ -1125,7 +1172,14 @@ exports.withdrawInvite = async (req, res, next) => {
             actorId,
             actorRole,
             action: 'WITHDRAW_INVITE',
-            metadata: { inviteId, targetUserId: invite.invited_user_id }
+            metadata: {
+                inviteId,
+                targetUserId: invite.invited_user_id,
+                targetName: targetUserName,
+                targetUserName,
+                targetType: 'user',
+                roleName: invite.role
+            }
         });
 
         await client.query("COMMIT");
@@ -1176,10 +1230,43 @@ exports.getActivityLogs = async (req, res, next) => {
     try {
         let query = `
             SELECT al.log_id, al.action, al.created_at, al.actor_role, al.metadata,
-                   u.user_id AS actor_id, u.full_name AS actor_name, u.avatar_url AS actor_avatar
+                   u.user_id AS actor_id, u.full_name AS actor_name, u.avatar_url AS actor_avatar,
+                   COALESCE(
+                       al.metadata->>'targetName',
+                       al.metadata->>'targetUserName',
+                       al.metadata->>'authorName',
+                       CASE 
+                           WHEN al.action IN ('LIKE', 'LIKED') AND (al.metadata->>'postId') ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+                           THEN (
+                               SELECT COALESCE(o.name, u_author.full_name)
+                               FROM posts p
+                               LEFT JOIN organizations o ON p.author_org_id = o.org_id
+                               LEFT JOIN users u_author ON p.author_id = u_author.user_id
+                               WHERE p.post_id = (al.metadata->>'postId')::uuid
+                           )
+                           ELSE NULL
+                       END,
+                       CASE 
+                           WHEN (al.metadata->>'targetUserId') ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' 
+                           THEN (SELECT full_name FROM users WHERE user_id = (al.metadata->>'targetUserId')::uuid)
+                           ELSE NULL
+                       END,
+                       CASE 
+                           WHEN (al.metadata->>'removedUserId') ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' 
+                           THEN (SELECT full_name FROM users WHERE user_id = (al.metadata->>'removedUserId')::uuid)
+                           ELSE NULL
+                       END,
+                       CASE 
+                           WHEN (al.metadata->>'targetId') ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' AND al.action IN ('INVITE_MEMBER', 'WITHDRAW_INVITE', 'REMOVE_MEMBER', 'ASSIGN_ROLE')
+                           THEN (SELECT full_name FROM users WHERE user_id = (al.metadata->>'targetId')::uuid)
+                           ELSE NULL
+                       END,
+                       al.metadata->>'email',
+                       ''
+                   ) AS target_name
             FROM audit_logs al
             JOIN active_users u ON al.actor_id = u.user_id
-            JOIN organization_members om ON om.user_id = al.actor_id AND om.org_id = al.entity_id AND om.status IN ('ACTIVE', 'SUSPENDED', 'REMOVED')
+            LEFT JOIN organization_members om ON om.user_id = al.actor_id AND om.org_id = al.entity_id AND om.status IN ('ACTIVE', 'SUSPENDED', 'REMOVED')
             WHERE al.entity_id = $1 AND al.entity_type = 'ORGANIZATION'
               AND al.action NOT IN ('TEAMS', 'ACTIVITY_LOGS', 'ROLES', 'VIEW_TEAMS', 'VIEW_ACTIVITY_LOGS', 'VIEW_ROLES', 'VIEW_MEMBERS', 'MEMBERS')
         `;
@@ -1201,7 +1288,9 @@ exports.getActivityLogs = async (req, res, next) => {
         if (roleId && roleId !== 'all') {
             query += ` AND (
                 om.role_id = $${paramIdx} OR 
-                LOWER(al.actor_role) = (SELECT LOWER(name) FROM organization_roles WHERE role_id = $${paramIdx} AND org_id = $1)
+                LOWER(al.actor_role) = (SELECT LOWER(name) FROM organization_roles WHERE role_id = $${paramIdx} AND org_id = $1) OR
+                al.metadata->>'roleId' = $${paramIdx}::text OR
+                LOWER(COALESCE(al.metadata->>'roleName', al.metadata->>'role', '')) = (SELECT LOWER(name) FROM organization_roles WHERE role_id = $${paramIdx} AND org_id = $1)
             )`;
             params.push(roleId);
             paramIdx++;
@@ -1232,7 +1321,24 @@ exports.getActivityLogs = async (req, res, next) => {
                 u.full_name ILIKE $${paramIdx} OR
                 al.actor_role ILIKE $${paramIdx} OR
                 al.metadata::text ILIKE $${paramIdx} OR
-                (LOWER($${paramIdx}) LIKE '%feed%' AND al.action IN ('CREATE_POST', 'EDIT_POST', 'LIKE', 'COMMENT', 'REPOST', 'SHARE_POST', 'SAVE_POST'))
+                (
+                    CASE 
+                        WHEN (al.metadata->>'targetUserId') ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' 
+                        THEN (SELECT full_name FROM users WHERE user_id = (al.metadata->>'targetUserId')::uuid)
+                        WHEN (al.metadata->>'removedUserId') ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' 
+                        THEN (SELECT full_name FROM users WHERE user_id = (al.metadata->>'removedUserId')::uuid)
+                        WHEN al.action IN ('LIKE', 'LIKED') AND (al.metadata->>'postId') ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+                        THEN (
+                            SELECT COALESCE(o.name, u_author.full_name)
+                            FROM posts p
+                            LEFT JOIN organizations o ON p.author_org_id = o.org_id
+                            LEFT JOIN users u_author ON p.author_id = u_author.user_id
+                            WHERE p.post_id = (al.metadata->>'postId')::uuid
+                        )
+                        ELSE NULL
+                    END
+                ) ILIKE $${paramIdx} OR
+                (LOWER($${paramIdx}) LIKE '%feed%' AND al.action IN ('CREATE_POST', 'EDIT_POST', 'UPDATE_POST', 'LIKE', 'COMMENT', 'REPOST', 'SHARE_POST', 'SAVE_POST'))
             )`;
             params.push(`%${term}%`);
             paramIdx++;
@@ -1252,7 +1358,7 @@ exports.getActivityLogs = async (req, res, next) => {
         let countQuery = `
             SELECT COUNT(DISTINCT al.log_id)::int FROM audit_logs al
             JOIN active_users u ON al.actor_id = u.user_id
-            JOIN organization_members om ON om.user_id = al.actor_id AND om.org_id = al.entity_id AND om.status IN ('ACTIVE', 'SUSPENDED', 'REMOVED')
+            LEFT JOIN organization_members om ON om.user_id = al.actor_id AND om.org_id = al.entity_id AND om.status IN ('ACTIVE', 'SUSPENDED', 'REMOVED')
             WHERE al.entity_id = $1 AND al.entity_type = 'ORGANIZATION'
               AND al.action NOT IN ('TEAMS', 'ACTIVITY_LOGS', 'ROLES', 'VIEW_TEAMS', 'VIEW_ACTIVITY_LOGS', 'VIEW_ROLES', 'VIEW_MEMBERS', 'MEMBERS')
         `;
@@ -1268,7 +1374,9 @@ exports.getActivityLogs = async (req, res, next) => {
         if (roleId && roleId !== 'all') {
             countQuery += ` AND (
                 om.role_id = $${countParamIdx} OR 
-                LOWER(al.actor_role) = (SELECT LOWER(name) FROM organization_roles WHERE role_id = $${countParamIdx} AND org_id = $1)
+                LOWER(al.actor_role) = (SELECT LOWER(name) FROM organization_roles WHERE role_id = $${countParamIdx} AND org_id = $1) OR
+                al.metadata->>'roleId' = $${countParamIdx}::text OR
+                LOWER(COALESCE(al.metadata->>'roleName', al.metadata->>'role', '')) = (SELECT LOWER(name) FROM organization_roles WHERE role_id = $${countParamIdx} AND org_id = $1)
             )`;
             countParams.push(roleId);
             countParamIdx++;
@@ -1299,7 +1407,24 @@ exports.getActivityLogs = async (req, res, next) => {
                 u.full_name ILIKE $${countParamIdx} OR
                 al.actor_role ILIKE $${countParamIdx} OR
                 al.metadata::text ILIKE $${countParamIdx} OR
-                (LOWER($${countParamIdx}) LIKE '%feed%' AND al.action IN ('CREATE_POST', 'EDIT_POST', 'LIKE', 'COMMENT', 'REPOST', 'SHARE_POST', 'SAVE_POST'))
+                (
+                    CASE 
+                        WHEN (al.metadata->>'targetUserId') ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' 
+                        THEN (SELECT full_name FROM users WHERE user_id = (al.metadata->>'targetUserId')::uuid)
+                        WHEN (al.metadata->>'removedUserId') ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' 
+                        THEN (SELECT full_name FROM users WHERE user_id = (al.metadata->>'removedUserId')::uuid)
+                        WHEN al.action IN ('LIKE', 'LIKED') AND (al.metadata->>'postId') ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+                        THEN (
+                            SELECT COALESCE(o.name, u_author.full_name)
+                            FROM posts p
+                            LEFT JOIN organizations o ON p.author_org_id = o.org_id
+                            LEFT JOIN users u_author ON p.author_id = u_author.user_id
+                            WHERE p.post_id = (al.metadata->>'postId')::uuid
+                        )
+                        ELSE NULL
+                    END
+                ) ILIKE $${countParamIdx} OR
+                (LOWER($${countParamIdx}) LIKE '%feed%' AND al.action IN ('CREATE_POST', 'EDIT_POST', 'UPDATE_POST', 'LIKE', 'COMMENT', 'REPOST', 'SHARE_POST', 'SAVE_POST'))
             )`;
             countParams.push(`%${term}%`);
             countParamIdx++;

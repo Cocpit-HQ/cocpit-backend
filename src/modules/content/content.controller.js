@@ -2530,7 +2530,8 @@ exports.updatePostById = async (req, res) => {
                 await logAudit(auditClient, {
                     entityId: author_org_id,
                     actorId: userId,
-                    action: 'UPDATE_POST',
+                    actorRole: req.actor?.roleName || null,
+                    action: 'EDIT_POST',
                     metadata: {
                         type: 'post',
                         id: postId,
@@ -2798,6 +2799,7 @@ exports.deletePost = async (req, res) => {
                 await logAudit(auditClient, {
                     entityId: author_org_id,
                     actorId: userId,
+                    actorRole: req.actor?.roleName || null,
                     action: 'DELETE_POST', // Consistent naming
                     metadata: {
                         type: 'post',
@@ -3074,12 +3076,41 @@ exports.toggleLike = async (req, res) => {
                     "INSERT INTO post_likes (post_id, user_id, org_id) VALUES ($1, $2, $3)",
                     [postId, userId, companyId]
                 );
+                let authorName = null;
+                let authorId = null;
+                let authorType = 'user';
+                try {
+                    const postAuthorRes = await pool.query(
+                        `SELECT p.author_id, p.author_org_id, 
+                                COALESCE(o.name, u.full_name) AS author_name
+                         FROM posts p
+                         LEFT JOIN organizations o ON p.author_org_id = o.org_id
+                         LEFT JOIN users u ON p.author_id = u.user_id
+                         WHERE p.post_id = $1`,
+                        [postId]
+                    );
+                    if (postAuthorRes.rowCount > 0) {
+                        const row = postAuthorRes.rows[0];
+                        authorName = row.author_name;
+                        authorId = row.author_org_id || row.author_id;
+                        authorType = row.author_org_id ? 'organization' : 'user';
+                    }
+                } catch (e) {
+                    console.error("Error resolving post author for like audit log:", e);
+                }
+
                 await logAudit(pool, {
                     entityId: companyId,
                     actorId: userId,
                     actorRole: req.actor?.roleName || null,
                     action: 'LIKE',
-                    metadata: { postId }
+                    metadata: { 
+                        postId,
+                        authorName,
+                        targetName: authorName,
+                        authorId,
+                        authorType
+                    }
                 });
             } else {
                 await pool.query(

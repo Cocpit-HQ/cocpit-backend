@@ -71,11 +71,23 @@ exports.inviteMember = async (req, res) => {
             [companyId, userId, email, role, targetRoleData.role_id, token, expiresAt]
         );
 
+        const invitedUserLookup = await client.query(`SELECT user_id, full_name FROM users WHERE email = $1`, [email]);
+        const invitedUser = invitedUserLookup.rows[0];
+        const targetUserName = invitedUser?.full_name || email;
+
         await logAudit(client, {
             entityId: companyId,
             actorId: userId,
             action: 'INVITE_MEMBER',
-            metadata: { email, role }
+            metadata: {
+                email,
+                role,
+                roleName: role,
+                targetUserId: invitedUser?.user_id,
+                targetName: targetUserName,
+                targetUserName,
+                targetType: 'user'
+            }
         });
 
         await client.query("COMMIT");
@@ -236,7 +248,7 @@ exports.acceptTeamsInvite = async (req, res) => {
             entityId: invite.org_id,
             actorId: userId,
             action: 'JOIN_ORGANIZATION',
-            metadata: { inviteId: invite.invite_id, role: invite.role }
+            metadata: { inviteId: invite.invite_id, role: invite.role, roleName: invite.role }
         });
 
         // Add Notification for original inviter
@@ -374,13 +386,14 @@ exports.removeMember = async (req, res) => {
 
         // 2. Check target member role
         const targetRes = await client.query(
-            `SELECT cr.name as role, cr.priority FROM organization_members cm 
+            `SELECT cr.role_id, cr.name as role, cr.priority FROM organization_members cm 
              JOIN organization_roles cr ON cm.role_id = cr.role_id
              WHERE cm.org_id = $1 AND cm.user_id = $2`,
             [companyId, memberId]
         );
         if (targetRes.rowCount === 0) throw new Error("Member not found");
         const targetRole = targetRes.rows[0].role;
+        const targetRoleId = targetRes.rows[0].role_id;
         const targetPriority = targetRes.rows[0].priority;
 
         // 3. Enforce Hierarchy
@@ -406,11 +419,23 @@ exports.removeMember = async (req, res) => {
         // Lifecycle: End all active sessions for this member
         const endedSessions = await chatSessionCtrl.endAllSessionsForMember(client, companyId, memberId, userId);
 
+        const targetUserRes = await client.query(`SELECT full_name FROM users WHERE user_id = $1`, [memberId]);
+        const targetUserName = targetUserRes.rows[0]?.full_name || 'team member';
+
         await logAudit(client, {
             entityId: companyId,
             actorId: userId,
             action: 'REMOVE_MEMBER',
-            metadata: { removedUserId: memberId, removedRole: targetRole }
+            metadata: { 
+                targetUserId: memberId,
+                removedUserId: memberId, 
+                targetName: targetUserName,
+                targetUserName,
+                targetType: 'user',
+                roleId: targetRoleId,
+                roleName: targetRole,
+                removedRole: targetRole 
+            }
         });
 
         await client.query("COMMIT");
@@ -532,7 +557,7 @@ exports.transferOwnership = async (req, res) => {
         } else {
             const adminCreate = await client.query(
                 `INSERT INTO organization_roles (org_id, name, color, permissions, priority, is_system_role)
-                 VALUES ($1, 'Admin', '#FFD700', '["*"]', 100, TRUE) RETURNING role_id`,
+                 VALUES ($1, 'Admin', '#06B6D4', '["*"]', 100, TRUE) RETURNING role_id`,
                 [companyId]
             );
             adminRoleId = adminCreate.rows[0].role_id;
@@ -707,16 +732,22 @@ exports.batchDeclineTeamInvites = async (req, res, next) => {
             );
         }
 
-        // Bulk log audit - using UNNEST
-        const actorIds = Array(validInvites.length).fill(userId);
-        const actions = Array(validInvites.length).fill('DECLINE_INVITATION');
-        const metadataArray = validInvites.map(i => JSON.stringify({ inviteId: i.invite_id, role: i.role }));
-
-        await client.query(
-            `INSERT INTO organization_audit_logs (org_id, actor_id, action, metadata) 
-             SELECT o, a, act, m::jsonb FROM UNNEST($1::uuid[], $2::uuid[], $3::text[], $4::text[]) AS t(o, a, act, m)`,
-            [validOrgIds, actorIds, actions, metadataArray]
-        );
+        // Bulk log audit
+        for (const invite of validInvites) {
+            await logAudit(client, {
+                entityId: invite.org_id,
+                actorId: userId,
+                action: 'DECLINE_INVITATION',
+                metadata: {
+                    inviteId: invite.invite_id,
+                    roleId: invite.role_id,
+                    roleName: invite.role,
+                    role: invite.role,
+                    email: invite.email,
+                    targetUserId: userId
+                }
+            });
+        }
 
         await client.query("COMMIT");
 
@@ -760,7 +791,7 @@ exports.declineTeamsInvite = async (req, res, next) => {
         }
         const invite = inviteRes.rows[0];
 
-        const userRes = await client.query(`SELECT email FROM users WHERE user_id = $1`, [userId]);
+        const userRes = await client.query(`SELECT full_name, email FROM users WHERE user_id = $1`, [userId]);
         if (userRes.rows[0].email !== invite.email) {
             throw new AppError(`This invitation was sent to ${invite.email}. You are logged in as ${userRes.rows[0].email}.`, 403);
         }
@@ -781,7 +812,14 @@ exports.declineTeamsInvite = async (req, res, next) => {
             entityId: invite.org_id,
             actorId: userId,
             action: 'DECLINE_INVITATION',
-            metadata: { inviteId: invite.invite_id, role: invite.role }
+            metadata: {
+                inviteId: invite.invite_id,
+                roleId: invite.role_id,
+                roleName: invite.role,
+                role: invite.role,
+                email: invite.email,
+                targetUserId: userId
+            }
         });
 
         await client.query("COMMIT");

@@ -23,25 +23,42 @@ const PERMISSION_MAP = {
 const checkOrgPermission = async (queryable, orgId, userId, permissionsToCheck) => {
     try {
         const res = await queryable.query(
-            `SELECT cr.permissions, cr.name, cm.status, cm.expires_at
-             FROM organization_members cm
+            `SELECT cr.permissions, cr.name, cm.status, cm.expires_at, o.created_by
+             FROM organizations o
+             LEFT JOIN organization_members cm ON cm.org_id = o.org_id AND cm.user_id = $2
              LEFT JOIN organization_roles cr ON cm.role_id = cr.role_id
-             WHERE cm.org_id = $1 AND cm.user_id = $2`,
+             WHERE o.org_id = $1`,
             [orgId, userId]
         );
 
         if (res.rowCount === 0) return false;
 
-        const { permissions, status, expires_at } = res.rows[0];
+        const { permissions, status, expires_at, created_by, name: roleName } = res.rows[0];
+
+        // 1. Creator / Owner Bypass: If the user is the creator of the organization, they have root access
+        if (userId && created_by && userId === created_by) return true;
 
         if (status !== 'ACTIVE') return false;
         if (expires_at && new Date(expires_at) < new Date()) return false;
 
         // Permissions check
         const perms = permissions || [];
-        if (perms.includes("*")) return true;
+        const roleLower = (roleName || '').toLowerCase();
+
+        // 2. Wildcard or Owner role has all permissions
+        if (perms.includes("*") || roleLower === 'owner') return true;
 
         const checks = Array.isArray(permissionsToCheck) ? permissionsToCheck : [permissionsToCheck];
+
+        // 3. Admin / Full Control bypass: MANAGE_COMPANY, MANAGE_ORGANIZATION, or role is Admin
+        const isCompanyAdmin = perms.includes("MANAGE_COMPANY") || perms.includes("MANAGE_ORGANIZATION") || roleLower === 'admin';
+        if (isCompanyAdmin) {
+            // Full control allows all actions except root owner actions
+            const ownerOnlyActions = ["*"];
+            if (!checks.every(c => ownerOnlyActions.includes(c))) {
+                return true;
+            }
+        }
 
         // Check if ANY of the required permissions are present
         return checks.some(p => {

@@ -219,7 +219,12 @@ exports.getUserProfile = async (req, res) => {
   const { id } = req.params;
   const currentUserId = req.user.sub;
 
-  if (id === currentUserId) {
+  const actorType = (req.actor?.type || req.headers['x-actor-type'] || '').toUpperCase().trim();
+  const actorOrgId = req.actor?.orgId || req.headers['x-actor-id'] || null;
+  const isOrgActor = actorType === 'ORGANIZATION' && !!actorOrgId;
+
+  // Only return personal private profile if caller is in personal user mode
+  if (id === currentUserId && !isOrgActor) {
     return current_user.getMyProfile(req, res);
   }
 
@@ -423,12 +428,7 @@ exports.getUserProfile = async (req, res) => {
     let connectionRequestId = null;
     let connectionRequestSender = null;
 
-    if (currentUserId && (currentUserId !== targetUserId || (req.headers['x-actor-type'] || '').toUpperCase().trim() === 'ORGANIZATION')) {
-      // Detect if the request is made under an Organization actor context
-      const actorType = (req.headers['x-actor-type'] || '').toUpperCase().trim();
-      const actorOrgId = req.headers['x-actor-id'] || null;
-      const isOrgActor = actorType === 'ORGANIZATION' && !!actorOrgId;
-
+    if (currentUserId && (currentUserId !== targetUserId || isOrgActor)) {
       if (isOrgActor) {
         // Check if the organization follows this user
         const followCheck = await pool.query(
@@ -436,6 +436,13 @@ exports.getUserProfile = async (req, res) => {
           [actorOrgId, targetUserId]
         );
         isFollowing = followCheck.rowCount > 0;
+
+        // Check if the target user follows this organization
+        const followedByCheck = await pool.query(
+          "SELECT 1 FROM organization_followers WHERE org_id = $1 AND user_id = $2",
+          [actorOrgId, targetUserId]
+        );
+        isFollowedBy = followedByCheck.rowCount > 0;
       } else {
         // Check Following (Me -> Them) for personal user context
         const followCheck = await pool.query(
@@ -443,55 +450,50 @@ exports.getUserProfile = async (req, res) => {
           [currentUserId, targetUserId]
         );
         isFollowing = followCheck.rowCount > 0;
-      }
 
-      // Check Followed By (Them -> Me)
-      const followedByCheck = await pool.query(
-        "SELECT 1 FROM followers WHERE follower_id = $1 AND following_id = $2",
-        [targetUserId, currentUserId]
-      );
-      isFollowedBy = followedByCheck.rowCount > 0;
+        // Check Followed By (Them -> Me)
+        const followedByCheck = await pool.query(
+          "SELECT 1 FROM followers WHERE follower_id = $1 AND following_id = $2",
+          [targetUserId, currentUserId]
+        );
+        isFollowedBy = followedByCheck.rowCount > 0;
 
-      // Check True Connection
-      const connectionCheck = await pool.query(
-        "SELECT 1 FROM connections WHERE user_id = $1 AND connected_user_id = $2",
-        [currentUserId, targetUserId]
-      );
-      const isConnected = connectionCheck.rowCount > 0;
-
-      if (isConnected) {
-        // `connections` is a personal, user-to-user relationship — it says nothing
-        // about whether the acting ORGANIZATION follows this person, so don't let
-        // it stomp the org-aware isFollowing computed above when acting as a company.
-        if (!isOrgActor) {
-          isFollowing = true;
-        }
-        isFollowedBy = true;
-        connectionRequestStatus = 'connected';
-      }
-
-      // Only check requests if NOT already connected
-      if (!isConnected) {
-        const requestCheck = await pool.query(
-          `SELECT request_id, sender_id, status 
-           FROM connection_requests 
-           WHERE ((sender_id = $1 AND receiver_id = $2) 
-              OR (sender_id = $2 AND receiver_id = $1))
-             AND status != 'connected'`,
+        // Check True Connection
+        const connectionCheck = await pool.query(
+          "SELECT 1 FROM connections WHERE user_id = $1 AND connected_user_id = $2",
           [currentUserId, targetUserId]
         );
+        const isConnected = connectionCheck.rowCount > 0;
 
-        if (requestCheck.rowCount > 0) {
-          const reqRow = requestCheck.rows[0];
-          connectionRequestStatus = reqRow.status;
-          connectionRequestId = reqRow.request_id;
-          connectionRequestSender = reqRow.sender_id === currentUserId ? 'me' : 'them';
+        if (isConnected) {
+          isFollowing = true;
+          isFollowedBy = true;
+          connectionRequestStatus = 'connected';
+        }
+
+        // Only check requests if NOT already connected
+        if (!isConnected) {
+          const requestCheck = await pool.query(
+            `SELECT request_id, sender_id, status 
+             FROM connection_requests 
+             WHERE ((sender_id = $1 AND receiver_id = $2) 
+                OR (sender_id = $2 AND receiver_id = $1))
+               AND status != 'connected'`,
+            [currentUserId, targetUserId]
+          );
+
+          if (requestCheck.rowCount > 0) {
+            const reqRow = requestCheck.rows[0];
+            connectionRequestStatus = reqRow.status;
+            connectionRequestId = reqRow.request_id;
+            connectionRequestSender = reqRow.sender_id === currentUserId ? 'me' : 'them';
+          }
         }
       }
     }
 
     // Privacy gating for email, recovery email, and phone number
-    const isOwner = currentUserId === targetUserId;
+    const isOwner = !isOrgActor && currentUserId === targetUserId;
     user.email = (isOwner || user.profile_show_email) ? (user.email || null) : null;
     user.mobile_number = (isOwner || user.profile_show_phone) ? (user.mobile_number || null) : null;
     if (isOwner) {
@@ -2282,4 +2284,4 @@ exports.clearSearchHistory = async (req, res) => {
     console.error("Clear search history error:", err);
     res.status(500).json({ success: false, message: "Internal server error" });
   }
-};
+};
