@@ -396,7 +396,7 @@ exports.getUserProfile = async (req, res) => {
           targetName: user.name,
           targetHandle: user.account_name,
           targetType: 'user',
-          linkUrl: `/u/${handleOrId}`,
+          linkUrl: `/profile/${handleOrId}`,
           highlightedText: 'profile'
         }
       }).catch(err => console.error("Error logging user profile view audit:", err));

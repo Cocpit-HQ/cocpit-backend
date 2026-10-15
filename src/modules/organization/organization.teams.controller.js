@@ -1236,13 +1236,13 @@ exports.getActivityLogs = async (req, res, next) => {
                        al.metadata->>'targetUserName',
                        al.metadata->>'authorName',
                        CASE 
-                           WHEN al.action IN ('LIKE', 'LIKED') AND (al.metadata->>'postId') ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+                           WHEN al.action IN ('LIKE', 'LIKED', 'COMMENT', 'COMMENTED') AND COALESCE(al.metadata->>'postId', al.metadata->>'post_id') ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
                            THEN (
                                SELECT COALESCE(o.name, u_author.full_name)
                                FROM posts p
                                LEFT JOIN organizations o ON p.author_org_id = o.org_id
                                LEFT JOIN users u_author ON p.author_id = u_author.user_id
-                               WHERE p.post_id = (al.metadata->>'postId')::uuid
+                               WHERE p.post_id = COALESCE(al.metadata->>'postId', al.metadata->>'post_id')::uuid
                            )
                            ELSE NULL
                        END,
@@ -1254,6 +1254,17 @@ exports.getActivityLogs = async (req, res, next) => {
                        CASE 
                            WHEN (al.metadata->>'removedUserId') ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' 
                            THEN (SELECT full_name FROM users WHERE user_id = (al.metadata->>'removedUserId')::uuid)
+                           ELSE NULL
+                       END,
+                       CASE 
+                           WHEN al.action IN ('ORGANIZATION_BLOCK_ADDED', 'ORGANIZATION_BLOCK_REMOVED')
+                                AND COALESCE(al.metadata->>'targetId', al.metadata->>'blockedId') ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+                           THEN (
+                               SELECT COALESCE(u_blk.full_name, o_blk.name)
+                               FROM (SELECT COALESCE(al.metadata->>'targetId', al.metadata->>'blockedId')::uuid AS b_id) sub
+                               LEFT JOIN users u_blk ON u_blk.user_id = sub.b_id
+                               LEFT JOIN organizations o_blk ON o_blk.org_id = sub.b_id
+                           )
                            ELSE NULL
                        END,
                        CASE 
@@ -1327,18 +1338,27 @@ exports.getActivityLogs = async (req, res, next) => {
                         THEN (SELECT full_name FROM users WHERE user_id = (al.metadata->>'targetUserId')::uuid)
                         WHEN (al.metadata->>'removedUserId') ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' 
                         THEN (SELECT full_name FROM users WHERE user_id = (al.metadata->>'removedUserId')::uuid)
-                        WHEN al.action IN ('LIKE', 'LIKED') AND (al.metadata->>'postId') ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+                        WHEN al.action IN ('ORGANIZATION_BLOCK_ADDED', 'ORGANIZATION_BLOCK_REMOVED')
+                             AND COALESCE(al.metadata->>'targetId', al.metadata->>'blockedId') ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+                        THEN (
+                            SELECT COALESCE(u_blk.full_name, o_blk.name)
+                            FROM (SELECT COALESCE(al.metadata->>'targetId', al.metadata->>'blockedId')::uuid AS b_id) sub
+                            LEFT JOIN users u_blk ON u_blk.user_id = sub.b_id
+                            LEFT JOIN organizations o_blk ON o_blk.org_id = sub.b_id
+                        )
+                        WHEN al.action IN ('LIKE', 'LIKED', 'COMMENT', 'COMMENTED') AND COALESCE(al.metadata->>'postId', al.metadata->>'post_id') ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
                         THEN (
                             SELECT COALESCE(o.name, u_author.full_name)
                             FROM posts p
                             LEFT JOIN organizations o ON p.author_org_id = o.org_id
                             LEFT JOIN users u_author ON p.author_id = u_author.user_id
-                            WHERE p.post_id = (al.metadata->>'postId')::uuid
+                            WHERE p.post_id = COALESCE(al.metadata->>'postId', al.metadata->>'post_id')::uuid
                         )
                         ELSE NULL
                     END
                 ) ILIKE $${paramIdx} OR
-                (LOWER($${paramIdx}) LIKE '%feed%' AND al.action IN ('CREATE_POST', 'EDIT_POST', 'UPDATE_POST', 'LIKE', 'COMMENT', 'REPOST', 'SHARE_POST', 'SAVE_POST'))
+                (LOWER($${paramIdx}) LIKE '%feed%' AND al.action IN ('CREATE_POST', 'EDIT_POST', 'UPDATE_POST', 'LIKE', 'COMMENT', 'REPOST', 'SHARE_POST', 'SAVE_POST')) OR
+                (LOWER($${paramIdx}) LIKE '%verif%' AND al.action IN ('DOCUMENTS_SUBMITTED', 'DOMAIN_VERIFIED'))
             )`;
             params.push(`%${term}%`);
             paramIdx++;
@@ -1413,18 +1433,19 @@ exports.getActivityLogs = async (req, res, next) => {
                         THEN (SELECT full_name FROM users WHERE user_id = (al.metadata->>'targetUserId')::uuid)
                         WHEN (al.metadata->>'removedUserId') ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' 
                         THEN (SELECT full_name FROM users WHERE user_id = (al.metadata->>'removedUserId')::uuid)
-                        WHEN al.action IN ('LIKE', 'LIKED') AND (al.metadata->>'postId') ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+                        WHEN al.action IN ('LIKE', 'LIKED', 'COMMENT', 'COMMENTED') AND COALESCE(al.metadata->>'postId', al.metadata->>'post_id') ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
                         THEN (
                             SELECT COALESCE(o.name, u_author.full_name)
                             FROM posts p
                             LEFT JOIN organizations o ON p.author_org_id = o.org_id
                             LEFT JOIN users u_author ON p.author_id = u_author.user_id
-                            WHERE p.post_id = (al.metadata->>'postId')::uuid
+                            WHERE p.post_id = COALESCE(al.metadata->>'postId', al.metadata->>'post_id')::uuid
                         )
                         ELSE NULL
                     END
                 ) ILIKE $${countParamIdx} OR
-                (LOWER($${countParamIdx}) LIKE '%feed%' AND al.action IN ('CREATE_POST', 'EDIT_POST', 'UPDATE_POST', 'LIKE', 'COMMENT', 'REPOST', 'SHARE_POST', 'SAVE_POST'))
+                (LOWER($${countParamIdx}) LIKE '%feed%' AND al.action IN ('CREATE_POST', 'EDIT_POST', 'UPDATE_POST', 'LIKE', 'COMMENT', 'REPOST', 'SHARE_POST', 'SAVE_POST')) OR
+                (LOWER($${countParamIdx}) LIKE '%verif%' AND al.action IN ('DOCUMENTS_SUBMITTED', 'DOMAIN_VERIFIED'))
             )`;
             countParams.push(`%${term}%`);
             countParamIdx++;
