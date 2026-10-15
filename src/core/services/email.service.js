@@ -80,6 +80,30 @@ const sendOTPEmail = async (email, otp, purpose = "signup") => {
 
 
 /**
+ * Safely resolves the frontend base URL for email links.
+ * Handles missing origins from mobile clients (Android/iOS) and prevents
+ * localhost URLs from being sent when running on staging or production.
+ * @param {string|null|undefined} clientOrigin
+ * @returns {string}
+ */
+const resolveFrontendUrl = (clientOrigin) => {
+    const defaultUrl = process.env.FRONTEND_URL || (process.env.NODE_ENV === "staging" ? "https://staging.cocpit.in" : "http://localhost:3000");
+
+    if (!clientOrigin || clientOrigin === "null" || clientOrigin.startsWith("capacitor://") || clientOrigin.startsWith("ionic://")) {
+        return defaultUrl;
+    }
+
+    // If clientOrigin is localhost, but server is running in staging/prod or has FRONTEND_URL set, do not send localhost in email
+    if (clientOrigin.includes("localhost") || clientOrigin.includes("127.0.0.1")) {
+        if (process.env.NODE_ENV === "staging" || process.env.NODE_ENV === "production" || process.env.FRONTEND_URL) {
+            return defaultUrl;
+        }
+    }
+
+    return clientOrigin;
+};
+
+/**
  * Sends an account deletion scheduled email with a one-click restore link.
  * @param {string} email - The user's email address
  * @param {string} fullName - The user's display name
@@ -91,8 +115,7 @@ const sendAccountDeletionEmail = async (email, fullName, restoreToken, deletionD
         throw new Error("Email service is not configured (RESEND_API_KEY missing).");
     }
 
-    const fallbackUrl = process.env.FRONTEND_URL || (process.env.NODE_ENV === "staging" ? "https://staging.cocpit.in" : "http://localhost:3000");
-    const frontendUrl = clientOrigin || fallbackUrl;
+    const frontendUrl = resolveFrontendUrl(clientOrigin);
     const restoreLink = restoreToken ? `${frontendUrl}/restore-account?token=${restoreToken}` : `${frontendUrl}/restore-account`;
     const deletionDateStr = new Date(deletionDate).toLocaleDateString("en-US", {
         year: "numeric", month: "long", day: "numeric",
@@ -152,8 +175,7 @@ const sendOrganizationDeletionEmail = async (email, orgName, restoreToken, delet
         throw new Error("Email service is not configured (RESEND_API_KEY missing).");
     }
 
-    const fallbackUrl = process.env.FRONTEND_URL || (process.env.NODE_ENV === "staging" ? "https://staging.cocpit.in" : "http://localhost:3000");
-    const frontendUrl = clientOrigin || fallbackUrl;
+    const frontendUrl = resolveFrontendUrl(clientOrigin);
     const restoreLink = `${frontendUrl}/company/restore?token=${restoreToken}`;
     const deletionDateStr = new Date(deletionDate).toLocaleDateString("en-US", {
         year: "numeric", month: "long", day: "numeric",
@@ -212,8 +234,7 @@ const sendPasswordResetLinkEmail = async (email, fullName, resetToken, clientOri
         throw new Error("Email service is not configured (RESEND_API_KEY missing).");
     }
 
-    const fallbackUrl = process.env.FRONTEND_URL || (process.env.NODE_ENV === "staging" ? "https://staging.cocpit.in" : "http://localhost:3000");
-    const frontendUrl = clientOrigin || fallbackUrl;
+    const frontendUrl = resolveFrontendUrl(clientOrigin);
     const resetLink = `${frontendUrl}/reset-password?token=${resetToken}`;
 
     try {

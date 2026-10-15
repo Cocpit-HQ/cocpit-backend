@@ -1806,7 +1806,13 @@ exports.deleteAccount = async (req, res) => {
       new Set([user.recovery_email, user.email].filter((e) => Boolean(e) && typeof e === "string" && e.trim() !== ""))
     );
 
-    const baseUrl = req.get('origin') || req.headers.referer || process.env.CLIENT_URL || user.client_origin || 'http://localhost:3000';
+    let baseUrl = req.get('origin');
+    if (!baseUrl && req.headers.referer) {
+      try { baseUrl = new URL(req.headers.referer).origin; } catch (_) {}
+    }
+    if (!baseUrl) {
+      baseUrl = process.env.CLIENT_URL || (user.client_origin && !user.client_origin.includes('localhost') ? user.client_origin : null);
+    }
 
     for (const recipientEmail of recipientEmails) {
       sendAccountDeletionEmail(recipientEmail, user.full_name, rawToken, deletionExecuteAt, baseUrl).catch((err) => {
@@ -2007,7 +2013,13 @@ exports.resendRecoveryEmail = async (req, res) => {
         new Set([user.recovery_email, user.email].filter((e) => Boolean(e) && typeof e === "string" && e.trim() !== ""))
       );
 
-      const baseUrl = req.get('origin') || req.headers.referer || process.env.CLIENT_URL || user.client_origin || 'http://localhost:3000';
+      let baseUrl = req.get('origin');
+      if (!baseUrl && req.headers.referer) {
+        try { baseUrl = new URL(req.headers.referer).origin; } catch (_) {}
+      }
+      if (!baseUrl) {
+        baseUrl = process.env.CLIENT_URL || (user.client_origin && !user.client_origin.includes('localhost') ? user.client_origin : null);
+      }
 
       for (const recipientEmail of recipientEmails) {
         await sendAccountDeletionEmail(recipientEmail, user.full_name, rawToken, user.deletion_execute_at, baseUrl).catch((err) => {

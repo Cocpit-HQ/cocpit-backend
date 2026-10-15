@@ -81,7 +81,13 @@ exports.requestPasswordResetLink = async (req, res) => {
             return res.status(401).json({ success: false, message: "Unauthorized" });
         }
 
-        const baseUrl = req.get('origin') || req.headers.referer || process.env.CLIENT_URL || 'http://localhost:3000';
+        let baseUrl = req.get('origin');
+        if (!baseUrl && req.headers.referer) {
+            try { baseUrl = new URL(req.headers.referer).origin; } catch (_) {}
+        }
+        if (!baseUrl) {
+            baseUrl = process.env.CLIENT_URL || null;
+        }
         const result = await passwordResetService.requestPasswordResetLink(userId, baseUrl);
         return res.status(200).json(result);
     } catch (err) {

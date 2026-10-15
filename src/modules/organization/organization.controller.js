@@ -583,7 +583,13 @@ exports.deleteOrganization = async (req, res) => {
         // Send recovery email (non-blocking)
         const userEmailRes = await client.query("SELECT email FROM users WHERE user_id = $1", [userId]);
         const emailService = require("../../core/services/email.service");
-        const baseUrl = req.get('origin') || req.headers.referer || process.env.CLIENT_URL || 'http://localhost:3000';
+        let baseUrl = req.get('origin');
+        if (!baseUrl && req.headers.referer) {
+            try { baseUrl = new URL(req.headers.referer).origin; } catch (_) {}
+        }
+        if (!baseUrl) {
+            baseUrl = process.env.CLIENT_URL || null;
+        }
         emailService.sendOrganizationDeletionEmail(
             userEmailRes.rows[0].email,
             orgName,
