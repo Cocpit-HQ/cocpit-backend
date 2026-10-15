@@ -7,6 +7,7 @@ const authRepo = require("../auth/auth.repository");
 const { handleExperienceOrgLink, handleEducationOrgLink } = require("../../utils/orgLinkHelper");
 const aiService = require("../../services/ai.service");
 const cloudinary = require("../../core/infrastructure/cloudinary.client");
+const { toTitleCase } = require("../../utils/nameNormalizer");
 
 const ONBOARDING_STEPS = {
     ROLE: "ROLE",
@@ -439,7 +440,7 @@ exports.saveInterests = async (req, res) => {
 
         const rawInterests = interests
             .filter(i => typeof i === "string" && i.trim().length > 0)
-            .map(i => i.trim());
+            .map(i => toTitleCase(i));
 
         // Deduplicate by slug to prevent same-request collisions
         const uniqueMap = new Map();
@@ -555,7 +556,7 @@ exports.saveSkills = async (req, res) => {
 
     const skillList = [...new Set(
         skills.filter(s => typeof s === "string")
-            .map(s => s.trim().toLowerCase().replace(/\s+/g, " ").split(" ").map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(" "))
+            .map(s => toTitleCase(s))
             .filter(Boolean)
     )];
 

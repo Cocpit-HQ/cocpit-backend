@@ -9,6 +9,7 @@ const profileCalc = require("./profile.calculator");
 const { checkBlockStatus, checkActorBlockStatus } = require("../../core/utils/blockCheck");
 const pool = require("../../core/db/pool");
 const { handleExperienceOrgLink, handleEducationOrgLink, cleanupPreviousCompanyMemberships } = require("../../utils/orgLinkHelper");
+const { toTitleCase } = require("../../utils/nameNormalizer");
 
 // ─── Experience Validation Helpers ──────────────────────────────────────────────
 
@@ -905,7 +906,7 @@ exports.addSkills = async (req, res) => {
 
     const skillList = [...new Set(
         name.filter(s => typeof s === "string")
-            .map(s => s.trim().toLowerCase().replace(/\s+/g, " ").split(" ").map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(" "))
+            .map(s => toTitleCase(s))
             .filter(Boolean)
     )];
 
@@ -976,7 +977,7 @@ exports.syncSkills = async (req, res) => {
 
     const skillList = [...new Set(
         skillNames.filter(s => typeof s === "string")
-            .map(s => s.trim().toLowerCase().replace(/\s+/g, " ").split(" ").map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(" "))
+            .map(s => toTitleCase(s))
             .filter(Boolean)
     )];
 

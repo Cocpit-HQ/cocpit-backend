@@ -571,7 +571,7 @@ exports.getMyCommentedPosts = async (req, res) => {
             p.post_type,
             COALESCE(p.author_org_id, u.user_id) AS author_id,
             COALESCE(comp.name, u.full_name) AS author_name,
-            COALESCE(comp.logo_url, u.avatar_url) AS author_avatar,
+            CASE WHEN p.author_org_id IS NOT NULL THEN comp.logo_url ELSE u.avatar_url END AS author_avatar,
             COALESCE(comp.slug, u.account_name) AS author_slug,
             (p.author_org_id IS NOT NULL) AS is_organization_post,
             pc.name AS category_name,
@@ -593,7 +593,7 @@ exports.getMyCommentedPosts = async (req, res) => {
                     'created_at', mc.created_at,
                     'author_id', COALESCE(mc.author_org_id, mc_u.user_id),
                     'author_name', COALESCE(mc_comp.name, mc_u.full_name),
-                    'author_avatar', COALESCE(mc_comp.logo_url, mc_u.avatar_url),
+                    'author_avatar', CASE WHEN mc.author_org_id IS NOT NULL THEN mc_comp.logo_url ELSE mc_u.avatar_url END,
                     'author_title', mc_u.headline,
                     'like_count', (SELECT COUNT(*) FROM active_comment_likes cl WHERE cl.comment_id = mc.comment_id)::int,
                     'is_liked', EXISTS(SELECT 1 FROM active_comment_likes cl WHERE cl.comment_id = mc.comment_id AND (
@@ -689,7 +689,7 @@ exports.getMyPrivatePosts = async (req, res) => {
             p.post_type,
             COALESCE(p.author_org_id, u.user_id) AS author_id,
             COALESCE(comp.name, u.full_name) AS author_name,
-            COALESCE(comp.logo_url, u.avatar_url) AS author_avatar,
+            CASE WHEN p.author_org_id IS NOT NULL THEN comp.logo_url ELSE u.avatar_url END AS author_avatar,
             COALESCE(comp.slug, u.account_name) AS author_slug,
             CASE WHEN p.author_org_id IS NOT NULL THEN comp.headline ELSE u.headline END AS author_headline,
             (p.author_org_id IS NOT NULL) AS is_organization_post,
@@ -1558,7 +1558,7 @@ exports.getPostById = async (req, res) => {
         const query = `SELECT 
     p.*, 
     COALESCE(comp.name, u.full_name) AS author_name,
-    COALESCE(comp.logo_url, u.avatar_url) AS author_avatar,
+    CASE WHEN p.author_org_id IS NOT NULL THEN comp.logo_url ELSE u.avatar_url END AS author_avatar,
     COALESCE(comp.slug, u.account_name) AS author_slug,
     CASE WHEN p.author_org_id IS NOT NULL THEN comp.headline ELSE u.headline END AS author_headline,
     (p.author_org_id IS NOT NULL) AS is_organization_post,
@@ -1803,6 +1803,7 @@ exports.getPostById = async (req, res) => {
         )
         FROM post_polls pp
         WHERE pp.post_id = p.post_id
+        LIMIT 1
     ) AS poll,
 
     -- Shared Post Data
@@ -1854,7 +1855,7 @@ exports.getPostById = async (req, res) => {
                 'author', json_build_object(
                     'user_id', COALESCE(sp.author_org_id, sp_u.user_id),
                     'full_name', COALESCE(sp_comp.name, sp_u.full_name),
-                    'avatar_url', COALESCE(sp_comp.logo_url, sp_u.avatar_url),
+                    'avatar_url', CASE WHEN sp.author_org_id IS NOT NULL THEN sp_comp.logo_url ELSE sp_u.avatar_url END,
                     'author_headline', CASE WHEN sp.author_org_id IS NOT NULL THEN sp_comp.headline ELSE sp_u.headline END,
                     'author_slug', COALESCE(sp_comp.slug, sp_u.account_name),
                     'is_organization_post', (sp.author_org_id IS NOT NULL)
@@ -1898,7 +1899,7 @@ exports.getPostById = async (req, res) => {
                              'author', json_build_object(
                                  'user_id', COALESCE(sp_sp.author_org_id, sp_sp_u.user_id),
                                  'full_name', COALESCE(sp_sp_comp.name, sp_sp_u.full_name),
-                                 'avatar_url', COALESCE(sp_sp_comp.logo_url, sp_sp_u.avatar_url),
+                                 'avatar_url', CASE WHEN sp_sp.author_org_id IS NOT NULL THEN sp_sp_comp.logo_url ELSE sp_sp_u.avatar_url END,
                                  'author_slug', COALESCE(sp_sp_comp.slug, sp_sp_u.account_name),
                                  'is_organization_post', (sp_sp.author_org_id IS NOT NULL)
                              ),
@@ -2039,7 +2040,7 @@ exports.getPostById = async (req, res) => {
             'author', json_build_object(
                 'user_id', COALESCE(sp.author_org_id, sp_u.user_id),
                 'full_name', COALESCE(sp_comp.name, sp_u.full_name),
-                'avatar_url', COALESCE(sp_comp.logo_url, sp_u.avatar_url)
+                'avatar_url', CASE WHEN sp.author_org_id IS NOT NULL THEN sp_comp.logo_url ELSE sp_u.avatar_url END
             )
         )
         WHEN (sp.visibility = 'public' AND sp_cat.name = 'Personal') THEN json_build_object(
@@ -2048,7 +2049,7 @@ exports.getPostById = async (req, res) => {
             'author', json_build_object(
                 'user_id', COALESCE(sp.author_org_id, sp_u.user_id),
                 'full_name', COALESCE(sp_comp.name, sp_u.full_name),
-                'avatar_url', COALESCE(sp_comp.logo_url, sp_u.avatar_url)
+                'avatar_url', CASE WHEN sp.author_org_id IS NOT NULL THEN sp_comp.logo_url ELSE sp_u.avatar_url END
             )
         )
         ELSE 
@@ -2190,6 +2191,7 @@ WHERE p.post_id = $1
         const hydratedArray = await hydrateShareCounts([post]);
         const finalPost = hydratedArray[0];
 
+        const pollOptions = finalPost.poll?.options || [];
         const mappedPost = {
             ...finalPost,
             id: finalPost.post_id,
@@ -2197,7 +2199,9 @@ WHERE p.post_id = $1
             created_by_user_id: finalPost.author_id,
             coverImage: (post.media && post.media.length > 0) ? post.media[0].url : null,
             publishedAt: post.created_at,
-            updatedAt: post.updated_at
+            updatedAt: post.updated_at,
+            options: pollOptions,
+            poll_options: pollOptions
         };
 
         // If this is a community article, check if the requesting user is subscribed
@@ -5492,7 +5496,7 @@ exports.getStoryDetailsById = async (req, res) => {
             SELECT 
                 COALESCE(c.org_id, u.user_id) as user_id, -- Frontend uses 'user_id' as key
                 COALESCE(c.name, u.full_name) as full_name, 
-                COALESCE(c.logo_url, u.avatar_url) as avatar_url, 
+                CASE WHEN sv.viewer_org_id IS NOT NULL THEN c.logo_url ELSE u.avatar_url END as avatar_url, 
                 sr.reaction_type, 
                 sv.viewed_at,
                 c.org_id,
@@ -5597,7 +5601,7 @@ exports.getPollAnalytics = async (req, res) => {
                             'is_company', (pv.org_id IS NOT NULL),
                             'full_name', COALESCE(o.name, u.full_name),
                             'account_name', COALESCE(o.slug, u.account_name),
-                            'avatar_url', COALESCE(o.logo_url, u.avatar_url),
+                            'avatar_url', CASE WHEN pv.org_id IS NOT NULL THEN o.logo_url ELSE u.avatar_url END,
                             'headline', COALESCE(o.headline, u.headline),
                             'option_id', pv.option_id
                         )
@@ -5907,7 +5911,7 @@ exports.getPostLikes = async (req, res) => {
                 COALESCE(pl.org_id::text, pl.user_id::text) AS user_id,
                 COALESCE(comp.slug, u.account_name) AS username,
                 COALESCE(comp.name, u.full_name) AS full_name,
-                COALESCE(comp.logo_url, u.avatar_url) AS avatar,
+                CASE WHEN pl.org_id IS NOT NULL THEN comp.logo_url ELSE u.avatar_url END AS avatar,
                 -- Determine if the liked entity is the current viewer (self)
                 (
                     $2::uuid IS NOT NULL AND pl.org_id = $2::uuid

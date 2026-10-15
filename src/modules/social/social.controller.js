@@ -3713,10 +3713,10 @@ exports.sendMessage = async (req, res) => {
                     SELECT 
                         p.post_id, p.content, p.created_at, p.post_type, p.title,
                         COALESCE(org.name, u.display_name, 'Unknown Author') as author,
-                        COALESCE(org.logo_url, u.display_avatar, NULL) as author_avatar,
+                        CASE WHEN p.author_org_id IS NOT NULL THEN org.logo_url ELSE u.display_avatar END as author_avatar,
                         COALESCE(org.headline, u.display_headline, NULL) as author_headline,
                         (p.author_org_id IS NOT NULL) as is_organization_post,
-                        json_build_object('full_name', COALESCE(org.name, u.display_name), 'avatar_url', COALESCE(org.logo_url, u.display_avatar), 'headline', COALESCE(org.headline, u.display_headline)) as author_obj,
+                        json_build_object('full_name', COALESCE(org.name, u.display_name), 'avatar_url', CASE WHEN p.author_org_id IS NOT NULL THEN org.logo_url ELSE u.display_avatar END, 'headline', COALESCE(org.headline, u.display_headline)) as author_obj,
                         (SELECT json_agg(json_build_object('url', url, 'media_type', media_type)) FROM post_media WHERE post_id = p.post_id) as media,
                         (
                             SELECT json_build_object(
@@ -4747,7 +4747,7 @@ exports.getMessages = async (req, res) => {
                             'post_type', sp.post_type,
                             'title', sp.title,
                             'author', COALESCE(sp_org.name, au.display_name, 'Unknown Author'),
-                            'author_avatar', COALESCE(sp_org.logo_url, au.display_avatar, NULL),
+                            'author_avatar', CASE WHEN sp.author_org_id IS NOT NULL THEN sp_org.logo_url ELSE au.display_avatar END,
                             'author_headline', COALESCE(sp_org.headline, au.display_headline, NULL),
                             'author_username', au.display_username,
                             'is_organization_post', (sp.author_org_id IS NOT NULL),

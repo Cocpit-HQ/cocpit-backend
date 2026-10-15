@@ -17,7 +17,7 @@ const getPostHydrationSelect = (companyParamIdx, userParamIdx) => `
     p.author_org_id AS author_org_id,
     p.author_id AS created_by_user_id,
     COALESCE(comp.name, u.full_name) AS author_name,
-    COALESCE(comp.logo_url, u.avatar_url) AS author_avatar,
+    CASE WHEN p.author_org_id IS NOT NULL THEN comp.logo_url ELSE u.avatar_url END AS author_avatar,
     COALESCE(comp.slug, u.account_name) AS author_slug,
     CASE WHEN p.author_org_id IS NOT NULL THEN comp.headline ELSE u.headline END AS author_headline,
     (p.author_org_id IS NOT NULL) AS is_organization_post,
@@ -281,7 +281,7 @@ const getPostHydrationSelect = (companyParamIdx, userParamIdx) => `
             'created_at', pc_first.created_at,
             'author_id', COALESCE(pc_first.author_org_id, u_first.user_id),
             'author_name', COALESCE(comp_first.name, u_first.full_name),
-            'author_avatar', COALESCE(comp_first.logo_url, u_first.avatar_url),
+            'author_avatar', CASE WHEN pc_first.author_org_id IS NOT NULL THEN comp_first.logo_url ELSE u_first.avatar_url END,
             'author_title', u_first.headline
         )
         FROM active_post_comments pc_first

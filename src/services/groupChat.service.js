@@ -935,7 +935,7 @@ class GroupChatService {
                 SELECT 
                     p.post_id, p.content, p.created_at, p.post_type, p.title,
                     COALESCE(org.name, u.display_name, 'Unknown Author') as author,
-                    COALESCE(org.logo_url, u.display_avatar, NULL) as author_avatar,
+                    CASE WHEN p.author_org_id IS NOT NULL THEN org.logo_url ELSE u.display_avatar END as author_avatar,
                     COALESCE(org.headline, u.display_headline, NULL) as author_headline,
                     (p.author_org_id IS NOT NULL) as is_organization_post,
                     (SELECT json_agg(json_build_object('url', url, 'media_type', media_type)) FROM post_media WHERE post_id = p.post_id) as media

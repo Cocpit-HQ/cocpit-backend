@@ -317,7 +317,7 @@ exports.getSavedPosts = async (req, res) => {
             p.content AS content,
             sp.saved_at,
             COALESCE(comp_auth.name, u_auth.full_name) AS author_name, 
-            COALESCE(comp_auth.logo_url, u_auth.avatar_url) AS author_avatar,
+            CASE WHEN p.author_org_id IS NOT NULL THEN comp_auth.logo_url ELSE u_auth.avatar_url END AS author_avatar,
             COALESCE(comp_auth.slug, u_auth.account_name) AS author_slug,
             CASE WHEN p.author_org_id IS NOT NULL THEN comp_auth.headline ELSE u_auth.headline END AS author_headline,
             COALESCE(
@@ -337,12 +337,46 @@ exports.getSavedPosts = async (req, res) => {
                         'author', json_build_object(
                             'user_id', COALESCE(orig_p.author_org_id, u_orig.user_id),
                             'full_name', COALESCE(comp_orig.name, u_orig.full_name),
-                            'avatar_url', COALESCE(comp_orig.logo_url, u_orig.avatar_url)
+                            'avatar_url', CASE WHEN orig_p.author_org_id IS NOT NULL THEN comp_orig.logo_url ELSE u_orig.avatar_url END
                         ),
                         'media', COALESCE(
                             (SELECT json_agg(json_build_object('url', pm.url, 'media_type', pm.media_type)) 
                              FROM post_media pm WHERE pm.post_id = orig_p.post_id),
                             '[]'::json
+                        ),
+                        'poll', (
+                            SELECT json_build_object(
+                                'poll_id', pp_orig.poll_id,
+                                'duration', COALESCE(pp_orig.duration, '1 day'),
+                                'total_votes', (SELECT COUNT(*) FROM poll_votes pv WHERE pv.poll_id = pp_orig.poll_id)::int,
+                                'user_vote', (
+                                    SELECT pv_u.option_id FROM poll_votes pv_u 
+                                    WHERE pv_u.poll_id = pp_orig.poll_id 
+                                    AND (
+                                        ${isOrgActor ? 'pv_u.org_id = $1::uuid' : 'pv_u.voter_id = $1 AND pv_u.org_id IS NULL'}
+                                    )
+                                    LIMIT 1
+                                ),
+                                'is_active', (pp_orig.created_at + COALESCE(pp_orig.duration, '1 day')::interval > NOW()),
+                                'options',
+                                COALESCE(
+                                    (
+                                        SELECT json_agg(
+                                            json_build_object(
+                                                'option_id', po.option_id,
+                                                'option_text', po.option_text,
+                                                'vote_count', (SELECT COUNT(*) FROM poll_votes pv WHERE pv.option_id = po.option_id)
+                                            )
+                                        )
+                                        FROM poll_options po
+                                        WHERE po.poll_id = pp_orig.poll_id
+                                    ),
+                                    '[]'::json
+                                )
+                            )
+                            FROM post_polls pp_orig
+                            WHERE pp_orig.post_id = orig_p.post_id
+                            LIMIT 1
                         )
                     )
                 ELSE NULL
@@ -352,6 +386,42 @@ exports.getSavedPosts = async (req, res) => {
             (SELECT COUNT(*) FROM saved_post sp_cnt WHERE sp_cnt.post_id = p.post_id)::int AS save_count,
             (SELECT COUNT(*) FROM poll_votes pv WHERE pv.poll_id = (SELECT poll_id FROM post_polls pp WHERE pp.post_id = p.post_id LIMIT 1))::int AS votes,
             (SELECT (pp.created_at + COALESCE(pp.duration, '1 day')::interval > NOW()) FROM post_polls pp WHERE pp.post_id = p.post_id LIMIT 1) AS "isPollActive",
+
+            -- Full Poll Object with Options
+            (
+                SELECT json_build_object(
+                    'poll_id', pp.poll_id,
+                    'duration', COALESCE(pp.duration, '1 day'),
+                    'total_votes', (SELECT COUNT(*) FROM poll_votes pv WHERE pv.poll_id = pp.poll_id)::int,
+                    'user_vote', (
+                        SELECT pv_u.option_id FROM poll_votes pv_u 
+                        WHERE pv_u.poll_id = pp.poll_id 
+                        AND (
+                            ${isOrgActor ? 'pv_u.org_id = $1::uuid' : 'pv_u.voter_id = $1 AND pv_u.org_id IS NULL'}
+                        )
+                        LIMIT 1
+                    ),
+                    'is_active', (pp.created_at + COALESCE(pp.duration, '1 day')::interval > NOW()),
+                    'options',
+                    COALESCE(
+                        (
+                            SELECT json_agg(
+                                json_build_object(
+                                    'option_id', po.option_id,
+                                    'option_text', po.option_text,
+                                    'vote_count', (SELECT COUNT(*) FROM poll_votes pv WHERE pv.option_id = po.option_id)
+                                )
+                            )
+                            FROM poll_options po
+                            WHERE po.poll_id = pp.poll_id
+                        ),
+                        '[]'::json
+                    )
+                )
+                FROM post_polls pp
+                WHERE pp.post_id = p.post_id
+                LIMIT 1
+            ) AS poll,
 
             -- Identity Aware states
             EXISTS(
@@ -397,12 +467,16 @@ exports.getSavedPosts = async (req, res) => {
 
         const formattedPosts = result.rows.map(row => {
             const firstImage = row.image_url || row.post_url || (Array.isArray(row.media) && row.media.length > 0 ? row.media[0].url : null);
+            const pollOptions = row.poll?.options || [];
             return {
                 ...row,
                 image_url: firstImage,
                 post_url: firstImage,
                 imageSrc: firstImage,
                 images: Array.isArray(row.images) && row.images.length > 0 ? row.images : (firstImage ? [firstImage] : []),
+                poll: row.poll || null,
+                options: pollOptions,
+                poll_options: pollOptions,
             };
         });
 

@@ -3,6 +3,7 @@
  * All database queries for profile data: user info, experiences, educations, skills, resume.
  */
 const pool = require("../../core/db/pool");
+const { toTitleCase } = require("../../utils/nameNormalizer");
 
 // ─── User / Profile Queries ────────────────────────────────────────────────────
 
@@ -741,7 +742,7 @@ const syncProjectSkillsInTx = async (client, profileId, projectId, skillNames) =
     await client.query(`DELETE FROM project_skills WHERE project_id = $1`, [projectId]);
     if (!Array.isArray(skillNames) || skillNames.length === 0) return;
     
-    const validNames = [...new Set(skillNames.map(s => (typeof s === 'string' ? s.trim() : '')).filter(Boolean))];
+    const validNames = [...new Set(skillNames.map(s => (typeof s === 'string' ? toTitleCase(s) : '')).filter(Boolean))];
     if (validNames.length === 0) return;
 
     await client.query(
@@ -776,7 +777,7 @@ const syncExperienceSkillsInTx = async (client, profileId, experienceId, skillNa
     await client.query(`DELETE FROM experience_skills WHERE experience_id = $1`, [experienceId]);
     if (!Array.isArray(skillNames) || skillNames.length === 0) return;
     
-    const validNames = [...new Set(skillNames.map(s => (typeof s === 'string' ? s.trim() : '')).filter(Boolean))];
+    const validNames = [...new Set(skillNames.map(s => (typeof s === 'string' ? toTitleCase(s) : '')).filter(Boolean))];
     if (validNames.length === 0) return;
 
     await client.query(
