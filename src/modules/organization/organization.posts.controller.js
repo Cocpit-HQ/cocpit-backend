@@ -169,6 +169,7 @@ exports.getOrganizationPosts = async (req, res) => {
         SELECT
             p.post_id,
             p.content,
+            p.location,
             p.created_at,
             p.visibility,
             p.post_type,
@@ -206,6 +207,11 @@ exports.getOrganizationPosts = async (req, res) => {
                     ($${orgActorParamIdx}::uuid IS NOT NULL AND pl.org_id = $${orgActorParamIdx}::uuid) OR ($${orgActorParamIdx}::uuid IS NULL AND pl.user_id = $${userParamIdx} AND pl.org_id IS NULL)
                 )
             ) AS is_liked,
+            EXISTS(
+                SELECT 1 FROM saved_post sp_me WHERE sp_me.post_id = p.post_id AND (
+                    ($${orgActorParamIdx}::uuid IS NOT NULL AND sp_me.org_id = $${orgActorParamIdx}::uuid) OR ($${orgActorParamIdx}::uuid IS NULL AND sp_me.user_id = $${userParamIdx} AND sp_me.org_id IS NULL)
+                )
+            ) AS is_saved,
             EXISTS(
                 SELECT 1 FROM posts sp_rep
                 WHERE sp_rep.shared_post_id = p.post_id
@@ -286,6 +292,11 @@ exports.getOrganizationPosts = async (req, res) => {
                         'is_liked', EXISTS(
                             SELECT 1 FROM active_post_likes pl WHERE pl.post_id = sp.post_id AND (
                                 ($${orgActorParamIdx}::uuid IS NOT NULL AND pl.org_id = $${orgActorParamIdx}::uuid) OR ($${orgActorParamIdx}::uuid IS NULL AND pl.user_id = $${userParamIdx} AND pl.org_id IS NULL)
+                            )
+                        ),
+                        'is_saved', EXISTS(
+                            SELECT 1 FROM saved_post sp_me WHERE sp_me.post_id = sp.post_id AND (
+                                ($${orgActorParamIdx}::uuid IS NOT NULL AND sp_me.org_id = $${orgActorParamIdx}::uuid) OR ($${orgActorParamIdx}::uuid IS NULL AND sp_me.user_id = $${userParamIdx} AND sp_me.org_id IS NULL)
                             )
                         ),
                         'is_reposted', EXISTS(

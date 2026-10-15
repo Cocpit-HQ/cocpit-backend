@@ -28,6 +28,31 @@ const featureFlagsService = require("../config/featureFlags.service");
 // ---------------------------------------------------------------------------
 
 /**
+ * Normalizes any address (including full Google Places addresses with plus codes,
+ * street names, localities, and postal codes) to "City, State, Country" format for profile display.
+ */
+function toCityStateCountry(raw, fallbackCountry = 'India') {
+    if (!raw || typeof raw !== 'string') return '';
+    const clean = raw.trim();
+    if (!clean) return '';
+    const parts = clean.split(',').map(s => s.trim()).filter(Boolean);
+    if (parts.length <= 1) {
+        return parts[0] ? (parts[0].toLowerCase().includes(fallbackCountry.toLowerCase()) ? parts[0] : `${parts[0]}, ${fallbackCountry}`) : '';
+    }
+    if (parts.length === 2) {
+        const p0 = parts[0].replace(/\b\d{4,7}\b/g, '').trim();
+        const p1 = parts[1].replace(/\b\d{4,7}\b/g, '').trim();
+        return [p0, p1].filter(Boolean).join(', ');
+    }
+    const country = parts[parts.length - 1].replace(/\b\d{4,7}\b/g, '').trim() || fallbackCountry;
+    const state = parts[parts.length - 2].replace(/\b\d{4,7}\b/g, '').replace(/[-–]\s*\d+/g, '').replace(/^[0-9A-Z]{4,8}\+[0-9A-Z]{2,4}\b/gi, '').trim();
+    const city = parts[parts.length - 3].replace(/\b\d{4,7}\b/g, '').replace(/^[0-9A-Z]{4,8}\+[0-9A-Z]{2,4}\b/gi, '').trim();
+    const tokens = [city, state, country].filter(Boolean);
+    return tokens.filter((t, i) => tokens.indexOf(t) === i).join(', ');
+}
+exports.toCityStateCountry = toCityStateCountry;
+
+/**
  * Resolve orgId param — accepts UUID or slug.
  * Returns { org_id, entity_type, ... } or null if not found.
  */
@@ -37,7 +62,7 @@ async function resolveOrg(orgIdOrSlug) {
 
     const result = await pool.query(
         `SELECT org_id, name, slug, logo_url, cover_url, headline, slogan,
-                industry, size, website, location, phone, email,
+                industry, size, website, location, location_formatted, phone, email,
                 description, entity_type, institution_type,
                 established_year, campus_location,
                 verification_status, email_verified, phone_verified,
@@ -105,7 +130,62 @@ exports.getOrgProfile = async (req, res) => {
         if (req.user || req.actor) {
             const isBlocked = await checkActorBlockStatus(req, org.org_id);
             if (isBlocked) {
-                return res.status(404).json({ message: 'Organization not found' });
+                return res.status(200).json({
+                    org: {
+                        org_id: org.org_id,
+                        company_id: org.org_id,
+                        id: org.org_id,
+                        name: org.name,
+                        slug: org.slug,
+                        logo_url: org.logo_url,
+                        cover_url: org.cover_url,
+                        headline: org.headline,
+                        slogan: org.slogan,
+                        industry: org.industry,
+                        entity_type: org.entity_type,
+                        institution_type: org.institution_type,
+                        verification_status: org.verification_status,
+                    },
+                    organization: {
+                        org_id: org.org_id,
+                        company_id: org.org_id,
+                        id: org.org_id,
+                        name: org.name,
+                        slug: org.slug,
+                        logo_url: org.logo_url,
+                        cover_url: org.cover_url,
+                        headline: org.headline,
+                        slogan: org.slogan,
+                        industry: org.industry,
+                        entity_type: org.entity_type,
+                        institution_type: org.institution_type,
+                        verification_status: org.verification_status,
+                    },
+                    counts: {
+                        followers_count: 0,
+                        following_count: 0,
+                        subscribers_count: 0,
+                        members_count: 0,
+                        alumni_count: 0,
+                        posts_count: 0,
+                        active_jobs_count: 0,
+                    },
+                    relationship: {
+                        is_following: false,
+                        is_subscribed: false,
+                        is_connected: false,
+                        is_blocked: true,
+                    },
+                    is_own_profile: false,
+                    is_member: false,
+                    membership: null,
+                    viewer_role: null,
+                    viewer_permissions: [],
+                    latest_posts: [],
+                    links: [],
+                    key_offerings: [],
+                    growth: null,
+                });
             }
         }
 
@@ -156,7 +236,7 @@ exports.getOrgProfile = async (req, res) => {
             getViewerMembership(org.org_id, viewerId),
             // Latest 3 posts preview
             pool.query(
-                `SELECT p.post_id, p.content, p.created_at,
+                `SELECT p.post_id, p.content, p.location, p.created_at,
                         COALESCE(lc.like_count, 0)::int AS like_count,
                         COALESCE(cc.comment_count, 0)::int AS comment_count,
                         COALESCE(pm.media, '[]'::json) AS media,
@@ -169,7 +249,8 @@ exports.getOrgProfile = async (req, res) => {
                             ORDER BY pl_sample.created_at DESC
                             LIMIT 1
                         ) AS sample_liker_username,
-                        EXISTS(SELECT 1 FROM active_post_likes pl WHERE pl.post_id = p.post_id AND pl.user_id = $2) AS is_liked
+                        EXISTS(SELECT 1 FROM active_post_likes pl WHERE pl.post_id = p.post_id AND pl.user_id = $2) AS is_liked,
+                        EXISTS(SELECT 1 FROM saved_post sp_me WHERE sp_me.post_id = p.post_id AND sp_me.user_id = $2 AND sp_me.org_id IS NULL) AS is_saved
                  FROM posts p
                  LEFT JOIN (
                      SELECT post_id, COUNT(*)::int AS like_count FROM active_post_likes GROUP BY post_id
@@ -532,9 +613,12 @@ exports.getOrgProfile = async (req, res) => {
             }).catch(err => console.error("Profile view audit log error:", err));
         }
 
+        const displayLocation = toCityStateCountry(org.location_formatted || org.location || org.city, org.country || 'India');
+
         return res.json({
             org: {
                 ...org,
+                location: displayLocation,
                 is_verified: ['DOMAIN_VERIFIED'].includes(org.verification_status),
                 following_count: counts.following_count || 0,
                 followers_count: counts.followers_count,
@@ -601,7 +685,7 @@ exports.getOrgAbout = async (req, res) => {
                 `SELECT office_id, city, country, address, is_headquarters
                  FROM organization_offices 
                  WHERE org_id = $1 AND is_deleted = FALSE
-                 ORDER BY is_headquarters DESC, city ASC`,
+                 ORDER BY is_headquarters DESC, created_at ASC`,
                 [org.org_id]
             ),
             pool.query(
@@ -634,9 +718,12 @@ exports.getOrgAbout = async (req, res) => {
             website: org.website,
             industry: org.industry,
             size: org.size,
-            location: org.location,
+            location: org.location_formatted || org.location || org.city,
             country: org.country,
             city: org.city,
+            headquarter: org.location_formatted || org.location || org.city,
+            headquarter_location: org.location_formatted || org.location || org.city,
+            location_formatted: org.location_formatted || org.location,
             founded: org.established_year,
             entity_type: org.entity_type,
             institution_type: org.institution_type,
@@ -889,6 +976,8 @@ exports.getOrgPeople = async (req, res) => {
     const { limit = 20, search, cursor } = req.query;
     const limitVal = parseInt(limit);
     const viewerId = req.user?.sub || null;
+    const isOrgActor = req.actor?.type === 'ORGANIZATION' || (req.headers['x-actor-type'] || '').toUpperCase().trim() === 'ORGANIZATION';
+    const actorOrgId = isOrgActor ? (req.actor?.orgId || req.headers['x-actor-id'] || null) : null;
 
     try {
         const org = await resolveOrg(orgId);
@@ -914,7 +1003,7 @@ exports.getOrgPeople = async (req, res) => {
             } catch (_) { /* invalid cursor — ignore */ }
         }
 
-        const params = [org.org_id, limitVal, viewerId];
+        const params = [org.org_id, limitVal, viewerId, actorOrgId];
         let searchClause = '';
         if (search && search.trim()) {
             params.push(`%${search.trim()}%`);
@@ -966,25 +1055,34 @@ exports.getOrgPeople = async (req, res) => {
                  enriched AS (
                      SELECT *,
                             COALESCE(
-                                CASE WHEN $3::uuid IS NULL THEN false
-                                     ELSE EXISTS(SELECT 1 FROM followers WHERE follower_id = $3::uuid AND following_id = user_id)
+                                CASE
+                                    WHEN $4::uuid IS NOT NULL THEN
+                                        EXISTS(SELECT 1 FROM organization_user_follows WHERE org_id = $4::uuid AND user_id = current_employees.user_id)
+                                    WHEN $3::uuid IS NULL THEN false
+                                    ELSE EXISTS(SELECT 1 FROM followers WHERE follower_id = $3::uuid AND following_id = user_id)
                                 END, false
                             ) AS is_following,
                             COALESCE(
-                                CASE WHEN $3::uuid IS NULL THEN false
-                                     ELSE EXISTS(SELECT 1 FROM followers WHERE follower_id = user_id AND following_id = $3::uuid)
+                                CASE
+                                    WHEN $4::uuid IS NOT NULL THEN
+                                        EXISTS(SELECT 1 FROM organization_followers WHERE org_id = $4::uuid AND user_id = current_employees.user_id)
+                                    WHEN $3::uuid IS NULL THEN false
+                                    ELSE EXISTS(SELECT 1 FROM followers WHERE follower_id = user_id AND following_id = $3::uuid)
                                 END, false
                             ) AS is_followed_by,
                             CASE
+                                WHEN $4::uuid IS NOT NULL THEN null
                                 WHEN $3::uuid IS NULL THEN null
                                 WHEN EXISTS(SELECT 1 FROM connections c WHERE c.user_id = $3::uuid AND c.connected_user_id = current_employees.user_id) THEN 'connected'
                                 ELSE (SELECT status FROM connection_requests WHERE ((sender_id = $3::uuid AND receiver_id = user_id) OR (sender_id = user_id AND receiver_id = $3::uuid)) AND status != 'connected' LIMIT 1)
                             END AS connection_request_status,
                             CASE
+                                WHEN $4::uuid IS NOT NULL THEN null
                                 WHEN $3::uuid IS NULL THEN null
                                 ELSE (SELECT request_id FROM connection_requests WHERE ((sender_id = $3::uuid AND receiver_id = user_id) OR (sender_id = user_id AND receiver_id = $3::uuid)) AND status != 'connected' LIMIT 1)
                             END AS connection_request_id,
                             CASE
+                                WHEN $4::uuid IS NOT NULL THEN null
                                 WHEN $3::uuid IS NULL THEN null
                                 ELSE (SELECT CASE WHEN sender_id = $3::uuid THEN 'me' ELSE 'them' END FROM connection_requests WHERE ((sender_id = $3::uuid AND receiver_id = user_id) OR (sender_id = user_id AND receiver_id = $3::uuid)) AND status != 'connected' LIMIT 1)
                             END AS connection_request_sender
@@ -1067,6 +1165,8 @@ exports.getOrgAlumni = async (req, res) => {
     const { limit = 20, search, graduation_year, cursor } = req.query;
     const limitVal = parseInt(limit);
     const viewerId = req.user?.sub || null;
+    const isOrgActor = req.actor?.type === 'ORGANIZATION' || (req.headers['x-actor-type'] || '').toUpperCase().trim() === 'ORGANIZATION';
+    const actorOrgId = isOrgActor ? (req.actor?.orgId || req.headers['x-actor-id'] || null) : null;
 
     try {
         const org = await resolveOrg(orgId);
@@ -1096,7 +1196,7 @@ exports.getOrgAlumni = async (req, res) => {
             } catch (_) { /* invalid cursor — ignore */ }
         }
 
-        const params = [org.org_id, limitVal, viewerId];
+        const params = [org.org_id, limitVal, viewerId, actorOrgId];
         const filters = [];
 
         if (search && search.trim()) {
@@ -1168,25 +1268,34 @@ exports.getOrgAlumni = async (req, res) => {
                  enriched AS (
                      SELECT *,
                             COALESCE(
-                                CASE WHEN $3::uuid IS NULL THEN false
-                                     ELSE EXISTS(SELECT 1 FROM followers WHERE follower_id = $3::uuid AND following_id = user_id)
+                                CASE
+                                    WHEN $4::uuid IS NOT NULL THEN
+                                        EXISTS(SELECT 1 FROM organization_user_follows WHERE org_id = $4::uuid AND user_id = school_alumni.user_id)
+                                    WHEN $3::uuid IS NULL THEN false
+                                    ELSE EXISTS(SELECT 1 FROM followers WHERE follower_id = $3::uuid AND following_id = user_id)
                                 END, false
                             ) AS is_following,
                             COALESCE(
-                                CASE WHEN $3::uuid IS NULL THEN false
-                                     ELSE EXISTS(SELECT 1 FROM followers WHERE follower_id = user_id AND following_id = $3::uuid)
+                                CASE
+                                    WHEN $4::uuid IS NOT NULL THEN
+                                        EXISTS(SELECT 1 FROM organization_followers WHERE org_id = $4::uuid AND user_id = school_alumni.user_id)
+                                    WHEN $3::uuid IS NULL THEN false
+                                    ELSE EXISTS(SELECT 1 FROM followers WHERE follower_id = user_id AND following_id = $3::uuid)
                                 END, false
                             ) AS is_followed_by,
                             CASE
+                                WHEN $4::uuid IS NOT NULL THEN null
                                 WHEN $3::uuid IS NULL THEN null
                                 WHEN EXISTS(SELECT 1 FROM connections c WHERE c.user_id = $3::uuid AND c.connected_user_id = school_alumni.user_id) THEN 'connected'
                                 ELSE (SELECT status FROM connection_requests WHERE ((sender_id = $3::uuid AND receiver_id = user_id) OR (sender_id = user_id AND receiver_id = $3::uuid)) AND status != 'connected' LIMIT 1)
                             END AS connection_request_status,
                             CASE
+                                WHEN $4::uuid IS NOT NULL THEN null
                                 WHEN $3::uuid IS NULL THEN null
                                 ELSE (SELECT request_id FROM connection_requests WHERE ((sender_id = $3::uuid AND receiver_id = user_id) OR (sender_id = user_id AND receiver_id = $3::uuid)) AND status != 'connected' LIMIT 1)
                             END AS connection_request_id,
                             CASE
+                                WHEN $4::uuid IS NOT NULL THEN null
                                 WHEN $3::uuid IS NULL THEN null
                                 ELSE (SELECT CASE WHEN sender_id = $3::uuid THEN 'me' ELSE 'them' END FROM connection_requests WHERE ((sender_id = $3::uuid AND receiver_id = user_id) OR (sender_id = user_id AND receiver_id = $3::uuid)) AND status != 'connected' LIMIT 1)
                             END AS connection_request_sender
@@ -1268,7 +1377,7 @@ exports.updateOrgProfile = async (req, res) => {
     const userId = req.user.sub;
 
     const {
-        name, headline, industry, size, website, country, city, established_year, keyOfferings
+        name, headline, industry, size, website, country, city, location, formattedAddress, latitude, longitude, placeId, established_year, keyOfferings
     } = req.body;
 
     // Validate name if provided
@@ -1337,7 +1446,24 @@ exports.updateOrgProfile = async (req, res) => {
         addUpdate('size', size || null);
         addUpdate('website', website?.trim() || null);
         addUpdate('country', country?.trim() || null);
-        addUpdate('city', city?.trim() || null);
+
+        const fullLoc = formattedAddress || location || city;
+        if (fullLoc !== undefined) {
+            const cleanFull = fullLoc ? fullLoc.trim() : null;
+            addUpdate('location_formatted', cleanFull);
+            addUpdate('location', cleanFull);
+            if (city) {
+                addUpdate('city', city.trim());
+            }
+        } else if (city !== undefined) {
+            addUpdate('city', city?.trim() || null);
+            addUpdate('location', city?.trim() || null);
+        }
+
+        if (latitude !== undefined && latitude !== null) addUpdate('location_lat', Number(latitude));
+        if (longitude !== undefined && longitude !== null) addUpdate('location_lng', Number(longitude));
+        if (placeId !== undefined) addUpdate('location_place_id', placeId || null);
+
         addUpdate('established_year', established_year ? parseInt(established_year) : null);
 
         if (params.length === 0 && keyOfferings === undefined) {
@@ -1353,14 +1479,14 @@ exports.updateOrgProfile = async (req, res) => {
                 SET ${updates.join(', ')}, updated_at = NOW()
                 WHERE org_id = $${params.length} AND is_deleted = FALSE
                 RETURNING org_id, name, headline, industry, institution_type, size, website,
-                          country, city, established_year, logo_url, cover_url,
+                          country, city, location, location_formatted, established_year, logo_url, cover_url,
                           entity_type, updated_at
             `;
             result = await client.query(query, params);
         } else {
             result = await client.query(
                 `SELECT org_id, name, headline, industry, institution_type, size, website,
-                        country, city, established_year, logo_url, cover_url,
+                        country, city, location, location_formatted, established_year, logo_url, cover_url,
                         entity_type, updated_at
                  FROM organizations WHERE org_id = $1 AND is_deleted = FALSE`,
                 [orgId]
@@ -1578,11 +1704,10 @@ exports.updateOrgAbout = async (req, res) => {
                 [orgId]
             );
             const existingLinkIds = new Set(currentRes.rows.map(r => r.link_id));
-            const VALID_PLATFORMS = ['linkedin', 'twitter', 'instagram', 'facebook', 'youtube', 'discord', 'github', 'other'];
-
             for (const link of links) {
                 if (!link.url) continue;
-                const platform = VALID_PLATFORMS.includes(link.platform) ? link.platform : 'other';
+                let platform = (link.platform || 'website').toLowerCase().trim() || 'website';
+                if (platform === 'twitter') platform = 'x';
 
                 if (link.link_id && existingLinkIds.has(link.link_id)) {
                     // Update existing active link
@@ -1621,7 +1746,11 @@ exports.updateOrgAbout = async (req, res) => {
             );
             const activeSpecialties = new Map(currentRes.rows.map(r => [r.name.toLowerCase(), r.specialty_id]));
 
-            for (const name of specialties) {
+            const uniqueSpecialties = Array.from(
+                new Map(specialties.map(s => [s?.toString().trim().toLowerCase(), s?.toString().trim()])).values()
+            ).filter(Boolean);
+
+            for (const name of uniqueSpecialties) {
                 if (!name || !name.trim()) continue;
                 const cleanName = name.trim();
                 const key = cleanName.toLowerCase();
@@ -1644,9 +1773,10 @@ exports.updateOrgAbout = async (req, res) => {
                             [deletedRes.rows[0].specialty_id]
                         );
                     } else {
-                        // Insert new specialty
+                        // Insert new specialty with conflict protection
                         await client.query(
-                            `INSERT INTO organization_specialties (org_id, name) VALUES ($1, $2)`,
+                            `INSERT INTO organization_specialties (org_id, name) VALUES ($1, $2)
+                             ON CONFLICT (org_id, name) WHERE is_deleted = FALSE DO NOTHING`,
                             [orgId, cleanName]
                         );
                     }

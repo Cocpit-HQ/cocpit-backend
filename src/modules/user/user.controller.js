@@ -467,12 +467,12 @@ exports.getUserProfile = async (req, res) => {
 
         if (isConnected) {
           isFollowing = true;
-          isFollowedBy = true;
           connectionRequestStatus = 'connected';
-        }
+          isFollowedBy = true;
+          }
 
-        // Only check requests if NOT already connected
-        if (!isConnected) {
+        // Only check requests if NOT already connected and NOT acting as an organization
+        if (!isConnected && !isOrgActor) {
           const requestCheck = await pool.query(
             `SELECT request_id, sender_id, status 
              FROM connection_requests 

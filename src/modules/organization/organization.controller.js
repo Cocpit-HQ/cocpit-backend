@@ -11,6 +11,7 @@ const { logAudit } = require("../../core/infrastructure/audit.service");
 // --- Updated Permissions Helper ---
 const { requireOrgPermission } = require("../../core/middlewares/organization.auth.middleware");
 const featureFlagsService = require("../config/featureFlags.service");
+const { toCityStateCountry } = require("./organization.profile.controller");
 
 exports.createOrganization = async (req, res) => {
     const userId = req.user.sub;
@@ -241,7 +242,18 @@ exports.getOrganization = async (req, res) => {
         if (req.user || req.actor) {
             const isBlocked = await checkActorBlockStatus(req, company.org_id);
             if (isBlocked) {
-                return res.status(404).json({ message: "Organization not found" });
+                return res.status(200).json({
+                    ...company,
+                    is_blocked: true,
+                    relationship: {
+                        is_following: false,
+                        is_subscribed: false,
+                        is_connected: false,
+                        is_blocked: true,
+                    },
+                    member_count: 0,
+                    viewer_role_data: null,
+                });
             }
         }
 
@@ -369,6 +381,9 @@ exports.getOrganization = async (req, res) => {
         // ZERO NETWORK DATA LEAK PAYLOAD STRIPPING: If permission denied, strip raw sensitive fields
         if (!canViewEmail) company.email = null;
         if (!canViewPhone) company.phone = null;
+
+        const displayLoc = toCityStateCountry(company.location_formatted || company.location || company.city, company.country || 'India');
+        company.location = displayLoc;
 
         res.json(company);
     } catch (err) {
@@ -1611,9 +1626,13 @@ exports.getProfilePreview = async (req, res) => {
             return res.status(404).json({ message: "Organization not found" });
         }
 
+        const preview = orgRes.rows[0];
+        const displayLoc = toCityStateCountry(preview.location_formatted || preview.location || preview.city, preview.country || 'India');
+        preview.location = displayLoc;
+
         res.json({
             success: true,
-            preview: orgRes.rows[0]
+            preview
         });
     } catch (err) {
         console.error("Get profile preview error:", err);

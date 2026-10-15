@@ -6585,9 +6585,19 @@ exports.getOrganizationFollowing = async (req, res) => {
     const { search } = req.query;
 
     try {
-        const isOwnOrgActor = req.actor && req.actor.type === "ORGANIZATION" && req.actor.orgId === orgId;
+        let isAuthorizedViewer = (req.actor && req.actor.type === "ORGANIZATION" && req.actor.orgId === orgId);
 
-        if (!isOwnOrgActor) {
+        if (!isAuthorizedViewer && req.user?.sub) {
+            const memberCheck = await pool.query(
+                `SELECT 1 FROM organization_members WHERE org_id = $1 AND user_id = $2`,
+                [orgId, req.user.sub]
+            );
+            if (memberCheck.rowCount > 0) {
+                isAuthorizedViewer = true;
+            }
+        }
+
+        if (!isAuthorizedViewer) {
             const privacyRes = await pool.query(
                 `SELECT following_visibility FROM organization_privacy_settings WHERE org_id = $1`,
                 [orgId]
