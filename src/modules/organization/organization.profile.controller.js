@@ -1518,7 +1518,7 @@ exports.updateOrgProfile = async (req, res) => {
                 const off = keyOfferings[i];
                 if (!off.content || !off.content.trim()) continue; // will be filtered out anyway
 
-                if (off.content.trim().length > 40) {
+                if (off.content.trim().length > 60) {
                     await client.query('ROLLBACK');
                     return res.status(400).json({ message: 'Key offering content must not exceed 60 characters.' });
                 }

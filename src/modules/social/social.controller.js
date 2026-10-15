@@ -660,12 +660,32 @@ exports.getCompanyFollowers = async (req, res) => {
                 }
             }
         }
+        const viewerOrgId = req.actor && req.actor.type === "ORGANIZATION" && req.actor.orgId ? req.actor.orgId : null;
+        const viewerUserId = req.user?.sub || null;
+
+        let viewerUserFollowsExpr = "FALSE";
+        let viewerCompanyFollowsExpr = "FALSE";
+        const params = [companyId];
+
+        if (viewerOrgId) {
+            params.push(viewerOrgId);
+            const viewerIdx = params.length;
+            viewerUserFollowsExpr = `EXISTS(SELECT 1 FROM organization_user_follows WHERE org_id = $${viewerIdx} AND user_id = u.user_id)`;
+            viewerCompanyFollowsExpr = `EXISTS(SELECT 1 FROM organization_org_follows WHERE follower_org_id = $${viewerIdx} AND following_org_id = c.org_id)`;
+        } else if (viewerUserId) {
+            params.push(viewerUserId);
+            const viewerIdx = params.length;
+            viewerUserFollowsExpr = `EXISTS(SELECT 1 FROM followers WHERE follower_id = $${viewerIdx} AND following_id = u.user_id)`;
+            viewerCompanyFollowsExpr = `EXISTS(SELECT 1 FROM organization_followers WHERE user_id = $${viewerIdx} AND org_id = c.org_id)`;
+        }
+
         let userQuery = `
             SELECT u.user_id, u.full_name, u.headline, u.avatar_url, cf.created_at as followed_at,
                    EXISTS(
                        SELECT 1 FROM organization_user_follows ouf
                        WHERE ouf.org_id = $1 AND ouf.user_id = u.user_id
                    ) as is_followed_back,
+                   (${viewerUserFollowsExpr}) as is_following,
                    'user' as type
             FROM organization_followers cf
             JOIN active_users u ON cf.user_id = u.user_id
@@ -681,23 +701,24 @@ exports.getCompanyFollowers = async (req, res) => {
                        SELECT 1 FROM organization_org_follows back_f
                        WHERE back_f.follower_org_id = $1 AND back_f.following_org_id = c.org_id
                    ) as is_followed_back,
+                   (${viewerCompanyFollowsExpr}) as is_following,
                    'company' as type
             FROM organization_org_follows cf
             JOIN organizations c ON cf.follower_org_id = c.org_id
             WHERE cf.following_org_id = $1 AND c.is_deleted = FALSE
         `;
 
-        const params = [companyId];
-
         if (search && search.trim()) {
-            userQuery += ` AND (u.full_name ILIKE '%' || $2 || '%')`;
-            companyQuery += ` AND (c.name ILIKE '%' || $2 || '%')`;
             params.push(search.trim());
+            const searchIdx = params.length;
+            userQuery += ` AND (u.full_name ILIKE '%' || $${searchIdx} || '%')`;
+            companyQuery += ` AND (c.name ILIKE '%' || $${searchIdx} || '%')`;
         }
 
         let fullQuery = `SELECT * FROM ((${userQuery}) UNION ALL (${companyQuery})) as t`;
         if (search && search.trim()) {
-            fullQuery += ` ORDER BY (CASE WHEN full_name ILIKE $2 || '%' THEN 0 ELSE 1 END), followed_at DESC`;
+            const searchIdx = params.length;
+            fullQuery += ` ORDER BY (CASE WHEN full_name ILIKE $${searchIdx} || '%' THEN 0 ELSE 1 END), followed_at DESC`;
         } else {
             fullQuery += ` ORDER BY followed_at DESC`;
         }
@@ -6626,26 +6647,48 @@ exports.getOrganizationFollowing = async (req, res) => {
                 }
             }
         }
+        const viewerOrgId = req.actor && req.actor.type === "ORGANIZATION" && req.actor.orgId ? req.actor.orgId : null;
+        const viewerUserId = req.user?.sub || null;
+
+        let viewerUserFollowsExpr = "FALSE";
+        let viewerCompanyFollowsExpr = "FALSE";
+        const params = [orgId];
+
+        if (viewerOrgId) {
+            params.push(viewerOrgId);
+            const viewerIdx = params.length;
+            viewerUserFollowsExpr = `EXISTS(SELECT 1 FROM organization_user_follows WHERE org_id = $${viewerIdx} AND user_id = u.user_id)`;
+            viewerCompanyFollowsExpr = `EXISTS(SELECT 1 FROM organization_org_follows WHERE follower_org_id = $${viewerIdx} AND following_org_id = c.org_id)`;
+        } else if (viewerUserId) {
+            params.push(viewerUserId);
+            const viewerIdx = params.length;
+            viewerUserFollowsExpr = `EXISTS(SELECT 1 FROM followers WHERE follower_id = $${viewerIdx} AND following_id = u.user_id)`;
+            viewerCompanyFollowsExpr = `EXISTS(SELECT 1 FROM organization_followers WHERE user_id = $${viewerIdx} AND org_id = c.org_id)`;
+        }
+
         let userQuery = `
-            SELECT u.user_id, u.full_name AS name, u.avatar_url AS avatar, u.headline, f.created_at, 'user' as type
+            SELECT u.user_id, u.full_name AS name, u.avatar_url AS avatar, u.headline, f.created_at,
+                   (${viewerUserFollowsExpr}) as is_following,
+                   'user' as type
             FROM organization_user_follows f
             JOIN active_users u ON f.user_id = u.user_id
             WHERE f.org_id = $1
         `;
 
         let companyQuery = `
-            SELECT c.org_id as user_id, c.name AS name, c.logo_url as avatar, c.industry as headline, cf.created_at, 'company' as type
+            SELECT c.org_id as user_id, c.name AS name, c.logo_url as avatar, c.industry as headline, cf.created_at,
+                   (${viewerCompanyFollowsExpr}) as is_following,
+                   'company' as type
             FROM organization_org_follows cf
             JOIN organizations c ON cf.following_org_id = c.org_id
             WHERE cf.follower_org_id = $1 AND c.is_deleted = FALSE
         `;
 
-        const params = [orgId];
-
         if (search && search.trim()) {
-            userQuery += ` AND (u.full_name ILIKE $2 OR u.headline ILIKE $2)`;
-            companyQuery += ` AND (c.name ILIKE $2 OR c.industry ILIKE $2)`;
             params.push(`%${search.trim()}%`);
+            const searchIdx = params.length;
+            userQuery += ` AND (u.full_name ILIKE $${searchIdx} OR u.headline ILIKE $${searchIdx})`;
+            companyQuery += ` AND (c.name ILIKE $${searchIdx} OR c.industry ILIKE $${searchIdx})`;
         }
 
         const fullQuery = `(${userQuery}) UNION ALL (${companyQuery}) ORDER BY created_at DESC`;

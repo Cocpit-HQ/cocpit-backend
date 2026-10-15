@@ -2,7 +2,7 @@ const express = require("express");
 const router = express.Router();
 const socialController = require("./social.controller");
 const messageController = require("../messaging/message.controller");
-const { requireAuth } = require("../../core/middlewares/auth.middleware");
+const { requireAuth, optionalAuth } = require("../../core/middlewares/auth.middleware");
 const { requireOrgPermission, requireCompanyPermission } = require("../../core/middlewares/organization.auth.middleware");
 
 // Follow (One-way)
@@ -17,7 +17,7 @@ router.delete("/users/followers/:followerId", requireAuth, socialController.remo
 router.post("/organizations/:orgId/follow", requireAuth, socialController.followCompany);
 router.delete("/organizations/:orgId/unfollow", requireAuth, socialController.unfollowCompany);
 router.get("/organizations/:orgId/relationship", requireAuth, socialController.getCompanyRelationship);
-router.get("/organizations/:orgId/followers", socialController.getCompanyFollowers);
+router.get("/organizations/:orgId/followers", optionalAuth, socialController.getCompanyFollowers);
 router.delete("/organizations/:orgId/followers/:followerId", requireAuth, requireOrgPermission("MANAGE_MEMBERS"), socialController.removeCompanyFollower);
 
 // Organization Following Entities
@@ -25,7 +25,7 @@ router.post("/organizations/:orgId/following/users/:userId", requireAuth, requir
 router.delete("/organizations/:orgId/following/users/:userId", requireAuth, requireOrgPermission("MANAGE_COMPANY"), socialController.organizationUnfollowUser);
 router.post("/organizations/:orgId/following/organizations/:targetOrgId", requireAuth, requireOrgPermission("MANAGE_COMPANY"), socialController.organizationFollowOrganization);
 router.delete("/organizations/:orgId/following/organizations/:targetOrgId", requireAuth, requireOrgPermission("MANAGE_COMPANY"), socialController.organizationUnfollowOrganization);
-router.get("/organizations/:orgId/following", socialController.getOrganizationFollowing);
+router.get("/organizations/:orgId/following", optionalAuth, socialController.getOrganizationFollowing);
 
 
 

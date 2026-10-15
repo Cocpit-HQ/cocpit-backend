@@ -770,22 +770,14 @@ exports.getPublicProfilePosts = async (req, res) => {
     // ✅ LIMIT (provide a buffer for preview mode so frontend can filter hidden posts)
     params.push(isPreview ? Math.max(Number(limit) || 10, 10) : limit);
 
-    // ✅ Strict Block Logic for Shared Posts (dependant on userParamIdx which is derived from params.length + 1)
-    // We can't interpolate userParamIdx here because it's calculated afterwards.
-    // BUT, we know userParamIdx will be the LAST parameter pushed (req.user.sub).
-    // So usually it is params.length + 1 (after limit).
-    // Let's use a placeholder or interpolation.
-    // Actually, userParamIdx is calculated at line 313.
-    // Accessing it inside whereClause string is fine because whereClause is interpolated into query string at line 435.
-    // So we just need to ensure we use the variable `${userParamIdx}` in the string literal, but `userParamIdx` isn't defined yet!
-    // Ah, wait. `whereClause` is a string accumulating parts.
-    // If I add it *before* `userParamIdx` is defined, I can't use `userParamIdx`.
-    // OPTION: Add it to the query string *literally* at line 436, using `${userParamIdx}` which IS defined there.
+    // Viewer actor context (Company / Organization vs User)
+    const rawType = req.headers["x-actor-type"] || req.actor?.type;
+    const type = typeof rawType === "string" ? rawType.trim().toUpperCase() : null;
+    const isOrgType = type === "ORGANIZATION" || type === "COMPANY" || type === "ORG";
+    const actorOrgId = isOrgType ? (req.headers["x-actor-id"] || req.headers["x-company-id"] || req.headers["x-org-id"] || req.actor?.id || null) : null;
 
-    // Changing approach: I will modify the query string directly at line 437.
-
-
-    const userParamIdx = params.length + 1; // Index for current user (will be pushed later)
+    const userParamIdx = params.length + 1; // Index for current user (pushed later)
+    const orgActorParamIdx = params.length + 2; // Index for actor organization ID (pushed later)
 
     const query = `
       SELECT
@@ -839,27 +831,51 @@ exports.getPublicProfilePosts = async (req, res) => {
         ) AS sample_liker_username,
         (SELECT COUNT(*) FROM active_post_comments pc WHERE pc.post_id = p.post_id)::int AS comment_count,
 
-        EXISTS(SELECT 1 FROM active_post_likes pl WHERE pl.post_id = p.post_id AND pl.user_id = $${userParamIdx}) AS is_liked,
-        EXISTS(SELECT 1 FROM saved_post sp_me WHERE sp_me.post_id = p.post_id AND sp_me.user_id = $${userParamIdx} AND sp_me.org_id IS NULL) AS is_saved,
+        EXISTS(
+            SELECT 1 FROM active_post_likes pl WHERE pl.post_id = p.post_id AND (
+                ($${orgActorParamIdx}::uuid IS NOT NULL AND pl.org_id = $${orgActorParamIdx}::uuid)
+                OR
+                ($${orgActorParamIdx}::uuid IS NULL AND pl.user_id = $${userParamIdx} AND pl.org_id IS NULL)
+            )
+        ) AS is_liked,
+        EXISTS(
+            SELECT 1 FROM saved_post sp_me WHERE sp_me.post_id = p.post_id AND (
+                ($${orgActorParamIdx}::uuid IS NOT NULL AND sp_me.org_id = $${orgActorParamIdx}::uuid)
+                OR
+                ($${orgActorParamIdx}::uuid IS NULL AND sp_me.user_id = $${userParamIdx} AND sp_me.org_id IS NULL)
+            )
+        ) AS is_saved,
         EXISTS(
             SELECT 1 FROM posts sp_rep
             WHERE sp_rep.shared_post_id = p.post_id 
-            AND sp_rep.author_id = $${userParamIdx} AND sp_rep.author_org_id IS NULL
+            AND (
+                ($${orgActorParamIdx}::uuid IS NOT NULL AND sp_rep.author_org_id = $${orgActorParamIdx}::uuid)
+                OR
+                ($${orgActorParamIdx}::uuid IS NULL AND sp_rep.author_id = $${userParamIdx} AND sp_rep.author_org_id IS NULL)
+            )
             AND sp_rep.is_active = TRUE
             AND (sp_rep.is_removed IS FALSE OR sp_rep.is_removed IS NULL)
         ) AS is_reposted,
         EXISTS(
             SELECT 1 FROM posts sp_rep
             WHERE sp_rep.shared_post_id = p.post_id 
-            AND sp_rep.author_id = $${userParamIdx} AND sp_rep.author_org_id IS NULL
+            AND (
+                ($${orgActorParamIdx}::uuid IS NOT NULL AND sp_rep.author_org_id = $${orgActorParamIdx}::uuid)
+                OR
+                ($${orgActorParamIdx}::uuid IS NULL AND sp_rep.author_id = $${userParamIdx} AND sp_rep.author_org_id IS NULL)
+            )
             AND sp_rep.is_active = TRUE
             AND (sp_rep.is_removed IS FALSE OR sp_rep.is_removed IS NULL)
-        AND sp_rep.content IS NOT NULL AND TRIM(sp_rep.content) != ''
+            AND sp_rep.content IS NOT NULL AND TRIM(sp_rep.content) != ''
         ) AS is_reposted_with_thoughts,
         (
             SELECT sp_rep.post_id FROM posts sp_rep
             WHERE sp_rep.shared_post_id = p.post_id 
-            AND sp_rep.author_id = $${userParamIdx} AND sp_rep.author_org_id IS NULL
+            AND (
+                ($${orgActorParamIdx}::uuid IS NOT NULL AND sp_rep.author_org_id = $${orgActorParamIdx}::uuid)
+                OR
+                ($${orgActorParamIdx}::uuid IS NULL AND sp_rep.author_id = $${userParamIdx} AND sp_rep.author_org_id IS NULL)
+            )
             AND sp_rep.is_active = TRUE
             AND (sp_rep.is_removed IS FALSE OR sp_rep.is_removed IS NULL)
             LIMIT 1
@@ -876,8 +892,11 @@ exports.getPublicProfilePosts = async (req, res) => {
                 SELECT pl_sample.user_id, pl_sample.org_id
                 FROM active_post_likes pl_sample
                 WHERE pl_sample.post_id = p.post_id
-                  AND pl_sample.user_id IS NOT NULL
-                  AND pl_sample.user_id != $${userParamIdx}::uuid
+                  AND (
+                    ($${orgActorParamIdx}::uuid IS NOT NULL AND pl_sample.org_id != $${orgActorParamIdx}::uuid)
+                    OR
+                    ($${orgActorParamIdx}::uuid IS NULL AND ($${userParamIdx}::uuid IS NULL OR pl_sample.user_id != $${userParamIdx}::uuid))
+                  )
                 ORDER BY pl_sample.created_at DESC
                 LIMIT 3
             ) sub
@@ -958,27 +977,55 @@ exports.getPublicProfilePosts = async (req, res) => {
               'comment_count', (SELECT COUNT(*) FROM active_post_comments pc WHERE pc.post_id = sp.post_id)::int,
               'rePostCount', (SELECT COUNT(*) FROM posts sp_share2 WHERE sp_share2.shared_post_id = sp.post_id AND sp_share2.is_active = TRUE AND (sp_share2.is_removed IS FALSE OR sp_share2.is_removed IS NULL))::int,
               'sharePostCount', (SELECT COUNT(*) FROM shares s WHERE s.entity_type IN ('post', 'article') AND s.entity_id = sp.post_id::text)::int,
-              'is_liked', EXISTS(SELECT 1 FROM active_post_likes pl WHERE pl.post_id = sp.post_id AND pl.user_id = $${userParamIdx}),
-              'is_saved', EXISTS(SELECT 1 FROM saved_post sp_me WHERE sp_me.post_id = sp.post_id AND sp_me.user_id = $${userParamIdx} AND sp_me.org_id IS NULL),
+              'is_liked', EXISTS(
+                  SELECT 1 FROM active_post_likes pl 
+                  WHERE pl.post_id = sp.post_id 
+                  AND (
+                      ($${orgActorParamIdx}::uuid IS NOT NULL AND pl.org_id = $${orgActorParamIdx}::uuid)
+                      OR
+                      ($${orgActorParamIdx}::uuid IS NULL AND pl.user_id = $${userParamIdx} AND pl.org_id IS NULL)
+                  )
+              ),
+              'is_saved', EXISTS(
+                  SELECT 1 FROM saved_post sp_me 
+                  WHERE sp_me.post_id = sp.post_id 
+                  AND (
+                      ($${orgActorParamIdx}::uuid IS NOT NULL AND sp_me.org_id = $${orgActorParamIdx}::uuid)
+                      OR
+                      ($${orgActorParamIdx}::uuid IS NULL AND sp_me.user_id = $${userParamIdx} AND sp_me.org_id IS NULL)
+                  )
+              ),
               'is_reposted', EXISTS(
                   SELECT 1 FROM posts sp_rep
                   WHERE sp_rep.shared_post_id = sp.post_id 
-                  AND sp_rep.author_id = $${userParamIdx} AND sp_rep.author_org_id IS NULL
+                  AND (
+                      ($${orgActorParamIdx}::uuid IS NOT NULL AND sp_rep.author_org_id = $${orgActorParamIdx}::uuid)
+                      OR
+                      ($${orgActorParamIdx}::uuid IS NULL AND sp_rep.author_id = $${userParamIdx} AND sp_rep.author_org_id IS NULL)
+                  )
                   AND sp_rep.is_active = TRUE
                   AND (sp_rep.is_removed IS FALSE OR sp_rep.is_removed IS NULL)
               ),
               'is_reposted_with_thoughts', EXISTS(
                   SELECT 1 FROM posts sp_rep
                   WHERE sp_rep.shared_post_id = sp.post_id 
-                  AND sp_rep.author_id = $${userParamIdx} AND sp_rep.author_org_id IS NULL
+                  AND (
+                      ($${orgActorParamIdx}::uuid IS NOT NULL AND sp_rep.author_org_id = $${orgActorParamIdx}::uuid)
+                      OR
+                      ($${orgActorParamIdx}::uuid IS NULL AND sp_rep.author_id = $${userParamIdx} AND sp_rep.author_org_id IS NULL)
+                  )
                   AND sp_rep.is_active = TRUE
                   AND (sp_rep.is_removed IS FALSE OR sp_rep.is_removed IS NULL)
-              AND sp_rep.content IS NOT NULL AND TRIM(sp_rep.content) != ''
+                  AND sp_rep.content IS NOT NULL AND TRIM(sp_rep.content) != ''
               ),
               'repost_id', (
                   SELECT sp_rep.post_id FROM posts sp_rep
                   WHERE sp_rep.shared_post_id = sp.post_id 
-                  AND sp_rep.author_id = $${userParamIdx} AND sp_rep.author_org_id IS NULL
+                  AND (
+                      ($${orgActorParamIdx}::uuid IS NOT NULL AND sp_rep.author_org_id = $${orgActorParamIdx}::uuid)
+                      OR
+                      ($${orgActorParamIdx}::uuid IS NULL AND sp_rep.author_id = $${userParamIdx} AND sp_rep.author_org_id IS NULL)
+                  )
                   AND sp_rep.is_active = TRUE
                   AND (sp_rep.is_removed IS FALSE OR sp_rep.is_removed IS NULL)
                   LIMIT 1
@@ -995,8 +1042,11 @@ exports.getPublicProfilePosts = async (req, res) => {
                       SELECT pl_sample.user_id, pl_sample.org_id
                       FROM active_post_likes pl_sample
                       WHERE pl_sample.post_id = sp.post_id
-                        AND pl_sample.user_id IS NOT NULL
-                        AND pl_sample.user_id != $${userParamIdx}::uuid
+                        AND (
+                          ($${orgActorParamIdx}::uuid IS NOT NULL AND pl_sample.org_id != $${orgActorParamIdx}::uuid)
+                          OR
+                          ($${orgActorParamIdx}::uuid IS NULL AND ($${userParamIdx}::uuid IS NULL OR pl_sample.user_id != $${userParamIdx}::uuid))
+                        )
                       ORDER BY pl_sample.created_at DESC
                       LIMIT 3
                   ) sub
@@ -1143,8 +1193,9 @@ exports.getPublicProfilePosts = async (req, res) => {
       LIMIT $${idx};
     `;
 
-    // Add current user ID to params for is_liked check and user_vote check
-    params.push(currentUserId);
+    // Add current user ID and actor organization ID to params for interaction checks
+    params.push(currentUserId || null);
+    params.push(actorOrgId || null);
 
     const { rows } = await pool.query(query, params);
     const last = rows[rows.length - 1];
