@@ -191,15 +191,15 @@ exports.getLegalDocs = (req, res) => {
     const docs = [
         {
             title: "Privacy Policy",
-            url: process.env.LEGAL_PRIVACY_POLICY_URL || `${localBase}/privacy_policy.html`
+            url: process.env.LEGAL_PRIVACY_POLICY_URL || "https://cocpit.in/privacy-policy"
         },
         {
             title: "Terms of Service",
-            url: process.env.LEGAL_TERMS_OF_SERVICE_URL || `${localBase}/terms_of_service.html`
+            url: process.env.LEGAL_TERMS_OF_SERVICE_URL || "https://cocpit.in/terms-and-conditions"
         },
         {
             title: "Community Guidelines",
-            url: process.env.LEGAL_COMMUNITY_GUIDELINES_URL || `${localBase}/community_guidelines.html`
+            url: process.env.LEGAL_COMMUNITY_GUIDELINES_URL || "https://cocpit.in/community-guidelines"
         },
         {
             title: "Cookie Policy",

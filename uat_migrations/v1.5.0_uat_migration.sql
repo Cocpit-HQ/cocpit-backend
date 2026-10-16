@@ -38,3 +38,19 @@ CREATE INDEX IF NOT EXISTS idx_organizations_location_coords
     WHERE location_lat IS NOT NULL AND location_lng IS NOT NULL;
 
 COMMIT;
+
+-- ==============================================================================
+-- UAT Migration v1.5.0 (International Phone Number Support 7-15 Digits)
+-- Target Database: cocpit_backend_uat
+-- Description: Updates users check constraint mobile_format to support 7 to 15 digits
+-- ==============================================================================
+
+BEGIN;
+
+ALTER TABLE users 
+    DROP CONSTRAINT IF EXISTS mobile_format;
+
+ALTER TABLE users 
+    ADD CONSTRAINT mobile_format CHECK (mobile_number IS NULL OR mobile_number ~ '^[0-9]{7,15}$');
+
+COMMIT;

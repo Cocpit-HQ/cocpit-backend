@@ -2214,7 +2214,6 @@ WHERE p.post_id = $1
         const hydratedArray = await hydrateShareCounts([post]);
         const finalPost = hydratedArray[0];
 
-        const pollOptions = finalPost.poll?.options || [];
         const mappedPost = {
             ...finalPost,
             id: finalPost.post_id,
@@ -2222,9 +2221,7 @@ WHERE p.post_id = $1
             created_by_user_id: finalPost.author_id,
             coverImage: (post.media && post.media.length > 0) ? post.media[0].url : null,
             publishedAt: post.created_at,
-            updatedAt: post.updated_at,
-            options: pollOptions,
-            poll_options: pollOptions
+            updatedAt: post.updated_at
         };
 
         // If this is a community article, check if the requesting user is subscribed

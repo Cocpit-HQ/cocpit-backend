@@ -117,12 +117,14 @@ exports.verifyResetToken = async (req, res) => {
  */
 exports.resetPasswordWithToken = async (req, res) => {
     try {
-        const { token, newPassword } = req.body;
+        // Extract logoutOtherDevices flag to support keeping other devices signed in after link-based password reset
+        const { token, newPassword, logoutOtherDevices, logoutOthers } = req.body;
         if (!token || !newPassword) {
             return res.status(400).json({ success: false, message: "Token and new password are required" });
         }
+        const shouldLogoutOthers = logoutOtherDevices ?? logoutOthers ?? true;
 
-        const result = await passwordResetService.resetPasswordWithToken(token, newPassword);
+        const result = await passwordResetService.resetPasswordWithToken(token, newPassword, shouldLogoutOthers);
         return res.status(200).json(result);
     } catch (err) {
         console.error("Reset password with token error:", err);

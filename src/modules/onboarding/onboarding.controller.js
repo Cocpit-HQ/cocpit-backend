@@ -886,12 +886,13 @@ exports.parseResumeUpload = async (req, res) => {
             }
         }
 
-        // Strip bracketed text and enforce maximum 14 skills to comply with onboarding schema validation
+        // Strip bracketed text, normalize to Title Case, deduplicate, and enforce maximum 14 skills to comply with onboarding schema validation
         if (parsedData && Array.isArray(parsedData.skills)) {
-            parsedData.skills = parsedData.skills
-                .map(skill => skill.replace(/\s*[([].*?[)\]]/g, '').trim())
-                .filter(Boolean)
-                .slice(0, 14);
+            parsedData.skills = [...new Set(
+                parsedData.skills
+                    .map(skill => toTitleCase(skill.replace(/\s*[([].*?[)\]]/g, '')))
+                    .filter(Boolean)
+            )].slice(0, 14);
         }
 
         const cleanIsoDate = (dateStr) => {

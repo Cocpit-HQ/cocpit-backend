@@ -214,11 +214,12 @@ const verifyResetToken = async (rawToken) => {
 };
 
 /**
- * Complete link-based password reset and revoke ALL active sessions
+ * Complete link-based password reset
  * @param {string} rawToken
  * @param {string} newPassword
+ * @param {boolean} logoutOtherDevices - Whether to invalidate sessions on other devices
  */
-const resetPasswordWithToken = async (rawToken, newPassword) => {
+const resetPasswordWithToken = async (rawToken, newPassword, logoutOtherDevices = true) => {
     const verification = await verifyResetToken(rawToken);
     if (!verification.valid) {
         if (verification.reason === "used") {
@@ -265,16 +266,20 @@ const resetPasswordWithToken = async (rawToken, newPassword) => {
             [tokenHash]
         );
 
-        // 3. Delete ALL sessions for this user
-        const deletedResult = await client.query(
-            "DELETE FROM refresh_tokens WHERE user_id = $1 RETURNING session_id",
-            [userId]
-        );
+        let deletedSessionIds = [];
+
+        // Invalidate other device sessions only if requested (honoring Keep Signed In selection)
+        if (logoutOtherDevices) {
+            const deletedResult = await client.query(
+                "DELETE FROM refresh_tokens WHERE user_id = $1 RETURNING session_id",
+                [userId]
+            );
+            deletedSessionIds = deletedResult.rows.map(r => r.session_id);
+        }
 
         await client.query("COMMIT");
 
-        // 4. Invalidate all session access tokens in Redis & disconnect sockets
-        const deletedSessionIds = deletedResult.rows.map(r => r.session_id);
+        // Invalidate all session access tokens in Redis & disconnect sockets
         if (deletedSessionIds.length > 0) {
             await Promise.allSettled(
                 deletedSessionIds.map(async (sessionId) => {
@@ -292,7 +297,7 @@ const resetPasswordWithToken = async (rawToken, newPassword) => {
 
         return {
             success: true,
-            message: "Password reset successfully. All sessions have been logged out.",
+            message: "Password reset successful",
         };
     } catch (err) {
         await client.query("ROLLBACK");

@@ -42,7 +42,7 @@ CREATE TABLE users (
   deletion_execute_at TIMESTAMPTZ,
   is_deactivated BOOLEAN DEFAULT false,
   country_code VARCHAR(10) DEFAULT '+91',
-  CONSTRAINT mobile_format CHECK (mobile_number ~ '^[0-9]{10}$')
+  CONSTRAINT mobile_format CHECK (mobile_number IS NULL OR mobile_number ~ '^[0-9]{7,15}$')
 );
 
 
@@ -944,7 +944,7 @@ CREATE TABLE event_registrations (
   job_title TEXT,
   registered_at TIMESTAMPTZ DEFAULT now(),
   PRIMARY KEY (event_id, user_id),
-  CONSTRAINT mobile_format CHECK (mobile_number ~ '^[0-9]{10}$')
+  CONSTRAINT mobile_format CHECK (mobile_number IS NULL OR mobile_number ~ '^[0-9]{7,15}$')
 );
 
 CREATE TABLE event_saves (

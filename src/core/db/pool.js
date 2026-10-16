@@ -64,6 +64,8 @@ async function checkDbConnection() {
         ALTER TABLE blocks DROP CONSTRAINT IF EXISTS blocks_blocked_id_fkey;
         ALTER TABLE blocks DROP CONSTRAINT IF EXISTS blocks_blocker_id_fkey;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS dob DATE;
+        ALTER TABLE users DROP CONSTRAINT IF EXISTS mobile_format;
+        ALTER TABLE users ADD CONSTRAINT mobile_format CHECK (mobile_number IS NULL OR mobile_number ~ '^[0-9]{7,15}$');
         CREATE OR REPLACE VIEW active_users AS 
         SELECT * FROM users 
         WHERE (is_deleted IS FALSE OR is_deleted IS NULL) 

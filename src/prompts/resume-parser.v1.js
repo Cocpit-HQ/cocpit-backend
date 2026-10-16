@@ -10,7 +10,7 @@ RULES:
 5. If a field is missing in the resume, leave it as null, empty string, empty array according to the schema.
 6. Extract only what is requested in the JSON schema.
 7. Return purely the JSON object without any markdown formatting or explanations.
-8. SKILLS EXTRACTION: Extract skills ONLY from dedicated skill sections (e.g., "Skills", "Technical Skills", "Core Competencies", "Areas of Expertise"). DO NOT extract or infer skills from work experience descriptions. IGNORE any skills enclosed in brackets(e.g., from "AWS (EC2, S3)" extract ONLY "AWS", do NOT extract "EC2" or "S3").
+8. SKILLS EXTRACTION: Extract skills ONLY from dedicated skill sections (e.g., "Skills", "Technical Skills", "Core Competencies", "Areas of Expertise"). Format skill names in Title Case (capitalize the first letter of each word). DO NOT extract or infer skills from work experience descriptions. IGNORE any skills enclosed in brackets(e.g., from "AWS (EC2, S3)" extract ONLY "AWS", do NOT extract "EC2" or "S3").
 9. DATES: Extract dates formatted strictly as YYYY-MM-DD or MM/YYYY. If a date is missing, unknown, or unclear, leave it strictly as null. NEVER output placeholder or zeroed dates like "0000", "0000-00", "00/0000", or "0000-00-00".`;
 
 const RESUME_JSON_SCHEMA = {

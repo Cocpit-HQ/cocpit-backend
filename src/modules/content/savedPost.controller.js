@@ -467,16 +467,13 @@ exports.getSavedPosts = async (req, res) => {
 
         const formattedPosts = result.rows.map(row => {
             const firstImage = row.image_url || row.post_url || (Array.isArray(row.media) && row.media.length > 0 ? row.media[0].url : null);
-            const pollOptions = row.poll?.options || [];
             return {
                 ...row,
                 image_url: firstImage,
                 post_url: firstImage,
                 imageSrc: firstImage,
                 images: Array.isArray(row.images) && row.images.length > 0 ? row.images : (firstImage ? [firstImage] : []),
-                poll: row.poll || null,
-                options: pollOptions,
-                poll_options: pollOptions,
+                poll: row.poll || null
             };
         });
 

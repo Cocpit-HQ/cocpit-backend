@@ -71,7 +71,7 @@ const phoneSchema = z.object({
     countryCode: z.enum(['+91', '+971'], { required_error: "Country code is required" }),
     phone: z.string({
       required_error: "Phone number is required",
-    }).min(9, { message: "Phone number must be at least 9 digits" }).max(10, { message: "Phone number must be at most 10 digits" }),
+    }).min(7, { message: "Phone number must be at least 7 digits" }).max(15, { message: "Phone number must be at most 15 digits" }),
   }).superRefine((data, ctx) => {
     if (data.countryCode === '+971' && data.phone.length !== 9) {
       ctx.addIssue({

@@ -123,4 +123,14 @@ ALTER TABLE organizations
     ADD COLUMN IF NOT EXISTS location_lng DOUBLE PRECISION,
     ADD COLUMN IF NOT EXISTS location_place_id TEXT;
 
-CREATE INDEX IF NOT EXISTS idx_organizations_location_coords ON organizations(location_lat, location_lng) WHERE location_lat IS NOT NULL AND location_lng IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_organizations_location_coords ON organizations(location_lat, location_lng) WHERE location_lat IS NOT NULL AND location_lng IS NOT NULL;
+
+-- 14. users: Update mobile_format constraint to support international phone numbers (7 to 15 digits)
+ALTER TABLE users 
+    DROP CONSTRAINT IF EXISTS mobile_format;
+
+ALTER TABLE users 
+    ADD CONSTRAINT mobile_format CHECK (mobile_number IS NULL OR mobile_number ~ '^[0-9]{7,15}$');
+
+COMMIT;
+
