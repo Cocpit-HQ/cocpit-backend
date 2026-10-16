@@ -382,8 +382,8 @@ exports.getUserProfile = async (req, res) => {
     const profileId = user.profile_id;
     delete user.profile_id; // Remove from response payload
 
-    // Log audit when viewing another user's profile under Organization actor context
-    if (targetUserId !== currentUserId && actorContext && actorContext.type === "ORGANIZATION" && actorContext.orgId) {
+    // Log audit when viewing another user's profile under Organization actor context (skip if pre-validation check)
+    if (req.query.skipAudit !== 'true' && targetUserId !== currentUserId && actorContext && actorContext.type === "ORGANIZATION" && actorContext.orgId) {
 
       const handleOrId = user.account_name || targetUserId;
       logAudit(pool, {

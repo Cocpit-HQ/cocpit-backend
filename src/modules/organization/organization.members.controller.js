@@ -83,6 +83,7 @@ exports.inviteMember = async (req, res) => {
                 email,
                 role,
                 roleName: role,
+                roleId: targetRoleData.role_id,
                 targetUserId: invitedUser?.user_id,
                 targetName: targetUserName,
                 targetUserName,
@@ -248,7 +249,7 @@ exports.acceptTeamsInvite = async (req, res) => {
             entityId: invite.org_id,
             actorId: userId,
             action: 'JOIN_ORGANIZATION',
-            metadata: { inviteId: invite.invite_id, role: invite.role, roleName: invite.role }
+            metadata: { inviteId: invite.invite_id, role: invite.role, roleName: invite.role, roleId }
         });
 
         // Add Notification for original inviter

@@ -1367,6 +1367,24 @@ exports.createPost = async (req, res) => {
             }
             // PERMISSION CHECK END
 
+            let originalAuthorName = null;
+            let originalAuthorId = null;
+            if (req.body.shared_post_id) {
+                const origAuthorRes = await client.query(
+                    `SELECT COALESCE(o.name, u.full_name) AS author_name,
+                            COALESCE(p.author_org_id, p.author_id) AS author_id
+                     FROM posts p
+                     LEFT JOIN organizations o ON p.author_org_id = o.org_id
+                     LEFT JOIN users u ON p.author_id = u.user_id
+                     WHERE p.post_id = $1`,
+                    [req.body.shared_post_id]
+                );
+                if (origAuthorRes.rowCount > 0) {
+                    originalAuthorName = origAuthorRes.rows[0].author_name;
+                    originalAuthorId = origAuthorRes.rows[0].author_id;
+                }
+            }
+
             await logAudit(client, {
                 entityId: companyId,
                 actorId: userId,
@@ -1375,7 +1393,12 @@ exports.createPost = async (req, res) => {
                 metadata: {
                     type: 'post',
                     id: postId,
-                    title: title || content.substring(0, 20)
+                    postId: postId,
+                    sharedPostId: req.body.shared_post_id || null,
+                    authorName: originalAuthorName,
+                    authorId: originalAuthorId,
+                    targetName: originalAuthorName,
+                    title: title || (content ? content.substring(0, 20) : '')
                 }
             });
         }

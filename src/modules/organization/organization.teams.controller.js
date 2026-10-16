@@ -1232,6 +1232,16 @@ exports.getActivityLogs = async (req, res, next) => {
             SELECT al.log_id, al.action, al.created_at, al.actor_role, al.metadata,
                    u.user_id AS actor_id, u.full_name AS actor_name, u.avatar_url AS actor_avatar,
                    COALESCE(
+                       al.metadata->>'roleId',
+                       (
+                           SELECT role_id::text 
+                           FROM organization_roles 
+                           WHERE org_id = al.entity_id 
+                             AND LOWER(name) = LOWER(COALESCE(al.metadata->>'roleName', al.metadata->>'role', ''))
+                           LIMIT 1
+                       )
+                   ) AS role_id,
+                   COALESCE(
                        al.metadata->>'targetName',
                        al.metadata->>'targetUserName',
                        al.metadata->>'authorName',
@@ -1243,6 +1253,17 @@ exports.getActivityLogs = async (req, res, next) => {
                                LEFT JOIN organizations o ON p.author_org_id = o.org_id
                                LEFT JOIN users u_author ON p.author_id = u_author.user_id
                                WHERE p.post_id = COALESCE(al.metadata->>'postId', al.metadata->>'post_id')::uuid
+                           )
+                           WHEN al.action IN ('REPOST', 'REPOSTED') AND COALESCE(al.metadata->>'sharedPostId', al.metadata->>'postId', al.metadata->>'id') ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+                           THEN (
+                               SELECT COALESCE(o.name, u_author.full_name)
+                               FROM posts p_orig
+                               LEFT JOIN organizations o ON p_orig.author_org_id = o.org_id
+                               LEFT JOIN users u_author ON p_orig.author_id = u_author.user_id
+                               WHERE p_orig.post_id = COALESCE(
+                                   CASE WHEN (al.metadata->>'sharedPostId') ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' THEN (al.metadata->>'sharedPostId')::uuid ELSE NULL END,
+                                   (SELECT shared_post_id FROM posts WHERE post_id = COALESCE(al.metadata->>'postId', al.metadata->>'id')::uuid)
+                               )
                            )
                            ELSE NULL
                        END,
