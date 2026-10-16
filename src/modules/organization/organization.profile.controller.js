@@ -35,7 +35,8 @@ function toCityStateCountry(raw, fallbackCountry = 'India') {
     if (!raw || typeof raw !== 'string') return '';
     const clean = raw.trim();
     if (!clean) return '';
-    const parts = clean.split(',').map(s => s.trim()).filter(Boolean);
+    const rawParts = clean.split(',').map(s => s.trim()).filter(Boolean);
+    const parts = rawParts.filter((p, i, arr) => arr.findIndex(x => x.toLowerCase() === p.toLowerCase()) === i);
     if (parts.length <= 1) {
         return parts[0] ? (parts[0].toLowerCase().includes(fallbackCountry.toLowerCase()) ? parts[0] : `${parts[0]}, ${fallbackCountry}`) : '';
     }

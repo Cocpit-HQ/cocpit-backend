@@ -1751,14 +1751,22 @@ exports.saveDraftPresence = async (req, res) => {
         }
     }
 
-    const locationStr =
+    const rawLoc = (
         formattedAddress ||
         (typeof location === 'string' ? location : location?.formattedAddress || location?.description) ||
-        [city, country].filter(Boolean).join(', ') ||
-        null;
+        city ||
+        ''
+    ).trim();
 
     const locCountry = country || (typeof location === 'object' ? location?.country : null) || null;
-    const locCity = city || (typeof location === 'object' ? location?.city : null) || null;
+    let tokens = rawLoc ? rawLoc.split(',').map(s => s.trim()).filter(Boolean) : [];
+    if (locCountry && !tokens.some(t => t.toLowerCase() === locCountry.trim().toLowerCase())) {
+        tokens.push(locCountry.trim());
+    }
+    const uniqueTokens = tokens.filter((t, i, arr) => arr.findIndex(x => x.toLowerCase() === t.toLowerCase()) === i);
+    const locationStr = uniqueTokens.length > 0 ? uniqueTokens.join(', ') : null;
+    const locCity = (typeof location === 'object' && location?.city) ||
+                    (city && !city.includes(',') ? city.trim() : (uniqueTokens.length > 0 ? uniqueTokens[0] : null));
     const locLat = latitude !== undefined && latitude !== null ? Number(latitude) : (typeof location === 'object' && location?.latitude !== undefined ? Number(location.latitude) : null);
     const locLng = longitude !== undefined && longitude !== null ? Number(longitude) : (typeof location === 'object' && location?.longitude !== undefined ? Number(location.longitude) : null);
     const locPlaceId = placeId || (typeof location === 'object' ? location?.placeId : null) || null;
@@ -2257,14 +2265,22 @@ exports.publishNewOrganization = async (req, res) => {
         country_of_operation
     } = req.body;
 
-    const locationStr =
+    const rawLoc = (
         formattedAddress ||
         (typeof location === 'string' ? location : location?.formattedAddress || location?.description) ||
-        [city, country || country_of_operation].filter(Boolean).join(', ') ||
-        null;
+        city ||
+        ''
+    ).trim();
 
     const locCountry = country || (typeof location === 'object' ? location?.country : null) || country_of_operation || null;
-    const locCity = city || (typeof location === 'object' ? location?.city : null) || null;
+    let tokens = rawLoc ? rawLoc.split(',').map(s => s.trim()).filter(Boolean) : [];
+    if (locCountry && !tokens.some(t => t.toLowerCase() === locCountry.trim().toLowerCase())) {
+        tokens.push(locCountry.trim());
+    }
+    const uniqueTokens = tokens.filter((t, i, arr) => arr.findIndex(x => x.toLowerCase() === t.toLowerCase()) === i);
+    const locationStr = uniqueTokens.length > 0 ? uniqueTokens.join(', ') : null;
+    const locCity = (typeof location === 'object' && location?.city) ||
+                    (city && !city.includes(',') ? city.trim() : (uniqueTokens.length > 0 ? uniqueTokens[0] : null));
     const locLat = latitude !== undefined && latitude !== null ? Number(latitude) : (typeof location === 'object' && location?.latitude !== undefined ? Number(location.latitude) : null);
     const locLng = longitude !== undefined && longitude !== null ? Number(longitude) : (typeof location === 'object' && location?.longitude !== undefined ? Number(location.longitude) : null);
     const locPlaceId = placeId || (typeof location === 'object' ? location?.placeId : null) || null;
@@ -2313,12 +2329,13 @@ exports.publishNewOrganization = async (req, res) => {
         const establishedYearInt = established_year ? parseInt(established_year, 10) : null;
         const effectiveType = (entity_type || type || 'COMPANY').toUpperCase();
         const isInstitution = effectiveType === 'INSTITUTION';
-
-        // TODO(admin-verification): institutions are auto-marked VERIFIED because the
-        // admin document/domain review flow isn't wired up yet. Once it exists, institutions
-        // should start at UNVERIFIED and go through that flow like the verification_status
-        // check in content.controller.js already expects.
-        const initialVerificationStatus = isInstitution ? 'VERIFIED' : 'UNVERIFIED';
+        const hasDocuments = Boolean(
+            req.files &&
+            req.files.documents &&
+            req.files.documents.length > 0 &&
+            req.files.documents.some(doc => Boolean(doc && doc.path))
+        );
+        const initialVerificationStatus = hasDocuments ? 'VERIFIED' : 'UNVERIFIED';
 
         const insertQuery = `
             INSERT INTO organizations (
@@ -2406,14 +2423,22 @@ exports.publishNewOrganization = async (req, res) => {
         );
 
         if (req.files && req.files.documents && req.files.documents.length > 0) {
+            const docUrls = [];
             for (let doc of req.files.documents) {
                 const docUrl = doc.path.replace(/\\/g, "/");
+                docUrls.push(docUrl);
                 await client.query(
                     `INSERT INTO organization_documents (org_id, document_url, document_name, document_type)
                      VALUES ($1, $2, $3, $4)`,
                     [orgId, docUrl, doc.originalname, doc.mimetype]
                 );
             }
+
+            await client.query(
+                `INSERT INTO organization_verifications (org_id, verification_type, document_urls, is_verified, otp, expires_at)
+                 VALUES ($1, 'DOCUMENT', $2, TRUE, 'N/A', NOW() + INTERVAL '1 day')`,
+                [orgId, JSON.stringify(docUrls)]
+            );
         }
 
         // Audit Log for organization creation
