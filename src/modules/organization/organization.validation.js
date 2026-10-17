@@ -47,7 +47,8 @@ const saveIdentitySchema = z.object({
 const savePresenceSchema = z.object({
   body: z.object({
     email: z.string({ required_error: "Email is required" }).trim().email("Invalid email format"),
-    phone: z.string({ required_error: "Phone number is required" }).trim().min(5, "Invalid phone number"),
+    // phone: z.string({ required_error: "Phone number is required" }).trim().min(5, "Invalid phone number"),
+    phone: z.string().trim().optional().nullable(),
     website: z.string().trim().optional().nullable(),
     size: z.string({ required_error: "Size is required" }).trim(),
     country: z.string({ required_error: "Country is required" }).trim(),

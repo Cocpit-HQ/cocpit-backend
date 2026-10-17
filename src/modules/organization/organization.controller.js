@@ -1738,6 +1738,7 @@ exports.saveDraftPresence = async (req, res) => {
         description
     } = req.body;
 
+    /*
     if (phone) {
         const p = phone.trim();
         if (p.startsWith('+91') && p.replace(/\D/g, '').length !== 12) {
@@ -1750,6 +1751,7 @@ exports.saveDraftPresence = async (req, res) => {
             return res.status(400).json({ success: false, message: "Japan phone numbers must be exactly 10 digits." });
         }
     }
+    */
 
     const rawLoc = (
         formattedAddress ||
@@ -1806,7 +1808,7 @@ exports.saveDraftPresence = async (req, res) => {
         `;
 
         await client.query(updateText, [
-            email, phone, website || null, size, locCountry, locCity, locationStr, locLat, locLng, locPlaceId, headline, description || null, orgId
+            email, phone || null, website || null, size, locCountry, locCity, locationStr, locLat, locLng, locPlaceId, headline, description || null, orgId
         ]);
 
         await client.query("COMMIT");
@@ -2141,9 +2143,11 @@ exports.completeOnboardingFlow = async (req, res) => {
         if (!org.email_verified) {
             throw new AppError("Organization email must be verified before completing onboarding", 400);
         }
+        /*
         if (!org.phone_verified) {
             throw new AppError("Organization phone number must be verified before completing onboarding", 400);
         }
+        */
 
         const docsRes = await client.query(`SELECT document_url FROM organization_documents WHERE org_id = $1`, [orgId]);
         let finalVerificationStatus = 'DOMAIN_VERIFIED';
@@ -2307,6 +2311,7 @@ exports.publishNewOrganization = async (req, res) => {
             }
         }
 
+        /*
         if (phone) {
             const smsService = require("../../core/services/sms.service");
             const normalizedPhone = smsService.normalizePhone(phone.trim());
@@ -2319,6 +2324,7 @@ exports.publishNewOrganization = async (req, res) => {
                 throw new AppError("Phone number has not been verified.", 400);
             }
         }
+        */
 
         let logoUrl = null;
         if (req.files && req.files.logo && req.files.logo.length > 0) {
