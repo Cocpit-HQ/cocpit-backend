@@ -1,4 +1,5 @@
 const pool = require('../../../core/db/pool');
+const { MAIN_API_INTERNAL_URL } = require('../../utils/mainApiUrl');
 
 exports.getReportReasons = async (req, res) => {
   try {
@@ -206,7 +207,7 @@ exports.updateAppeal = async (req, res) => {
 
     // Notify Main API to emit Socket.io notification
     try {
-      await fetch('http://localhost:5000/internal/v1/appeals/notify', {
+      await fetch(`${MAIN_API_INTERNAL_URL}/internal/v1/appeals/notify`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

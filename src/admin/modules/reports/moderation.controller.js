@@ -91,10 +91,10 @@ exports.approveAppeal = async (req, res) => {
     );
 
     // 5. Redis cleanup
-    const Redis = require('ioredis');
-    const redis = new Redis(process.env.REDIS_URL);
-    await redis.del(`suspended_user:${user_id}`);
-    redis.disconnect();
+    const redis = require('../../../core/cache/redis');
+    await redis.del(`suspended_user:${user_id}`).catch((err) =>
+      console.warn('[Moderation] Redis cleanup skipped:', err.message)
+    );
 
     await req.db.query('COMMIT');
     res.json({ success: true, message: 'Appeal approved and user unsuspended.' });

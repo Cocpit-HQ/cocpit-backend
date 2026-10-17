@@ -1,9 +1,6 @@
-const Redis = require("ioredis");
+const createRedisClient = require("./createRedisClient");
 
-const redis = new Redis({
-  host: process.env.REDIS_HOST || "localhost",
-  port: process.env.REDIS_PORT || 6379,
-  db: parseInt(process.env.REDIS_DB || "0"), // 0=prod, 1=staging, 2=UAT
+const redis = createRedisClient({
   // Safety measures to avoid connection storms
   maxRetriesPerRequest: 0, // Fail fast instead of queuing up commands when down
   enableOfflineQueue: false, // Don't queue commands when Redis is unavailable

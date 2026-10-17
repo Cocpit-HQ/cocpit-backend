@@ -37,6 +37,39 @@ const { enforceOnboarding } = require("./core/middlewares/onboarding.middleware"
 const app = express();
 app.set("trust proxy", 1);
 
+// ── Monolith: Admin API runs inside this process ─────────────────────────────
+// Replaces src/gateway.js: /api/admin/* goes to the admin app, as the gateway did.
+// Requests on an ADMIN_HOSTS domain (comma-separated hostnames) go to the admin app
+// entirely, which is what hitting the old admin port (:5001) used to do.
+const adminApp = require("./admin.app");
+const adminHosts = (process.env.ADMIN_HOSTS || "")
+  .split(",")
+  .map((h) => h.trim().toLowerCase())
+  .filter(Boolean);
+
+const isAdminRequest = (req) => {
+  if (req.path === "/api/admin" || req.path.startsWith("/api/admin/")) return true;
+  if (adminHosts.length === 0) return false;
+  const host = (req.headers["x-forwarded-host"] || req.headers.host || "").split(",")[0].trim().split(":")[0].toLowerCase();
+  return adminHosts.includes(host);
+};
+
+app.use((req, res, next) => {
+  if (!isAdminRequest(req)) return next();
+  const parent = req.app;
+  adminApp.handle(req, res, (err) => {
+    // Same prototype restore Express does for mounted sub-apps
+    Object.setPrototypeOf(req, parent.request);
+    Object.setPrototypeOf(res, parent.response);
+    next(err);
+  });
+});
+
+const allowedOrigins = (process.env.ALLOWED_ORIGINS || "")
+  .split(",")
+  .map((o) => o.trim())
+  .filter(Boolean);
+
 const corsOptions = {
   origin: function (origin, callback) {
     if (!origin ||
@@ -49,7 +82,7 @@ const corsOptions = {
       origin === "https://uat.cocpit.in"
     ) {
       callback(null, true);
-    } else if (process.env.ALLOWED_ORIGINS && process.env.ALLOWED_ORIGINS.includes(origin)) {
+    } else if (allowedOrigins.includes(origin)) {
       callback(null, true);
     } else {
       callback(new Error('Not allowed by CORS'));
@@ -97,6 +130,9 @@ app.use((req, res, next) => {
   });
   next();
 });
+
+// Internal service-to-service endpoints (x-internal-secret), used by the admin module
+app.use("/internal/v1", require("./modules/internal/internal.routes"));
 
 app.use("/api/auth", authRoutes);
 app.use("/api/onboarding", onboardingRoutes);

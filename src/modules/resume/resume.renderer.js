@@ -25,7 +25,11 @@ async function renderResumePdf(mappedData, templateName = 'default') {
     // 3. Launch Puppeteer to render HTML into PDF
     const browser = await puppeteer.launch({
         headless: 'new', // Use the new headless mode
-        channel: 'chrome', // Force using system-installed Chrome (bypasses Windows Smart App Control / Code Integrity policies)
+        // Container (Docker/Railway): Chromium from the image via PUPPETEER_EXECUTABLE_PATH.
+        // Local Windows: system-installed Chrome (bypasses Smart App Control / Code Integrity policies).
+        ...(process.env.PUPPETEER_EXECUTABLE_PATH
+            ? { executablePath: process.env.PUPPETEER_EXECUTABLE_PATH }
+            : { channel: 'chrome' }),
         args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
     });
 

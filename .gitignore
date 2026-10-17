@@ -10,8 +10,10 @@
 !.yarn/releases
 !.yarn/versions
 
-# json files
+# json files (secrets like firebase-service-account.json) — but npm manifests must be tracked
 *.json
+!package.json
+!package-lock.json
 
 # testing
 /coverage
