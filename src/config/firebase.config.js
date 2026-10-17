@@ -1,25 +1,16 @@
 /**
  * Firebase Admin Configuration
- * Credentials, first match wins:
- *   1. FIREBASE_SERVICE_ACCOUNT_BASE64 — base64 of the service-account JSON (Railway / containers)
- *   2. FIREBASE_SERVICE_ACCOUNT_PATH   — path to the JSON file (local dev / PM2)
+ * Initializes the SDK using the service account path defined in .env.
  */
 const admin = require("firebase-admin");
 const path = require("path");
 const fs = require("fs");
 
-function loadServiceAccount() {
-    const base64 = process.env.FIREBASE_SERVICE_ACCOUNT_BASE64;
-    if (base64 && base64.trim()) {
-        return JSON.parse(Buffer.from(base64.trim(), "base64").toString("utf8"));
-    }
+const serviceAccountPath = process.env.FIREBASE_SERVICE_ACCOUNT_PATH;
 
-    const serviceAccountPath = process.env.FIREBASE_SERVICE_ACCOUNT_PATH;
-    if (!serviceAccountPath) {
-        console.warn("⚠️ Firebase Admin: neither FIREBASE_SERVICE_ACCOUNT_BASE64 nor FIREBASE_SERVICE_ACCOUNT_PATH is set. Push notifications will be disabled.");
-        return null;
-    }
-
+if (!serviceAccountPath) {
+    console.warn("⚠️ Firebase Admin: FIREBASE_SERVICE_ACCOUNT_PATH not set in .env. Push notifications will be disabled.");
+} else {
     // Resolve path relative to project root if it's not absolute
     const absolutePath = path.isAbsolute(serviceAccountPath)
         ? serviceAccountPath
@@ -27,21 +18,17 @@ function loadServiceAccount() {
 
     if (!fs.existsSync(absolutePath)) {
         console.warn(`⚠️ Firebase Admin: Service account file not found at ${absolutePath}. Push notifications will be disabled.`);
-        return null;
+    } else {
+        try {
+            const serviceAccount = require(absolutePath);
+            admin.initializeApp({
+                credential: admin.credential.cert(serviceAccount),
+            });
+            console.log("✅ Firebase Admin initialized successfully");
+        } catch (err) {
+            console.error("❌ Firebase Admin initialization failed:", err.message);
+        }
     }
-    return require(absolutePath);
-}
-
-try {
-    const serviceAccount = loadServiceAccount();
-    if (serviceAccount) {
-        admin.initializeApp({
-            credential: admin.credential.cert(serviceAccount),
-        });
-        console.log("✅ Firebase Admin initialized successfully");
-    }
-} catch (err) {
-    console.error("❌ Firebase Admin initialization failed:", err.message);
 }
 
 module.exports = admin;

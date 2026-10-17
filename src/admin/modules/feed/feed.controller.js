@@ -1,5 +1,4 @@
 const pool = require('../../../core/db/pool');
-const { MAIN_API_INTERNAL_URL } = require('../../utils/mainApiUrl');
 const redis = require('../../../core/cache/redis');
 
 // GET /api/admin/feed/metrics
@@ -301,7 +300,7 @@ exports.restoreFeedPost = async (req, res) => {
 
     // Notify Main API to emit Socket.io notification
     try {
-      await fetch(`${MAIN_API_INTERNAL_URL}/internal/v1/appeals/notify`, {
+      await fetch('http://localhost:5000/internal/v1/appeals/notify', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -350,7 +349,7 @@ exports.rejectFeedPostAppeal = async (req, res) => {
 
     // Notify Main API to emit Socket.io notification
     try {
-      await fetch(`${MAIN_API_INTERNAL_URL}/internal/v1/appeals/notify`, {
+      await fetch('http://localhost:5000/internal/v1/appeals/notify', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
