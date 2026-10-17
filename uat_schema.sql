@@ -132,13 +132,26 @@ ALTER TABLE users
 ALTER TABLE users 
     ADD CONSTRAINT mobile_format CHECK (mobile_number IS NULL OR mobile_number ~ '^[0-9]{7,15}$');
 
-COMMIT;
+-- 15. event_registrations: Update mobile_format constraint to support international phone numbers
+ALTER TABLE event_registrations
+    DROP CONSTRAINT IF EXISTS mobile_format;
 
+ALTER TABLE event_registrations
+    ADD CONSTRAINT mobile_format CHECK (mobile_number IS NULL OR mobile_number ~ '^[0-9]{7,15}$');
+
+-- 16. feature_flags: Teams module feature flags
 INSERT INTO feature_flags (flag_key, is_enabled, updated_at)
-VALUES 
+VALUES
   ('enableTeamsModule', TRUE, now()),
   ('enableTeams', TRUE, now()),
-  ('teams', TRUE, now()),
+  ('teams', TRUE, now())
+ON CONFLICT (flag_key) DO NOTHING;
+
+COMMIT;
+
+-- 17. feature_flags: Org Settings, Org Analytics, Org Notifications feature flags
+INSERT INTO feature_flags (flag_key, is_enabled, updated_at)
+VALUES 
   ('enableOrgSettingsModule', TRUE, now()),
   ('enableOrgSettings', TRUE, now()),
   ('orgSettings', TRUE, now()),
