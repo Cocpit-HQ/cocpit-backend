@@ -1,0 +1,886 @@
+/**
+ * Profile Repository
+ * All database queries for profile data: user info, experiences, educations, skills, resume.
+ */
+const pool = require("../../core/db/pool");
+const { toTitleCase } = require("../../utils/nameNormalizer");
+
+// ─── User / Profile Queries ────────────────────────────────────────────────────
+
+const getFullProfile = async (userId) => {
+    const result = await pool.query(
+        `SELECT u.user_id, u.full_name, u.headline, u.avatar_url, u.cover_image_url,
+                u.location, u.about_text, u.email, u.recovery_email, u.mobile_number, u.account_name, u.website, u.created_at,
+                u.onboarding_step, u.profile_show_email, u.profile_show_phone,
+                u.dob,
+                u.location_formatted, u.location_country, u.location_state, u.location_city,
+                u.location_lat, u.location_lng, u.location_place_id, u.is_identity_verified, u.is_suspended,
+                p.profile_id, p.account_type, p.open_to, p.availability, p.work_preference,
+                p.working_industry AS industry,
+                p.profile_views_count, p.search_appearances_count, p.version
+         FROM active_users u
+         LEFT JOIN profiles p ON u.user_id = p.user_id
+         WHERE u.user_id = $1`,
+        [userId]
+    );
+    return result.rows[0] || null;
+};
+
+const updateUserFields = async (userId, fields) => {
+    const { full_name, headline, job_title, company_name, school, degree, location, about_text, mobile_number, account_name, website } = fields;
+    await pool.query("BEGIN");
+    await pool.query(
+        `UPDATE users
+     SET full_name = COALESCE($1, full_name), headline = COALESCE($2, headline),
+         job_title = COALESCE($3, job_title), company_name = COALESCE($4, company_name),
+         school = COALESCE($5, school), degree = COALESCE($6, degree),
+         location = COALESCE($7, location), about_text = COALESCE($8, about_text),
+         mobile_number = COALESCE($9, mobile_number),account_name = COALESCE($10, account_name), website = COALESCE($11, website), updated_at = now()
+     WHERE user_id = $12`,
+        [full_name, headline, job_title, company_name, school, degree, location, about_text, mobile_number, account_name, website, userId]
+    );
+    await pool.query("COMMIT");
+};
+
+const updateAvatarUrl = async (userId, url) => {
+    await pool.query("UPDATE users SET avatar_url = $1 WHERE user_id = $2", [url, userId]);
+};
+
+const updateProfileIndustry = async (userId, industry) => {
+    await ensureProfileId(userId);
+    await pool.query(
+        "UPDATE profiles SET working_industry = $1, updated_at = now() WHERE user_id = $2",
+        [industry, userId]
+    );
+};
+
+const getAvatarUrl = async (userId) => {
+    const result = await pool.query("SELECT avatar_url FROM users WHERE user_id = $1", [userId]);
+    return result.rows[0]?.avatar_url || null;
+};
+
+const updateCoverUrl = async (userId, url) => {
+    await pool.query("UPDATE users SET cover_image_url = $1 WHERE user_id = $2", [url, userId]);
+};
+
+// ─── Identity ──────────────────────────────────────────────────────────────────
+
+const getIdentity = async (userId) => {
+    const result = await pool.query(
+        `SELECT open_to, availability, work_preference FROM profiles WHERE user_id = $1`,
+        [userId]
+    );
+    return result.rows[0] || null;
+};
+
+const normalizeAccountType = (type) => {
+    if (!type) return type;
+    const lower = String(type).toLowerCase().trim().replace(/[-_ ]+/g, "_");
+    switch (lower) {
+        case "student": return "Student";
+        case "fresher": return "Fresher";
+        case "intern": return "Intern";
+        case "self_employed": return "Self-employed";
+        case "employed":
+        case "employee": return "Employed";
+        case "unemployed":
+        case "currently_not_working": return "Currently not working";
+        case "employer": return "Employer";
+        case "admin": return "Admin";
+        default: return type;
+    }
+};
+
+const updateIdentity = async (userId, { open_to, availability, work_preference, account_type }) => {
+    const normalizedAccountType = account_type ? normalizeAccountType(account_type) : undefined;
+    await ensureProfileId(userId, normalizedAccountType || "Student");
+    let query = `UPDATE profiles SET open_to = $1, availability = $2, work_preference = $3`;
+    let params = [open_to, availability, work_preference];
+    let idx = 4;
+    if (normalizedAccountType !== undefined) {
+        query += `, account_type = $${idx}`;
+        params.push(normalizedAccountType);
+        idx++;
+    }
+    query += `, updated_at = now() WHERE user_id = $${idx} RETURNING *`;
+    params.push(userId);
+    const result = await pool.query(query, params);
+    return result.rows[0] || null;
+};
+
+// ─── Resume ────────────────────────────────────────────────────────────────────
+
+const getResume = async (userId) => {
+    const result = await pool.query(`SELECT * FROM user_resumes WHERE user_id = $1`, [userId]);
+    return result.rows[0] || null;
+};
+
+const getLatestResume = async (userId) => {
+    const result = await pool.query(
+        `SELECT file_name, file_url FROM user_resumes WHERE user_id = $1 ORDER BY uploaded_at DESC LIMIT 1`,
+        [userId]
+    );
+    return result.rows[0] || null;
+};
+
+const replaceResume = async (userId, { originalname, path, mimetype, size }) => {
+    await pool.query(`DELETE FROM user_resumes WHERE user_id = $1`, [userId]);
+    const result = await pool.query(
+        `INSERT INTO user_resumes (user_id, file_name, file_url, file_type, file_size)
+     VALUES ($1, $2, $3, $4, $5) RETURNING *`,
+        [userId, originalname, path, mimetype, size]
+    );
+    return result.rows[0];
+};
+
+const deleteResume = async (userId) => {
+    const result = await pool.query(`DELETE FROM user_resumes WHERE user_id = $1 RETURNING *`, [userId]);
+    return result.rows[0] || null;
+};
+
+// ─── Profile ID Helper ─────────────────────────────────────────────────────────
+
+const getProfileId = async (userId) => {
+    const result = await pool.query(`SELECT profile_id FROM profiles WHERE user_id = $1`, [userId]);
+    return result.rows[0]?.profile_id || null;
+};
+
+const ensureProfileId = async (userId, accountType = "Student") => {
+    let profileId = await getProfileId(userId);
+    if (!profileId) {
+        const result = await pool.query(
+            `INSERT INTO profiles (user_id, open_to, availability, work_preference, account_type) 
+             VALUES ($1, $2, $3, $4, $5) RETURNING profile_id`,
+            [userId, accountType === "Employer" ? "Full-time" : "Freelance", "Immediately", "Remote", accountType]
+        );
+        profileId = result.rows[0].profile_id;
+    }
+    return profileId;
+};
+
+const getProfileVersion = async (profileId) => {
+    const result = await pool.query(`SELECT version FROM profiles WHERE profile_id = $1`, [profileId]);
+    return result.rows[0]?.version ?? 0;
+};
+
+const incrementProfileVersion = async (client, profileId, currentVersion) => {
+    const result = await client.query(
+        `UPDATE profiles SET version = version + 1, updated_at = now() 
+         WHERE profile_id = $1 AND version = $2 
+         RETURNING version`,
+        [profileId, currentVersion]
+    );
+    return result.rows[0]?.version || null;
+};
+
+// ─── Idempotency ──────────────────────────────────────────────────────────────
+
+const getIdempotentResponse = async (requestId) => {
+    const result = await pool.query(
+        `SELECT response_body, status_code FROM idempotent_requests WHERE request_id = $1`,
+        [requestId]
+    );
+    return result.rows[0] || null;
+};
+
+const saveIdempotentResponse = async (requestId, statusCode, responseBody) => {
+    await pool.query(
+        `INSERT INTO idempotent_requests (request_id, status_code, response_body)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (request_id) DO UPDATE 
+         SET status_code = EXCLUDED.status_code, response_body = EXCLUDED.response_body`,
+        [requestId, statusCode, JSON.stringify(responseBody)]
+    );
+};
+
+// ─── Experiences ────────────────────────────────────────────────────────────────
+
+const getExperiences = async (profileId) => {
+    const result = await pool.query(
+        `SELECT e.experience_id, e.profile_id, e.title, e.company_name, e.location, e.work_type, e.work_mode, e.start_date, e.end_date, e.is_current, e.description, e.created_at,
+                COALESCE(o.org_id, o_fallback.org_id) AS org_id,
+                COALESCE(o.logo_url, o_fallback.logo_url) AS logo_url,
+                COALESCE(o.name, o_fallback.name, e.company_name) AS org_name,
+                COALESCE(o.slug, o_fallback.slug) AS org_slug,
+                COALESCE(
+                    (SELECT json_agg(s.name) 
+                     FROM experience_skills es 
+                     JOIN skills s ON es.skill_id = s.skill_id 
+                     WHERE es.experience_id = e.experience_id), 
+                    '[]'::json
+                ) AS skills
+         FROM experiences e 
+         LEFT JOIN organizations o ON e.org_id = o.org_id AND o.is_deleted = FALSE
+         LEFT JOIN (
+             SELECT DISTINCT ON (LOWER(TRIM(name))) org_id, logo_url, name, slug
+             FROM organizations
+             WHERE entity_type = 'COMPANY' AND is_deleted = FALSE
+             ORDER BY LOWER(TRIM(name)), created_at ASC
+         ) o_fallback ON e.org_id IS NULL AND LOWER(TRIM(e.company_name)) = LOWER(TRIM(o_fallback.name))
+         WHERE e.profile_id = $1 
+         ORDER BY e.is_current DESC, e.start_date DESC, e.end_date DESC, e.experience_id DESC`,
+        [profileId]
+    );
+    return result.rows;
+};
+
+/** Returns flat (ungrouped) experience rows for a profile — used for validation checks */
+const getExperiencesByProfileId = async (profileId) => {
+    const result = await pool.query(
+        `SELECT e.*,
+                COALESCE(
+                    (SELECT json_agg(s.name) 
+                     FROM experience_skills es 
+                     JOIN skills s ON es.skill_id = s.skill_id 
+                     WHERE es.experience_id = e.experience_id), 
+                    '[]'::json
+                ) AS skills
+         FROM experiences e 
+         WHERE e.profile_id = $1 
+         ORDER BY e.is_current DESC, e.start_date DESC, e.end_date DESC, e.experience_id DESC`,
+        [profileId]
+    );
+    return result.rows;
+};
+
+
+const addExperience = async (profileId, data) => {
+    const { title, company_name, location, work_type, work_mode, start_date, end_date, is_current, description, org_id } = data;
+    const result = await pool.query(
+        `INSERT INTO experiences (profile_id, title, company_name, location, work_type, work_mode, start_date, end_date, is_current, description, org_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *`,
+        [profileId, title, company_name, location ?? null, work_type ?? null, work_mode ?? null, start_date, end_date ?? null, is_current ?? false, description ?? null, org_id ?? null]
+    );
+    return result.rows[0];
+};
+
+const findExperience = async (experienceId, profileId) => {
+    const result = await pool.query(
+        `SELECT * FROM experiences WHERE experience_id = $1 AND profile_id = $2`,
+        [experienceId, profileId]
+    );
+    return result.rows[0] || null;
+};
+
+const ALLOWED_EXPERIENCE_COLUMNS = new Set([
+    'title', 'company_name', 'location', 'work_type', 'work_mode',
+    'start_date', 'end_date', 'is_current', 'description', 'org_id',
+]);
+
+const updateExperience = async (experienceId, profileId, data) => {
+    const fields = [];
+    const values = [];
+    let idx = 1;
+    for (const [key, val] of Object.entries(data)) {
+        if (!ALLOWED_EXPERIENCE_COLUMNS.has(key)) continue; // drop unknown / sensitive columns
+        if (val !== undefined) { fields.push(`${key} = $${idx++}`); values.push(val); }
+    }
+    if (fields.length === 0) return null;
+    values.push(experienceId, profileId);
+    const result = await pool.query(
+        `UPDATE experiences SET ${fields.join(", ")} WHERE experience_id = $${idx++} AND profile_id = $${idx} RETURNING *`,
+        values
+    );
+    return result.rows[0] || null;
+};
+
+const deleteExperience = async (experienceId, profileId) => {
+    const result = await pool.query(
+        `DELETE FROM experiences WHERE experience_id = $1 AND profile_id = $2 RETURNING *`,
+        [experienceId, profileId]
+    );
+    return result.rows[0] || null;
+};
+
+const deleteExperienceInTx = async (client, experienceId, profileId) => {
+    const result = await client.query(
+        `DELETE FROM experiences WHERE experience_id = $1 AND profile_id = $2 RETURNING *`,
+        [experienceId, profileId]
+    );
+    return result.rows[0] || null;
+};
+
+/**
+ * Ends a specific experience inside an existing pg transaction.
+ * Only succeeds if the experience belongs to this profile AND is still active.
+ * Returns the updated row, or null if not found / already ended.
+ */
+const endExperienceById = async (client, experienceId, profileId, endDate) => {
+    const result = await client.query(
+        `UPDATE experiences
+         SET is_current = false, end_date = $1
+         WHERE experience_id = $2
+           AND profile_id    = $3
+           AND is_current    = true
+         RETURNING *`,
+        [endDate, experienceId, profileId]
+    );
+    return result.rows[0] || null;
+};
+
+/**
+ * Inserts a new experience inside an existing pg transaction.
+ */
+const addExperienceInTx = async (client, profileId, data) => {
+    const { title, company_name, location, work_type, work_mode,
+            start_date, end_date, is_current, description, org_id } = data;
+    const result = await client.query(
+        `INSERT INTO experiences
+             (profile_id, title, company_name, location, work_type, work_mode,
+              start_date, end_date, is_current, description, org_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+         RETURNING *`,
+        [profileId, title, company_name, location ?? null, work_type ?? null, work_mode ?? null,
+         start_date, end_date ?? null, is_current ?? false, description ?? null, org_id ?? null]
+    );
+    return result.rows[0];
+};
+
+const updateExperienceInTx = async (client, experienceId, profileId, data) => {
+    const fields = [];
+    const values = [];
+    let idx = 1;
+    for (const [key, val] of Object.entries(data)) {
+        if (!ALLOWED_EXPERIENCE_COLUMNS.has(key)) continue;
+        if (val !== undefined) { 
+            fields.push(`${key} = $${idx++}`); 
+            values.push(val); 
+        }
+    }
+    if (fields.length === 0) return null;
+    values.push(experienceId, profileId);
+    const result = await client.query(
+        `UPDATE experiences SET ${fields.join(", ")} WHERE experience_id = $${idx++} AND profile_id = $${idx} RETURNING *`,
+        values
+    );
+    return result.rows[0] || null;
+};
+
+// ─── Educations ─────────────────────────────────────────────────────────────────
+
+const getEducations = async (profileId) => {
+    const result = await pool.query(
+        `SELECT e.education_id, e.profile_id, e.school_name, e.degree, e.field_of_study, e.location, e.start_date, e.end_date, e.description, e.created_at,
+                COALESCE(o.org_id, o_fallback.org_id) AS school_org_id,
+                COALESCE(o.logo_url, o_fallback.logo_url) AS school_logo,
+                COALESCE(o.name, o_fallback.name, e.school_name) AS school_org_name,
+                COALESCE(o.slug, o_fallback.slug) AS school_org_slug
+         FROM educations e
+         LEFT JOIN organizations o ON e.school_org_id = o.org_id AND o.is_deleted = FALSE
+         LEFT JOIN (
+             SELECT DISTINCT ON (LOWER(TRIM(name))) org_id, logo_url, name, slug
+             FROM organizations
+             WHERE entity_type = 'INSTITUTION' AND is_deleted = FALSE
+             ORDER BY LOWER(TRIM(name)), created_at ASC
+         ) o_fallback ON e.school_org_id IS NULL AND LOWER(TRIM(e.school_name)) = LOWER(TRIM(o_fallback.name))
+         WHERE e.profile_id = $1 
+         ORDER BY e.start_date DESC`,
+        [profileId]
+    );
+    return result.rows;
+};
+
+const addEducation = async (profileId, data) => {
+    const { school_name, school_org_id, degree, field_of_study, location, start_date, end_date, description } = data;
+    const result = await pool.query(
+        `INSERT INTO educations (profile_id, school_name, school_org_id, degree, field_of_study, location, start_date, end_date, description)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
+        [profileId, school_name, school_org_id ?? null, degree ?? null, field_of_study ?? null, location ?? null, start_date ?? null, end_date ?? null, description ?? null]
+    );
+    return result.rows[0];
+};
+
+const addEducationInTx = async (client, profileId, data) => {
+    const { school_name, school_org_id, degree, field_of_study, location, start_date, end_date, description } = data;
+    const result = await client.query(
+        `INSERT INTO educations (profile_id, school_name, school_org_id, degree, field_of_study, location, start_date, end_date, description)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
+        [profileId, school_name, school_org_id ?? null, degree ?? null, field_of_study ?? null, location ?? null, start_date ?? null, end_date ?? null, description ?? null]
+    );
+    return result.rows[0];
+};
+
+const ALLOWED_EDUCATION_COLUMNS = new Set([
+    'school_name', 'school_org_id', 'degree', 'field_of_study', 'location',
+    'start_date', 'end_date', 'description'
+]);
+
+const updateEducation = async (educationId, profileId, data) => {
+    const fields = [];
+    const values = [];
+    let idx = 1;
+    for (const [key, val] of Object.entries(data)) {
+        if (!ALLOWED_EDUCATION_COLUMNS.has(key)) continue;
+        if (val !== undefined) { fields.push(`${key} = $${idx++}`); values.push(val); }
+    }
+    if (fields.length === 0) return null;
+    values.push(educationId, profileId);
+    const result = await pool.query(
+        `UPDATE educations SET ${fields.join(", ")} WHERE education_id = $${idx++} AND profile_id = $${idx} RETURNING *`,
+        values
+    );
+    return result.rows[0] || null;
+};
+
+const updateEducationInTx = async (client, educationId, profileId, data) => {
+    const fields = [];
+    const values = [];
+    let idx = 1;
+    for (const [key, val] of Object.entries(data)) {
+        if (!ALLOWED_EDUCATION_COLUMNS.has(key)) continue;
+        if (val !== undefined) { fields.push(`${key} = $${idx++}`); values.push(val); }
+    }
+    if (fields.length === 0) return null;
+    values.push(educationId, profileId);
+    const result = await client.query(
+        `UPDATE educations SET ${fields.join(", ")} WHERE education_id = $${idx++} AND profile_id = $${idx} RETURNING *`,
+        values
+    );
+    return result.rows[0] || null;
+};
+
+const deleteEducation = async (educationId, profileId) => {
+    const result = await pool.query(
+        `DELETE FROM educations WHERE education_id = $1 AND profile_id = $2 RETURNING *`,
+        [educationId, profileId]
+    );
+    return result.rows[0] || null;
+};
+
+// ─── Skills ─────────────────────────────────────────────────────────────────────
+
+const getSkills = async (profileId) => {
+    const result = await pool.query(
+        `SELECT s.skill_id, s.name FROM user_skills us JOIN skills s ON us.skill_id = s.skill_id WHERE us.profile_id = $1`,
+        [profileId]
+    );
+    return result.rows;
+};
+
+const deleteSkillMapping = async (profileId, skillId) => {
+    const result = await pool.query(
+        `DELETE FROM user_skills WHERE profile_id = $1 AND skill_id = $2 RETURNING *`,
+        [profileId, skillId]
+    );
+    return result.rows[0] || null;
+};
+
+// ─── Social / Relationship Queries (used by getProfile) ────────────────────────
+
+const getCompanyRoles = async (userId) => {
+    const result = await pool.query(
+        `SELECT c.org_id as company_id, c.org_id, c.name, c.slug, c.logo_url,
+            COALESCE(cr.name, cm.role) as role,
+            cm.is_primary_display, cm.is_role_visible, COALESCE(cr.priority, 0) as priority
+     FROM organization_members cm
+     JOIN organizations c ON cm.org_id = c.org_id
+     LEFT JOIN organization_roles cr ON cm.role_id = cr.role_id
+     WHERE cm.user_id = $1 AND c.is_deleted = FALSE
+     ORDER BY cm.is_primary_display DESC, priority DESC, c.name ASC`,
+        [userId]
+    );
+    return result.rows;
+};
+
+const getSocialCounts = async (userId) => {
+    const result = await pool.query(
+        `SELECT 
+        (
+            SELECT COUNT(*) 
+            FROM followers f
+            JOIN active_users u ON f.follower_id = u.user_id
+            WHERE f.following_id = $1
+              AND NOT EXISTS (
+                  SELECT 1 FROM blocks b
+                  WHERE (b.blocker_id = $1 AND b.blocked_id = u.user_id)
+                     OR (b.blocker_id = u.user_id AND b.blocked_id = $1)
+              )
+        ) + (
+            SELECT COUNT(*) 
+            FROM organization_user_follows ouf
+            JOIN organizations o ON ouf.org_id = o.org_id
+            WHERE ouf.user_id = $1 AND o.is_deleted = FALSE
+        ) as followers_count,
+        (
+            SELECT COUNT(*) 
+            FROM followers f
+            JOIN active_users u ON f.following_id = u.user_id
+            WHERE f.follower_id = $1
+              AND NOT EXISTS (
+                  SELECT 1 FROM blocks b
+                  WHERE (b.blocker_id = $1 AND b.blocked_id = u.user_id)
+                     OR (b.blocker_id = u.user_id AND b.blocked_id = $1)
+              )
+        ) + (
+            SELECT COUNT(*) 
+            FROM organization_followers cf 
+            JOIN organizations c ON cf.org_id = c.org_id 
+            WHERE cf.user_id = $1 AND c.is_deleted = FALSE
+        ) as following_count,
+        (
+            SELECT COUNT(*) 
+            FROM connections c
+            JOIN active_users u ON c.connected_user_id = u.user_id
+            WHERE c.user_id = $1
+              AND NOT EXISTS (
+                  SELECT 1 FROM blocks b 
+                  WHERE (b.blocker_id = $1 AND b.blocked_id = u.user_id)
+                     OR (b.blocker_id = u.user_id AND b.blocked_id = $1)
+              )
+        ) + (
+            SELECT COUNT(*) 
+            FROM organization_connections cc 
+            JOIN organizations c ON cc.org_id = c.org_id 
+            WHERE cc.user_id = $1 AND c.is_deleted = FALSE
+        ) as connections_count`,
+        [userId]
+    );
+    return result.rows[0];
+};
+
+const getRelationshipInfo = async (viewerId, targetId) => {
+    const followCheck = await pool.query(
+        "SELECT 1 FROM followers WHERE follower_id = $1 AND following_id = $2",
+        [viewerId, targetId]
+    );
+    const followedByCheck = await pool.query(
+        "SELECT 1 FROM followers WHERE follower_id = $1 AND following_id = $2",
+        [targetId, viewerId]
+    );
+    const connectionCheck = await pool.query(
+        "SELECT 1 FROM connections WHERE user_id = $1 AND connected_user_id = $2",
+        [viewerId, targetId]
+    );
+
+    let isFollowing = followCheck.rowCount > 0;
+    let isFollowedBy = followedByCheck.rowCount > 0;
+    let connectionRequestStatus = null;
+    let connectionRequestId = null;
+    let connectionRequestSender = null;
+    const isConnected = connectionCheck.rowCount > 0;
+
+    if (isConnected) {
+        isFollowing = true;
+        isFollowedBy = true;
+        connectionRequestStatus = "connected";
+    } else {
+        const requestCheck = await pool.query(
+            `SELECT request_id, sender_id, status FROM connection_requests
+       WHERE ((sender_id = $1 AND receiver_id = $2) OR (sender_id = $2 AND receiver_id = $1)) AND status != 'connected'`,
+            [viewerId, targetId]
+        );
+        if (requestCheck.rowCount > 0) {
+            const reqRow = requestCheck.rows[0];
+            connectionRequestStatus = reqRow.status;
+            connectionRequestId = reqRow.request_id;
+            connectionRequestSender = reqRow.sender_id === viewerId ? "me" : "them";
+        }
+    }
+
+    return { isFollowing, isFollowedBy, connectionRequestStatus, connectionRequestId, connectionRequestSender };
+};
+
+const getCompanyRelationshipInfo = async (orgId, targetId) => {
+    const followCheck = await pool.query(
+        "SELECT 1 FROM organization_user_follows WHERE org_id = $1 AND user_id = $2",
+        [orgId, targetId]
+    );
+    const followedByCheck = await pool.query(
+        "SELECT 1 FROM organization_followers WHERE org_id = $1 AND user_id = $2",
+        [orgId, targetId]
+    );
+
+    return {
+        isFollowing: followCheck.rowCount > 0,
+        isFollowedBy: followedByCheck.rowCount > 0,
+        connectionRequestStatus: null,
+        connectionRequestId: null,
+        connectionRequestSender: null,
+    };
+};
+
+// ─── Pool (for skills transactions that need client) ────────────────────────────
+
+const getClient = async () => pool.connect();
+
+const getUserRole = async (userId) => {
+    const result = await pool.query(
+        `SELECT r.role_name FROM user_roles ur
+         JOIN roles r ON ur.role_id = r.role_id
+         WHERE ur.user_id = $1
+         ORDER BY ur.assigned_at DESC
+         LIMIT 1`,
+        [userId]
+    );
+    return result.rows[0]?.role_name || null;
+};
+
+const getUserInterests = async (userId) => {
+    const result = await pool.query(
+        `SELECT i.name FROM user_interests ui
+         JOIN interests i ON ui.interest_id = i.interest_id
+         WHERE ui.user_id = $1`,
+        [userId]
+    );
+    return result.rows;
+};
+
+// ─── Profile Projects ──────────────────────────────────────────────────────────
+
+const getProjects = async (profileId) => {
+    const projectsRes = await pool.query(
+        `SELECT project_id, profile_id, title, organization, org_id, details,
+                start_month, start_year, end_month, end_year, is_current,
+                role, team_size, role_description, created_at, updated_at
+         FROM projects
+         WHERE profile_id = $1
+         ORDER BY is_current DESC, CAST(start_year AS INTEGER) DESC, start_month DESC, created_at DESC`,
+        [profileId]
+    );
+
+    if (projectsRes.rows.length === 0) return [];
+    const projects = projectsRes.rows;
+    const projectIds = projects.map(p => p.project_id);
+    const placeholders = projectIds.map((_, i) => `$${i + 1}`).join(',');
+
+    const skillsRes = await pool.query(
+        `SELECT ps.project_id, s.name
+         FROM project_skills ps
+         JOIN skills s ON ps.skill_id = s.skill_id
+         WHERE ps.project_id IN (${placeholders})`,
+        projectIds
+    );
+
+    const mediaRes = await pool.query(
+        `SELECT media_id AS id, project_id, media_type AS type, title, url, file_url AS "fileUrl", file_name AS "fileName", display_order
+         FROM project_media
+         WHERE project_id IN (${placeholders})
+         ORDER BY display_order ASC, created_at ASC`,
+        projectIds
+    );
+
+    const skillMap = {};
+    skillsRes.rows.forEach(row => {
+        if (!skillMap[row.project_id]) skillMap[row.project_id] = [];
+        skillMap[row.project_id].push(row.name);
+    });
+
+    const mediaMap = {};
+    mediaRes.rows.forEach(row => {
+        if (!mediaMap[row.project_id]) mediaMap[row.project_id] = [];
+        const { project_id, display_order, ...mediaItem } = row;
+        mediaMap[project_id].push(mediaItem);
+    });
+
+    return projects.map(p => ({
+        ...p,
+        skills: skillMap[p.project_id] || [],
+        media: mediaMap[p.project_id] || []
+    }));
+};
+
+const addProjectInTx = async (client, profileId, data) => {
+    const {
+        title, organization, org_id, details, start_month, start_year,
+        end_month, end_year, is_current, role, team_size, role_description
+    } = data;
+    const result = await client.query(
+        `INSERT INTO projects (
+            profile_id, title, organization, org_id, details,
+            start_month, start_year, end_month, end_year, is_current,
+            role, team_size, role_description
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+         RETURNING *`,
+        [
+            profileId, title, organization, org_id ?? null, details ?? null,
+            start_month, start_year, is_current ? null : (end_month ?? null),
+            is_current ? null : (end_year ?? null), is_current ?? false,
+            role ?? null, team_size ?? null, role_description ?? null
+        ]
+    );
+    return result.rows[0];
+};
+
+const ALLOWED_PROJECT_COLUMNS = new Set([
+    'title', 'organization', 'org_id', 'details',
+    'start_month', 'start_year', 'end_month', 'end_year',
+    'is_current', 'role', 'team_size', 'role_description'
+]);
+
+const updateProjectInTx = async (client, projectId, profileId, data) => {
+    const fields = [];
+    const values = [];
+    let idx = 1;
+    for (const [key, val] of Object.entries(data)) {
+        if (!ALLOWED_PROJECT_COLUMNS.has(key)) continue;
+        if (val !== undefined) {
+            fields.push(`${key} = $${idx++}`);
+            values.push(val);
+        }
+    }
+    if (fields.length === 0) return null;
+    fields.push(`updated_at = now()`);
+    values.push(projectId, profileId);
+    const result = await client.query(
+        `UPDATE projects SET ${fields.join(", ")}
+         WHERE project_id = $${idx++} AND profile_id = $${idx}
+         RETURNING *`,
+        values
+    );
+    return result.rows[0] || null;
+};
+
+const deleteProjectInTx = async (client, projectId, profileId) => {
+    const result = await client.query(
+        `DELETE FROM projects WHERE project_id = $1 AND profile_id = $2 RETURNING *`,
+        [projectId, profileId]
+    );
+    return result.rows[0] || null;
+};
+
+const syncProjectSkillsInTx = async (client, profileId, projectId, skillNames) => {
+    await client.query(`DELETE FROM project_skills WHERE project_id = $1`, [projectId]);
+    if (!Array.isArray(skillNames) || skillNames.length === 0) return;
+    
+    const validNames = [...new Set(skillNames.map(s => (typeof s === 'string' ? toTitleCase(s) : '')).filter(Boolean))];
+    if (validNames.length === 0) return;
+
+    await client.query(
+        `INSERT INTO skills (name)
+         SELECT UNNEST($1::text[]) ON CONFLICT (lower(name)) DO NOTHING`,
+        [validNames]
+    );
+
+    const { rows: skills } = await client.query(
+        `SELECT skill_id FROM skills WHERE lower(name) IN (SELECT lower(s) FROM UNNEST($1::text[]) AS s)`,
+        [validNames]
+    );
+
+    if (skills.length > 0) {
+        // Insert into project_skills
+        const values = skills.map((_, i) => `($1, $${i + 2})`).join(",");
+        await client.query(
+            `INSERT INTO project_skills (project_id, skill_id) VALUES ${values} ON CONFLICT DO NOTHING`,
+            [projectId, ...skills.map(s => s.skill_id)]
+        );
+
+        // Sync to user_skills so the profile retains these skills
+        const userValues = skills.map((_, i) => `($1, $${i + 2})`).join(",");
+        await client.query(
+            `INSERT INTO user_skills (profile_id, skill_id) VALUES ${userValues} ON CONFLICT DO NOTHING`,
+            [profileId, ...skills.map(s => s.skill_id)]
+        );
+    }
+};
+
+const syncExperienceSkillsInTx = async (client, profileId, experienceId, skillNames) => {
+    await client.query(`DELETE FROM experience_skills WHERE experience_id = $1`, [experienceId]);
+    if (!Array.isArray(skillNames) || skillNames.length === 0) return;
+    
+    const validNames = [...new Set(skillNames.map(s => (typeof s === 'string' ? toTitleCase(s) : '')).filter(Boolean))];
+    if (validNames.length === 0) return;
+
+    await client.query(
+        `INSERT INTO skills (name)
+         SELECT UNNEST($1::text[]) ON CONFLICT (lower(name)) DO NOTHING`,
+        [validNames]
+    );
+
+    const { rows: skills } = await client.query(
+        `SELECT skill_id FROM skills WHERE lower(name) IN (SELECT lower(s) FROM UNNEST($1::text[]) AS s)`,
+        [validNames]
+    );
+
+    if (skills.length > 0) {
+        // Insert into experience_skills
+        const values = skills.map((_, i) => `($1, $${i + 2})`).join(",");
+        await client.query(
+            `INSERT INTO experience_skills (experience_id, skill_id) VALUES ${values} ON CONFLICT DO NOTHING`,
+            [experienceId, ...skills.map(s => s.skill_id)]
+        );
+
+        // Sync to user_skills so the profile retains these skills
+        const userValues = skills.map((_, i) => `($1, $${i + 2})`).join(",");
+        await client.query(
+            `INSERT INTO user_skills (profile_id, skill_id) VALUES ${userValues} ON CONFLICT DO NOTHING`,
+            [profileId, ...skills.map(s => s.skill_id)]
+        );
+    }
+};
+
+const syncProjectMediaInTx = async (client, projectId, mediaList) => {
+    await client.query(`DELETE FROM project_media WHERE project_id = $1`, [projectId]);
+    if (!Array.isArray(mediaList) || mediaList.length === 0) return;
+
+    for (let i = 0; i < mediaList.length; i++) {
+        const m = mediaList[i];
+        if (!m || !m.title) continue;
+        const type = ['link', 'image', 'document'].includes(m.type) ? m.type : 'link';
+        await client.query(
+            `INSERT INTO project_media (project_id, media_type, title, url, file_url, file_name, display_order)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+            [
+                projectId,
+                type,
+                m.title.trim(),
+                m.url ?? null,
+                m.fileUrl ?? m.file_url ?? null,
+                m.fileName ?? m.file_name ?? null,
+                i
+            ]
+        );
+    }
+};
+
+const touchProfileVersionInTx = async (client, profileId) => {
+    const result = await client.query(
+        `UPDATE profiles SET version = COALESCE(version, 0) + 1, updated_at = now() 
+         WHERE profile_id = $1 
+         RETURNING version`,
+        [profileId]
+    );
+    return result.rows[0]?.version || null;
+};
+
+const getProfileScoreData = async (userId) => {
+    const u = await getFullProfile(userId);
+    if (!u) return null;
+
+    const profileId = u.profile_id;
+    const [skills, experiences, educations, projects] = await Promise.all([
+        profileId ? getSkills(profileId) : [],
+        profileId ? getExperiencesByProfileId(profileId) : [],
+        profileId ? getEducations(profileId) : [],
+        profileId ? getProjects(profileId) : [],
+    ]);
+
+    return {
+        userProfile: u,
+        skills,
+        experiences,
+        educations,
+        projects,
+    };
+};
+
+module.exports = {
+    getFullProfile, updateUserFields, updateAvatarUrl, getAvatarUrl, updateCoverUrl, updateProfileIndustry,
+    getIdentity, updateIdentity,
+    getResume, getLatestResume, replaceResume, deleteResume,
+    getProfileId, ensureProfileId, getProfileVersion, incrementProfileVersion,
+    getIdempotentResponse, saveIdempotentResponse,
+    getExperiences, getExperiencesByProfileId, addExperience, findExperience, updateExperience, deleteExperience,
+    endExperienceById, addExperienceInTx, updateExperienceInTx, deleteExperienceInTx,
+    getEducations, addEducation, updateEducation, deleteEducation,
+    addEducationInTx, updateEducationInTx,
+    getSkills, deleteSkillMapping,
+    getCompanyRoles, getSocialCounts, getRelationshipInfo, getCompanyRelationshipInfo,
+    getUserRole,
+    getUserInterests,
+    getProjects, addProjectInTx, updateProjectInTx, deleteProjectInTx,
+    syncProjectSkillsInTx, syncExperienceSkillsInTx, syncProjectMediaInTx, touchProfileVersionInTx,
+    getProfileScoreData,
+    getClient,
+};
+
+

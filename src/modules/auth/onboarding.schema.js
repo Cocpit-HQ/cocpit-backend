@@ -1,0 +1,40 @@
+const { z } = require("zod");
+
+const accountNameRegex = /^[a-z0-9_.]{3,30}$/;
+
+const checkAccountNameSchema = z.object({
+  query: z.object({
+    account_name: z.string({
+      required_error: "Account name is required"
+    })
+      .min(3, "Account name must be at least 3 characters")
+      .max(30, "Account name must be at most 30 characters")
+      .regex(accountNameRegex, "Account name can only contain lowercase letters, numbers, dots, and underscores"),
+  }),
+});
+
+const completeOnboardingSchema = z.object({
+  body: z.object({
+    account_name: z.string({
+      required_error: "Account name is required"
+    })
+      .min(3, "Account name must be at least 3 characters")
+      .max(30, "Account name must be at most 30 characters")
+      .regex(accountNameRegex, "Account name can only contain lowercase letters, numbers, dots, and underscores")
+      .optional(),
+    location: z.object({
+      country: z.string().min(1),
+      state: z.string().nullable().optional(),
+      city: z.string().min(1),
+      formattedAddress: z.string().min(1),
+      latitude: z.number().nullable().optional(),
+      longitude: z.number().nullable().optional(),
+      placeId: z.string().min(1),
+    }).optional(),
+  }),
+});
+
+module.exports = {
+  checkAccountNameSchema,
+  completeOnboardingSchema,
+};

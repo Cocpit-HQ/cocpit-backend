@@ -1,0 +1,61 @@
+# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+
+# dependencies
+/node_modules
+/.pnp
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/versions
+
+# json files
+*.json
+
+# testing
+/coverage
+/test/
+
+# next.js
+/.next/
+/out/
+
+# production
+/build
+
+# misc
+.DS_Store
+*.pem
+
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+newrelic_agent.log
+
+# env files (can opt-in for committing if needed)
+.env*
+
+# vercel
+.vercel
+
+# typescript
+*.tsbuildinfo
+next-env.d.ts
+
+# secrets
+secrets/
+
+# Dev-only scripts (never commit to main/develop)
+scripts/dev-only/
+
+# Planning and documentation (use Notion/Confluence instead)
+# plans/
+
+# Scratch and Logs
+flow_logs.md
+recover.txt
+scratch_*
+*.log

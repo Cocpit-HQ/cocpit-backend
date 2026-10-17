@@ -1,0 +1,5 @@
+- Backend uses Node.js + PostgreSQL
+- Dates must follow ISO format
+- All APIs return JSON
+- Atomic operations must be transactional
+- Validation errors use 422

@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>{{user.name}} Resume</title>
+    <style>
+        /* Helvetica-style sans serif */
+        body {
+            font-family: Arial, Helvetica, sans-serif;
+            margin: 0;
+            color: #141414;
+            font-size: 12pt;
+            line-height: 1.25;
+        }
+
+        .text-center {
+            text-align: center;
+        }
+
+        h1 {
+            margin: 0;
+            font-size: 28pt;
+            font-weight: bold;
+        }
+
+        .contact-info {
+            font-size: 11pt;
+            margin-top: 5pt;
+            margin-bottom: -3pt;
+            text-align: center;
+        }
+
+        .contact-info a {
+            color: inherit;
+            text-decoration: none;
+        }
+        
+        .contact-item {
+            display: inline-flex;
+            align-items: center;
+            vertical-align: middle;
+        }
+
+        .icon {
+            display: inline-flex;
+            align-items: center;
+            margin-right: 4px;
+        }
+        
+        .sep {
+            margin: 0 4px;
+        }
+
+        .section {
+            margin-top: 10pt;
+        }
+
+        .section-title {
+            font-weight: bold;
+            font-size: 14pt;
+            text-transform: uppercase;
+            margin-bottom: 2pt;
+            page-break-after: avoid;
+            break-after: avoid;
+        }
+
+        .section-divider {
+            border-bottom: 2pt solid #d4d4d4;
+            margin-bottom: 4pt;
+            page-break-after: avoid;
+            break-after: avoid;
+        }
+
+        .item {
+            margin-bottom: 8pt;
+        }
+
+        /* Use simple tables for ATS layout extraction instead of Flexbox */
+        .layout-table {
+            width: 100%;
+            border-collapse: collapse;
+            page-break-after: avoid;
+            break-after: avoid;
+        }
+        .layout-table td {
+            padding: 0;
+            vertical-align: top;
+        }
+
+        .item-title {
+            font-weight: bold;
+            text-align: left;
+        }
+
+        .item-date {
+            color: #4d4d4d;
+            font-size: 11pt;
+            text-align: right;
+            white-space: nowrap;
+        }
+
+        .layout-table td.item-subtitle {
+            font-style: italic;
+            text-align: left;
+            padding-top: 4pt;
+        }
+
+        .layout-table td.item-location {
+            color: #4d4d4d;
+            font-size: 11pt;
+            text-align: right;
+            white-space: nowrap;
+            padding-top: 4pt;
+        }
+
+        ul {
+            margin-top: 10pt;
+            margin-bottom: 0;
+            padding-left: 0.15in;
+            list-style-type: disc;
+        }
+
+        li {
+            font-size: 11pt;
+            margin-bottom: 1pt;
+            padding-left: 0;
+            page-break-inside: avoid;
+            break-inside: avoid;
+        }
+        
+        .skills-container {
+            margin-top: 4pt;
+            font-size: 11pt;
+        }
+
+        .skill-category {
+            margin-bottom: 2pt;
+        }
+        
+        .skill-name {
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="text-center">
+        <h1>{{user.name}}</h1>
+        <div class="contact-info">
+            {{#each user.contactItems}}
+                <span class="contact-item">
+                    {{#if this.icon}}<span class="icon">{{{this.icon}}}</span>{{/if}}
+                    {{#if this.url}}
+                    <a href="{{this.url}}">{{this.display}}</a>
+                    {{else}}
+                    {{this.text}}
+                    {{/if}}
+                </span>
+                {{#unless @last}}<span class="sep">|</span>{{/unless}}
+            {{/each}}
+        </div>
+    </div>
+
+    {{#if experiences.length}}
+    <div class="section">
+        <div class="section-title">EXPERIENCE</div>
+        <div class="section-divider"></div>
+        {{#each experiences}}
+        <div class="item">
+            <table class="layout-table">
+                <tr>
+                    <td class="item-title">{{company_name}}</td>
+                    <td class="item-date">{{date_range}}</td>
+                </tr>
+                <tr>
+                    <td class="item-subtitle">{{title}}</td>
+                    <td class="item-location">{{location}}</td>
+                </tr>
+            </table>
+            {{#if bullet_points.length}}
+            <ul>
+                {{#each bullet_points}}
+                <li>{{this}}</li>
+                {{/each}}
+            </ul>
+            {{/if}}
+        </div>
+        {{/each}}
+    </div>
+    {{/if}}
+
+    {{#if projects.length}}
+    <div class="section">
+        <div class="section-title">PROJECTS</div>
+        <div class="section-divider"></div>
+        {{#each projects}}
+        <div class="item">
+            <table class="layout-table">
+                <tr>
+                    <td class="item-title">{{name}}</td>
+                    <td class="item-date">{{date_range}}</td>
+                </tr>
+            </table>
+            {{#if bullet_points.length}}
+            <ul>
+                {{#each bullet_points}}
+                <li>{{this}}</li>
+                {{/each}}
+            </ul>
+            {{/if}}
+        </div>
+        {{/each}}
+    </div>
+    {{/if}}
+
+    {{#if educations.length}}
+    <div class="section">
+        <div class="section-title">EDUCATION</div>
+        <div class="section-divider"></div>
+        {{#each educations}}
+        <div class="item">
+            <table class="layout-table">
+                <tr>
+                    <td class="item-title">{{school_name}}</td>
+                    <td class="item-date">{{date_range}}</td>
+                </tr>
+                <tr>
+                    <td class="item-subtitle">{{degree}}{{#if field_of_study}} in {{field_of_study}}{{/if}}</td>
+                    <td class="item-location">{{location}}</td>
+                </tr>
+            </table>
+            {{#if bullet_points.length}}
+            <ul>
+                {{#each bullet_points}}
+                <li>{{this}}</li>
+                {{/each}}
+            </ul>
+            {{/if}}
+        </div>
+        {{/each}}
+    </div>
+    {{/if}}
+
+    {{#if skills.length}}
+    <div class="section">
+        <div class="section-title">SKILLS</div>
+        <div class="section-divider"></div>
+        <div class="skills-container">
+            {{#each skills}}
+            <div class="skill-category">
+                <span class="skill-name">{{category}}:</span> {{items}}
+            </div>
+            {{/each}}
+        </div>
+    </div>
+    {{/if}}
+</body>
+</html>
