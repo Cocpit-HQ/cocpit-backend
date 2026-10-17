@@ -5,7 +5,6 @@ npm-debug.log*
 .github
 .claude
 .env*
-!.env.example
 **/firebase-service-account*.json
 secrets
 coverage
@@ -13,8 +12,6 @@ docs
 plans
 FEED-SPRINT-HQ
 antigravity
-__mocks__
-**/*.test.js
 uploads/*
 !uploads/legal
 token.txt

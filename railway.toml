@@ -1,12 +1,14 @@
-# Railway config-as-code for the backend monolith (Main API + Admin API + Socket.IO + workers).
+# Railway config-as-code for the backend (single service: gateway + main + admin via pm2-runtime).
 [build]
 builder = "DOCKERFILE"
 dockerfilePath = "Dockerfile"
 
 [deploy]
+# Gateway health endpoint (src/gateway.js). Set the service variable PORT=8000 so Railway
+# health-checks and routes the public domain to the gateway.
 healthcheckPath = "/health"
-healthcheckTimeout = 120
+healthcheckTimeout = 180
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 5
-# Keep at 1: cron workers run in-process (setInterval) and would run once per replica.
+# Keep at 1: cron workers run inside the main API and Redis is embedded.
 numReplicas = 1
