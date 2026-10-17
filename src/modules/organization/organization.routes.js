@@ -26,6 +26,61 @@ const {
 const institutionController = require("./institution.controller");
 const hierarchyController = require("./organization.hierarchy.controller");
 const teamsCtrl = require("./organization.teams.controller");
+const featureFlagsService = require("../config/featureFlags.service");
+
+const checkOrgAnalyticsModule = (req, res, next) => {
+    const flags = featureFlagsService.getFlags();
+    if (
+        flags['enableOrgAnalyticsModule'] === false ||
+        flags['enableOrgAnalytics'] === false ||
+        flags['enable_org_analytics'] === false ||
+        flags['enable_org_analytics_module'] === false ||
+        flags['orgAnalytics'] === false ||
+        flags['org_analytics'] === false
+    ) {
+        return res.status(403).json({
+            success: false,
+            message: 'Organization Analytics module is currently disabled by administrator.'
+        });
+    }
+    next();
+};
+
+const checkOrgSettingsModule = (req, res, next) => {
+    const flags = featureFlagsService.getFlags();
+    if (
+        flags['enableOrgSettingsModule'] === false ||
+        flags['enableOrgSettings'] === false ||
+        flags['enable_org_settings'] === false ||
+        flags['enable_org_settings_module'] === false ||
+        flags['orgSettings'] === false ||
+        flags['org_settings'] === false
+    ) {
+        return res.status(403).json({
+            success: false,
+            message: 'Organization Settings module is currently disabled by administrator.'
+        });
+    }
+    next();
+};
+
+const checkOrgNotificationsModule = (req, res, next) => {
+    const flags = featureFlagsService.getFlags();
+    if (
+        flags['enableOrgNotificationsModule'] === false ||
+        flags['enableOrgNotifications'] === false ||
+        flags['enable_org_notifications'] === false ||
+        flags['enable_org_notifications_module'] === false ||
+        flags['orgNotifications'] === false ||
+        flags['org_notifications'] === false
+    ) {
+        return res.status(403).json({
+            success: false,
+            message: 'Organization Notifications module is currently disabled by administrator.'
+        });
+    }
+    next();
+};
 
 // --- COMPANY ONBOARDING WIZARD ---
 router.get("/organizations/countries", requireAuth, organizationController.getCountriesList);
@@ -153,9 +208,9 @@ router.get("/admin/verifications/queue", requireAuth, requireRoles(["Admin"]), v
 router.put("/admin/verifications/:verificationId/review", requireAuth, requireRoles(["Admin"]), verifyController.reviewVerification);
 
 // --- ANALYTICS ---
-router.get("/organizations/:orgId/analytics/overview", requireAuth, requireOrgPermission("VIEW_ANALYTICS"), analyticsController.getOverview);
-router.get("/organizations/:orgId/analytics/engagement", requireAuth, requireOrgPermission("VIEW_ANALYTICS"), analyticsController.getEngagement);
-router.get("/organizations/:orgId/analytics/jobs", requireAuth, requireOrgPermission("VIEW_ANALYTICS"), analyticsController.getJobs);
+router.get("/organizations/:orgId/analytics/overview", requireAuth, checkOrgAnalyticsModule, requireOrgPermission("VIEW_ANALYTICS"), analyticsController.getOverview);
+router.get("/organizations/:orgId/analytics/engagement", requireAuth, checkOrgAnalyticsModule, requireOrgPermission("VIEW_ANALYTICS"), analyticsController.getEngagement);
+router.get("/organizations/:orgId/analytics/jobs", requireAuth, checkOrgAnalyticsModule, requireOrgPermission("VIEW_ANALYTICS"), analyticsController.getJobs);
 
 // --- SETTINGS (TECH STACK / GALLERY) ---
 router.get("/organizations/:slug/tech-stack", optionalAuth, settingsController.getTechStack);
@@ -189,13 +244,13 @@ router.post("/organizations/:orgId/cover", requireAuth, requireOrgPermission("MA
 router.delete("/organizations/:orgId/cover", requireAuth, requireOrgPermission("MANAGE_SETTINGS"), settingsController.deleteCover);
 
 // --- ACCOUNT SETTINGS & LIFECYCLE ---
-router.get("/organizations/:orgId/account-settings", requireAuth, requireOrgPermission("MANAGE_SETTINGS"), settingsController.getAccountSettings);
+router.get("/organizations/:orgId/account-settings", requireAuth, checkOrgSettingsModule, requireOrgPermission("MANAGE_SETTINGS"), settingsController.getAccountSettings);
 router.patch("/organizations/:orgId/deactivate", requireAuth, settingsController.deactivateOrganization);
 router.patch("/organizations/:orgId/reactivate", requireAuth, settingsController.reactivateOrganization);
 
 // --- NOTIFICATIONS ---
-router.get("/organizations/:orgId/notification-preferences", requireAuth, settingsController.getNotificationPreferences);
-router.put("/organizations/:orgId/notification-preferences", requireAuth, settingsController.updateNotificationPreferences);
+router.get("/organizations/:orgId/notification-preferences", requireAuth, checkOrgNotificationsModule, settingsController.getNotificationPreferences);
+router.put("/organizations/:orgId/notification-preferences", requireAuth, checkOrgNotificationsModule, settingsController.updateNotificationPreferences);
 
 // --- HIERARCHY ---
 // Public: list sub-organizations of an org

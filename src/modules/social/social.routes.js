@@ -96,15 +96,37 @@ router.get("/messages/:messageId/seen-by", requireAuth, socialController.getMess
 const featureFlagsService = require("../config/featureFlags.service");
 const blockIfNotificationsDisabled = (req, res, next) => {
     const flags = featureFlagsService.getFlags();
-    const isNotificationsDisabled = 
-        flags["enableNotificationsModule"] === false ||
-        flags["enableNotifications"] === false ||
-        flags["enable_notifications"] === false ||
-        flags["enable_notifications_module"] === false ||
-        flags["notifications"] === false;
+    const isCompanyActor = Boolean(
+        req.query.companyId ||
+        req.actor?.type === "ORGANIZATION" ||
+        req.headers["x-actor-type"] === "ORGANIZATION"
+    );
 
-    if (isNotificationsDisabled) {
-        return res.status(403).json({ message: "Notifications are currently disabled." });
+    if (isCompanyActor) {
+        const isOrgNotificationsDisabled =
+            flags["enableOrgNotificationsModule"] === false ||
+            flags["enableOrgNotifications"] === false ||
+            flags["enable_org_notifications"] === false ||
+            flags["enable_org_notifications_module"] === false ||
+            flags["orgNotifications"] === false ||
+            flags["org_notifications"] === false ||
+            flags["enableNotificationsModule"] === false ||
+            flags["enableNotifications"] === false;
+
+        if (isOrgNotificationsDisabled) {
+            return res.status(403).json({ message: "Organization notifications are currently disabled." });
+        }
+    } else {
+        const isNotificationsDisabled = 
+            flags["enableNotificationsModule"] === false ||
+            flags["enableNotifications"] === false ||
+            flags["enable_notifications"] === false ||
+            flags["enable_notifications_module"] === false ||
+            flags["notifications"] === false;
+
+        if (isNotificationsDisabled) {
+            return res.status(403).json({ message: "Notifications are currently disabled." });
+        }
     }
     next();
 };

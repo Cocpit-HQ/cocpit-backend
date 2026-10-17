@@ -106,6 +106,22 @@ async function checkDbConnection() {
         CREATE TRIGGER feature_flags_update_trigger
         AFTER INSERT OR UPDATE ON feature_flags
         FOR EACH ROW EXECUTE FUNCTION notify_feature_flag_update();
+
+        INSERT INTO feature_flags (flag_key, is_enabled)
+        VALUES 
+          ('enableTeamsModule', TRUE),
+          ('enableTeams', TRUE),
+          ('teams', TRUE),
+          ('enableOrgSettingsModule', TRUE),
+          ('enableOrgSettings', TRUE),
+          ('orgSettings', TRUE),
+          ('enableOrgAnalyticsModule', TRUE),
+          ('enableOrgAnalytics', TRUE),
+          ('orgAnalytics', TRUE),
+          ('enableOrgNotificationsModule', TRUE),
+          ('enableOrgNotifications', TRUE),
+          ('orgNotifications', TRUE)
+        ON CONFLICT (flag_key) DO NOTHING;
       `).catch(err => console.warn("Database schema update notice:", err.message));
     }
     return true;

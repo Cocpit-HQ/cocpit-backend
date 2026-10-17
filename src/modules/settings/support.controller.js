@@ -191,19 +191,19 @@ exports.getLegalDocs = (req, res) => {
     const docs = [
         {
             title: "Privacy Policy",
-            url: process.env.LEGAL_PRIVACY_POLICY_URL || "https://cocpit.in/privacy-policy"
+            url: process.env.LEGAL_PRIVACY_POLICY_URL || `${localBase}/cocpit_privacy_policy.html`
         },
         {
             title: "Terms of Service",
-            url: process.env.LEGAL_TERMS_OF_SERVICE_URL || "https://cocpit.in/terms-and-conditions"
+            url: process.env.LEGAL_TERMS_OF_SERVICE_URL || `${localBase}/cocpit_terms_of_use.html`
         },
         {
             title: "Community Guidelines",
-            url: process.env.LEGAL_COMMUNITY_GUIDELINES_URL || "https://cocpit.in/community-guidelines"
+            url: process.env.LEGAL_COMMUNITY_GUIDELINES_URL || `${localBase}/cocpit_community_guidelines.html`
         },
         {
             title: "Cookie Policy",
-            url: process.env.LEGAL_COOKIE_POLICY_URL || `${localBase}/cookie_policy.html`
+            url: process.env.LEGAL_COOKIE_POLICY_URL || `${localBase}/cocpit_cookie_policy.html`
         },
     ];
 

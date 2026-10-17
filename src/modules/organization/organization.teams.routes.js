@@ -6,6 +6,26 @@ const router = express.Router({ mergeParams: true });
 const teamsCtrl = require('./organization.teams.controller');
 const { requireAuth } = require('../../core/middlewares/auth.middleware');
 const { requireOrgAccess } = require('../../core/middlewares/org-rbac.middleware');
+const featureFlagsService = require('../config/featureFlags.service');
+
+const checkTeamsModule = (req, res, next) => {
+    const flags = featureFlagsService.getFlags();
+    if (
+        flags['enableTeamsModule'] === false ||
+        flags['enableTeams'] === false ||
+        flags['enable_teams'] === false ||
+        flags['enable_teams_module'] === false ||
+        flags['teams'] === false
+    ) {
+        return res.status(403).json({
+            success: false,
+            message: 'Teams module is currently disabled by administrator.'
+        });
+    }
+    next();
+};
+
+router.use(checkTeamsModule);
 
 // Roles
 router.get('/roles',                 requireAuth, requireOrgAccess('TEAMS'),          teamsCtrl.getRoles);

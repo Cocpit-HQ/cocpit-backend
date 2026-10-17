@@ -1,43 +1,210 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Cocpit - Community Guidelines</title>
-    <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; line-height: 1.6; color: #1f2937; max-width: 800px; margin: 0 auto; padding: 40px 20px; background-color: #f9fafb; }
-        .card { background: #ffffff; padding: 40px; border-radius: 16px; border: 1px solid #e5e7eb; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05); }
-        h1 { color: #111827; border-bottom: 2px solid #6366f1; padding-bottom: 10px; margin-top: 0; font-size: 28px; }
-        h2 { color: #374151; font-size: 20px; margin-top: 24px; }
-        p, ul { color: #4b5563; font-size: 15px; }
-        li { margin-bottom: 8px; }
-        .badge { background: #e0e7ff; color: #4338ca; padding: 4px 12px; border-radius: 9999px; font-size: 12px; font-weight: 600; display: inline-block; margin-bottom: 20px; }
-    </style>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Cocpit Community Guidelines</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --orange: #EC6229;
+      --orange-dark: #EC6229;
+      --orange-soft: #fff7f2;
+      --text: #292524;
+      --muted: #78716c;
+      --line: #f7c5b2;
+      --surface: #ffffff;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      padding: 40px 20px;
+      background: #fffaf5;
+      color: var(--text);
+      font-family: "DM Sans", sans-serif;
+      font-size: 16px;
+      line-height: 1.75;
+    }
+
+    main {
+      width: min(100%, 900px);
+      margin: 0 auto;
+      padding: clamp(24px, 5vw, 56px);
+      background: var(--surface);
+      border: 1px solid #ffedd5;
+      border-radius: 20px;
+      box-shadow: 0 12px 40px rgba(124, 45, 18, 0.06);
+    }
+
+    .page-header {
+      margin: 0 0 30px;
+      padding: 0 0 22px;
+      border-bottom: 2px solid var(--orange);
+    }
+
+    .page-header h1 {
+      margin: 0 0 8px;
+      color: var(--orange);
+      font-size: clamp(26px, 4vw, 34px);
+      line-height: 1.2;
+      font-weight: 700;
+      letter-spacing: -.03em;
+    }
+
+    .effective-date {
+      margin: 0;
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 500;
+    }
+
+    section + section {
+      margin-top: 34px;
+      padding-top: 28px;
+      border-top: 1px solid #f5e7dc;
+    }
+
+    h2 {
+      margin: 0 0 14px;
+      color: var(--orange-dark);
+      font-size: clamp(18px, 2.5vw, 22px);
+      line-height: 1.35;
+      font-weight: 700;
+      letter-spacing: -.02em;
+    }
+
+    p { margin: 0 0 14px; }
+    p:last-child { margin-bottom: 0; }
+
+    ul {
+      margin: 12px 0 0;
+      padding-left: 22px;
+    }
+
+    li {
+      margin: 0 0 12px;
+      padding-left: 4px;
+    }
+
+    li::marker { color: var(--orange); }
+
+    strong {
+      color: #292524;
+      font-weight: 700;
+    }
+
+    .level {
+      margin-top: 18px;
+      padding: 18px 20px;
+      border-left: 3px solid var(--orange);
+      border-radius: 0 12px 12px 0;
+      background: var(--orange-soft);
+    }
+
+    .level p { margin-bottom: 8px; }
+    .level p:last-child { margin-bottom: 0; }
+
+    a {
+      color: var(--orange-dark);
+      text-decoration-thickness: 1px;
+      text-underline-offset: 3px;
+      overflow-wrap: anywhere;
+    }
+
+    a:hover { color: var(--orange); }
+
+    @media (max-width: 600px) {
+      body { padding: 16px 10px; font-size: 15px; }
+      main { padding: 24px 20px; border-radius: 14px; }
+      section + section { margin-top: 26px; padding-top: 22px; }
+    }
+  </style>
 </head>
 <body>
-    <div class="card">
-        <span class="badge">Official Legal Document • Last Updated: August 2026</span>
-        <h1>Community Guidelines</h1>
-        <p>Cocpit is built to empower professionals, creators, students, and employers to connect, collaborate, and grow together in a respectful, constructive environment. These Community Guidelines set the standards for acceptable behavior on Cocpit.</p>
+  <main>
+    <header class="page-header">
+      <h1>Community Guidelines</h1>
+      <p class="effective-date">Last Updated &amp; Effective Date: September 2026</p>
+    </header>
 
-        <h2>1. Be Professional and Authentic</h2>
-        <ul>
-            <li>Use your authentic professional identity and represent your experience accurately.</li>
-            <li>Maintain constructive, respectful interactions across posts, comments, messages, and project showcases.</li>
-        </ul>
+    <section>
+      <h2>1. PURPOSE &amp; COMMUNITY VISION</h2>
+      <p>Cocpit is designed to foster a high-integrity, professional, and innovative network where creators, developers, recruiters, and organization leaders collaborate to build what comes next.</p>
+      <p>Our Community Guidelines set the standards of acceptable behavior across all Platform interactions, including posts, job listings, messaging, community forums, AI-assisted tools, and recruitment workflows. By accessing Cocpit, you agree to uphold these standards.</p>
+    </section>
 
-        <h2>2. Zero Tolerance Policy</h2>
-        <ul>
-            <li><strong>No Harassment or Bullying:</strong> Personal attacks, targeted hate speech, intimidation, and discriminatory content will lead to immediate account suspension.</li>
-            <li><strong>No Explicit Content:</strong> Sexually explicit material, graphic violence, or illegal activities are strictly forbidden.</li>
-            <li><strong>No Spam or Phishing:</strong> Unsolicited promotional bulk spam, deceptive links, or financial scams are not permitted.</li>
-        </ul>
+    <section>
+      <h2>2. PROFESSIONAL CONDUCT &amp; RESPECT</h2>
+      <p>We believe that meaningful innovation thrives on constructive debate, collaboration, and mutual respect.</p>
+      <ul>
+        <li><strong>Zero Tolerance for Harassment:</strong> Do not engage in bullying, doxxing, stalking, intimidation, or personal attacks against any user or organization.</li>
+        <li><strong>Inclusive &amp; Non-Discriminatory Environment:</strong> Hate speech, slurs, discrimination, or bias based on race, ethnicity, religion, gender, sexual orientation, nationality, disability, or age is strictly prohibited.</li>
+        <li><strong>Professional Tone:</strong> Maintain a respectful, constructive, and civil tone in all public posts, comments, direct messages, and recruitment communications.</li>
+      </ul>
+    </section>
 
-        <h2>3. Respect Intellectual Property</h2>
-        <p>Only share content, images, articles, and media that you own or have explicit authorization to publish.</p>
+    <section>
+      <h2>3. AUTHENTICITY &amp; RECRUITMENT SAFETY</h2>
+      <p>Integrity is fundamental to professional discovery and hiring on Cocpit.</p>
+      <ul>
+        <li><strong>Accurate Credentials:</strong> Self-reported profiles, work experience, education, certifications, and skills must be accurate and truthful. Misrepresenting employment history or qualifications is a violation of our guidelines.</li>
+        <li><strong>Verified Job Postings:</strong> Recruiters and company administrators must publish legitimate, accurate employment opportunities. Deceptive job posts, pay-for-employment schemes, multi-level marketing (MLM), or phantom job listings will result in immediate termination.</li>
+        <li><strong>One Person, One Account:</strong> Creating multiple accounts to evade suspensions, impersonate other individuals or brands, or artificially manipulate engagement is prohibited.</li>
+      </ul>
+    </section>
 
-        <h2>4. Reporting and Moderation</h2>
-        <p>If you encounter content or behavior that violates these guidelines, use the in-app <strong>Report</strong> button or contact <strong>support@cocpit.in</strong>. Our moderation team reviews reported violations promptly.</p>
-    </div>
+    <section>
+      <h2>4. CONTENT SAFETY &amp; INTELLECTUAL PROPERTY</h2>
+      <p>You own the content you create and publish on Cocpit, but you are responsible for ensuring it complies with applicable legal standards.</p>
+      <ul>
+        <li><strong>No Illegal or Harmful Content:</strong> Do not upload, post, or transmit content promoting illegal acts, violent extremism, adult content, non-consensual imagery, or dangerous activities.</li>
+        <li><strong>Respect Intellectual Property:</strong> Only share content, code, images, or documents that you possess the legal right or copyright license to distribute.</li>
+        <li><strong>No Spam or Scraping:</strong> Commercial spam, phishing, automated bot interaction, unauthorized data harvesting, or scraping of user profiles and candidate databases is forbidden.</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>5. RESPONSIBLE AI USAGE</h2>
+      <p>Cocpit incorporates advanced AI tools (including Google Gemini) for resume parsing, job match scoring, career trajectory analysis, and job description creation.</p>
+      <ul>
+        <li><strong>Human Judgment in Hiring:</strong> AI match scores and career insights are advisory tools. Employers and recruiters must exercise independent human review when evaluating candidates.</li>
+        <li><strong>No AI Manipulation:</strong> Do not attempt to reverse-engineer, prompt-inject, or manipulate AI scoring algorithms through deceptive keyword stuffing or hidden text in resumes.</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>6. THREE-STRIKE DISCIPLINARY FRAMEWORK</h2>
+      <p>Cocpit enforces a progressive disciplinary model to protect community integrity:</p>
+
+      <div class="level">
+        <p><strong>Level 1 Violations (Toxic Conduct, Harassment, Spam)</strong></p>
+        <p>Enforces a 3-strike ladder: (a) First Report: Written warning &amp; content removal; (b) Second Report: Mandatory 30-day account suspension; (c) Third Report: Permanent account termination.</p>
+      </div>
+
+      <div class="level">
+        <p><strong>Level 2 Violations (Recruitment Scams, Credential Fraud)</strong></p>
+        <p>Immediate content removal, temporary account suspension, or permanent termination depending on deception severity.</p>
+      </div>
+
+      <div class="level">
+        <p><strong>Level 3 Violations (Illegal Activity, CSAM, Extremism)</strong></p>
+        <p>Immediate permanent account termination without prior warning and referral to law enforcement authorities.</p>
+      </div>
+    </section>
+
+    <section>
+      <h2>7. REPORTING &amp; GRIEVANCE ESCALATION</h2>
+      <p>If you encounter content or conduct that violates these guidelines, report it through the in-app reporting button or email our safety team.</p>
+      <ul>
+        <li><strong>Grievance Officer:</strong> Yash Oswal</li>
+        <li><strong>Safety Email:</strong> <a href="mailto:grievance@cocpit.com">grievance@cocpit.com</a> / <a href="mailto:yashoswal@cocpitin.org">yashoswal@cocpitin.org</a></li>
+      </ul>
+      <p>All reports are acknowledged within 24 hours and investigated thoroughly.</p>
+    </section>
+  </main>
 </body>
 </html>

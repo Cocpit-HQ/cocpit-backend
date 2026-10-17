@@ -4,13 +4,57 @@ const pool = require('../../../core/db/pool');
 
 const getFlags = async (req, res) => {
   try {
-    const keys = await redis.keys('feature_flag:*');
     const flags = {};
-    for (const key of keys) {
-      const val = await redis.get(key);
-      const flagKey = key.replace('feature_flag:', '');
-      flags[flagKey] = val === 'true';
+    try {
+      const keys = await redis.keys('feature_flag:*');
+      for (const key of keys) {
+        const val = await redis.get(key);
+        const flagKey = key.replace('feature_flag:', '');
+        flags[flagKey] = val === 'true';
+      }
+    } catch (rErr) {
+      console.warn('⚠️ Redis read failed in admin getFlags:', rErr.message);
     }
+
+    try {
+      const { rows } = await pool.query('SELECT flag_key, is_enabled FROM feature_flags');
+      for (const row of rows) {
+        if (flags[row.flag_key] === undefined) {
+          flags[row.flag_key] = row.is_enabled;
+        }
+      }
+    } catch (dbErr) {
+      console.warn('⚠️ DB read failed in admin getFlags:', dbErr.message);
+    }
+
+    // Default teams flag if not yet set
+    if (flags.enableTeamsModule === undefined && flags.enableTeams === undefined && flags.teams === undefined) {
+      flags.enableTeamsModule = true;
+      flags.enableTeams = true;
+      flags.teams = true;
+    }
+
+    // Default org settings flag if not yet set
+    if (flags.enableOrgSettingsModule === undefined && flags.enableOrgSettings === undefined && flags.orgSettings === undefined) {
+      flags.enableOrgSettingsModule = true;
+      flags.enableOrgSettings = true;
+      flags.orgSettings = true;
+    }
+
+    // Default org analytics flag if not yet set
+    if (flags.enableOrgAnalyticsModule === undefined && flags.enableOrgAnalytics === undefined && flags.orgAnalytics === undefined) {
+      flags.enableOrgAnalyticsModule = true;
+      flags.enableOrgAnalytics = true;
+      flags.orgAnalytics = true;
+    }
+
+    // Default org notifications flag if not yet set
+    if (flags.enableOrgNotificationsModule === undefined && flags.enableOrgNotifications === undefined && flags.orgNotifications === undefined) {
+      flags.enableOrgNotificationsModule = true;
+      flags.enableOrgNotifications = true;
+      flags.orgNotifications = true;
+    }
+
     res.json({ success: true, data: flags });
   } catch (error) {
     console.error('Error fetching flags:', error);
@@ -32,6 +76,42 @@ const updateFlag = async (req, res) => {
       itemsToUpdate.enableNotificationsModule = itemsToUpdate.enableNotifications;
     } else if (itemsToUpdate.enableNotificationsModule !== undefined && itemsToUpdate.enableNotifications === undefined) {
       itemsToUpdate.enableNotifications = itemsToUpdate.enableNotificationsModule;
+    }
+
+    // Ensure team flag aliases are kept in sync
+    const teamVal = itemsToUpdate.enableTeamsModule ?? itemsToUpdate.enableTeams ?? itemsToUpdate.teams;
+    if (teamVal !== undefined) {
+      const boolTeamVal = teamVal === true || teamVal === 'true';
+      itemsToUpdate.enableTeamsModule = boolTeamVal;
+      itemsToUpdate.enableTeams = boolTeamVal;
+      itemsToUpdate.teams = boolTeamVal;
+    }
+
+    // Ensure org settings flag aliases are kept in sync
+    const orgSettingsVal = itemsToUpdate.enableOrgSettingsModule ?? itemsToUpdate.enableOrgSettings ?? itemsToUpdate.orgSettings ?? itemsToUpdate.org_settings;
+    if (orgSettingsVal !== undefined) {
+      const boolOrgSettingsVal = orgSettingsVal === true || orgSettingsVal === 'true';
+      itemsToUpdate.enableOrgSettingsModule = boolOrgSettingsVal;
+      itemsToUpdate.enableOrgSettings = boolOrgSettingsVal;
+      itemsToUpdate.orgSettings = boolOrgSettingsVal;
+    }
+
+    // Ensure org analytics flag aliases are kept in sync
+    const orgAnalyticsVal = itemsToUpdate.enableOrgAnalyticsModule ?? itemsToUpdate.enableOrgAnalytics ?? itemsToUpdate.orgAnalytics ?? itemsToUpdate.org_analytics;
+    if (orgAnalyticsVal !== undefined) {
+      const boolOrgAnalyticsVal = orgAnalyticsVal === true || orgAnalyticsVal === 'true';
+      itemsToUpdate.enableOrgAnalyticsModule = boolOrgAnalyticsVal;
+      itemsToUpdate.enableOrgAnalytics = boolOrgAnalyticsVal;
+      itemsToUpdate.orgAnalytics = boolOrgAnalyticsVal;
+    }
+
+    // Ensure org notifications flag aliases are kept in sync
+    const orgNotificationsVal = itemsToUpdate.enableOrgNotificationsModule ?? itemsToUpdate.enableOrgNotifications ?? itemsToUpdate.orgNotifications ?? itemsToUpdate.org_notifications;
+    if (orgNotificationsVal !== undefined) {
+      const boolOrgNotificationsVal = orgNotificationsVal === true || orgNotificationsVal === 'true';
+      itemsToUpdate.enableOrgNotificationsModule = boolOrgNotificationsVal;
+      itemsToUpdate.enableOrgNotifications = boolOrgNotificationsVal;
+      itemsToUpdate.orgNotifications = boolOrgNotificationsVal;
     }
 
     let redisFailed = false;

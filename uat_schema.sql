@@ -133,4 +133,19 @@ ALTER TABLE users
     ADD CONSTRAINT mobile_format CHECK (mobile_number IS NULL OR mobile_number ~ '^[0-9]{7,15}$');
 
 COMMIT;
-
+
+INSERT INTO feature_flags (flag_key, is_enabled, updated_at)
+VALUES 
+  ('enableTeamsModule', TRUE, now()),
+  ('enableTeams', TRUE, now()),
+  ('teams', TRUE, now()),
+  ('enableOrgSettingsModule', TRUE, now()),
+  ('enableOrgSettings', TRUE, now()),
+  ('orgSettings', TRUE, now()),
+  ('enableOrgAnalyticsModule', TRUE, now()),
+  ('enableOrgAnalytics', TRUE, now()),
+  ('orgAnalytics', TRUE, now()),
+  ('enableOrgNotificationsModule', TRUE, now()),
+  ('enableOrgNotifications', TRUE, now()),
+  ('orgNotifications', TRUE, now())
+ON CONFLICT (flag_key) DO NOTHING;

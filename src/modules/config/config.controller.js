@@ -23,6 +23,10 @@ const getConfig = (req, res) => {
   // Prevent browser & CDN caching so feature flag toggles update instantly
   res.set("Cache-Control", "no-cache, no-store, must-revalidate");
 
+  const protocol = req?.protocol || 'http';
+  const host = req?.get?.('host') || req?.headers?.host || 'localhost:5000';
+  const localBase = `${protocol}://${host}/uploads/legal`;
+
   return res.status(200).json({
     // Schema version — increment (e.g., "1.1") when the structure changes
     // so old mobile clients can detect incompatibility before parsing.
@@ -68,10 +72,10 @@ const getConfig = (req, res) => {
     // Supports process.env.LEGAL_*_URL overrides if custom URLs are specified in .env.
     // =========================================================================
     legal: {
-      privacy_policy_url: process.env.LEGAL_PRIVACY_POLICY_URL || "https://cocpit.in/privacy-policy",
-      terms_of_service_url: process.env.LEGAL_TERMS_OF_SERVICE_URL || "https://cocpit.in/terms-and-conditions",
-      community_guidelines_url: process.env.LEGAL_COMMUNITY_GUIDELINES_URL || "https://cocpit.in/community-guidelines",
-      cookie_policy_url: process.env.LEGAL_COOKIE_POLICY_URL || `${req?.protocol || 'http'}://${req?.get?.('host') || req?.headers?.host || 'localhost:5000'}/uploads/legal/cookie_policy.html`,
+      privacy_policy_url: process.env.LEGAL_PRIVACY_POLICY_URL || `${localBase}/cocpit_privacy_policy.html`,
+      terms_of_service_url: process.env.LEGAL_TERMS_OF_SERVICE_URL || `${localBase}/cocpit_terms_of_use.html`,
+      community_guidelines_url: process.env.LEGAL_COMMUNITY_GUIDELINES_URL || `${localBase}/cocpit_community_guidelines.html`,
+      cookie_policy_url: process.env.LEGAL_COOKIE_POLICY_URL || `${localBase}/cocpit_cookie_policy.html`,
     },
   });
 };
