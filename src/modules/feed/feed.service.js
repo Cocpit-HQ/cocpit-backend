@@ -538,7 +538,7 @@ async function getFeed({ userId, cursor = null, limit = DEFAULT_PAGE_SIZE, pool 
   try {
     const itemIds = slicedItems.map(i => i.id).filter(Boolean);
     await Promise.all([
-      updateCursor(scopeId, nextCursor),
+      nextCursor ? updateCursor(scopeId, nextCursor) : Promise.resolve(),
       itemIds.length > 0 ? addToSeenSet(scopeId, itemIds) : Promise.resolve(),
       incrementSeenCount(scopeId, slicedItems.length),
     ]);

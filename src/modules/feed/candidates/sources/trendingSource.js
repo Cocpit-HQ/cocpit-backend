@@ -64,7 +64,35 @@ async function _fetchTrendingFromDb(pool) {
     LIMIT 50
   `;
 
-  const { rows } = await pool.query(sql);
+  let { rows } = await pool.query(sql);
+
+  // Fallback: If no posts in last 24h (dev environment, quiet periods, or staging DB),
+  // fetch recent public posts so the feed never renders completely empty.
+  if (!rows || rows.length === 0) {
+    const fallbackSql = `
+      SELECT
+        p.post_id   AS content_id,
+        'post'      AS type,
+        p.author_id,
+        p.created_at,
+        p.shared_post_id,
+        p.content,
+        (SELECT COUNT(*) FROM active_post_likes    pl WHERE pl.post_id = p.post_id)::float AS like_count,
+        (SELECT COUNT(*) FROM active_post_comments pc WHERE pc.post_id = p.post_id)::float AS comment_count,
+        ((SELECT COUNT(DISTINCT rp.author_id) FROM posts rp WHERE rp.shared_post_id = p.post_id AND rp.is_active = TRUE) + (SELECT COUNT(DISTINCT s.sender_id) FROM shares s WHERE s.entity_id = p.post_id::text AND s.entity_type = 'post'))::float AS share_count,
+        (SELECT COUNT(*) FROM reports       r  WHERE r.target_type = 'POST' AND r.target_id = p.post_id AND r.created_at > NOW() - INTERVAL '24 hours')::float AS report_count
+      FROM posts p
+      WHERE p.visibility  = 'public'
+        AND (p.is_removed IS FALSE OR p.is_removed IS NULL)
+        AND p.is_active = TRUE
+        AND p.is_community_article IS NOT TRUE
+      ORDER BY p.created_at DESC
+      LIMIT 50
+    `;
+    const fallbackRes = await pool.query(fallbackSql);
+    rows = fallbackRes.rows;
+  }
+
   return rows;
 }
 
