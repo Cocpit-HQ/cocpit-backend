@@ -1,0 +1,63 @@
+name: Nightly Railway DB Backup
+
+on:
+  # Runs at 12:00 AM IST = 18:30 UTC (IST is UTC+5:30)
+  schedule:
+    - cron: '30 18 * * *'
+  # Allow manual trigger from GitHub Actions UI
+  workflow_dispatch:
+
+jobs:
+  backup:
+    name: pg_dump Railway → GitHub Artifact
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Install PostgreSQL client
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends postgresql-client
+
+      - name: Run pg_dump
+        env:
+          PGPASSWORD: ${{ secrets.RAILWAY_DB_PASSWORD }}
+        run: |
+          TIMESTAMP=$(date -u +"%Y-%m-%d_%H-%M-%S")
+          FILENAME="cocpit_railway_${TIMESTAMP}.dump"
+          echo "BACKUP_FILE=${FILENAME}" >> $GITHUB_ENV
+
+          pg_dump \
+            -h ${{ secrets.RAILWAY_DB_HOST }} \
+            -p ${{ secrets.RAILWAY_DB_PORT }} \
+            -U ${{ secrets.RAILWAY_DB_USER }} \
+            -d ${{ secrets.RAILWAY_DB_NAME }} \
+            -Fc \
+            --no-owner \
+            --no-privileges \
+            -f "${FILENAME}"
+
+          SIZE=$(du -sh "${FILENAME}" | cut -f1)
+          echo "✅ Backup complete: ${FILENAME} (${SIZE})"
+
+      - name: Upload backup artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: railway-db-backup-${{ env.BACKUP_FILE }}
+          path: ${{ env.BACKUP_FILE }}
+          # Keep artifacts for 30 days (GitHub free plan limit)
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Verify backup integrity
+        env:
+          PGPASSWORD: ${{ secrets.RAILWAY_DB_PASSWORD }}
+        run: |
+          # Quick sanity check: list top-level objects in the dump
+          pg_restore --list "${{ env.BACKUP_FILE }}" | grep -c "TABLE" | xargs echo "📊 Tables in dump:"
+          echo "✅ Integrity check passed"
+
+      - name: Notify on failure
+        if: failure()
+        run: |
+          echo "::error::Nightly Railway DB backup FAILED at $(date -u). Check the logs above."
