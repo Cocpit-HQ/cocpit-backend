@@ -4,7 +4,7 @@ This document outlines the API endpoints, their usage, and the authentication wo
 
 ## Base URL
 All API routes are prefixed with `/api`.
-- Local: `http://localhost:5000/api`
+- Local: `https://cocpit-backend-staging.up.railway.app//api`
 
 ## Authentication Workflow
 The system uses a **Dual-Token** authentication mechanism (JWT Access Token + Refresh Token).

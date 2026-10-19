@@ -87,7 +87,7 @@ const sendOTPEmail = async (email, otp, purpose = "signup") => {
  * @returns {string}
  */
 const resolveFrontendUrl = (clientOrigin) => {
-    const defaultUrl = process.env.FRONTEND_URL || (process.env.NODE_ENV === "staging" ? "https://staging.cocpit.in" : "http://localhost:3000");
+    const defaultUrl = process.env.FRONTEND_URL || (process.env.NODE_ENV === "staging" ? "https://cocpit-frontend-staging.up.railway.app/" : "https://cocpit-frontend-staging.up.railway.app/");
 
     if (!clientOrigin || clientOrigin === "null" || clientOrigin.startsWith("capacitor://") || clientOrigin.startsWith("ionic://")) {
         return defaultUrl;
@@ -432,7 +432,7 @@ const sendSuspensionAppealEmail = async (email, fullName, appealToken, actionRea
         throw new Error("Email service is not configured (RESEND_API_KEY missing).");
     }
 
-    const backendUrl = process.env.API_URL || "http://localhost:5000";
+    const backendUrl = process.env.API_URL || "https://cocpit-backend-staging.up.railway.app/";
     const appealLink = `${backendUrl}/appeal.html?token=${appealToken}`;
 
     try {

@@ -71,7 +71,7 @@ const getConfig = (req, res) => {
       privacy_policy_url: process.env.LEGAL_PRIVACY_POLICY_URL || "https://cocpit.in/privacy-policy",
       terms_of_service_url: process.env.LEGAL_TERMS_OF_SERVICE_URL || "https://cocpit.in/terms-and-conditions",
       community_guidelines_url: process.env.LEGAL_COMMUNITY_GUIDELINES_URL || "https://cocpit.in/community-guidelines",
-      cookie_policy_url: process.env.LEGAL_COOKIE_POLICY_URL || `${req?.protocol || 'http'}://${req?.get?.('host') || req?.headers?.host || 'localhost:5000'}/uploads/legal/cookie_policy.html`,
+      cookie_policy_url: process.env.LEGAL_COOKIE_POLICY_URL || `${req?.protocol || 'http'}://${req?.get?.('host') || req?.headers?.host || 'cocpit-backend-staging.up.railway.app'}/uploads/legal/cookie_policy.html`,
     },
   });
 };

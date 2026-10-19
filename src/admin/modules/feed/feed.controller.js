@@ -300,7 +300,7 @@ exports.restoreFeedPost = async (req, res) => {
 
     // Notify Main API to emit Socket.io notification
     try {
-      await fetch('http://localhost:5000/internal/v1/appeals/notify', {
+      await fetch('https://cocpit-backend-staging.up.railway.app//internal/v1/appeals/notify', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -349,7 +349,7 @@ exports.rejectFeedPostAppeal = async (req, res) => {
 
     // Notify Main API to emit Socket.io notification
     try {
-      await fetch('http://localhost:5000/internal/v1/appeals/notify', {
+      await fetch('https://cocpit-backend-staging.up.railway.app//internal/v1/appeals/notify', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

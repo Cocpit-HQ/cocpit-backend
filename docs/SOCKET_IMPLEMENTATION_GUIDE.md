@@ -85,7 +85,7 @@ Since `npm test` is not set up, use Postman's WebSocket support to verify functi
 
 ### Test 1: Connect & Auth
 1.  Open Postman -> New -> **WebSocket Request**.
-2.  Enter URL: `ws://localhost:5000` (or your port).
+2.  Enter URL: `ws://cocpit-backend-staging.up.railway.app` (or your port).
 3.  Go to **Headers** or **Params**:
     *   Key: `Authorization`
     *   Value: `Bearer <YOUR_ACCESS_TOKEN>`

@@ -4,7 +4,7 @@ const { v4: uuidv4 } = require('uuid');
 
 const app = express();
 const PORT = process.env.GATEWAY_PORT || 8000;
-const MAIN_API_URL = process.env.MAIN_API_URL || 'http://localhost:5000';
+const MAIN_API_URL = process.env.MAIN_API_URL || 'https://cocpit-backend-staging.up.railway.app/';
 const ADMIN_API_URL = process.env.ADMIN_API_URL || 'http://localhost:5001';
 
 // Request ID Middleware

@@ -2078,7 +2078,7 @@ exports.downloadResume = async (req, res) => {
                 location: u.location,
                 website: u.website,
                 account_name: u.account_name,
-                client_origin: req.get('origin') || req.headers.referer || process.env.CLIENT_URL || 'http://localhost:3000'
+                client_origin: req.get('origin') || req.headers.referer || process.env.CLIENT_URL || 'https://cocpit-frontend-staging.up.railway.app/'
             },
             experiences: flatExperiencesForScore,
             educations,
