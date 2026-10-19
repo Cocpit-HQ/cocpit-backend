@@ -26,7 +26,7 @@ module.exports.initSocket = async (httpServer) => {
           origin.match(/^https:\/\/.*\.loca\.lt$/) ||
           origin === "https://frontend.cocpit.in" ||
           origin === "https://uat.cocpit.in" ||
-          origin === "https://cocpit-frontend-staging.up.railway.app/"  
+          origin === "https://cocpit-frontend-staging.up.railway.app"
       ) {
         callback(null, true);
       } else {
