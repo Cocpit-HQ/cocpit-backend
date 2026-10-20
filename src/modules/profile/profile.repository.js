@@ -361,18 +361,13 @@ const updateExperienceInTx = async (client, experienceId, profileId, data) => {
 const getEducations = async (profileId) => {
     const result = await pool.query(
         `SELECT e.education_id, e.profile_id, e.school_name, e.degree, e.field_of_study, e.location, e.start_date, e.end_date, e.description, e.created_at,
-                COALESCE(o.org_id, o_fallback.org_id) AS school_org_id,
-                COALESCE(o.logo_url, o_fallback.logo_url) AS school_logo,
-                COALESCE(o.name, o_fallback.name, e.school_name) AS school_org_name,
-                COALESCE(o.slug, o_fallback.slug) AS school_org_slug
+                o.org_id AS school_org_id,
+                o.logo_url AS school_logo,
+                o.logo_url AS avatar_url,
+                o.name AS school_org_name,
+                o.slug AS school_org_slug
          FROM educations e
          LEFT JOIN organizations o ON e.school_org_id = o.org_id AND o.is_deleted = FALSE
-         LEFT JOIN (
-             SELECT DISTINCT ON (LOWER(TRIM(name))) org_id, logo_url, name, slug
-             FROM organizations
-             WHERE entity_type = 'INSTITUTION' AND is_deleted = FALSE
-             ORDER BY LOWER(TRIM(name)), created_at ASC
-         ) o_fallback ON e.school_org_id IS NULL AND LOWER(TRIM(e.school_name)) = LOWER(TRIM(o_fallback.name))
          WHERE e.profile_id = $1 
          ORDER BY e.start_date DESC`,
         [profileId]

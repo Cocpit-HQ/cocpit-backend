@@ -235,12 +235,29 @@ exports.getUserProfile = async (req, res) => {
 
   let targetUserId = id;
 
-  // Import block check util if not already imported (it's not)
-
-
-  // ... existing code ...
-
-  if (!uuidRegex.test(id)) {
+  if (uuidRegex.test(id)) {
+    // Check if this UUID is an organization
+    try {
+      const orgCheck = await pool.query(
+        "SELECT org_id, slug, name FROM organizations WHERE org_id = $1::uuid AND is_deleted = FALSE",
+        [id]
+      );
+      if (orgCheck.rowCount > 0) {
+        const org = orgCheck.rows[0];
+        return res.status(404).json({
+          message: "User not found",
+          is_company: true,
+          type: "COMPANY",
+          org_id: org.org_id,
+          slug: org.slug,
+          name: org.name,
+          redirect_url: `/organization/${org.slug}`
+        });
+      }
+    } catch (err) {
+      console.error("Organization UUID lookup error in getUserProfile:", err);
+    }
+  } else {
     // If not a UUID, try to resolve as account_name (case-insensitive)
     try {
       const resolveResult = await pool.query(
@@ -248,6 +265,22 @@ exports.getUserProfile = async (req, res) => {
         [id]
       );
       if (resolveResult.rowCount === 0) {
+        const orgRes = await pool.query(
+          "SELECT org_id, slug, name FROM organizations WHERE LOWER(slug) = LOWER($1) AND is_deleted = FALSE",
+          [id]
+        );
+        if (orgRes.rowCount > 0) {
+          const org = orgRes.rows[0];
+          return res.status(404).json({
+            message: "User handle not found",
+            is_company: true,
+            type: "COMPANY",
+            org_id: org.org_id,
+            slug: org.slug,
+            name: org.name,
+            redirect_url: `/organization/${org.slug}`
+          });
+        }
         return res.status(404).json({ message: "User handle not found" });
       }
       targetUserId = resolveResult.rows[0].user_id;
@@ -375,6 +408,22 @@ exports.getUserProfile = async (req, res) => {
     const userResult = await pool.query(userQuery, [targetUserId]);
 
     if (userResult.rowCount === 0) {
+      const orgRes = await pool.query(
+        "SELECT org_id, slug, name FROM organizations WHERE org_id = $1::uuid AND is_deleted = FALSE",
+        [targetUserId]
+      );
+      if (orgRes.rowCount > 0) {
+        const org = orgRes.rows[0];
+        return res.status(404).json({
+          message: "User not found",
+          is_company: true,
+          type: "COMPANY",
+          org_id: org.org_id,
+          slug: org.slug,
+          name: org.name,
+          redirect_url: `/organization/${org.slug}`
+        });
+      }
       return res.status(404).json({ message: "User not found" });
     }
 
@@ -884,7 +933,9 @@ exports.getPublicProfilePosts = async (req, res) => {
             SELECT COALESCE(
                 json_agg(json_build_object(
                     'username', COALESCE(comp_like.slug, u_like.account_name),
-                    'avatar_url', CASE WHEN sub.org_id IS NOT NULL THEN comp_like.logo_url ELSE u_like.avatar_url END
+                    'avatar_url', CASE WHEN sub.org_id IS NOT NULL THEN comp_like.logo_url ELSE u_like.avatar_url END,
+                    'is_company', (sub.org_id IS NOT NULL),
+                    'is_organization', (sub.org_id IS NOT NULL)
                 )),
                 '[]'::json
             )
@@ -1034,7 +1085,9 @@ exports.getPublicProfilePosts = async (req, res) => {
                   SELECT COALESCE(
                       json_agg(json_build_object(
                           'username', COALESCE(comp_like.slug, u_like.account_name),
-                          'avatar_url', CASE WHEN sub.org_id IS NOT NULL THEN comp_like.logo_url ELSE u_like.avatar_url END
+                          'avatar_url', CASE WHEN sub.org_id IS NOT NULL THEN comp_like.logo_url ELSE u_like.avatar_url END,
+                          'is_company', (sub.org_id IS NOT NULL),
+                          'is_organization', (sub.org_id IS NOT NULL)
                       )),
                       '[]'::json
                   )
@@ -1342,7 +1395,9 @@ exports.getPublicProfileCommentedPosts = async (req, res) => {
                   SELECT COALESCE(
                       json_agg(json_build_object(
                           'username', COALESCE(comp_like.slug, u_like.account_name),
-                          'avatar_url', CASE WHEN sub.org_id IS NOT NULL THEN comp_like.logo_url ELSE u_like.avatar_url END
+                          'avatar_url', CASE WHEN sub.org_id IS NOT NULL THEN comp_like.logo_url ELSE u_like.avatar_url END,
+                          'is_company', (sub.org_id IS NOT NULL),
+                          'is_organization', (sub.org_id IS NOT NULL)
                       )),
                       '[]'::json
                   )
@@ -1607,7 +1662,9 @@ exports.getPublicProfileCommentedPosts = async (req, res) => {
             SELECT COALESCE(
                 json_agg(json_build_object(
                     'username', COALESCE(comp_like.slug, u_like.account_name),
-                    'avatar_url', CASE WHEN sub.org_id IS NOT NULL THEN comp_like.logo_url ELSE u_like.avatar_url END
+                    'avatar_url', CASE WHEN sub.org_id IS NOT NULL THEN comp_like.logo_url ELSE u_like.avatar_url END,
+                    'is_company', (sub.org_id IS NOT NULL),
+                    'is_organization', (sub.org_id IS NOT NULL)
                 )),
                 '[]'::json
             )

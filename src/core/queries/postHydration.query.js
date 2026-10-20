@@ -68,7 +68,10 @@ const getPostHydrationSelect = (companyParamIdx, userParamIdx) => `
         SELECT COALESCE(json_agg(json_build_object(
             'user_id', COALESCE(u_mention.user_id, o_mention.org_id),
             'full_name', COALESCE(u_mention.full_name, o_mention.name),
-            'account_name', COALESCE(u_mention.account_name, o_mention.slug)
+            'account_name', COALESCE(u_mention.account_name, o_mention.slug),
+            'is_company', (o_mention.org_id IS NOT NULL),
+            'type', CASE WHEN o_mention.org_id IS NOT NULL THEN 'COMPANY' ELSE 'USER' END,
+            'slug', o_mention.slug
         )), '[]'::json)
         FROM (
             SELECT DISTINCT (regexp_matches(COALESCE(p.content, ''), '@\\[[^\\]]+\\]\\(([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\\)', 'g'))[1]::uuid AS mentioned_id
@@ -179,7 +182,9 @@ const getPostHydrationSelect = (companyParamIdx, userParamIdx) => `
         SELECT COALESCE(
             json_agg(json_build_object(
                 'username', COALESCE(comp_like.slug, u_like.account_name),
-                'avatar_url', COALESCE(comp_like.logo_url, u_like.avatar_url)
+                'avatar_url', COALESCE(comp_like.logo_url, u_like.avatar_url),
+                'is_company', (sub.org_id IS NOT NULL),
+                'is_organization', (sub.org_id IS NOT NULL)
             )),
             '[]'::json
         )
@@ -194,7 +199,7 @@ const getPostHydrationSelect = (companyParamIdx, userParamIdx) => `
                   ($${companyParamIdx}::uuid IS NULL AND pl_sample.user_id = $${userParamIdx}::uuid AND pl_sample.org_id IS NULL)
               )
             ORDER BY pl_sample.created_at DESC
-            LIMIT 3
+            LIMIT 5
         ) sub
         LEFT JOIN active_users u_like ON u_like.user_id = sub.user_id
         LEFT JOIN organizations comp_like ON comp_like.org_id = sub.org_id
@@ -436,7 +441,9 @@ const getPostHydrationSelect = (companyParamIdx, userParamIdx) => `
                      SELECT COALESCE(
                          json_agg(json_build_object(
                              'username', COALESCE(comp_like.slug, u_like.account_name),
-                             'avatar_url', COALESCE(comp_like.logo_url, u_like.avatar_url)
+                             'avatar_url', COALESCE(comp_like.logo_url, u_like.avatar_url),
+                             'is_company', (sub.org_id IS NOT NULL),
+                             'is_organization', (sub.org_id IS NOT NULL)
                          )),
                          '[]'::json
                      )
@@ -451,7 +458,7 @@ const getPostHydrationSelect = (companyParamIdx, userParamIdx) => `
                                ($${companyParamIdx}::uuid IS NULL AND pl_sample.user_id = $${userParamIdx}::uuid AND pl_sample.org_id IS NULL)
                            )
                          ORDER BY pl_sample.created_at DESC
-                         LIMIT 3
+                         LIMIT 5
                      ) sub
                      LEFT JOIN active_users u_like ON u_like.user_id = sub.user_id
                      LEFT JOIN organizations comp_like ON comp_like.org_id = sub.org_id

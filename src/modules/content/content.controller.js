@@ -1134,19 +1134,10 @@ exports.createPost = async (req, res) => {
 
             if (companyId) {
                 // Determine if it's a COMPANY or INSTITUTION
-                const orgRes = await client.query('SELECT entity_type, verification_status FROM organizations WHERE org_id = $1', [companyId]);
+                const orgRes = await client.query('SELECT entity_type FROM organizations WHERE org_id = $1', [companyId]);
                 const entityType = orgRes.rows[0]?.entity_type;
-                const vStatus = orgRes.rows[0]?.verification_status;
 
                 if (entityType === 'INSTITUTION') {
-                    // --- PHASE 4: Verification Check ---
-                    const verifiedStatuses = ['VERIFIED', 'DOMAIN_VERIFIED'];
-                    if (!verifiedStatuses.includes(vStatus)) {
-                        await client.query('ROLLBACK');
-                        return res.status(403).json({
-                            message: "Institution must be verified before posting. Please verify via EDU email or documents."
-                        });
-                    }
                     if (!institutionAllowed.includes(category)) {
                         await client.query('ROLLBACK');
                         return res.status(400).json({
@@ -1714,7 +1705,9 @@ exports.getPostById = async (req, res) => {
         SELECT COALESCE(
             json_agg(json_build_object(
                 'username', COALESCE(comp_like.slug, u_like.account_name),
-                'avatar_url', COALESCE(comp_like.logo_url, u_like.avatar_url)
+                'avatar_url', COALESCE(comp_like.logo_url, u_like.avatar_url),
+                'is_company', (sub.org_id IS NOT NULL),
+                'is_organization', (sub.org_id IS NOT NULL)
             )),
             '[]'::json
         )
@@ -2000,7 +1993,9 @@ exports.getPostById = async (req, res) => {
                     SELECT COALESCE(
                         json_agg(json_build_object(
                             'username', COALESCE(comp_like.slug, u_like.account_name),
-                            'avatar_url', COALESCE(comp_like.logo_url, u_like.avatar_url)
+                            'avatar_url', COALESCE(comp_like.logo_url, u_like.avatar_url),
+                            'is_company', (sub.org_id IS NOT NULL),
+                            'is_organization', (sub.org_id IS NOT NULL)
                         )),
                         '[]'::json
                     )
@@ -2361,16 +2356,6 @@ exports.updatePostById = async (req, res) => {
                     if (hasPerm || isOrgOwner.rowCount > 0) {
                         canEdit = true;
                     }
-                }
-            } else if (author_id === userId) {
-                const memberCheck = await client.query(
-                    `SELECT 1 FROM organization_members WHERE org_id = $1 AND user_id = $2 AND status = 'ACTIVE'
-                     UNION ALL
-                     SELECT 1 FROM organizations WHERE org_id = $1 AND created_by = $2`,
-                    [author_org_id, userId]
-                );
-                if (memberCheck.rowCount > 0) {
-                    canEdit = true;
                 }
             }
         } else {
@@ -2786,25 +2771,8 @@ exports.deletePost = async (req, res) => {
                     }
                 }
             }
-            // Case B: The request is NOT in the org context (e.g. user is browsing as personal,
-            // or is on the company profile page without the org actor header set).
-            // The human who originally authored the post can still delete it —
-            // they just aren't currently "acting as" the company.
-            else if (author_id === userId) {
-                // Verify the user really is a member (or owner) of that org so we don't let
-                // an outsider delete a post simply because their user_id happens to match.
-                const memberCheck = await client.query(
-                    `SELECT 1 FROM organization_members WHERE org_id = $1 AND user_id = $2 AND status = 'ACTIVE'
-                     UNION ALL
-                     SELECT 1 FROM organizations WHERE org_id = $1 AND created_by = $2`,
-                    [author_org_id, userId]
-                );
-                if (memberCheck.rowCount > 0) {
-                    canDelete = true;
-                }
-            }
         } else {
-            if (author_id === userId) {
+            if (!orgId && author_id === userId) {
                 canDelete = true;
             }
         }

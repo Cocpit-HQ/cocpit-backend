@@ -245,7 +245,9 @@ exports.getOrganizationPosts = async (req, res) => {
                 SELECT COALESCE(
                     json_agg(json_build_object(
                         'username', COALESCE(comp_like.slug, u_like.account_name),
-                        'avatar_url', CASE WHEN sub.org_id IS NOT NULL THEN comp_like.logo_url ELSE u_like.avatar_url END
+                        'avatar_url', CASE WHEN sub.org_id IS NOT NULL THEN comp_like.logo_url ELSE u_like.avatar_url END,
+                        'is_company', (sub.org_id IS NOT NULL),
+                        'is_organization', (sub.org_id IS NOT NULL)
                     )),
                     '[]'::json
                 )
@@ -332,7 +334,9 @@ exports.getOrganizationPosts = async (req, res) => {
                             SELECT COALESCE(
                                 json_agg(json_build_object(
                                     'username', COALESCE(comp_like.slug, u_like.account_name),
-                                    'avatar_url', CASE WHEN sub.org_id IS NOT NULL THEN comp_like.logo_url ELSE u_like.avatar_url END
+                                    'avatar_url', CASE WHEN sub.org_id IS NOT NULL THEN comp_like.logo_url ELSE u_like.avatar_url END,
+                                    'is_company', (sub.org_id IS NOT NULL),
+                                    'is_organization', (sub.org_id IS NOT NULL)
                                 )),
                                 '[]'::json
                             )

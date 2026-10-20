@@ -10,6 +10,7 @@ const { requireAuth, optionalAuth } = require('../../core/middlewares/auth.middl
 const { requireOrgPermission } = require('../../core/middlewares/organization.auth.middleware');
 const { uploadChatMedia } = require('../../core/middlewares/upload.middleware');
 const { resolveActorContext } = require('../../core/middlewares/actor-context.middleware');
+const { validateSocialLinks } = require('./organization.validation');
 
 // ---------------------------------------------------------------------------
 // READ — public / optional auth
@@ -94,6 +95,7 @@ router.put(
 router.put(
     '/:orgId/about',
     requireAuth,
+    validateSocialLinks,
     requireOrgPermission('MANAGE_COMPANY_DETAILS'),
     profileCtrl.updateOrgAbout
 );

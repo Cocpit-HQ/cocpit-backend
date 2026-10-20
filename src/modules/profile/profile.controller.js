@@ -803,15 +803,39 @@ exports.addEducation = async (req, res) => {
             return res.status(422).json({ message: "Validation failed", errors: [{ path: "school_name", message: "School/University cannot exceed 255 characters" }] });
         }
 
-        const data = { school_name, school_org_id, degree, field_of_study, location, start_date, end_date, description };
+        let resolvedOrgId = school_org_id;
+        if (!resolvedOrgId && school_name) {
+            const orgMatch = await client.query(
+                `SELECT org_id FROM organizations WHERE LOWER(TRIM(name)) = LOWER(TRIM($1)) AND entity_type = 'INSTITUTION' AND is_deleted = FALSE LIMIT 1`,
+                [school_name]
+            );
+            if (orgMatch.rowCount > 0) {
+                resolvedOrgId = orgMatch.rows[0].org_id;
+            }
+        }
+
+        const dataToSave = { school_name, school_org_id: resolvedOrgId || null, degree, field_of_study, location, start_date, end_date, description };
 
         await client.query('BEGIN');
-        await handleEducationOrgLink(client, req.user.sub, data);
+        await handleEducationOrgLink(client, req.user.sub, dataToSave);
 
-        const education = await profileRepo.addEducationInTx(client, profileId, data);
+        const education = await profileRepo.addEducationInTx(client, profileId, dataToSave);
+
+        let avatarUrl = null;
+        if (education.school_org_id) {
+            const orgRes = await client.query(`SELECT logo_url FROM organizations WHERE org_id = $1 AND is_deleted = FALSE`, [education.school_org_id]);
+            avatarUrl = orgRes.rows[0]?.logo_url || null;
+        }
 
         await client.query('COMMIT');
-        res.status(201).json({ message: "Education added successfully", education });
+        res.status(201).json({
+            message: "Education added successfully",
+            education: {
+                ...education,
+                avatar_url: avatarUrl,
+                school_logo: avatarUrl
+            }
+        });
     } catch (err) {
         if (client) await client.query('ROLLBACK');
         console.error("Add education error:", err);
@@ -843,7 +867,19 @@ exports.updateEducation = async (req, res) => {
         }
 
         const resolvedSchoolName = school_name !== undefined ? school_name : existing.school_name;
-        const resolvedSchoolOrgId = school_org_id !== undefined ? school_org_id : existing.school_org_id;
+        let resolvedSchoolOrgId = school_org_id !== undefined ? school_org_id : existing.school_org_id;
+
+        // If school_name was updated or provided, re-verify school_org_id matches that school name
+        if (resolvedSchoolName) {
+            const orgMatch = await client.query(
+                `SELECT org_id FROM organizations WHERE LOWER(TRIM(name)) = LOWER(TRIM($1)) AND entity_type = 'INSTITUTION' AND is_deleted = FALSE LIMIT 1`,
+                [resolvedSchoolName]
+            );
+            if (orgMatch.rowCount > 0) {
+                resolvedSchoolOrgId = orgMatch.rows[0].org_id;
+            }
+        }
+
         const resolvedDegree = degree !== undefined ? degree : existing.degree;
         const resolvedField = field_of_study !== undefined ? field_of_study : existing.field_of_study;
         const resolvedLocation = location !== undefined ? location : existing.location;
@@ -871,8 +907,21 @@ exports.updateEducation = async (req, res) => {
             return res.status(400).json({ message: "No fields provided to update" });
         }
 
+        let avatarUrl = null;
+        if (education.school_org_id) {
+            const orgRes = await client.query(`SELECT logo_url FROM organizations WHERE org_id = $1 AND is_deleted = FALSE`, [education.school_org_id]);
+            avatarUrl = orgRes.rows[0]?.logo_url || null;
+        }
+
         await client.query('COMMIT');
-        res.json({ message: "Education updated successfully", education });
+        res.json({
+            message: "Education updated successfully",
+            education: {
+                ...education,
+                avatar_url: avatarUrl,
+                school_logo: avatarUrl
+            }
+        });
     } catch (err) {
         if (client) await client.query('ROLLBACK');
         console.error("Update education error:", err);
