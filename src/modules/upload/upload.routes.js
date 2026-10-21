@@ -1,5 +1,4 @@
 const express = require("express");
-const multer = require("multer");
 const { uploadStory } = require("../../core/middlewares/upload.middleware");
 const { requireAuth } = require("../../core/middlewares/auth.middleware");
 const { generatePresignedUploadUrl, objectExistsInR2 } = require("../../core/infrastructure/r2.client");
@@ -67,17 +66,23 @@ router.post("/upload/presign", requireAuth, async (req, res) => {
   }
 });
 
+const { addTranscodeJob, getJobStatus } = require("../../queues/media.queue");
+
 // ─────────────────────────────────────────────────────────────────────────────
 // ROUTE 2: POST /upload/process
 // Called by client AFTER it has successfully PUT the file to R2.
-// Triggers 12-bit AVIF transcoding and returns the display URL + metadata.
+// Decoupled architecture:
+//  - Default: Queues 12-bit AVIF transcoding to BullMQ background worker (<15ms response).
+//             Returns immediately with rawMasterUrl so client can post without waiting.
+//  - sync=true: Executes transcoding immediately in-request (for scripts/verification).
 // ─────────────────────────────────────────────────────────────────────────────
 router.post("/upload/process", requireAuth, async (req, res) => {
   if (!hasR2) {
     return res.status(503).json({ error: "R2 not configured" });
   }
 
-  const { rawKey, rawMasterUrl, mediaType = "image" } = req.body;
+  const { rawKey, rawMasterUrl, mediaType = "image", sync = false } = req.body;
+  const isSync = sync === true || req.query.sync === "true";
 
   if (!rawKey || !rawMasterUrl) {
     return res.status(400).json({ error: "Missing required fields: rawKey, rawMasterUrl" });
@@ -93,26 +98,54 @@ router.post("/upload/process", requireAuth, async (req, res) => {
   }
 
   try {
-    console.log(`[UploadRoutes] /upload/process starting dual-asset pipeline for: ${rawKey} (${mediaType})`);
+    if (isSync) {
+      console.log(`[UploadRoutes] /upload/process (sync) running dual-asset pipeline: ${rawKey} (${mediaType})`);
+      const asset = await processDualAsset({ rawKey, rawMasterUrl, mediaType });
+      return res.json({
+        status: "completed",
+        url: asset.url,              // 12-bit AVIF display URL (or raw video)
+        master_url: asset.masterUrl, // 100% untouched raw master
+        media_type: asset.mediaType,
+        width: asset.width,
+        height: asset.height,
+        format: asset.format || "avif",
+        bit_depth: asset.bitDepth || 12,
+        is_processed: true,
+      });
+    }
 
-    const asset = await processDualAsset({ rawKey, rawMasterUrl, mediaType });
+    // Asynchronous decoupled BullMQ background queue (<15ms response)
+    const job = await addTranscodeJob({ rawKey, rawMasterUrl, mediaType });
+    console.log(`[UploadRoutes] /upload/process (async) enqueued job ${job.id} for: ${rawKey}`);
 
-    console.log(`[UploadRoutes] Dual-asset complete → display: ${asset.url}`);
-
-    // Return the processed asset metadata to the client
-    // Client will include these in the POST /post payload (media_urls)
-    return res.json({
-      url: asset.url,             // 12-bit AVIF display URL (or raw video URL)
-      master_url: asset.masterUrl, // 100% untouched raw master
-      media_type: asset.mediaType,
-      width: asset.width,
-      height: asset.height,
-      format: asset.format || "avif",
-      bit_depth: asset.bitDepth || 12,
+    return res.status(202).json({
+      jobId: job.id,
+      status: "processing",
+      url: rawMasterUrl,            // Instant raw master display while AVIF processes in worker
+      master_url: rawMasterUrl,     // Permanent untouched master
+      media_type: mediaType,
+      is_processed: false,
     });
   } catch (err) {
     console.error("[UploadRoutes] Processing error:", err);
     return res.status(500).json({ error: "Media processing failed", details: err.message });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ROUTE 2B: GET /upload/job/:jobId
+// Poll status of an asynchronous background transcode job.
+// ─────────────────────────────────────────────────────────────────────────────
+router.get("/upload/job/:jobId", requireAuth, async (req, res) => {
+  try {
+    const jobStatus = await getJobStatus(req.params.jobId);
+    if (!jobStatus) {
+      return res.status(404).json({ error: "Job not found" });
+    }
+    return res.json(jobStatus);
+  } catch (err) {
+    console.error("[UploadRoutes] Job status error:", err);
+    return res.status(500).json({ error: "Failed to get job status", details: err.message });
   }
 });
 

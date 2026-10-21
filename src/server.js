@@ -1,7 +1,6 @@
 const path = require('path');
 require("dotenv").config({ path: path.resolve(__dirname, '../.env') });
 require("newrelic");
-const express = require("express");
 
 // Server Entry Point
 const app = require("./app");
@@ -14,7 +13,6 @@ app.get('/health', (req, res) => {
 const http = require("http");
 const { initSocket } = require("./utils/socket");
 const { processJobExpirations } = require("./workers/jobExpiryWorker");
-const { processEventOutbox } = require("./workers/eventOutboxWorker");
 const { processStoryExpirations } = require("./workers/storyExpiryWorker");
 const { sweepActivityLogs, runDailyDecay } = require("./workers/intentEngine");
 const { startFeedWorker } = require("./workers/feedWorker");
@@ -102,6 +100,9 @@ startFeedWorker();
 const { startWorker: startAiAnalysisWorker } = require("./workers/applicationAnalysisWorker");
 startAiAnalysisWorker().catch(e => console.error("AI Worker crashed:", e));
 
+// B9.7 — Cloudflare R2 12-Bit AVIF Media Transcoder Background Worker (BullMQ + Sharp)
+const { startMediaTranscoderWorker } = require("./workers/mediaTranscoder.worker");
+startMediaTranscoderWorker();
 
 // Event Outbox Processor disabled
 

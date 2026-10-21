@@ -8,6 +8,7 @@ const { checkBlockStatus } = require("../../core/utils/blockCheck");
 const BlockModel = require("../../models/block.model");
 const { logAudit } = require("../../core/infrastructure/audit.service");
 const cloudinary = require("../../core/infrastructure/cloudinary.client");
+const { deleteMediaByUrls } = require("../../core/infrastructure/r2.client");
 const { checkOrgPermission } = require("../../core/utils/rbac");
 const { notifyOrgFollowers, notifyBroadcastToChildOrgs } = require("../../services/notification.service");
 const { logActivity, removeActivity } = require("../../core/services/activityLogger");
@@ -614,7 +615,7 @@ exports.getMyCommentedPosts = async (req, res) => {
         LEFT JOIN organizations comp ON comp.org_id = p.author_org_id
         LEFT JOIN post_categories pc ON pc.category_id = p.category_id
         LEFT JOIN (
-            SELECT pm.post_id, json_agg(json_build_object('media_id', pm.media_id, 'url', pm.url, 'media_type', pm.media_type)) AS media
+            SELECT pm.post_id, json_agg(json_build_object('media_id', pm.media_id, 'url', pm.url, 'master_url', pm.master_url, 'media_type', pm.media_type, 'width', pm.width, 'height', pm.height, 'format', pm.format, 'bit_depth', pm.bit_depth)) AS media
             FROM post_media pm GROUP BY pm.post_id
         ) pm ON pm.post_id = p.post_id
         LEFT JOIN (SELECT post_id, COUNT(*) AS like_count FROM active_post_likes GROUP BY post_id) lc ON lc.post_id = p.post_id
@@ -712,7 +713,7 @@ exports.getMyPrivatePosts = async (req, res) => {
         LEFT JOIN organizations comp ON comp.org_id = p.author_org_id
         LEFT JOIN post_categories pc ON pc.category_id = p.category_id
         LEFT JOIN (
-            SELECT pm.post_id, json_agg(json_build_object('media_id', pm.media_id, 'url', pm.url, 'media_type', pm.media_type)) AS media
+            SELECT pm.post_id, json_agg(json_build_object('media_id', pm.media_id, 'url', pm.url, 'master_url', pm.master_url, 'media_type', pm.media_type, 'width', pm.width, 'height', pm.height, 'format', pm.format, 'bit_depth', pm.bit_depth)) AS media
             FROM post_media pm GROUP BY pm.post_id
         ) pm ON pm.post_id = p.post_id
         LEFT JOIN (SELECT post_id, COUNT(*) AS like_count FROM active_post_likes GROUP BY post_id) lc ON lc.post_id = p.post_id
@@ -1286,13 +1287,18 @@ exports.createPost = async (req, res) => {
         if (media_urls && Array.isArray(media_urls) && media_urls.length > 0) {
             const mediaPromises = media_urls.map(mediaItem => {
                 const url = typeof mediaItem === 'string' ? mediaItem : mediaItem.url;
-                const width = mediaItem.width || null;
-                const height = mediaItem.height || null;
-                let currentType = url.toLowerCase().match(/\.(mp4|webm|mov)(\?|#|$)/) ? 'video' : 'image';
+                const masterUrl = typeof mediaItem === 'object' && mediaItem !== null ? (mediaItem.master_url || mediaItem.masterUrl || url) : url;
+                const width = (typeof mediaItem === 'object' && mediaItem !== null ? mediaItem.width : null) || null;
+                const height = (typeof mediaItem === 'object' && mediaItem !== null ? mediaItem.height : null) || null;
+                const format = (typeof mediaItem === 'object' && mediaItem !== null ? mediaItem.format : null) || (url?.match(/\.avif/i) ? 'avif' : null);
+                const bitDepth = (typeof mediaItem === 'object' && mediaItem !== null ? (mediaItem.bit_depth || mediaItem.bitDepth) : null) || (url?.match(/\.avif/i) ? 12 : null);
+                const isProcessed = !!(url && !url.includes('/raw/'));
+                let currentType = url?.toLowerCase().match(/\.(mp4|webm|mov)(\?|#|$)/) ? 'video' : 'image';
                 type = currentType; // Keep a reference to one type for response (legacy behavior)
                 return client.query(
-                    `INSERT INTO post_media (post_id, url, media_type, width, height) VALUES ($1, $2, $3, $4, $5)`,
-                    [postId, url, currentType, width, height]
+                    `INSERT INTO post_media (post_id, url, media_type, width, height, master_url, format, bit_depth, is_processed) 
+                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+                    [postId, url, currentType, width, height, masterUrl, format, bitDepth, isProcessed]
                 );
             });
             await Promise.all(mediaPromises);
@@ -2526,7 +2532,11 @@ exports.updatePostById = async (req, res) => {
         }
 
         // 5. Update Media: The "Sync" approach
+        let removedMediaUrls = [];
         if (Array.isArray(media_urls)) {
+            const existingMediaRes = await client.query(`SELECT url FROM post_media WHERE post_id = $1`, [postId]);
+            const existingUrls = existingMediaRes.rows.map(r => r.url);
+
             await client.query(`DELETE FROM post_media WHERE post_id = $1`, [postId]);
 
             for (let i = 0; i < media_urls.length; i++) {
@@ -2534,16 +2544,25 @@ exports.updatePostById = async (req, res) => {
                 const url = typeof item === 'object' && item !== null ? item.url : item;
                 if (!url) continue;
                 
+                const masterUrl = typeof item === 'object' && item !== null ? (item.master_url || item.masterUrl || url) : url;
                 const width = (parsedMediaMetadata[i] && parsedMediaMetadata[i].width) || (typeof item === 'object' && item !== null ? item.width : null);
                 const height = (parsedMediaMetadata[i] && parsedMediaMetadata[i].height) || (typeof item === 'object' && item !== null ? item.height : null);
+                const format = (typeof item === 'object' && item !== null ? item.format : null) || (url?.match(/\.avif/i) ? 'avif' : null);
+                const bitDepth = (typeof item === 'object' && item !== null ? (item.bit_depth || item.bitDepth) : null) || (url?.match(/\.avif/i) ? 12 : null);
+                const isProcessed = !!(url && !url.includes('/raw/'));
                 
                 const type = url.match(/\.(mp4|webm|mov)(\?|#|$)/i) ? "video" : "image";
                 await client.query(
-                    `INSERT INTO post_media (post_id, url, media_type, width, height)
-       VALUES ($1, $2, $3, $4, $5)`,
-                    [postId, url, type, width, height]
+                    `INSERT INTO post_media (post_id, url, media_type, width, height, master_url, format, bit_depth, is_processed)
+                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+                    [postId, url, type, width, height, masterUrl, format, bitDepth, isProcessed]
                 );
             }
+
+            const newUrls = media_urls
+                .map(item => (typeof item === 'object' && item !== null ? item.url : item))
+                .filter(Boolean);
+            removedMediaUrls = existingUrls.filter(oldUrl => !newUrls.includes(oldUrl));
         }
 
 
@@ -2569,6 +2588,13 @@ exports.updatePostById = async (req, res) => {
 
         await client.query('COMMIT');
 
+        // Asynchronously delete removed media from Cloudflare R2
+        if (removedMediaUrls.length > 0) {
+            deleteMediaByUrls(removedMediaUrls).catch(err => {
+                console.error("[updatePostById] Failed to delete removed media from R2:", err.message);
+            });
+        }
+
         // Handle Hashtags asynchronously without outbox
         const { processHashtags } = require("../../workers/eventOutboxWorker");
         processHashtags(pool, 'POST_UPDATED', postId).catch(err => console.error("Hashtag process error:", err));
@@ -2582,9 +2608,12 @@ SELECT
         (SELECT json_agg(json_build_object(
             'media_id', pm.media_id,
             'url', pm.url,
+            'master_url', pm.master_url,
             'media_type', pm.media_type,
             'width', pm.width,
-            'height', pm.height
+            'height', pm.height,
+            'format', pm.format,
+            'bit_depth', pm.bit_depth
         )) FROM post_media pm WHERE pm.post_id = p.post_id),
         '[]'::json
     ) AS media,
@@ -2836,12 +2865,32 @@ exports.deletePost = async (req, res) => {
             }
         }
 
+        // Retrieve media URLs before deleting post
+        const mediaRes = await client.query(
+            `SELECT url FROM post_media WHERE post_id = $1`,
+            [postId]
+        );
+        const mediaUrls = mediaRes.rows.map(r => r.url);
+
+        await client.query(
+            `DELETE FROM post_media WHERE post_id = $1`,
+            [postId]
+        );
+
         await client.query(
             `UPDATE posts SET is_active = FALSE WHERE post_id = $1 OR shared_post_id = $1`,
             [postId]
         );
 
         await client.query('COMMIT');
+
+        // Asynchronously delete media from Cloudflare R2
+        if (mediaUrls.length > 0) {
+            deleteMediaByUrls(mediaUrls).catch(err => {
+                console.error("[deletePost] Failed to delete media from R2:", err.message);
+            });
+        }
+
         res.status(200).json({ message: "Post deleted", deletedPostId: postId, id: postId });
 
     } catch (err) {

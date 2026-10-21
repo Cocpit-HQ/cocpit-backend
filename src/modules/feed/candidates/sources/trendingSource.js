@@ -202,6 +202,7 @@ function _mapRowToCandidate(row) {
 async function getTrendingCandidates({ userId, limit, pool, socialGraphIds = new Set(), blockedIds = new Set() }) {
   try {
     void userId; // reserved for niche trending in future
+    const candidateLimit = Math.min(limit ?? TRENDING_CAP, TRENDING_CAP);
 
     let candidates = [];
 
@@ -213,7 +214,7 @@ async function getTrendingCandidates({ userId, limit, pool, socialGraphIds = new
       candidates = redisRows
         .filter(row => !socialGraphIds.has(row.content_id))  // A4.3 dedup
         .filter(row => !blockedIds.has(row.author_id) && !blockedIds.has(row.author_org_id))
-        .slice(0, TRENDING_CAP)
+        .slice(0, candidateLimit)
         .map(row => _mapRowToCandidate(row));
 
       return candidates;
@@ -240,7 +241,7 @@ async function getTrendingCandidates({ userId, limit, pool, socialGraphIds = new
     candidates = dbRows
       .filter(row => !socialGraphIds.has(row.content_id)) // A4.3 dedup
       .filter(row => !blockedIds.has(row.author_id) && !blockedIds.has(row.author_org_id))
-      .slice(0, TRENDING_CAP)
+      .slice(0, candidateLimit)
       .map(row => _mapRowToCandidate(row));
 
     return candidates;

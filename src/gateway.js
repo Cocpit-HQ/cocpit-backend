@@ -30,11 +30,11 @@ app.use('/api/admin', createProxyMiddleware({
   changeOrigin: true,
   // The middleware automatically forwards headers from req.headers, including our x-request-id
   on: {
-    proxyRes: (proxyRes, req, res) => {
+    proxyRes: (proxyRes, req) => {
       // Optional: Log response status
       console.log(`[Gateway] Request ID: ${req.headers['x-request-id']} <- [Admin API] ${proxyRes.statusCode}`);
     },
-    error: (err, req, res) => {
+    error: (err, req) => {
       console.error(`[Gateway] Request ID: ${req.headers['x-request-id']} - Error Proxying to Admin API:`, err.message);
     }
   }
@@ -46,10 +46,10 @@ app.use('/', createProxyMiddleware({
   changeOrigin: true,
   ws: true, // Enable WebSockets for Socket.io
   on: {
-    proxyRes: (proxyRes, req, res) => {
+    proxyRes: (proxyRes, req) => {
       console.log(`[Gateway] Request ID: ${req.headers['x-request-id']} <- [Main API] ${proxyRes.statusCode}`);
     },
-    error: (err, req, res) => {
+    error: (err, req) => {
       console.error(`[Gateway] Request ID: ${req.headers['x-request-id']} - Error Proxying to Main API:`, err.message);
     }
   }

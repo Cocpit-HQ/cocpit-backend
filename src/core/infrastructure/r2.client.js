@@ -1,4 +1,4 @@
-const { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectsCommand, HeadObjectCommand } = require("@aws-sdk/client-s3");
+const { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectsCommand, HeadObjectCommand, ListObjectsV2Command } = require("@aws-sdk/client-s3");
 const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
 const path = require("path");
 
@@ -17,8 +17,8 @@ const r2Client = new S3Client({
   forcePathStyle: false,
 });
 
-const R2_BUCKET = process.env.R2_BUCKET_NAME;
-const CDN_BASE_URL = process.env.R2_CDN_BASE_URL; // e.g. https://pub-xxx.r2.dev OR custom CDN domain
+const getBucketName = () => process.env.R2_BUCKET_NAME || "cocpit-db";
+const getCdnBaseUrl = () => process.env.R2_CDN_BASE_URL || "https://pub-9ab7b27b805e4ef3954360339e67917a.r2.dev";
 
 /**
  * Derive a clean CDN public URL for an R2 object key.
@@ -27,10 +27,11 @@ const CDN_BASE_URL = process.env.R2_CDN_BASE_URL; // e.g. https://pub-xxx.r2.dev
  * @returns {string} - Public CDN URL
  */
 function getPublicUrl(key) {
-  if (!CDN_BASE_URL) {
+  const cdn = getCdnBaseUrl();
+  if (!cdn) {
     throw new Error("[R2Client] R2_CDN_BASE_URL env var is not set.");
   }
-  return `${CDN_BASE_URL.replace(/\/$/, "")}/${key}`;
+  return `${cdn.replace(/\/$/, "")}/${key}`;
 }
 
 /**
@@ -45,14 +46,15 @@ function getPublicUrl(key) {
  * @returns {Promise<{uploadUrl, rawKey, rawMasterUrl}>}
  */
 async function generatePresignedUploadUrl({ filename, contentType, folder = "posts", expiresIn = 1800 }) {
-  if (!R2_BUCKET) throw new Error("[R2Client] R2_BUCKET_NAME env var is not set.");
+  const bucket = getBucketName();
+  if (!bucket) throw new Error("[R2Client] R2_BUCKET_NAME env var is not set.");
 
   const timestamp = Date.now();
   const sanitizedName = path.basename(filename).replace(/[^a-zA-Z0-9._-]/g, "_");
   const rawKey = `raw/${folder}/${timestamp}-${sanitizedName}`;
 
   const command = new PutObjectCommand({
-    Bucket: R2_BUCKET,
+    Bucket: bucket,
     Key: rawKey,
     ContentType: contentType,
   });
@@ -60,7 +62,7 @@ async function generatePresignedUploadUrl({ filename, contentType, folder = "pos
   const uploadUrl = await getSignedUrl(r2Client, command, { expiresIn });
   const rawMasterUrl = getPublicUrl(rawKey);
 
-  console.log(`[R2Client] Generated presigned PUT URL for key: ${rawKey}`);
+  console.log(`[R2Client] Generated presigned PUT URL for key: ${rawKey} in bucket '${bucket}'`);
 
   return {
     uploadUrl,   // Client PUT directly to this URL
@@ -75,7 +77,8 @@ async function generatePresignedUploadUrl({ filename, contentType, folder = "pos
  * @returns {Promise<Buffer>}
  */
 async function downloadFromR2AsBuffer(key) {
-  const cmd = new GetObjectCommand({ Bucket: R2_BUCKET, Key: key });
+  const bucket = getBucketName();
+  const cmd = new GetObjectCommand({ Bucket: bucket, Key: key });
   const response = await r2Client.send(cmd);
   const chunks = [];
   for await (const chunk of response.Body) {
@@ -93,9 +96,10 @@ async function downloadFromR2AsBuffer(key) {
  * @param {string} [opts.cacheControl] - Cache header (default: 1 year immutable)
  */
 async function uploadBufferToR2({ key, body, contentType, cacheControl = "public, max-age=31536000, immutable" }) {
+  const bucket = getBucketName();
   await r2Client.send(
     new PutObjectCommand({
-      Bucket: R2_BUCKET,
+      Bucket: bucket,
       Key: key,
       Body: body,
       ContentType: contentType,
@@ -103,26 +107,37 @@ async function uploadBufferToR2({ key, body, contentType, cacheControl = "public
     })
   );
   const publicUrl = getPublicUrl(key);
-  console.log(`[R2Client] Uploaded buffer to R2: ${key} → ${publicUrl}`);
+  console.log(`[R2Client] Uploaded buffer to R2 (${bucket}): ${key} → ${publicUrl}`);
   return publicUrl;
 }
 
 /**
- * Batch delete objects from R2 (used by story expiry worker).
+ * Batch delete objects from R2.
  * @param {string[]} keys - Array of R2 object keys to delete
  */
 async function deleteObjectsFromR2(keys) {
   if (!keys || keys.length === 0) return;
-  await r2Client.send(
-    new DeleteObjectsCommand({
-      Bucket: R2_BUCKET,
-      Delete: {
-        Objects: keys.map((Key) => ({ Key })),
-        Quiet: true,
-      },
-    })
-  );
-  console.log(`[R2Client] Deleted ${keys.length} objects from R2.`);
+  const bucket = getBucketName();
+  if (!bucket) {
+    console.warn("[R2Client] R2_BUCKET_NAME not set, cannot delete objects.");
+    return;
+  }
+
+  // S3 DeleteObjects max limit is 1000 per batch
+  const batchSize = 1000;
+  for (let i = 0; i < keys.length; i += batchSize) {
+    const chunk = keys.slice(i, i + batchSize);
+    await r2Client.send(
+      new DeleteObjectsCommand({
+        Bucket: bucket,
+        Delete: {
+          Objects: chunk.map((Key) => ({ Key })),
+          Quiet: true,
+        },
+      })
+    );
+  }
+  console.log(`[R2Client] Deleted ${keys.length} objects from R2 bucket '${bucket}'.`);
 }
 
 /**
@@ -132,10 +147,114 @@ async function deleteObjectsFromR2(keys) {
  */
 async function objectExistsInR2(key) {
   try {
-    await r2Client.send(new HeadObjectCommand({ Bucket: R2_BUCKET, Key: key }));
+    const bucket = getBucketName();
+    await r2Client.send(new HeadObjectCommand({ Bucket: bucket, Key: key }));
     return true;
   } catch {
     return false;
+  }
+}
+
+/**
+ * Given one or more media URLs or objects ({url}), find all related R2 keys
+ * (both display variant and raw master) and delete them from the active R2 bucket.
+ *
+ * @param {string|object|Array<string|object>} mediaInput
+ */
+async function deleteMediaByUrls(mediaInput) {
+  if (!mediaInput) return;
+  const list = Array.isArray(mediaInput) ? mediaInput : [mediaInput];
+  if (list.length === 0) return;
+
+  const bucket = getBucketName();
+  if (!bucket) {
+    console.warn("[R2Client] R2_BUCKET_NAME not configured, skipping media deletion.");
+    return;
+  }
+
+  const keysToDelete = new Set();
+  const currentCdn = getCdnBaseUrl();
+
+  for (const item of list) {
+    const rawUrl = typeof item === "object" && item !== null ? item.url : item;
+    if (!rawUrl || typeof rawUrl !== "string") continue;
+
+    // Check if URL belongs to R2
+    const isR2 =
+      rawUrl.includes(".r2.dev") ||
+      rawUrl.includes(".r2.cloudflarestorage.com") ||
+      (currentCdn && rawUrl.startsWith(currentCdn)) ||
+      rawUrl.startsWith("display/") ||
+      rawUrl.startsWith("raw/");
+
+    if (!isR2) {
+      console.log(`[R2Client] Skipping non-R2 media deletion: ${rawUrl}`);
+      continue;
+    }
+
+    try {
+      let pathname = rawUrl;
+      if (rawUrl.startsWith("http://") || rawUrl.startsWith("https://")) {
+        const parsed = new URL(rawUrl);
+        pathname = parsed.pathname;
+      }
+      pathname = pathname.replace(/^\/+/, ""); // strip leading slash
+
+      // Add the exact key found
+      keysToDelete.add(pathname);
+
+      // Extract folder and base name without extension
+      // Format: (display|raw)/<folder>/<timestamp>-<name>.<ext>
+      const match = pathname.match(/^(?:display|raw)\/([^/]+)\/(.+?)(\.[^./]+)?$/);
+      if (match) {
+        const folder = match[1];   // e.g. "posts"
+        const baseName = match[2]; // e.g. "1792574189433-downloaded_stored"
+
+        // Search for any raw files matching raw/<folder>/<baseName>
+        try {
+          const rawList = await r2Client.send(
+            new ListObjectsV2Command({
+              Bucket: bucket,
+              Prefix: `raw/${folder}/${baseName}`,
+            })
+          );
+          if (rawList.Contents) {
+            for (const obj of rawList.Contents) {
+              if (obj.Key) keysToDelete.add(obj.Key);
+            }
+          }
+        } catch (e) {
+          console.error(`[R2Client] Error listing raw objects for prefix raw/${folder}/${baseName}:`, e.message);
+        }
+
+        // Search for any display files matching display/<folder>/<baseName>
+        try {
+          const displayList = await r2Client.send(
+            new ListObjectsV2Command({
+              Bucket: bucket,
+              Prefix: `display/${folder}/${baseName}`,
+            })
+          );
+          if (displayList.Contents) {
+            for (const obj of displayList.Contents) {
+              if (obj.Key) keysToDelete.add(obj.Key);
+            }
+          }
+        } catch (e) {
+          console.error(`[R2Client] Error listing display objects for prefix display/${folder}/${baseName}:`, e.message);
+        }
+      }
+    } catch (err) {
+      console.error(`[R2Client] Error parsing media URL for deletion (${rawUrl}):`, err.message);
+    }
+  }
+
+  if (keysToDelete.size > 0) {
+    const keysArray = Array.from(keysToDelete);
+    console.log(`[R2Client] Deleting ${keysArray.length} objects from bucket '${bucket}':`, keysArray);
+    await deleteObjectsFromR2(keysArray);
+  } else {
+    console.log("[R2Client] No matching R2 keys found to delete.");
   }
 }
 
@@ -147,4 +266,6 @@ module.exports = {
   uploadBufferToR2,
   deleteObjectsFromR2,
   objectExistsInR2,
+  deleteMediaByUrls,
 };
+

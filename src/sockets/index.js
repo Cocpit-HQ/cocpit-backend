@@ -61,16 +61,16 @@ module.exports.initSocket = async (httpServer) => {
       const pubClient = createClient({ url: redisUrl });
 
       // Mandatory error handlers to prevent process crash
-      pubClient.on("error", (err) => { /* Silently handled to prevent crashes */ });
+      pubClient.on("error", () => { /* Silently handled to prevent crashes */ });
 
       const subClient = pubClient.duplicate();
-      subClient.on("error", (err) => { /* Silently handled to prevent crashes */ });
+      subClient.on("error", () => { /* Silently handled to prevent crashes */ });
 
       await Promise.all([pubClient.connect(), subClient.connect()]);
 
       io.adapter(createAdapter(pubClient, subClient));
       console.log("✅ Redis adapter initialized for Socket.IO");
-    } catch (err) {
+    } catch {
       console.warn("⚠️ Redis unavailable for Socket.IO adapter. Falling back to in-memory.");
       // We don't exit process, just fallback to default memory adapter
     }
@@ -106,7 +106,7 @@ module.exports.initSocket = async (httpServer) => {
       socket.actorScope = socket.actorType === "ORGANIZATION" && socket.actorId ? `org:${socket.actorId}` : `user:${socket.userId}`;
       socket._actorRoom = null;
       next();
-    } catch (err) {
+    } catch {
       next(new Error("Authentication error: Invalid token"));
     }
   });

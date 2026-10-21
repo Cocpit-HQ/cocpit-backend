@@ -782,7 +782,7 @@ const sendOrgDocumentVerifiedEmail = async (email, companyName) => {
                 <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 560px; margin: 0 auto;">
                     <h2 style="color: #0F172A;">Verification Successful</h2>
                     <p>Hi there,</p>
-                    <p>Your company documents have been reviewed and verified successfully. You now have full access to Cocpit's hiring tools.</p>
+                    <p>Your documents for ${companyName || "your company"} have been reviewed and verified successfully. You now have full access to Cocpit's hiring tools.</p>
                 </div>
             `,
         });

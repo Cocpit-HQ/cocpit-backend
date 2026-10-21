@@ -84,127 +84,6 @@ function buildCacheScopeId(userId, orgActorId) {
 }
 
 // ---------------------------------------------------------------------------
-// Main Entry
-// ---------------------------------------------------------------------------
-
-/**
- * Fetch a chronological feed, bypassing all ranking logic and seen-set filtering.
- * It will filter out explicitly hidden posts and blocked users.
- */
-async function _fetchChronologicalFeed(userId, cursor, limit, pool, orgActorId) {
-  const scopeId = buildCacheScopeId(userId, orgActorId);
-  
-  // Use timestamp string (e.g. ts:2026-07-15T10:00:00.000Z) or default to now
-  let cursorTs = new Date().toISOString();
-  if (cursor && cursor.startsWith('ts:')) {
-    cursorTs = cursor.slice(3);
-  }
-
-  // Fetch chronological posts, filtering blocked users and blocked organizations directly in SQL
-  const query = `
-    SELECT p.post_id AS id, 'post' AS type, 'organic' AS slot_type, p.created_at
-    FROM posts p
-    WHERE p.visibility = 'public'
-      AND (p.is_removed IS FALSE OR p.is_removed IS NULL)
-      AND p.is_active = TRUE
-      AND p.is_community_article IS NOT TRUE
-      AND p.created_at < $1
-      ${orgActorId ? `
-      AND NOT EXISTS (
-        SELECT 1 FROM blocks b
-        WHERE (b.is_org_block = true AND p.author_org_id IS NULL AND ((b.blocker_id = $2 AND b.blocked_id = p.author_id) OR (b.blocker_id = p.author_id AND b.blocked_id = $2)))
-           OR (b.is_org_block = true AND p.author_org_id IS NOT NULL AND ((b.blocker_id = p.author_org_id AND b.blocked_id = $2) OR (b.blocker_id = $2 AND b.blocked_id = p.author_org_id)))
-      )
-      AND NOT EXISTS (
-        SELECT 1 FROM reports r
-        WHERE (
-            r.target_id = p.post_id 
-            OR (
-                p.shared_post_id IS NOT NULL 
-                AND (p.content IS NULL OR TRIM(regexp_replace(p.content, '<[^>]+>|&nbsp;|\u200B|\u00A0|&#8203;|&#160;|&zwnj;', '', 'gi')) = '') 
-                AND r.target_id = p.shared_post_id
-            )
-            OR (
-                EXISTS (
-                    SELECT 1 FROM posts rp 
-                    WHERE rp.post_id = r.target_id 
-                      AND rp.shared_post_id = COALESCE(p.shared_post_id, p.post_id)
-                      AND rp.content IS NOT NULL 
-                      AND TRIM(regexp_replace(rp.content, '<[^>]+>|&nbsp;|\u200B|\u00A0|&#8203;|&#160;|&zwnj;', '', 'gi')) != ''
-                )
-            )
-        )
-          AND r.target_type = 'POST' 
-          AND r.reporter_id = $4
-          AND r.reporter_org_id = $2
-      )
-      ` : `
-      AND NOT EXISTS (
-        SELECT 1 FROM blocks b
-        WHERE (b.is_org_block = false AND p.author_org_id IS NULL AND ((b.blocker_id = $2 AND b.blocked_id = p.author_id) OR (b.blocker_id = p.author_id AND b.blocked_id = $2)))
-           OR (b.is_org_block = true AND p.author_org_id IS NOT NULL AND ((b.blocker_id = p.author_org_id AND b.blocked_id = $2) OR (b.blocker_id = $2 AND b.blocked_id = p.author_org_id)))
-      )
-      AND NOT EXISTS (
-        SELECT 1 FROM reports r
-        WHERE (
-            r.target_id = p.post_id 
-            OR (
-                p.shared_post_id IS NOT NULL 
-                AND (p.content IS NULL OR TRIM(regexp_replace(p.content, '<[^>]+>|&nbsp;|\u200B|\u00A0|&#8203;|&#160;|&zwnj;', '', 'gi')) = '') 
-                AND r.target_id = p.shared_post_id
-            )
-            OR (
-                EXISTS (
-                    SELECT 1 FROM posts rp 
-                    WHERE rp.post_id = r.target_id 
-                      AND rp.shared_post_id = COALESCE(p.shared_post_id, p.post_id)
-                      AND rp.content IS NOT NULL 
-                      AND TRIM(regexp_replace(rp.content, '<[^>]+>|&nbsp;|\u200B|\u00A0|&#8203;|&#160;|&zwnj;', '', 'gi')) != ''
-                )
-            )
-        )
-          AND r.target_type = 'POST' 
-          AND r.reporter_id = $4
-          AND r.reporter_org_id IS NULL
-      )
-      `}
-    ORDER BY p.created_at DESC
-    LIMIT $3
-  `;
-  const result = await pool.query(query, [cursorTs, orgActorId || userId, limit, userId]);
-  let items = result.rows;
-
-  // Filter explicitly hidden posts
-  try {
-    const hiddenSet = await getHiddenSet(scopeId);
-    if (hiddenSet && hiddenSet.length > 0) {
-      const hiddenIds = new Set(hiddenSet);
-      items = items.filter(item => !hiddenIds.has(item.id));
-    }
-  } catch (err) {
-    console.warn('[feedService] Failed to fetch hidden set for chronological feed:', err.message);
-  }
-
-  // Map to position for standard response format
-  const formattedItems = items.map((item, index) => ({
-    id: item.id,
-    type: item.type,
-    slot_type: item.slot_type,
-    position: index,
-    created_at: item.created_at
-  }));
-
-  // Determine next cursor based on the last item's created_at
-  let nextCursor = null;
-  if (formattedItems.length > 0) {
-    const lastItemTs = new Date(formattedItems[formattedItems.length - 1].created_at).toISOString();
-    nextCursor = `ts:${lastItemTs}`;
-  }
-
-  return { items: formattedItems, nextCursor };
-}
-
-// ---------------------------------------------------------------------------
 // Internal: run the full generation → ranking → reranking pipeline
 // ---------------------------------------------------------------------------
 
@@ -217,14 +96,13 @@ async function _fetchChronologicalFeed(userId, cursor, limit, pool, orgActorId) 
  * @param {object} params
  * @param {string} params.userId        - Requesting user UUID (real identity — used for DB-backed personalization)
  * @param {string} params.scopeId       - Cache-scope id (see buildCacheScopeId) — used for the seen-set only
- * @param {number} params.limit         - Page size (default 20)
  * @param {object} params.pool          - pg Pool instance
  * @param {object} params.session       - FeedSession (from feedSession.service)
  * @param {boolean} params.isInitialPage - ID-160 follow-up: true when this is a fresh page
  *   load (no cursor), so rerankCandidates skips the seen-set filter — see its own doc comment.
  * @returns {Promise<Array>}       - FeedItem[] from rerankingEngine
  */
-async function _runPipeline({ userId, scopeId, limit, pool, session, isInitialPage }) {
+async function _runPipeline({ userId, scopeId, pool, session, isInitialPage }) {
   // ── Step 1: Generate candidates (all 4 sources) ───────────────────────────
   const candidates = await generateCandidates({ userId, pool });
   const totalCandidates = candidates.length;
@@ -501,7 +379,7 @@ async function getFeed({ userId, cursor = null, limit = DEFAULT_PAGE_SIZE, pool 
   let totalCandidates = 0;
 
   try {
-    const pipelineResult = await _runPipeline({ userId, scopeId, limit: pageSize, pool, session, isInitialPage });
+    const pipelineResult = await _runPipeline({ userId, scopeId, pool, session, isInitialPage });
     feedItems = pipelineResult.feedItems;
     totalCandidates = pipelineResult.totalCandidates;
   } catch (pipelineErr) {
@@ -520,7 +398,7 @@ async function getFeed({ userId, cursor = null, limit = DEFAULT_PAGE_SIZE, pool 
         position: index
       }));
     } catch (fallbackErr) {
-      feedItems = [];
+      console.warn('[feedService] Trending fallback failed:', fallbackErr.message);
     }
   }
 
@@ -703,7 +581,9 @@ async function submitFeedback({ userId, postId, feedbackType, sessionId, positio
     // 3a. Increment positive score (+5)
     try {
       await incrementUserHashtagScore(userId, 5, null, postId).catch(() => {});
-    } catch (err) {}
+    } catch {
+      // Keep feedback handling best-effort when hashtag scoring is unavailable.
+    }
 
     // 4a. If they were previously "NOT_INTERESTED", we should unhide it from Redis sets
     try {
@@ -711,7 +591,9 @@ async function submitFeedback({ userId, postId, feedbackType, sessionId, positio
         removeFromSeenSet(scopeId, [postId]),
         removeFromHiddenSet(scopeId, [postId])
       ]);
-    } catch (err) {}
+    } catch {
+      // Keep feedback handling best-effort when Redis is unavailable.
+    }
 
   } else if (feedbackType === 'NOT_INTERESTED') {
     // 2b. Add to hiddenSet / seenSet
@@ -743,7 +625,9 @@ async function submitFeedback({ userId, postId, feedbackType, sessionId, positio
     // 4b. Decrement score (-5)
     try {
       await incrementUserHashtagScore(userId, -5, null, postId).catch(() => {});
-    } catch (err) {}
+    } catch {
+      // Keep feedback handling best-effort when hashtag scoring is unavailable.
+    }
   }
 
   return { ok: true };

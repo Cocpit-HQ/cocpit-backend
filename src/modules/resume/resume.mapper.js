@@ -9,7 +9,7 @@ function formatDate(dateString) {
         const date = typeof dateString === 'string' ? parseISO(dateString) : new Date(dateString);
         if (!isValid(date)) return '';
         return format(date, 'MMM yyyy');
-    } catch (err) {
+    } catch {
         return '';
     }
 }
@@ -58,7 +58,7 @@ function extractBulletPoints(text) {
     if (!text) return [];
     // Assuming the user might use newlines, bullet characters, or hyphens
     return text.split(/\n+/)
-        .map(line => line.replace(/^[\u2022\u25E6\u25A0\-\*]\s*/, '').trim())
+        .map(line => line.replace(/^[\u2022\u25E6\u25A0\-*]\s*/, '').trim())
         .filter(line => line.length > 0);
 }
 
@@ -123,8 +123,8 @@ function mapProfileToResumeTemplate(profileData) {
                     icon: iconType
                 });
             }
-        } catch (e) {
-            // Invalid URL, ignore
+        } catch {
+            // Invalid URL, ignore.
         }
     }
 

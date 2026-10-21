@@ -6,7 +6,7 @@ const { z } = require("zod");
  */
 const profileRepo = require("./profile.repository");
 const profileCalc = require("./profile.calculator");
-const { checkBlockStatus, checkActorBlockStatus } = require("../../core/utils/blockCheck");
+const { checkActorBlockStatus } = require("../../core/utils/blockCheck");
 const pool = require("../../core/db/pool");
 const { handleExperienceOrgLink, handleEducationOrgLink, cleanupPreviousCompanyMemberships } = require("../../utils/orgLinkHelper");
 const { toTitleCase } = require("../../utils/nameNormalizer");
@@ -224,7 +224,7 @@ exports.getMyProfile = async (req, res) => {
 
 exports.updateProfile = async (req, res) => {
     const userId = req.user.sub;
-    const { full_name, headline, job_title, company_name, school, degree, location, about_text, mobile_number,
+    const { full_name, headline, job_title, company_name, school, degree, location, about_text,
         account_name, website, industry } = req.body;
 
     if (full_name) {
@@ -556,9 +556,6 @@ exports.addExperience = async (req, res) => {
             }
         }
 
-        const companyNorm = (company_name || "").trim().toLowerCase();
-        const newEnd = is_current ? null : end_date;
-
         // ── Multiple is_current check (work_type × work_mode matrix) ─────────────
         let warning = undefined;
         if (is_current) {
@@ -678,9 +675,6 @@ exports.updateExperience = async (req, res) => {
         // Fetch all OTHER experiences (exclude self from all checks)
         const allExperiences = await profileRepo.getExperiencesByProfileId(profileId);
         const otherExperiences = allExperiences.filter(e => e.experience_id !== req.params.id);
-        const companyNorm = (resolvedCompany || "").trim().toLowerCase();
-        const resolvedNewEnd = resolvedCurrent ? null : resolvedEnd;
-
         // ── Multiple is_current check (work_type × work_mode matrix) ─────────────
         // Only run this check when transitioning a role from non-current → current.
         let warning = undefined;
@@ -949,7 +943,9 @@ exports.addSkills = async (req, res) => {
                 const userId = req.user.userId || req.user.id || req.user.sub || req.body.userId;
                 incrementUserHashtagScore(userId, 5, skillNames, null).catch(() => { });
             }
-        } catch (e) { }
+        } catch {
+            // Keep the profile update successful if optional recommendation scoring fails.
+        }
 
 
         // Fetch ALL skills for this profile to return to frontend
@@ -1016,7 +1012,9 @@ exports.syncSkills = async (req, res) => {
                 const userId = req.user.userId || req.user.id || req.user.sub || req.body.userId;
                 incrementUserHashtagScore(userId, 5, skillList, null).catch(() => { });
             }
-        } catch (e) { }
+        } catch {
+            // Keep the profile update successful if optional recommendation scoring fails.
+        }
 
         // Fetch ALL skills for this profile to return to frontend
         const allSkills = await profileRepo.getSkills(profileId);
@@ -1141,7 +1139,7 @@ exports.getSkills = async (req, res) => {
     if (rawCursor) {
         try {
             cursorName = Buffer.from(rawCursor, "base64").toString("utf8");
-        } catch (_) {
+        } catch {
             return res.status(400).json({ success: false, message: "Invalid cursor" });
         }
     }
@@ -2054,8 +2052,7 @@ exports.downloadResume = async (req, res) => {
         }
 
         const profileId = u.profile_id;
-        const [experiences, educations, skills, projects, flatExperiencesForScore] = await Promise.all([
-            profileId ? profileRepo.getExperiences(profileId) : [],
+        const [educations, skills, projects, flatExperiencesForScore] = await Promise.all([
             profileId ? profileRepo.getEducations(profileId) : [],
             profileId ? profileRepo.getSkills(profileId) : [],
             profileId ? profileRepo.getProjects(profileId) : [],

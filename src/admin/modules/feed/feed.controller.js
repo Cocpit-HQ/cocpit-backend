@@ -1,4 +1,3 @@
-const pool = require('../../../core/db/pool');
 const redis = require('../../../core/cache/redis');
 
 // GET /api/admin/feed/metrics

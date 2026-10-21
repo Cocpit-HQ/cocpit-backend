@@ -1,16 +1,18 @@
 const sharp = require("sharp");
-const path = require("path");
-const { downloadFromR2AsBuffer, uploadBufferToR2, getPublicUrl } = require("../core/infrastructure/r2.client");
+const { downloadFromR2AsBuffer, uploadBufferToR2 } = require("../core/infrastructure/r2.client");
+const { Worker } = require("bullmq");
+const { redisConnection } = require("../queues/media.queue");
 const pool = require("../core/db/pool");
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Media Transcoder Worker
+// Media Transcoder Worker (BullMQ + Sharp Dual-Asset Pipeline)
 // ─────────────────────────────────────────────────────────────────────────────
 // Responsibilities:
 //  1. Fetch raw uploaded image from R2
 //  2. Encode it to 12-bit AVIF (4:4:4, Q95, Display P3 colour space)
 //  3. Save the AVIF display variant back to R2 under display/ prefix
-//  4. Return URLs + dimensions for DB persistence
+//  4. Update post_media table in PostgreSQL with display variant + metadata
+//  5. Video is kept raw (no transcoding per user specification)
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
@@ -105,14 +107,13 @@ async function transcodeImageToAvif(rawKey) {
  * @param {object} opts
  * @param {string} opts.rawKey       - R2 key of the raw master
  * @param {string} opts.rawMasterUrl - Public URL of the raw master
- * @param {string} [opts.mediaType]  - "image" | "video" (video not yet transcoded here)
+ * @param {string} [opts.mediaType]  - "image" | "video"
  * @returns {Promise<{url, masterUrl, mediaType, width, height, format, bitDepth}>}
  */
 async function processDualAsset({ rawKey, rawMasterUrl, mediaType = "image" }) {
   if (mediaType === "video") {
-    // Video: For now, serve the raw video directly from CDN.
-    // HLS transcoding (FFmpeg) is a Phase 3 enhancement documented in the architecture plan.
-    console.log(`[MediaTranscoder] Video detected – serving raw from CDN directly: ${rawKey}`);
+    // Video: Keep raw per user instruction (no HLS/FFmpeg transcoding)
+    console.log(`[MediaTranscoder] Video detected – keeping raw from R2/CDN: ${rawKey}`);
     return {
       url: rawMasterUrl,
       masterUrl: rawMasterUrl,
@@ -140,8 +141,65 @@ async function processDualAsset({ rawKey, rawMasterUrl, mediaType = "image" }) {
   };
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// BullMQ Background Worker Initialization
+// ─────────────────────────────────────────────────────────────────────────────
+let mediaWorkerInstance = null;
+
+function startMediaTranscoderWorker() {
+  if (mediaWorkerInstance) return mediaWorkerInstance;
+
+  console.log("[MediaTranscoderWorker] Starting BullMQ background worker (queue: 'media-transcode', concurrency: 4)...");
+
+  mediaWorkerInstance = new Worker(
+    "media-transcode",
+    async (job) => {
+      const { rawKey, rawMasterUrl, mediaType = "image" } = job.data;
+      console.log(`[MediaTranscoderWorker] Processing job ${job.id} for: ${rawKey}`);
+
+      const asset = await processDualAsset({ rawKey, rawMasterUrl, mediaType });
+
+      // Update post_media table in PostgreSQL with display URL and metadata
+      try {
+        const updateRes = await pool.query(
+          `UPDATE post_media 
+           SET url = $1, width = $2, height = $3, format = $4, bit_depth = $5, is_processed = TRUE
+           WHERE (master_url = $6 OR url = $6)
+           RETURNING post_id, media_id`,
+          [asset.url, asset.width, asset.height, asset.format, asset.bitDepth, rawMasterUrl]
+        );
+        if (updateRes.rowCount > 0) {
+          console.log(`[MediaTranscoderWorker] ✅ Updated ${updateRes.rowCount} post_media rows with 12-bit AVIF: ${asset.url}`);
+        }
+      } catch (dbErr) {
+        console.error(`[MediaTranscoderWorker] Failed to update post_media for job ${job.id}:`, dbErr.message);
+      }
+
+      return asset;
+    },
+    {
+      connection: redisConnection,
+      concurrency: 4, // Max 4 parallel transcoding jobs
+    }
+  );
+
+  mediaWorkerInstance.on("completed", (job, returnvalue) => {
+    console.log(`[MediaTranscoderWorker] ✅ Job ${job.id} completed. Display: ${returnvalue?.url}`);
+  });
+
+  mediaWorkerInstance.on("failed", (job, err) => {
+    console.error(`[MediaTranscoderWorker] ❌ Job ${job?.id} failed:`, err.message);
+  });
+
+  return mediaWorkerInstance;
+}
+
+// Auto-start worker
+startMediaTranscoderWorker();
+
 module.exports = {
   transcodeImageToAvif,
   processDualAsset,
   deriveDisplayKey,
+  startMediaTranscoderWorker,
 };
