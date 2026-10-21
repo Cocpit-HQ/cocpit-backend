@@ -132,4 +132,4 @@ const gracefulShutdown = () => {
 
 process.on('SIGINT', gracefulShutdown);
 process.on('SIGTERM', gracefulShutdown);
-// Trigger nodemon restart
+// Trigger nodemon restart: R2 dual-asset architecture active
