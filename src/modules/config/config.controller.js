@@ -46,6 +46,8 @@ const getConfig = (req, res) => {
     // Fetched synchronously from in-memory cache (backed by Redis)
     features: require('./featureFlags.service').getFlags(),
 
+    shareBaseUrl: process.env.SHARE_BASE_URL || process.env.FRONTEND_URL || "https://staging.cocpit.in/",
+
     // App versioning and maintenance controls.
     app: {
       // Hard update threshold — if client is below this, force update.
