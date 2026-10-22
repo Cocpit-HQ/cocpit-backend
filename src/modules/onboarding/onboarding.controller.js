@@ -959,6 +959,14 @@ const MASTER_STATUS_OPTIONS = [
     { id: "unemployed", label: "Currently not working" }
 ];
 
+const MASTER_INSTITUTION_TYPES = [
+    { id: "school", label: "School", slug: "school" },
+    { id: "college", label: "College", slug: "college" },
+    { id: "university", label: "University", slug: "university" },
+    { id: "coaching", label: "Coaching", slug: "coaching" },
+    { id: "tuition", label: "Tuition", slug: "tuition" }
+];
+
 const MASTER_INDUSTRIES = [
     "Accounting", "Airlines/Aviation", "Alternative Dispute Resolution", "Alternative Medicine",
     "Animation", "Apparel & Fashion", "Architecture & Planning", "Arts & Crafts",
@@ -1013,6 +1021,20 @@ exports.getOnboardingOptions = async (req, res) => {
             const filtered = query
                 ? MASTER_STATUS_OPTIONS.filter(o => o.label.toLowerCase().includes(query))
                 : MASTER_STATUS_OPTIONS;
+            return res.status(200).json({ success: true, data: filtered });
+        }
+
+        if (
+            slug === "institution-types" ||
+            slug === "institution_types" ||
+            slug === "institutions" ||
+            slug === "institution-type"
+        ) {
+            const filtered = query
+                ? MASTER_INSTITUTION_TYPES.filter(
+                    o => o.label.toLowerCase().includes(query) || o.slug.toLowerCase().includes(query)
+                )
+                : MASTER_INSTITUTION_TYPES;
             return res.status(200).json({ success: true, data: filtered });
         }
 
