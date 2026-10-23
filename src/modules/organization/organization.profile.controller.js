@@ -604,14 +604,48 @@ exports.getOrgProfile = async (req, res) => {
         }));
 
         // Log public profile view only when an external user (non-member) views the org profile
-        if (viewerId && !isOwnProfile) {
-            logAudit(pool, {
-                entityId: org.org_id,
-                actorId: viewerId,
-                actorRole: membership?.role_name || null,
-                action: 'VIEW',
-                metadata: { source: 'public_profile', orgName: org.name }
-            }).catch(err => console.error("Profile view audit log error:", err));
+        const isAuditSkipped = req.query.skipAudit === 'true' || 
+                               req.query.skipAuditLog === 'true' || 
+                               req.query.skipauditlog === 'true' || 
+                               req.query.skip_audit === 'true' || 
+                               req.query.skip_audit_log === 'true';
+
+        if (!isAuditSkipped && viewerId && !isOwnProfile) {
+            (async () => {
+                const auditClient = await pool.connect();
+                try {
+                    // Check if viewer is an active team member of this org
+                    const memberCheck = await auditClient.query(
+                        `SELECT 1 FROM organization_members WHERE org_id = $1 AND user_id = $2 AND status = 'ACTIVE'`,
+                        [org.org_id, viewerId]
+                    );
+                    if (memberCheck.rowCount > 0) return;
+
+                    // Atomic insert with 5-minute cooldown to prevent duplicate logs (e.g. from parallel queries, follow/unfollow, or re-renders)
+                    await auditClient.query(
+                        `INSERT INTO audit_logs (entity_type, entity_id, actor_id, actor_role, action, metadata)
+                         SELECT 'ORGANIZATION', $1, $2, $3, 'VIEW', $4::jsonb
+                         WHERE NOT EXISTS (
+                             SELECT 1 FROM audit_logs 
+                             WHERE entity_type = 'ORGANIZATION' 
+                               AND entity_id = $1 
+                               AND actor_id = $2 
+                               AND action = 'VIEW' 
+                               AND created_at > NOW() - INTERVAL '5 minutes'
+                         )`,
+                        [
+                            org.org_id,
+                            viewerId,
+                            membership?.role_name || null,
+                            JSON.stringify({ source: 'public_profile', orgName: org.name })
+                        ]
+                    );
+                } catch (err) {
+                    console.error("Profile view audit log error:", err);
+                } finally {
+                    auditClient.release();
+                }
+            })();
         }
 
         const displayLocation = toCityStateCountry(org.location_formatted || org.location || org.city, org.country || 'India');

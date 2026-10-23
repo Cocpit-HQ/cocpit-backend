@@ -432,7 +432,13 @@ exports.getUserProfile = async (req, res) => {
     delete user.profile_id; // Remove from response payload
 
     // Log audit when viewing another user's profile under Organization actor context (skip if pre-validation check)
-    if (req.query.skipAudit !== 'true' && targetUserId !== currentUserId && actorContext && actorContext.type === "ORGANIZATION" && actorContext.orgId) {
+    const isUserAuditSkipped = req.query.skipAudit === 'true' || 
+                               req.query.skipAuditLog === 'true' || 
+                               req.query.skipauditlog === 'true' ||
+                               req.query.skip_audit === 'true' ||
+                               req.query.skip_audit_log === 'true';
+
+    if (!isUserAuditSkipped && targetUserId !== currentUserId && actorContext && actorContext.type === "ORGANIZATION" && actorContext.orgId) {
 
       const handleOrId = user.account_name || targetUserId;
       logAudit(pool, {

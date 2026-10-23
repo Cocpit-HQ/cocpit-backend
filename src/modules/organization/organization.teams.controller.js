@@ -1278,10 +1278,10 @@ exports.getActivityLogs = async (req, res, next) => {
                            ELSE NULL
                        END,
                        CASE 
-                           WHEN al.action IN ('ORGANIZATION_BLOCK_ADDED', 'ORGANIZATION_BLOCK_REMOVED')
+                           WHEN al.action IN ('ORGANIZATION_BLOCK_ADDED', 'ORGANIZATION_BLOCK_REMOVED', 'BLOCK_USER', 'UNBLOCK_USER', 'BLOCK', 'UNBLOCK')
                                 AND COALESCE(al.metadata->>'targetId', al.metadata->>'blockedId') ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
                            THEN (
-                               SELECT COALESCE(u_blk.full_name, o_blk.name)
+                               SELECT COALESCE(u_blk.full_name, u_blk.account_name, o_blk.name)
                                FROM (SELECT COALESCE(al.metadata->>'targetId', al.metadata->>'blockedId')::uuid AS b_id) sub
                                LEFT JOIN users u_blk ON u_blk.user_id = sub.b_id
                                LEFT JOIN organizations o_blk ON o_blk.org_id = sub.b_id
@@ -1359,10 +1359,10 @@ exports.getActivityLogs = async (req, res, next) => {
                         THEN (SELECT full_name FROM users WHERE user_id = (al.metadata->>'targetUserId')::uuid)
                         WHEN (al.metadata->>'removedUserId') ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' 
                         THEN (SELECT full_name FROM users WHERE user_id = (al.metadata->>'removedUserId')::uuid)
-                        WHEN al.action IN ('ORGANIZATION_BLOCK_ADDED', 'ORGANIZATION_BLOCK_REMOVED')
+                        WHEN al.action IN ('ORGANIZATION_BLOCK_ADDED', 'ORGANIZATION_BLOCK_REMOVED', 'BLOCK_USER', 'UNBLOCK_USER', 'BLOCK', 'UNBLOCK')
                              AND COALESCE(al.metadata->>'targetId', al.metadata->>'blockedId') ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
                         THEN (
-                            SELECT COALESCE(u_blk.full_name, o_blk.name)
+                            SELECT COALESCE(u_blk.full_name, u_blk.account_name, o_blk.name)
                             FROM (SELECT COALESCE(al.metadata->>'targetId', al.metadata->>'blockedId')::uuid AS b_id) sub
                             LEFT JOIN users u_blk ON u_blk.user_id = sub.b_id
                             LEFT JOIN organizations o_blk ON o_blk.org_id = sub.b_id
@@ -1454,6 +1454,14 @@ exports.getActivityLogs = async (req, res, next) => {
                         THEN (SELECT full_name FROM users WHERE user_id = (al.metadata->>'targetUserId')::uuid)
                         WHEN (al.metadata->>'removedUserId') ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' 
                         THEN (SELECT full_name FROM users WHERE user_id = (al.metadata->>'removedUserId')::uuid)
+                        WHEN al.action IN ('ORGANIZATION_BLOCK_ADDED', 'ORGANIZATION_BLOCK_REMOVED', 'BLOCK_USER', 'UNBLOCK_USER', 'BLOCK', 'UNBLOCK')
+                             AND COALESCE(al.metadata->>'targetId', al.metadata->>'blockedId') ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+                        THEN (
+                            SELECT COALESCE(u_blk.full_name, u_blk.account_name, o_blk.name)
+                            FROM (SELECT COALESCE(al.metadata->>'targetId', al.metadata->>'blockedId')::uuid AS b_id) sub
+                            LEFT JOIN users u_blk ON u_blk.user_id = sub.b_id
+                            LEFT JOIN organizations o_blk ON o_blk.org_id = sub.b_id
+                        )
                         WHEN al.action IN ('LIKE', 'LIKED', 'COMMENT', 'COMMENTED') AND COALESCE(al.metadata->>'postId', al.metadata->>'post_id') ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
                         THEN (
                             SELECT COALESCE(o.name, u_author.full_name)

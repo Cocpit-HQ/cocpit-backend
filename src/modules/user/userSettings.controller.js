@@ -1285,12 +1285,49 @@ exports.unblockUser = async (req, res) => {
             const orgId = req.actor.orgId;
             const userId = req.user.sub;
 
-            // Check permissions: Only Owner or Admin can manage organization blocked accounts
+            // Check permissions: Only Owner, Admin, or Profile Management can manage organization blocked accounts
             const isOwner = req.actor.roleName === 'Owner' || (req.actor.permissions && req.actor.permissions.includes('*'));
             const isAdmin = (req.actor.roleName || '').toUpperCase() === 'ADMIN' || isOwner;
+            const hasProfileManagement = req.actor.permissions && (
+                req.actor.permissions.includes('MANAGE_COMPANY_DETAILS') ||
+                req.actor.permissions.includes('EDIT_COMPANY_PROFILE') ||
+                req.actor.permissions.includes('REPORT_BLOCK')
+            );
 
-            if (!isOwner && !isAdmin) {
-                return res.status(403).json({ success: false, message: "Only organization owners or administrators can manage organization blocked accounts" });
+            if (!isOwner && !isAdmin && !hasProfileManagement) {
+                return res.status(403).json({ success: false, message: "Only organization owners, administrators, or members with profile management permission can manage organization blocked accounts" });
+            }
+
+            // Look up target details before removal for audit logging and activity logs
+            let targetName = null;
+            let targetType = 'user';
+
+            const blockedAccountRes = await pool.query(
+                `SELECT oba.blocked_type,
+                        COALESCE(u.full_name, u.account_name, o.name) AS name
+                 FROM organization_blocked_accounts oba
+                 LEFT JOIN active_users u ON oba.blocked_type = 'user' AND oba.blocked_id = u.user_id
+                 LEFT JOIN active_organizations o ON oba.blocked_type = 'company' AND oba.blocked_id = o.org_id
+                 WHERE oba.org_id = $1 AND oba.blocked_id = $2
+                 LIMIT 1`,
+                [orgId, id]
+            );
+
+            if (blockedAccountRes.rows.length > 0 && blockedAccountRes.rows[0].name) {
+                targetName = blockedAccountRes.rows[0].name;
+                targetType = blockedAccountRes.rows[0].blocked_type;
+            } else {
+                const userRes = await pool.query(`SELECT full_name, account_name FROM users WHERE user_id = $1`, [id]);
+                if (userRes.rows.length > 0 && (userRes.rows[0].full_name || userRes.rows[0].account_name)) {
+                    targetName = userRes.rows[0].full_name || userRes.rows[0].account_name;
+                    targetType = 'user';
+                } else {
+                    const orgRes = await pool.query(`SELECT name FROM organizations WHERE org_id = $1`, [id]);
+                    if (orgRes.rows.length > 0 && orgRes.rows[0].name) {
+                        targetName = orgRes.rows[0].name;
+                        targetType = 'company';
+                    }
+                }
             }
 
             await BlockModel.unblockUser(orgId, id, true);
@@ -1304,7 +1341,12 @@ exports.unblockUser = async (req, res) => {
                 entityType: 'ORGANIZATION',
                 actorId: userId,
                 action: 'ORGANIZATION_BLOCK_REMOVED',
-                metadata: { blockedId: id }
+                metadata: {
+                    blockedId: id,
+                    targetId: id,
+                    targetName: targetName || (targetType === 'company' ? 'organization' : 'user'),
+                    targetType: targetType
+                }
             });
 
             // Dispatch real-time socket events for chat UI & conversation state

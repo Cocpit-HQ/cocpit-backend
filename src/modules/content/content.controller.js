@@ -2399,15 +2399,33 @@ exports.updatePostById = async (req, res) => {
 
         if (author_org_id) {
             if (orgId && author_org_id === orgId) {
-                if (author_id === userId) {
+                // ===========================================================================
+                // [SCRUM-1367]
+                // Previously:
+                // if (author_id === userId) {
+                //     canEdit = true;
+                // } else {
+                //     const hasPerm = await checkOrgPermission(client, orgId, userId, ["MANAGE_CONTENT", "MANAGE_ORGANIZATION", "MANAGE_ORGANIZATION_DETAILS", "MANAGE_COMPANY", "MANAGE_COMPANY_DETAILS"]);
+                //     const isOrgOwner = await client.query(`SELECT 1 FROM organizations WHERE org_id = $1 AND created_by = $2`, [orgId, userId]);
+                //     if (hasPerm || isOrgOwner.rowCount > 0) canEdit = true;
+                // }
+                //
+                // Reason for update:
+                // MANAGE_COMPANY_DETAILS (Profile Management) previously granted post edit/delete.
+                // Per SCRUM-1367, company post editing is strictly controlled by Post Interactions
+                // (CREATE_POST / CREATE_CONTENT / MANAGE_CONTENT) along with Owner and Admin roles.
+                // Team members without Post Interactions are not permitted to edit company posts.
+                // ===========================================================================
+                const isOrgOwner = await client.query(`SELECT 1 FROM organizations WHERE org_id = $1 AND created_by = $2`, [orgId, userId]);
+                const isOwner = isOrgOwner.rowCount > 0 || req.actor?.roleName === 'Owner' || (req.actor?.permissions && req.actor?.permissions.includes('*'));
+                const isAdmin = (req.actor?.roleName || '').toUpperCase() === 'ADMIN' || isOwner;
+
+                // Post Interactions permission: CREATE_POST or CREATE_CONTENT
+                const { checkOrgPermission } = require("../../core/utils/rbac");
+                const hasPostInteractions = await checkOrgPermission(client, orgId, userId, ["CREATE_POST", "CREATE_CONTENT", "MANAGE_CONTENT"]);
+
+                if (isOwner || isAdmin || hasPostInteractions) {
                     canEdit = true;
-                } else {
-                    const { checkOrgPermission } = require("../../core/utils/rbac");
-                    const hasPerm = await checkOrgPermission(client, orgId, userId, ["MANAGE_CONTENT", "MANAGE_ORGANIZATION", "MANAGE_ORGANIZATION_DETAILS", "MANAGE_COMPANY", "MANAGE_COMPANY_DETAILS"]);
-                    const isOrgOwner = await client.query(`SELECT 1 FROM organizations WHERE org_id = $1 AND created_by = $2`, [orgId, userId]);
-                    if (hasPerm || isOrgOwner.rowCount > 0) {
-                        canEdit = true;
-                    }
                 }
             }
         } else {
@@ -2418,7 +2436,7 @@ exports.updatePostById = async (req, res) => {
 
         if (!canEdit) {
             await client.query("ROLLBACK");
-            return res.status(403).json({ message: "Unauthorized to edit this post" });
+            return res.status(403).json({ message: "You do not have post interaction permissions to edit company posts" });
         }
 
 
@@ -2810,17 +2828,34 @@ exports.deletePost = async (req, res) => {
         // 2. Check Permissions
         if (author_org_id) {
             // Case A: The request is made in the context of the org that owns the post.
-            // Any member with CREATE_CONTENT or MANAGE_CONTENT can delete; the original author always can.
             if (orgId && author_org_id === orgId) {
-                if (author_id === userId) {
+                // ===========================================================================
+                // [SCRUM-1367]
+                // Previously:
+                // if (author_id === userId) {
+                //     canDelete = true;
+                // } else {
+                //     const hasPerm = await checkOrgPermission(client, orgId, userId, ["MANAGE_CONTENT", "MANAGE_ORGANIZATION", "MANAGE_ORGANIZATION_DETAILS", "MANAGE_COMPANY", "MANAGE_COMPANY_DETAILS"]);
+                //     const isOrgOwner = await client.query(`SELECT 1 FROM organizations WHERE org_id = $1 AND created_by = $2`, [orgId, userId]);
+                //     if (hasPerm || isOrgOwner.rowCount > 0) canDelete = true;
+                // }
+                //
+                // Reason for update:
+                // MANAGE_COMPANY_DETAILS (Profile Management) previously granted post deletion.
+                // Per SCRUM-1367, company post deletion is strictly controlled by Post Interactions
+                // (CREATE_POST / CREATE_CONTENT / MANAGE_CONTENT) along with Owner and Admin roles.
+                // Team members without Post Interactions are not permitted to delete company posts.
+                // ===========================================================================
+                const isOrgOwner = await client.query(`SELECT 1 FROM organizations WHERE org_id = $1 AND created_by = $2`, [orgId, userId]);
+                const isOwner = isOrgOwner.rowCount > 0 || req.actor?.roleName === 'Owner' || (req.actor?.permissions && req.actor?.permissions.includes('*'));
+                const isAdmin = (req.actor?.roleName || '').toUpperCase() === 'ADMIN' || isOwner;
+
+                // Post Interactions permission: CREATE_POST or CREATE_CONTENT
+                const { checkOrgPermission } = require("../../core/utils/rbac");
+                const hasPostInteractions = await checkOrgPermission(client, orgId, userId, ["CREATE_POST", "CREATE_CONTENT", "MANAGE_CONTENT"]);
+
+                if (isOwner || isAdmin || hasPostInteractions) {
                     canDelete = true;
-                } else {
-                    const { checkOrgPermission } = require("../../core/utils/rbac");
-                    const hasPerm = await checkOrgPermission(client, orgId, userId, ["MANAGE_CONTENT", "MANAGE_ORGANIZATION", "MANAGE_ORGANIZATION_DETAILS", "MANAGE_COMPANY", "MANAGE_COMPANY_DETAILS"]);
-                    const isOrgOwner = await client.query(`SELECT 1 FROM organizations WHERE org_id = $1 AND created_by = $2`, [orgId, userId]);
-                    if (hasPerm || isOrgOwner.rowCount > 0) {
-                        canDelete = true;
-                    }
                 }
             }
         } else {
@@ -2831,7 +2866,7 @@ exports.deletePost = async (req, res) => {
 
         if (!canDelete) {
             await client.query('ROLLBACK');
-            return res.status(403).json({ message: "You are not authorized to delete this post." });
+            return res.status(403).json({ message: "You do not have post interaction permissions to delete company posts" });
         }
 
         // 3. Delete
@@ -2964,6 +2999,14 @@ exports.voteInPoll = async (req, res) => {
     const { userId, orgId: companyId } = actorScope;
 
     try {
+        // RBAC check: if acting as an organization, ensure member has permission
+        if (companyId) {
+            const hasPermission = await checkOrgPermission(pool, companyId, userId, ['CREATE_POST', 'CREATE_CONTENT']);
+            if (!hasPermission) {
+                return res.status(403).json({ message: "You do not have permission to interact with posts for this organization" });
+            }
+        }
+
         // 1. Check if poll exists and if it's still active using DB logic
         const pollRes = await pool.query(
             `SELECT pp.poll_id, 
@@ -3029,6 +3072,14 @@ exports.removeVote = async (req, res) => {
     const { userId, orgId: companyId } = actorScope;
 
     try {
+        // RBAC check: if acting as an organization, ensure member has permission
+        if (companyId) {
+            const hasPermission = await checkOrgPermission(pool, companyId, userId, ['CREATE_POST', 'CREATE_CONTENT']);
+            if (!hasPermission) {
+                return res.status(403).json({ message: "You do not have permission to interact with posts for this organization" });
+            }
+        }
+
         const pollRes = await pool.query(
             `SELECT poll_id, (created_at + COALESCE(duration, '1 day')::interval > NOW()) as is_active 
              FROM post_polls WHERE post_id = $1`,

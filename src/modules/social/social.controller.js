@@ -5308,12 +5308,17 @@ exports.blockUser = async (req, res) => {
                 }
             }
         } else {
-            // Check if acting user on behalf of organization is Owner or Admin
+            // Check if acting user on behalf of organization is Owner, Admin, or has Profile Management
             const isOwner = req.actor.roleName === 'Owner' || (req.actor.permissions && req.actor.permissions.includes('*'));
             const isAdmin = (req.actor.roleName || '').toUpperCase() === 'ADMIN' || isOwner;
+            const hasProfileManagement = req.actor.permissions && (
+                req.actor.permissions.includes('MANAGE_COMPANY_DETAILS') ||
+                req.actor.permissions.includes('EDIT_COMPANY_PROFILE') ||
+                req.actor.permissions.includes('REPORT_BLOCK')
+            );
 
-            if (!isOwner && !isAdmin) {
-                return res.status(403).json({ success: false, message: "Only organization owners or administrators can block accounts" });
+            if (!isOwner && !isAdmin && !hasProfileManagement) {
+                return res.status(403).json({ success: false, message: "Only organization owners, administrators, or members with profile management permission can block accounts" });
             }
 
             // Organization is blocking target. Verify target is not an Owner or Admin of this organization.
@@ -5490,13 +5495,32 @@ exports.blockUser = async (req, res) => {
         }
 
         if (isOrgActor) {
+            let targetName = null;
+            let targetType = 'user';
+            const userTargetRes = await pool.query(`SELECT full_name, account_name FROM users WHERE user_id = $1`, [targetId]);
+            if (userTargetRes.rows.length > 0 && (userTargetRes.rows[0].full_name || userTargetRes.rows[0].account_name)) {
+                targetName = userTargetRes.rows[0].full_name || userTargetRes.rows[0].account_name;
+                targetType = 'user';
+            } else {
+                const orgTargetRes = await pool.query(`SELECT name FROM organizations WHERE org_id = $1`, [targetId]);
+                if (orgTargetRes.rows.length > 0 && orgTargetRes.rows[0].name) {
+                    targetName = orgTargetRes.rows[0].name;
+                    targetType = 'company';
+                }
+            }
+
             const { logAudit } = require("../../services/audit.service");
             logAudit(pool, {
                 entityId: blockerId,
                 entityType: 'ORGANIZATION',
                 actorId: req.user.sub,
                 action: 'ORGANIZATION_BLOCK_ADDED',
-                metadata: { targetId }
+                metadata: {
+                    targetId,
+                    blockedId: targetId,
+                    targetName: targetName || (targetType === 'company' ? 'organization' : 'user'),
+                    targetType
+                }
             }).catch(e => console.error("Audit log error:", e));
 
             if (socketService.io) {
@@ -5675,9 +5699,14 @@ exports.unblockUser = async (req, res) => {
     if (isOrgActor) {
         const isOwner = req.actor.roleName === 'Owner' || (req.actor.permissions && req.actor.permissions.includes('*'));
         const isAdmin = (req.actor.roleName || '').toUpperCase() === 'ADMIN' || isOwner;
+        const hasProfileManagement = req.actor.permissions && (
+            req.actor.permissions.includes('MANAGE_COMPANY_DETAILS') ||
+            req.actor.permissions.includes('EDIT_COMPANY_PROFILE') ||
+            req.actor.permissions.includes('REPORT_BLOCK')
+        );
 
-        if (!isOwner && !isAdmin) {
-            return res.status(403).json({ success: false, message: "Only organization owners or administrators can unblock accounts" });
+        if (!isOwner && !isAdmin && !hasProfileManagement) {
+            return res.status(403).json({ success: false, message: "Only organization owners, administrators, or members with profile management permission can unblock accounts" });
         }
     }
 
@@ -5730,13 +5759,32 @@ exports.unblockUser = async (req, res) => {
         }
 
         if (isOrgActor) {
+            let targetName = null;
+            let targetType = 'user';
+            const userTargetRes = await pool.query(`SELECT full_name, account_name FROM users WHERE user_id = $1`, [targetId]);
+            if (userTargetRes.rows.length > 0 && (userTargetRes.rows[0].full_name || userTargetRes.rows[0].account_name)) {
+                targetName = userTargetRes.rows[0].full_name || userTargetRes.rows[0].account_name;
+                targetType = 'user';
+            } else {
+                const orgTargetRes = await pool.query(`SELECT name FROM organizations WHERE org_id = $1`, [targetId]);
+                if (orgTargetRes.rows.length > 0 && orgTargetRes.rows[0].name) {
+                    targetName = orgTargetRes.rows[0].name;
+                    targetType = 'company';
+                }
+            }
+
             const { logAudit } = require("../../services/audit.service");
             logAudit(pool, {
                 entityId: blockerId,
                 entityType: 'ORGANIZATION',
                 actorId: req.user.sub,
                 action: 'ORGANIZATION_BLOCK_REMOVED',
-                metadata: { targetId }
+                metadata: {
+                    targetId,
+                    blockedId: targetId,
+                    targetName: targetName || (targetType === 'company' ? 'organization' : 'user'),
+                    targetType
+                }
             }).catch(e => console.error("Audit log error:", e));
 
             if (socketService.io) {

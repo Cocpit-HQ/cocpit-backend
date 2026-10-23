@@ -47,6 +47,24 @@ exports.createReport = async (req, res) => {
     return res.status(401).json({ message: "Authentication error: could not identify reporter" });
   }
 
+  // Check permissions: If acting as organization, require Owner, Admin, or Profile Management
+  if (isOrgType) {
+    const isOwner = req.actor?.roleName === 'Owner' || (req.actor?.permissions && req.actor?.permissions.includes('*'));
+    const isAdmin = (req.actor?.roleName || '').toUpperCase() === 'ADMIN' || isOwner;
+    const hasProfileManagement = req.actor?.permissions && (
+      req.actor.permissions.includes('MANAGE_COMPANY_DETAILS') ||
+      req.actor.permissions.includes('EDIT_COMPANY_PROFILE') ||
+      req.actor.permissions.includes('REPORT_BLOCK')
+    );
+
+    if (!isOwner && !isAdmin && !hasProfileManagement) {
+      return res.status(403).json({
+        success: false,
+        message: "Only organization owners, administrators, or members with profile management permission can submit reports on behalf of the company"
+      });
+    }
+  }
+
   try {
     // 2. Validate Target Existence & Ownership
     let authorId = null;

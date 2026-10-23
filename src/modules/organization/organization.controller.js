@@ -204,6 +204,7 @@ exports.getOrganization = async (req, res) => {
         ${userId ? `(
             SELECT json_build_object(
                 'name', cr.name,
+                'color', cr.color,
                 'description', cr.description,
                 'permissions', cr.permissions,
                 'priority', cr.priority
@@ -272,7 +273,13 @@ exports.getOrganization = async (req, res) => {
         }
 
         // Audit Log for Analytics (Log only external non-member views)
-        if (userId && company.org_id) {
+        const isAuditSkipped = req.query.skipAudit === 'true' || 
+                               req.query.skipAuditLog === 'true' || 
+                               req.query.skipauditlog === 'true' || 
+                               req.query.skip_audit === 'true' || 
+                               req.query.skip_audit_log === 'true';
+
+        if (!isAuditSkipped && userId && company.org_id) {
             (async () => {
                 const auditClient = await pool.connect();
                 try {
@@ -285,31 +292,24 @@ exports.getOrganization = async (req, res) => {
                     // Skip logging if user is an active team member of their own org
                     if (memberCheck.rowCount > 0) return;
 
-                    // Refinement: Debounce VIEW logs (5 seconds cooldown)
-                    const lastViewRes = await auditClient.query(
-                        `SELECT created_at FROM audit_logs 
-                         WHERE entity_id = $1 AND entity_type = 'ORGANIZATION' AND actor_id = $2 AND action = 'VIEW' 
-                         ORDER BY created_at DESC LIMIT 1`,
-                        [company.org_id, userId]
+                    // Atomic insert with 5-minute cooldown to prevent duplicate logs (e.g. from parallel queries, follow/unfollow, or re-renders)
+                    await auditClient.query(
+                        `INSERT INTO audit_logs (entity_type, entity_id, actor_id, actor_role, action, metadata)
+                         SELECT 'ORGANIZATION', $1, $2, NULL, 'VIEW', $3::jsonb
+                         WHERE NOT EXISTS (
+                             SELECT 1 FROM audit_logs 
+                             WHERE entity_type = 'ORGANIZATION' 
+                               AND entity_id = $1 
+                               AND actor_id = $2 
+                               AND action = 'VIEW' 
+                               AND created_at > NOW() - INTERVAL '5 minutes'
+                         )`,
+                        [
+                            company.org_id,
+                            userId,
+                            JSON.stringify({ source: 'profile_page' })
+                        ]
                     );
-
-                    let shouldLog = true;
-                    if (lastViewRes.rowCount > 0) {
-                        const lastViewTime = new Date(lastViewRes.rows[0].created_at).getTime();
-                        const timeDiff = Date.now() - lastViewTime;
-                        if (timeDiff < 5 * 1000) { // 5 seconds debounce
-                            shouldLog = false;
-                        }
-                    }
-
-                    if (shouldLog) {
-                        await logAudit(auditClient, {
-                            entityId: company.org_id,
-                            actorId: userId,
-                            action: 'VIEW',
-                            metadata: { source: 'profile_page' }
-                        });
-                    }
                 } catch (e) { console.error("Audit log error:", e); }
                 finally { auditClient.release(); }
             })();
@@ -1053,6 +1053,7 @@ exports.getUserOrganizations = async (req, res) => {
             `SELECT c.*, 
              json_build_object(
                 'name', cr.name,
+                'color', cr.color,
                 'description', cr.description,
                 'permissions', cr.permissions,
                 'priority', cr.priority
@@ -1084,6 +1085,7 @@ exports.getOwnedOrganizations = async (req, res) => {
             `SELECT c.*, 
              json_build_object(
                 'name', cr.name,
+                'color', cr.color,
                 'description', cr.description,
                 'permissions', cr.permissions,
                 'priority', cr.priority
