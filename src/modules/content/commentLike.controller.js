@@ -1,4 +1,5 @@
 const pool = require("../../core/db/pool");
+const BlockModel = require("../../models/block.model");
 const { checkBlockStatus } = require("../../core/utils/blockCheck");
 
 // Toggle like on a comment
@@ -13,7 +14,7 @@ exports.toggleCommentLike = async (req, res) => {
     try {
         // Check if comment exists
         const commentCheck = await pool.query(
-            `SELECT comment_id, author_id FROM post_comments WHERE comment_id = $1`,
+            `SELECT comment_id, author_id, author_org_id FROM post_comments WHERE comment_id = $1`,
             [commentId]
         );
 
@@ -22,11 +23,20 @@ exports.toggleCommentLike = async (req, res) => {
         }
 
         const commentAuthorId = commentCheck.rows[0].author_id;
-        const isBlocked = await checkBlockStatus(commentAuthorId, userId);
-        const hasBlocked = await checkBlockStatus(userId, commentAuthorId);
+        const commentAuthorOrgId = commentCheck.rows[0].author_org_id;
 
-        if (isBlocked || hasBlocked) {
-            return res.status(403).json({ message: "You cannot like this comment" });
+        if (commentAuthorOrgId) {
+            const isOrgBlocked = await BlockModel.isAnyBlocked(userId, commentAuthorOrgId);
+            if (isOrgBlocked) {
+                return res.status(403).json({ message: "You cannot like this comment" });
+            }
+        } else if (commentAuthorId && commentAuthorId !== userId) {
+            const isBlocked = await checkBlockStatus(commentAuthorId, userId);
+            const hasBlocked = await checkBlockStatus(userId, commentAuthorId);
+
+            if (isBlocked || hasBlocked) {
+                return res.status(403).json({ message: "You cannot like this comment" });
+            }
         }
 
         // Check if user already liked this comment

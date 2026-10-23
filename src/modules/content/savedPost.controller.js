@@ -231,6 +231,14 @@ exports.toggleSavePost = async (req, res) => {
     try {
         const { userId, orgId, isOrgActor } = getSavedPostActorScope(req, companyId || null);
 
+        if (isOrgActor && orgId) {
+            const { checkOrgPermission } = require('../../core/utils/rbac');
+            const hasPerm = await checkOrgPermission(pool, orgId, userId, ['CREATE_POST', 'CREATE_CONTENT']);
+            if (!hasPerm) {
+                return res.status(403).json({ success: false, message: "You do not have permission to interact with posts on behalf of this organization." });
+            }
+        }
+
         // Check if already saved
         const existingQuery = isOrgActor
             ? `SELECT * FROM saved_post WHERE post_id = $1 AND org_id = $2::uuid`

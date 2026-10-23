@@ -15,7 +15,8 @@
     "lint": "eslint .",
     "test": "jest --forceExit",
     "migrate:uat": "node uat_migrations/run_uat_migration.js",
-    "migrate:uat:v1.6.0": "node uat_migrations/run_v1.6.0_migration.js"
+    "migrate:uat:v1.6.0": "node uat_migrations/run_v1.6.0_migration.js",
+    "migrate:uat:v1.7.0": "node uat_migrations/run_v1.7.0_migration.js"
   },
   "keywords": [],
   "author": "",

@@ -55,23 +55,40 @@ Brings UAT database schema into alignment with Staging for the v1.6.0 release (B
 
 ---
 
+### `v1.7.0_uat_migration.sql`
+Promotes `MANAGE_COMPANY_DETAILS` from a locked system key (`sort_order = 0`) to a dynamic UI checklist key (`sort_order = 20`) in `organization_permission_keys`.
+
+#### Changes Included:
+1. **`organization_permission_keys` table**:
+   - Updates `MANAGE_COMPANY_DETAILS` with `sort_order = 20`, `label = 'Edit company profile'`, `ui_type = 'toggle'`, `requires_parent = FALSE`.
+   - Allows organization admins to assign profile-editing permissions via dynamic roles in the Teams section.
+
+---
+
 ## How to Run
 
-### Running v1.6.0 Migration
+### Running v1.7.0 Migration
 
 #### Option 1: Using npm script (recommended)
 ```bash
-npm run migrate:uat:v1.6.0
+npm run migrate:uat:v1.7.0
 ```
 
 #### Option 2: Using Node runner directly
 ```bash
-node uat_migrations/run_v1.6.0_migration.js
+node uat_migrations/run_v1.7.0_migration.js
 ```
 
 #### Option 3: Using `psql` directly
 ```bash
-psql -h 192.168.1.50 -U swaroop -d cocpit_backend_uat -f uat_migrations/v1.6.0_uat_migration.sql
+psql -h 192.168.1.50 -U swaroop -d cocpit_backend_uat -f uat_migrations/v1.7.0_uat_migration.sql
+```
+
+---
+
+### Running v1.6.0 Migration
+```bash
+npm run migrate:uat:v1.6.0
 ```
 
 ---

@@ -1023,6 +1023,16 @@ exports.createPost = async (req, res) => {
 
         // 0. If reposting, check if original is Personal or already reposted
         if (req.body.shared_post_id) {
+            if (companyId) {
+                const canRepost = await checkOrgPermission(client, companyId, userId, ['CREATE_POST', 'CREATE_CONTENT']);
+                if (!canRepost) {
+                    await client.query('ROLLBACK');
+                    return res.status(403).json({
+                        message: "You do not have permission to repost on behalf of this organization."
+                    });
+                }
+            }
+
             // Check if Personal or already a repost
             const originalPostCheck = await client.query(
                 `SELECT pc.name, p.shared_post_id, p.content FROM posts p 
@@ -1173,10 +1183,13 @@ exports.createPost = async (req, res) => {
 
                 } else {
                     // Normal Company Post
-                    // if (!companyAllowed.includes(category)) {
-                    //     await client.query('ROLLBACK');
-                    //     return res.status(400).json({ message: `Invalid category for Company posts. Allowed: Update, Hiring, Milestone, Insight` });
-                    // }
+                    const canPost = await checkOrgPermission(client, companyId, userId, ['CREATE_POST', 'CREATE_CONTENT']);
+                    if (!canPost) {
+                        await client.query('ROLLBACK');
+                        return res.status(403).json({
+                            message: "You do not have permission to post on behalf of this organization."
+                        });
+                    }
                 }
             } else {
                 // User Post
@@ -1627,6 +1640,19 @@ exports.getPostById = async (req, res) => {
             OR
             ($3::uuid IS NULL AND pl_sample.user_id = $2 AND pl_sample.org_id IS NULL)
         )
+        ${companyId ? `
+        AND NOT EXISTS (
+            SELECT 1 FROM blocks b 
+            WHERE (b.is_org_block = true AND pl_sample.org_id IS NULL AND ((b.blocker_id = $3 AND b.blocked_id = pl_sample.user_id) OR (b.blocker_id = pl_sample.user_id AND b.blocked_id = $3)))
+               OR (b.is_org_block = true AND pl_sample.org_id IS NOT NULL AND ((b.blocker_id = pl_sample.org_id AND b.blocked_id = $3) OR (b.blocker_id = $3 AND b.blocked_id = pl_sample.org_id)))
+        )
+        ` : `
+        AND NOT EXISTS (
+            SELECT 1 FROM blocks b 
+            WHERE (b.is_org_block = false AND pl_sample.org_id IS NULL AND ((b.blocker_id = $2 AND b.blocked_id = pl_sample.user_id) OR (b.blocker_id = pl_sample.user_id AND b.blocked_id = $2)))
+               OR (b.is_org_block = true AND pl_sample.org_id IS NOT NULL AND ((b.blocker_id = pl_sample.org_id AND b.blocked_id = $2) OR (b.blocker_id = $2 AND b.blocked_id = pl_sample.org_id)))
+        )
+        `}
         ORDER BY
             (
                 $2::uuid IS NOT NULL AND
@@ -1721,6 +1747,19 @@ exports.getPostById = async (req, res) => {
                   OR
                   ($3::uuid IS NULL AND pl_sample.user_id = $2 AND pl_sample.org_id IS NULL)
               )
+              ${companyId ? `
+              AND NOT EXISTS (
+                  SELECT 1 FROM blocks b 
+                  WHERE (b.is_org_block = true AND pl_sample.org_id IS NULL AND ((b.blocker_id = $3 AND b.blocked_id = pl_sample.user_id) OR (b.blocker_id = pl_sample.user_id AND b.blocked_id = $3)))
+                     OR (b.is_org_block = true AND pl_sample.org_id IS NOT NULL AND ((b.blocker_id = pl_sample.org_id AND b.blocked_id = $3) OR (b.blocker_id = $3 AND b.blocked_id = pl_sample.org_id)))
+              )
+              ` : `
+              AND NOT EXISTS (
+                  SELECT 1 FROM blocks b 
+                  WHERE (b.is_org_block = false AND pl_sample.org_id IS NULL AND ((b.blocker_id = $2 AND b.blocked_id = pl_sample.user_id) OR (b.blocker_id = pl_sample.user_id AND b.blocked_id = $2)))
+                     OR (b.is_org_block = true AND pl_sample.org_id IS NOT NULL AND ((b.blocker_id = pl_sample.org_id AND b.blocked_id = $2) OR (b.blocker_id = $2 AND b.blocked_id = pl_sample.org_id)))
+              )
+              `}
             ORDER BY pl_sample.created_at DESC
             LIMIT 3
         ) sub
@@ -2009,6 +2048,19 @@ exports.getPostById = async (req, res) => {
                               OR
                               ($3::uuid IS NULL AND pl_sample.user_id = $2 AND pl_sample.org_id IS NULL)
                           )
+                          ${companyId ? `
+                          AND NOT EXISTS (
+                              SELECT 1 FROM blocks b 
+                              WHERE (b.is_org_block = true AND pl_sample.org_id IS NULL AND ((b.blocker_id = $3 AND b.blocked_id = pl_sample.user_id) OR (b.blocker_id = pl_sample.user_id AND b.blocked_id = $3)))
+                                 OR (b.is_org_block = true AND pl_sample.org_id IS NOT NULL AND ((b.blocker_id = pl_sample.org_id AND b.blocked_id = $3) OR (b.blocker_id = $3 AND b.blocked_id = pl_sample.org_id)))
+                          )
+                          ` : `
+                          AND NOT EXISTS (
+                              SELECT 1 FROM blocks b 
+                              WHERE (b.is_org_block = false AND pl_sample.org_id IS NULL AND ((b.blocker_id = $2 AND b.blocked_id = pl_sample.user_id) OR (b.blocker_id = pl_sample.user_id AND b.blocked_id = $2)))
+                                 OR (b.is_org_block = true AND pl_sample.org_id IS NOT NULL AND ((b.blocker_id = pl_sample.org_id AND b.blocked_id = $2) OR (b.blocker_id = $2 AND b.blocked_id = pl_sample.org_id)))
+                          )
+                          `}
                         ORDER BY pl_sample.created_at DESC
                         LIMIT 3
                     ) sub
@@ -3027,6 +3079,13 @@ exports.toggleLike = async (req, res) => {
     const { userId, orgId: companyId } = actorScope;
 
     try {
+        if (companyId) {
+            const hasPerm = await checkOrgPermission(pool, companyId, userId, ['CREATE_POST', 'CREATE_CONTENT']);
+            if (!hasPerm) {
+                return res.status(403).json({ message: "You do not have permission to interact with posts on behalf of this organization." });
+            }
+        }
+
         // 1️⃣ Check if already liked
         let alreadyLiked;
         if (companyId) {
@@ -3269,6 +3328,13 @@ exports.addComment = async (req, res) => {
 
     const { userId, orgId: companyId } = actorScope;
 
+    if (companyId) {
+        const hasPerm = await checkOrgPermission(pool, companyId, userId, ['CREATE_POST', 'CREATE_CONTENT']);
+        if (!hasPerm) {
+            return res.status(403).json({ message: "You do not have permission to interact with posts on behalf of this organization." });
+        }
+    }
+
     if (!postId || !userId || !content || !content.trim()) {
         console.error('[addComment] Missing required fields', { postId, userId, hasContent: !!content });
         return res.status(400).json({ message: "all fields are required" })
@@ -3323,12 +3389,16 @@ exports.addComment = async (req, res) => {
             }
         }
 
-        // Block Check: Post Author (skip if company)
-        if (!companyId) {
-            const isBlockedByPostAuthor = await checkBlockStatus(postAuthorId, userId);
-            const hasBlockedPostAuthor = await checkBlockStatus(userId, postAuthorId);
-
-            if (isBlockedByPostAuthor || hasBlockedPostAuthor) {
+        // Identity-Aware Block Check: Post Author
+        const activeActorId = companyId || userId;
+        if (postCompanyId) {
+            const isBlocked = await BlockModel.isAnyBlocked(activeActorId, postCompanyId);
+            if (isBlocked) {
+                return res.status(403).json({ message: "You cannot comment on this post" });
+            }
+        } else if (postAuthorId && postAuthorId !== userId) {
+            const isBlocked = await BlockModel.isAnyBlocked(activeActorId, postAuthorId);
+            if (isBlocked) {
                 return res.status(403).json({ message: "You cannot comment on this post" });
             }
         }
@@ -3351,15 +3421,22 @@ exports.addComment = async (req, res) => {
             }
 
             // Block Check: Parent Comment Author
-            const parentAuthorRes = await pool.query(`SELECT author_id FROM active_post_comments WHERE comment_id = $1`, [parent_id]);
+            const parentAuthorRes = await pool.query(
+                `SELECT author_id, author_org_id FROM active_post_comments WHERE comment_id = $1`,
+                [parent_id]
+            );
             if (parentAuthorRes.rowCount > 0) {
                 const parentAuthorId = parentAuthorRes.rows[0].author_id;
+                const parentAuthorOrgId = parentAuthorRes.rows[0].author_org_id;
 
-                if (!companyId) { // Skip block check for companies for now (simplify)
-                    const isBlockedByParentHandler = await checkBlockStatus(parentAuthorId, userId);
-                    const hasBlockedParentHandler = await checkBlockStatus(userId, parentAuthorId);
-
-                    if (isBlockedByParentHandler || hasBlockedParentHandler) {
+                if (parentAuthorOrgId) {
+                    const isBlocked = await BlockModel.isAnyBlocked(activeActorId, parentAuthorOrgId);
+                    if (isBlocked) {
+                        return res.status(403).json({ message: "You cannot reply to this comment" });
+                    }
+                } else if (parentAuthorId && parentAuthorId !== userId) {
+                    const isBlocked = await BlockModel.isAnyBlocked(activeActorId, parentAuthorId);
+                    if (isBlocked) {
                         return res.status(403).json({ message: "You cannot reply to this comment" });
                     }
                 }
@@ -4271,13 +4348,13 @@ exports.getComments = async (req, res) => {
       ${companyId ? `
       AND NOT EXISTS (
         SELECT 1 FROM blocks b 
-        WHERE (b.is_org_block = true AND ((b.blocker_id = $3 AND b.blocked_id = c.author_id) OR (b.blocker_id = c.author_id AND b.blocked_id = $3)))
+        WHERE (b.is_org_block = true AND c.author_org_id IS NULL AND ((b.blocker_id = $3 AND b.blocked_id = c.author_id) OR (b.blocker_id = c.author_id AND b.blocked_id = $3)))
            OR (b.is_org_block = true AND c.author_org_id IS NOT NULL AND ((b.blocker_id = c.author_org_id AND b.blocked_id = $3) OR (b.blocker_id = $3 AND b.blocked_id = c.author_org_id)))
       )
       ` : `
       AND NOT EXISTS (
         SELECT 1 FROM blocks b 
-        WHERE (b.is_org_block = false AND ((b.blocker_id = $2 AND b.blocked_id = c.author_id) OR (b.blocker_id = c.author_id AND b.blocked_id = $2)))
+        WHERE (b.is_org_block = false AND c.author_org_id IS NULL AND ((b.blocker_id = $2 AND b.blocked_id = c.author_id) OR (b.blocker_id = c.author_id AND b.blocked_id = $2)))
            OR (b.is_org_block = true AND c.author_org_id IS NOT NULL AND ((b.blocker_id = c.author_org_id AND b.blocked_id = $2) OR (b.blocker_id = $2 AND b.blocked_id = c.author_org_id)))
       )
       `}
@@ -5927,6 +6004,20 @@ exports.getPostLikes = async (req, res) => {
                 (pl.org_id IS NULL AND u.user_id IS NOT NULL) OR 
                 (pl.org_id IS NOT NULL AND comp.org_id IS NOT NULL)
             )
+            -- Exclude blocked users / organizations
+            ${viewerOrgId ? `
+            AND NOT EXISTS (
+                SELECT 1 FROM blocks b 
+                WHERE (b.is_org_block = true AND pl.org_id IS NULL AND ((b.blocker_id = $2 AND b.blocked_id = pl.user_id) OR (b.blocker_id = pl.user_id AND b.blocked_id = $2)))
+                   OR (b.is_org_block = true AND pl.org_id IS NOT NULL AND ((b.blocker_id = pl.org_id AND b.blocked_id = $2) OR (b.blocker_id = $2 AND b.blocked_id = pl.org_id)))
+            )
+            ` : `
+            AND NOT EXISTS (
+                SELECT 1 FROM blocks b 
+                WHERE (b.is_org_block = false AND pl.org_id IS NULL AND ((b.blocker_id = $3 AND b.blocked_id = pl.user_id) OR (b.blocker_id = pl.user_id AND b.blocked_id = $3)))
+                   OR (b.is_org_block = true AND pl.org_id IS NOT NULL AND ((b.blocker_id = pl.org_id AND b.blocked_id = $3) OR (b.blocker_id = $3 AND b.blocked_id = pl.org_id)))
+            )
+            `}
             ORDER BY pl.created_at DESC`,
             [postId, viewerOrgId, viewerUserId]
         );
