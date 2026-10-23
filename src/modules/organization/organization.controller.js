@@ -2392,9 +2392,9 @@ exports.publishNewOrganization = async (req, res) => {
             ownerRoleName = 'Admin';
             roles = [
                 { name: 'Admin', color: '#06B6D4', permissions: ['*'], priority: 100 },
-                { name: 'Faculty', color: '#FF5733', permissions: ['CREATE_ACADEMIC_CONTENT', 'MODERATE_STUDENTS', 'VIEW_MEMBERS'], priority: 80 },
-                { name: 'Student Moderator', color: '#28B463', permissions: ['CREATE_GENERAL_CONTENT', 'MODERATE_GENERAL', 'VIEW_MEMBERS'], priority: 60 },
-                { name: 'Student', color: '#3498DB', permissions: ['CREATE_GENERAL_CONTENT', 'VIEW_MEMBERS'], priority: 10 }
+                // { name: 'Faculty', color: '#FF5733', permissions: ['CREATE_ACADEMIC_CONTENT', 'MODERATE_STUDENTS', 'VIEW_MEMBERS'], priority: 80 },
+                // { name: 'Student Moderator', color: '#28B463', permissions: ['CREATE_GENERAL_CONTENT', 'MODERATE_GENERAL', 'VIEW_MEMBERS'], priority: 60 },
+                // { name: 'Student', color: '#3498DB', permissions: ['CREATE_GENERAL_CONTENT', 'VIEW_MEMBERS'], priority: 10 }
             ];
         } else {
             ownerRoleName = 'Admin';

@@ -138,7 +138,7 @@ exports.createRole = async (req, res, next) => {
     const { name, color, description, permissions = [] } = req.body;
     const upperPermissions = (Array.isArray(permissions) ? permissions : [])
         .map(p => typeof p === 'string' ? p.toUpperCase().trim() : p)
-        .filter(p => p !== 'CHANNEL' && p !== 'CHANNELS');
+        .filter(p => p !== 'CHANNEL' && p !== 'CHANNELS' && p !== 'SETTINGS');
 
     if (!name) {
         return next(new AppError("Role name is required", 400));
@@ -216,7 +216,7 @@ exports.updateRole = async (req, res, next) => {
     const { name, color, description, permissions = [] } = req.body;
     const upperPermissions = (Array.isArray(permissions) ? permissions : [])
         .map(p => typeof p === 'string' ? p.toUpperCase().trim() : p)
-        .filter(p => p !== 'CHANNEL' && p !== 'CHANNELS');
+        .filter(p => p !== 'CHANNEL' && p !== 'CHANNELS' && p !== 'SETTINGS');
 
     // Validation: ACTIVITY_LOGS requires TEAMS
     if (upperPermissions.includes('ACTIVITY_LOGS') && !upperPermissions.includes('TEAMS')) {
