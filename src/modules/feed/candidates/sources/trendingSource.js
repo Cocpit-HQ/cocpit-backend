@@ -43,6 +43,7 @@ async function _fetchTrendingFromDb(pool) {
       p.post_id   AS content_id,
       'post'      AS type,
       p.author_id,
+      p.author_org_id,
       p.created_at,
       p.shared_post_id,
       p.content,
@@ -135,6 +136,7 @@ function _mapRowToCandidate(row) {
     source:            CANDIDATE_SOURCES.TRENDING_GLOBAL,
     contentId:         row.content_id,
     authorId:          row.author_id || null,
+    author_org_id:     row.author_org_id || null,
     createdAt:         row.created_at
                          ? (row.created_at instanceof Date
                              ? row.created_at.toISOString()

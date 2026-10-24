@@ -179,16 +179,28 @@ class BlockModel {
                 await redisClient.del(this.getCacheKey(userId));
                 await redisClient.del(this.getCacheKey(userId) + ":empty");
 
-                // NEW: clear feed candidate pool (TTL 120s key)
+                // Clear feed candidate pool (TTL 120s key)
                 await redisClient.del(`feed:candidates:${userId}`);
 
-                // NEW: clear all paginated feed slice keys for this user
-                // Pattern: feed:slice:{userId}:{cursor}  (TTL 300s each)
-                // SCAN is non-blocking and safe on single-instance Redis
+                // Clear all paginated feed slice keys for this user/org scope
+                // Pattern: feed:slice:{userId}* (e.g. feed:slice:user, feed:slice:user:org:orgId)
                 let cursor = 0;
                 do {
                     const reply = await redisClient.scan(cursor, {
-                        MATCH: `feed:slice:${userId}:*`,
+                        MATCH: `feed:slice:${userId}*`,
+                        COUNT: 100,
+                    });
+                    cursor = reply.cursor;
+                    if (reply.keys && reply.keys.length > 0) {
+                        await redisClient.del(reply.keys);
+                    }
+                } while (cursor !== 0);
+
+                // Clear feed session keys so next getFeed initializes a fresh session
+                cursor = 0;
+                do {
+                    const reply = await redisClient.scan(cursor, {
+                        MATCH: `feed:session:${userId}*`,
                         COUNT: 100,
                     });
                     cursor = reply.cursor;

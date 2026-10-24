@@ -465,20 +465,31 @@ exports.leaveOrganization = async (req, res) => {
     try {
         await client.query("BEGIN");
 
-        // 1. Check existence and role
-        const resRole = await client.query(
-            `SELECT oroles.name AS role_name FROM organization_members om
-             JOIN organization_roles oroles ON om.role_id = oroles.role_id
-             WHERE om.org_id = $1 AND om.user_id = $2`,
+        // 1. Check existence and role with LEFT JOIN and organization creator
+        const resMember = await client.query(
+            `SELECT om.member_id, om.status, om.role_id, oroles.name AS role_name, o.created_by
+             FROM organization_members om
+             JOIN organizations o ON o.org_id = om.org_id
+             LEFT JOIN organization_roles oroles ON om.role_id = oroles.role_id
+             WHERE om.org_id = $1 AND om.user_id = $2 AND om.status = 'ACTIVE'`,
             [companyId, userId]
         );
-        if (resRole.rowCount === 0) throw new Error("You are not a member of this organization");
-        const roleName = resRole.rows[0].role_name;
 
-        // 2. OWNER cannot leave
-        if (roleName === 'Owner') throw new Error("OWNER cannot leave. Transfer ownership first.");
+        if (resMember.rowCount === 0) {
+            await client.query("ROLLBACK");
+            return res.status(404).json({ message: "You are not an active member of this organization" });
+        }
 
-        // 3. Leave
+        const member = resMember.rows[0];
+
+        // 2. Creator or Owner cannot leave
+        const isOwner = member.created_by === userId || member.role_name?.toLowerCase() === 'owner';
+        if (isOwner) {
+            await client.query("ROLLBACK");
+            return res.status(403).json({ message: "Owner cannot leave. Transfer ownership first." });
+        }
+
+        // 3. Delete membership
         await client.query(
             `DELETE FROM organization_members WHERE org_id = $1 AND user_id = $2`,
             [companyId, userId]
@@ -486,21 +497,24 @@ exports.leaveOrganization = async (req, res) => {
 
         await logAudit(client, {
             entityId: companyId,
-            actorId: userId, // Self-action
+            entityType: 'ORGANIZATION',
+            actorId: userId,
+            actorRole: member.role_name || 'Member',
             action: 'LEAVE_ORGANIZATION',
-            metadata: { role: roleName }
+            metadata: { 
+                role: member.role_name || 'Member',
+                roleName: member.role_name || 'Member',
+                roleId: member.role_id || null
+            }
         });
 
         await client.query("COMMIT");
-        res.json({ message: "You have left the organization" });
+        return res.json({ message: "You have left the organization" });
 
     } catch (err) {
         await client.query("ROLLBACK");
         console.error("Leave organization error:", err);
-        if (err.message.startsWith("OWNER")) {
-            return res.status(403).json({ message: err.message });
-        }
-        res.status(500).json({ message: "Internal server error" });
+        return res.status(500).json({ message: "Internal server error" });
     } finally {
         client.release();
     }
@@ -588,11 +602,25 @@ exports.transferOwnership = async (req, res) => {
             [newOwnerId, companyId]
         );
 
+        const newOwnerRes = await client.query("SELECT full_name, email FROM users WHERE user_id = $1", [newOwnerId]);
+        const newOwnerName = newOwnerRes.rows[0]?.full_name || 'team member';
+
         await logAudit(client, {
             entityId: companyId,
+            entityType: 'ORGANIZATION',
             actorId: userId,
+            actorRole: 'Owner',
             action: 'TRANSFER_OWNERSHIP',
-            metadata: { from: userId, to: newOwnerId }
+            metadata: { 
+                from: userId, 
+                to: newOwnerId,
+                targetUserId: newOwnerId,
+                targetName: newOwnerName,
+                targetUserName: newOwnerName,
+                newOwnerEmail: newOwnerRes.rows[0]?.email,
+                role: 'Owner',
+                roleName: 'Owner'
+            }
         });
 
         await client.query("COMMIT");

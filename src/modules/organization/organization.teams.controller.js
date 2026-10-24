@@ -510,7 +510,7 @@ exports.getMembers = async (req, res, next) => {
             paramIndex++;
         }
 
-        query += ` ORDER BY r.priority DESC, om.joined_at DESC LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`;
+        query += ` ORDER BY CASE WHEN LOWER(COALESCE(r.name, '')) = 'admin' THEN 0 ELSE 1 END, r.priority DESC, om.joined_at ASC LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`;
         params.push(limit, offset);
 
         const result = await pool.query(query, params);
@@ -837,13 +837,22 @@ exports.transferOwnership = async (req, res, next) => {
             [orgId, actorId, newOwnerId, JSON.stringify({ transferred_by: actorId })]
         );
 
+        const newOwnerRes = await client.query("SELECT full_name, email FROM users WHERE user_id = $1", [newOwnerId]);
+        const newOwnerName = newOwnerRes.rows[0]?.full_name || 'team member';
+
         // 8. Audit Log (Option C)
         await logAudit(client, {
             entityId: orgId,
             actorId,
             actorRole,
             action: 'TRANSFER_OWNERSHIP',
-            metadata: { previousOwnerId: actorId, newOwnerId }
+            metadata: {
+                previousOwnerId: actorId,
+                newOwnerId,
+                targetUserId: newOwnerId,
+                targetName: newOwnerName,
+                targetUserName: newOwnerName
+            }
         });
 
         await client.query("COMMIT");
@@ -1278,7 +1287,12 @@ exports.getActivityLogs = async (req, res, next) => {
                            ELSE NULL
                        END,
                        CASE 
-                           WHEN al.action IN ('ORGANIZATION_BLOCK_ADDED', 'ORGANIZATION_BLOCK_REMOVED', 'BLOCK_USER', 'UNBLOCK_USER', 'BLOCK', 'UNBLOCK')
+                           WHEN COALESCE(al.metadata->>'newOwnerId', al.metadata->>'to') ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' 
+                           THEN (SELECT full_name FROM users WHERE user_id = COALESCE(al.metadata->>'newOwnerId', al.metadata->>'to')::uuid)
+                           ELSE NULL
+                       END,
+                       CASE 
+                           WHEN al.action IN ('ORGANIZATION_BLOCK_ADDED', 'ORGANIZATION_BLOCK_REMOVED')
                                 AND COALESCE(al.metadata->>'targetId', al.metadata->>'blockedId') ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
                            THEN (
                                SELECT COALESCE(u_blk.full_name, u_blk.account_name, o_blk.name)
@@ -1379,7 +1393,8 @@ exports.getActivityLogs = async (req, res, next) => {
                     END
                 ) ILIKE $${paramIdx} OR
                 (LOWER($${paramIdx}) LIKE '%feed%' AND al.action IN ('CREATE_POST', 'EDIT_POST', 'UPDATE_POST', 'LIKE', 'COMMENT', 'REPOST', 'SHARE_POST', 'SAVE_POST')) OR
-                (LOWER($${paramIdx}) LIKE '%verif%' AND al.action IN ('DOCUMENTS_SUBMITTED', 'DOMAIN_VERIFIED'))
+                (LOWER($${paramIdx}) LIKE '%verif%' AND al.action IN ('DOCUMENTS_SUBMITTED', 'DOMAIN_VERIFIED')) OR
+                (LOWER($${paramIdx}) LIKE '%notif%' AND al.action = 'ORGANIZATION_NOTIFICATIONS_UPDATED')
             )`;
             params.push(`%${term}%`);
             paramIdx++;

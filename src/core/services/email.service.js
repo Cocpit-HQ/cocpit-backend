@@ -170,9 +170,20 @@ const sendAccountDeletionEmail = async (email, fullName, restoreToken, deletionD
  * @param {string} restoreToken - Raw restore token
  * @param {Date}   deletionDate - The scheduled permanent deletion date
  */
-const sendOrganizationDeletionEmail = async (email, orgName, restoreToken, deletionDate, clientOrigin) => {
+const sendOrganizationDeletionEmail = async (recipients, orgName, restoreToken, deletionDate, clientOrigin) => {
     if (!resend) {
         throw new Error("Email service is not configured (RESEND_API_KEY missing).");
+    }
+
+    const recipientList = Array.from(new Set(
+        (Array.isArray(recipients) ? recipients : [recipients])
+            .filter(e => typeof e === 'string' && e.trim() !== '')
+            .map(e => e.toLowerCase().trim())
+    ));
+
+    if (recipientList.length === 0) {
+        console.warn("[EmailService] No valid recipient emails provided for organization deletion email");
+        return null;
     }
 
     const frontendUrl = resolveFrontendUrl(clientOrigin);
@@ -180,46 +191,49 @@ const sendOrganizationDeletionEmail = async (email, orgName, restoreToken, delet
     const deletionDateStr = new Date(deletionDate).toLocaleDateString("en-US", {
         year: "numeric", month: "long", day: "numeric",
     });
-
-    try {
-        const { data, error } = await resend.emails.send({
-            from: "Cocpit <noreply@cocpit.in>",
-            to: [email],
-            subject: `Your company page "${orgName}" is scheduled for deletion`,
-            html: `
-                <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 560px; margin: 0 auto;">
-                    <div style="background: #0a0f1e; padding: 24px 32px; border-radius: 8px 8px 0 0;">
-                        <h2 style="color: #ffffff; margin: 0; font-size: 22px;">Cocpit</h2>
-                    </div>
-                    <div style="background: #f9f9f9; padding: 32px; border-radius: 0 0 8px 8px; border: 1px solid #e0e0e0;">
-                        <h3 style="margin-top: 0;">Company Deletion Scheduled</h3>
-                        <p>We received a request to delete your company page: <strong>${orgName}</strong>.</p>
-                        <p>The company and all its associated posts and jobs will be <strong>permanently deleted on ${deletionDateStr}</strong>.</p>
-                        <p>If you changed your mind, click the button below to restore the company before that date:</p>
-                        <div style="text-align: center; margin: 32px 0;">
-                            <a href="${restoreLink}"
-                               style="background: #2563eb; color: #ffffff; padding: 14px 28px; text-decoration: none; border-radius: 6px; font-weight: bold; font-size: 15px; display: inline-block;">
-                                Restore Company
-                            </a>
+    const results = [];
+    for (const recipient of recipientList) {
+        try {
+            const { data, error } = await resend.emails.send({
+                from: "Cocpit <noreply@cocpit.in>",
+                to: recipient,
+                subject: `Your company page "${orgName}" is scheduled for deletion`,
+                html: `
+                    <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 560px; margin: 0 auto;">
+                        <div style="background: #0a0f1e; padding: 24px 32px; border-radius: 8px 8px 0 0;">
+                            <h2 style="color: #ffffff; margin: 0; font-size: 22px;">Cocpit</h2>
                         </div>
-                        <p style="font-size: 13px; color: #888;">This link expires on ${deletionDateStr} and can only be used once.</p>
-                        <hr style="border: none; border-top: 1px solid #e0e0e0; margin: 24px 0;">
-                        <p style="font-size: 12px; color: #aaa; text-align: center;">© ${new Date().getFullYear()} Cocpit. All rights reserved.</p>
+                        <div style="background: #f9f9f9; padding: 32px; border-radius: 0 0 8px 8px; border: 1px solid #e0e0e0;">
+                            <h3 style="margin-top: 0;">Company Deletion Scheduled</h3>
+                            <p>We received a request to delete your company page: <strong>${orgName}</strong>.</p>
+                            <p>The company and all its associated posts and jobs will be <strong>permanently deleted on ${deletionDateStr}</strong>.</p>
+                            <p>If you changed your mind, click the button below to restore the company before that date:</p>
+                            <div style="text-align: center; margin: 32px 0;">
+                                <a href="${restoreLink}"
+                                   style="background: #2563eb; color: #ffffff; padding: 14px 28px; text-decoration: none; border-radius: 6px; font-weight: bold; font-size: 15px; display: inline-block;">
+                                    Restore Company
+                                </a>
+                            </div>
+                            <p style="font-size: 13px; color: #888;">This link expires on ${deletionDateStr} and can only be used once.</p>
+                            <hr style="border: none; border-top: 1px solid #e0e0e0; margin: 24px 0;">
+                            <p style="font-size: 12px; color: #aaa; text-align: center;">© ${new Date().getFullYear()} Cocpit. All rights reserved.</p>
+                        </div>
                     </div>
-                </div>
-            `,
-        });
+                `,
+            });
 
-        if (error) {
-            console.error("Resend error (organization deletion email):", error);
-            throw new Error(error.message || "Failed to send organization deletion email");
+            if (error) {
+                console.error(`Resend error (organization deletion email to ${recipient}):`, error);
+            } else {
+                console.log(`✅ [EmailService] Organization deletion email sent to ${recipient} (id: ${data?.id})`);
+                results.push(data);
+            }
+        } catch (err) {
+            console.error(`Failed to send organization deletion email to ${recipient}:`, err);
         }
-
-        return data;
-    } catch (err) {
-        console.error("Failed to send organization deletion email to:", email, err);
-        throw err;
     }
+
+    return results;
 };
 
 
@@ -636,6 +650,7 @@ const sendOrgDeactivateOTPEmail = async (recipients, otp, orgName) => {
  */
 const sendOrgRecoverOTPEmail = async (recipients, otp, orgName) => {
     const recipientList = Array.isArray(recipients) ? recipients : [recipients];
+    console.log(`🔑 [OTP CONSOLE LOG] Recipient: ${recipientList.join(", ")} | Purpose: org_recovery | OTP Code: ${otp}`);
     if (!resend) {
         throw new Error("Email service is not configured (RESEND_API_KEY missing).");
     }
@@ -643,35 +658,34 @@ const sendOrgRecoverOTPEmail = async (recipients, otp, orgName) => {
     const subject = `Action Required: Verification Code to Recover "${orgName || 'Organization'}"`;
 
     try {
-        const { data, error } = await resend.emails.send({
-            from: "Cocpit <noreply@cocpit.in>",
-            to: recipientList,
-            subject,
-            html: `
-                <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 560px; margin: 0 auto;">
-                    <div style="background: #0a0f1e; padding: 24px 32px; border-radius: 8px 8px 0 0;">
-                        <h2 style="color: #ffffff; margin: 0; font-size: 22px;">Cocpit</h2>
-                    </div>
-                    <div style="background: #ffffff; padding: 32px; border-radius: 0 0 8px 8px; border: 1px solid #e0e0e0;">
-                        <h3 style="margin-top: 0; color: #111;">Organization Page Recovery</h3>
-                        <p>We received a request to recover and cancel scheduled deletion for: <strong>${orgName || "your organization"}</strong>.</p>
-                        <p>To restore your page immediately and preserve all content, enter the following 6-digit verification code:</p>
-                        <div style="text-align: center; margin: 24px 0;">
-                            <span style="font-size: 32px; font-weight: bold; letter-spacing: 6px; color: #2563eb; background: #eff6ff; padding: 12px 24px; border-radius: 8px; border: 1px solid #bfdbfe; display: inline-block;">${otp}</span>
+        const results = await Promise.allSettled(
+            recipientList.map((toEmail) =>
+                resend.emails.send({
+                    from: "Cocpit <noreply@cocpit.in>",
+                    to: [toEmail],
+                    subject,
+                    html: `
+                        <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 560px; margin: 0 auto;">
+                            <div style="background: #0a0f1e; padding: 24px 32px; border-radius: 8px 8px 0 0;">
+                                <h2 style="color: #ffffff; margin: 0; font-size: 22px;">Cocpit</h2>
+                            </div>
+                            <div style="background: #ffffff; padding: 32px; border-radius: 0 0 8px 8px; border: 1px solid #e0e0e0;">
+                                <h3 style="margin-top: 0; color: #111;">Organization Page Recovery</h3>
+                                <p>We received a request to recover and cancel scheduled deletion for: <strong>${orgName || "your organization"}</strong>.</p>
+                                <p>To restore your page immediately and preserve all content, enter the following 6-digit verification code:</p>
+                                <div style="text-align: center; margin: 24px 0;">
+                                    <span style="font-size: 32px; font-weight: bold; letter-spacing: 6px; color: #2563eb; background: #eff6ff; padding: 12px 24px; border-radius: 8px; border: 1px solid #bfdbfe; display: inline-block;">${otp}</span>
+                                </div>
+                                <p style="font-size: 13px; color: #666;">This verification code will expire in 5 minutes.</p>
+                                <p style="font-size: 13px; color: #888;">If you did not request this recovery, please check your account security settings.</p>
+                            </div>
                         </div>
-                        <p style="font-size: 13px; color: #666;">This verification code will expire in 5 minutes.</p>
-                        <p style="font-size: 13px; color: #888;">If you did not request this recovery, please check your account security settings.</p>
-                    </div>
-                </div>
-            `,
-        });
+                    `,
+                })
+            )
+        );
 
-        if (error) {
-            console.error("Resend error (org recover OTP):", error);
-            throw new Error(error.message || "Failed to send organization recover OTP email");
-        }
-
-        return data;
+        return results;
     } catch (err) {
         console.error("Failed to send org recover OTP email to:", recipientList, err);
         throw err;

@@ -77,6 +77,9 @@ async function _fetchFirstDegree(userId, pool) {
           (b.is_org_block = true AND p.author_org_id IS NOT NULL
             AND ((b.blocker_id = p.author_org_id AND b.blocked_id = $1)
                  OR (b.blocker_id = $1 AND b.blocked_id = p.author_org_id)))
+          OR
+          (b.is_org_block = false AND p.author_org_id IS NOT NULL
+            AND (b.blocker_id = $1 AND b.blocked_id = p.author_org_id))
       )
     ORDER BY p.created_at DESC
     LIMIT ${SOURCE_CAP}
@@ -128,6 +131,9 @@ async function _fetchSecondDegree(userId, pool) {
           (b.is_org_block = true AND p.author_org_id IS NOT NULL
             AND ((b.blocker_id = p.author_org_id AND b.blocked_id = $1)
                  OR (b.blocker_id = $1 AND b.blocked_id = p.author_org_id)))
+          OR
+          (b.is_org_block = false AND p.author_org_id IS NOT NULL
+            AND (b.blocker_id = $1 AND b.blocked_id = p.author_org_id))
       )
     ORDER BY p.created_at DESC
     LIMIT ${SOURCE_CAP}

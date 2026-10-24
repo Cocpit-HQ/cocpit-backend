@@ -590,28 +590,18 @@ exports.deleteOrganization = async (req, res) => {
 
         await logAudit(client, {
             entityId: orgId,
+            entityType: 'ORGANIZATION',
             actorId: userId,
-            action: 'DELETE',
-            metadata: {}
+            actorRole: 'Owner',
+            action: 'ORGANIZATION_SCHEDULED_FOR_DELETION',
+            metadata: {
+                orgName,
+                role: 'Owner',
+                roleName: 'Owner'
+            }
         });
 
-        // Send recovery email (non-blocking)
-        const userEmailRes = await client.query("SELECT email FROM users WHERE user_id = $1", [userId]);
-        const emailService = require("../../core/services/email.service");
-        let baseUrl = req.get('origin');
-        if (!baseUrl && req.headers.referer) {
-            try { baseUrl = new URL(req.headers.referer).origin; } catch (_) {}
-        }
-        if (!baseUrl) {
-            baseUrl = process.env.CLIENT_URL || null;
-        }
-        emailService.sendOrganizationDeletionEmail(
-            userEmailRes.rows[0].email,
-            orgName,
-            rawToken,
-            deletionExecuteAt,
-            baseUrl
-        ).catch(err => console.error("[DeleteOrg] Failed to send recovery email:", err));
+        // Deletion scheduled - recovery is handled via User Settings > Organizations (within 40-day grace period)
 
         await client.query("COMMIT");
 
@@ -631,7 +621,7 @@ exports.deleteOrganization = async (req, res) => {
             console.error("[DeleteOrg] Socket notification error:", sErr);
         }
 
-        res.json({ 
+        res.json({
             message: "Organization scheduled for deletion. Check your email for a recovery link.",
             deletionDate: deletionExecuteAt
         });
@@ -727,29 +717,33 @@ exports.sendDeleteOrgOTP = async (req, res) => {
         const expiresAt = new Date(Date.now() + OTP_EXPIRY_MINUTES * 60000);
 
         await client.query(
-            `INSERT INTO email_otps (email, otp_hash, expires_at, attempts, created_at, request_count, purpose)
-             VALUES ($1, $2, $3, 0, NOW(), 1, 'org_deletion')
+            `INSERT INTO email_otps (email, otp_hash, expires_at, attempts, created_at, request_count, purpose, verified_at, session_expires_at)
+             VALUES ($1, $2, $3, 0, NOW(), 1, 'org_deletion', NULL, NULL)
              ON CONFLICT (email, purpose)
              DO UPDATE SET
                  otp_hash = EXCLUDED.otp_hash,
                  expires_at = EXCLUDED.expires_at,
                  attempts = 0,
                  created_at = NOW(),
-                 request_count = email_otps.request_count + 1`,
+                 request_count = email_otps.request_count + 1,
+                 verified_at = NULL,
+                 session_expires_at = NULL`,
             [primaryEmail, otpHash, expiresAt]
         );
 
         if (recipients.length > 1) {
             await client.query(
-                `INSERT INTO email_otps (email, otp_hash, expires_at, attempts, created_at, request_count, purpose)
-                 VALUES ($1, $2, $3, 0, NOW(), 1, 'org_deletion')
+                `INSERT INTO email_otps (email, otp_hash, expires_at, attempts, created_at, request_count, purpose, verified_at, session_expires_at)
+                 VALUES ($1, $2, $3, 0, NOW(), 1, 'org_deletion', NULL, NULL)
                  ON CONFLICT (email, purpose)
                  DO UPDATE SET
                      otp_hash = EXCLUDED.otp_hash,
                      expires_at = EXCLUDED.expires_at,
                      attempts = 0,
                      created_at = NOW(),
-                     request_count = email_otps.request_count + 1`,
+                     request_count = email_otps.request_count + 1,
+                     verified_at = NULL,
+                     session_expires_at = NULL`,
                 [recipients[1], otpHash, expiresAt]
             );
         }
@@ -832,7 +826,10 @@ exports.validateOTPForOrganizationDeletion = async (req, res) => {
         }
 
         if (otpResult.error) {
-            return res.status(otpResult.error.status || 400).json({ message: otpResult.error.message });
+            const message = (otpResult.error.message === "Incorrect code" || otpResult.error.message === "Invalid verification code")
+                ? "Invalid verification code"
+                : otpResult.error.message;
+            return res.status(otpResult.error.status || 400).json({ message });
         }
 
         return res.status(200).json({ success: true, message: "OTP verified successfully" });
@@ -898,7 +895,10 @@ exports.verifyOTPAndDeleteOrganization = async (req, res) => {
 
         if (otpResult.error) {
             await client.query("ROLLBACK");
-            return res.status(otpResult.error.status || 400).json({ message: otpResult.error.message });
+            const message = (otpResult.error.message === "Incorrect code" || otpResult.error.message === "Invalid verification code")
+                ? "Invalid verification code"
+                : otpResult.error.message;
+            return res.status(otpResult.error.status || 400).json({ message });
         }
 
         // 4. Soft Delete Execution & Restoration Setup
@@ -941,12 +941,21 @@ exports.verifyOTPAndDeleteOrganization = async (req, res) => {
 
         await logAudit(client, {
             entityId: orgId,
+            entityType: 'ORGANIZATION',
             actorId: userId,
-            action: 'DELETE',
-            metadata: { method: 'OTP_VERIFIED' }
+            actorRole: 'Owner',
+            action: 'ORGANIZATION_SCHEDULED_FOR_DELETION',
+            metadata: {
+                method: 'OTP_VERIFIED',
+                orgName: org.name,
+                role: 'Owner',
+                roleName: 'Owner'
+            }
         });
 
         await client.query("COMMIT");
+
+        // 5. Deletion scheduled - recovery is handled via User Settings > Organizations (within 40-day grace period)
 
         // Broadcast real-time socket event `org_deleted` and `org_status_changed`
         try {
@@ -1126,7 +1135,7 @@ exports.getUserOrganizationsSettings = async (req, res) => {
         // Includes active, deactivated, and scheduled_for_deletion orgs IF deletion_execute_at > NOW()
         // Hides orgs where 40-day recovery window has passed (deletion_execute_at <= NOW())
         const ownedRes = await client.query(
-            `SELECT o.org_id AS id, o.name, o.industry AS type, o.logo_url AS "logoUrl",
+            `SELECT o.org_id AS id, o.slug, o.name, o.industry AS type, o.logo_url AS "logoUrl",
                     o.created_at, o.entity_type, o.is_deleted, o.deletion_execute_at, o.is_deactivated
              FROM organizations o
              WHERE o.created_by = $1
@@ -1145,6 +1154,7 @@ exports.getUserOrganizationsSettings = async (req, res) => {
 
             return {
                 id: o.id,
+                slug: o.slug,
                 name: o.name,
                 type: o.type || "Company",
                 logoUrl: o.logoUrl || null,
@@ -1157,7 +1167,7 @@ exports.getUserOrganizationsSettings = async (req, res) => {
 
         // 2. Associated Orgs (User is member but NOT owner/creator)
         const assocRes = await client.query(
-            `SELECT o.org_id AS id, o.name, o.industry AS type, o.logo_url AS "logoUrl",
+            `SELECT o.org_id AS id, o.slug, o.name, o.industry AS type, o.logo_url AS "logoUrl",
                     om.joined_at, r.name AS role
              FROM organizations o
              JOIN organization_members om ON o.org_id = om.org_id
@@ -1170,6 +1180,7 @@ exports.getUserOrganizationsSettings = async (req, res) => {
 
         const associatedOrgs = assocRes.rows.map(o => ({
             id: o.id,
+            slug: o.slug,
             name: o.name,
             type: o.type || "Company",
             logoUrl: o.logoUrl || null,
@@ -1260,35 +1271,46 @@ exports.sendRecoverOrgOTP = async (req, res) => {
         const expiresAt = new Date(Date.now() + OTP_EXPIRY_MINUTES * 60000);
 
         await client.query(
-            `INSERT INTO email_otps (email, otp_hash, expires_at, attempts, created_at, request_count, purpose)
-             VALUES ($1, $2, $3, 0, NOW(), 1, 'org_recovery')
+            `INSERT INTO email_otps (email, otp_hash, expires_at, attempts, created_at, request_count, purpose, verified_at, session_expires_at)
+             VALUES ($1, $2, $3, 0, NOW(), 1, 'org_recovery', NULL, NULL)
              ON CONFLICT (email, purpose)
              DO UPDATE SET
                  otp_hash = EXCLUDED.otp_hash,
                  expires_at = EXCLUDED.expires_at,
                  attempts = 0,
                  created_at = NOW(),
-                 request_count = email_otps.request_count + 1`,
+                 request_count = email_otps.request_count + 1,
+                 verified_at = NULL,
+                 session_expires_at = NULL`,
             [primaryEmail, otpHash, expiresAt]
         );
 
         if (recipients.length > 1) {
             await client.query(
-                `INSERT INTO email_otps (email, otp_hash, expires_at, attempts, created_at, request_count, purpose)
-                 VALUES ($1, $2, $3, 0, NOW(), 1, 'org_recovery')
+                `INSERT INTO email_otps (email, otp_hash, expires_at, attempts, created_at, request_count, purpose, verified_at, session_expires_at)
+                 VALUES ($1, $2, $3, 0, NOW(), 1, 'org_recovery', NULL, NULL)
                  ON CONFLICT (email, purpose)
                  DO UPDATE SET
                      otp_hash = EXCLUDED.otp_hash,
                      expires_at = EXCLUDED.expires_at,
                      attempts = 0,
                      created_at = NOW(),
-                     request_count = email_otps.request_count + 1`,
+                     request_count = email_otps.request_count + 1,
+                     verified_at = NULL,
+                     session_expires_at = NULL`,
                 [recipients[1], otpHash, expiresAt]
             );
         }
 
         const emailService = require("../../core/services/email.service");
         await emailService.sendOrgRecoverOTPEmail(recipients, otp, org.name);
+
+        console.log(`\n==================================================`);
+        console.log(`🔑 [TESTING OTP] ORGANIZATION RECOVERY CODE`);
+        console.log(`🏢 Organization: "${org.name}" (ID: ${orgId})`);
+        console.log(`✉️ Sent To: ${recipients.join(", ")}`);
+        console.log(`👉 VERIFICATION CODE (OTP): ${otp}`);
+        console.log(`==================================================\n`);
 
         const maskedDisplay = recipients.map(maskEmail).join(", ");
         res.json({
@@ -1301,6 +1323,76 @@ exports.sendRecoverOrgOTP = async (req, res) => {
     } catch (err) {
         console.error("Send recover org OTP error:", err);
         res.status(500).json({ message: err.message || "Failed to send verification code" });
+    } finally {
+        client.release();
+    }
+};
+
+exports.validateOTPForOrganizationRecovery = async (req, res) => {
+    const { orgId } = req.params;
+    const userId = req.user.sub;
+    const { otp } = req.body;
+
+    if (!otp || String(otp).trim().length !== 6) {
+        return res.status(400).json({ message: "6-digit verification code is required" });
+    }
+
+    const client = await pool.connect();
+    try {
+        const orgRes = await client.query(
+            `SELECT name, email, created_by, is_deleted, deletion_execute_at FROM organizations WHERE org_id = $1`,
+            [orgId]
+        );
+        if (orgRes.rowCount === 0) {
+            return res.status(404).json({ message: "Organization not found" });
+        }
+        const org = orgRes.rows[0];
+
+        if (org.created_by !== userId) {
+            return res.status(403).json({ message: "Only the organization owner can recover this page" });
+        }
+
+        if (!org.is_deleted) {
+            return res.status(400).json({ message: "Organization is not scheduled for deletion" });
+        }
+
+        if (org.deletion_execute_at && new Date(org.deletion_execute_at) <= new Date()) {
+            return res.status(400).json({ message: "The 40-day recovery window for this organization has expired. Page cannot be recovered." });
+        }
+
+        const ownerRes = await client.query(
+            "SELECT email FROM users WHERE user_id = $1",
+            [org.created_by]
+        );
+        const ownerEmail = ownerRes.rows[0]?.email;
+        const orgEmail = org.email;
+
+        const recipientSet = new Set();
+        if (orgEmail && orgEmail.trim()) recipientSet.add(orgEmail.toLowerCase().trim());
+        if (ownerEmail && ownerEmail.trim()) recipientSet.add(ownerEmail.toLowerCase().trim());
+
+        const recipients = Array.from(recipientSet);
+        if (recipients.length === 0) {
+            return res.status(400).json({ message: "No registered email address found for this organization owner" });
+        }
+
+        const { verifyOTP } = require("../auth/otp.service");
+        let otpResult = await verifyOTP(recipients[0], otp, false, "org_recovery");
+        if (otpResult.error && otpResult.error.message.includes("No active OTP found") && recipients.length > 1) {
+            otpResult = await verifyOTP(recipients[1], otp, false, "org_recovery");
+        }
+
+        if (otpResult.error) {
+            const message = (otpResult.error.message === "Incorrect code" || otpResult.error.message === "Invalid verification code")
+                ? "Invalid verification code"
+                : otpResult.error.message;
+            return res.status(otpResult.error.status || 400).json({ message });
+        }
+
+        return res.status(200).json({ success: true, message: "OTP verified successfully" });
+    } catch (err) {
+        console.error("Validate recover org OTP error:", err);
+        res.status(500).json({ message: err.message || "Failed to validate OTP" });
     } finally {
         client.release();
     }
@@ -1371,7 +1463,10 @@ exports.verifyOTPAndRecoverOrganization = async (req, res) => {
 
             if (otpResult.error) {
                 await client.query("ROLLBACK");
-                return res.status(otpResult.error.status || 400).json({ message: otpResult.error.message });
+                const message = (otpResult.error.message === "Incorrect code" || otpResult.error.message === "Invalid verification code")
+                    ? "Invalid verification code"
+                    : otpResult.error.message;
+                return res.status(otpResult.error.status || 400).json({ message });
             }
         }
 
@@ -1387,8 +1482,13 @@ exports.verifyOTPAndRecoverOrganization = async (req, res) => {
             entityId: orgId,
             entityType: 'ORGANIZATION',
             actorId: userId,
+            actorRole: 'Owner',
             action: 'ORGANIZATION_RECOVERED',
-            metadata: {}
+            metadata: {
+                orgName: org.name,
+                role: 'Owner',
+                roleName: 'Owner'
+            }
         });
 
         await client.query("COMMIT");
@@ -1770,7 +1870,7 @@ exports.saveDraftPresence = async (req, res) => {
     const uniqueTokens = tokens.filter((t, i, arr) => arr.findIndex(x => x.toLowerCase() === t.toLowerCase()) === i);
     const locationStr = uniqueTokens.length > 0 ? uniqueTokens.join(', ') : null;
     const locCity = (typeof location === 'object' && location?.city) ||
-                    (city && !city.includes(',') ? city.trim() : (uniqueTokens.length > 0 ? uniqueTokens[0] : null));
+        (city && !city.includes(',') ? city.trim() : (uniqueTokens.length > 0 ? uniqueTokens[0] : null));
     const locLat = latitude !== undefined && latitude !== null ? Number(latitude) : (typeof location === 'object' && location?.latitude !== undefined ? Number(location.latitude) : null);
     const locLng = longitude !== undefined && longitude !== null ? Number(longitude) : (typeof location === 'object' && location?.longitude !== undefined ? Number(location.longitude) : null);
     const locPlaceId = placeId || (typeof location === 'object' ? location?.placeId : null) || null;
@@ -2153,7 +2253,7 @@ exports.completeOnboardingFlow = async (req, res) => {
 
         const docsRes = await client.query(`SELECT document_url FROM organization_documents WHERE org_id = $1`, [orgId]);
         let finalVerificationStatus = 'DOMAIN_VERIFIED';
-        
+
         if (docsRes.rowCount > 0) {
             finalVerificationStatus = 'DOCUMENT_PENDING';
             const docUrls = docsRes.rows.map(row => row.document_url);
@@ -2286,7 +2386,7 @@ exports.publishNewOrganization = async (req, res) => {
     const uniqueTokens = tokens.filter((t, i, arr) => arr.findIndex(x => x.toLowerCase() === t.toLowerCase()) === i);
     const locationStr = uniqueTokens.length > 0 ? uniqueTokens.join(', ') : null;
     const locCity = (typeof location === 'object' && location?.city) ||
-                    (city && !city.includes(',') ? city.trim() : (uniqueTokens.length > 0 ? uniqueTokens[0] : null));
+        (city && !city.includes(',') ? city.trim() : (uniqueTokens.length > 0 ? uniqueTokens[0] : null));
     const locLat = latitude !== undefined && latitude !== null ? Number(latitude) : (typeof location === 'object' && location?.latitude !== undefined ? Number(location.latitude) : null);
     const locLng = longitude !== undefined && longitude !== null ? Number(longitude) : (typeof location === 'object' && location?.longitude !== undefined ? Number(location.longitude) : null);
     const locPlaceId = placeId || (typeof location === 'object' ? location?.placeId : null) || null;

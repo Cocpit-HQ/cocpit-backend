@@ -166,10 +166,12 @@ router.patch("/organizations/:orgId/deactivate", requireAuth, settingsController
 router.patch("/organizations/:orgId/reactivate", requireAuth, settingsController.reactivateOrganization);
 
 router.post("/organizations/:orgId/reactivate/send-otp", requireAuth, otpGenerationLimiter, settingsController.sendReactivateOrgOTP);
+router.post("/organizations/:orgId/reactivate/validate-otp", requireAuth, organizationActionLimiter, settingsController.validateReactivateOrgOTP);
 router.post("/organizations/:orgId/reactivate/verify-otp", requireAuth, organizationActionLimiter, settingsController.reactivateOrganization);
 router.post("/organizations/:orgId/reactivate", requireAuth, settingsController.reactivateOrganization);
 
 router.post("/organizations/:orgId/recover/send-otp", requireAuth, otpGenerationLimiter, organizationController.sendRecoverOrgOTP);
+router.post("/organizations/:orgId/recover/validate-otp", requireAuth, organizationActionLimiter, organizationController.validateOTPForOrganizationRecovery);
 router.post("/organizations/:orgId/recover/verify-otp", requireAuth, organizationActionLimiter, organizationController.verifyOTPAndRecoverOrganization);
 router.post("/organizations/:orgId/recover", requireAuth, organizationController.verifyOTPAndRecoverOrganization);
 

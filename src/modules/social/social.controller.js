@@ -38,7 +38,7 @@ const getRequestedOrganizationActorId = (req, fallbackOrgId = null) => {
         throw err;
     }
 
-    return actorOrgId;
+    return actorOrgId || fallbackOrgId;
 };
 
 const getSocialActorScope = (req, fallbackOrgId = null) => {
@@ -5112,7 +5112,18 @@ exports.getNotifications = async (req, res) => {
         query += ` ORDER BY n.created_at DESC`;
 
         const result = await pool.query(query, [companyId || userId]);
-        res.json(result.rows);
+        let rows = result.rows;
+        if (companyId) {
+            // Deduplicate multi-admin notification copies for organization
+            const seen = new Set();
+            rows = rows.filter((n) => {
+                const key = `${n.type}:${n.reference_id || ''}:${n.sender_id || ''}:${n.text}`;
+                if (seen.has(key)) return false;
+                seen.add(key);
+                return true;
+            });
+        }
+        res.json(rows);
     } catch (err) {
         console.error("Get notifications error:", err);
         res.status(500).json({ message: "Internal server error" });
@@ -5135,7 +5146,7 @@ exports.markNotificationRead = async (req, res) => {
     let actorScope;
 
     try {
-        actorScope = getSocialActorScope(req, req.query.companyId || req.body?.companyId || null);
+        actorScope = getSocialActorScope(req, req.query?.companyId || req.body?.companyId || null);
     } catch (err) {
         return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
     }
@@ -5143,16 +5154,48 @@ exports.markNotificationRead = async (req, res) => {
     const { userId, orgId: companyId } = actorScope;
 
     try {
-        const query = companyId
-            ? `UPDATE notifications
-               SET is_read = TRUE
-               WHERE notification_id = $1 AND recipient_org_id = $2
-               RETURNING *`
-            : `UPDATE notifications
-               SET is_read = TRUE
-               WHERE notification_id = $1 AND user_id = $2 AND recipient_org_id IS NULL
-               RETURNING *`;
-        const result = await pool.query(query, [id, companyId || userId]);
+        if (companyId) {
+            const result = await pool.query(
+                `UPDATE notifications
+                 SET is_read = TRUE
+                 WHERE recipient_org_id = $1 
+                   AND (
+                     notification_id = $2
+                     OR (type, COALESCE(reference_id::text, ''), text) IN (
+                         SELECT type, COALESCE(reference_id::text, ''), text 
+                         FROM notifications 
+                         WHERE notification_id = $2 AND recipient_org_id = $1
+                     )
+                   )
+                 RETURNING *`,
+                [companyId, id]
+            );
+
+            if (result.rowCount === 0)
+                return res.status(404).json({ message: "Notification not found" });
+
+            socketService.notifyOrg(companyId, "notificationRead", {
+                notificationId: id,
+                companyId,
+            });
+            socketService.broadcastGlobal("notificationRead", {
+                notificationId: id,
+                companyId,
+            });
+
+            return res.json({
+                message: "Notification marked as read",
+                notification: result.rows[0],
+            });
+        }
+
+        const result = await pool.query(
+            `UPDATE notifications
+             SET is_read = TRUE
+             WHERE notification_id = $1 AND user_id = $2 AND recipient_org_id IS NULL
+             RETURNING *`,
+            [id, userId]
+        );
 
         if (result.rowCount === 0)
             return res.status(404).json({ message: "Notification not found" });
@@ -5166,6 +5209,7 @@ exports.markNotificationRead = async (req, res) => {
             notification: result.rows[0],
         });
     } catch (err) {
+        console.error("Mark notification read error:", err);
         res.status(500).json({ message: "Internal server error" });
     }
 };
@@ -5175,7 +5219,7 @@ exports.markAllNotificationsRead = async (req, res) => {
     let actorScope;
 
     try {
-        actorScope = getSocialActorScope(req, req.body?.companyId || req.query.companyId || null);
+        actorScope = getSocialActorScope(req, req.body?.companyId || req.query?.companyId || null);
     } catch (err) {
         return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
     }
@@ -5183,19 +5227,24 @@ exports.markAllNotificationsRead = async (req, res) => {
     const { userId, orgId: companyId } = actorScope;
 
     try {
-        let query = `UPDATE notifications SET is_read = TRUE WHERE is_read = FALSE`;
-        const params = [];
-
         if (companyId) {
-            query += ` AND recipient_org_id = $1`;
-            params.push(companyId);
-        } else {
-            query += ` AND user_id = $1 AND recipient_org_id IS NULL`;
-            params.push(userId);
+            await pool.query(
+                `UPDATE notifications SET is_read = TRUE WHERE recipient_org_id = $1 AND is_read = FALSE`,
+                [companyId]
+            );
+
+            socketService.notifyOrg(companyId, "allNotificationsRead", { companyId });
+            socketService.broadcastGlobal("allNotificationsRead", { companyId });
+
+            return res.json({ message: "All notifications marked as read" });
         }
 
-        await pool.query(query, params);
+        await pool.query(
+            `UPDATE notifications SET is_read = TRUE WHERE user_id = $1 AND recipient_org_id IS NULL AND is_read = FALSE`,
+            [userId]
+        );
 
+        socketService.notifyUser(userId, "allNotificationsRead", {});
         res.json({ message: "All notifications marked as read" });
     } catch (err) {
         console.error("Mark all read error:", err);
@@ -5215,7 +5264,7 @@ exports.deleteNotification = async (req, res) => {
     let actorScope;
 
     try {
-        actorScope = getSocialActorScope(req, req.query.companyId || req.body?.companyId || null);
+        actorScope = getSocialActorScope(req, req.query?.companyId || req.body?.companyId || null);
     } catch (err) {
         return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
     }
@@ -5223,14 +5272,40 @@ exports.deleteNotification = async (req, res) => {
     const { userId, orgId: companyId } = actorScope;
 
     try {
-        const query = companyId
-            ? `DELETE FROM notifications WHERE notification_id = $1 AND recipient_org_id = $2 RETURNING *`
-            : `DELETE FROM notifications WHERE notification_id = $1 AND user_id = $2 AND recipient_org_id IS NULL RETURNING *`;
-        const result = await pool.query(query, [id, companyId || userId]);
+        if (companyId) {
+            const result = await pool.query(
+                `DELETE FROM notifications 
+                 WHERE recipient_org_id = $1 
+                   AND (
+                     notification_id = $2
+                     OR (type, COALESCE(reference_id::text, ''), text) IN (
+                         SELECT type, COALESCE(reference_id::text, ''), text 
+                         FROM notifications 
+                         WHERE notification_id = $2 AND recipient_org_id = $1
+                     )
+                   )
+                 RETURNING notification_id`,
+                [companyId, id]
+            );
+
+            if (result.rowCount === 0)
+                return res.status(404).json({ message: "Notification not found" });
+
+            socketService.notifyOrg(companyId, "notificationDeleted", { notificationId: id, companyId });
+            socketService.broadcastGlobal("notificationDeleted", { notificationId: id, companyId });
+
+            return res.json({ message: "Notification deleted" });
+        }
+
+        const result = await pool.query(
+            `DELETE FROM notifications WHERE notification_id = $1 AND user_id = $2 AND recipient_org_id IS NULL RETURNING notification_id`,
+            [id, userId]
+        );
 
         if (result.rowCount === 0)
             return res.status(404).json({ message: "Notification not found" });
 
+        socketService.notifyUser(userId, "notificationDeleted", { notificationId: id });
         res.json({ message: "Notification deleted" });
     } catch (err) {
         console.error("Delete notification error:", err);
@@ -5240,7 +5315,7 @@ exports.deleteNotification = async (req, res) => {
 
 // Delete multiple notifications (bulk)
 exports.deleteNotificationsBulk = async (req, res) => {
-    const { ids } = req.body;
+    const { ids, tab } = req.body;
     let actorScope;
 
     if (!ids || !Array.isArray(ids) || ids.length === 0) {
@@ -5256,11 +5331,63 @@ exports.deleteNotificationsBulk = async (req, res) => {
     const { userId, orgId: companyId } = actorScope;
 
     try {
-        const query = companyId
-            ? `DELETE FROM notifications WHERE notification_id = ANY($1::uuid[]) AND recipient_org_id = $2`
-            : `DELETE FROM notifications WHERE notification_id = ANY($1::uuid[]) AND user_id = $2 AND recipient_org_id IS NULL`;
-        await pool.query(query, [ids, companyId || userId]);
+        if (companyId) {
+            if (tab === 'all') {
+                // Clear all notifications for this organization
+                await pool.query(
+                    `DELETE FROM notifications WHERE recipient_org_id = $1`,
+                    [companyId]
+                );
+            } else if (tab === 'jobs') {
+                await pool.query(
+                    `DELETE FROM notifications 
+                     WHERE recipient_org_id = $1 
+                       AND (type = 'organization_job' OR type = 'job_offer' OR type LIKE '%job%' OR type LIKE '%application%' OR type LIKE '%offer%')`,
+                    [companyId]
+                );
+            } else {
+                await pool.query(
+                    `DELETE FROM notifications 
+                     WHERE recipient_org_id = $1 
+                       AND (
+                         notification_id = ANY($2::uuid[])
+                         OR (type, COALESCE(reference_id::text, ''), text) IN (
+                             SELECT type, COALESCE(reference_id::text, ''), text 
+                             FROM notifications 
+                             WHERE notification_id = ANY($2::uuid[]) AND recipient_org_id = $1
+                         )
+                       )`,
+                    [companyId, ids]
+                );
+            }
 
+            socketService.notifyOrg(companyId, "notificationsCleared", { companyId, tab });
+            socketService.broadcastGlobal("notificationsCleared", { companyId, tab });
+
+            return res.json({ message: "Notifications deleted" });
+        }
+
+        if (tab === 'all') {
+            await pool.query(
+                `DELETE FROM notifications WHERE user_id = $1 AND recipient_org_id IS NULL`,
+                [userId]
+            );
+        } else if (tab === 'jobs') {
+            await pool.query(
+                `DELETE FROM notifications 
+                 WHERE user_id = $1 
+                   AND recipient_org_id IS NULL 
+                   AND (type = 'organization_job' OR type = 'job_offer' OR type LIKE '%job%' OR type LIKE '%application%' OR type LIKE '%offer%')`,
+                [userId]
+            );
+        } else {
+            await pool.query(
+                `DELETE FROM notifications WHERE notification_id = ANY($1::uuid[]) AND user_id = $2 AND recipient_org_id IS NULL`,
+                [ids, userId]
+            );
+        }
+
+        socketService.notifyUser(userId, "notificationsCleared", { tab });
         res.json({ message: "Notifications deleted" });
     } catch (err) {
         console.error("Delete notifications bulk error:", err);
@@ -5529,7 +5656,7 @@ exports.blockUser = async (req, res) => {
             }
         }
 
-        res.json({ message: isOrgActor ? "User blocked for organization" : "User blocked successfully" });
+        res.json({ message: isOrgActor ? "Account blocked for company" : "User blocked successfully" });
     } catch (err) {
         console.error("Block user error:", err);
         res.status(500).json({ message: "Internal server error" });
@@ -5793,7 +5920,7 @@ exports.unblockUser = async (req, res) => {
             }
         }
 
-        res.json({ message: isOrgActor ? "User unblocked for organization" : "User unblocked successfully" });
+        res.json({ message: isOrgActor ? "Account unblocked for company" : "User unblocked successfully" });
     } catch (err) {
         console.error("Unblock user error:", err);
         res.status(500).json({ message: "Internal server error" });

@@ -212,12 +212,12 @@ const verifyOTP = async (email, otp, consume = true, purpose = "signup") => {
 
     const record = result.rows[0];
 
-    if (!consume && record.verified_at) {
-        return { error: { status: 400, message: "This code has already been verified." } };
-    }
+    // Determine if there is a currently active verified session for this OTP cycle
+    const isCurrentSessionVerified = !!(record.verified_at &&
+        (!record.created_at || new Date(record.verified_at) >= new Date(record.created_at)));
 
-    // 2. Check expiry (10-minute code expiry or 10-minute session expiry)
-    const isExpired = record.session_expires_at
+    // 2. Check expiry (10-minute code expiry or 10-minute session expiry if verified)
+    const isExpired = (isCurrentSessionVerified && record.session_expires_at)
         ? new Date() > new Date(record.session_expires_at)
         : new Date() > new Date(record.expires_at);
 
@@ -254,8 +254,11 @@ const verifyOTP = async (email, otp, consume = true, purpose = "signup") => {
     if (consume) {
         await pool.query(`DELETE FROM email_otps WHERE email = $1 AND purpose = $2`, [normalizedEmail, purpose]);
     } else {
-        // Start 10-minute verified session upon successful verification
-        sessionExpiresAt = new Date(Date.now() + SESSION_EXPIRY_MINUTES * 60000);
+        // Start or retain 10-minute verified session upon successful verification
+        sessionExpiresAt = (isCurrentSessionVerified && record.session_expires_at && new Date(record.session_expires_at) > new Date())
+            ? record.session_expires_at
+            : new Date(Date.now() + SESSION_EXPIRY_MINUTES * 60000);
+
         await pool.query(
             `UPDATE email_otps SET verified_at = NOW(), session_expires_at = $1 WHERE email = $2 AND purpose = $3`,
             [sessionExpiresAt, normalizedEmail, purpose]
@@ -282,7 +285,10 @@ const verifyOtpSession = async (email, purpose = "signup") => {
     }
 
     const record = result.rows[0];
-    if (!record.verified_at) {
+    const isCurrentSessionVerified = !!(record.verified_at &&
+        (!record.created_at || new Date(record.verified_at) >= new Date(record.created_at)));
+
+    if (!isCurrentSessionVerified) {
         return { valid: false, message: "Email has not been verified." };
     }
 

@@ -705,8 +705,18 @@ exports.getActivityLogs = async (req, res) => {
         // req.actor.type here would return org data even on the personal settings page.
         const explicitActorType = req.headers["x-actor-type"];
         const explicitActorId = req.headers["x-actor-id"] || req.query.companyId || null;
-        const isOrgActor = explicitActorType === "ORGANIZATION" && !!explicitActorId;
-        const actorOrgId = isOrgActor ? explicitActorId : null;
+        let isOrgActor = (explicitActorType === "ORGANIZATION" || Boolean(req.query.companyId)) && !!explicitActorId;
+        let actorOrgId = isOrgActor ? explicitActorId : null;
+
+        if (isOrgActor && actorOrgId) {
+            const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(actorOrgId);
+            if (!isUuid) {
+                const orgRes = await pool.query('SELECT org_id FROM organizations WHERE slug = $1 LIMIT 1', [actorOrgId]);
+                if (orgRes.rows.length > 0) {
+                    actorOrgId = orgRes.rows[0].org_id;
+                }
+            }
+        }
         const targetId = isOrgActor ? actorOrgId : req.user.sub;
         const { type } = req.query;
 
@@ -717,11 +727,17 @@ exports.getActivityLogs = async (req, res) => {
                     pc.post_id AS "postId",
                     COALESCE(post_comp.name, post_author.full_name) AS "postAuthor",
                     CASE WHEN p.author_org_id IS NOT NULL THEN post_comp.logo_url ELSE post_author.avatar_url END AS "postAuthorAvatar",
-                    COALESCE(post_comp.slogan, post_author.headline, 'Member') AS "postAuthorRole",
+                    CASE WHEN p.author_org_id IS NOT NULL THEN COALESCE(post_comp.headline, '') ELSE COALESCE(post_author.headline, '') END AS "postAuthorRole",
+                    (p.author_org_id IS NOT NULL) AS "isPostCompany",
+                    (p.author_org_id IS NOT NULL) AS "isCompanyPost",
+                    (p.author_org_id IS NOT NULL) AS "isCompany",
+                    p.author_org_id,
                     CASE WHEN p.post_type = 'poll' THEN COALESCE(NULLIF(p.title, ''), p.content) ELSE p.content END AS "postTitle",
                     COALESCE(commenter_comp.name, commenter.full_name) AS commenter,
                     CASE WHEN pc.author_org_id IS NOT NULL THEN commenter_comp.logo_url ELSE commenter.avatar_url END AS "commenterAvatar",
-                    COALESCE(commenter_comp.slogan, commenter.headline, 'Member') AS "commenterRole",
+                    CASE WHEN pc.author_org_id IS NOT NULL THEN COALESCE(commenter_comp.headline, '') ELSE COALESCE(commenter.headline, '') END AS "commenterRole",
+                    (pc.author_org_id IS NOT NULL) AS "isCommenterCompany",
+                    pc.author_org_id AS "commenterOrgId",
                     pc.content AS comment,
                     (SELECT COUNT(*) FROM active_comment_likes cl WHERE cl.comment_id = pc.comment_id) AS likes,
                     (SELECT COUNT(*) FROM active_post_comments sub_c WHERE sub_c.parent_id = pc.comment_id) AS replies,
@@ -733,12 +749,18 @@ exports.getActivityLogs = async (req, res) => {
                     (p.post_id IS NULL) AS "isDeleted",
                     (p.post_id IS NULL) AS is_deleted
                  FROM active_post_comments pc
-                 LEFT JOIN posts p ON pc.post_id = p.post_id
-                 LEFT JOIN active_users post_author ON p.author_id = post_author.user_id
+                 JOIN posts p ON pc.post_id = p.post_id
+                 LEFT JOIN users post_author ON p.author_id = post_author.user_id
                  LEFT JOIN organizations post_comp ON p.author_org_id = post_comp.org_id
-                 LEFT JOIN active_users commenter ON pc.author_id = commenter.user_id
+                 LEFT JOIN users commenter ON pc.author_id = commenter.user_id
                  LEFT JOIN organizations commenter_comp ON pc.author_org_id = commenter_comp.org_id
                  WHERE pc.author_org_id = $1::uuid
+                   AND p.is_active = true AND (p.is_removed IS FALSE OR p.is_removed IS NULL)
+                   AND (
+                       (p.author_org_id IS NULL AND post_author.user_id IS NOT NULL AND (post_author.is_deactivated IS FALSE OR post_author.is_deactivated IS NULL) AND (post_author.is_deleted IS NULL OR post_author.is_deleted = FALSE))
+                       OR
+                       (p.author_org_id IS NOT NULL AND post_comp.org_id IS NOT NULL AND post_comp.is_deleted = FALSE AND (post_comp.deletion_execute_at IS NULL OR post_comp.deletion_execute_at > NOW()) AND post_comp.is_deactivated = FALSE)
+                   )
                  ORDER BY pc.created_at DESC
                  LIMIT 50`
                 : `SELECT 
@@ -746,11 +768,17 @@ exports.getActivityLogs = async (req, res) => {
                     pc.post_id AS "postId",
                     COALESCE(post_comp.name, post_author.full_name) AS "postAuthor",
                     CASE WHEN p.author_org_id IS NOT NULL THEN post_comp.logo_url ELSE post_author.avatar_url END AS "postAuthorAvatar",
-                    COALESCE(post_comp.slogan, post_author.headline, 'Member') AS "postAuthorRole",
+                    CASE WHEN p.author_org_id IS NOT NULL THEN COALESCE(post_comp.headline, '') ELSE COALESCE(post_author.headline, '') END AS "postAuthorRole",
+                    (p.author_org_id IS NOT NULL) AS "isPostCompany",
+                    (p.author_org_id IS NOT NULL) AS "isCompanyPost",
+                    (p.author_org_id IS NOT NULL) AS "isCompany",
+                    p.author_org_id,
                     CASE WHEN p.post_type = 'poll' THEN COALESCE(NULLIF(p.title, ''), p.content) ELSE p.content END AS "postTitle",
                     COALESCE(commenter_comp.name, commenter.full_name) AS commenter,
                     CASE WHEN pc.author_org_id IS NOT NULL THEN commenter_comp.logo_url ELSE commenter.avatar_url END AS "commenterAvatar",
-                    COALESCE(commenter_comp.slogan, commenter.headline, 'Member') AS "commenterRole",
+                    CASE WHEN pc.author_org_id IS NOT NULL THEN COALESCE(commenter_comp.headline, '') ELSE COALESCE(commenter.headline, '') END AS "commenterRole",
+                    (pc.author_org_id IS NOT NULL) AS "isCommenterCompany",
+                    pc.author_org_id AS "commenterOrgId",
                     pc.content AS comment,
                     (SELECT COUNT(*) FROM active_comment_likes cl WHERE cl.comment_id = pc.comment_id) AS likes,
                     (SELECT COUNT(*) FROM active_post_comments sub_c WHERE sub_c.parent_id = pc.comment_id) AS replies,
@@ -762,12 +790,18 @@ exports.getActivityLogs = async (req, res) => {
                     (p.post_id IS NULL) AS "isDeleted",
                     (p.post_id IS NULL) AS is_deleted
                  FROM active_post_comments pc
-                 LEFT JOIN posts p ON pc.post_id = p.post_id
-                 LEFT JOIN active_users post_author ON p.author_id = post_author.user_id
+                 JOIN posts p ON pc.post_id = p.post_id
+                 LEFT JOIN users post_author ON p.author_id = post_author.user_id
                  LEFT JOIN organizations post_comp ON p.author_org_id = post_comp.org_id
-                 LEFT JOIN active_users commenter ON pc.author_id = commenter.user_id
+                 LEFT JOIN users commenter ON pc.author_id = commenter.user_id
                  LEFT JOIN organizations commenter_comp ON pc.author_org_id = commenter_comp.org_id
                  WHERE pc.author_id = $1 AND pc.author_org_id IS NULL
+                   AND p.is_active = true AND (p.is_removed IS FALSE OR p.is_removed IS NULL)
+                   AND (
+                       (p.author_org_id IS NULL AND post_author.user_id IS NOT NULL AND (post_author.is_deactivated IS FALSE OR post_author.is_deactivated IS NULL) AND (post_author.is_deleted IS NULL OR post_author.is_deleted = FALSE))
+                       OR
+                       (p.author_org_id IS NOT NULL AND post_comp.org_id IS NOT NULL AND post_comp.is_deleted = FALSE AND (post_comp.deletion_execute_at IS NULL OR post_comp.deletion_execute_at > NOW()) AND post_comp.is_deactivated = FALSE)
+                   )
                  ORDER BY pc.created_at DESC
                  LIMIT 50`;
 
@@ -781,7 +815,10 @@ exports.getActivityLogs = async (req, res) => {
                     p.post_id AS "postId",
                     COALESCE(o.name, u.full_name) AS user,
                     CASE WHEN p.author_org_id IS NOT NULL THEN o.logo_url ELSE u.avatar_url END AS "avatarUrl",
-                    COALESCE(o.slogan, u.headline, 'Member') AS role,
+                    CASE WHEN p.author_org_id IS NOT NULL THEN COALESCE(o.headline, '') ELSE COALESCE(u.headline, '') END AS role,
+                    (p.author_org_id IS NOT NULL) AS "isCompanyPost",
+                    (p.author_org_id IS NOT NULL) AS "isCompany",
+                    p.author_org_id,
                     CASE WHEN p.post_type IS NOT NULL THEN p.post_type::text ELSE 'text' END AS type,
                     p.content AS content,
                     CASE WHEN p.post_type = 'poll' THEN COALESCE(NULLIF(p.title, ''), p.content) ELSE p.title END AS "postTitle",
@@ -792,10 +829,26 @@ exports.getActivityLogs = async (req, res) => {
                     (p.post_id IS NULL) AS is_deleted
                  FROM posts p
                  LEFT JOIN post_tags pt ON pt.post_id = p.post_id AND pt.tagged_user_id = $1::uuid AND pt.is_active_tag = true
-                 LEFT JOIN active_users u ON p.author_id = u.user_id
+                 LEFT JOIN users u ON p.author_id = u.user_id
                  LEFT JOIN organizations o ON p.author_org_id = o.org_id
-                 WHERE (pt.tag_id IS NOT NULL OR p.content ~ ('@\\[[^\\]]+\\]\\(' || $1::text || '\\)'))
+                 WHERE (
+                     pt.tag_id IS NOT NULL
+                     OR (
+                         p.content ~ ('@\\[[^\\]]+\\]\\(' || $1::text || '\\)')
+                         AND NOT EXISTS (
+                             SELECT 1 FROM post_tags pt_inactive
+                             WHERE pt_inactive.post_id = p.post_id
+                               AND pt_inactive.tagged_user_id = $1::uuid
+                               AND pt_inactive.is_active_tag = false
+                         )
+                     )
+                 )
                    AND p.is_active = true AND (p.is_removed IS FALSE OR p.is_removed IS NULL)
+                   AND (
+                       (p.author_org_id IS NULL AND u.user_id IS NOT NULL AND (u.is_deactivated IS FALSE OR u.is_deactivated IS NULL) AND (u.is_deleted IS NULL OR u.is_deleted = FALSE))
+                       OR
+                       (p.author_org_id IS NOT NULL AND o.org_id IS NOT NULL AND o.is_deleted = FALSE AND (o.deletion_execute_at IS NULL OR o.deletion_execute_at > NOW()) AND o.is_deactivated = FALSE)
+                   )
                  ORDER BY COALESCE(pt.updated_at, p.updated_at) DESC
                  LIMIT 50`
                 : `SELECT 
@@ -803,7 +856,10 @@ exports.getActivityLogs = async (req, res) => {
                     p.post_id AS "postId",
                     COALESCE(o.name, u.full_name) AS user,
                     CASE WHEN p.author_org_id IS NOT NULL THEN o.logo_url ELSE u.avatar_url END AS "avatarUrl",
-                    COALESCE(o.slogan, u.headline, 'Member') AS role,
+                    CASE WHEN p.author_org_id IS NOT NULL THEN COALESCE(o.headline, '') ELSE COALESCE(u.headline, '') END AS role,
+                    (p.author_org_id IS NOT NULL) AS "isCompanyPost",
+                    (p.author_org_id IS NOT NULL) AS "isCompany",
+                    p.author_org_id,
                     CASE WHEN p.post_type IS NOT NULL THEN p.post_type::text ELSE 'text' END AS type,
                     p.content AS content,
                     CASE WHEN p.post_type = 'poll' THEN COALESCE(NULLIF(p.title, ''), p.content) ELSE p.title END AS "postTitle",
@@ -813,11 +869,27 @@ exports.getActivityLogs = async (req, res) => {
                     (p.post_id IS NULL) AS "isDeleted",
                     (p.post_id IS NULL) AS is_deleted
                  FROM posts p
-                 LEFT JOIN post_tags pt ON pt.post_id = p.post_id AND pt.tagged_user_id = $1 AND pt.is_active_tag = true
-                 LEFT JOIN active_users u ON p.author_id = u.user_id
+                 LEFT JOIN post_tags pt ON pt.post_id = p.post_id AND pt.tagged_user_id = $1::uuid AND pt.is_active_tag = true
+                 LEFT JOIN users u ON p.author_id = u.user_id
                  LEFT JOIN organizations o ON p.author_org_id = o.org_id
-                 WHERE (pt.tag_id IS NOT NULL OR p.content ~ ('@\\[[^\\]]+\\]\\(' || $1::text || '\\)'))
+                 WHERE (
+                     pt.tag_id IS NOT NULL
+                     OR (
+                         p.content ~ ('@\\[[^\\]]+\\]\\(' || $1::text || '\\)')
+                         AND NOT EXISTS (
+                             SELECT 1 FROM post_tags pt_inactive
+                             WHERE pt_inactive.post_id = p.post_id
+                               AND pt_inactive.tagged_user_id = $1::uuid
+                               AND pt_inactive.is_active_tag = false
+                         )
+                     )
+                 )
                    AND p.is_active = true AND (p.is_removed IS FALSE OR p.is_removed IS NULL)
+                   AND (
+                       (p.author_org_id IS NULL AND u.user_id IS NOT NULL AND (u.is_deactivated IS FALSE OR u.is_deactivated IS NULL) AND (u.is_deleted IS NULL OR u.is_deleted = FALSE))
+                       OR
+                       (p.author_org_id IS NOT NULL AND o.org_id IS NOT NULL AND o.is_deleted = FALSE AND (o.deletion_execute_at IS NULL OR o.deletion_execute_at > NOW()) AND o.is_deactivated = FALSE)
+                   )
                  ORDER BY COALESCE(pt.updated_at, p.updated_at) DESC
                  LIMIT 50`;
 
@@ -831,7 +903,10 @@ exports.getActivityLogs = async (req, res) => {
                     pl.post_id AS id,
                     COALESCE(comp.name, u.full_name) AS user,
                     CASE WHEN p.author_org_id IS NOT NULL THEN comp.logo_url ELSE u.avatar_url END AS "avatarUrl",
-                    COALESCE(comp.slogan, u.headline, 'Member') AS role,
+                    CASE WHEN p.author_org_id IS NOT NULL THEN COALESCE(comp.headline, '') ELSE COALESCE(u.headline, '') END AS role,
+                    (p.author_org_id IS NOT NULL) AS "isCompanyPost",
+                    (p.author_org_id IS NOT NULL) AS "isCompany",
+                    p.author_org_id,
                     CASE WHEN p.post_type IS NOT NULL THEN p.post_type::text ELSE 'text' END AS type,
                     p.content AS content,
                     CASE WHEN p.post_type = 'poll' THEN COALESCE(NULLIF(p.title, ''), p.content) ELSE p.title END AS "postTitle",
@@ -846,16 +921,25 @@ exports.getActivityLogs = async (req, res) => {
                      WHERE org_id = $1::uuid
                      GROUP BY post_id
                  ) pl
-                 LEFT JOIN posts p ON pl.post_id = p.post_id
-                 LEFT JOIN active_users u ON p.author_id = u.user_id
+                 JOIN posts p ON pl.post_id = p.post_id
+                 LEFT JOIN users u ON p.author_id = u.user_id
                  LEFT JOIN organizations comp ON p.author_org_id = comp.org_id
+                 WHERE p.is_active = true AND (p.is_removed IS FALSE OR p.is_removed IS NULL)
+                   AND (
+                       (p.author_org_id IS NULL AND u.user_id IS NOT NULL AND (u.is_deactivated IS FALSE OR u.is_deactivated IS NULL) AND (u.is_deleted IS NULL OR u.is_deleted = FALSE))
+                       OR
+                       (p.author_org_id IS NOT NULL AND comp.org_id IS NOT NULL AND comp.is_deleted = FALSE AND (comp.deletion_execute_at IS NULL OR comp.deletion_execute_at > NOW()) AND comp.is_deactivated = FALSE)
+                   )
                  ORDER BY pl.created_at DESC
                  LIMIT 50`
                 : `SELECT 
                     pl.post_id AS id,
                     COALESCE(comp.name, u.full_name) AS user,
                     CASE WHEN p.author_org_id IS NOT NULL THEN comp.logo_url ELSE u.avatar_url END AS "avatarUrl",
-                    COALESCE(comp.slogan, u.headline, 'Member') AS role,
+                    CASE WHEN p.author_org_id IS NOT NULL THEN COALESCE(comp.headline, '') ELSE COALESCE(u.headline, '') END AS role,
+                    (p.author_org_id IS NOT NULL) AS "isCompanyPost",
+                    (p.author_org_id IS NOT NULL) AS "isCompany",
+                    p.author_org_id,
                     CASE WHEN p.post_type IS NOT NULL THEN p.post_type::text ELSE 'text' END AS type,
                     p.content AS content,
                     CASE WHEN p.post_type = 'poll' THEN COALESCE(NULLIF(p.title, ''), p.content) ELSE p.title END AS "postTitle",
@@ -870,9 +954,15 @@ exports.getActivityLogs = async (req, res) => {
                      WHERE user_id = $1 AND org_id IS NULL
                      GROUP BY post_id
                  ) pl
-                 LEFT JOIN posts p ON pl.post_id = p.post_id
-                 LEFT JOIN active_users u ON p.author_id = u.user_id
+                 JOIN posts p ON pl.post_id = p.post_id
+                 LEFT JOIN users u ON p.author_id = u.user_id
                  LEFT JOIN organizations comp ON p.author_org_id = comp.org_id
+                 WHERE p.is_active = true AND (p.is_removed IS FALSE OR p.is_removed IS NULL)
+                   AND (
+                       (p.author_org_id IS NULL AND u.user_id IS NOT NULL AND (u.is_deactivated IS FALSE OR u.is_deactivated IS NULL) AND (u.is_deleted IS NULL OR u.is_deleted = FALSE))
+                       OR
+                       (p.author_org_id IS NOT NULL AND comp.org_id IS NOT NULL AND comp.is_deleted = FALSE AND (comp.deletion_execute_at IS NULL OR comp.deletion_execute_at > NOW()) AND comp.is_deactivated = FALSE)
+                   )
                  ORDER BY pl.created_at DESC
                  LIMIT 50`;
 
@@ -891,8 +981,20 @@ exports.getActivityLogs = async (req, res) => {
  */
 exports.removeActivity = async (req, res) => {
     try {
-        const actorOrgId = req.actor?.type === "ORGANIZATION" ? (req.actor.orgId || req.headers["x-actor-id"]) : null;
-        const isOrgActor = !!actorOrgId;
+        const explicitActorType = req.headers["x-actor-type"];
+        const explicitActorId = req.headers["x-actor-id"] || req.query.companyId || req.body?.companyId || null;
+        let isOrgActor = (explicitActorType === "ORGANIZATION" || Boolean(req.query.companyId) || Boolean(req.body?.companyId)) && !!explicitActorId;
+        let actorOrgId = isOrgActor ? explicitActorId : null;
+
+        if (isOrgActor && actorOrgId) {
+            const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(actorOrgId);
+            if (!isUuid) {
+                const orgRes = await pool.query('SELECT org_id FROM organizations WHERE slug = $1 LIMIT 1', [actorOrgId]);
+                if (orgRes.rows.length > 0) {
+                    actorOrgId = orgRes.rows[0].org_id;
+                }
+            }
+        }
         const targetId = isOrgActor ? actorOrgId : req.user.sub;
         const { type, id } = req.params;
 
@@ -1216,7 +1318,7 @@ exports.getBlockedUsers = async (req, res) => {
                         COALESCE(u.full_name, u.account_name, o.name, 'Blocked Account') AS name,
                         COALESCE(u.avatar_url, o.logo_url, '') AS avatar
                  FROM organization_blocked_accounts oba
-                 LEFT JOIN active_users u ON oba.blocked_type = 'user' AND oba.blocked_id = u.user_id AND (u.is_deactivated IS FALSE OR u.is_deactivated IS NULL)
+                 LEFT JOIN users u ON oba.blocked_type = 'user' AND oba.blocked_id = u.user_id AND (u.is_deactivated IS FALSE OR u.is_deactivated IS NULL)
                  LEFT JOIN active_organizations o ON oba.blocked_type = 'company' AND oba.blocked_id = o.org_id
                  WHERE oba.org_id = $1
                    AND (u.user_id IS NOT NULL OR o.org_id IS NOT NULL)
@@ -1358,7 +1460,7 @@ exports.unblockUser = async (req, res) => {
                 actorUserId: userId,
             });
 
-            return res.status(200).json({ success: true });
+            return res.status(200).json({ success: true, message: "Account unblocked for company" });
         }
 
         // Personal User Context Branching
@@ -1375,7 +1477,7 @@ exports.unblockUser = async (req, res) => {
             actorUserId: userId,
         });
 
-        return res.status(200).json({ success: true });
+        return res.status(200).json({ success: true, message: "User unblocked successfully" });
     } catch (error) {
         console.error("Unblock user error:", error);
         return res.status(500).json({ success: false, message: "Failed to unblock account" });
@@ -1523,7 +1625,7 @@ exports.getUserReports = async (req, res) => {
                     ELSE 'Reported content'
                 END AS title,
                 COALESCE(u.account_name, po.name, pu.account_name, cu.account_name) AS reported_username,
-                CASE WHEN p.post_type = 'article' OR pc_cat.name = 'Article' OR p.is_community_article = TRUE THEN 'article' WHEN p.post_type = 'poll' THEN 'poll' ELSE p.post_type END AS post_type,
+                CASE WHEN p.post_type = 'article' OR pc_cat.name = 'Article' OR p.is_community_article = TRUE THEN 'article' WHEN p.post_type = 'poll' THEN 'poll' ELSE p.post_type::text END AS post_type,
                 (SELECT pm.url FROM post_media pm WHERE pm.post_id = p.post_id LIMIT 1) AS media_url,
                 (SELECT pm.media_type FROM post_media pm WHERE pm.post_id = p.post_id LIMIT 1) AS media_type
             FROM reports r
@@ -1542,26 +1644,35 @@ exports.getUserReports = async (req, res) => {
             [...queryParams, limit, offset]
         );
 
-        const reports = result.rows.map((row) => ({
-            id:               row.id,
-            targetType:       row.target_type,
-            targetId:         row.target_id,
-            reportedUsername: row.reported_username || null,
-            type:             row.target_type === 'USER'
-                ? 'Profile'
-                : (row.target_type
-                    ? row.target_type.charAt(0).toUpperCase() + row.target_type.slice(1).toLowerCase()
-                    : 'Profile'),
-            date:        formatDate(row.created_at),
-            reason:      row.reason_label,
-            title:       row.title,
-            status:      row.status || 'pending',
-            statusLabel: REPORT_STATUS_LABELS[row.status] || 'Submitted',
-            postType:    row.post_type || null,
-            mediaType:   (row.post_type || row.media_type || '').toLowerCase() || null,
-            imageUrl:    (row.media_type?.toLowerCase() === 'image' || (!row.media_type && row.media_url)) ? row.media_url : null,
-            videoUrl:    row.media_type?.toLowerCase() === 'video' ? row.media_url : null,
-        }));
+        const reports = result.rows.map((row) => {
+            const rawPostType = (row.post_type || '').toLowerCase();
+            const normalizedPostType = (row.target_type === 'POST' && (rawPostType === 'image' || rawPostType === 'video' || rawPostType === 'text'))
+                ? 'post'
+                : (row.post_type || null);
+
+            return {
+                id:               row.id,
+                targetType:       row.target_type,
+                targetId:         row.target_id,
+                reportedUsername: row.reported_username || null,
+                type:             row.target_type === 'USER'
+                    ? 'User profile'
+                    : (row.target_type === 'COMPANY'
+                        ? 'Company profile'
+                        : (row.target_type
+                            ? row.target_type.charAt(0).toUpperCase() + row.target_type.slice(1).toLowerCase()
+                            : 'User profile')),
+                date:        formatDate(row.created_at),
+                reason:      row.reason_label,
+                title:       row.title,
+                status:      row.status || 'pending',
+                statusLabel: REPORT_STATUS_LABELS[row.status] || 'Submitted',
+                postType:    normalizedPostType,
+                mediaType:   (row.media_type || rawPostType || '').toLowerCase() || null,
+                imageUrl:    (row.media_type?.toLowerCase() === 'image' || (!row.media_type && row.media_url)) ? row.media_url : null,
+                videoUrl:    row.media_type?.toLowerCase() === 'video' ? row.media_url : null,
+            };
+        });
 
         return res.status(200).json({
             reports,
@@ -1604,7 +1715,7 @@ exports.getUserReportById = async (req, res) => {
                     ELSE 'Reported content'
                 END AS title,
                 COALESCE(u.account_name, po.name, pu.account_name, cu.account_name) AS reported_username,
-                CASE WHEN p.post_type = 'article' OR pc_cat.name = 'Article' OR p.is_community_article = TRUE THEN 'article' WHEN p.post_type = 'poll' THEN 'poll' ELSE p.post_type END AS post_type,
+                CASE WHEN p.post_type = 'article' OR pc_cat.name = 'Article' OR p.is_community_article = TRUE THEN 'article' WHEN p.post_type = 'poll' THEN 'poll' ELSE p.post_type::text END AS post_type,
                 (SELECT pm.url FROM post_media pm WHERE pm.post_id = p.post_id LIMIT 1) AS media_url,
                 (SELECT pm.media_type FROM post_media pm WHERE pm.post_id = p.post_id LIMIT 1) AS media_type
             FROM reports r
@@ -1634,23 +1745,30 @@ exports.getUserReportById = async (req, res) => {
         );
 
         const row = result.rows[0];
+        const rawPostType = (row.post_type || '').toLowerCase();
+        const normalizedPostType = (row.target_type === 'POST' && (rawPostType === 'image' || rawPostType === 'video' || rawPostType === 'text'))
+            ? 'post'
+            : (row.post_type || null);
+
         return res.status(200).json({
             id:               row.id,
             targetType:       row.target_type,
             targetId:         row.target_id,
             reportedUsername: row.reported_username || null,
             type:             row.target_type === 'USER'
-                ? 'Profile'
-                : (row.target_type
-                    ? row.target_type.charAt(0).toUpperCase() + row.target_type.slice(1).toLowerCase()
-                    : 'Profile'),
+                ? 'User profile'
+                : (row.target_type === 'COMPANY'
+                    ? 'Company profile'
+                    : (row.target_type
+                        ? row.target_type.charAt(0).toUpperCase() + row.target_type.slice(1).toLowerCase()
+                        : 'User profile')),
             date:        formatDate(row.created_at),
             reason:      row.reason_label,
             title:       row.title,
             status:      row.status || 'pending',
             statusLabel: REPORT_STATUS_LABELS[row.status] || 'Submitted',
-            postType:    row.post_type || null,
-            mediaType:   (row.post_type || row.media_type || '').toLowerCase() || null,
+            postType:    normalizedPostType,
+            mediaType:   (row.media_type || rawPostType || '').toLowerCase() || null,
             imageUrl:    (row.media_type?.toLowerCase() === 'image' || (!row.media_type && row.media_url)) ? row.media_url : null,
             videoUrl:    row.media_type?.toLowerCase() === 'video' ? row.media_url : null,
             reviewNotes: notesRes.rows.map((n) => ({

@@ -49,12 +49,11 @@ exports.getNotificationPreferences = async (req, res) => {
         // Check if request is acting as Organization actor
         if (req.actor && req.actor.type === "ORGANIZATION") {
             const orgId = req.actor.orgId;
-            const userId = req.user.sub;
             const result = await pool.query(
                 `SELECT events_enabled, jobs_enabled, posts_enabled,
                         messages_enabled, messages_chat_enabled, messages_jobs_enabled, email_enabled, push_enabled
-                 FROM organization_notification_preferences WHERE user_id = $1 AND org_id = $2`,
-                [userId, orgId]
+                 FROM organization_notification_settings WHERE org_id = $1`,
+                [orgId]
             );
 
             if (result.rowCount === 0) {
@@ -74,11 +73,13 @@ exports.getNotificationPreferences = async (req, res) => {
             }
 
             const row = result.rows[0];
-            // Fix Bug 3: all_notifications must reflect ALL sub-preferences, not just posts+jobs+events
+            // all_notifications reflects all primary and sub-preferences
             const allEnabled =
                 (row.posts_enabled ?? true) &&
                 (row.jobs_enabled ?? true) &&
                 (row.messages_enabled ?? true) &&
+                (row.messages_chat_enabled ?? true) &&
+                (row.messages_jobs_enabled ?? true) &&
                 (row.email_enabled ?? true) &&
                 (row.push_enabled ?? true);
 
@@ -144,56 +145,214 @@ exports.updateNotificationPreferences = async (req, res) => {
                 return res.status(403).json({ success: false, message: "You do not have permission to manage organization notification settings" });
             }
 
-            const {
-                all_notifications = true,
-                post_notifications = true,
-                job_alerts = true,
-                message_notifications = true,
-                messages_chat_enabled = true,
-                messages_jobs_enabled = true,
-                email_notifications = true,
-                push_notifications = true,
-            } = req.body;
+            const body = req.body || {};
+            const masterToggle = body.all_notifications !== undefined ? body.all_notifications : null;
 
-            // Fix ON CONFLICT error (42P10): Table has primary key (user_id, org_id)
-            await pool.query(
-                `INSERT INTO organization_notification_preferences
-                    (user_id, org_id, events_enabled, jobs_enabled, posts_enabled, messages_enabled, messages_chat_enabled, messages_jobs_enabled, email_enabled, push_enabled, updated_at)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())
-                 ON CONFLICT (user_id, org_id) DO UPDATE SET
-                    events_enabled = EXCLUDED.events_enabled,
-                    jobs_enabled = EXCLUDED.jobs_enabled,
-                    posts_enabled = EXCLUDED.posts_enabled,
-                    messages_enabled = EXCLUDED.messages_enabled,
-                    messages_chat_enabled = EXCLUDED.messages_chat_enabled,
-                    messages_jobs_enabled = EXCLUDED.messages_jobs_enabled,
-                    email_enabled = EXCLUDED.email_enabled,
-                    push_enabled = EXCLUDED.push_enabled,
-                    updated_at = NOW()`,
-                [userId, orgId, all_notifications, job_alerts, post_notifications, message_notifications, messages_chat_enabled, messages_jobs_enabled, email_notifications, push_notifications]
+            // If masterToggle is set, default unset children to masterToggle; otherwise keep null for COALESCE preservation
+            const post_notifications = body.post_notifications !== undefined 
+                ? body.post_notifications 
+                : (masterToggle !== null ? masterToggle : null);
+            const job_alerts = body.job_alerts !== undefined 
+                ? body.job_alerts 
+                : (masterToggle !== null ? masterToggle : null);
+            const message_notifications = body.message_notifications !== undefined 
+                ? body.message_notifications 
+                : (masterToggle !== null ? masterToggle : null);
+            const messages_chat_enabled = body.messages_chat_enabled !== undefined 
+                ? body.messages_chat_enabled 
+                : (masterToggle !== null ? masterToggle : null);
+            const messages_jobs_enabled = body.messages_jobs_enabled !== undefined 
+                ? body.messages_jobs_enabled 
+                : (masterToggle !== null ? masterToggle : null);
+            const email_notifications = body.email_notifications !== undefined 
+                ? body.email_notifications 
+                : (masterToggle !== null ? masterToggle : null);
+            const push_notifications = body.push_notifications !== undefined 
+                ? body.push_notifications 
+                : (masterToggle !== null ? masterToggle : null);
+
+            // Fetch previous settings to detect which notification setting changed
+            const prevResult = await pool.query(
+                `SELECT * FROM organization_notification_settings WHERE org_id = $1`,
+                [orgId]
             );
+            const prevRow = prevResult.rows[0] || {};
+            const prevPosts = prevRow.posts_enabled ?? true;
+            const prevJobs = prevRow.jobs_enabled ?? true;
+            const prevMessages = prevRow.messages_enabled ?? true;
+            const prevChat = prevRow.messages_chat_enabled ?? true;
+            const prevMsgJobs = prevRow.messages_jobs_enabled ?? true;
+            const prevEmail = prevRow.email_enabled ?? true;
+            const prevAll = prevPosts && prevJobs && prevMessages && prevChat && prevMsgJobs && prevEmail;
+
+            // Safe upsert using COALESCE so partial updates do not overwrite omitted fields with defaults
+            // org_id is PRIMARY KEY; user_id stores the user who made the update
+            const result = await pool.query(
+                `INSERT INTO organization_notification_settings
+                    (org_id, user_id, events_enabled, jobs_enabled, posts_enabled, messages_enabled, messages_chat_enabled, messages_jobs_enabled, email_enabled, push_enabled, updated_at)
+                 VALUES ($1, $2, COALESCE($3, true), COALESCE($4, true), COALESCE($5, true), COALESCE($6, true), COALESCE($7, true), COALESCE($8, true), COALESCE($9, true), COALESCE($10, true), NOW())
+                 ON CONFLICT (org_id) DO UPDATE SET
+                    user_id = $2,
+                    events_enabled = COALESCE($3, organization_notification_settings.events_enabled),
+                    jobs_enabled = COALESCE($4, organization_notification_settings.jobs_enabled),
+                    posts_enabled = COALESCE($5, organization_notification_settings.posts_enabled),
+                    messages_enabled = COALESCE($6, organization_notification_settings.messages_enabled),
+                    messages_chat_enabled = COALESCE($7, organization_notification_settings.messages_chat_enabled),
+                    messages_jobs_enabled = COALESCE($8, organization_notification_settings.messages_jobs_enabled),
+                    email_enabled = COALESCE($9, organization_notification_settings.email_enabled),
+                    push_enabled = COALESCE($10, organization_notification_settings.push_enabled),
+                    updated_at = NOW()
+                 RETURNING *`,
+                [orgId, userId, masterToggle, job_alerts, post_notifications, message_notifications, messages_chat_enabled, messages_jobs_enabled, email_notifications, push_notifications]
+            );
+
+            const row = result.rows[0];
+            const allEnabled =
+                (row.posts_enabled ?? true) &&
+                (row.jobs_enabled ?? true) &&
+                (row.messages_enabled ?? true) &&
+                (row.messages_chat_enabled ?? true) &&
+                (row.messages_jobs_enabled ?? true) &&
+                (row.email_enabled ?? true) &&
+                (row.push_enabled ?? true);
+
+            const updatedPreferences = {
+                all_notifications: allEnabled,
+                post_notifications: row.posts_enabled ?? true,
+                job_alerts: row.jobs_enabled ?? true,
+                message_notifications: row.messages_enabled ?? true,
+                messages_chat_enabled: row.messages_chat_enabled ?? true,
+                messages_jobs_enabled: row.messages_jobs_enabled ?? true,
+                email_notifications: row.email_enabled ?? true,
+                push_notifications: row.push_enabled ?? true,
+            };
+
+            // Detect which notification setting was toggled and whether it was turned on or off
+            let changedItem = null;
+
+            // 1. Check if the master "All notifications" toggle was clicked
+            if (body.all_notifications !== undefined && body.all_notifications !== prevAll) {
+                const targetState = Boolean(body.all_notifications);
+                const allSynced = (row.posts_enabled === targetState) &&
+                                  (row.jobs_enabled === targetState) &&
+                                  (row.messages_enabled === targetState) &&
+                                  (row.email_enabled === targetState);
+                if (allSynced) {
+                    changedItem = {
+                        key: 'all_notifications',
+                        label: 'all notifications',
+                        state: targetState ? 'on' : 'off',
+                        oldValue: prevAll,
+                        newValue: targetState
+                    };
+                }
+            }
+
+            // 2. Check individual settings if master toggle wasn't the sole trigger
+            if (!changedItem) {
+                if (body.post_notifications !== undefined && body.post_notifications !== prevPosts) {
+                    changedItem = {
+                        key: 'post_notifications',
+                        label: 'post notifications',
+                        state: body.post_notifications ? 'on' : 'off',
+                        oldValue: prevPosts,
+                        newValue: Boolean(body.post_notifications)
+                    };
+                } else if (body.job_alerts !== undefined && body.job_alerts !== prevJobs) {
+                    changedItem = {
+                        key: 'job_alerts',
+                        label: 'job alerts',
+                        state: body.job_alerts ? 'on' : 'off',
+                        oldValue: prevJobs,
+                        newValue: Boolean(body.job_alerts)
+                    };
+                } else if (body.messages_chat_enabled !== undefined && body.messages_chat_enabled !== prevChat) {
+                    changedItem = {
+                        key: 'messages_chat_enabled',
+                        label: 'chat message notifications',
+                        state: body.messages_chat_enabled ? 'on' : 'off',
+                        oldValue: prevChat,
+                        newValue: Boolean(body.messages_chat_enabled)
+                    };
+                } else if (body.messages_jobs_enabled !== undefined && body.messages_jobs_enabled !== prevMsgJobs) {
+                    changedItem = {
+                        key: 'messages_jobs_enabled',
+                        label: 'job message notifications',
+                        state: body.messages_jobs_enabled ? 'on' : 'off',
+                        oldValue: prevMsgJobs,
+                        newValue: Boolean(body.messages_jobs_enabled)
+                    };
+                } else if (body.message_notifications !== undefined && body.message_notifications !== prevMessages) {
+                    changedItem = {
+                        key: 'message_notifications',
+                        label: 'message notifications',
+                        state: body.message_notifications ? 'on' : 'off',
+                        oldValue: prevMessages,
+                        newValue: Boolean(body.message_notifications)
+                    };
+                } else if (body.email_notifications !== undefined && body.email_notifications !== prevEmail) {
+                    changedItem = {
+                        key: 'email_notifications',
+                        label: 'email notifications',
+                        state: body.email_notifications ? 'on' : 'off',
+                        oldValue: prevEmail,
+                        newValue: Boolean(body.email_notifications)
+                    };
+                } else if (body.all_notifications !== undefined && body.all_notifications !== prevAll) {
+                    changedItem = {
+                        key: 'all_notifications',
+                        label: 'all notifications',
+                        state: body.all_notifications ? 'on' : 'off',
+                        oldValue: prevAll,
+                        newValue: Boolean(body.all_notifications)
+                    };
+                }
+            }
+
+            // Fallback default
+            if (!changedItem) {
+                changedItem = {
+                    key: 'notifications',
+                    label: 'company notification preferences',
+                    state: allEnabled ? 'on' : 'off',
+                    oldValue: prevAll,
+                    newValue: allEnabled
+                };
+            }
 
             // Log Audit Entry
             await logAudit(pool, {
                 entityId: orgId,
                 entityType: 'ORGANIZATION',
                 actorId: userId,
+                actorRole: req.actor?.roleName || null,
                 action: 'ORGANIZATION_NOTIFICATIONS_UPDATED',
-                metadata: { all_notifications, post_notifications, job_alerts, message_notifications, messages_chat_enabled, messages_jobs_enabled, email_notifications, push_notifications }
+                metadata: {
+                    settingKey: changedItem.key,
+                    settingLabel: changedItem.label,
+                    state: changedItem.state,
+                    oldValue: changedItem.oldValue,
+                    newValue: changedItem.newValue,
+                    preferences: updatedPreferences
+                }
             });
 
             // Emit Real-time Socket Event
             if (socketService.io) {
                 socketService.io.to(`org_${orgId}`).emit("ORGANIZATION_NOTIFICATIONS_UPDATED", {
                     orgId,
-                    preferences: { all_notifications, post_notifications, job_alerts, message_notifications, messages_chat_enabled, messages_jobs_enabled, email_notifications, push_notifications }
+                    preferences: updatedPreferences
+                });
+                socketService.io.emit("company_notifications_updated", {
+                    orgId,
+                    preferences: updatedPreferences
                 });
             }
 
             return res.status(200).json({
                 success: true,
                 message: "Organization notification preferences updated",
-                preferences: req.body,
+                preferences: updatedPreferences,
             });
         }
 

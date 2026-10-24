@@ -351,6 +351,7 @@ exports.getMyPosts = async (req, res) => {
                 SELECT 1 FROM blocks b 
                 WHERE (b.is_org_block = false AND sp.author_org_id IS NULL AND ((b.blocker_id = $${userParamIdx} AND b.blocked_id = sp.author_id) OR (b.blocker_id = sp.author_id AND b.blocked_id = $${userParamIdx})))
                    OR (b.is_org_block = true AND sp.author_org_id IS NOT NULL AND ((b.blocker_id = sp.author_org_id AND b.blocked_id = $${userParamIdx}) OR (b.blocker_id = $${userParamIdx} AND b.blocked_id = sp.author_org_id)))
+                   OR (b.is_org_block = false AND sp.author_org_id IS NOT NULL AND (b.blocker_id = $${userParamIdx} AND b.blocked_id = sp.author_org_id))
             )
         )
         `}
@@ -6145,7 +6146,7 @@ exports.removeMention = async (req, res) => {
     let actorScope;
 
     try {
-        actorScope = getContentActorScope(req, req.body?.companyId || null);
+        actorScope = getContentActorScope(req, req.body?.companyId || req.query?.companyId || req.headers["x-actor-id"] || null);
     } catch (err) {
         return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
     }

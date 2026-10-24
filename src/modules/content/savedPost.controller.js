@@ -103,14 +103,14 @@ exports.getFolders = async (req, res) => {
 
         if (isOrgActor) {
             queryText = `SELECT sf.*, 
-                    (SELECT COUNT(*) FROM saved_post sp WHERE sp.folder_id = sf.folder_id)::int AS post_count
+                    (SELECT COUNT(*) FROM saved_post sp JOIN posts p ON sp.post_id = p.post_id WHERE sp.folder_id = sf.folder_id AND p.is_active = true AND (p.is_removed IS FALSE OR p.is_removed IS NULL))::int AS post_count
              FROM saved_folders sf
              WHERE sf.org_id = $1::uuid
              ORDER BY sf.created_at DESC`;
             queryParams = [orgId];
         } else {
             queryText = `SELECT sf.*, 
-                    (SELECT COUNT(*) FROM saved_post sp WHERE sp.folder_id = sf.folder_id)::int AS post_count
+                    (SELECT COUNT(*) FROM saved_post sp JOIN posts p ON sp.post_id = p.post_id WHERE sp.folder_id = sf.folder_id AND p.is_active = true AND (p.is_removed IS FALSE OR p.is_removed IS NULL))::int AS post_count
              FROM saved_folders sf
              WHERE sf.user_id = $1 AND sf.org_id IS NULL
              ORDER BY sf.created_at DESC`;
@@ -314,10 +314,10 @@ exports.getSavedPosts = async (req, res) => {
 
         if (isOrgActor) {
             queryParams.push(orgId);
-            whereClause = `sp.org_id = $1::uuid`;
+            whereClause = `sp.org_id = $1::uuid AND p.is_active = true AND (p.is_removed IS FALSE OR p.is_removed IS NULL)`;
         } else {
             queryParams.push(userId);
-            whereClause = `sp.user_id = $1 AND sp.org_id IS NULL`;
+            whereClause = `sp.user_id = $1 AND sp.org_id IS NULL AND p.is_active = true AND (p.is_removed IS FALSE OR p.is_removed IS NULL)`;
         }
 
         let queryText = `SELECT 

@@ -354,7 +354,7 @@ exports.getAccountSettings = async (req, res) => {
     const orgId = req.params.orgId || req.params.companyId;
     try {
         const result = await pool.query(
-            `SELECT o.org_id, o.email, o.phone, o.is_deactivated, o.deactivated_at,
+            `SELECT o.org_id, o.email, o.phone, o.country_code, o.is_deactivated, o.deactivated_at,
                     o.entity_type, o.name, o.created_by, u.full_name AS owner_name
              FROM organizations o
              LEFT JOIN users u ON o.created_by = u.user_id
@@ -371,6 +371,7 @@ exports.getAccountSettings = async (req, res) => {
             id: org.org_id,
             email: org.email || "",
             phone: org.phone || "",
+            countryCode: org.country_code || "",
             isDeactivated: org.is_deactivated || false,
             deactivatedAt: org.deactivated_at || null,
             entityType: org.entity_type || "COMPANY",
@@ -448,29 +449,33 @@ exports.sendDeactivateOrgOTP = async (req, res) => {
         const expiresAt = new Date(Date.now() + OTP_EXPIRY_MINUTES * 60000);
 
         await client.query(
-            `INSERT INTO email_otps (email, otp_hash, expires_at, attempts, created_at, request_count, purpose)
-             VALUES ($1, $2, $3, 0, NOW(), 1, 'org_deactivation')
+            `INSERT INTO email_otps (email, otp_hash, expires_at, attempts, created_at, request_count, purpose, verified_at, session_expires_at)
+             VALUES ($1, $2, $3, 0, NOW(), 1, 'org_deactivation', NULL, NULL)
              ON CONFLICT (email, purpose)
              DO UPDATE SET
                  otp_hash = EXCLUDED.otp_hash,
                  expires_at = EXCLUDED.expires_at,
                  attempts = 0,
                  created_at = NOW(),
-                 request_count = email_otps.request_count + 1`,
+                 request_count = email_otps.request_count + 1,
+                 verified_at = NULL,
+                 session_expires_at = NULL`,
             [primaryEmail, otpHash, expiresAt]
         );
 
         if (recipients.length > 1) {
             await client.query(
-                `INSERT INTO email_otps (email, otp_hash, expires_at, attempts, created_at, request_count, purpose)
-                 VALUES ($1, $2, $3, 0, NOW(), 1, 'org_deactivation')
+                `INSERT INTO email_otps (email, otp_hash, expires_at, attempts, created_at, request_count, purpose, verified_at, session_expires_at)
+                 VALUES ($1, $2, $3, 0, NOW(), 1, 'org_deactivation', NULL, NULL)
                  ON CONFLICT (email, purpose)
                  DO UPDATE SET
                      otp_hash = EXCLUDED.otp_hash,
                      expires_at = EXCLUDED.expires_at,
                      attempts = 0,
                      created_at = NOW(),
-                     request_count = email_otps.request_count + 1`,
+                     request_count = email_otps.request_count + 1,
+                     verified_at = NULL,
+                     session_expires_at = NULL`,
                 [recipients[1], otpHash, expiresAt]
             );
         }
@@ -485,10 +490,11 @@ exports.sendDeactivateOrgOTP = async (req, res) => {
         console.log(`👉 VERIFICATION CODE (OTP): ${otp}`);
         console.log(`==================================================\n`);
 
+        const maskedDisplay = recipients.map(maskEmailHelper).join(", ");
         res.json({
             success: true,
             message: "Verification code sent successfully to your registered email address.",
-            email_masked: maskEmailHelper(primaryEmail),
+            email_masked: maskedDisplay,
             cooldown_seconds: 30
         });
     } catch (err) {
@@ -520,22 +526,29 @@ exports.validateDeactivateOrgOTP = async (req, res) => {
         const org = orgRes.rows[0];
 
         const ownerRes = await client.query("SELECT email FROM users WHERE user_id = $1", [org.created_by || userId]);
-        const primaryEmail = (org.email || ownerRes.rows[0]?.email || "").toLowerCase().trim();
+        const ownerEmail = ownerRes.rows[0]?.email;
+        const orgEmail = org.email;
 
-        const otpRes = await client.query("SELECT * FROM email_otps WHERE email = $1 AND purpose = 'org_deactivation'", [primaryEmail]);
-        if (otpRes.rowCount === 0) {
-            return res.status(400).json({ message: "No verification code was requested for this email." });
+        const recipientSet = new Set();
+        if (orgEmail && orgEmail.trim()) recipientSet.add(orgEmail.toLowerCase().trim());
+        if (ownerEmail && ownerEmail.trim()) recipientSet.add(ownerEmail.toLowerCase().trim());
+
+        const recipients = Array.from(recipientSet);
+        if (recipients.length === 0) {
+            return res.status(400).json({ message: "No registered email address found for this organization or owner" });
         }
 
-        const record = otpRes.rows[0];
-        if (new Date() > new Date(record.expires_at)) {
-            return res.status(400).json({ message: "Verification code has expired. Please request a new code." });
+        const { verifyOTP } = require("../auth/otp.service");
+        let otpResult = await verifyOTP(recipients[0], otp, false, "org_deactivation");
+        if (otpResult.error && otpResult.error.message.includes("No active OTP found") && recipients.length > 1) {
+            otpResult = await verifyOTP(recipients[1], otp, false, "org_deactivation");
         }
 
-        const bcrypt = require("bcrypt");
-        const isMatch = await bcrypt.compare(String(otp).trim(), record.otp_hash);
-        if (!isMatch) {
-            return res.status(400).json({ message: "Invalid verification code. Please check and try again." });
+        if (otpResult.error) {
+            const message = (otpResult.error.message === "Incorrect code" || otpResult.error.message === "Invalid verification code")
+                ? "Invalid verification code"
+                : otpResult.error.message;
+            return res.status(otpResult.error.status || 400).json({ message });
         }
 
         res.json({ success: true, message: "Verification code validated successfully" });
@@ -578,30 +591,37 @@ exports.deactivateOrganization = async (req, res) => {
         }
 
         const ownerRes = await client.query("SELECT email FROM users WHERE user_id = $1", [org.created_by || userId]);
-        const primaryEmail = (org.email || ownerRes.rows[0]?.email || "").toLowerCase().trim();
+        const ownerEmail = ownerRes.rows[0]?.email;
+        const orgEmail = org.email;
 
-        // Verify OTP
-        const otpRes = await client.query("SELECT * FROM email_otps WHERE email = $1 AND purpose = 'org_deactivation'", [primaryEmail]);
-        if (otpRes.rowCount === 0) {
+        const recipientSet = new Set();
+        if (orgEmail && orgEmail.trim()) recipientSet.add(orgEmail.toLowerCase().trim());
+        if (ownerEmail && ownerEmail.trim()) recipientSet.add(ownerEmail.toLowerCase().trim());
+
+        const recipients = Array.from(recipientSet);
+        if (recipients.length === 0) {
             await client.query("ROLLBACK");
-            return res.status(400).json({ message: "No verification code was requested for this organization." });
+            return res.status(400).json({ message: "No registered email address found for this organization or owner" });
         }
 
-        const record = otpRes.rows[0];
-        if (new Date() > new Date(record.expires_at)) {
-            await client.query("ROLLBACK");
-            return res.status(400).json({ message: "Verification code has expired. Please request a new code." });
+        // Verify OTP via otpService (consume = true)
+        const { verifyOTP } = require("../auth/otp.service");
+        let otpResult = await verifyOTP(recipients[0], otp, true, "org_deactivation");
+        if (otpResult.error && otpResult.error.message.includes("No active OTP found") && recipients.length > 1) {
+            otpResult = await verifyOTP(recipients[1], otp, true, "org_deactivation");
         }
 
-        const bcrypt = require("bcrypt");
-        const isMatch = await bcrypt.compare(String(otp).trim(), record.otp_hash);
-        if (!isMatch) {
+        if (otpResult.error) {
             await client.query("ROLLBACK");
-            return res.status(400).json({ message: "Invalid verification code. Please check and try again." });
+            const message = (otpResult.error.message === "Incorrect code" || otpResult.error.message === "Invalid verification code")
+                ? "Invalid verification code"
+                : otpResult.error.message;
+            return res.status(otpResult.error.status || 400).json({ message });
         }
 
-        // Delete OTP after successful verification
-        await client.query("DELETE FROM email_otps WHERE email = $1 AND purpose = 'org_deactivation'", [primaryEmail]);
+        if (recipients.length > 1) {
+            await pool.query(`DELETE FROM email_otps WHERE email = ANY($1) AND purpose = 'org_deactivation'`, [recipients]);
+        }
 
         await client.query(
             `UPDATE organizations SET is_deactivated = true, deactivated_at = NOW() WHERE org_id = $1`,
@@ -612,8 +632,13 @@ exports.deactivateOrganization = async (req, res) => {
             entityId: orgId,
             entityType: 'ORGANIZATION',
             actorId: userId,
+            actorRole: 'Owner',
             action: 'ORGANIZATION_DEACTIVATED',
-            metadata: {}
+            metadata: {
+                orgName: org.name,
+                role: 'Owner',
+                roleName: 'Owner'
+            }
         });
 
         await client.query("COMMIT");
@@ -708,29 +733,33 @@ exports.sendReactivateOrgOTP = async (req, res) => {
         const expiresAt = new Date(Date.now() + OTP_EXPIRY_MINUTES * 60000);
 
         await client.query(
-            `INSERT INTO email_otps (email, otp_hash, expires_at, attempts, created_at, request_count, purpose)
-             VALUES ($1, $2, $3, 0, NOW(), 1, 'org_reactivation')
+            `INSERT INTO email_otps (email, otp_hash, expires_at, attempts, created_at, request_count, purpose, verified_at, session_expires_at)
+             VALUES ($1, $2, $3, 0, NOW(), 1, 'org_reactivation', NULL, NULL)
              ON CONFLICT (email, purpose)
              DO UPDATE SET
                  otp_hash = EXCLUDED.otp_hash,
                  expires_at = EXCLUDED.expires_at,
                  attempts = 0,
                  created_at = NOW(),
-                 request_count = email_otps.request_count + 1`,
+                 request_count = email_otps.request_count + 1,
+                 verified_at = NULL,
+                 session_expires_at = NULL`,
             [primaryEmail, otpHash, expiresAt]
         );
 
         if (recipients.length > 1) {
             await client.query(
-                `INSERT INTO email_otps (email, otp_hash, expires_at, attempts, created_at, request_count, purpose)
-                 VALUES ($1, $2, $3, 0, NOW(), 1, 'org_reactivation')
+                `INSERT INTO email_otps (email, otp_hash, expires_at, attempts, created_at, request_count, purpose, verified_at, session_expires_at)
+                 VALUES ($1, $2, $3, 0, NOW(), 1, 'org_reactivation', NULL, NULL)
                  ON CONFLICT (email, purpose)
                  DO UPDATE SET
                      otp_hash = EXCLUDED.otp_hash,
                      expires_at = EXCLUDED.expires_at,
                      attempts = 0,
                      created_at = NOW(),
-                     request_count = email_otps.request_count + 1`,
+                     request_count = email_otps.request_count + 1,
+                     verified_at = NULL,
+                     session_expires_at = NULL`,
                 [recipients[1], otpHash, expiresAt]
             );
         }
@@ -756,6 +785,68 @@ exports.sendReactivateOrgOTP = async (req, res) => {
     } catch (err) {
         console.error("Send reactivate org OTP error:", err);
         res.status(500).json({ message: err.message || "Failed to send verification code" });
+    } finally {
+        client.release();
+    }
+};
+
+exports.validateReactivateOrgOTP = async (req, res) => {
+    const orgId = req.params.orgId || req.params.companyId;
+    const userId = req.user.sub;
+    const { otp } = req.body;
+
+    if (!otp || String(otp).trim().length !== 6) {
+        return res.status(400).json({ message: "6-digit verification code is required" });
+    }
+
+    const client = await pool.connect();
+    try {
+        const orgRes = await client.query(
+            "SELECT name, email, created_by FROM organizations WHERE org_id = $1 AND is_deleted = FALSE",
+            [orgId]
+        );
+        if (orgRes.rowCount === 0) {
+            return res.status(404).json({ message: "Organization not found" });
+        }
+        const org = orgRes.rows[0];
+
+        if (org.created_by !== userId) {
+            return res.status(403).json({ message: "Only the organization owner can validate the reactivation code" });
+        }
+
+        const ownerRes = await client.query(
+            "SELECT email FROM users WHERE user_id = $1",
+            [org.created_by]
+        );
+        const ownerEmail = ownerRes.rows[0]?.email;
+        const orgEmail = org.email;
+
+        const recipientSet = new Set();
+        if (orgEmail && orgEmail.trim()) recipientSet.add(orgEmail.toLowerCase().trim());
+        if (ownerEmail && ownerEmail.trim()) recipientSet.add(ownerEmail.toLowerCase().trim());
+
+        const recipients = Array.from(recipientSet);
+        if (recipients.length === 0) {
+            return res.status(400).json({ message: "No registered email address found for this organization owner" });
+        }
+
+        const { verifyOTP } = require("../auth/otp.service");
+        let otpResult = await verifyOTP(recipients[0], otp, false, "org_reactivation");
+        if (otpResult.error && otpResult.error.message.includes("No active OTP found") && recipients.length > 1) {
+            otpResult = await verifyOTP(recipients[1], otp, false, "org_reactivation");
+        }
+
+        if (otpResult.error) {
+            const message = (otpResult.error.message === "Incorrect code" || otpResult.error.message === "Invalid verification code")
+                ? "Invalid verification code"
+                : otpResult.error.message;
+            return res.status(otpResult.error.status || 400).json({ message });
+        }
+
+        return res.status(200).json({ success: true, message: "Verification code validated successfully" });
+    } catch (err) {
+        console.error("Validate reactivate org OTP error:", err);
+        return res.status(500).json({ message: err.message || "Failed to validate verification code" });
     } finally {
         client.release();
     }
@@ -818,7 +909,14 @@ exports.reactivateOrganization = async (req, res) => {
 
             if (otpResult.error) {
                 await client.query("ROLLBACK");
-                return res.status(otpResult.error.status || 400).json({ message: otpResult.error.message });
+                const message = (otpResult.error.message === "Incorrect code" || otpResult.error.message === "Invalid verification code")
+                    ? "Invalid verification code"
+                    : otpResult.error.message;
+                return res.status(otpResult.error.status || 400).json({ message });
+            }
+
+            if (recipients.length > 1) {
+                await pool.query(`DELETE FROM email_otps WHERE email = ANY($1) AND purpose = 'org_reactivation'`, [recipients]);
             }
         }
 
@@ -831,8 +929,13 @@ exports.reactivateOrganization = async (req, res) => {
             entityId: orgId,
             entityType: 'ORGANIZATION',
             actorId: userId,
+            actorRole: 'Owner',
             action: 'ORGANIZATION_REACTIVATED',
-            metadata: {}
+            metadata: {
+                orgName: org.name,
+                role: 'Owner',
+                roleName: 'Owner'
+            }
         });
 
         await client.query("COMMIT");
