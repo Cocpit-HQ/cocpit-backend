@@ -1412,7 +1412,7 @@ exports.updateOrgProfile = async (req, res) => {
     const userId = req.user.sub;
 
     const {
-        name, headline, industry, size, website, country, city, location, formattedAddress, latitude, longitude, placeId, established_year, keyOfferings
+        name, headline, org_type, industry, institution_type, size, website, country, city, location, formattedAddress, latitude, longitude, placeId, established_year, keyOfferings
     } = req.body;
 
     // Validate name if provided
@@ -1456,7 +1456,9 @@ exports.updateOrgProfile = async (req, res) => {
         if (entityTypeRes.rowCount === 0) {
             throw Object.assign(new Error('Organization not found'), { statusCode: 404 });
         }
-        const isInstitution = entityTypeRes.rows[0].entity_type === 'INSTITUTION';
+
+        const resolvedOrgType = (org_type || req.body.entity_type || req.body.type || entityTypeRes.rows[0].entity_type || '').toUpperCase();
+        const isInstitution = resolvedOrgType === 'INSTITUTION';
 
         // Build dynamic update to only touch fields defined for Step 1 Profile updates
         const updates = [];
@@ -1470,13 +1472,18 @@ exports.updateOrgProfile = async (req, res) => {
 
         addUpdate('name', name?.trim() || null);
         addUpdate('headline', headline?.trim() || null);
-        // `industry` carries the Stage 1 dropdown value for both org types (COMPANY industry
-        // or INSTITUTION type — School/College/...); route it to the right column here so an
-        // edit-profile save can't undo the institution_type written at org-creation time.
+        
+        // Conditionally update based on org_type
         if (isInstitution) {
-            addUpdate('institution_type', industry || null);
+            if (institution_type !== undefined || industry !== undefined) {
+                addUpdate('institution_type', institution_type || industry || null);
+                addUpdate('industry', null);
+            }
         } else {
-            addUpdate('industry', industry || null);
+            if (industry !== undefined || institution_type !== undefined) {
+                addUpdate('industry', industry || null);
+                addUpdate('institution_type', null);
+            }
         }
         addUpdate('size', size || null);
         addUpdate('website', website?.trim() || null);

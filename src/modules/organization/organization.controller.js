@@ -1794,8 +1794,8 @@ exports.saveDraftIdentity = async (req, res) => {
             slug,
             establishedYearInt,
             logoUrl,
-            org.entity_type === 'COMPANY' ? industry : null,
-            org.entity_type === 'INSTITUTION' ? institution_type : null,
+            org.entity_type === 'COMPANY' ? (industry?.trim() || null) : null,
+            org.entity_type === 'INSTITUTION' ? (institution_type?.trim() || industry?.trim() || null) : null,
             org.entity_type === 'INSTITUTION' ? campus_location : null,
             orgId
         ]);
@@ -2353,7 +2353,9 @@ exports.publishNewOrganization = async (req, res) => {
     const {
         name,
         established_year,
+        org_type,
         industry,
+        institution_type,
         email,
         phone,
         website,
@@ -2436,8 +2438,15 @@ exports.publishNewOrganization = async (req, res) => {
 
         const slug = await generateUniqueSlug(client, name);
         const establishedYearInt = established_year ? parseInt(established_year, 10) : null;
-        const effectiveType = (entity_type || type || 'COMPANY').toUpperCase();
+        const effectiveType = (org_type || entity_type || type || 'COMPANY').toUpperCase();
         const isInstitution = effectiveType === 'INSTITUTION';
+        const finalInstitutionType = isInstitution 
+            ? (institution_type?.trim() || industry?.trim() || null) 
+            : null;
+        const finalIndustry = !isInstitution 
+            ? (industry?.trim() || null) 
+            : null;
+
         const hasDocuments = Boolean(
             req.files &&
             req.files.documents &&
@@ -2464,8 +2473,8 @@ exports.publishNewOrganization = async (req, res) => {
             slug,
             isInstitution ? 'INSTITUTION' : (effectiveType || 'COMPANY'),
             establishedYearInt,
-            isInstitution ? null : (industry || null),
-            isInstitution ? (industry || null) : null,
+            finalIndustry,
+            finalInstitutionType,
             logoUrl,
             email ? email.toLowerCase().trim() : null,
             phone ? phone.trim() : null,
