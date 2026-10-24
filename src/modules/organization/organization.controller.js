@@ -110,17 +110,18 @@ exports.createOrganization = async (req, res) => {
         let ownerRoleName;
 
         ownerRoleName = 'Admin';
+        const adminDescription = 'Administrator Has full access to all modules and features of the application. Administrators can view, manage, create, edit, and delete any data, as well as configure settings and oversee all system activities';
         roles = [
-            { name: 'Admin', color: '#06B6D4', permissions: ["*"], priority: 100, is_system: true }
+            { name: 'Admin', color: '#06B6D4', description: adminDescription, permissions: ["*"], priority: 100, is_system: true }
         ];
 
         let ownerRoleId;
 
         for (const r of roles) {
             const rRes = await client.query(
-                `INSERT INTO organization_roles (org_id, name, color, permissions, priority, is_system_role)
-                 VALUES ($1, $2, $3, $4, $5, $6) RETURNING role_id`,
-                [company.org_id, r.name, r.color, JSON.stringify(r.permissions), r.priority, r.is_system]
+                `INSERT INTO organization_roles (org_id, name, color, description, permissions, priority, is_system_role)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING role_id`,
+                [company.org_id, r.name, r.color, r.description || null, JSON.stringify(r.permissions), r.priority, r.is_system]
             );
             if (r.name === ownerRoleName) ownerRoleId = rRes.rows[0].role_id;
         }

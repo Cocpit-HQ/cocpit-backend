@@ -28,10 +28,10 @@ async function isActorAdminOrOwner(client, orgId, userId) {
          WHERE om.org_id = $1 AND om.user_id = $2 AND om.status = 'ACTIVE' AND LOWER(r.name) = 'admin'`,
         [orgId, userId]
     );
-    return adminRes.rowCount > 0;
 }
 
-// 1. Get all roles in the organization
+const ADMIN_DEFAULT_DESCRIPTION = 'Administrator Has full access to all modules and features of the application. Administrators can view, manage, create, edit, and delete any data, as well as configure settings and oversee all system activities';
+
 // 1. Get all roles in the organization
 exports.getRoles = async (req, res, next) => {
     const orgId = req.params.orgId;
@@ -67,10 +67,13 @@ exports.getRoles = async (req, res, next) => {
                 ? r.permissions
                 : (typeof r.permissions === 'string' ? JSON.parse(r.permissions || '[]') : []);
             const cleanPerms = rawPerms.filter(p => typeof p === 'string' && p.toUpperCase().trim() !== 'CHANNEL' && p.toUpperCase().trim() !== 'CHANNELS');
+            const rNameLower = (r.name || '').toLowerCase();
+            const isAdmin = rNameLower === 'admin' || rNameLower === 'owner';
             return {
                 ...r,
                 permissions: cleanPerms,
-                color: r.name.toLowerCase() === 'admin' ? '#06B6D4' : r.color
+                color: isAdmin ? '#06B6D4' : r.color,
+                description: r.description || (isAdmin ? ADMIN_DEFAULT_DESCRIPTION : '')
             };
         });
         res.json(roles);
@@ -122,7 +125,10 @@ exports.getRoleById = async (req, res, next) => {
             ? role.permissions
             : (typeof role.permissions === 'string' ? JSON.parse(role.permissions || '[]') : []);
         role.permissions = rawPerms.filter(p => typeof p === 'string' && p.toUpperCase().trim() !== 'CHANNEL' && p.toUpperCase().trim() !== 'CHANNELS');
-        role.color = role.name.toLowerCase() === 'admin' ? '#06B6D4' : role.color;
+        const roleNameLower = (role.name || '').toLowerCase();
+        const isAdmin = roleNameLower === 'admin' || roleNameLower === 'owner';
+        role.color = isAdmin ? '#06B6D4' : role.color;
+        role.description = role.description || (isAdmin ? ADMIN_DEFAULT_DESCRIPTION : '');
         res.json(role);
     } catch (err) {
         next(err);
