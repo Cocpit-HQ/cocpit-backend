@@ -1,7 +1,8 @@
 const pool = require("../../core/db/pool");
 const { logActivity: logIntentActivity } = require("../../utils/activityLogger");
-const cloudinary = require("../../core/infrastructure/cloudinary.client");
 const socketService = require("../../core/infrastructure/socket.service");
+const { randomUUID } = require("crypto");
+const { uploadBufferToR2 } = require("../../core/infrastructure/r2.client");
 
 const getRequestedOrganizationActorId = (req, fallbackOrgId = null) => {
     const actorOrgId = req.actor?.type === "ORGANIZATION" ? req.actor.orgId : null;
@@ -42,13 +43,18 @@ const resolveCoverImage = async (file, rawCoverImage) => {
         const val = rawCoverImage.trim();
         if (val.startsWith('data:')) {
             try {
-                const uploadRes = await cloudinary.uploader.upload(val, {
-                    folder: "covers",
-                    resource_type: "image"
+                const match = val.match(/^data:(image\/(?:png|jpeg|webp|gif));base64,(.+)$/);
+                if (!match) return null;
+
+                const [, contentType, encodedData] = match;
+                const extension = contentType.split("/")[1].replace("jpeg", "jpg");
+                return await uploadBufferToR2({
+                    key: `covers/saved-folder-${randomUUID()}.${extension}`,
+                    body: Buffer.from(encodedData, "base64"),
+                    contentType,
                 });
-                return (uploadRes.secure_url || uploadRes.url || '').replace(/\\/g, "/");
             } catch (err) {
-                console.error("[savedPost.controller] Failed to upload base64 image to Cloudinary:", err);
+                console.error("[savedPost.controller] Failed to upload base64 image to R2:", err);
                 return null;
             }
         }

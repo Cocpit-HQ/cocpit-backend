@@ -6,7 +6,7 @@ const pool = require("../../core/db/pool");
 const authRepo = require("../auth/auth.repository");
 const { handleExperienceOrgLink, handleEducationOrgLink } = require("../../utils/orgLinkHelper");
 const aiService = require("../../services/ai.service");
-const cloudinary = require("../../core/infrastructure/cloudinary.client");
+const { uploadBufferToR2 } = require("../../core/infrastructure/r2.client");
 const { toTitleCase } = require("../../utils/nameNormalizer");
 
 const ONBOARDING_STEPS = {
@@ -332,7 +332,8 @@ exports.getInterests = async (req, res) => {
     if (rawCursor) {
         try {
             cursorName = Buffer.from(rawCursor, "base64").toString("utf8");
-        } catch (_) {
+        } catch {
+            // Invalid cursors are rejected below.
             return res.status(400).json({ success: false, message: "Invalid cursor" });
         }
     }
@@ -386,7 +387,8 @@ exports.getSkills = async (req, res) => {
     if (rawCursor) {
         try {
             cursorName = Buffer.from(rawCursor, "base64").toString("utf8");
-        } catch (_) {
+        } catch {
+            // Invalid cursors are rejected below.
             return res.status(400).json({ success: false, message: "Invalid cursor" });
         }
     }
@@ -452,7 +454,6 @@ exports.saveInterests = async (req, res) => {
         }
 
         const deduplicatedNames = Array.from(uniqueMap.values());
-        const deduplicatedSlugs = Array.from(uniqueMap.keys());
 
         if (deduplicatedNames.length < 3 || deduplicatedNames.length > 7) {
             return res.status(400).json({ success: false, message: "Please select between 3 and 7 valid unique interests" });
@@ -747,7 +748,7 @@ exports.updateProfile = async (req, res) => {
 
 exports.updateLocation = async (req, res) => {
     const userId = req.user?.sub;
-    const { location, country, state, city, formattedAddress, latitude, longitude, placeId } = req.body;
+    const { country, state, city, formattedAddress, latitude, longitude, placeId } = req.body;
 
     // New Google Places mode
     const ALLOWED_COUNTRIES = ["India", "United Arab Emirates", "Japan"];
@@ -845,41 +846,37 @@ exports.parseResumeUpload = async (req, res) => {
 
         const sourceIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
 
-        // Upload to Cloudinary concurrently while parsing with AI
-        const uploadToCloudinary = () => {
-            return new Promise((resolve, reject) => {
-                const stream = cloudinary.uploader.upload_stream(
-                    { folder: "resumes", resource_type: "raw", public_id: `resume_${userId}_${Date.now()}.pdf` },
-                    (error, result) => {
-                        if (error) reject(error);
-                        else resolve(result);
-                    }
-                );
-                const { Readable } = require('stream');
-                Readable.from(fileBuffer).pipe(stream);
+        // Upload to Cloudflare R2 concurrently while parsing with AI
+        const uploadToR2 = async () => {
+            const key = `resumes/resume_${userId}_${Date.now()}.pdf`;
+            const publicUrl = await uploadBufferToR2({
+                key,
+                body: fileBuffer,
+                contentType: mimeType || "application/pdf"
             });
+            return { secure_url: publicUrl };
         };
 
-        const [parsedData, cloudinaryResult] = await Promise.all([
+        const [parsedData, r2Result] = await Promise.all([
             aiService.parseResume({
                 fileBuffer,
                 mimeType,
                 userId,
                 sourceIp
             }),
-            uploadToCloudinary().catch(e => {
-                console.error("Cloudinary upload failed:", e);
+            uploadToR2().catch(e => {
+                console.error("R2 resume upload failed:", e);
                 return null;
             })
         ]);
 
-        if (cloudinaryResult) {
+        if (r2Result) {
             // Save to DB
             try {
                 await pool.query(
                     `INSERT INTO user_resumes (user_id, file_name, file_url, file_type, file_size)
                      VALUES ($1, $2, $3, $4, $5)`,
-                    [userId, req.file.originalname, cloudinaryResult.secure_url, mimeType, req.file.size]
+                    [userId, req.file.originalname, r2Result.secure_url, mimeType, req.file.size]
                 );
             } catch (dbErr) {
                 console.error("Failed to save resume URL to DB:", dbErr);

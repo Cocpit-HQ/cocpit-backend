@@ -1,9 +1,8 @@
 const Redis = require('ioredis');
-const { updateFlagInMemory } = require('../../modules/config/featureFlags.service');
 const socketService = require('../infrastructure/socket.service');
 
 // Create a dedicated Redis client for subscribing since it blocks other commands
-const redisUrl = process.env.REDIS_URL || 'redis://127.0.0.1:6379';
+const redisUrl = process.env.REDIS_URL || 'redis://127.0.0.1:6380';
 const subscriber = new Redis(redisUrl);
 
 subscriber.on('connect', () => {

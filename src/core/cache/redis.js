@@ -1,9 +1,32 @@
 const Redis = require("ioredis");
 
+let redisOptions;
+if (process.env.REDIS_URL) {
+  try {
+    const u = new URL(process.env.REDIS_URL);
+    redisOptions = {
+      host: u.hostname || "localhost",
+      port: parseInt(u.port || "6380", 10),
+      password: u.password || undefined,
+      db: parseInt(process.env.REDIS_DB || (u.pathname ? u.pathname.replace("/", "") : "0") || "0", 10),
+    };
+  } catch {
+    redisOptions = {
+      host: process.env.REDIS_HOST || "localhost",
+      port: parseInt(process.env.REDIS_PORT || "6380", 10),
+      db: parseInt(process.env.REDIS_DB || "0", 10),
+    };
+  }
+} else {
+  redisOptions = {
+    host: process.env.REDIS_HOST || "localhost",
+    port: parseInt(process.env.REDIS_PORT || "6380", 10),
+    db: parseInt(process.env.REDIS_DB || "0", 10),
+  };
+}
+
 const redis = new Redis({
-  host: process.env.REDIS_HOST || "localhost",
-  port: process.env.REDIS_PORT || 6379,
-  db: parseInt(process.env.REDIS_DB || "0"), // 0=prod, 1=staging, 2=UAT
+  ...redisOptions,
   // Safety measures to avoid connection storms
   maxRetriesPerRequest: 0, // Fail fast instead of queuing up commands when down
   enableOfflineQueue: false, // Don't queue commands when Redis is unavailable

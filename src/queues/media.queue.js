@@ -1,10 +1,27 @@
 const { Queue } = require("bullmq");
 
-const redisConnection = {
-  host: process.env.REDIS_HOST || "127.0.0.1",
-  port: parseInt(process.env.REDIS_PORT || "6379", 10),
-  maxRetriesPerRequest: null,
-};
+function getRedisConnectionOptions() {
+  if (process.env.REDIS_URL) {
+    try {
+      const u = new URL(process.env.REDIS_URL);
+      return {
+        host: u.hostname || "127.0.0.1",
+        port: parseInt(u.port || "6380", 10),
+        password: u.password || undefined,
+        maxRetriesPerRequest: null,
+      };
+    } catch {
+      // Ignore malformed Redis URLs and use the host/port fallback.
+    }
+  }
+  return {
+    host: process.env.REDIS_HOST || "127.0.0.1",
+    port: parseInt(process.env.REDIS_PORT || "6380", 10),
+    maxRetriesPerRequest: null,
+  };
+}
+
+const redisConnection = getRedisConnectionOptions();
 
 const mediaTranscodeQueue = new Queue("media-transcode", {
   connection: redisConnection,
@@ -32,10 +49,10 @@ mediaTranscodeQueue.on("error", (err) => {
  * @param {string} [payload.postId]     - Optional associated post_id
  * @returns {Promise<import("bullmq").Job>}
  */
-async function addTranscodeJob({ rawKey, rawMasterUrl, mediaType = "image", postId = null }) {
+async function addTranscodeJob({ rawKey, rawMasterUrl, mediaType = "image", postId = null, ownerId = null }) {
   const job = await mediaTranscodeQueue.add(
     "transcode",
-    { rawKey, rawMasterUrl, mediaType, postId },
+    { rawKey, rawMasterUrl, mediaType, postId, ownerId },
     {
       jobId: `transcode-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`,
     }

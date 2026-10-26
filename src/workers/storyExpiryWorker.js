@@ -1,12 +1,12 @@
 const pool = require("../core/db/pool");
-const cloudinary = require("../core/infrastructure/cloudinary.client");
+const { deleteObjectsFromR2 } = require("../core/infrastructure/r2.client");
 
 /**
  * Story Expiry Worker
  * -------------------
  * Runs periodically (every 15 minutes) to:
  * 1. Find stories whose `expires_at` has passed
- * 2. Delete their Cloudinary assets (images/videos)
+ * 2. Delete their R2 storage assets
  * 3. Hard-delete them from PostgreSQL (CASCADE removes views/reactions/comments)
  */
 const processStoryExpirations = async () => {
@@ -18,12 +18,12 @@ const processStoryExpirations = async () => {
             client.once('error', (err) => {
                 console.error("[StoryExpiryWorker] Unexpected client error:", err.message);
             });
-        } catch (connErr) {
-            console.warn("[StoryExpiryWorker] Database connection unavailable. Skipping sweep.");
+        } catch (connectionError) {
+            console.warn("[StoryExpiryWorker] Database connection unavailable. Skipping sweep:", connectionError.message);
             return;
         }
 
-        // 1. Find expired stories with their Cloudinary public_ids
+        // 1. Find expired stories with their public_ids/keys
         const expiredRes = await client.query(`
             SELECT story_id, cld_public_id, media_type
             FROM stories
@@ -35,33 +35,14 @@ const processStoryExpirations = async () => {
 
         console.log(`[StoryExpiryWorker] Found ${expiredRes.rowCount} expired stories.`);
 
-        // 2. Batch delete from Cloudinary (group by resource type)
-        const imageIds = [];
-        const videoIds = [];
-        for (const story of expiredRes.rows) {
-            if (!story.cld_public_id) continue;
-            if (story.media_type === 'video') {
-                videoIds.push(story.cld_public_id);
-            } else {
-                imageIds.push(story.cld_public_id);
-            }
-        }
-
-        if (imageIds.length > 0) {
+        // 2. Batch delete assets from R2
+        const r2Keys = expiredRes.rows.map(r => r.cld_public_id).filter(Boolean);
+        if (r2Keys.length > 0) {
             try {
-                await cloudinary.api.delete_resources(imageIds, { resource_type: 'image' });
-                console.log(`[StoryExpiryWorker] Deleted ${imageIds.length} image assets from Cloudinary.`);
-            } catch (cldErr) {
-                console.error("[StoryExpiryWorker] Cloudinary image deletion error:", cldErr.message);
-            }
-        }
-
-        if (videoIds.length > 0) {
-            try {
-                await cloudinary.api.delete_resources(videoIds, { resource_type: 'video' });
-                console.log(`[StoryExpiryWorker] Deleted ${videoIds.length} video assets from Cloudinary.`);
-            } catch (cldErr) {
-                console.error("[StoryExpiryWorker] Cloudinary video deletion error:", cldErr.message);
+                await deleteObjectsFromR2(r2Keys);
+                console.log(`[StoryExpiryWorker] Deleted ${r2Keys.length} assets from R2.`);
+            } catch (r2Err) {
+                console.error("[StoryExpiryWorker] R2 deletion error:", r2Err.message);
             }
         }
 

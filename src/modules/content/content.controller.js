@@ -1,5 +1,3 @@
-const { incrementUserHashtagScore } = require("../../services/recommendation.service");
-const { ur, vi } = require("zod/locales");
 const { sanitizeContent } = require("../../utils/contentSanitizer");
 const { sanitizeArticleContent } = require("../../utils/articleContentSanitizer");
 const pool = require("../../core/db/pool");
@@ -7,14 +5,19 @@ const socketService = require("../../core/infrastructure/socket.service");
 const { checkBlockStatus } = require("../../core/utils/blockCheck");
 const BlockModel = require("../../models/block.model");
 const { logAudit } = require("../../core/infrastructure/audit.service");
-const cloudinary = require("../../core/infrastructure/cloudinary.client");
-const { deleteMediaByUrls } = require("../../core/infrastructure/r2.client");
+const redisClient = require("../../core/cache/redis");
+const { deleteMediaByUrls, deleteObjectsFromR2 } = require("../../core/infrastructure/r2.client");
 const { checkOrgPermission } = require("../../core/utils/rbac");
 const { notifyOrgFollowers, notifyBroadcastToChildOrgs } = require("../../services/notification.service");
 const { logActivity, removeActivity } = require("../../core/services/activityLogger");
 const { logActivity: logIntentActivity } = require("../../utils/activityLogger");
 const { sendToUser: sendPush } = require("../notification/notification.service");
 const contentGenerationService = require("../../services/contentGeneration.service");
+
+function currentStatusForMedia(url, mediaItem) {
+    if (mediaItem && typeof mediaItem === "object" && mediaItem.processing_status) return mediaItem.processing_status;
+    return url && !url.includes("/raw/") ? "ready" : "processing";
+}
 
 const getRequestedOrganizationActorId = (req, fallbackOrgId = null) => {
     // 1. Prefer Explicit Actor Header Context
@@ -54,7 +57,7 @@ const getContentActorScope = (req, fallbackOrgId = null) => {
     };
 };
 
-const getOptionalContentActorScope = (req, _fallbackOrgId = null) => {
+const getOptionalContentActorScope = (req) => {
     const userId = req.user?.sub || req.user?.user_id || null;
 
     if (!userId) {
@@ -132,7 +135,7 @@ const broadcastChannelArticlePublished = async (orgId, article) => {
     }
 };
 
-const { getPostHydrationSelect, getPostHydrationJoins, getPublicFeedWhere } = require("../../core/queries/postHydration.query.js");
+const { getPostHydrationSelect, getPostHydrationJoins } = require("../../core/queries/postHydration.query.js");
 const { hydrateShareCounts } = require("../../utils/shareHydration");
 
 // --- Feed / Posts ---
@@ -615,7 +618,7 @@ exports.getMyCommentedPosts = async (req, res) => {
         LEFT JOIN organizations comp ON comp.org_id = p.author_org_id
         LEFT JOIN post_categories pc ON pc.category_id = p.category_id
         LEFT JOIN (
-            SELECT pm.post_id, json_agg(json_build_object('media_id', pm.media_id, 'url', pm.url, 'master_url', pm.master_url, 'media_type', pm.media_type, 'width', pm.width, 'height', pm.height, 'format', pm.format, 'bit_depth', pm.bit_depth)) AS media
+            SELECT pm.post_id, json_agg(json_build_object('media_id', pm.media_id, 'url', pm.url, 'master_url', pm.master_url, 'media_type', pm.media_type, 'width', pm.width, 'height', pm.height, 'format', pm.format, 'bit_depth', pm.bit_depth, 'fallback_url', pm.fallback_url, 'avif_url', pm.avif_url, 'processing_status', pm.processing_status)) AS media
             FROM post_media pm GROUP BY pm.post_id
         ) pm ON pm.post_id = p.post_id
         LEFT JOIN (SELECT post_id, COUNT(*) AS like_count FROM active_post_likes GROUP BY post_id) lc ON lc.post_id = p.post_id
@@ -713,7 +716,7 @@ exports.getMyPrivatePosts = async (req, res) => {
         LEFT JOIN organizations comp ON comp.org_id = p.author_org_id
         LEFT JOIN post_categories pc ON pc.category_id = p.category_id
         LEFT JOIN (
-            SELECT pm.post_id, json_agg(json_build_object('media_id', pm.media_id, 'url', pm.url, 'master_url', pm.master_url, 'media_type', pm.media_type, 'width', pm.width, 'height', pm.height, 'format', pm.format, 'bit_depth', pm.bit_depth)) AS media
+            SELECT pm.post_id, json_agg(json_build_object('media_id', pm.media_id, 'url', pm.url, 'master_url', pm.master_url, 'media_type', pm.media_type, 'width', pm.width, 'height', pm.height, 'format', pm.format, 'bit_depth', pm.bit_depth, 'fallback_url', pm.fallback_url, 'avif_url', pm.avif_url, 'processing_status', pm.processing_status)) AS media
             FROM post_media pm GROUP BY pm.post_id
         ) pm ON pm.post_id = p.post_id
         LEFT JOIN (SELECT post_id, COUNT(*) AS like_count FROM active_post_likes GROUP BY post_id) lc ON lc.post_id = p.post_id
@@ -873,7 +876,9 @@ exports.createPost = async (req, res) => {
     if (media_urls && typeof media_urls === 'string') {
         try {
             media_urls = JSON.parse(media_urls);
-        } catch (e) { }
+        } catch {
+            // Keep the original value when it is not valid JSON.
+        }
     }
 
     if (status !== undefined && status !== "published" && status !== "draft") {
@@ -1129,8 +1134,6 @@ exports.createPost = async (req, res) => {
             }
 
             // --- CONTEXT-AWARE CATEGORY VALIDATION ---
-            const userAllowed = ['Personal', 'Professional', 'Achievement'];
-            const companyAllowed = ['Update', 'Hiring', 'Milestone', 'Insight', 'Professional', 'Article'];
             const institutionAllowed = ['Professional', 'Announcement', 'Academic', 'Admission', 'Campus Life', 'Research', 'Club Activity', 'General'];
 
             if (companyId) {
@@ -1283,22 +1286,47 @@ exports.createPost = async (req, res) => {
         }
 
         let type;
-        // 3. Insert Media (Parallel Optimized)
+        // 3. Insert Media (Parallel Optimized & Transcode-Aware)
         if (media_urls && Array.isArray(media_urls) && media_urls.length > 0) {
-            const mediaPromises = media_urls.map(mediaItem => {
-                const url = typeof mediaItem === 'string' ? mediaItem : mediaItem.url;
+            const mediaPromises = media_urls.map(async (mediaItem) => {
+                let url = typeof mediaItem === 'string' ? mediaItem : mediaItem.url;
                 const masterUrl = typeof mediaItem === 'object' && mediaItem !== null ? (mediaItem.master_url || mediaItem.masterUrl || url) : url;
-                const width = (typeof mediaItem === 'object' && mediaItem !== null ? mediaItem.width : null) || null;
-                const height = (typeof mediaItem === 'object' && mediaItem !== null ? mediaItem.height : null) || null;
-                const format = (typeof mediaItem === 'object' && mediaItem !== null ? mediaItem.format : null) || (url?.match(/\.avif/i) ? 'avif' : null);
-                const bitDepth = (typeof mediaItem === 'object' && mediaItem !== null ? (mediaItem.bit_depth || mediaItem.bitDepth) : null) || (url?.match(/\.avif/i) ? 12 : null);
-                const isProcessed = !!(url && !url.includes('/raw/'));
+                let width = (typeof mediaItem === 'object' && mediaItem !== null ? mediaItem.width : null) || null;
+                let height = (typeof mediaItem === 'object' && mediaItem !== null ? mediaItem.height : null) || null;
+                let format = (typeof mediaItem === 'object' && mediaItem !== null ? mediaItem.format : null) || (url?.match(/\.avif/i) ? 'avif' : null);
+                let bitDepth = (typeof mediaItem === 'object' && mediaItem !== null ? (mediaItem.bit_depth || mediaItem.bitDepth) : null) || (url?.match(/\.avif/i) ? 12 : null);
+                let isProcessed = !!(url && !url.includes('/raw/'));
+                let fallbackUrl = typeof mediaItem === 'object' && mediaItem !== null ? mediaItem.fallback_url || null : null;
+                let avifUrl = typeof mediaItem === 'object' && mediaItem !== null ? mediaItem.avif_url || null : null;
+                let processingStatus = currentStatusForMedia(url, mediaItem);
+
+                // If background worker already finished and cached the display variant, use it immediately
+                if (masterUrl && !isProcessed) {
+                    try {
+                        const cached = await redisClient.get(`media:conversion:${masterUrl}`);
+                        if (cached) {
+                            const parsed = JSON.parse(cached);
+                            url = parsed.url || url;
+                            width = parsed.width || width;
+                            height = parsed.height || height;
+                            format = parsed.format || format;
+                            bitDepth = parsed.bitDepth || bitDepth;
+                            isProcessed = true;
+                            fallbackUrl = parsed.fallbackUrl || url;
+                            avifUrl = parsed.avifUrl || null;
+                            processingStatus = parsed.processingStatus || "ready";
+                        }
+            } catch {
+                        // Fail open and persist the raw master URL.
+                    }
+                }
+
                 let currentType = url?.toLowerCase().match(/\.(mp4|webm|mov)(\?|#|$)/) ? 'video' : 'image';
-                type = currentType; // Keep a reference to one type for response (legacy behavior)
+                type = currentType;
                 return client.query(
-                    `INSERT INTO post_media (post_id, url, media_type, width, height, master_url, format, bit_depth, is_processed) 
-                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-                    [postId, url, currentType, width, height, masterUrl, format, bitDepth, isProcessed]
+                    `INSERT INTO post_media (post_id, url, media_type, width, height, master_url, format, bit_depth, is_processed, fallback_url, avif_url, processing_status)
+                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+                    [postId, url, currentType, width, height, masterUrl, format, bitDepth, isProcessed, fallbackUrl, avifUrl, currentType === 'video' ? 'ready' : processingStatus]
                 );
             });
             await Promise.all(mediaPromises);
@@ -1788,7 +1816,10 @@ exports.getPostById = async (req, res) => {
                     'url', pm.url,
                     'media_type', pm.media_type,
                     'width', pm.width,
-                    'height', pm.height
+                    'height', pm.height,
+                    'fallback_url', pm.fallback_url,
+                    'avif_url', pm.avif_url,
+                    'processing_status', pm.processing_status
                 )
             )
             FROM post_media pm
@@ -1945,7 +1976,7 @@ exports.getPostById = async (req, res) => {
                                  LEFT JOIN organizations o_mention ON o_mention.org_id = mentions.mentioned_id AND o_mention.is_deleted = FALSE
                                  WHERE u_mention.user_id IS NOT NULL OR o_mention.org_id IS NOT NULL
                              ),
-                             'media', COALESCE((SELECT json_agg(json_build_object('url', pm.url, 'media_type', pm.media_type, 'width', pm.width, 'height', pm.height)) FROM post_media pm WHERE pm.post_id = sp_sp.post_id), '[]'::json)
+                             'media', COALESCE((SELECT json_agg(json_build_object('url', pm.url, 'media_type', pm.media_type, 'width', pm.width, 'height', pm.height, 'fallback_url', pm.fallback_url, 'avif_url', pm.avif_url, 'processing_status', pm.processing_status)) FROM post_media pm WHERE pm.post_id = sp_sp.post_id), '[]'::json)
                          )
                          FROM posts sp_sp
                          LEFT JOIN active_users sp_sp_u ON sp_sp_u.user_id = sp_sp.author_id
@@ -2099,7 +2130,7 @@ LEFT JOIN post_categories sp_cat ON sp.category_id = sp_cat.category_id
         LEFT JOIN jobs sj ON p.shared_job_id = sj.job_id
         LEFT JOIN organizations sj_comp ON sj.org_id = sj_comp.org_id
 LEFT JOIN (
-    SELECT post_id, json_agg(json_build_object('url', url, 'media_type', media_type)) as media
+    SELECT post_id, json_agg(json_build_object('url', url, 'media_type', media_type, 'fallback_url', fallback_url, 'avif_url', avif_url, 'processing_status', processing_status)) as media
     FROM post_media
     GROUP BY post_id
 ) sp_media ON sp.post_id = sp_media.post_id
@@ -2254,7 +2285,7 @@ WHERE p.post_id = $1
 
 exports.updatePostById = async (req, res) => {
     const postId = req.params.id;
-    let { content, category, visibility, media_urls, post_type, title, poll_options, location, status } = req.body;
+    let { content, category, visibility, media_urls, post_type, title, location, status } = req.body;
     // "media" is inline content images/videos; "cover_media" (article posts only) is
     // the explicitly chosen cover - kept on its own field so we never have to guess.
     const mediaFiles = (req.files && req.files.media) || [];
@@ -2271,9 +2302,6 @@ exports.updatePostById = async (req, res) => {
         content = sanitizeArticleContent(content);
     }
     title = sanitizeContent(title);
-    if (poll_options && Array.isArray(poll_options)) {
-        poll_options = poll_options.map(opt => sanitizeContent(opt));
-    }
     let actorScope;
 
     try {
@@ -2481,13 +2509,11 @@ exports.updatePostById = async (req, res) => {
         }
 
         // category
-        let categoryId;
         if (category !== undefined) {
             const catRes = await client.query(
                 `SELECT category_id FROM post_categories WHERE name = $1`,
                 [category]
             );
-            categoryId = catRes.rows[0]?.category_id;
             if (catRes.rows.length > 0) {
                 updates.push(`category_id = $${index++}`);
                 values.push(catRes.rows[0].category_id);
@@ -2521,7 +2547,6 @@ exports.updatePostById = async (req, res) => {
         }
 
 
-        let type;
         let parsedMediaMetadata = [];
         if (req.body.media_metadata) {
             try {
@@ -2550,12 +2575,14 @@ exports.updatePostById = async (req, res) => {
                 const format = (typeof item === 'object' && item !== null ? item.format : null) || (url?.match(/\.avif/i) ? 'avif' : null);
                 const bitDepth = (typeof item === 'object' && item !== null ? (item.bit_depth || item.bitDepth) : null) || (url?.match(/\.avif/i) ? 12 : null);
                 const isProcessed = !!(url && !url.includes('/raw/'));
-                
+                const fallbackUrl = typeof item === 'object' && item !== null ? item.fallback_url || null : null;
+                const avifUrl = typeof item === 'object' && item !== null ? item.avif_url || null : null;
                 const type = url.match(/\.(mp4|webm|mov)(\?|#|$)/i) ? "video" : "image";
+                const processingStatus = type === 'video' ? 'ready' : currentStatusForMedia(url, item);
                 await client.query(
-                    `INSERT INTO post_media (post_id, url, media_type, width, height, master_url, format, bit_depth, is_processed)
-                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-                    [postId, url, type, width, height, masterUrl, format, bitDepth, isProcessed]
+                    `INSERT INTO post_media (post_id, url, media_type, width, height, master_url, format, bit_depth, is_processed, fallback_url, avif_url, processing_status)
+                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+                    [postId, url, type, width, height, masterUrl, format, bitDepth, isProcessed, fallbackUrl, avifUrl, processingStatus]
                 );
             }
 
@@ -2613,7 +2640,10 @@ SELECT
             'width', pm.width,
             'height', pm.height,
             'format', pm.format,
-            'bit_depth', pm.bit_depth
+            'bit_depth', pm.bit_depth,
+            'fallback_url', pm.fallback_url,
+            'avif_url', pm.avif_url,
+            'processing_status', pm.processing_status
         )) FROM post_media pm WHERE pm.post_id = p.post_id),
         '[]'::json
     ) AS media,
@@ -3334,7 +3364,6 @@ exports.toggleLike = async (req, res) => {
 };
 
 exports.addComment = async (req, res) => {
-    const fs = require('fs');
     const postId = req.params.id;
     let { content, parent_id } = req.body; // Added companyId
 
@@ -3374,7 +3403,6 @@ exports.addComment = async (req, res) => {
 
         const postAuthorId = post.rows[0].author_id;
         const postCompanyId = post.rows[0].author_org_id;
-        const postType = post.rows[0].post_type;
         const isCommunityArticle = post.rows[0].is_community_article;
 
         // Thoughts subscription check (only for community articles)
@@ -4238,7 +4266,6 @@ exports.getComments = async (req, res) => {
         }
 
         const postCompanyId = post.rows[0].author_org_id;
-        const postType = post.rows[0].post_type;
         const isCommunityArticle = post.rows[0].is_community_article;
 
         // Thoughts subscription check (only for community articles)
@@ -4613,7 +4640,7 @@ exports.getStories = async (req, res) => {
                                 'full_name', sp_u.full_name,
                                 'avatar_url', sp_u.avatar_url
                             ),
-                            'media', (SELECT json_agg(json_build_object('url', url, 'media_type', media_type)) FROM post_media WHERE post_id = sp.post_id)
+                            'media', (SELECT json_agg(json_build_object('url', url, 'media_type', media_type, 'fallback_url', fallback_url, 'avif_url', avif_url, 'processing_status', processing_status)) FROM post_media WHERE post_id = sp.post_id)
                         )
                     -- Failure Analysis
                     WHEN sp.visibility = 'private' THEN json_build_object(
@@ -4758,7 +4785,7 @@ exports.getGroupedStories = async (req, res) => {
                                 'full_name', sp_u.full_name,
                                 'avatar_url', sp_u.avatar_url
                             ),
-                            'media', (SELECT json_agg(json_build_object('url', url, 'media_type', media_type)) FROM post_media WHERE post_id = sp.post_id)
+                            'media', (SELECT json_agg(json_build_object('url', url, 'media_type', media_type, 'fallback_url', fallback_url, 'avif_url', avif_url, 'processing_status', processing_status)) FROM post_media WHERE post_id = sp.post_id)
                         )
                     -- Failure Analysis
                     WHEN sp.visibility = 'private' THEN json_build_object(
@@ -5045,7 +5072,7 @@ exports.createStory = async (req, res) => {
                             'full_name', sp_u.full_name,
                             'avatar_url', sp_u.avatar_url
                         ),
-                        'media', (SELECT json_agg(json_build_object('url', url, 'media_type', media_type)) FROM post_media WHERE post_id = sp.post_id)
+                        'media', (SELECT json_agg(json_build_object('url', url, 'media_type', media_type, 'fallback_url', fallback_url, 'avif_url', avif_url, 'processing_status', processing_status)) FROM post_media WHERE post_id = sp.post_id)
                     )
                 END AS shared_post
             FROM stories s
@@ -5108,12 +5135,11 @@ exports.deleteStory = async (req, res) => {
             return res.status(404).json({ message: "Story not found or unauthorized", storyId, userId });
         }
 
-        // Clean up Cloudinary asset in background
-        const { cld_public_id, media_type } = result.rows[0];
+        // Clean up the R2 object in the background.
+        const { cld_public_id } = result.rows[0];
         if (cld_public_id) {
-            const resourceType = media_type === 'video' ? 'video' : 'image';
-            cloudinary.uploader.destroy(cld_public_id, { resource_type: resourceType })
-                .catch(err => console.error(`[deleteStory] Cloudinary cleanup failed for ${cld_public_id}:`, err.message));
+            deleteObjectsFromR2([cld_public_id])
+                .catch(err => console.error(`[deleteStory] R2 cleanup failed for ${cld_public_id}:`, err.message));
         }
 
         res.status(200).json({ message: "Story deleted", deletedStoryId: storyId });
@@ -5426,8 +5452,8 @@ exports.reactToStory = async (req, res) => {
                 if (ioService && ioService.notifyUser) {
                     ioService.notifyUser(author_id, "notification", notificationData);
                 }
-            } catch (e) {
-                // console.warn("Socket notification failed:", e);
+            } catch {
+                // Socket notification is best-effort; the database write follows.
             }
 
             // Persist to DB
@@ -5895,14 +5921,13 @@ exports.deleteStoryComment = async (req, res) => {
             return res.status(404).json({ message: "Comment not found or unauthorized" });
         }
         res.status(200).json({ message: "Comment deleted", deletedCommentId: commentId });
-    } catch (err) {
+    } catch {
         return res.status(500).json({ message: "Internal server error" })
     }
 }
 // --- POST MODERATION ---
 
 exports.flagPost = async (req, res) => {
-    const userId = req.user.sub;
     const { id: postId } = req.params;
 
     try {
@@ -5949,7 +5974,7 @@ exports.moderatePost = async (req, res) => {
             return res.status(400).json({ message: "Post is already removed" });
         }
 
-        const updateRes = await pool.query(
+        await pool.query(
             `UPDATE posts 
              SET is_removed = TRUE, removed_by = $1, removed_reason = $2 
              WHERE post_id = $3 RETURNING *`,

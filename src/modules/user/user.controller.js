@@ -12,7 +12,7 @@ const socketService = require("../../core/infrastructure/socket.service");
 const { sendAccountDeletionEmail } = require("../../core/services/email.service");
 const { verifyGoogleToken } = require("../auth/googleAuth.service");
 const { comparePassword } = require("../../core/utils/password");
-const { checkBlockStatus, checkActorBlockStatus } = require("../../core/utils/blockCheck");
+const { checkActorBlockStatus } = require("../../core/utils/blockCheck");
 const { logAudit } = require("../../core/infrastructure/audit.service");
 
 /**
@@ -811,7 +811,7 @@ exports.getPublicProfilePosts = async (req, res) => {
         pc.name AS category_name,
 
         COALESCE(
-          (SELECT json_agg(json_build_object('url', pm.url, 'media_type', pm.media_type, 'width', pm.width, 'height', pm.height)) 
+          (SELECT json_agg(json_build_object('url', pm.url, 'media_type', pm.media_type, 'width', pm.width, 'height', pm.height, 'fallback_url', pm.fallback_url, 'avif_url', pm.avif_url, 'processing_status', pm.processing_status))
            FROM post_media pm WHERE pm.post_id = p.post_id),
           '[]'::json
         ) AS media,
@@ -972,7 +972,7 @@ exports.getPublicProfilePosts = async (req, res) => {
                 'author_headline', CASE WHEN sp.author_org_id IS NOT NULL THEN sp_comp.headline ELSE sp_u.headline END,
                 'is_organization_post', (sp.author_org_id IS NOT NULL)
               ),
-              'media', COALESCE((SELECT json_agg(json_build_object('url', pm.url, 'media_type', pm.media_type, 'width', pm.width, 'height', pm.height)) FROM post_media pm WHERE pm.post_id = sp.post_id), '[]'::json),
+              'media', COALESCE((SELECT json_agg(json_build_object('url', pm.url, 'media_type', pm.media_type, 'width', pm.width, 'height', pm.height, 'fallback_url', pm.fallback_url, 'avif_url', pm.avif_url, 'processing_status', pm.processing_status)) FROM post_media pm WHERE pm.post_id = sp.post_id), '[]'::json),
               'like_count', (SELECT COUNT(*) FROM active_post_likes pl WHERE pl.post_id = sp.post_id)::int,
               'comment_count', (SELECT COUNT(*) FROM active_post_comments pc WHERE pc.post_id = sp.post_id)::int,
               'rePostCount', (SELECT COUNT(*) FROM posts sp_share2 WHERE sp_share2.shared_post_id = sp.post_id AND sp_share2.is_active = TRUE AND (sp_share2.is_removed IS FALSE OR sp_share2.is_removed IS NULL))::int,
@@ -1228,7 +1228,6 @@ exports.getPublicProfileCommentedPosts = async (req, res) => {
     cursorPostId,
     limit = 10,
   } = req.query;
-
   // Validate / resolve UUID or account_name
   const uuidRegex =
     /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
@@ -1266,6 +1265,7 @@ exports.getPublicProfileCommentedPosts = async (req, res) => {
     let idx = 2;
 
     // Only public posts the target user has commented on (excluding their own posts)
+    const isPreview = req.query.preview === "true" || req.query.preview === true;
     let whereClause = `WHERE EXISTS (
       SELECT 1 FROM active_post_comments pc_filter
       WHERE pc_filter.post_id = p.post_id
@@ -1289,8 +1289,6 @@ exports.getPublicProfileCommentedPosts = async (req, res) => {
     }
 
     params.push(limit);
-    const limitIdx = idx;
-
     const userParamIdx = params.length + 1;
     params.push(currentUserId || null);
 
@@ -1506,7 +1504,6 @@ exports.getPublicProfileCommentedPosts = async (req, res) => {
     cursorPostId,
     limit = 10,
   } = req.query;
-
   // Validate / resolve UUID or account_name
   const uuidRegex =
     /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
@@ -1657,7 +1654,7 @@ exports.getPublicProfileCommentedPosts = async (req, res) => {
       LEFT JOIN organizations comp ON comp.org_id = p.author_org_id
       LEFT JOIN post_categories pc ON pc.category_id = p.category_id
       LEFT JOIN (
-          SELECT pm.post_id, json_agg(json_build_object('media_id', pm.media_id, 'url', pm.url, 'media_type', pm.media_type)) AS media
+          SELECT pm.post_id, json_agg(json_build_object('media_id', pm.media_id, 'url', pm.url, 'media_type', pm.media_type, 'fallback_url', pm.fallback_url, 'avif_url', pm.avif_url, 'processing_status', pm.processing_status)) AS media
           FROM post_media pm GROUP BY pm.post_id
       ) pm ON pm.post_id = p.post_id
       LEFT JOIN (SELECT post_id, COUNT(*) AS like_count FROM active_post_likes GROUP BY post_id) lc ON lc.post_id = p.post_id
@@ -1859,7 +1856,7 @@ exports.deleteAccount = async (req, res) => {
 
     let baseUrl = req.get('origin');
     if (!baseUrl && req.headers.referer) {
-      try { baseUrl = new URL(req.headers.referer).origin; } catch (_) {}
+      try { baseUrl = new URL(req.headers.referer).origin; } catch { /* Ignore malformed referrers. */ }
     }
     if (!baseUrl) {
       baseUrl = process.env.CLIENT_URL || (user.client_origin && !user.client_origin.includes('localhost') ? user.client_origin : null);
@@ -2066,7 +2063,7 @@ exports.resendRecoveryEmail = async (req, res) => {
 
       let baseUrl = req.get('origin');
       if (!baseUrl && req.headers.referer) {
-        try { baseUrl = new URL(req.headers.referer).origin; } catch (_) {}
+        try { baseUrl = new URL(req.headers.referer).origin; } catch { /* Ignore malformed referrers. */ }
       }
       if (!baseUrl) {
         baseUrl = process.env.CLIENT_URL || (user.client_origin && !user.client_origin.includes('localhost') ? user.client_origin : null);

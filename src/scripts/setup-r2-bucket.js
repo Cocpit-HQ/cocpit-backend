@@ -27,7 +27,7 @@ const CORS_RULES = [
       "http://localhost:3001",
       "https://cocpit.com",
       "https://www.cocpit.com",
-      "https://cocpit-frontend.railway.internal",
+      "https://cocpit-frontend-staging.up.railway.app",
       "https://cocpit-backend-staging.up.railway.app",
       // Wildcard for dev environments – tighten in production
       "*",

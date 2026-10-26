@@ -1,6 +1,7 @@
 const { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectsCommand, HeadObjectCommand, ListObjectsV2Command } = require("@aws-sdk/client-s3");
 const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
 const path = require("path");
+const { randomUUID } = require("crypto");
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Cloudflare R2 Client Configuration
@@ -45,18 +46,19 @@ function getPublicUrl(key) {
  * @param {number} [opts.expiresIn]   - Signed URL TTL in seconds (default: 1800 = 30 min)
  * @returns {Promise<{uploadUrl, rawKey, rawMasterUrl}>}
  */
-async function generatePresignedUploadUrl({ filename, contentType, folder = "posts", expiresIn = 1800 }) {
+async function generatePresignedUploadUrl({ filename, contentType, size, folder = "posts", expiresIn = 1800 }) {
   const bucket = getBucketName();
   if (!bucket) throw new Error("[R2Client] R2_BUCKET_NAME env var is not set.");
 
   const timestamp = Date.now();
   const sanitizedName = path.basename(filename).replace(/[^a-zA-Z0-9._-]/g, "_");
-  const rawKey = `raw/${folder}/${timestamp}-${sanitizedName}`;
+  const rawKey = `raw/${folder}/${timestamp}-${randomUUID()}-${sanitizedName}`;
 
   const command = new PutObjectCommand({
     Bucket: bucket,
     Key: rawKey,
     ContentType: contentType,
+    ...(Number.isFinite(Number(size)) ? { ContentLength: Number(size) } : {}),
   });
 
   const uploadUrl = await getSignedUrl(r2Client, command, { expiresIn });
@@ -153,6 +155,11 @@ async function objectExistsInR2(key) {
   } catch {
     return false;
   }
+}
+
+async function getObjectMetadataFromR2(key) {
+  const bucket = getBucketName();
+  return r2Client.send(new HeadObjectCommand({ Bucket: bucket, Key: key }));
 }
 
 /**
@@ -266,6 +273,7 @@ module.exports = {
   uploadBufferToR2,
   deleteObjectsFromR2,
   objectExistsInR2,
+  getObjectMetadataFromR2,
   deleteMediaByUrls,
 };
 

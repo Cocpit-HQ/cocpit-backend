@@ -432,7 +432,7 @@ const sendSuspensionAppealEmail = async (email, fullName, appealToken, actionRea
         throw new Error("Email service is not configured (RESEND_API_KEY missing).");
     }
 
-    const backendUrl = process.env.API_URL || "https://cocpit-backend-staging.up.railway.app/";
+    const backendUrl = (process.env.API_URL || process.env.MAIN_API_URL || "http://localhost:5000").replace(/\/+$/, "");
     const appealLink = `${backendUrl}/appeal.html?token=${appealToken}`;
 
     try {

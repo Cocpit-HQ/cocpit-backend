@@ -1,7 +1,5 @@
-const { stat } = require("node:fs");
 const pool = require("../../core/db/pool");
 const redisClient = require("../../core/db/redis"); // Added for cache invalidation
-const { connected } = require("node:process");
 const { formatDistanceToNow } = require('date-fns');
 const socketService = require("../../core/infrastructure/socket.service");
 const { hasActorPermission } = require("../../core/middlewares/actor-context.middleware");
@@ -271,8 +269,6 @@ exports.unfollowUser = async (req, res) => {
             // The frontend `getRelationshipStatus` handles this dynamically.
             // We just need to trigger the invalidation.
             // Check if B follows A?
-            const reverseCheck = await client.query("SELECT 1 FROM followers WHERE follower_id = $1 AND following_id = $2", [followingId, followerId]);
-            const bFollowsA = reverseCheck.rowCount > 0;
 
             // Actually, simple invalidation signal is best.
             // We already sent 'none' above, which forces a re-fetch usually or sets state.
@@ -1078,7 +1074,7 @@ exports.getFollowersCount = async (req, res) => {
         );
         res.json({ followers_count: result.rows[0].count });
     }
-    catch (err) {
+    catch {
         res.status(500).json({ message: "Internal server error" });
     }
 
@@ -2608,7 +2604,6 @@ exports.getMyConnections = async (req, res) => {
         }
 
         // Apply block filtering to connections
-        const viewerIdx = 1; // Always $1 for getMyConnections as we don't have a separate viewer param, but wait
         // In getMyConnections, userId is the current user.
         userQuery += `
             AND NOT EXISTS (
@@ -3717,7 +3712,7 @@ exports.sendMessage = async (req, res) => {
                         COALESCE(org.headline, u.display_headline, NULL) as author_headline,
                         (p.author_org_id IS NOT NULL) as is_organization_post,
                         json_build_object('full_name', COALESCE(org.name, u.display_name), 'avatar_url', CASE WHEN p.author_org_id IS NOT NULL THEN org.logo_url ELSE u.display_avatar END, 'headline', COALESCE(org.headline, u.display_headline)) as author_obj,
-                        (SELECT json_agg(json_build_object('url', url, 'media_type', media_type)) FROM post_media WHERE post_id = p.post_id) as media,
+                        (SELECT json_agg(json_build_object('url', url, 'media_type', media_type, 'fallback_url', fallback_url, 'avif_url', avif_url, 'processing_status', processing_status)) FROM post_media WHERE post_id = p.post_id) as media,
                         (
                             SELECT json_build_object(
                                 'poll_id', pp.poll_id,
@@ -4751,7 +4746,7 @@ exports.getMessages = async (req, res) => {
                             'author_headline', COALESCE(sp_org.headline, au.display_headline, NULL),
                             'author_username', au.display_username,
                             'is_organization_post', (sp.author_org_id IS NOT NULL),
-                            'media', (SELECT json_agg(json_build_object('url', url, 'media_type', media_type)) FROM post_media WHERE post_id = sp.post_id),
+                            'media', (SELECT json_agg(json_build_object('url', url, 'media_type', media_type, 'fallback_url', fallback_url, 'avif_url', avif_url, 'processing_status', processing_status)) FROM post_media WHERE post_id = sp.post_id),
                             'poll', (
                                 SELECT json_build_object(
                                     'poll_id', pp.poll_id,
@@ -5165,7 +5160,7 @@ exports.markNotificationRead = async (req, res) => {
             message: "Notification marked as read",
             notification: result.rows[0],
         });
-    } catch (err) {
+    } catch {
         res.status(500).json({ message: "Internal server error" });
     }
 };
@@ -5997,8 +5992,6 @@ exports.handleCompanyConnectionRequest = async (req, res) => {
             await client.query('ROLLBACK');
             return res.status(404).json({ message: "Pending invitation not found" });
         }
-
-        const invite = reqRes.rows[0];
 
         if (status === 'accepted') {
             // 2. Create connection + follow (Atomic Multi-update)

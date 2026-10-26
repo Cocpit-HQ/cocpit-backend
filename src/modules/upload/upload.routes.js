@@ -1,8 +1,11 @@
 const express = require("express");
+const { randomUUID } = require("crypto");
 const { uploadStory } = require("../../core/middlewares/upload.middleware");
 const { requireAuth } = require("../../core/middlewares/auth.middleware");
-const { generatePresignedUploadUrl, objectExistsInR2 } = require("../../core/infrastructure/r2.client");
+const { generatePresignedUploadUrl, objectExistsInR2, getObjectMetadataFromR2, downloadFromR2AsBuffer, getPublicUrl } = require("../../core/infrastructure/r2.client");
 const { processDualAsset } = require("../../workers/mediaTranscoder.worker");
+const { validateUploadBatch, validateImageBuffer, MAX_IMAGE_BYTES, MAX_POST_IMAGE_BYTES, MAX_POST_MEDIA_COUNT } = require("./mediaValidation");
+const createR2Storage = require("../../core/infrastructure/r2MulterStorage");
 
 const router = express.Router();
 
@@ -35,7 +38,7 @@ router.post("/upload/presign", requireAuth, async (req, res) => {
     });
   }
 
-  const { filename, contentType, folder = "posts" } = req.body;
+  const { filename, contentType } = req.body;
 
   if (!filename || !contentType) {
     return res.status(400).json({ error: "Missing required fields: filename, contentType" });
@@ -52,7 +55,8 @@ router.post("/upload/presign", requireAuth, async (req, res) => {
   }
 
   try {
-    const ticket = await generatePresignedUploadUrl({ filename, contentType, folder });
+    validateUploadBatch([{ filename, contentType, size: Number(req.body.size) }]);
+    const ticket = await generatePresignedUploadUrl({ filename, contentType, size: Number(req.body.size), folder: `posts/${req.user.sub}` });
     console.log(`[UploadRoutes] /upload/presign issued for user ${req.user.sub}: ${ticket.rawKey}`);
 
     return res.json({
@@ -63,6 +67,21 @@ router.post("/upload/presign", requireAuth, async (req, res) => {
   } catch (err) {
     console.error("[UploadRoutes] Presign error:", err);
     return res.status(500).json({ error: "Failed to generate upload URL", details: err.message });
+  }
+});
+
+router.post("/upload/presign-batch", requireAuth, async (req, res) => {
+  if (!hasR2) return res.status(503).json({ error: "R2 not configured" });
+  try {
+    const files = req.body?.files;
+    validateUploadBatch(files);
+    const uploads = await Promise.all(files.map(async (file, index) => {
+      const ticket = await generatePresignedUploadUrl({ filename: file.filename || file.name, contentType: file.contentType || file.type, size: Number(file.size), folder: `posts/${req.user.sub}` });
+      return { ...ticket, index, filename: file.filename || file.name, contentType: file.contentType || file.type, size: Number(file.size), media_type: String(file.contentType || file.type).startsWith("video/") ? "video" : "image" };
+    }));
+    return res.json({ uploads, maxImageBytes: MAX_IMAGE_BYTES, maxPostImageBytes: MAX_POST_IMAGE_BYTES, maxFiles: MAX_POST_MEDIA_COUNT });
+  } catch (error) {
+    return res.status(400).json({ error: error.message });
   }
 });
 
@@ -89,6 +108,9 @@ router.post("/upload/process", requireAuth, async (req, res) => {
   }
 
   // Verify the upload actually landed in R2 before processing
+  if (typeof rawKey !== "string" || !rawKey.startsWith(`raw/posts/${req.user.sub}/`) || rawMasterUrl !== getPublicUrl(rawKey)) {
+    return res.status(403).json({ error: "Upload does not belong to this user." });
+  }
   const exists = await objectExistsInR2(rawKey);
   if (!exists) {
     return res.status(400).json({
@@ -98,6 +120,13 @@ router.post("/upload/process", requireAuth, async (req, res) => {
   }
 
   try {
+    const objectMetadata = await getObjectMetadataFromR2(rawKey);
+    if (!objectMetadata.ContentLength || objectMetadata.ContentLength > (mediaType === "video" ? 100 : 10) * 1024 * 1024) {
+      return res.status(400).json({ error: "Uploaded object exceeds the allowed size." });
+    }
+    if (req.body.size && Number(req.body.size) !== Number(objectMetadata.ContentLength)) {
+      return res.status(400).json({ error: "Uploaded object size does not match its upload ticket." });
+    }
     if (isSync) {
       console.log(`[UploadRoutes] /upload/process (sync) running dual-asset pipeline: ${rawKey} (${mediaType})`);
       const asset = await processDualAsset({ rawKey, rawMasterUrl, mediaType });
@@ -106,6 +135,9 @@ router.post("/upload/process", requireAuth, async (req, res) => {
         url: asset.url,              // 12-bit AVIF display URL (or raw video)
         master_url: asset.masterUrl, // 100% untouched raw master
         media_type: asset.mediaType,
+        fallback_url: asset.fallbackUrl,
+        avif_url: asset.avifUrl,
+        processing_status: "ready",
         width: asset.width,
         height: asset.height,
         format: asset.format || "avif",
@@ -115,15 +147,18 @@ router.post("/upload/process", requireAuth, async (req, res) => {
     }
 
     // Asynchronous decoupled BullMQ background queue (<15ms response)
-    const job = await addTranscodeJob({ rawKey, rawMasterUrl, mediaType });
+    const job = await addTranscodeJob({ rawKey, rawMasterUrl, mediaType, ownerId: req.user.sub });
     console.log(`[UploadRoutes] /upload/process (async) enqueued job ${job.id} for: ${rawKey}`);
 
     return res.status(202).json({
       jobId: job.id,
       status: "processing",
-      url: rawMasterUrl,            // Instant raw master display while AVIF processes in worker
+      url: rawMasterUrl,
       master_url: rawMasterUrl,     // Permanent untouched master
       media_type: mediaType,
+      processing_status: "processing",
+      fallback_url: null,
+      avif_url: null,
       is_processed: false,
     });
   } catch (err) {
@@ -142,7 +177,8 @@ router.get("/upload/job/:jobId", requireAuth, async (req, res) => {
     if (!jobStatus) {
       return res.status(404).json({ error: "Job not found" });
     }
-    return res.json(jobStatus);
+    if (jobStatus.data?.ownerId !== req.user.sub) return res.status(404).json({ error: "Job not found" });
+    return res.json({ id: jobStatus.id, state: jobStatus.state, progress: jobStatus.progress, returnvalue: jobStatus.returnvalue, failedReason: jobStatus.failedReason });
   } catch (err) {
     console.error("[UploadRoutes] Job status error:", err);
     return res.status(500).json({ error: "Failed to get job status", details: err.message });
@@ -150,37 +186,39 @@ router.get("/upload/job/:jobId", requireAuth, async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ROUTE 3: POST /upload  (LEGACY – Cloudinary fallback, kept for backwards compatibility)
-// Used when R2 is not configured (local dev) or for non-R2 environments.
-// This path still proxies through Express → Cloudinary.
+// ROUTE 3: POST /upload  (Multipart upload via Cloudflare R2)
+// Fallback for callers unable to use direct presigned PUT
 // ─────────────────────────────────────────────────────────────────────────────
-if (!hasR2) {
-  // Only register the heavy multer route when R2 is NOT available
-  const { upload } = require("../../core/middlewares/upload.middleware");
-  router.post(
-    "/upload",
-    upload.array("files", 12),
-    (req, res) => {
-      console.log("[UploadRoute:Legacy] Uploaded files via Cloudinary:", req.files?.length);
-      const urls = req.files.map(file => ({
-        url: file.path,
-        media_type: file.resource_type || (file.mimetype?.startsWith("video") ? "video" : "image"),
-        width: file.width || null,
-        height: file.height || null,
+const multer = require("multer");
+const postUpload = multer({ storage: createR2Storage({ folder: "raw/posts", filename: (req, file) => `${req.user.sub}/${Date.now()}-${randomUUID()}-${file.originalname.replace(/[^a-zA-Z0-9._-]/g, "_")}` }), limits: { fileSize: 100 * 1024 * 1024, files: MAX_POST_MEDIA_COUNT } });
+router.post(
+  "/upload",
+  requireAuth,
+  postUpload.array("files", MAX_POST_MEDIA_COUNT),
+  async (req, res) => {
+    try {
+      const files = req.files || [];
+      validateUploadBatch(files.map((file) => ({ name: file.originalname, size: file.size, type: file.mimetype })));
+      const syncProcessing = req.query.sync === "true";
+      const urls = await Promise.all(files.map(async (file) => {
+        const rawKey = file.key;
+        const rawMasterUrl = file.path;
+        if (!rawKey || !rawKey.startsWith(`raw/posts/${req.user.sub}/`)) throw new Error("Upload key is not scoped to the authenticated user.");
+        const mediaType = file.mimetype?.startsWith("video/") || /\.(mp4|mov|webm)$/i.test(file.originalname) ? "video" : "image";
+        if (mediaType === "image") validateImageBuffer(await downloadFromR2AsBuffer(rawKey), file.originalname, file.mimetype);
+        if (syncProcessing) {
+          const asset = await processDualAsset({ rawKey, rawMasterUrl, mediaType });
+          return { url: asset.url, master_url: asset.masterUrl, media_type: mediaType, processing_status: "ready", fallback_url: asset.fallbackUrl, avif_url: asset.avifUrl, width: asset.width, height: asset.height, format: asset.format, bit_depth: asset.bitDepth };
+        }
+        const job = await addTranscodeJob({ rawKey, rawMasterUrl, mediaType, ownerId: req.user.sub });
+        return { url: rawMasterUrl, master_url: rawMasterUrl, media_type: mediaType, processing_status: "processing", fallback_url: null, avif_url: null, jobId: job.id };
       }));
-      res.json({ urls });
+      return res.status(syncProcessing ? 200 : 202).json({ urls });
+    } catch (error) {
+      return res.status(400).json({ error: error.message });
     }
-  );
-} else {
-  // In R2 mode, reject any attempt to use the old multipart upload route
-  router.post("/upload", (req, res) => {
-    return res.status(410).json({
-      error: "Legacy upload endpoint disabled",
-      message: "Use POST /upload/presign + POST /upload/process for direct R2 uploads.",
-      docs: "See SCALABLE_MEDIA_ARCHITECTURE_PLAN.md for the new upload flow.",
-    });
-  });
-}
+  }
+);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ROUTE 4: POST /upload/story  (Story upload – still uses multer until Phase 4 migration)
@@ -193,27 +231,12 @@ router.post(
 
     try {
       const mediaType = req.file.mimetype.startsWith("video") ? "video" : "image";
+      // For video stories, thumbnailUrl defaults to the video URL or display image
       let thumbnailUrl = req.file.path;
-
-      // Legacy: generate Cloudinary thumbnail URL if not using R2 yet
-      if (!hasR2 && req.file.filename) {
-        try {
-          const cloudinary = require("../../core/infrastructure/cloudinary.client");
-          if (cloudinary.url) {
-            thumbnailUrl = cloudinary.url(req.file.filename, {
-              resource_type: "video",
-              format: "jpg",
-              transformation: [{ width: 720, aspectRatio: "9:16", crop: "fill" }],
-            });
-          }
-        } catch (e) {
-          console.error("Error generating thumbnail URL:", e);
-        }
-      }
 
       res.json({
         url: req.file.path,
-        public_id: req.file.filename || req.file.originalname,
+        public_id: req.file.key || req.file.filename || req.file.originalname,
         media_type: mediaType,
         thumbnail_url: thumbnailUrl,
       });

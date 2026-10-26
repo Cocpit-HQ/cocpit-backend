@@ -87,7 +87,7 @@ function mapProfileToResumeTemplate(profileData) {
 
     // 1. By default, add the link of the cocpit profile
     if (user.account_name) {
-        let baseUrl = user.client_origin || process.env.CLIENT_URL || 'https://cocpit-frontend-staging.up.railway.app/';
+        let baseUrl = user.client_origin || process.env.CLIENT_URL || process.env.FRONTEND_URL || 'http://localhost:3000';
         if (baseUrl.endsWith('/')) baseUrl = baseUrl.slice(0, -1);
         
         const profileUrl = `${baseUrl}/profile/${user.account_name}`;

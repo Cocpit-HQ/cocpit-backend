@@ -8,8 +8,8 @@ module.exports = {
       env: {
         NODE_ENV: "production",
         GATEWAY_PORT: 8000,
-        MAIN_API_URL: "https://cocpit-backend-staging.up.railway.app/",
-        ADMIN_API_URL: "http://localhost:5001"
+        MAIN_API_URL: process.env.MAIN_API_URL || "http://localhost:5000",
+        ADMIN_API_URL: process.env.ADMIN_API_URL || "http://localhost:5001"
       }
     },
     {

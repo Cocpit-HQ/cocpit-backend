@@ -185,7 +185,7 @@ exports.getFaqs = (req, res) => {
 // =========================================================================
 exports.getLegalDocs = (req, res) => {
     const protocol = req?.protocol || 'http';
-    const host = req?.get?.('host') || req?.headers?.host || 'cocpit-backend-staging.up.railway.app';
+    const host = req?.get?.('host') || req?.headers?.host || (process.env.API_URL ? new URL(process.env.API_URL).host : 'localhost:5000');
     const localBase = `${protocol}://${host}/uploads/legal`;
 
     const docs = [
