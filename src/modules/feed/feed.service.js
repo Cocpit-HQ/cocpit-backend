@@ -102,7 +102,7 @@ function buildCacheScopeId(userId, orgActorId) {
  *   load (no cursor), so rerankCandidates skips the seen-set filter — see its own doc comment.
  * @returns {Promise<Array>}       - FeedItem[] from rerankingEngine
  */
-async function _runPipeline({ userId, scopeId, pool, session, isInitialPage }) {
+async function _runPipeline({ userId, scopeId, pool, session, isInitialPage, orgActorId = null }) {
   // ── Step 1: Generate candidates (all 4 sources) ───────────────────────────
   const candidates = await generateCandidates({ userId, pool });
   const totalCandidates = candidates.length;
@@ -132,7 +132,7 @@ async function _runPipeline({ userId, scopeId, pool, session, isInitialPage }) {
   // scopeId (not userId) so the seen-set dedup matches whichever actor is
   // actually viewing — see buildCacheScopeId. isInitialPage disables the
   // seen-set filter for a fresh page load — see rerankCandidates doc comment.
-  const feedItems = await rerankCandidates(
+  let feedItems = await rerankCandidates(
     rankedCandidates,
     scopeId,
     session,
@@ -140,6 +140,43 @@ async function _runPipeline({ userId, scopeId, pool, session, isInitialPage }) {
     explorationCandidates,
     isInitialPage,
   );
+
+  // Always show the actor's newest posts in their own initial feed page. The
+  // social-graph candidate source intentionally excludes self-authored posts,
+  // so without this small injection a freshly published post can vanish as
+  // soon as the client's optimistic card is reconciled with the ranked feed.
+  if (isInitialPage && pool) {
+    try {
+      const ownPosts = await pool.query(
+        `SELECT post_id
+         FROM posts
+         WHERE is_active = TRUE
+           AND COALESCE(is_removed, FALSE) = FALSE
+           AND status = 'published'
+           AND visibility = 'public'
+           AND (($2::uuid IS NULL AND author_id = $1 AND author_org_id IS NULL)
+             OR ($2::uuid IS NOT NULL AND author_org_id = $2))
+         ORDER BY created_at DESC, post_id DESC
+         LIMIT 3`,
+        [userId, orgActorId]
+      );
+      const existingIds = new Set(feedItems.map((item) => item.id));
+      const ownItems = ownPosts.rows
+        .filter((row) => !existingIds.has(row.post_id))
+        .map((row, index) => ({
+          id: row.post_id,
+          type: 'post',
+          content: {},
+          author: { id: orgActorId || userId },
+          score: 0,
+          slot_type: 'organic',
+          position: index,
+        }));
+      feedItems = [...ownItems, ...feedItems];
+    } catch (error) {
+      console.warn('[feedService] Could not add the actor\'s latest posts to the first page:', error.message);
+    }
+  }
 
   return { feedItems, totalCandidates };
 }
@@ -379,7 +416,7 @@ async function getFeed({ userId, cursor = null, limit = DEFAULT_PAGE_SIZE, pool 
   let totalCandidates = 0;
 
   try {
-    const pipelineResult = await _runPipeline({ userId, scopeId, pool, session, isInitialPage });
+    const pipelineResult = await _runPipeline({ userId, scopeId, pool, session, isInitialPage, orgActorId });
     feedItems = pipelineResult.feedItems;
     totalCandidates = pipelineResult.totalCandidates;
   } catch (pipelineErr) {

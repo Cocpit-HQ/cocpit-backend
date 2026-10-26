@@ -1286,6 +1286,7 @@ exports.createPost = async (req, res) => {
         }
 
         let type;
+        let createdMedia = [];
         // 3. Insert Media (Parallel Optimized & Transcode-Aware)
         if (media_urls && Array.isArray(media_urls) && media_urls.length > 0) {
             const mediaPromises = media_urls.map(async (mediaItem) => {
@@ -1311,7 +1312,7 @@ exports.createPost = async (req, res) => {
                             height = parsed.height || height;
                             format = parsed.format || format;
                             bitDepth = parsed.bitDepth || bitDepth;
-                            isProcessed = true;
+                            isProcessed = parsed.processingStatus === "ready";
                             fallbackUrl = parsed.fallbackUrl || url;
                             avifUrl = parsed.avifUrl || null;
                             processingStatus = parsed.processingStatus || "ready";
@@ -1323,13 +1324,26 @@ exports.createPost = async (req, res) => {
 
                 let currentType = url?.toLowerCase().match(/\.(mp4|webm|mov)(\?|#|$)/) ? 'video' : 'image';
                 type = currentType;
-                return client.query(
+                const mediaResult = await client.query(
                     `INSERT INTO post_media (post_id, url, media_type, width, height, master_url, format, bit_depth, is_processed, fallback_url, avif_url, processing_status)
-                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                     RETURNING media_id`,
                     [postId, url, currentType, width, height, masterUrl, format, bitDepth, isProcessed, fallbackUrl, avifUrl, currentType === 'video' ? 'ready' : processingStatus]
                 );
+                return {
+                    media_id: mediaResult.rows[0]?.media_id,
+                    post_id: postId,
+                    url,
+                    master_url: masterUrl,
+                    media_type: currentType,
+                    width,
+                    height,
+                    fallback_url: fallbackUrl,
+                    avif_url: avifUrl,
+                    processing_status: currentType === 'video' ? 'ready' : processingStatus,
+                };
             });
-            await Promise.all(mediaPromises);
+            createdMedia = await Promise.all(mediaPromises);
         }
 
         // 4. Handle Repost Notification
@@ -1438,6 +1452,18 @@ exports.createPost = async (req, res) => {
         }
 
         await client.query('COMMIT');
+
+        // The initial ranked feed slice may have been cached before this post
+        // was created. Force its next read to rebuild; feed.service also adds
+        // the actor's newest published posts to that initial page.
+        try {
+            const feedService = require("../feed/feed.service");
+            const { deleteFeedSlice } = require("../feed/cache/feedCache");
+            const feedScopeId = feedService.buildCacheScopeId(userId, companyId);
+            await deleteFeedSlice(feedScopeId, "initial");
+        } catch (cacheError) {
+            console.warn("[CreatePost] Could not invalidate the initial feed slice:", cacheError.message);
+        }
 
         // Mentions in post content (fire-and-forget, after commit)
         if (content && typeof content === 'string') {
@@ -1558,6 +1584,45 @@ exports.createPost = async (req, res) => {
         // 🎯 Intent Layer: Log Create Post
         logIntentActivity({ userId, action: "create_post", metadata: { postId, postType: post_type, category } });
 
+        let authorData = {};
+        try {
+            const authorResult = companyId
+                ? await pool.query(`SELECT name AS author_name, logo_url AS author_avatar, slug AS author_slug, headline AS author_headline FROM organizations WHERE org_id = $1`, [companyId])
+                : await pool.query(`SELECT full_name AS author_name, avatar_url AS author_avatar, account_name AS author_slug, headline AS author_headline FROM users WHERE user_id = $1`, [userId]);
+            authorData = authorResult.rows[0] || {};
+        } catch (authorError) {
+            console.warn("[CreatePost] Could not load author details for create response:", authorError.message);
+        }
+
+        const createdPost = {
+            post_id: postId,
+            content,
+            created_at: postResult.rows[0]?.created_at || new Date().toISOString(),
+            visibility: visibility || 'public',
+            author_id: userId,
+            author_org_id: companyId || undefined,
+            author_name: authorData.author_name || "",
+            author_avatar: authorData.author_avatar || null,
+            author_slug: authorData.author_slug || undefined,
+            author_headline: authorData.author_headline || undefined,
+            is_organization_post: Boolean(companyId),
+            category_name: category || null,
+            location: location || null,
+            media: createdMedia,
+            poll: pollId ? { poll_id: pollId, options: poll_options || [], total_votes: 0, duration: poll_duration || '1 week', is_active: true } : null,
+            like_count: 0,
+            comment_count: 0,
+            share_count: 0,
+            is_liked: false,
+            is_reposted: false,
+            is_commented: false,
+            is_saved: false,
+            is_reported: false,
+            post_type,
+            title: title || undefined,
+            status: status || 'published',
+        };
+
         res.status(201).json({
             message: "Post created",
             postId,
@@ -1570,6 +1635,7 @@ exports.createPost = async (req, res) => {
             mediaUrls: media_urls,
             mediaType: type,
             status: status || 'published',
+            post: createdPost,
             poll: {
                 pollId: pollId,
                 duration: poll_duration,

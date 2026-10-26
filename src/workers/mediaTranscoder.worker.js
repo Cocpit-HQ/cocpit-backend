@@ -11,7 +11,7 @@ const MAX_DISPLAY_PX = 2560;
 const MAX_INPUT_PIXELS = 100_000_000;
 if (!libheif.HeifDecoder) throw new Error("HEIC/HEIF decoder failed to initialize.");
 
-function deriveDisplayKey(rawKey, extension = ".avif") {
+function deriveDisplayKey(rawKey, extension = ".jpg") {
   const noExt = rawKey.replace(/\.[^/.]+$/, "");
   return noExt.replace(/^raw\//, "display/") + extension;
 }
@@ -67,19 +67,10 @@ async function transcodeImage(rawBuffer, rawKey) {
   const fallbackKey = deriveDisplayKey(rawKey, fallbackExt);
   const fallbackUrl = await uploadBufferToR2({ key: fallbackKey, body: fallbackResult.data, contentType: fallbackMime });
 
-  let avifUrl = null;
-  try {
-    const avifResult = await base.clone().avif({ quality: 85, effort: 5, chromaSubsampling: "4:4:4" }).toBuffer({ resolveWithObject: true });
-    avifUrl = await uploadBufferToR2({ key: deriveDisplayKey(rawKey), body: avifResult.data, contentType: "image/avif" });
-  } catch (error) {
-    console.warn(`[MediaTranscoder] AVIF variant failed for ${rawKey}; compatible image is available: ${error.message}`);
-  }
-
   return {
     url: fallbackUrl,
-    displayUrl: avifUrl || fallbackUrl,
     fallbackUrl,
-    avifUrl,
+    avifUrl: null,
     masterUrl: getPublicUrl(rawKey),
     mediaType: "image",
     width: fallbackResult.info.width,
@@ -112,14 +103,26 @@ async function saveProcessingResult(rawMasterUrl, asset, status = "ready", error
   return result.rows;
 }
 
-async function notifyProcessingUpdate(rows, ownerId, status) {
+async function notifyProcessingUpdate(rows, ownerId, status, mediaAsset = null) {
   if (!rows.length) return;
   const socketService = require("../core/infrastructure/socket.service");
   const postIds = [...new Set(rows.map((row) => row.post_id))];
   const postRows = await pool.query("SELECT post_id, visibility FROM posts WHERE post_id = ANY($1::uuid[])", [postIds]);
   const publicPosts = new Set(postRows.rows.filter((post) => post.visibility === "public").map((post) => post.post_id));
   for (const row of rows) {
-    const payload = { postId: row.post_id, mediaId: row.media_id, processing_status: status };
+    const payload = {
+      postId: row.post_id,
+      mediaId: row.media_id,
+      processing_status: status,
+      media: mediaAsset ? {
+        url: mediaAsset.url,
+        fallback_url: mediaAsset.fallbackUrl || null,
+        avif_url: mediaAsset.avifUrl || null,
+        width: mediaAsset.width || null,
+        height: mediaAsset.height || null,
+        media_type: mediaAsset.mediaType || "image",
+      } : null,
+    };
     if (publicPosts.has(row.post_id)) socketService.broadcastGlobal?.("media_processing_updated", payload);
     else socketService.notifyUser?.(ownerId, "media_processing_updated", payload);
   }
@@ -140,7 +143,7 @@ function startMediaTranscoderWorker() {
       console.warn(`[MediaTranscoder] Redis result cache failed: ${error.message}`);
     }
     const rows = await saveProcessingResult(rawMasterUrl, asset);
-    await notifyProcessingUpdate(rows, ownerId, "ready");
+    await notifyProcessingUpdate(rows, ownerId, "ready", asset);
     return asset;
   }, { connection: redisConnection, concurrency: 3 });
 
@@ -165,11 +168,14 @@ function startMediaTranscoderWorker() {
     try {
       const rows = await pool.query(
         `UPDATE post_media SET processing_status = 'failed', processing_error = $1,
-           url = COALESCE(fallback_url, url), is_processed = FALSE
-         WHERE master_url = $2 RETURNING post_id, media_id`,
+           url = COALESCE(master_url, url), is_processed = FALSE
+         WHERE master_url = $2 RETURNING post_id, media_id, master_url`,
         [String(error.message).slice(0, 500), job.data.rawMasterUrl]
       );
-      await notifyProcessingUpdate(rows.rows, job.data.ownerId, "failed");
+      await notifyProcessingUpdate(rows.rows, job.data.ownerId, "failed", {
+        url: rows.rows[0]?.master_url || job.data.rawMasterUrl,
+        mediaType: job.data.mediaType || "image",
+      });
     } catch (dbError) {
       console.error(`[MediaTranscoder] Could not save failed state: ${dbError.message}`);
     }
@@ -178,4 +184,4 @@ function startMediaTranscoderWorker() {
   return mediaWorkerInstance;
 }
 
-module.exports = { transcodeImageToAvif: (rawKey) => downloadFromR2AsBuffer(rawKey).then((buffer) => transcodeImage(buffer, rawKey)), processDualAsset, deriveDisplayKey, startMediaTranscoderWorker };
+module.exports = { transcodeImageToCompatibleFormat: (rawKey) => downloadFromR2AsBuffer(rawKey).then((buffer) => transcodeImage(buffer, rawKey)), processDualAsset, deriveDisplayKey, startMediaTranscoderWorker };

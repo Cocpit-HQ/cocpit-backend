@@ -91,6 +91,11 @@ async function getFeedSlice(userId, cursor) {
   }
 }
 
+async function deleteFeedSlice(userId, cursor) {
+  if (!userId || !cursor) throw new Error("deleteFeedSlice: userId and cursor are required");
+  await redis.del(keys.feedSlice(userId, cursor));
+}
+
 // ─── B1.4 ─────────────────────────────────────────────────────────────────────
 /**
  * Add item IDs to the user's seen set (deduplication set).
@@ -323,6 +328,7 @@ module.exports = {
   // Feed slice
   setFeedSlice,
   getFeedSlice,
+  deleteFeedSlice,
   // Seen set
   addToSeenSet,
   getSeenSet,

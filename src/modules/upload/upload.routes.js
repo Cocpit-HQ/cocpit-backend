@@ -86,11 +86,56 @@ router.post("/upload/presign-batch", requireAuth, async (req, res) => {
 
 const { addTranscodeJob, getJobStatus } = require("../../queues/media.queue");
 
+// Queue a completed direct-to-R2 batch with one authenticated request. The
+// browser still uploads each original directly to R2; this call is the signal
+// that all PUTs have completed and the worker can begin processing them.
+router.post("/upload/process-batch", requireAuth, async (req, res) => {
+  if (!hasR2) return res.status(503).json({ error: "R2 not configured" });
+
+  try {
+    const uploads = req.body?.uploads;
+    validateUploadBatch(uploads);
+
+    const verifiedUploads = await Promise.all(uploads.map(async (upload) => {
+      const { rawKey, rawMasterUrl, mediaType = "image" } = upload;
+      if (typeof rawKey !== "string" || !rawKey.startsWith(`raw/posts/${req.user.sub}/`) || rawMasterUrl !== getPublicUrl(rawKey)) {
+        throw new Error("Upload does not belong to this user.");
+      }
+      if (!(await objectExistsInR2(rawKey))) throw new Error(`Raw file ${rawKey} was not found in R2.`);
+
+      const metadata = await getObjectMetadataFromR2(rawKey);
+      const maxBytes = (mediaType === "video" ? 100 : 10) * 1024 * 1024;
+      if (!metadata.ContentLength || metadata.ContentLength > maxBytes) throw new Error("Uploaded object exceeds the allowed size.");
+      if (upload.size && Number(upload.size) !== Number(metadata.ContentLength)) throw new Error("Uploaded object size does not match its upload ticket.");
+      return { rawKey, rawMasterUrl, mediaType };
+    }));
+
+    const queuedUploads = await Promise.all(verifiedUploads.map(async (upload) => {
+      const job = await addTranscodeJob({ ...upload, ownerId: req.user.sub });
+      return {
+        jobId: job.id,
+        status: "processing",
+        url: upload.rawMasterUrl,
+        master_url: upload.rawMasterUrl,
+        media_type: upload.mediaType,
+        processing_status: "processing",
+        fallback_url: null,
+        avif_url: null,
+        is_processed: false,
+      };
+    }));
+
+    return res.status(202).json({ uploads: queuedUploads });
+  } catch (error) {
+    return res.status(400).json({ error: error.message });
+  }
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 // ROUTE 2: POST /upload/process
 // Called by client AFTER it has successfully PUT the file to R2.
 // Decoupled architecture:
-//  - Default: Queues 12-bit AVIF transcoding to BullMQ background worker (<15ms response).
+//  - Default: Queues compatible JPEG/PNG display-image processing in BullMQ.
 //             Returns immediately with rawMasterUrl so client can post without waiting.
 //  - sync=true: Executes transcoding immediately in-request (for scripts/verification).
 // ─────────────────────────────────────────────────────────────────────────────
@@ -127,11 +172,11 @@ router.post("/upload/process", requireAuth, async (req, res) => {
       return res.status(400).json({ error: "Uploaded object size does not match its upload ticket." });
     }
     if (isSync) {
-      console.log(`[UploadRoutes] /upload/process (sync) running dual-asset pipeline: ${rawKey} (${mediaType})`);
+      console.log(`[UploadRoutes] /upload/process (sync) generating compatible display image: ${rawKey} (${mediaType})`);
       const asset = await processDualAsset({ rawKey, rawMasterUrl, mediaType });
       return res.json({
         status: "completed",
-        url: asset.url,              // 12-bit AVIF display URL (or raw video)
+        url: asset.url,              // Compatible JPEG/PNG display URL (or raw video)
         master_url: asset.masterUrl, // 100% untouched raw master
         media_type: asset.mediaType,
         fallback_url: asset.fallbackUrl,
@@ -139,13 +184,13 @@ router.post("/upload/process", requireAuth, async (req, res) => {
         processing_status: "ready",
         width: asset.width,
         height: asset.height,
-        format: asset.format || "avif",
-        bit_depth: asset.bitDepth || 12,
+        format: asset.format || "jpeg",
+        bit_depth: asset.bitDepth || 8,
         is_processed: true,
       });
     }
 
-    // Asynchronous decoupled BullMQ background queue (<15ms response)
+    // Asynchronous decoupled BullMQ background queue
     const job = await addTranscodeJob({ rawKey, rawMasterUrl, mediaType, ownerId: req.user.sub });
     console.log(`[UploadRoutes] /upload/process (async) enqueued job ${job.id} for: ${rawKey}`);
 
