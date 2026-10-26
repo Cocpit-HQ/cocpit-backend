@@ -22,7 +22,7 @@ const { processUnreadMessagesNudges } = require("./workers/unreadMessages.cron")
 const { processOfferExpiryNudges } = require("./workers/jobOfferExpiry.cron");
 const server = http.createServer(app);
 
-// Configure high timeouts (10 minutes) for streaming large video uploads to Cloudinary
+// Configure high timeouts (10 minutes) for streaming large media uploads to Cloudflare R2
 server.timeout = 600000;
 server.headersTimeout = 601000;
 server.requestTimeout = 600000;

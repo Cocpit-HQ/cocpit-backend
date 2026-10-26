@@ -4914,18 +4914,12 @@ exports.getGroupedStories = async (req, res) => {
                 like_count: story.like_count || 0,
                 shared_post: story.shared_post,
                 story_metadata: story.story_metadata,
-                // Derive thumbnail_url: for Cloudinary videos swap extension to .jpg
-                // for images use the media_url directly
+                // Images can use their own URL as a thumbnail. Video thumbnails
+                // must be supplied explicitly; an R2 video URL has no implicit image sibling.
                 thumbnail_url: (() => {
                     const url = story.media_url || '';
                     if (!url) return null;
-                    if (story.media_type === 'video') {
-                        if (url.includes('cloudinary')) {
-                            // Swap any extension (e.g. .mp4) to .jpg for thumbnail
-                            return url.replace(/\.[^/.?]+(\?.*)?$/, '.jpg$1');
-                        }
-                        return null; // Non-cloudinary video: no thumbnail available
-                    }
+                    if (story.media_type === 'video') return story.thumbnail_url || null;
                     return url; // Image: use media_url directly as thumbnail
                 })()
             });
@@ -4997,10 +4991,11 @@ exports.createStory = async (req, res) => {
 
     let {
         title,
-        media_url,        // The baked snapshot URL (image or video) from Cloudinary
+        media_url,        // Public R2 URL for the uploaded image or video
         description,
         media_type,
-        public_id,        // Cloudinary public_id for cleanup
+        storage_key,      // R2 object key used for cleanup
+        public_id,        // Legacy request alias for older installed clients
         shared_post_id,
         story_metadata,   // Optional: edit metadata for re-editing (hybrid approach)
     } = req.body;
@@ -5034,7 +5029,7 @@ exports.createStory = async (req, res) => {
                 description || null,
                 media_url,          // $4
                 type,               // $5
-                public_id || null,  // $6
+                storage_key || public_id || null,  // $6 (the DB column retains its legacy name)
                 shared_post_id || null, // $7
                 story_metadata ? JSON.parse(JSON.stringify(story_metadata)) : {}, // $8
                 authorCompanyId || null  // $9
@@ -5114,7 +5109,7 @@ exports.deleteStory = async (req, res) => {
     }
 
     try {
-        // Delete from DB and get the Cloudinary public_id for cleanup
+        // Delete from DB and retrieve the stored R2 object key for cleanup.
         // Allow deletion if:
         //   1. Acting as company AND story was authored by that company (author_org_id match)
         //   2. The underlying user is the story author (author_id match) — regardless of current profile context
@@ -5126,7 +5121,7 @@ exports.deleteStory = async (req, res) => {
                     OR
                     (author_id = $2)
                )
-             RETURNING story_id, cld_public_id, media_type`,
+             RETURNING story_id, cld_public_id AS storage_key, media_type`,
             [storyId, userId, orgId || null]
         );
 
@@ -5136,10 +5131,10 @@ exports.deleteStory = async (req, res) => {
         }
 
         // Clean up the R2 object in the background.
-        const { cld_public_id } = result.rows[0];
-        if (cld_public_id) {
-            deleteObjectsFromR2([cld_public_id])
-                .catch(err => console.error(`[deleteStory] R2 cleanup failed for ${cld_public_id}:`, err.message));
+        const { storage_key: storageKey } = result.rows[0];
+        if (storageKey) {
+            deleteObjectsFromR2([storageKey])
+                .catch(err => console.error(`[deleteStory] R2 cleanup failed for ${storageKey}:`, err.message));
         }
 
         res.status(200).json({ message: "Story deleted", deletedStoryId: storyId });

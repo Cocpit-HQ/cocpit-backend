@@ -2,9 +2,7 @@ const { sanitizeContent } = require("../../utils/contentSanitizer");
 const pool = require("../../core/db/pool");
 const { getFlags } = require('../config/featureFlags.service');
 const { buildJobFilters } = require("../../core/utils/jobQueryBuilder");
-const { logAudit } = require("../../core/infrastructure/audit.service");
 const { checkOrgPermission } = require("../../core/utils/rbac");
-const { notifyOrgFollowers } = require("../../services/notification.service");
 const { sendToUser } = require("../notification/notification.service");
 const socketService = require("../../services/socket.service");
 const { hasActorPermission } = require("../../core/middlewares/actor-context.middleware");
@@ -451,7 +449,7 @@ exports.getJobById = async (req, res) => {
       const rateLimitKey = `ai_rate_limit:job:${resolvedJobId}`;
       const count = await redis.get(rateLimitKey);
       job.ai_generation_count = count ? parseInt(count, 10) : 0;
-    } catch (e) {
+    } catch {
       job.ai_generation_count = 0;
     }
 
@@ -475,7 +473,7 @@ exports.createJob = async (req, res) => {
 
   title = sanitizeContent(title);
 
-  let requestedOrgId = null;
+  let requestedOrgId;
   let resolvedCompanyName = "";
   try {
     requestedOrgId = getRequestedOrganizationActorId(req, org_id || null);
@@ -1053,7 +1051,7 @@ exports.applyJob = async (req, res) => {
     }
     const existingWithdrawn = existing.rowCount > 0 && existing.rows[0].current_status === 'Withdrawn';
 
-    // Resume file URL from Cloudinary or existing profile resume
+    // Resume URL from the configured upload storage or existing profile resume
     let resume_url = null;
     let resume_file_name = null;
     if (req.file) {
@@ -1231,7 +1229,7 @@ exports.applyJob = async (req, res) => {
 
 
     if (totalApplications < MIN_POOL) {
-
+      // Keep the default score when the applicant pool is too small to rank reliably.
     } else {
       const rankRes = await client.query(`
         SELECT COUNT(*) + 1 AS rank
@@ -1603,7 +1601,7 @@ exports.getMyRecentResumes = async (req, res) => {
 
       if (!name) {
         name = url.split('/').pop() || 'Resume.pdf';
-        // Clean up Cloudinary name (remove user id prefix if present)
+        // Clean up generated resume names when displaying a downloaded filename.
         // Format: resume-userid-timestamp.pdf -> Resume-timestamp.pdf or just keep it simple
         if (name.startsWith('resume-')) {
           const parts = name.split('-');
@@ -1659,7 +1657,8 @@ exports.getMyApplications = async (req, res) => {
   }
 
   try {
-    const { status: applicationStatus, ...filterParams } = req.query;
+    const filterParams = { ...req.query };
+    delete filterParams.status;
     const { conditions, values, nextIndex } = buildJobFilters(filterParams, 2);
 
     // Base params: userId is $1
@@ -1749,7 +1748,6 @@ exports.getMyApplications = async (req, res) => {
 
 exports.getMyJobs = async (req, res) => {
   const recruiterId = req.user.sub; // logged-in recruiter
-  const actorOrgId = req.actor?.type === "ORGANIZATION" ? req.actor.orgId : null;
   const {
     limit = 10,
     cursor,
@@ -2529,7 +2527,7 @@ exports.generateJD = async (req, res) => {
       });
     } catch (aiErr) {
       // Revert the rate limit counter on failure
-      try { await redis.decr(rateLimitKey); } catch (e) { /* ignore */ }
+      try { await redis.decr(rateLimitKey); } catch { /* ignore */ }
 
       await client.query("ROLLBACK");
       return res.status(aiErr.statusCode || 503).json({
@@ -2544,7 +2542,7 @@ exports.generateJD = async (req, res) => {
       validateContentSafety(generated);
     } catch (validationErr) {
       // Revert the rate limit counter on failure
-      try { await redis.decr(rateLimitKey); } catch (e) { /* ignore */ }
+      try { await redis.decr(rateLimitKey); } catch { /* ignore */ }
 
       await client.query("ROLLBACK");
       return res.status(validationErr.statusCode || 422).json({

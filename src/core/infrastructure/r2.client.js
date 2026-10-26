@@ -7,19 +7,22 @@ const { randomUUID } = require("crypto");
 // Cloudflare R2 Client Configuration
 // Endpoint: https://<accountId>.r2.cloudflarestorage.com (S3-compatible)
 // ─────────────────────────────────────────────────────────────────────────────
+const r2Endpoint = process.env.R2_ENDPOINT || (process.env.R2_ACCOUNT_ID
+  ? `https://${process.env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com`
+  : undefined);
+
 const r2Client = new S3Client({
   region: "auto",
-  endpoint: process.env.R2_ENDPOINT, // e.g. https://dfb9645beb803038c3b1e89183cdc126.r2.cloudflarestorage.com
+  endpoint: r2Endpoint, // R2's S3-compatible endpoint
   credentials: {
     accessKeyId: process.env.R2_ACCESS_KEY_ID,
     secretAccessKey: process.env.R2_SECRET_ACCESS_KEY,
   },
-  // Cloudflare R2 requires path-style URLs (not virtual hosted)
-  forcePathStyle: false,
+  forcePathStyle: true,
 });
 
-const getBucketName = () => process.env.R2_BUCKET_NAME || "cocpit-db";
-const getCdnBaseUrl = () => process.env.R2_CDN_BASE_URL || "https://pub-9ab7b27b805e4ef3954360339e67917a.r2.dev";
+const getBucketName = () => process.env.R2_BUCKET_NAME || "";
+const getCdnBaseUrl = () => (process.env.R2_PUBLIC_URL || process.env.R2_CDN_BASE_URL || "").replace(/\/$/, "");
 
 /**
  * Derive a clean CDN public URL for an R2 object key.
@@ -30,9 +33,9 @@ const getCdnBaseUrl = () => process.env.R2_CDN_BASE_URL || "https://pub-9ab7b27b
 function getPublicUrl(key) {
   const cdn = getCdnBaseUrl();
   if (!cdn) {
-    throw new Error("[R2Client] R2_CDN_BASE_URL env var is not set.");
+    throw new Error("[R2Client] Set R2_PUBLIC_URL or R2_CDN_BASE_URL.");
   }
-  return `${cdn.replace(/\/$/, "")}/${key}`;
+  return `${cdn}/${key}`;
 }
 
 /**
@@ -80,6 +83,7 @@ async function generatePresignedUploadUrl({ filename, contentType, size, folder 
  */
 async function downloadFromR2AsBuffer(key) {
   const bucket = getBucketName();
+  if (!bucket) throw new Error("[R2Client] R2_BUCKET_NAME env var is not set.");
   const cmd = new GetObjectCommand({ Bucket: bucket, Key: key });
   const response = await r2Client.send(cmd);
   const chunks = [];
@@ -99,6 +103,7 @@ async function downloadFromR2AsBuffer(key) {
  */
 async function uploadBufferToR2({ key, body, contentType, cacheControl = "public, max-age=31536000, immutable" }) {
   const bucket = getBucketName();
+  if (!bucket) throw new Error("[R2Client] R2_BUCKET_NAME env var is not set.");
   await r2Client.send(
     new PutObjectCommand({
       Bucket: bucket,
@@ -129,7 +134,7 @@ async function deleteObjectsFromR2(keys) {
   const batchSize = 1000;
   for (let i = 0; i < keys.length; i += batchSize) {
     const chunk = keys.slice(i, i + batchSize);
-    await r2Client.send(
+    const response = await r2Client.send(
       new DeleteObjectsCommand({
         Bucket: bucket,
         Delete: {
@@ -138,6 +143,10 @@ async function deleteObjectsFromR2(keys) {
         },
       })
     );
+    if (response.Errors?.length) {
+      const failedKeys = response.Errors.map(({ Key, Code }) => `${Key || "unknown"} (${Code || "unknown error"})`);
+      throw new Error(`[R2Client] Failed to delete R2 objects: ${failedKeys.join(", ")}`);
+    }
   }
   console.log(`[R2Client] Deleted ${keys.length} objects from R2 bucket '${bucket}'.`);
 }
@@ -150,6 +159,7 @@ async function deleteObjectsFromR2(keys) {
 async function objectExistsInR2(key) {
   try {
     const bucket = getBucketName();
+    if (!bucket) return false;
     await r2Client.send(new HeadObjectCommand({ Bucket: bucket, Key: key }));
     return true;
   } catch {
@@ -159,6 +169,7 @@ async function objectExistsInR2(key) {
 
 async function getObjectMetadataFromR2(key) {
   const bucket = getBucketName();
+  if (!bucket) throw new Error("[R2Client] R2_BUCKET_NAME env var is not set.");
   return r2Client.send(new HeadObjectCommand({ Bucket: bucket, Key: key }));
 }
 
@@ -180,19 +191,33 @@ async function deleteMediaByUrls(mediaInput) {
   }
 
   const keysToDelete = new Set();
-  const currentCdn = getCdnBaseUrl();
+  const configuredPublicBases = [process.env.R2_PUBLIC_URL, process.env.R2_CDN_BASE_URL]
+    .filter(Boolean)
+    .map((base) => base.replace(/\/$/, ""));
 
   for (const item of list) {
     const rawUrl = typeof item === "object" && item !== null ? item.url : item;
     if (!rawUrl || typeof rawUrl !== "string") continue;
 
     // Check if URL belongs to R2
-    const isR2 =
-      rawUrl.includes(".r2.dev") ||
-      rawUrl.includes(".r2.cloudflarestorage.com") ||
-      (currentCdn && rawUrl.startsWith(currentCdn)) ||
-      rawUrl.startsWith("display/") ||
-      rawUrl.startsWith("raw/");
+    const isRawKey = rawUrl.startsWith("display/") || rawUrl.startsWith("raw/");
+    let isConfiguredPublicUrl = false;
+    if (/^https?:\/\//i.test(rawUrl)) {
+      try {
+        const parsed = new URL(rawUrl);
+        isConfiguredPublicUrl = configuredPublicBases.some((base) => {
+          try {
+            const configured = new URL(base);
+            return parsed.origin === configured.origin && parsed.pathname.startsWith(`${configured.pathname.replace(/\/$/, "")}/`);
+          } catch {
+            return false;
+          }
+        });
+      } catch {
+        // Ignore malformed URLs; they are not safe to use as R2 object keys.
+      }
+    }
+    const isR2 = isRawKey || isConfiguredPublicUrl;
 
     if (!isR2) {
       console.log(`[R2Client] Skipping non-R2 media deletion: ${rawUrl}`);
@@ -201,11 +226,21 @@ async function deleteMediaByUrls(mediaInput) {
 
     try {
       let pathname = rawUrl;
-      if (rawUrl.startsWith("http://") || rawUrl.startsWith("https://")) {
+      if (/^https?:\/\//i.test(rawUrl)) {
         const parsed = new URL(rawUrl);
-        pathname = parsed.pathname;
+        const matchedBase = configuredPublicBases
+          .map((base) => new URL(base))
+          .find((base) => parsed.origin === base.origin && parsed.pathname.startsWith(`${base.pathname.replace(/\/$/, "")}/`));
+        if (!matchedBase) continue;
+        pathname = parsed.pathname.slice(matchedBase.pathname.replace(/\/$/, "").length);
       }
-      pathname = pathname.replace(/^\/+/, ""); // strip leading slash
+      try {
+        pathname = decodeURIComponent(pathname);
+      } catch {
+        console.warn("[R2Client] Skipping media URL with invalid path encoding.");
+        continue;
+      }
+      pathname = pathname.replace(/^\/+/, "");
 
       // Add the exact key found
       keysToDelete.add(pathname);

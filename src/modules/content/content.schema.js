@@ -28,6 +28,27 @@ const hideCommentSchema = z.object({
 
 const uuidOrEmpty = z.preprocess((val) => (val === "" ? null : val), z.string().uuid().optional().nullable());
 
+// R2 uploads return media records, not bare URLs. Keep accepting legacy URL
+// strings while validating the fields the post controller persists.
+const postMediaSchema = z.union([
+  z.string().min(1),
+  z.object({
+    url: z.string().min(1),
+    master_url: z.string().min(1).optional(),
+    masterUrl: z.string().min(1).optional(),
+    media_type: z.enum(["image", "video"]).optional(),
+    processing_status: z.enum(["processing", "ready", "failed"]).optional(),
+    fallback_url: z.string().min(1).nullable().optional(),
+    avif_url: z.string().min(1).nullable().optional(),
+    width: z.number().nonnegative().nullable().optional(),
+    height: z.number().nonnegative().nullable().optional(),
+    format: z.string().min(1).optional(),
+    bit_depth: z.number().positive().optional(),
+    is_processed: z.boolean().optional(),
+    jobId: z.string().optional(),
+  }).passthrough(),
+]);
+
 const createPostSchema = z.object({
   body: z.object({
     content: z.string().optional().nullable(),
@@ -68,7 +89,7 @@ const createPostSchema = z.object({
         }
       }
       return val;
-    }, z.array(z.string()).optional()),
+    }, z.array(postMediaSchema).optional()),
   }).passthrough(),
 });
 

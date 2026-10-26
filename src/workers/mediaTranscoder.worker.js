@@ -3,6 +3,7 @@ const libheif = require("libheif-js/wasm-bundle");
 const { downloadFromR2AsBuffer, uploadBufferToR2, getPublicUrl } = require("../core/infrastructure/r2.client");
 const { Worker } = require("bullmq");
 const { redisConnection } = require("../queues/media.queue");
+const redisClient = require("../core/db/redis");
 const pool = require("../core/db/pool");
 const { detectImageMime, validateImageBuffer } = require("../modules/upload/mediaValidation");
 
@@ -132,7 +133,9 @@ function startMediaTranscoderWorker() {
     const { rawKey, rawMasterUrl, mediaType = "image", ownerId } = job.data;
     const asset = await processDualAsset({ rawKey, rawMasterUrl, mediaType });
     try {
-      await redisConnection.set(`media:conversion:${rawMasterUrl}`, JSON.stringify(asset), "EX", 86400);
+      if (redisClient?.isOpen) {
+        await redisClient.set(`media:conversion:${rawMasterUrl}`, JSON.stringify(asset), "EX", 86400);
+      }
     } catch (error) {
       console.warn(`[MediaTranscoder] Redis result cache failed: ${error.message}`);
     }
@@ -146,14 +149,20 @@ function startMediaTranscoderWorker() {
     console.error(`[MediaTranscoder] Job ${job?.id} failed:`, error.message);
     if (!job || job.attemptsMade < (job.opts?.attempts || 1)) return;
     try {
-      await redisConnection.set(`media:conversion:${job.data.rawMasterUrl}`, JSON.stringify({
-        url: job.data.rawMasterUrl,
-        masterUrl: job.data.rawMasterUrl,
-        fallbackUrl: null,
-        avifUrl: null,
-        processingStatus: "failed",
-        error: String(error.message).slice(0, 500),
-      }), "EX", 86400);
+      if (redisClient?.isOpen) {
+        await redisClient.set(`media:conversion:${job.data.rawMasterUrl}`, JSON.stringify({
+          url: job.data.rawMasterUrl,
+          masterUrl: job.data.rawMasterUrl,
+          fallbackUrl: null,
+          avifUrl: null,
+          processingStatus: "failed",
+          error: String(error.message).slice(0, 500),
+        }), "EX", 86400);
+      }
+    } catch (redisErr) {
+      console.warn(`[MediaTranscoder] Redis failed cache error: ${redisErr.message}`);
+    }
+    try {
       const rows = await pool.query(
         `UPDATE post_media SET processing_status = 'failed', processing_error = $1,
            url = COALESCE(fallback_url, url), is_processed = FALSE
@@ -168,7 +177,5 @@ function startMediaTranscoderWorker() {
   mediaWorkerInstance.on("error", (error) => console.error("[MediaTranscoder] Worker error:", error.message));
   return mediaWorkerInstance;
 }
-
-startMediaTranscoderWorker();
 
 module.exports = { transcodeImageToAvif: (rawKey) => downloadFromR2AsBuffer(rawKey).then((buffer) => transcodeImage(buffer, rawKey)), processDualAsset, deriveDisplayKey, startMediaTranscoderWorker };

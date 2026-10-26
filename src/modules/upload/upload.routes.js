@@ -10,20 +10,19 @@ const createR2Storage = require("../../core/infrastructure/r2MulterStorage");
 const router = express.Router();
 
 // ─────────────────────────────────────────────────────────────────────────────
-// R2 Feature Flag
-// When R2 is configured, uploads bypass the backend entirely (presigned PUT).
-// When R2 is NOT configured (local dev without creds), fall through to legacy
-// multer→cloudinary flow for backwards compatibility.
+// Cloudflare R2 Storage Engine
+// Uploads use direct presigned PUT to R2, eliminating server proxy overhead.
+// Multipart /upload endpoint also stores directly to R2.
 // ─────────────────────────────────────────────────────────────────────────────
 const hasR2 = !!(
   process.env.R2_ACCOUNT_ID &&
   process.env.R2_ACCESS_KEY_ID &&
   process.env.R2_SECRET_ACCESS_KEY &&
   process.env.R2_BUCKET_NAME &&
-  process.env.R2_CDN_BASE_URL
+  (process.env.R2_CDN_BASE_URL || process.env.R2_PUBLIC_URL)
 );
 
-console.log(`[UploadRoutes] R2 mode: ${hasR2 ? "ENABLED ✅ (Direct presigned uploads)" : "DISABLED ⚠️ (Legacy Cloudinary fallback)"}`);
+console.log(`[UploadRoutes] Cloudflare R2 Storage: ${hasR2 ? "ENABLED ✅ (Direct presigned + R2 multipart)" : "NOT CONFIGURED ⚠️"}`);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ROUTE 1: POST /upload/presign
@@ -34,7 +33,7 @@ router.post("/upload/presign", requireAuth, async (req, res) => {
   if (!hasR2) {
     return res.status(503).json({
       error: "R2 not configured",
-      message: "R2 environment variables are missing. Use /upload (legacy) endpoint.",
+      message: "R2 environment variables are missing.",
     });
   }
 
