@@ -811,7 +811,7 @@ exports.getPublicProfilePosts = async (req, res) => {
         pc.name AS category_name,
 
         COALESCE(
-          (SELECT json_agg(json_build_object('url', pm.url, 'media_type', pm.media_type, 'width', pm.width, 'height', pm.height, 'fallback_url', pm.fallback_url, 'avif_url', pm.avif_url, 'processing_status', pm.processing_status))
+          (SELECT json_agg(json_build_object('media_id', pm.media_id, 'url', pm.url, 'master_url', pm.master_url, 'media_type', pm.media_type, 'width', pm.width, 'height', pm.height, 'fallback_url', pm.fallback_url, 'avif_url', pm.avif_url, 'processing_status', pm.processing_status, 'stream_uid', pm.stream_uid, 'stream_hls_url', pm.stream_hls_url, 'stream_dash_url', pm.stream_dash_url, 'stream_thumbnail_url', pm.stream_thumbnail_url, 'hdr_manifest_url', pm.hdr_manifest_url, 'hdr_processing_status', pm.hdr_processing_status))
            FROM post_media pm WHERE pm.post_id = p.post_id),
           '[]'::json
         ) AS media,
@@ -972,7 +972,7 @@ exports.getPublicProfilePosts = async (req, res) => {
                 'author_headline', CASE WHEN sp.author_org_id IS NOT NULL THEN sp_comp.headline ELSE sp_u.headline END,
                 'is_organization_post', (sp.author_org_id IS NOT NULL)
               ),
-              'media', COALESCE((SELECT json_agg(json_build_object('url', pm.url, 'media_type', pm.media_type, 'width', pm.width, 'height', pm.height, 'fallback_url', pm.fallback_url, 'avif_url', pm.avif_url, 'processing_status', pm.processing_status)) FROM post_media pm WHERE pm.post_id = sp.post_id), '[]'::json),
+              'media', COALESCE((SELECT json_agg(json_build_object('media_id', pm.media_id, 'url', pm.url, 'master_url', pm.master_url, 'media_type', pm.media_type, 'width', pm.width, 'height', pm.height, 'fallback_url', pm.fallback_url, 'avif_url', pm.avif_url, 'processing_status', pm.processing_status, 'stream_uid', pm.stream_uid, 'stream_hls_url', pm.stream_hls_url, 'stream_dash_url', pm.stream_dash_url, 'stream_thumbnail_url', pm.stream_thumbnail_url, 'hdr_manifest_url', pm.hdr_manifest_url, 'hdr_processing_status', pm.hdr_processing_status)) FROM post_media pm WHERE pm.post_id = sp.post_id), '[]'::json),
               'like_count', (SELECT COUNT(*) FROM active_post_likes pl WHERE pl.post_id = sp.post_id)::int,
               'comment_count', (SELECT COUNT(*) FROM active_post_comments pc WHERE pc.post_id = sp.post_id)::int,
               'rePostCount', (SELECT COUNT(*) FROM posts sp_share2 WHERE sp_share2.shared_post_id = sp.post_id AND sp_share2.is_active = TRUE AND (sp_share2.is_removed IS FALSE OR sp_share2.is_removed IS NULL))::int,
@@ -1654,7 +1654,7 @@ exports.getPublicProfileCommentedPosts = async (req, res) => {
       LEFT JOIN organizations comp ON comp.org_id = p.author_org_id
       LEFT JOIN post_categories pc ON pc.category_id = p.category_id
       LEFT JOIN (
-          SELECT pm.post_id, json_agg(json_build_object('media_id', pm.media_id, 'url', pm.url, 'media_type', pm.media_type, 'fallback_url', pm.fallback_url, 'avif_url', pm.avif_url, 'processing_status', pm.processing_status)) AS media
+          SELECT pm.post_id, json_agg(json_build_object('media_id', pm.media_id, 'url', pm.url, 'media_type', pm.media_type, 'fallback_url', pm.fallback_url, 'avif_url', pm.avif_url, 'processing_status', pm.processing_status, 'stream_uid', pm.stream_uid, 'stream_hls_url', pm.stream_hls_url, 'stream_dash_url', pm.stream_dash_url, 'stream_thumbnail_url', pm.stream_thumbnail_url, 'hdr_manifest_url', pm.hdr_manifest_url, 'hdr_processing_status', pm.hdr_processing_status)) AS media
           FROM post_media pm GROUP BY pm.post_id
       ) pm ON pm.post_id = p.post_id
       LEFT JOIN (SELECT post_id, COUNT(*) AS like_count FROM active_post_likes GROUP BY post_id) lc ON lc.post_id = p.post_id

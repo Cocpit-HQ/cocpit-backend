@@ -6,6 +6,8 @@ const { redisConnection } = require("../queues/media.queue");
 const redisClient = require("../core/db/redis");
 const pool = require("../core/db/pool");
 const { detectImageMime, validateImageBuffer } = require("../modules/upload/mediaValidation");
+const { isStreamConfigured, createStreamVideoFromUrl } = require("../core/infrastructure/cloudflareStream.client");
+const { addVideoHdrJob } = require("../queues/videoHdr.queue");
 
 const MAX_DISPLAY_PX = 2560;
 const MAX_INPUT_PIXELS = 100_000_000;
@@ -121,6 +123,12 @@ async function notifyProcessingUpdate(rows, ownerId, status, mediaAsset = null) 
         width: mediaAsset.width || null,
         height: mediaAsset.height || null,
         media_type: mediaAsset.mediaType || "image",
+        stream_uid: mediaAsset.streamUid || null,
+        stream_hls_url: mediaAsset.streamHlsUrl || null,
+        stream_dash_url: mediaAsset.streamDashUrl || null,
+        stream_thumbnail_url: mediaAsset.streamThumbnailUrl || null,
+        hdr_manifest_url: mediaAsset.hdrManifestUrl || null,
+        hdr_processing_status: mediaAsset.hdrProcessingStatus || null,
       } : null,
     };
     if (publicPosts.has(row.post_id)) socketService.broadcastGlobal?.("media_processing_updated", payload);
@@ -134,6 +142,48 @@ function startMediaTranscoderWorker() {
   if (mediaWorkerInstance) return mediaWorkerInstance;
   mediaWorkerInstance = new Worker("media-transcode", async (job) => {
     const { rawKey, rawMasterUrl, mediaType = "image", ownerId } = job.data;
+    if (mediaType === "video") {
+      if (!isStreamConfigured()) throw new Error("Cloudflare Stream is not fully configured for adaptive video playback.");
+      await addVideoHdrJob({ rawKey, rawMasterUrl, ownerId });
+      const streamResult = await createStreamVideoFromUrl({ url: rawMasterUrl, creator: ownerId, name: rawKey.split("/").pop() });
+      const asset = {
+        url: rawMasterUrl,
+        masterUrl: rawMasterUrl,
+        fallbackUrl: rawMasterUrl,
+        mediaType: "video",
+        streamUid: streamResult?.uid || null,
+        streamHlsUrl: streamResult?.hlsUrl || null,
+        streamDashUrl: streamResult?.dashUrl || null,
+        streamThumbnailUrl: streamResult?.thumbnailUrl || null,
+        processingStatus: "processing",
+        hdrProcessingStatus: "processing",
+      };
+      try {
+        if (redisClient?.isOpen) {
+          const cacheKey = `media:conversion:${rawMasterUrl}`;
+          const current = await redisClient.get(cacheKey);
+          const cachedAsset = current ? JSON.parse(current) : {};
+          await redisClient.set(cacheKey, JSON.stringify({ ...cachedAsset, ...asset,
+            hdrManifestUrl: cachedAsset.hdrManifestUrl || null,
+            hdrProcessingStatus: cachedAsset.hdrProcessingStatus || asset.hdrProcessingStatus,
+          }), "EX", 30 * 86400);
+          if (streamResult) await redisClient.set(`media:stream:uid:${streamResult.uid}`, rawMasterUrl, "EX", 30 * 86400);
+        }
+      } catch (error) {
+        console.warn(`[MediaTranscoder] Video result cache failed: ${error.message}`);
+      }
+      const rows = await pool.query(
+        `UPDATE post_media SET stream_uid = $1, stream_hls_url = $2, stream_dash_url = $3,
+           stream_thumbnail_url = $4, processing_status = $5, is_processed = $6,
+           hdr_processing_status = 'processing'
+         WHERE master_url = $7 OR url = $7 RETURNING post_id, media_id`,
+        [asset.streamUid, asset.streamHlsUrl, asset.streamDashUrl, asset.streamThumbnailUrl,
+          asset.processingStatus, asset.processingStatus === "ready", rawMasterUrl]
+      );
+      if (rows.rows.length) await notifyProcessingUpdate(rows.rows, ownerId, asset.processingStatus, asset);
+      return asset;
+    }
+
     const asset = await processDualAsset({ rawKey, rawMasterUrl, mediaType });
     try {
       if (redisClient?.isOpen) {
@@ -184,4 +234,10 @@ function startMediaTranscoderWorker() {
   return mediaWorkerInstance;
 }
 
-module.exports = { transcodeImageToCompatibleFormat: (rawKey) => downloadFromR2AsBuffer(rawKey).then((buffer) => transcodeImage(buffer, rawKey)), processDualAsset, deriveDisplayKey, startMediaTranscoderWorker };
+async function closeMediaTranscoderWorker() {
+  if (!mediaWorkerInstance) return;
+  await mediaWorkerInstance.close();
+  mediaWorkerInstance = null;
+}
+
+module.exports = { transcodeImageToCompatibleFormat: (rawKey) => downloadFromR2AsBuffer(rawKey).then((buffer) => transcodeImage(buffer, rawKey)), processDualAsset, deriveDisplayKey, startMediaTranscoderWorker, closeMediaTranscoderWorker };

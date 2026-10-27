@@ -102,7 +102,11 @@ startAiAnalysisWorker().catch(e => console.error("AI Worker crashed:", e));
 
 // B9.7 — Cloudflare R2 12-Bit AVIF Media Transcoder Background Worker (BullMQ + Sharp)
 const { startMediaTranscoderWorker } = require("./workers/mediaTranscoder.worker");
-startMediaTranscoderWorker();
+const shouldStartMediaWorker = process.env.ENABLE_MEDIA_WORKER === undefined
+  ? process.env.NODE_ENV !== "production"
+  : process.env.ENABLE_MEDIA_WORKER === "true";
+if (shouldStartMediaWorker) startMediaTranscoderWorker();
+else console.log("[Main API] Media transcoding runs in the isolated media worker service.");
 
 // Event Outbox Processor disabled
 

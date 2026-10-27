@@ -9,6 +9,7 @@ if (process.env.REDIS_URL) {
       port: parseInt(u.port || "6380", 10),
       password: u.password || undefined,
       db: parseInt(process.env.REDIS_DB || (u.pathname ? u.pathname.replace("/", "") : "0") || "0", 10),
+      ...(u.protocol === "rediss:" ? { tls: {} } : {}),
     };
   } catch {
     redisOptions = {

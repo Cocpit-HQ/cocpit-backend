@@ -1,6 +1,8 @@
 const { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectsCommand, HeadObjectCommand, ListObjectsV2Command } = require("@aws-sdk/client-s3");
 const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
 const path = require("path");
+const fs = require("fs");
+const { pipeline } = require("stream/promises");
 const { randomUUID } = require("crypto");
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -93,6 +95,28 @@ async function downloadFromR2AsBuffer(key) {
   return Buffer.concat(chunks);
 }
 
+async function downloadFromR2ToFile(key, filePath) {
+  const bucket = getBucketName();
+  if (!bucket) throw new Error("[R2Client] R2_BUCKET_NAME env var is not set.");
+  const response = await r2Client.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
+  if (!response.Body) throw new Error(`[R2Client] R2 returned an empty body for ${key}.`);
+  await pipeline(response.Body, fs.createWriteStream(filePath));
+  return filePath;
+}
+
+async function uploadFileToR2({ key, filePath, contentType, cacheControl = "public, max-age=31536000, immutable" }) {
+  const bucket = getBucketName();
+  if (!bucket) throw new Error("[R2Client] R2_BUCKET_NAME env var is not set.");
+  await r2Client.send(new PutObjectCommand({
+    Bucket: bucket,
+    Key: key,
+    Body: fs.createReadStream(filePath),
+    ContentType: contentType,
+    CacheControl: cacheControl,
+  }));
+  return getPublicUrl(key);
+}
+
 /**
  * Upload a buffer directly to R2 (used by the transcoder to store processed AVIF).
  * @param {object} opts
@@ -151,6 +175,22 @@ async function deleteObjectsFromR2(keys) {
   console.log(`[R2Client] Deleted ${keys.length} objects from R2 bucket '${bucket}'.`);
 }
 
+async function deleteR2Prefix(prefix) {
+  const bucket = getBucketName();
+  if (!bucket || !prefix) return;
+  let continuationToken;
+  do {
+    const page = await r2Client.send(new ListObjectsV2Command({
+      Bucket: bucket,
+      Prefix: prefix,
+      ContinuationToken: continuationToken,
+    }));
+    const keys = (page.Contents || []).map((item) => item.Key).filter(Boolean);
+    if (keys.length) await deleteObjectsFromR2(keys);
+    continuationToken = page.IsTruncated ? page.NextContinuationToken : undefined;
+  } while (continuationToken);
+}
+
 /**
  * Check if an R2 object exists (used for validation / orphan detection).
  * @param {string} key
@@ -196,7 +236,7 @@ async function deleteMediaByUrls(mediaInput) {
     .map((base) => base.replace(/\/$/, ""));
 
   for (const item of list) {
-    const rawUrl = typeof item === "object" && item !== null ? item.url : item;
+    const rawUrl = typeof item === "object" && item !== null ? (item.master_url || item.masterUrl || item.url) : item;
     if (!rawUrl || typeof rawUrl !== "string") continue;
 
     // Check if URL belongs to R2
@@ -305,8 +345,11 @@ module.exports = {
   getPublicUrl,
   generatePresignedUploadUrl,
   downloadFromR2AsBuffer,
+  downloadFromR2ToFile,
   uploadBufferToR2,
+  uploadFileToR2,
   deleteObjectsFromR2,
+  deleteR2Prefix,
   objectExistsInR2,
   getObjectMetadataFromR2,
   deleteMediaByUrls,

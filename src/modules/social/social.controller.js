@@ -3712,7 +3712,7 @@ exports.sendMessage = async (req, res) => {
                         COALESCE(org.headline, u.display_headline, NULL) as author_headline,
                         (p.author_org_id IS NOT NULL) as is_organization_post,
                         json_build_object('full_name', COALESCE(org.name, u.display_name), 'avatar_url', CASE WHEN p.author_org_id IS NOT NULL THEN org.logo_url ELSE u.display_avatar END, 'headline', COALESCE(org.headline, u.display_headline)) as author_obj,
-                        (SELECT json_agg(json_build_object('url', url, 'media_type', media_type, 'fallback_url', fallback_url, 'avif_url', avif_url, 'processing_status', processing_status)) FROM post_media WHERE post_id = p.post_id) as media,
+                        (SELECT json_agg(json_build_object('media_id', media_id, 'url', url, 'master_url', master_url, 'media_type', media_type, 'fallback_url', fallback_url, 'avif_url', avif_url, 'processing_status', processing_status, 'stream_uid', stream_uid, 'stream_hls_url', stream_hls_url, 'stream_dash_url', stream_dash_url, 'stream_thumbnail_url', stream_thumbnail_url, 'hdr_manifest_url', hdr_manifest_url, 'hdr_processing_status', hdr_processing_status)) FROM post_media WHERE post_id = p.post_id) as media,
                         (
                             SELECT json_build_object(
                                 'poll_id', pp.poll_id,
@@ -4746,7 +4746,7 @@ exports.getMessages = async (req, res) => {
                             'author_headline', COALESCE(sp_org.headline, au.display_headline, NULL),
                             'author_username', au.display_username,
                             'is_organization_post', (sp.author_org_id IS NOT NULL),
-                            'media', (SELECT json_agg(json_build_object('url', url, 'media_type', media_type, 'fallback_url', fallback_url, 'avif_url', avif_url, 'processing_status', processing_status)) FROM post_media WHERE post_id = sp.post_id),
+                            'media', (SELECT json_agg(json_build_object('media_id', media_id, 'url', url, 'master_url', master_url, 'media_type', media_type, 'fallback_url', fallback_url, 'avif_url', avif_url, 'processing_status', processing_status, 'stream_uid', stream_uid, 'stream_hls_url', stream_hls_url, 'stream_dash_url', stream_dash_url, 'stream_thumbnail_url', stream_thumbnail_url, 'hdr_manifest_url', hdr_manifest_url, 'hdr_processing_status', hdr_processing_status)) FROM post_media WHERE post_id = sp.post_id),
                             'poll', (
                                 SELECT json_build_object(
                                     'poll_id', pp.poll_id,

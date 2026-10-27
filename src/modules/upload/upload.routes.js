@@ -8,6 +8,9 @@ const { validateUploadBatch, validateImageBuffer, MAX_IMAGE_BYTES, MAX_POST_IMAG
 const createR2Storage = require("../../core/infrastructure/r2MulterStorage");
 
 const router = express.Router();
+const { streamWebhook } = require("./streamWebhook.controller");
+
+router.post("/upload/stream/webhook", streamWebhook);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Cloudflare R2 Storage Engine
@@ -171,7 +174,7 @@ router.post("/upload/process", requireAuth, async (req, res) => {
     if (req.body.size && Number(req.body.size) !== Number(objectMetadata.ContentLength)) {
       return res.status(400).json({ error: "Uploaded object size does not match its upload ticket." });
     }
-    if (isSync) {
+    if (isSync && mediaType !== "video") {
       console.log(`[UploadRoutes] /upload/process (sync) generating compatible display image: ${rawKey} (${mediaType})`);
       const asset = await processDualAsset({ rawKey, rawMasterUrl, mediaType });
       return res.json({
@@ -250,14 +253,15 @@ router.post(
         if (!rawKey || !rawKey.startsWith(`raw/posts/${req.user.sub}/`)) throw new Error("Upload key is not scoped to the authenticated user.");
         const mediaType = file.mimetype?.startsWith("video/") || /\.(mp4|mov|webm)$/i.test(file.originalname) ? "video" : "image";
         if (mediaType === "image") validateImageBuffer(await downloadFromR2AsBuffer(rawKey), file.originalname, file.mimetype);
-        if (syncProcessing) {
+        if (syncProcessing && mediaType !== "video") {
           const asset = await processDualAsset({ rawKey, rawMasterUrl, mediaType });
           return { url: asset.url, master_url: asset.masterUrl, media_type: mediaType, processing_status: "ready", fallback_url: asset.fallbackUrl, avif_url: asset.avifUrl, width: asset.width, height: asset.height, format: asset.format, bit_depth: asset.bitDepth };
         }
         const job = await addTranscodeJob({ rawKey, rawMasterUrl, mediaType, ownerId: req.user.sub });
         return { url: rawMasterUrl, master_url: rawMasterUrl, media_type: mediaType, processing_status: "processing", fallback_url: null, avif_url: null, jobId: job.id };
       }));
-      return res.status(syncProcessing ? 200 : 202).json({ urls });
+      const queuedVideo = files.some((file) => file.mimetype?.startsWith("video/") || /\.(mp4|mov|webm)$/i.test(file.originalname));
+      return res.status(syncProcessing && !queuedVideo ? 200 : 202).json({ urls });
     } catch (error) {
       return res.status(400).json({ error: error.message });
     }

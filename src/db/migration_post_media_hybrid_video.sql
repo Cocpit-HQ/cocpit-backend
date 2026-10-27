@@ -1,0 +1,27 @@
+BEGIN;
+
+ALTER TABLE post_media
+  ADD COLUMN IF NOT EXISTS master_url TEXT,
+  ADD COLUMN IF NOT EXISTS format TEXT,
+  ADD COLUMN IF NOT EXISTS bit_depth INT,
+  ADD COLUMN IF NOT EXISTS is_processed BOOLEAN NOT NULL DEFAULT FALSE,
+  ADD COLUMN IF NOT EXISTS fallback_url TEXT,
+  ADD COLUMN IF NOT EXISTS avif_url TEXT,
+  ADD COLUMN IF NOT EXISTS processing_status TEXT NOT NULL DEFAULT 'ready',
+  ADD COLUMN IF NOT EXISTS processing_error TEXT,
+  ADD COLUMN IF NOT EXISTS stream_uid TEXT,
+  ADD COLUMN IF NOT EXISTS stream_hls_url TEXT,
+  ADD COLUMN IF NOT EXISTS stream_dash_url TEXT,
+  ADD COLUMN IF NOT EXISTS stream_thumbnail_url TEXT,
+  ADD COLUMN IF NOT EXISTS hdr_manifest_url TEXT,
+  ADD COLUMN IF NOT EXISTS hdr_processing_status TEXT,
+  ADD COLUMN IF NOT EXISTS hdr_color_transfer TEXT,
+  ADD COLUMN IF NOT EXISTS hdr_width INT,
+  ADD COLUMN IF NOT EXISTS hdr_height INT,
+  ADD COLUMN IF NOT EXISTS hdr_error TEXT;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_post_media_stream_uid
+  ON post_media (stream_uid)
+  WHERE stream_uid IS NOT NULL;
+
+COMMIT;

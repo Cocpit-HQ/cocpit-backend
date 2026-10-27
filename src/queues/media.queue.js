@@ -1,4 +1,5 @@
 const { Queue } = require("bullmq");
+const crypto = require("crypto");
 
 function getRedisConnectionOptions() {
   if (process.env.REDIS_URL) {
@@ -8,6 +9,8 @@ function getRedisConnectionOptions() {
         host: u.hostname || "127.0.0.1",
         port: parseInt(u.port || "6380", 10),
         password: u.password || undefined,
+        db: parseInt(process.env.REDIS_DB || (u.pathname ? u.pathname.replace("/", "") : "0") || "0", 10),
+        ...(u.protocol === "rediss:" ? { tls: {} } : {}),
         maxRetriesPerRequest: null,
       };
     } catch {
@@ -17,6 +20,7 @@ function getRedisConnectionOptions() {
   return {
     host: process.env.REDIS_HOST || "127.0.0.1",
     port: parseInt(process.env.REDIS_PORT || "6380", 10),
+    db: parseInt(process.env.REDIS_DB || "0", 10),
     maxRetriesPerRequest: null,
   };
 }
@@ -50,11 +54,12 @@ mediaTranscodeQueue.on("error", (err) => {
  * @returns {Promise<import("bullmq").Job>}
  */
 async function addTranscodeJob({ rawKey, rawMasterUrl, mediaType = "image", postId = null, ownerId = null }) {
+  const stableId = crypto.createHash("sha256").update(rawKey).digest("hex").slice(0, 32);
   const job = await mediaTranscodeQueue.add(
     "transcode",
     { rawKey, rawMasterUrl, mediaType, postId, ownerId },
     {
-      jobId: `transcode-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`,
+      jobId: `transcode-${stableId}`,
     }
   );
   console.log(`[MediaQueue] Enqueued job ${job.id} for rawKey: ${rawKey}`);
@@ -85,4 +90,5 @@ module.exports = {
   addTranscodeJob,
   getJobStatus,
   redisConnection,
+  getRedisConnectionOptions,
 };

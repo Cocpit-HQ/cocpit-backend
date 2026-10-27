@@ -72,6 +72,7 @@ app.use(helmet({
   crossOriginOpenerPolicy: { policy: "same-origin-allow-popups" },
 }));
 app.use(cors(corsOptions));
+app.use("/api/upload/stream/webhook", express.raw({ type: "application/json", limit: "1mb" }));
 app.use(express.json({ limit: "100mb" }));
 app.use(express.urlencoded({ limit: "100mb", extended: true }));
 app.use(cookieParser());

@@ -708,7 +708,7 @@ exports.sharePostToConversations = async (req, res) => {
         const spRes = await client.query(`
             SELECT p.post_id, p.content, p.created_at,
             json_build_object('full_name', u.full_name, 'avatar_url', u.avatar_url) as author,
-            (SELECT json_agg(json_build_object('url', url, 'media_type', media_type)) FROM post_media WHERE post_id = p.post_id) as media
+            (SELECT json_agg(json_build_object('media_id', media_id, 'url', url, 'master_url', master_url, 'media_type', media_type, 'processing_status', processing_status, 'stream_hls_url', stream_hls_url, 'stream_dash_url', stream_dash_url, 'stream_thumbnail_url', stream_thumbnail_url, 'hdr_manifest_url', hdr_manifest_url, 'hdr_processing_status', hdr_processing_status)) FROM post_media WHERE post_id = p.post_id) as media
             FROM posts p
             JOIN active_users u ON p.author_id = u.user_id
             WHERE p.post_id = $1
@@ -909,7 +909,7 @@ exports.getShareUsers = async (req, res) => {
                     cursorPriority = parseInt(parts[0]);
                     cursorUserId = parts[1];
                 }
-            } catch (_) { /* invalid cursor — ignore */ }
+            } catch { /* invalid cursor — ignore */ }
         }
 
         // Build query parameters

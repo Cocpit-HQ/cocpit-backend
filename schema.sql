@@ -478,7 +478,25 @@ CREATE TABLE post_media (
   media_type TEXT CHECK (media_type IN ('image', 'video')),
   aspect_ratio TEXT, -- e.g., '4:5'
   width INT,
-  height INT
+  height INT,
+  master_url TEXT,
+  format TEXT,
+  bit_depth INT,
+  is_processed BOOLEAN NOT NULL DEFAULT FALSE,
+  fallback_url TEXT,
+  avif_url TEXT,
+  processing_status TEXT NOT NULL DEFAULT 'ready',
+  processing_error TEXT,
+  stream_uid TEXT,
+  stream_hls_url TEXT,
+  stream_dash_url TEXT,
+  stream_thumbnail_url TEXT,
+  hdr_manifest_url TEXT,
+  hdr_processing_status TEXT,
+  hdr_color_transfer TEXT,
+  hdr_width INT,
+  hdr_height INT,
+  hdr_error TEXT
 );
 
 CREATE TABLE stories (

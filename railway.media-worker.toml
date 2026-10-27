@@ -1,0 +1,9 @@
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+startCommand = "npm run start:media-worker"
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 5
+numReplicas = 1

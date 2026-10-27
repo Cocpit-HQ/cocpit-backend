@@ -6,7 +6,8 @@ const { checkBlockStatus } = require("../../core/utils/blockCheck");
 const BlockModel = require("../../models/block.model");
 const { logAudit } = require("../../core/infrastructure/audit.service");
 const redisClient = require("../../core/cache/redis");
-const { deleteMediaByUrls, deleteObjectsFromR2 } = require("../../core/infrastructure/r2.client");
+const { deleteObjectsFromR2 } = require("../../core/infrastructure/r2.client");
+const { deleteHybridMedia } = require("../../core/infrastructure/mediaDeletion");
 const { checkOrgPermission } = require("../../core/utils/rbac");
 const { notifyOrgFollowers, notifyBroadcastToChildOrgs } = require("../../services/notification.service");
 const { logActivity, removeActivity } = require("../../core/services/activityLogger");
@@ -618,7 +619,7 @@ exports.getMyCommentedPosts = async (req, res) => {
         LEFT JOIN organizations comp ON comp.org_id = p.author_org_id
         LEFT JOIN post_categories pc ON pc.category_id = p.category_id
         LEFT JOIN (
-            SELECT pm.post_id, json_agg(json_build_object('media_id', pm.media_id, 'url', pm.url, 'master_url', pm.master_url, 'media_type', pm.media_type, 'width', pm.width, 'height', pm.height, 'format', pm.format, 'bit_depth', pm.bit_depth, 'fallback_url', pm.fallback_url, 'avif_url', pm.avif_url, 'processing_status', pm.processing_status)) AS media
+            SELECT pm.post_id, json_agg(json_build_object('media_id', pm.media_id, 'url', pm.url, 'master_url', pm.master_url, 'media_type', pm.media_type, 'width', pm.width, 'height', pm.height, 'format', pm.format, 'bit_depth', pm.bit_depth, 'fallback_url', pm.fallback_url, 'avif_url', pm.avif_url, 'processing_status', pm.processing_status, 'stream_uid', pm.stream_uid, 'stream_hls_url', pm.stream_hls_url, 'stream_dash_url', pm.stream_dash_url, 'stream_thumbnail_url', pm.stream_thumbnail_url, 'hdr_manifest_url', pm.hdr_manifest_url, 'hdr_processing_status', pm.hdr_processing_status)) AS media
             FROM post_media pm GROUP BY pm.post_id
         ) pm ON pm.post_id = p.post_id
         LEFT JOIN (SELECT post_id, COUNT(*) AS like_count FROM active_post_likes GROUP BY post_id) lc ON lc.post_id = p.post_id
@@ -716,7 +717,7 @@ exports.getMyPrivatePosts = async (req, res) => {
         LEFT JOIN organizations comp ON comp.org_id = p.author_org_id
         LEFT JOIN post_categories pc ON pc.category_id = p.category_id
         LEFT JOIN (
-            SELECT pm.post_id, json_agg(json_build_object('media_id', pm.media_id, 'url', pm.url, 'master_url', pm.master_url, 'media_type', pm.media_type, 'width', pm.width, 'height', pm.height, 'format', pm.format, 'bit_depth', pm.bit_depth, 'fallback_url', pm.fallback_url, 'avif_url', pm.avif_url, 'processing_status', pm.processing_status)) AS media
+            SELECT pm.post_id, json_agg(json_build_object('media_id', pm.media_id, 'url', pm.url, 'master_url', pm.master_url, 'media_type', pm.media_type, 'width', pm.width, 'height', pm.height, 'format', pm.format, 'bit_depth', pm.bit_depth, 'fallback_url', pm.fallback_url, 'avif_url', pm.avif_url, 'processing_status', pm.processing_status, 'stream_uid', pm.stream_uid, 'stream_hls_url', pm.stream_hls_url, 'stream_dash_url', pm.stream_dash_url, 'stream_thumbnail_url', pm.stream_thumbnail_url, 'hdr_manifest_url', pm.hdr_manifest_url, 'hdr_processing_status', pm.hdr_processing_status)) AS media
             FROM post_media pm GROUP BY pm.post_id
         ) pm ON pm.post_id = p.post_id
         LEFT JOIN (SELECT post_id, COUNT(*) AS like_count FROM active_post_likes GROUP BY post_id) lc ON lc.post_id = p.post_id
@@ -1300,6 +1301,12 @@ exports.createPost = async (req, res) => {
                 let fallbackUrl = typeof mediaItem === 'object' && mediaItem !== null ? mediaItem.fallback_url || null : null;
                 let avifUrl = typeof mediaItem === 'object' && mediaItem !== null ? mediaItem.avif_url || null : null;
                 let processingStatus = currentStatusForMedia(url, mediaItem);
+                let streamUid = typeof mediaItem === 'object' && mediaItem !== null ? mediaItem.stream_uid || null : null;
+                let streamHlsUrl = typeof mediaItem === 'object' && mediaItem !== null ? mediaItem.stream_hls_url || null : null;
+                let streamDashUrl = typeof mediaItem === 'object' && mediaItem !== null ? mediaItem.stream_dash_url || null : null;
+                let streamThumbnailUrl = typeof mediaItem === 'object' && mediaItem !== null ? mediaItem.stream_thumbnail_url || null : null;
+                let hdrManifestUrl = typeof mediaItem === 'object' && mediaItem !== null ? mediaItem.hdr_manifest_url || null : null;
+                let hdrProcessingStatus = typeof mediaItem === 'object' && mediaItem !== null ? mediaItem.hdr_processing_status || null : null;
 
                 // If background worker already finished and cached the display variant, use it immediately
                 if (masterUrl && !isProcessed) {
@@ -1315,20 +1322,30 @@ exports.createPost = async (req, res) => {
                             isProcessed = parsed.processingStatus === "ready";
                             fallbackUrl = parsed.fallbackUrl || url;
                             avifUrl = parsed.avifUrl || null;
-                            processingStatus = parsed.processingStatus || "ready";
+                            processingStatus = parsed.processingStatus || processingStatus;
+                            streamUid = parsed.streamUid || streamUid;
+                            streamHlsUrl = parsed.streamHlsUrl || streamHlsUrl;
+                            streamDashUrl = parsed.streamDashUrl || streamDashUrl;
+                            streamThumbnailUrl = parsed.streamThumbnailUrl || streamThumbnailUrl;
+                            hdrManifestUrl = parsed.hdrManifestUrl || hdrManifestUrl;
+                            hdrProcessingStatus = parsed.hdrProcessingStatus || hdrProcessingStatus;
                         }
             } catch {
                         // Fail open and persist the raw master URL.
                     }
                 }
 
-                let currentType = url?.toLowerCase().match(/\.(mp4|webm|mov)(\?|#|$)/) ? 'video' : 'image';
+                let currentType = mediaItem && typeof mediaItem === 'object' && mediaItem.media_type
+                    ? mediaItem.media_type
+                    : (url?.toLowerCase().match(/\.(mp4|webm|mov|mkv|avi)(\?|#|$)/) ? 'video' : 'image');
                 type = currentType;
                 const mediaResult = await client.query(
-                    `INSERT INTO post_media (post_id, url, media_type, width, height, master_url, format, bit_depth, is_processed, fallback_url, avif_url, processing_status)
-                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                    `INSERT INTO post_media (post_id, url, media_type, width, height, master_url, format, bit_depth, is_processed, fallback_url, avif_url, processing_status,
+                       stream_uid, stream_hls_url, stream_dash_url, stream_thumbnail_url, hdr_manifest_url, hdr_processing_status)
+                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
                      RETURNING media_id`,
-                    [postId, url, currentType, width, height, masterUrl, format, bitDepth, isProcessed, fallbackUrl, avifUrl, currentType === 'video' ? 'ready' : processingStatus]
+                    [postId, url, currentType, width, height, masterUrl, format, bitDepth, isProcessed, fallbackUrl, avifUrl, processingStatus,
+                        streamUid, streamHlsUrl, streamDashUrl, streamThumbnailUrl, hdrManifestUrl, hdrProcessingStatus]
                 );
                 return {
                     media_id: mediaResult.rows[0]?.media_id,
@@ -1340,7 +1357,13 @@ exports.createPost = async (req, res) => {
                     height,
                     fallback_url: fallbackUrl,
                     avif_url: avifUrl,
-                    processing_status: currentType === 'video' ? 'ready' : processingStatus,
+                    processing_status: processingStatus,
+                    stream_uid: streamUid,
+                    stream_hls_url: streamHlsUrl,
+                    stream_dash_url: streamDashUrl,
+                    stream_thumbnail_url: streamThumbnailUrl,
+                    hdr_manifest_url: hdrManifestUrl,
+                    hdr_processing_status: hdrProcessingStatus,
                 };
             });
             createdMedia = await Promise.all(mediaPromises);
@@ -2042,7 +2065,7 @@ exports.getPostById = async (req, res) => {
                                  LEFT JOIN organizations o_mention ON o_mention.org_id = mentions.mentioned_id AND o_mention.is_deleted = FALSE
                                  WHERE u_mention.user_id IS NOT NULL OR o_mention.org_id IS NOT NULL
                              ),
-                             'media', COALESCE((SELECT json_agg(json_build_object('url', pm.url, 'media_type', pm.media_type, 'width', pm.width, 'height', pm.height, 'fallback_url', pm.fallback_url, 'avif_url', pm.avif_url, 'processing_status', pm.processing_status)) FROM post_media pm WHERE pm.post_id = sp_sp.post_id), '[]'::json)
+                             'media', COALESCE((SELECT json_agg(json_build_object('media_id', pm.media_id, 'url', pm.url, 'master_url', pm.master_url, 'media_type', pm.media_type, 'width', pm.width, 'height', pm.height, 'fallback_url', pm.fallback_url, 'avif_url', pm.avif_url, 'processing_status', pm.processing_status, 'stream_uid', pm.stream_uid, 'stream_hls_url', pm.stream_hls_url, 'stream_dash_url', pm.stream_dash_url, 'stream_thumbnail_url', pm.stream_thumbnail_url, 'hdr_manifest_url', pm.hdr_manifest_url, 'hdr_processing_status', pm.hdr_processing_status)) FROM post_media pm WHERE pm.post_id = sp_sp.post_id), '[]'::json)
                          )
                          FROM posts sp_sp
                          LEFT JOIN active_users sp_sp_u ON sp_sp_u.user_id = sp_sp.author_id
@@ -2196,7 +2219,7 @@ LEFT JOIN post_categories sp_cat ON sp.category_id = sp_cat.category_id
         LEFT JOIN jobs sj ON p.shared_job_id = sj.job_id
         LEFT JOIN organizations sj_comp ON sj.org_id = sj_comp.org_id
 LEFT JOIN (
-    SELECT post_id, json_agg(json_build_object('url', url, 'media_type', media_type, 'fallback_url', fallback_url, 'avif_url', avif_url, 'processing_status', processing_status)) as media
+    SELECT post_id, json_agg(json_build_object('url', url, 'media_type', media_type, 'fallback_url', fallback_url, 'avif_url', avif_url, 'processing_status', processing_status, 'stream_uid', stream_uid, 'stream_hls_url', stream_hls_url, 'stream_dash_url', stream_dash_url, 'stream_thumbnail_url', stream_thumbnail_url, 'hdr_manifest_url', hdr_manifest_url, 'hdr_processing_status', hdr_processing_status)) as media
     FROM post_media
     GROUP BY post_id
 ) sp_media ON sp.post_id = sp_media.post_id
@@ -2623,15 +2646,25 @@ exports.updatePostById = async (req, res) => {
         }
 
         // 5. Update Media: The "Sync" approach
-        let removedMediaUrls = [];
+        let removedMediaRecords = [];
         if (Array.isArray(media_urls)) {
-            const existingMediaRes = await client.query(`SELECT url FROM post_media WHERE post_id = $1`, [postId]);
-            const existingUrls = existingMediaRes.rows.map(r => r.url);
+            const existingMediaRes = await client.query(`SELECT media_id, url, master_url, stream_uid FROM post_media WHERE post_id = $1`, [postId]);
+            const existingMedia = existingMediaRes.rows;
+            const newMasterUrls = new Set(media_urls.map((mediaItem) => typeof mediaItem === 'object' && mediaItem !== null
+                ? (mediaItem.master_url || mediaItem.masterUrl || mediaItem.url)
+                : mediaItem).filter(Boolean));
+            removedMediaRecords = existingMedia.filter((mediaItem) => !newMasterUrls.has(mediaItem.master_url || mediaItem.url));
+            const existingByMasterUrl = new Map(existingMedia.map((mediaItem) => [mediaItem.master_url || mediaItem.url, mediaItem]));
 
             await client.query(`DELETE FROM post_media WHERE post_id = $1`, [postId]);
 
             for (let i = 0; i < media_urls.length; i++) {
-                const item = media_urls[i];
+                const inputItem = media_urls[i];
+                const inputUrl = typeof inputItem === 'object' && inputItem !== null ? inputItem.url : inputItem;
+                const inputMasterUrl = typeof inputItem === 'object' && inputItem !== null ? (inputItem.master_url || inputItem.masterUrl || inputUrl) : inputUrl;
+                const item = typeof inputItem === 'object' && inputItem !== null
+                    ? { ...(existingByMasterUrl.get(inputMasterUrl) || {}), ...inputItem }
+                    : { ...(existingByMasterUrl.get(inputMasterUrl) || {}), url: inputItem };
                 const url = typeof item === 'object' && item !== null ? item.url : item;
                 if (!url) continue;
                 
@@ -2643,19 +2676,25 @@ exports.updatePostById = async (req, res) => {
                 const isProcessed = !!(url && !url.includes('/raw/'));
                 const fallbackUrl = typeof item === 'object' && item !== null ? item.fallback_url || null : null;
                 const avifUrl = typeof item === 'object' && item !== null ? item.avif_url || null : null;
-                const type = url.match(/\.(mp4|webm|mov)(\?|#|$)/i) ? "video" : "image";
-                const processingStatus = type === 'video' ? 'ready' : currentStatusForMedia(url, item);
+                const type = item.media_type || (url.match(/\.(mp4|webm|mov|mkv|avi)(\?|#|$)/i) ? "video" : "image");
+                const processingStatus = currentStatusForMedia(url, item);
+                const cached = await redisClient.get(`media:conversion:${masterUrl}`).catch(() => null);
+                const cachedAsset = cached ? JSON.parse(cached) : {};
+                const persistedUrl = cachedAsset.url || url;
+                const persistedStatus = cachedAsset.processingStatus || processingStatus;
                 await client.query(
-                    `INSERT INTO post_media (post_id, url, media_type, width, height, master_url, format, bit_depth, is_processed, fallback_url, avif_url, processing_status)
-                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
-                    [postId, url, type, width, height, masterUrl, format, bitDepth, isProcessed, fallbackUrl, avifUrl, processingStatus]
+                    `INSERT INTO post_media (post_id, url, media_type, width, height, master_url, format, bit_depth, is_processed, fallback_url, avif_url, processing_status,
+                       stream_uid, stream_hls_url, stream_dash_url, stream_thumbnail_url, hdr_manifest_url, hdr_processing_status)
+                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)`,
+                    [postId, persistedUrl, type, width || cachedAsset.width || null, height || cachedAsset.height || null, masterUrl, format || cachedAsset.format || null, bitDepth || cachedAsset.bitDepth || null, isProcessed || persistedStatus === "ready", fallbackUrl || cachedAsset.fallbackUrl || null, avifUrl || cachedAsset.avifUrl || null, persistedStatus,
+                        item.stream_uid || cachedAsset.streamUid || null,
+                        item.stream_hls_url || cachedAsset.streamHlsUrl || null,
+                        item.stream_dash_url || cachedAsset.streamDashUrl || null,
+                        item.stream_thumbnail_url || cachedAsset.streamThumbnailUrl || null,
+                        item.hdr_manifest_url || cachedAsset.hdrManifestUrl || null,
+                        item.hdr_processing_status || cachedAsset.hdrProcessingStatus || null]
                 );
             }
-
-            const newUrls = media_urls
-                .map(item => (typeof item === 'object' && item !== null ? item.url : item))
-                .filter(Boolean);
-            removedMediaUrls = existingUrls.filter(oldUrl => !newUrls.includes(oldUrl));
         }
 
 
@@ -2681,10 +2720,10 @@ exports.updatePostById = async (req, res) => {
 
         await client.query('COMMIT');
 
-        // Asynchronously delete removed media from Cloudflare R2
-        if (removedMediaUrls.length > 0) {
-            deleteMediaByUrls(removedMediaUrls).catch(err => {
-                console.error("[updatePostById] Failed to delete removed media from R2:", err.message);
+        // Asynchronously delete removed source, HDR derivatives, and Stream asset.
+        if (removedMediaRecords.length > 0) {
+            deleteHybridMedia(removedMediaRecords).catch(err => {
+                console.error("[updatePostById] Failed to delete removed media:", err.message);
             });
         }
 
@@ -2963,10 +3002,10 @@ exports.deletePost = async (req, res) => {
 
         // Retrieve media URLs before deleting post
         const mediaRes = await client.query(
-            `SELECT url FROM post_media WHERE post_id = $1`,
+            `SELECT media_id, url, master_url, stream_uid FROM post_media WHERE post_id = $1`,
             [postId]
         );
-        const mediaUrls = mediaRes.rows.map(r => r.url);
+        const mediaRecords = mediaRes.rows;
 
         await client.query(
             `DELETE FROM post_media WHERE post_id = $1`,
@@ -2980,10 +3019,10 @@ exports.deletePost = async (req, res) => {
 
         await client.query('COMMIT');
 
-        // Asynchronously delete media from Cloudflare R2
-        if (mediaUrls.length > 0) {
-            deleteMediaByUrls(mediaUrls).catch(err => {
-                console.error("[deletePost] Failed to delete media from R2:", err.message);
+        // Asynchronously delete R2 originals/HDR derivatives and Cloudflare Stream assets.
+        if (mediaRecords.length > 0) {
+            deleteHybridMedia(mediaRecords).catch(err => {
+                console.error("[deletePost] Failed to delete hybrid media:", err.message);
             });
         }
 
@@ -4706,7 +4745,7 @@ exports.getStories = async (req, res) => {
                                 'full_name', sp_u.full_name,
                                 'avatar_url', sp_u.avatar_url
                             ),
-                            'media', (SELECT json_agg(json_build_object('url', url, 'media_type', media_type, 'fallback_url', fallback_url, 'avif_url', avif_url, 'processing_status', processing_status)) FROM post_media WHERE post_id = sp.post_id)
+                            'media', (SELECT json_agg(json_build_object('media_id', media_id, 'url', url, 'master_url', master_url, 'media_type', media_type, 'fallback_url', fallback_url, 'avif_url', avif_url, 'processing_status', processing_status, 'stream_uid', stream_uid, 'stream_hls_url', stream_hls_url, 'stream_dash_url', stream_dash_url, 'stream_thumbnail_url', stream_thumbnail_url, 'hdr_manifest_url', hdr_manifest_url, 'hdr_processing_status', hdr_processing_status)) FROM post_media WHERE post_id = sp.post_id)
                         )
                     -- Failure Analysis
                     WHEN sp.visibility = 'private' THEN json_build_object(
@@ -4851,7 +4890,7 @@ exports.getGroupedStories = async (req, res) => {
                                 'full_name', sp_u.full_name,
                                 'avatar_url', sp_u.avatar_url
                             ),
-                            'media', (SELECT json_agg(json_build_object('url', url, 'media_type', media_type, 'fallback_url', fallback_url, 'avif_url', avif_url, 'processing_status', processing_status)) FROM post_media WHERE post_id = sp.post_id)
+                            'media', (SELECT json_agg(json_build_object('media_id', media_id, 'url', url, 'master_url', master_url, 'media_type', media_type, 'fallback_url', fallback_url, 'avif_url', avif_url, 'processing_status', processing_status, 'stream_uid', stream_uid, 'stream_hls_url', stream_hls_url, 'stream_dash_url', stream_dash_url, 'stream_thumbnail_url', stream_thumbnail_url, 'hdr_manifest_url', hdr_manifest_url, 'hdr_processing_status', hdr_processing_status)) FROM post_media WHERE post_id = sp.post_id)
                         )
                     -- Failure Analysis
                     WHEN sp.visibility = 'private' THEN json_build_object(
@@ -5133,7 +5172,7 @@ exports.createStory = async (req, res) => {
                             'full_name', sp_u.full_name,
                             'avatar_url', sp_u.avatar_url
                         ),
-                        'media', (SELECT json_agg(json_build_object('url', url, 'media_type', media_type, 'fallback_url', fallback_url, 'avif_url', avif_url, 'processing_status', processing_status)) FROM post_media WHERE post_id = sp.post_id)
+                        'media', (SELECT json_agg(json_build_object('media_id', media_id, 'url', url, 'master_url', master_url, 'media_type', media_type, 'fallback_url', fallback_url, 'avif_url', avif_url, 'processing_status', processing_status, 'stream_uid', stream_uid, 'stream_hls_url', stream_hls_url, 'stream_dash_url', stream_dash_url, 'stream_thumbnail_url', stream_thumbnail_url, 'hdr_manifest_url', hdr_manifest_url, 'hdr_processing_status', hdr_processing_status)) FROM post_media WHERE post_id = sp.post_id)
                     )
                 END AS shared_post
             FROM stories s
