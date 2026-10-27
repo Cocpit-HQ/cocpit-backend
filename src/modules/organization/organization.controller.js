@@ -230,7 +230,7 @@ exports.getOrganization = async (req, res) => {
        WHERE (c.slug = $1 OR (
            $1 ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' 
            AND c.org_id = $1::uuid
-       )) AND c.is_deleted = FALSE`,
+       )) AND c.is_deleted = FALSE AND c.is_deactivated = FALSE`,
             userId ? [slug, userId] : [slug]
         );
 
@@ -240,22 +240,43 @@ exports.getOrganization = async (req, res) => {
 
         const company = result.rows[0];
 
-        // 1.5 Bi-directional Block Check (User <-> Org, Org <-> Org)
+        // 1.5 Directional Block Check (User <-> Org, Org <-> Org)
         if (req.user || req.actor) {
-            const isBlocked = await checkActorBlockStatus(req, company.org_id);
-            if (isBlocked) {
-                return res.status(200).json({
-                    ...company,
-                    is_blocked: true,
-                    relationship: {
-                        is_following: false,
-                        is_subscribed: false,
-                        is_connected: false,
+            const activeActorId = req.actor?.type === "ORGANIZATION" && req.actor?.orgId
+                ? req.actor.orgId
+                : (req.user?.sub || req.user?.user_id || req.user?.id);
+
+            if (activeActorId && activeActorId !== company.org_id) {
+                // 1. Check if TARGET (Company) blocked the VIEWER (Blocked side - viewer strictly receives 404)
+                const blockedByTargetRes = await pool.query(
+                    `SELECT 1 FROM blocks WHERE blocker_id = $1 AND blocked_id = $2`,
+                    [company.org_id, activeActorId]
+                );
+                if (blockedByTargetRes.rowCount > 0) {
+                    return res.status(404).json({ message: "Organization not found" });
+                }
+
+                // 2. Check if VIEWER blocked the TARGET (Company) (Blocker side - viewer sees minimal blocked view)
+                const blockedByViewerRes = await pool.query(
+                    `SELECT 1 FROM blocks WHERE blocker_id = $1 AND blocked_id = $2`,
+                    [activeActorId, company.org_id]
+                );
+                if (blockedByViewerRes.rowCount > 0) {
+                    return res.status(200).json({
+                        ...company,
                         is_blocked: true,
-                    },
-                    member_count: 0,
-                    viewer_role_data: null,
-                });
+                        is_blocked_by_me: true,
+                        relationship: {
+                            is_following: false,
+                            is_subscribed: false,
+                            is_connected: false,
+                            is_blocked: true,
+                            is_blocked_by_me: true,
+                        },
+                        member_count: 0,
+                        viewer_role_data: null,
+                    });
+                }
             }
         }
 

@@ -70,7 +70,7 @@ async function resolveOrg(orgIdOrSlug) {
                 country, city, created_at, updated_at, created_by
          FROM organizations
          WHERE ${isUuid ? 'org_id = $1::uuid' : 'slug = $1'}
-           AND is_deleted = FALSE`,
+           AND is_deleted = FALSE AND is_deactivated = FALSE`,
         [orgIdOrSlug]
     );
     return result.rows[0] || null;
@@ -127,66 +127,88 @@ exports.getOrgProfile = async (req, res) => {
         const org = await resolveOrg(orgId);
         if (!org) return res.status(404).json({ message: 'Organization not found' });
 
-        // 1.5 Bi-directional Block Check (User <-> Org, Org <-> Org, User <-> User)
+        // 1.5 Directional Block Check (User <-> Org, Org <-> Org, User <-> User)
         if (req.user || req.actor) {
-            const isBlocked = await checkActorBlockStatus(req, org.org_id);
-            if (isBlocked) {
-                return res.status(200).json({
-                    org: {
-                        org_id: org.org_id,
-                        company_id: org.org_id,
-                        id: org.org_id,
-                        name: org.name,
-                        slug: org.slug,
-                        logo_url: org.logo_url,
-                        cover_url: org.cover_url,
-                        headline: org.headline,
-                        slogan: org.slogan,
-                        industry: org.industry,
-                        entity_type: org.entity_type,
-                        institution_type: org.institution_type,
-                        verification_status: org.verification_status,
-                    },
-                    organization: {
-                        org_id: org.org_id,
-                        company_id: org.org_id,
-                        id: org.org_id,
-                        name: org.name,
-                        slug: org.slug,
-                        logo_url: org.logo_url,
-                        cover_url: org.cover_url,
-                        headline: org.headline,
-                        slogan: org.slogan,
-                        industry: org.industry,
-                        entity_type: org.entity_type,
-                        institution_type: org.institution_type,
-                        verification_status: org.verification_status,
-                    },
-                    counts: {
-                        followers_count: 0,
-                        following_count: 0,
-                        subscribers_count: 0,
-                        members_count: 0,
-                        alumni_count: 0,
-                        posts_count: 0,
-                        active_jobs_count: 0,
-                    },
-                    relationship: {
-                        is_following: false,
-                        is_subscribed: false,
-                        is_connected: false,
+            const activeActorId = req.actor?.type === "ORGANIZATION" && req.actor?.orgId
+                ? req.actor.orgId
+                : (req.user?.sub || req.user?.user_id || req.user?.id);
+
+            if (activeActorId && activeActorId !== org.org_id) {
+                // 1. Check if TARGET (Company) blocked the VIEWER (Blocked side - viewer strictly receives 404)
+                const blockedByTargetRes = await pool.query(
+                    `SELECT 1 FROM blocks WHERE blocker_id = $1 AND blocked_id = $2`,
+                    [org.org_id, activeActorId]
+                );
+                if (blockedByTargetRes.rowCount > 0) {
+                    return res.status(404).json({ message: "Organization not found" });
+                }
+
+                // 2. Check if VIEWER blocked the TARGET (Company) (Blocker side - viewer sees minimal blocked view)
+                const blockedByViewerRes = await pool.query(
+                    `SELECT 1 FROM blocks WHERE blocker_id = $1 AND blocked_id = $2`,
+                    [activeActorId, org.org_id]
+                );
+                if (blockedByViewerRes.rowCount > 0) {
+                    return res.status(200).json({
+                        org: {
+                            org_id: org.org_id,
+                            company_id: org.org_id,
+                            id: org.org_id,
+                            name: org.name,
+                            slug: org.slug,
+                            logo_url: org.logo_url,
+                            cover_url: org.cover_url,
+                            headline: org.headline,
+                            slogan: org.slogan,
+                            industry: org.industry,
+                            entity_type: org.entity_type,
+                            institution_type: org.institution_type,
+                            verification_status: org.verification_status,
+                        },
+                        organization: {
+                            org_id: org.org_id,
+                            company_id: org.org_id,
+                            id: org.org_id,
+                            name: org.name,
+                            slug: org.slug,
+                            logo_url: org.logo_url,
+                            cover_url: org.cover_url,
+                            headline: org.headline,
+                            slogan: org.slogan,
+                            industry: org.industry,
+                            entity_type: org.entity_type,
+                            institution_type: org.institution_type,
+                            verification_status: org.verification_status,
+                        },
+                        counts: {
+                            followers_count: 0,
+                            following_count: 0,
+                            subscribers_count: 0,
+                            members_count: 0,
+                            alumni_count: 0,
+                            posts_count: 0,
+                            active_jobs_count: 0,
+                        },
+                        relationship: {
+                            is_following: false,
+                            is_subscribed: false,
+                            is_connected: false,
+                            is_blocked: true,
+                            is_blocked_by_me: true,
+                        },
                         is_blocked: true,
-                    },
-                    is_own_profile: false,
-                    is_member: false,
-                    membership: null,
-                    viewer_role: null,
-                    viewer_permissions: [],
-                    latest_posts: [],
-                    links: [],
-                    key_offerings: [],
-                    growth: null,
-                });
+                        is_blocked_by_me: true,
+                        is_own_profile: false,
+                        is_member: false,
+                        membership: null,
+                        viewer_role: null,
+                        viewer_permissions: [],
+                        latest_posts: [],
+                        links: [],
+                        key_offerings: [],
+                        growth: null,
+                    });
+                }
             }
         }
 

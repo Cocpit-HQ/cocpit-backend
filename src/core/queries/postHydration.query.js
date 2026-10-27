@@ -66,7 +66,9 @@ const getPostHydrationSelect = (companyParamIdx, userParamIdx) => `
 
     (
         SELECT COALESCE(json_agg(json_build_object(
+            'id', COALESCE(u_mention.user_id, o_mention.org_id),
             'user_id', COALESCE(u_mention.user_id, o_mention.org_id),
+            'org_id', o_mention.org_id,
             'full_name', COALESCE(u_mention.full_name, o_mention.name),
             'account_name', COALESCE(u_mention.account_name, o_mention.slug),
             'is_company', (o_mention.org_id IS NOT NULL),
@@ -77,7 +79,7 @@ const getPostHydrationSelect = (companyParamIdx, userParamIdx) => `
             SELECT DISTINCT (regexp_matches(COALESCE(p.content, ''), '@\\[[^\\]]+\\]\\(([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\\)', 'g'))[1]::uuid AS mentioned_id
         ) mentions
         LEFT JOIN active_users u_mention ON u_mention.user_id = mentions.mentioned_id
-        LEFT JOIN organizations o_mention ON o_mention.org_id = mentions.mentioned_id AND o_mention.is_deleted = FALSE
+        LEFT JOIN organizations o_mention ON o_mention.org_id = mentions.mentioned_id
         WHERE u_mention.user_id IS NOT NULL OR o_mention.org_id IS NOT NULL
     ) AS mentioned_users,
 
@@ -220,7 +222,10 @@ const getPostHydrationSelect = (companyParamIdx, userParamIdx) => `
     (
         EXISTS(
             SELECT 1 FROM saved_post sp_me 
-            WHERE sp_me.post_id = p.post_id 
+            WHERE (
+                sp_me.post_id = p.post_id 
+                OR (p.shared_post_id IS NOT NULL AND sp_me.post_id = p.shared_post_id)
+            )
             AND (
                 ($${companyParamIdx}::uuid IS NOT NULL AND sp_me.org_id = $${companyParamIdx}::uuid)
                 OR
@@ -394,15 +399,20 @@ const getPostHydrationSelect = (companyParamIdx, userParamIdx) => `
                  END,
                  'mentioned_users', (
                      SELECT COALESCE(json_agg(json_build_object(
+                         'id', COALESCE(u_mention.user_id, o_mention.org_id),
                          'user_id', COALESCE(u_mention.user_id, o_mention.org_id),
+                         'org_id', o_mention.org_id,
                          'full_name', COALESCE(u_mention.full_name, o_mention.name),
-                         'account_name', COALESCE(u_mention.account_name, o_mention.slug)
+                         'account_name', COALESCE(u_mention.account_name, o_mention.slug),
+                         'is_company', (o_mention.org_id IS NOT NULL),
+                         'type', CASE WHEN o_mention.org_id IS NOT NULL THEN 'COMPANY' ELSE 'USER' END,
+                         'slug', o_mention.slug
                      )), '[]'::json)
                      FROM (
                          SELECT DISTINCT (regexp_matches(COALESCE(sp.content, ''), '@\\[[^\\]]+\\]\\(([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\\)', 'g'))[1]::uuid AS mentioned_id
                      ) mentions
                      LEFT JOIN active_users u_mention ON u_mention.user_id = mentions.mentioned_id
-                     LEFT JOIN organizations o_mention ON o_mention.org_id = mentions.mentioned_id AND o_mention.is_deleted = FALSE
+                     LEFT JOIN organizations o_mention ON o_mention.org_id = mentions.mentioned_id
                      WHERE u_mention.user_id IS NOT NULL OR o_mention.org_id IS NOT NULL
                  ),
                  'media', COALESCE((SELECT json_agg(json_build_object('url', pm.url, 'media_type', pm.media_type, 'width', pm.width, 'height', pm.height)) FROM post_media pm WHERE pm.post_id = sp.post_id), '[]'::json),

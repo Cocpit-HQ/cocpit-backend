@@ -239,11 +239,23 @@ exports.getUserProfile = async (req, res) => {
     // Check if this UUID is an organization
     try {
       const orgCheck = await pool.query(
-        "SELECT org_id, slug, name FROM organizations WHERE org_id = $1::uuid AND is_deleted = FALSE",
+        "SELECT org_id, slug, name FROM organizations WHERE org_id = $1::uuid",
         [id]
       );
       if (orgCheck.rowCount > 0) {
         const org = orgCheck.rows[0];
+        const activeActorId = req.actor?.type === "ORGANIZATION" && req.actor?.orgId
+          ? req.actor.orgId
+          : (req.user?.sub || req.user?.user_id || req.user?.id);
+        if (activeActorId) {
+          const blockedByOrg = await pool.query(
+            "SELECT 1 FROM blocks WHERE blocker_id = $1 AND blocked_id = $2",
+            [org.org_id, activeActorId]
+          );
+          if (blockedByOrg.rowCount > 0) {
+            return res.status(404).json({ message: "User not found" });
+          }
+        }
         return res.status(404).json({
           message: "User not found",
           is_company: true,
@@ -251,7 +263,7 @@ exports.getUserProfile = async (req, res) => {
           org_id: org.org_id,
           slug: org.slug,
           name: org.name,
-          redirect_url: `/organization/${org.slug}`
+          redirect_url: `/organization/${org.org_id}`
         });
       }
     } catch (err) {
@@ -266,11 +278,23 @@ exports.getUserProfile = async (req, res) => {
       );
       if (resolveResult.rowCount === 0) {
         const orgRes = await pool.query(
-          "SELECT org_id, slug, name FROM organizations WHERE LOWER(slug) = LOWER($1) AND is_deleted = FALSE",
+          "SELECT org_id, slug, name FROM organizations WHERE LOWER(slug) = LOWER($1)",
           [id]
         );
         if (orgRes.rowCount > 0) {
           const org = orgRes.rows[0];
+          const activeActorId = req.actor?.type === "ORGANIZATION" && req.actor?.orgId
+            ? req.actor.orgId
+            : (req.user?.sub || req.user?.user_id || req.user?.id);
+          if (activeActorId) {
+            const blockedByOrg = await pool.query(
+              "SELECT 1 FROM blocks WHERE blocker_id = $1 AND blocked_id = $2",
+              [org.org_id, activeActorId]
+            );
+            if (blockedByOrg.rowCount > 0) {
+              return res.status(404).json({ message: "User handle not found" });
+            }
+          }
           return res.status(404).json({
             message: "User handle not found",
             is_company: true,
@@ -278,7 +302,7 @@ exports.getUserProfile = async (req, res) => {
             org_id: org.org_id,
             slug: org.slug,
             name: org.name,
-            redirect_url: `/organization/${org.slug}`
+            redirect_url: `/organization/${org.org_id}`
           });
         }
         return res.status(404).json({ message: "User handle not found" });
@@ -845,15 +869,20 @@ exports.getPublicProfilePosts = async (req, res) => {
         p.location,
         (
             SELECT COALESCE(json_agg(json_build_object(
+                'id', COALESCE(u_mention.user_id, o_mention.org_id),
                 'user_id', COALESCE(u_mention.user_id, o_mention.org_id),
+                'org_id', o_mention.org_id,
                 'full_name', COALESCE(u_mention.full_name, o_mention.name),
-                'account_name', COALESCE(u_mention.account_name, o_mention.slug)
+                'account_name', COALESCE(u_mention.account_name, o_mention.slug),
+                'is_company', (o_mention.org_id IS NOT NULL),
+                'type', CASE WHEN o_mention.org_id IS NOT NULL THEN 'COMPANY' ELSE 'USER' END,
+                'slug', o_mention.slug
             )), '[]'::json)
             FROM (
                 SELECT DISTINCT (regexp_matches(COALESCE(p.content, ''), '@\\[[^\\]]+\\]\\(([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\\)', 'g'))[1]::uuid AS mentioned_id
             ) mentions
             LEFT JOIN active_users u_mention ON u_mention.user_id = mentions.mentioned_id
-            LEFT JOIN organizations o_mention ON o_mention.org_id = mentions.mentioned_id AND o_mention.is_deleted = FALSE
+            LEFT JOIN organizations o_mention ON o_mention.org_id = mentions.mentioned_id
             WHERE u_mention.user_id IS NOT NULL OR o_mention.org_id IS NOT NULL
         ) AS mentioned_users,
 
@@ -1128,15 +1157,20 @@ exports.getPublicProfilePosts = async (req, res) => {
               ),
               'mentioned_users', (
                   SELECT COALESCE(json_agg(json_build_object(
+                      'id', COALESCE(u_mention.user_id, o_mention.org_id),
                       'user_id', COALESCE(u_mention.user_id, o_mention.org_id),
+                      'org_id', o_mention.org_id,
                       'full_name', COALESCE(u_mention.full_name, o_mention.name),
-                      'account_name', COALESCE(u_mention.account_name, o_mention.slug)
+                      'account_name', COALESCE(u_mention.account_name, o_mention.slug),
+                      'is_company', (o_mention.org_id IS NOT NULL),
+                      'type', CASE WHEN o_mention.org_id IS NOT NULL THEN 'COMPANY' ELSE 'USER' END,
+                      'slug', o_mention.slug
                   )), '[]'::json)
                   FROM (
                       SELECT DISTINCT (regexp_matches(COALESCE(sp.content, ''), '@\\[[^\\]]+\\]\\(([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\\)', 'g'))[1]::uuid AS mentioned_id
                   ) mentions
                   LEFT JOIN active_users u_mention ON u_mention.user_id = mentions.mentioned_id
-                  LEFT JOIN organizations o_mention ON o_mention.org_id = mentions.mentioned_id AND o_mention.is_deleted = FALSE
+                  LEFT JOIN organizations o_mention ON o_mention.org_id = mentions.mentioned_id
                   WHERE u_mention.user_id IS NOT NULL OR o_mention.org_id IS NOT NULL
               )
             )
