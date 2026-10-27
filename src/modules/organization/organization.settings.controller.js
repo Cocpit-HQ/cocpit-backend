@@ -2,6 +2,7 @@ const pool = require("../../core/db/pool");
 const { checkOrgPermission } = require("../../core/utils/rbac");
 
 const { logAudit } = require("../../core/infrastructure/audit.service");
+const { deleteR2Asset } = require("../../core/infrastructure/r2.client");
 
 // --- Tech Stack ---
 
@@ -179,6 +180,9 @@ exports.uploadLogo = async (req, res) => {
     const client = await pool.connect();
     try {
         await client.query("BEGIN");
+        const existingRes = await client.query(`SELECT logo_url FROM organizations WHERE org_id = $1`, [companyId]);
+        const oldLogo = existingRes.rows[0]?.logo_url;
+
         const logoUrl = req.file.path;
         await client.query(`UPDATE organizations SET logo_url = $1 WHERE org_id = $2`, [logoUrl, companyId]);
 
@@ -190,6 +194,11 @@ exports.uploadLogo = async (req, res) => {
         });
 
         await client.query("COMMIT");
+
+        if (oldLogo && oldLogo !== logoUrl) {
+            deleteR2Asset(oldLogo).catch(err => console.error("[uploadLogo] R2 cleanup error:", err.message));
+        }
+
         res.json({ message: "Logo updated", url: logoUrl });
     } catch (err) {
         await client.query("ROLLBACK");
@@ -207,6 +216,9 @@ exports.uploadCover = async (req, res) => {
     const client = await pool.connect();
     try {
         await client.query("BEGIN");
+        const existingRes = await client.query(`SELECT cover_url FROM organizations WHERE org_id = $1`, [companyId]);
+        const oldCover = existingRes.rows[0]?.cover_url;
+
         const coverUrl = req.file.path;
         await client.query(`UPDATE organizations SET cover_url = $1 WHERE org_id = $2`, [coverUrl, companyId]);
 
@@ -218,6 +230,11 @@ exports.uploadCover = async (req, res) => {
         });
 
         await client.query("COMMIT");
+
+        if (oldCover && oldCover !== coverUrl) {
+            deleteR2Asset(oldCover).catch(err => console.error("[uploadCover] R2 cleanup error:", err.message));
+        }
+
         res.json({ message: "Cover updated", url: coverUrl });
     } catch (err) {
         await client.query("ROLLBACK");
@@ -233,6 +250,9 @@ exports.deleteLogo = async (req, res) => {
     const client = await pool.connect();
     try {
         await client.query("BEGIN");
+        const existingRes = await client.query(`SELECT logo_url FROM organizations WHERE org_id = $1`, [companyId]);
+        const oldLogo = existingRes.rows[0]?.logo_url;
+
         await client.query(`UPDATE organizations SET logo_url = NULL WHERE org_id = $1`, [companyId]);
 
         await logAudit(client, {
@@ -243,6 +263,11 @@ exports.deleteLogo = async (req, res) => {
         });
 
         await client.query("COMMIT");
+
+        if (oldLogo) {
+            deleteR2Asset(oldLogo).catch(err => console.error("[deleteLogo] R2 cleanup error:", err.message));
+        }
+
         res.json({ message: "Logo deleted" });
     } catch (err) {
         await client.query("ROLLBACK");
@@ -258,6 +283,9 @@ exports.deleteCover = async (req, res) => {
     const client = await pool.connect();
     try {
         await client.query("BEGIN");
+        const existingRes = await client.query(`SELECT cover_url FROM organizations WHERE org_id = $1`, [companyId]);
+        const oldCover = existingRes.rows[0]?.cover_url;
+
         await client.query(`UPDATE organizations SET cover_url = NULL WHERE org_id = $1`, [companyId]);
 
         await logAudit(client, {
@@ -268,6 +296,11 @@ exports.deleteCover = async (req, res) => {
         });
 
         await client.query("COMMIT");
+
+        if (oldCover) {
+            deleteR2Asset(oldCover).catch(err => console.error("[deleteCover] R2 cleanup error:", err.message));
+        }
+
         res.json({ message: "Cover deleted" });
     } catch (err) {
         await client.query("ROLLBACK");

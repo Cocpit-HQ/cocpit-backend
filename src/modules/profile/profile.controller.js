@@ -10,6 +10,7 @@ const { checkBlockStatus, checkActorBlockStatus } = require("../../core/utils/bl
 const pool = require("../../core/db/pool");
 const { handleExperienceOrgLink, handleEducationOrgLink, cleanupPreviousCompanyMemberships } = require("../../utils/orgLinkHelper");
 const { toTitleCase } = require("../../utils/nameNormalizer");
+const { deleteR2Asset } = require("../../core/infrastructure/r2.client");
 
 // ─── Experience Validation Helpers ──────────────────────────────────────────────
 
@@ -275,7 +276,11 @@ exports.uploadOrReplaceAvatar = async (req, res) => {
     try {
         if (!req.file) return res.status(400).json({ message: "No file uploaded" });
         const avatarUrl = req.file.path || req.file.secure_url;
+        const oldAvatar = await profileRepo.getAvatarUrl(req.user.sub);
         await profileRepo.updateAvatarUrl(req.user.sub, avatarUrl);
+        if (oldAvatar && oldAvatar !== avatarUrl) {
+            deleteR2Asset(oldAvatar).catch(err => console.error("[uploadOrReplaceAvatar] R2 cleanup error:", err.message));
+        }
         res.json({ message: "Profile picture updated successfully", avatarUrl });
     } catch (err) {
         console.error("Avatar upload error:", err);
@@ -296,7 +301,11 @@ exports.getAvatar = async (req, res) => {
 
 exports.deleteAvatar = async (req, res) => {
     try {
+        const oldAvatar = await profileRepo.getAvatarUrl(req.user.sub);
         await profileRepo.updateAvatarUrl(req.user.sub, null);
+        if (oldAvatar) {
+            deleteR2Asset(oldAvatar).catch(err => console.error("[deleteAvatar] R2 cleanup error:", err.message));
+        }
         res.json({ message: "Profile picture deleted successfully" });
     } catch (err) {
         console.error("Delete avatar error:", err);
@@ -310,7 +319,11 @@ exports.uploadOrReplaceCoverPhoto = async (req, res) => {
     try {
         if (!req.file) return res.status(400).json({ message: "No file uploaded" });
         const coverUrl = req.file.path || req.file.secure_url;
+        const oldCover = await profileRepo.getCoverUrl(req.user.sub);
         await profileRepo.updateCoverUrl(req.user.sub, coverUrl);
+        if (oldCover && oldCover !== coverUrl) {
+            deleteR2Asset(oldCover).catch(err => console.error("[uploadOrReplaceCoverPhoto] R2 cleanup error:", err.message));
+        }
         res.json({ message: "Cover photo updated successfully", coverUrl });
     } catch (err) {
         console.error("Cover upload error:", err);
@@ -320,7 +333,11 @@ exports.uploadOrReplaceCoverPhoto = async (req, res) => {
 
 exports.deleteCoverPhoto = async (req, res) => {
     try {
+        const oldCover = await profileRepo.getCoverUrl(req.user.sub);
         await profileRepo.updateCoverUrl(req.user.sub, null);
+        if (oldCover) {
+            deleteR2Asset(oldCover).catch(err => console.error("[deleteCoverPhoto] R2 cleanup error:", err.message));
+        }
         res.json({ message: "Cover photo deleted successfully" });
     } catch (err) {
         console.error("Delete cover error:", err);
@@ -474,7 +491,11 @@ exports.updateIdentity = async (req, res) => {
 exports.uploadOrReplaceResume = async (req, res) => {
     if (!req.file) return res.status(400).json({ message: "Resume file is required" });
     try {
+        const oldResume = await profileRepo.getResume(req.user.sub);
         const resume = await profileRepo.replaceResume(req.user.sub, req.file);
+        if (oldResume?.file_url && oldResume.file_url !== resume.file_url) {
+            deleteR2Asset(oldResume.file_url).catch(err => console.error("[uploadOrReplaceResume] R2 cleanup error:", err.message));
+        }
         res.status(201).json({ message: "Resume uploaded successfully", resume });
     } catch (err) {
         console.error("Upload/Replace resume error:", err);
@@ -497,6 +518,9 @@ exports.deleteResume = async (req, res) => {
     try {
         const resume = await profileRepo.deleteResume(req.user.sub);
         if (!resume) return res.status(404).json({ message: "No resume found to delete" });
+        if (resume.file_url) {
+            deleteR2Asset(resume.file_url).catch(err => console.error("[deleteResume] R2 cleanup error:", err.message));
+        }
         res.json({ message: "Resume deleted successfully", resume });
     } catch (err) {
         console.error("Delete resume error:", err);

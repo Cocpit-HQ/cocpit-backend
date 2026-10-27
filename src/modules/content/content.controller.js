@@ -7,7 +7,7 @@ const socketService = require("../../core/infrastructure/socket.service");
 const { checkBlockStatus } = require("../../core/utils/blockCheck");
 const BlockModel = require("../../models/block.model");
 const { logAudit } = require("../../core/infrastructure/audit.service");
-const cloudinary = require("../../core/infrastructure/cloudinary.client");
+const { r2Client, hasR2, bucketName, deleteR2Asset, deleteR2Assets } = require("../../core/infrastructure/r2.client");
 const { checkOrgPermission } = require("../../core/utils/rbac");
 const { notifyOrgFollowers, notifyBroadcastToChildOrgs } = require("../../services/notification.service");
 const { logActivity, removeActivity } = require("../../core/services/activityLogger");
@@ -2598,12 +2598,17 @@ exports.updatePostById = async (req, res) => {
 
         // 5. Update Media: The "Sync" approach
         if (Array.isArray(media_urls)) {
+            const oldMediaRes = await client.query(`SELECT url FROM post_media WHERE post_id = $1`, [postId]);
+            const oldUrls = oldMediaRes.rows.map(r => r.url).filter(Boolean);
+
             await client.query(`DELETE FROM post_media WHERE post_id = $1`, [postId]);
 
+            const newUrls = [];
             for (let i = 0; i < media_urls.length; i++) {
                 const item = media_urls[i];
                 const url = typeof item === 'object' && item !== null ? item.url : item;
                 if (!url) continue;
+                newUrls.push(url);
                 
                 const width = (parsedMediaMetadata[i] && parsedMediaMetadata[i].width) || (typeof item === 'object' && item !== null ? item.width : null);
                 const height = (parsedMediaMetadata[i] && parsedMediaMetadata[i].height) || (typeof item === 'object' && item !== null ? item.height : null);
@@ -2614,6 +2619,11 @@ exports.updatePostById = async (req, res) => {
        VALUES ($1, $2, $3, $4, $5)`,
                     [postId, url, type, width, height]
                 );
+            }
+
+            const removedUrls = oldUrls.filter(u => !newUrls.includes(u));
+            if (removedUrls.length > 0) {
+                deleteR2Assets(removedUrls).catch(err => console.error("[updatePostById] R2 cleanup error:", err.message));
             }
         }
 
@@ -2907,12 +2917,25 @@ exports.deletePost = async (req, res) => {
             }
         }
 
+        // Fetch post media for CDN/R2 cleanup
+        const mediaRes = await client.query(
+            `SELECT url FROM post_media WHERE post_id = $1`,
+            [postId]
+        );
+        const postUrls = mediaRes.rows.map(r => r.url).filter(Boolean);
+
         await client.query(
             `UPDATE posts SET is_active = FALSE WHERE post_id = $1 OR shared_post_id = $1`,
             [postId]
         );
 
         await client.query('COMMIT');
+
+        // Clean up media from Cloudflare R2
+        if (postUrls.length > 0) {
+            deleteR2Assets(postUrls).catch(err => console.error("[deletePost] R2 cleanup error:", err.message));
+        }
+
         res.status(200).json({ message: "Post deleted", deletedPostId: postId, id: postId });
 
     } catch (err) {
@@ -5171,12 +5194,11 @@ exports.deleteStory = async (req, res) => {
             return res.status(404).json({ message: "Story not found or unauthorized", storyId, userId });
         }
 
-        // Clean up Cloudinary asset in background
-        const { cld_public_id, media_type } = result.rows[0];
+        // Clean up storage asset in background (Cloudflare R2 or legacy Cloudinary)
+        const { cld_public_id } = result.rows[0];
         if (cld_public_id) {
-            const resourceType = media_type === 'video' ? 'video' : 'image';
-            cloudinary.uploader.destroy(cld_public_id, { resource_type: resourceType })
-                .catch(err => console.error(`[deleteStory] Cloudinary cleanup failed for ${cld_public_id}:`, err.message));
+            const key = cld_public_id.startsWith("stories/") ? cld_public_id : `stories/${cld_public_id}`;
+            deleteR2Asset(key).catch(err => console.error(`[deleteStory] R2 cleanup failed for ${cld_public_id}:`, err.message));
         }
 
         res.status(200).json({ message: "Story deleted", deletedStoryId: storyId });

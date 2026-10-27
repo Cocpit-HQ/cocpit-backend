@@ -12,13 +12,15 @@ router.post(
   (req, res) => {
     console.log("[UploadRoute] Uploaded files:", req.files?.length);
     const urls = req.files.map(file => {
+      const isVideo = file.mimetype?.startsWith("video/") || false;
       console.log("[UploadRoute] File Mapping:", file.originalname, file.path);
       return {
-        url: file.path,
-        media_type: file.resource_type,
-        width: file.width,
-        height: file.height
-      }
+        url: file.path || file.location,
+        media_type: file.resource_type || (isVideo ? "video" : "image"),
+        width: file.width || null,
+        height: file.height || null,
+        key: file.key || null,
+      };
     });
 
     res.json({ urls });
@@ -32,26 +34,23 @@ router.post(
     if (!req.file) return res.status(400).json({ message: "No file uploaded" });
 
     try {
-      // Cloudinary returns the eager transformations in the response, but often we just need the basics first
-      // If local storage, req.file.path is the file path
-      const isCloudinary = !!req.file.filename; // Cloudinary exposes filename as public_id usually in storage engine
+      const isCloudinary = !!req.file.filename;
       console.log("Upload Story File:", req.file);
 
-      let thumbnailUrl = req.file.path;
-      if (isCloudinary && cloudinary.url) {
+      let thumbnailUrl = req.file.path || req.file.location;
+      if (isCloudinary && cloudinary?.url) {
         try {
           thumbnailUrl = cloudinary.url(req.file.filename, { resource_type: 'video', format: 'jpg', transformation: [{ width: 720, aspectRatio: "9:16", crop: "fill" }] });
         } catch (e) {
           console.error("Error generating thumbnail URL:", e);
-          // Fallback to path (which is likely the video URL, potentially raw)
         }
       }
 
-      const mediaType = req.file.mimetype.startsWith('video') ? 'video' : 'image';
+      const mediaType = req.file.mimetype?.startsWith('video') ? 'video' : 'image';
 
       res.json({
-        url: req.file.path,
-        public_id: req.file.filename || req.file.originalname,
+        url: req.file.path || req.file.location,
+        public_id: req.file.key || req.file.filename || req.file.originalname,
         media_type: mediaType,
         thumbnail_url: thumbnailUrl
       });

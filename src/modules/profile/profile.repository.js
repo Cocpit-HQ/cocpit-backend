@@ -63,6 +63,11 @@ const updateCoverUrl = async (userId, url) => {
     await pool.query("UPDATE users SET cover_image_url = $1 WHERE user_id = $2", [url, userId]);
 };
 
+const getCoverUrl = async (userId) => {
+    const result = await pool.query("SELECT cover_image_url FROM users WHERE user_id = $1", [userId]);
+    return result.rows[0]?.cover_image_url || null;
+};
+
 // ─── Identity ──────────────────────────────────────────────────────────────────
 
 const getIdentity = async (userId) => {
@@ -859,7 +864,7 @@ const getProfileScoreData = async (userId) => {
 };
 
 module.exports = {
-    getFullProfile, updateUserFields, updateAvatarUrl, getAvatarUrl, updateCoverUrl, updateProfileIndustry,
+    getFullProfile, updateUserFields, updateAvatarUrl, getAvatarUrl, updateCoverUrl, getCoverUrl, updateProfileIndustry,
     getIdentity, updateIdentity,
     getResume, getLatestResume, replaceResume, deleteResume,
     getProfileId, ensureProfileId, getProfileVersion, incrementProfileVersion,
