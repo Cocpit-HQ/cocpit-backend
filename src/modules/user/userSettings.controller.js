@@ -1248,6 +1248,11 @@ exports.getNotificationPreferences = async (req, res) => {
                 jobs: true,
                 messages: true,
                 emails: true,
+                all_notifications: true,
+                post_notifications: true,
+                job_alerts: true,
+                message_notifications: true,
+                email_notifications: true,
             });
         }
 
@@ -1259,6 +1264,11 @@ exports.getNotificationPreferences = async (req, res) => {
             jobs: prefs.job_alerts ?? true,
             messages: prefs.message_notifications ?? true,
             emails: prefs.email_notifications ?? true,
+            all_notifications: prefs.all_notifications ?? true,
+            post_notifications: prefs.post_notifications ?? true,
+            job_alerts: prefs.job_alerts ?? true,
+            message_notifications: prefs.message_notifications ?? true,
+            email_notifications: prefs.email_notifications ?? true,
         });
     } catch (error) {
         console.error("Get notification preferences error:", error);
@@ -1273,21 +1283,34 @@ exports.getNotificationPreferences = async (req, res) => {
 exports.updateNotificationPreferences = async (req, res) => {
     try {
         const userId = req.user.sub;
-        const { all = true, posts = true, jobs = true, messages = true, emails = true } = req.body;
+        const body = req.body || {};
+
+        const all = body.all_notifications !== undefined ? body.all_notifications : (body.all !== undefined ? body.all : null);
+        const posts = body.post_notifications !== undefined ? body.post_notifications : (body.posts !== undefined ? body.posts : null);
+        const jobs = body.job_alerts !== undefined ? body.job_alerts : (body.jobs !== undefined ? body.jobs : null);
+        const messages = body.message_notifications !== undefined ? body.message_notifications : (body.messages !== undefined ? body.messages : null);
+        const emails = body.email_notifications !== undefined ? body.email_notifications : (body.emails !== undefined ? body.emails : null);
 
         await pool.query(
             `INSERT INTO user_notification_preferences
                 (user_id, all_notifications, post_notifications, job_alerts, message_notifications, email_notifications, updated_at)
-             VALUES ($1, $2, $3, $4, $5, $6, NOW())
+             VALUES ($1, COALESCE($2, true), COALESCE($3, true), COALESCE($4, true), COALESCE($5, true), COALESCE($6, true), NOW())
              ON CONFLICT (user_id) DO UPDATE SET
-                all_notifications = EXCLUDED.all_notifications,
-                post_notifications = EXCLUDED.post_notifications,
-                job_alerts = EXCLUDED.job_alerts,
-                message_notifications = EXCLUDED.message_notifications,
-                email_notifications = EXCLUDED.email_notifications,
+                all_notifications = COALESCE($2, user_notification_preferences.all_notifications),
+                post_notifications = COALESCE($3, user_notification_preferences.post_notifications),
+                job_alerts = COALESCE($4, user_notification_preferences.job_alerts),
+                message_notifications = COALESCE($5, user_notification_preferences.message_notifications),
+                email_notifications = COALESCE($6, user_notification_preferences.email_notifications),
                 updated_at = NOW()`,
             [userId, all, posts, jobs, messages, emails]
         );
+
+        const socketService = require("../../core/infrastructure/socket.service");
+        if (socketService && socketService.notifyUser) {
+            socketService.notifyUser(userId, "USER_NOTIFICATIONS_UPDATED", {
+                preferences: { all, posts, jobs, messages, emails, post_notifications: posts }
+            });
+        }
 
         return res.status(200).json({ success: true });
     } catch (error) {

@@ -1661,8 +1661,8 @@ exports.updateOrgAbout = async (req, res) => {
     const { description, slogan, offices, links, specialties } = req.body;
 
     // Basic validations
-    if (description !== undefined && description !== null && description.length > 5000) {
-        return res.status(400).json({ message: 'Description must be 5000 characters or less' });
+    if (description !== undefined && description !== null && description.length > 2000) {
+        return res.status(400).json({ message: 'Description must be 2000 characters or less' });
     }
     if (slogan !== undefined && slogan !== null && slogan.length > 255) {
         return res.status(400).json({ message: 'Slogan must be 255 characters or less' });

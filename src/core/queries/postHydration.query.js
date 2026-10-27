@@ -3,6 +3,27 @@
  * Used to keep Public Feed and Hashtag Feed consistent.
  */
 
+const getLikerBlockFilter = (companyParamIdx, userParamIdx, plAlias = 'pl_sample') => `
+        AND NOT EXISTS (
+            SELECT 1 FROM blocks b 
+            WHERE (
+                -- When viewing as an organization
+                ($${companyParamIdx}::uuid IS NOT NULL AND (
+                    (b.is_org_block = true AND ${plAlias}.org_id IS NULL AND ((b.blocker_id = $${companyParamIdx}::uuid AND b.blocked_id = ${plAlias}.user_id) OR (b.blocker_id = ${plAlias}.user_id AND b.blocked_id = $${companyParamIdx}::uuid)))
+                    OR
+                    (${plAlias}.org_id IS NOT NULL AND ((b.blocker_id = ${plAlias}.org_id AND b.blocked_id = $${companyParamIdx}::uuid) OR (b.blocker_id = $${companyParamIdx}::uuid AND b.blocked_id = ${plAlias}.org_id)))
+                ))
+                OR
+                -- When viewing as an individual user
+                ($${companyParamIdx}::uuid IS NULL AND $${userParamIdx}::uuid IS NOT NULL AND (
+                    (b.is_org_block = false AND ${plAlias}.org_id IS NULL AND ((b.blocker_id = $${userParamIdx}::uuid AND b.blocked_id = ${plAlias}.user_id) OR (b.blocker_id = ${plAlias}.user_id AND b.blocked_id = $${userParamIdx}::uuid)))
+                    OR
+                    (${plAlias}.org_id IS NOT NULL AND ((b.blocker_id = ${plAlias}.org_id AND b.blocked_id = $${userParamIdx}::uuid) OR (b.blocker_id = $${userParamIdx}::uuid AND b.blocked_id = ${plAlias}.org_id)))
+                ))
+            )
+        )
+`;
+
 const getPostHydrationSelect = (companyParamIdx, userParamIdx) => `
     p.post_id,
     CASE WHEN p.post_type IN ('article', 'poll') THEN p.title ELSE NULL END AS title,
@@ -103,6 +124,7 @@ const getPostHydrationSelect = (companyParamIdx, userParamIdx) => `
             OR
             ($${companyParamIdx}::uuid IS NULL AND pl_sample.user_id = $${userParamIdx} AND pl_sample.org_id IS NULL)
         )
+        ${getLikerBlockFilter(companyParamIdx, userParamIdx, 'pl_sample')}
         ORDER BY 
             (
                 $${userParamIdx}::uuid IS NOT NULL AND 
@@ -200,6 +222,7 @@ const getPostHydrationSelect = (companyParamIdx, userParamIdx) => `
                   OR
                   ($${companyParamIdx}::uuid IS NULL AND pl_sample.user_id = $${userParamIdx}::uuid AND pl_sample.org_id IS NULL)
               )
+              ${getLikerBlockFilter(companyParamIdx, userParamIdx, 'pl_sample')}
             ORDER BY pl_sample.created_at DESC
             LIMIT 5
         ) sub
@@ -429,6 +452,7 @@ const getPostHydrationSelect = (companyParamIdx, userParamIdx) => `
                          OR
                          ($${companyParamIdx}::uuid IS NULL AND pl_sample.user_id = $${userParamIdx} AND pl_sample.org_id IS NULL)
                      )
+                     ${getLikerBlockFilter(companyParamIdx, userParamIdx, 'pl_sample')}
                      ORDER BY 
                          (
                              $${userParamIdx}::uuid IS NOT NULL AND 
@@ -467,6 +491,7 @@ const getPostHydrationSelect = (companyParamIdx, userParamIdx) => `
                                OR
                                ($${companyParamIdx}::uuid IS NULL AND pl_sample.user_id = $${userParamIdx}::uuid AND pl_sample.org_id IS NULL)
                            )
+                           ${getLikerBlockFilter(companyParamIdx, userParamIdx, 'pl_sample')}
                          ORDER BY pl_sample.created_at DESC
                          LIMIT 5
                      ) sub
@@ -670,16 +695,28 @@ const getPublicFeedWhere = (userParamIdx, companyParamIdx = null) => `
     ${companyParamIdx ? `
     AND NOT EXISTS (
         SELECT 1 FROM blocks b
-        WHERE (b.is_org_block = true AND p.author_org_id IS NULL AND ((b.blocker_id = $${companyParamIdx} AND b.blocked_id = p.author_id) OR (b.blocker_id = p.author_id AND b.blocked_id = $${companyParamIdx})))
-           OR (b.is_org_block = true AND p.author_org_id IS NOT NULL AND ((b.blocker_id = p.author_org_id AND b.blocked_id = $${companyParamIdx}) OR (b.blocker_id = $${companyParamIdx} AND b.blocked_id = p.author_org_id)))
+        WHERE (p.author_org_id IS NULL AND (
+                (b.is_org_block = true AND b.blocker_id = $${companyParamIdx} AND b.blocked_id = p.author_id)
+             OR (b.is_org_block = false AND b.blocker_id = p.author_id AND b.blocked_id = $${companyParamIdx})
+        ))
+        OR (p.author_org_id IS NOT NULL AND (
+                (b.blocker_id = p.author_org_id AND b.blocked_id = $${companyParamIdx})
+             OR (b.blocker_id = $${companyParamIdx} AND b.blocked_id = p.author_org_id)
+        ))
     )
     -- STRICT REPOST BLOCKING: Exclude repost if original author is blocked
     AND (
         p.shared_post_id IS NULL 
         OR NOT EXISTS (
             SELECT 1 FROM blocks b 
-            WHERE (b.is_org_block = true AND sp.author_org_id IS NULL AND ((b.blocker_id = $${companyParamIdx} AND b.blocked_id = sp.author_id) OR (b.blocker_id = sp.author_id AND b.blocked_id = $${companyParamIdx})))
-               OR (b.is_org_block = true AND sp.author_org_id IS NOT NULL AND ((b.blocker_id = sp.author_org_id AND b.blocked_id = $${companyParamIdx}) OR (b.blocker_id = $${companyParamIdx} AND b.blocked_id = sp.author_org_id)))
+            WHERE (sp.author_org_id IS NULL AND (
+                    (b.is_org_block = true AND b.blocker_id = $${companyParamIdx} AND b.blocked_id = sp.author_id)
+                 OR (b.is_org_block = false AND b.blocker_id = sp.author_id AND b.blocked_id = $${companyParamIdx})
+            ))
+            OR (sp.author_org_id IS NOT NULL AND (
+                    (b.blocker_id = sp.author_org_id AND b.blocked_id = $${companyParamIdx})
+                 OR (b.blocker_id = $${companyParamIdx} AND b.blocked_id = sp.author_org_id)
+            ))
         )
     )
     ` : `
@@ -735,4 +772,5 @@ module.exports = {
     getPostHydrationSelect,
     getPostHydrationJoins,
     getPublicFeedWhere,
+    getLikerBlockFilter,
 };

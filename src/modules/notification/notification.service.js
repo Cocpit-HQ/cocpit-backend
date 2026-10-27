@@ -20,7 +20,12 @@ const isNotificationAllowed = async (userId, notificationType = "post") => {
         const pref = res.rows[0];
         if (pref.all_notifications === false) return false;
 
-        if (["post", "like", "comment", "reply", "mention"].includes(notificationType) && pref.post_notifications === false) return false;
+        const postNotificationTypes = [
+            "post", "like", "comment", "reply", "mention", 
+            "post_tag", "repost", "share", "channel_article", 
+            "organization_post", "story_comment", "story_like"
+        ];
+        if (postNotificationTypes.includes(notificationType) && pref.post_notifications === false) return false;
         
         const isJobAlert = notificationType === "job" || 
                            notificationType.includes("application") || 
@@ -302,6 +307,7 @@ const notifyOrgDocumentRejected = async (orgId, reason) => {
 };
 
 module.exports = {
+    isNotificationAllowed,
     sendToUser,
     sendSilentPushToUser,
     notifyDocumentVerified,

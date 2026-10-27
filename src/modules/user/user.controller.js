@@ -2332,6 +2332,27 @@ exports.getSearchHistory = async (req, res) => {
       WHERE sh.user_id = $1
         AND (($2::uuid IS NULL AND sh.org_id IS NULL) OR (sh.org_id = $2::uuid))
         AND (sh.query_normalized NOT LIKE 'user:%' OR u.user_id IS NOT NULL OR o.org_id IS NOT NULL)
+        AND NOT EXISTS (
+          SELECT 1 FROM blocks b
+          WHERE (
+            -- Block between logged in user and target entity
+            (b.blocker_id = $1 AND b.blocked_id = COALESCE(u.user_id, o.org_id, CASE WHEN sh.profile_snapshot->>'id' ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' THEN (sh.profile_snapshot->>'id')::uuid ELSE NULL END))
+            OR (b.blocker_id = COALESCE(u.user_id, o.org_id, CASE WHEN sh.profile_snapshot->>'id' ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' THEN (sh.profile_snapshot->>'id')::uuid ELSE NULL END) AND b.blocked_id = $1)
+            -- Block between acting organization and target entity
+            OR ($2::uuid IS NOT NULL AND (
+              (b.blocker_id = $2 AND b.blocked_id = COALESCE(u.user_id, o.org_id, CASE WHEN sh.profile_snapshot->>'id' ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' THEN (sh.profile_snapshot->>'id')::uuid ELSE NULL END))
+              OR (b.blocker_id = COALESCE(u.user_id, o.org_id, CASE WHEN sh.profile_snapshot->>'id' ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' THEN (sh.profile_snapshot->>'id')::uuid ELSE NULL END) AND b.blocked_id = $2)
+            ))
+          )
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM organization_blocked_accounts oba
+          WHERE (
+            ($2::uuid IS NOT NULL AND oba.org_id = $2 AND oba.blocked_id = COALESCE(u.user_id, o.org_id, CASE WHEN sh.profile_snapshot->>'id' ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' THEN (sh.profile_snapshot->>'id')::uuid ELSE NULL END))
+            OR (oba.org_id = COALESCE(u.user_id, o.org_id, CASE WHEN sh.profile_snapshot->>'id' ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' THEN (sh.profile_snapshot->>'id')::uuid ELSE NULL END) AND oba.blocked_id = $1)
+            OR ($2::uuid IS NOT NULL AND oba.org_id = COALESCE(u.user_id, o.org_id, CASE WHEN sh.profile_snapshot->>'id' ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' THEN (sh.profile_snapshot->>'id')::uuid ELSE NULL END) AND oba.blocked_id = $2)
+          )
+        )
       ORDER BY sh.created_at DESC
     `;
     const result = await pool.query(query, [userId, orgId]);
@@ -2378,6 +2399,18 @@ exports.saveSearchHistory = async (req, res) => {
   
   // Make queryNormalized unique by profile ID to prevent collisions between users with identical names
   if (profileSnapshot && profileSnapshot.id) {
+    const targetId = profileSnapshot.id;
+    // Check if target entity is blocked (bi-directional for both personal user and org actor)
+    const blockCheck = await pool.query(
+      `SELECT 1 FROM blocks 
+       WHERE ((blocker_id = $1 AND blocked_id = $2) OR (blocker_id = $2 AND blocked_id = $1))
+          OR ($3::uuid IS NOT NULL AND ((blocker_id = $3 AND blocked_id = $2) OR (blocker_id = $2 AND blocked_id = $3)))
+       LIMIT 1`,
+      [userId, targetId, orgId]
+    );
+    if (blockCheck.rowCount > 0) {
+      return res.status(200).json({ success: true, message: "Blocked entity not saved to history" });
+    }
     queryNormalized = `user:${profileSnapshot.id}`;
   } else {
     queryNormalized = `query:${queryNormalized}`;

@@ -238,7 +238,7 @@ exports.updateProfile = async (req, res) => {
     if (school && school.length > 100) return res.status(400).json({ message: "School cannot exceed 100 characters" });
     if (degree && degree.length > 100) return res.status(400).json({ message: "Degree cannot exceed 100 characters" });
     if (location && location.length > 150) return res.status(400).json({ message: "Location cannot exceed 150 characters" });
-    if (about_text && about_text.length > 500) return res.status(400).json({ message: "About section cannot exceed 500 characters" });
+    if (about_text && about_text.length > 2000) return res.status(400).json({ message: "About section cannot exceed 2000 characters" });
     if (website && website.length > 255) return res.status(400).json({ message: "Website cannot exceed 255 characters" });
     // Validate account_name (username) if provided
     if (account_name !== undefined) {

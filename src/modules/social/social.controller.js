@@ -5095,6 +5095,13 @@ exports.getNotifications = async (req, res) => {
                     WHERE (b.blocker_id = $1 AND ((n.sender_id IS NOT NULL AND b.blocked_id = n.sender_id) OR (NULLIF(n.metadata->>'org_id', '')::uuid IS NOT NULL AND b.blocked_id = (n.metadata->>'org_id')::uuid)))
                        OR (b.blocked_id = $1 AND ((n.sender_id IS NOT NULL AND b.blocker_id = n.sender_id) OR (NULLIF(n.metadata->>'org_id', '')::uuid IS NOT NULL AND b.blocker_id = (n.metadata->>'org_id')::uuid)))
                 )
+                AND NOT EXISTS (
+                    SELECT 1
+                    FROM organization_notification_settings ons
+                    WHERE ons.org_id = $1
+                      AND ons.posts_enabled = false
+                      AND n.type = ANY(ARRAY['post', 'like', 'comment', 'reply', 'mention', 'post_tag', 'repost', 'share', 'channel_article', 'organization_post', 'story_comment', 'story_like'])
+                )
             `;
         } else {
             query += `
@@ -5105,6 +5112,15 @@ exports.getNotifications = async (req, res) => {
                     FROM blocks b
                     WHERE (b.blocker_id = $1 AND ((n.sender_id IS NOT NULL AND b.blocked_id = n.sender_id) OR (NULLIF(n.metadata->>'org_id', '')::uuid IS NOT NULL AND b.blocked_id = (n.metadata->>'org_id')::uuid)))
                        OR (b.blocked_id = $1 AND ((n.sender_id IS NOT NULL AND b.blocker_id = n.sender_id) OR (NULLIF(n.metadata->>'org_id', '')::uuid IS NOT NULL AND b.blocker_id = (n.metadata->>'org_id')::uuid)))
+                )
+                AND NOT EXISTS (
+                    SELECT 1
+                    FROM user_notification_preferences unp
+                    WHERE unp.user_id = $1
+                      AND (
+                          unp.all_notifications = false
+                          OR (unp.post_notifications = false AND n.type = ANY(ARRAY['post', 'like', 'comment', 'reply', 'mention', 'post_tag', 'repost', 'share', 'channel_article', 'organization_post', 'story_comment', 'story_like']))
+                      )
                 )
             `;
         }
@@ -5568,6 +5584,16 @@ exports.blockUser = async (req, res) => {
                     [blockerId, targetId]
                 );
             }
+
+            // Delete search history between blocker and target (both users and organizations)
+            await client.query(
+                `DELETE FROM user_search_history 
+                 WHERE (user_id = $1 AND (query_normalized = ('user:' || $2) OR profile_snapshot->>'id' = $2::text))
+                    OR (user_id = $2 AND (query_normalized = ('user:' || $1) OR profile_snapshot->>'id' = $1::text))
+                    OR (org_id = $1 AND (query_normalized = ('user:' || $2) OR profile_snapshot->>'id' = $2::text))
+                    OR (org_id = $2 AND (query_normalized = ('user:' || $1) OR profile_snapshot->>'id' = $1::text))`,
+                [blockerId, targetId]
+            );
 
             await client.query("COMMIT");
         } catch (e) {

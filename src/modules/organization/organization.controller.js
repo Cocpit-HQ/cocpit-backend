@@ -449,6 +449,11 @@ exports.updateOrganization = async (req, res) => {
         }
     }
 
+    // Description validation
+    if (description !== undefined && description !== null && description.length > 2000) {
+        return res.status(400).json({ message: "Description must be 2000 characters or less" });
+    }
+
     const locationStr =
         formattedAddress ||
         (typeof location === 'string' ? location : location?.formattedAddress || location?.description) ||
