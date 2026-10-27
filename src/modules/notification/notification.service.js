@@ -8,38 +8,7 @@ const deviceRepo = require("../device/device.repository");
 const pool = require("../../core/db/pool");
 const socketService = require("../../core/infrastructure/socket.service");
 const { sendDocumentVerifiedEmail, sendDocumentRejectedEmail, sendOrgDocumentVerifiedEmail, sendOrgDocumentRejectedEmail } = require("../../core/services/email.service");
-
-const isNotificationAllowed = async (userId, notificationType = "post") => {
-    try {
-        const res = await pool.query(
-            "SELECT all_notifications, post_notifications, job_alerts, message_notifications FROM user_notification_preferences WHERE user_id = $1",
-            [userId]
-        );
-        if (res.rowCount === 0) return true;
-
-        const pref = res.rows[0];
-        if (pref.all_notifications === false) return false;
-
-        const postNotificationTypes = [
-            "post", "like", "comment", "reply", "mention", 
-            "post_tag", "repost", "share", "channel_article", 
-            "organization_post", "story_comment", "story_like"
-        ];
-        if (postNotificationTypes.includes(notificationType) && pref.post_notifications === false) return false;
-        
-        const isJobAlert = notificationType === "job" || 
-                           notificationType.includes("application") || 
-                           notificationType.includes("offer");
-        if (isJobAlert && pref.job_alerts === false) return false;
-        
-        if (notificationType === "message" && pref.message_notifications === false) return false;
-
-        return true;
-    } catch (err) {
-        console.error("Error checking notification preferences:", err);
-        return true;
-    }
-};
+const { isNotificationAllowed, isOrgNotificationAllowed } = require("../../core/utils/notificationPermission");
 
 /**
  * Sends a push notification to all active devices of a user.
@@ -308,6 +277,7 @@ const notifyOrgDocumentRejected = async (orgId, reason) => {
 
 module.exports = {
     isNotificationAllowed,
+    isOrgNotificationAllowed,
     sendToUser,
     sendSilentPushToUser,
     notifyDocumentVerified,
