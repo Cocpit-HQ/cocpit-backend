@@ -25,16 +25,19 @@ const CORS_RULES = [
     AllowedOrigins: [
       "http://localhost:3000",
       "http://localhost:3001",
+      "http://localhost:5000",
       "https://cocpit.com",
       "https://www.cocpit.com",
+      "https://staging.cocpit.in",
+      "https://frontend.cocpit.in",
       "https://cocpit-frontend-staging.up.railway.app",
       "https://cocpit-backend-staging.up.railway.app",
       // Wildcard for dev environments – tighten in production
       "*",
     ],
     AllowedMethods: ["GET", "PUT", "POST", "HEAD", "DELETE"],
-    AllowedHeaders: ["*"],
-    ExposeHeaders: ["ETag", "Content-Length", "Content-Type"],
+    AllowedHeaders: ["*", "Range"],
+    ExposeHeaders: ["ETag", "Content-Length", "Content-Type", "Accept-Ranges", "Content-Range"],
     MaxAgeSeconds: 3600,
   },
 ];
