@@ -1339,6 +1339,7 @@ exports.getBlockedUsers = async (req, res) => {
             const obaResult = await pool.query(
                 `SELECT oba.blocked_id, oba.blocked_type, oba.created_at,
                         COALESCE(u.full_name, u.account_name, o.name, 'Blocked Account') AS name,
+                        COALESCE(u.account_name, o.slug) AS account_name,
                         COALESCE(u.avatar_url, o.logo_url, '') AS avatar
                  FROM organization_blocked_accounts oba
                  LEFT JOIN users u ON oba.blocked_type = 'user' AND oba.blocked_id = u.user_id AND (u.is_deactivated IS FALSE OR u.is_deactivated IS NULL)
@@ -1352,9 +1353,14 @@ exports.getBlockedUsers = async (req, res) => {
             const map = new Map();
             for (const item of orgBlockedList) {
                 if (!item || !item.user_id) continue;
+                const isCompany = item.entity_type === 'COMPANY';
                 map.set(item.user_id, {
                     id: item.user_id,
-                    type: item.entity_type === 'COMPANY' ? 'company' : 'user',
+                    slug: item.account_name,
+                    account_name: item.account_name,
+                    type: isCompany ? 'company' : 'user',
+                    entity_type: isCompany ? 'COMPANY' : 'USER',
+                    isCompany,
                     name: item.full_name || item.account_name || "Blocked Account",
                     created_at: item.created_at || new Date().toISOString(),
                     avatar: item.avatar_url || "",
@@ -1362,9 +1368,14 @@ exports.getBlockedUsers = async (req, res) => {
             }
             for (const row of obaResult.rows) {
                 if (!map.has(row.blocked_id)) {
+                    const isCompany = row.blocked_type === 'company' || row.blocked_type === 'COMPANY';
                     map.set(row.blocked_id, {
                         id: row.blocked_id,
-                        type: row.blocked_type,
+                        slug: row.account_name,
+                        account_name: row.account_name,
+                        type: isCompany ? 'company' : 'user',
+                        entity_type: isCompany ? 'COMPANY' : 'USER',
+                        isCompany,
                         name: row.name,
                         date: row.created_at ? new Date(row.created_at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) : "Blocked recently",
                         avatar: row.avatar,
@@ -1382,13 +1393,20 @@ exports.getBlockedUsers = async (req, res) => {
 
         const formatted = blockedList
             .filter((item) => item && item.user_id)
-            .map((item) => ({
-                id: item.user_id,
-                type: item.entity_type === 'COMPANY' ? 'company' : 'user',
-                name: item.full_name || item.account_name || "User",
-                created_at: item.created_at || new Date().toISOString(),
-                avatar: item.avatar_url || "",
-            }));
+            .map((item) => {
+                const isCompany = item.entity_type === 'COMPANY';
+                return {
+                    id: item.user_id,
+                    slug: item.account_name,
+                    account_name: item.account_name,
+                    type: isCompany ? 'company' : 'user',
+                    entity_type: isCompany ? 'COMPANY' : 'USER',
+                    isCompany,
+                    name: item.full_name || item.account_name || "User",
+                    created_at: item.created_at || new Date().toISOString(),
+                    avatar: item.avatar_url || "",
+                };
+            });
 
         return res.status(200).json(formatted);
     } catch (error) {

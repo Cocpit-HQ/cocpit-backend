@@ -436,6 +436,10 @@ exports.updateOrganization = async (req, res) => {
         headline
     } = req.body;
 
+    if (description !== undefined && description !== null && typeof description === 'string' && description.length > 2000) {
+        return res.status(400).json({ success: false, message: "Description must not exceed 2000 characters." });
+    }
+
     // Basic validation
     if (!name || name.trim().length < 2) {
         return res.status(400).json({ message: "Organization name must be at least 2 characters" });
@@ -1867,6 +1871,10 @@ exports.saveDraftPresence = async (req, res) => {
         description
     } = req.body;
 
+    if (description !== undefined && description !== null && typeof description === 'string' && description.length > 2000) {
+        return res.status(400).json({ success: false, message: "Description must not exceed 2000 characters." });
+    }
+
     /*
     if (phone) {
         const p = phone.trim();
@@ -2399,6 +2407,10 @@ exports.publishNewOrganization = async (req, res) => {
         entity_type,
         country_of_operation
     } = req.body;
+
+    if (description !== undefined && description !== null && typeof description === 'string' && description.length > 2000) {
+        return res.status(400).json({ success: false, message: "Description must not exceed 2000 characters." });
+    }
 
     const rawLoc = (
         formattedAddress ||

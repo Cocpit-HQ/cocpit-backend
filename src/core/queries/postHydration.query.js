@@ -114,13 +114,13 @@ const getPostHydrationSelect = (companyParamIdx, userParamIdx) => `
     (
         -- Resolve human-readable display name for the sample liker preview:
         -- Use company name if liked by an organization, otherwise fall back to user's full name (instead of slugs/handles)
-        SELECT COALESCE(comp_like.name, u_like.full_name)
+        SELECT COALESCE(comp_like.name, comp_like.slug, u_like.full_name, u_like.account_name)
         FROM active_post_likes pl_sample
          LEFT JOIN active_users u_like ON u_like.user_id = pl_sample.user_id
         LEFT JOIN organizations comp_like ON comp_like.org_id = pl_sample.org_id
         WHERE pl_sample.post_id = p.post_id
         AND NOT (
-            ($${companyParamIdx}::uuid IS NOT NULL AND pl_sample.org_id = $${companyParamIdx}::uuid)
+            ($${companyParamIdx}::uuid IS NOT NULL AND pl_sample.org_id IS NOT NULL AND pl_sample.org_id = $${companyParamIdx}::uuid)
             OR
             ($${companyParamIdx}::uuid IS NULL AND pl_sample.user_id = $${userParamIdx} AND pl_sample.org_id IS NULL)
         )
@@ -216,9 +216,8 @@ const getPostHydrationSelect = (companyParamIdx, userParamIdx) => `
             SELECT pl_sample.user_id, pl_sample.org_id
             FROM active_post_likes pl_sample
             WHERE pl_sample.post_id = p.post_id
-              AND pl_sample.user_id IS NOT NULL
               AND NOT (
-                  ($${companyParamIdx}::uuid IS NOT NULL AND pl_sample.org_id = $${companyParamIdx}::uuid)
+                  ($${companyParamIdx}::uuid IS NOT NULL AND pl_sample.org_id IS NOT NULL AND pl_sample.org_id = $${companyParamIdx}::uuid)
                   OR
                   ($${companyParamIdx}::uuid IS NULL AND pl_sample.user_id = $${userParamIdx}::uuid AND pl_sample.org_id IS NULL)
               )
@@ -485,9 +484,8 @@ const getPostHydrationSelect = (companyParamIdx, userParamIdx) => `
                          SELECT pl_sample.user_id, pl_sample.org_id
                          FROM active_post_likes pl_sample
                          WHERE pl_sample.post_id = sp.post_id
-                           AND pl_sample.user_id IS NOT NULL
                            AND NOT (
-                               ($${companyParamIdx}::uuid IS NOT NULL AND pl_sample.org_id = $${companyParamIdx}::uuid)
+                               ($${companyParamIdx}::uuid IS NOT NULL AND pl_sample.org_id IS NOT NULL AND pl_sample.org_id = $${companyParamIdx}::uuid)
                                OR
                                ($${companyParamIdx}::uuid IS NULL AND pl_sample.user_id = $${userParamIdx}::uuid AND pl_sample.org_id IS NULL)
                            )

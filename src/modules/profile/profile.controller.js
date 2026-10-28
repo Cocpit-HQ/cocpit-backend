@@ -225,8 +225,10 @@ exports.getMyProfile = async (req, res) => {
 
 exports.updateProfile = async (req, res) => {
     const userId = req.user.sub;
-    const { full_name, headline, job_title, company_name, school, degree, location, about_text, mobile_number,
+    const { full_name, headline, job_title, company_name, school, degree, location, about_text: rawAboutText, about: rawAbout, mobile_number,
         account_name, website, industry } = req.body;
+    const about_text = rawAboutText !== undefined ? rawAboutText : rawAbout;
+    if (about_text !== undefined) req.body.about_text = about_text;
 
     if (full_name) {
         if (full_name.trim().length < 3) return res.status(400).json({ message: "Full name must be at least 3 characters" });
@@ -550,6 +552,7 @@ exports.addExperience = async (req, res) => {
 
     // ── Basic validation ──────────────────────────────────────────────────────────
     if (title && title.length > 100) return res.status(400).json({ message: "Role cannot exceed 100 characters" });
+    if (description && description.length > 2000) return res.status(400).json({ message: "About cannot exceed 2000 characters" });
     if (!start_date) {
         return res.status(422).json({ message: "Start date is required" });
     }
@@ -692,6 +695,7 @@ exports.updateExperience = async (req, res) => {
 
         // ── Basic validation ──────────────────────────────────────────────────────
         if (title && title.length > 100) return res.status(400).json({ message: "Role cannot exceed 100 characters" });
+        if (description !== undefined && description !== null && description.length > 2000) return res.status(400).json({ message: "About cannot exceed 2000 characters" });
         if (!resolvedCurrent && !resolvedEnd) {
             return res.status(422).json({ message: "End date is required when not currently working" });
         }
@@ -827,6 +831,11 @@ exports.addEducation = async (req, res) => {
             return res.status(422).json({ message: "Validation failed", errors: [{ path: "school_name", message: "School/University cannot exceed 255 characters" }] });
         }
 
+        if (description && description.length > 2000) {
+            client.release();
+            return res.status(422).json({ message: "Validation failed", errors: [{ path: "description", message: "About cannot exceed 2000 characters" }] });
+        }
+
         let resolvedOrgId = school_org_id;
         if (!resolvedOrgId && school_name) {
             const orgMatch = await client.query(
@@ -888,6 +897,11 @@ exports.updateEducation = async (req, res) => {
         if (school_name && school_name.length > 255) {
             client.release();
             return res.status(422).json({ message: "Validation failed", errors: [{ path: "school_name", message: "School/University cannot exceed 255 characters" }] });
+        }
+
+        if (description !== undefined && description !== null && description.length > 2000) {
+            client.release();
+            return res.status(422).json({ message: "Validation failed", errors: [{ path: "description", message: "About cannot exceed 2000 characters" }] });
         }
 
         const resolvedSchoolName = school_name !== undefined ? school_name : existing.school_name;
@@ -1527,7 +1541,7 @@ const operationSchema = z.discriminatedUnion("type", [
             start_date: z.string(),
             end_date: z.string().nullable().optional(),
             is_current: z.boolean().optional(),
-            description: z.string().nullable().optional(),
+            description: z.string().max(2000, "About cannot exceed 2000 characters").nullable().optional(),
             org_id: z.string().uuid().nullable().optional(),
         }),
     }),
@@ -1543,7 +1557,7 @@ const operationSchema = z.discriminatedUnion("type", [
             start_date: z.string().optional(),
             end_date: z.string().nullable().optional(),
             is_current: z.boolean().optional(),
-            description: z.string().nullable().optional(),
+            description: z.string().max(2000, "About cannot exceed 2000 characters").nullable().optional(),
             org_id: z.string().uuid().nullable().optional(),
         }),
     }),
@@ -1881,6 +1895,10 @@ exports.addProject = async (req, res) => {
         errors.push({ path: "media", message: "A project can have at most 5 media items" });
     }
 
+    if (role_description && role_description.length > 2000) {
+        errors.push({ path: "role_description", message: "Role description cannot exceed 2000 characters" });
+    }
+
     if (errors.length > 0) {
         return res.status(422).json({ message: "Validation failed", errors });
     }
@@ -1954,6 +1972,10 @@ exports.updateProject = async (req, res) => {
 
     if (Array.isArray(media) && media.length > 5) {
         errors.push({ path: "media", message: "A project can have at most 5 media items" });
+    }
+
+    if (role_description && role_description.length > 2000) {
+        errors.push({ path: "role_description", message: "Role description cannot exceed 2000 characters" });
     }
 
     if (team_size !== undefined && team_size !== null && String(team_size).trim() !== "") {

@@ -10,6 +10,7 @@ const socketService = require("../../core/infrastructure/socket.service");
 const { sendDocumentVerifiedEmail, sendDocumentRejectedEmail, sendOrgDocumentVerifiedEmail, sendOrgDocumentRejectedEmail } = require("../../core/services/email.service");
 const { isNotificationAllowed, isOrgNotificationAllowed } = require("../../core/utils/notificationPermission");
 
+
 /**
  * Sends a push notification to all active devices of a user.
  * 
