@@ -51,13 +51,16 @@ function getPublicUrl(key) {
  * @param {number} [opts.expiresIn]   - Signed URL TTL in seconds (default: 1800 = 30 min)
  * @returns {Promise<{uploadUrl, rawKey, rawMasterUrl}>}
  */
-async function generatePresignedUploadUrl({ filename, contentType, size, folder = "posts", expiresIn = 1800 }) {
+async function generatePresignedUploadUrl({ filename, contentType, size, folder = "posts", ownerId, expiresIn = 1800 }) {
   const bucket = getBucketName();
   if (!bucket) throw new Error("[R2Client] R2_BUCKET_NAME env var is not set.");
 
   const timestamp = Date.now();
   const sanitizedName = path.basename(filename).replace(/[^a-zA-Z0-9._-]/g, "_");
-  const rawKey = `raw/${folder}/${timestamp}-${randomUUID()}-${sanitizedName}`;
+  // Keep post objects directly under raw/posts. The owner is encoded in the
+  // basename so existing upload routes can still enforce ownership.
+  const ownerPrefix = ownerId ? `${ownerId}-` : "";
+  const rawKey = `raw/${folder}/${ownerPrefix}${timestamp}-${randomUUID()}-${sanitizedName}`;
 
   const command = new PutObjectCommand({
     Bucket: bucket,

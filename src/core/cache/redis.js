@@ -6,7 +6,7 @@ if (process.env.REDIS_URL) {
     const u = new URL(process.env.REDIS_URL);
     redisOptions = {
       host: u.hostname || "localhost",
-      port: parseInt(u.port || "6380", 10),
+      port: parseInt(u.port || "6379", 10),
       password: u.password || undefined,
       db: parseInt(process.env.REDIS_DB || (u.pathname ? u.pathname.replace("/", "") : "0") || "0", 10),
       ...(u.protocol === "rediss:" ? { tls: {} } : {}),
@@ -14,14 +14,14 @@ if (process.env.REDIS_URL) {
   } catch {
     redisOptions = {
       host: process.env.REDIS_HOST || "localhost",
-      port: parseInt(process.env.REDIS_PORT || "6380", 10),
+      port: parseInt(process.env.REDIS_PORT || "6379", 10),
       db: parseInt(process.env.REDIS_DB || "0", 10),
     };
   }
 } else {
   redisOptions = {
     host: process.env.REDIS_HOST || "localhost",
-    port: parseInt(process.env.REDIS_PORT || "6380", 10),
+    port: parseInt(process.env.REDIS_PORT || "6379", 10),
     db: parseInt(process.env.REDIS_DB || "0", 10),
   };
 }

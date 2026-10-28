@@ -11,6 +11,7 @@
  */
 
 'use strict';
+/* global jest, describe, test, expect, beforeEach */
 
 const mockRedisStore = {};
 
@@ -157,7 +158,14 @@ describe('feed.edgecase.test.js — Feed Engine Resilience and Edge Cases', () =
   // ===========================================================================
   test('TC-E01: Cold start user with zero profile signals successfully fallback to trending items', async () => {
     // Mock database queries returning empty rows for relationship matches and user signals
-    pool.query.mockImplementation((sql) => {
+    pool.query.mockImplementation((sql, params) => {
+      if (sql.includes('p.post_id = ANY($3::uuid[])')) {
+        const rows = params[2].map((postId) => ({ post_id: postId, is_reported: false }));
+        return Promise.resolve({ rows, rowCount: rows.length });
+      }
+      if (sql.includes("created_at >= NOW() - INTERVAL '24 hours'")) {
+        return Promise.resolve({ rows: [], rowCount: 0 });
+      }
       if (sql.includes('posts')) {
         // Trending source query is triggered as a fallback; return 5 fallback trending items
         const posts = Array.from({ length: 5 }).map((_, i) => ({
@@ -239,7 +247,14 @@ describe('feed.edgecase.test.js — Feed Engine Resilience and Edge Cases', () =
   // B11.4d — Invalid Cursor Injection Handling
   // ===========================================================================
   test('TC-E04: Expired or invalid cursors fallback gracefully to new start', async () => {
-    pool.query.mockImplementation((sql) => {
+    pool.query.mockImplementation((sql, params) => {
+      if (sql.includes('p.post_id = ANY($3::uuid[])')) {
+        const rows = params[2].map((postId) => ({ post_id: postId, is_reported: false }));
+        return Promise.resolve({ rows, rowCount: rows.length });
+      }
+      if (sql.includes("created_at >= NOW() - INTERVAL '24 hours'")) {
+        return Promise.resolve({ rows: [], rowCount: 0 });
+      }
       if (sql.includes('posts')) {
         const posts = [{ content_id: 'post-new-uuid', type: 'post', author_id: 'a1', created_at: new Date().toISOString() }];
         return Promise.resolve({ rows: posts, rowCount: posts.length });

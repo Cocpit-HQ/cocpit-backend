@@ -22,6 +22,7 @@
  */
 
 'use strict';
+/* global jest, describe, test, expect, beforeEach */
 
 // ─── Mocks (must be hoisted before require of controller) ─────────────────────
 
@@ -48,13 +49,13 @@ jest.mock('./analytics/feedAnalytics.service', () => ({
 }));
 
 jest.mock('../../core/db/pool', () => ({}));
+jest.mock('../../core/cache/redis', () => ({}));
 
 // ─── Module under test ────────────────────────────────────────────────────────
 
 const feedController   = require('./feed.controller');
 const feedService      = require('./feed.service');
 const feedSession      = require('./session/feedSession.service');
-const feedAnalytics    = require('./analytics/feedAnalytics.service');
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -215,6 +216,7 @@ describe('feed.controller', () => {
   // ===========================================================================
   describe('trackEvent', () => {
 
+    /*
     const validBody = {
       event_type: 'impression',
       item_id:    'item-uuid-001',
@@ -224,7 +226,6 @@ describe('feed.controller', () => {
       context:    'home',
     };
 
-    /*
     // UNUSED: Tests commented out as trackEvent is unused by frontend
     test('TC-C08: returns 401 when req.user is null', async () => {
       const req  = makeReq({ user: null, body: validBody });

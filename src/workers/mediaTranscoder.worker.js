@@ -2,7 +2,8 @@ const sharp = require("sharp");
 const libheif = require("libheif-js/wasm-bundle");
 const { downloadFromR2AsBuffer, uploadBufferToR2, getPublicUrl } = require("../core/infrastructure/r2.client");
 const { Worker } = require("bullmq");
-const { redisConnection } = require("../queues/media.queue");
+const { redisConnection, mediaTranscodeQueue, addTranscodeJob } = require("../queues/media.queue");
+const { ownedPostRawKey } = require("../core/infrastructure/postMediaKey");
 const redisClient = require("../core/db/redis");
 const pool = require("../core/db/pool");
 const { detectImageMime, validateImageBuffer } = require("../modules/upload/mediaValidation");
@@ -137,6 +138,73 @@ async function notifyProcessingUpdate(rows, ownerId, status, mediaAsset = null) 
 }
 
 let mediaWorkerInstance = null;
+let reconciliationTimer = null;
+let reconciliationRunning = false;
+let streamReconciliationTimer = null;
+let streamReconciliationRunning = false;
+
+async function reconcilePendingPostMedia() {
+  if (reconciliationRunning) return;
+  reconciliationRunning = true;
+  try {
+    const pending = await pool.query(
+      `SELECT pm.master_url, pm.media_type, p.post_id, p.author_id
+       FROM post_media pm JOIN posts p ON p.post_id = pm.post_id
+       WHERE pm.processing_status = 'processing'
+         AND (pm.media_type = 'image' OR pm.stream_uid IS NULL)
+         AND p.created_at < NOW() - INTERVAL '20 seconds'
+         AND pm.master_url IS NOT NULL
+       ORDER BY p.created_at ASC LIMIT 100`
+    );
+    for (const row of pending.rows) {
+      const rawKey = ownedPostRawKey(row.master_url, row.author_id);
+      if (!rawKey) continue;
+      const stableId = require("crypto").createHash("sha256").update(rawKey).digest("hex").slice(0, 32);
+      const existing = await mediaTranscodeQueue.getJob(`transcode-${stableId}`);
+      if (existing) {
+        const state = await existing.getState();
+        if (state === "active" || state === "waiting" || state === "delayed") continue;
+        if (state === "completed" || state === "failed") await existing.remove();
+      }
+      await addTranscodeJob({ rawKey, rawMasterUrl: row.master_url, mediaType: row.media_type, postId: row.post_id, ownerId: row.author_id });
+    }
+  } catch (error) {
+    console.error("[MediaTranscoder] Pending media reconciliation failed:", error.message);
+  } finally {
+    reconciliationRunning = false;
+  }
+}
+
+async function reconcileStreamVideoStates() {
+  if (streamReconciliationRunning || !isStreamConfigured()) return;
+  streamReconciliationRunning = true;
+  try {
+    const rows = await pool.query(
+      `SELECT DISTINCT pm.stream_uid
+       FROM post_media pm JOIN posts p ON p.post_id = pm.post_id
+       WHERE pm.media_type = 'video' AND pm.processing_status = 'processing'
+         AND pm.stream_uid IS NOT NULL
+         AND p.created_at < NOW() - INTERVAL '1 minute'
+       LIMIT 50`
+    );
+    const { getStreamVideo } = require("../core/infrastructure/cloudflareStream.client");
+    const { handleStreamWebhook } = require("../modules/upload/streamWebhook.controller");
+    for (let index = 0; index < rows.rows.length; index += 5) {
+      const batch = rows.rows.slice(index, index + 5);
+      const results = await Promise.allSettled(batch.map(async ({ stream_uid: uid }) => {
+        const video = await getStreamVideo(uid);
+        await handleStreamWebhook(video);
+      }));
+      results.forEach((result) => {
+        if (result.status === "rejected") console.warn("[MediaTranscoder] Stream reconciliation failed:", result.reason?.message || result.reason);
+      });
+    }
+  } catch (error) {
+    console.error("[MediaTranscoder] Stream reconciliation query failed:", error.message);
+  } finally {
+    streamReconciliationRunning = false;
+  }
+}
 
 function startMediaTranscoderWorker() {
   if (mediaWorkerInstance) return mediaWorkerInstance;
@@ -164,6 +232,7 @@ function startMediaTranscoderWorker() {
           const current = await redisClient.get(cacheKey);
           const cachedAsset = current ? JSON.parse(current) : {};
           await redisClient.set(cacheKey, JSON.stringify({ ...cachedAsset, ...asset,
+            streamThumbnailUrl: cachedAsset.streamThumbnailUrl || asset.streamThumbnailUrl,
             hdrManifestUrl: cachedAsset.hdrManifestUrl || null,
             hdrProcessingStatus: cachedAsset.hdrProcessingStatus || asset.hdrProcessingStatus,
           }), "EX", 30 * 86400);
@@ -174,7 +243,7 @@ function startMediaTranscoderWorker() {
       }
       const rows = await pool.query(
         `UPDATE post_media SET stream_uid = $1, stream_hls_url = $2, stream_dash_url = $3,
-           stream_thumbnail_url = $4, processing_status = $5, is_processed = $6,
+           stream_thumbnail_url = COALESCE(stream_thumbnail_url, $4), processing_status = $5, is_processed = $6,
            hdr_processing_status = 'processing'
          WHERE master_url = $7 OR url = $7 RETURNING post_id, media_id`,
         [asset.streamUid, asset.streamHlsUrl, asset.streamDashUrl, asset.streamThumbnailUrl,
@@ -226,18 +295,32 @@ function startMediaTranscoderWorker() {
         url: rows.rows[0]?.master_url || job.data.rawMasterUrl,
         mediaType: job.data.mediaType || "image",
       });
+      if (job.data.mediaType === "video" && rows.rows.length) {
+        const { addVideoFallbackJob } = require("../queues/videoHdr.queue");
+        void addVideoFallbackJob({ rawKey: job.data.rawKey, rawMasterUrl: job.data.rawMasterUrl, ownerId: job.data.ownerId })
+          .catch((queueError) => console.error("[MediaTranscoder] Could not queue SDR fallback:", queueError.message));
+      }
     } catch (dbError) {
       console.error(`[MediaTranscoder] Could not save failed state: ${dbError.message}`);
     }
   });
   mediaWorkerInstance.on("error", (error) => console.error("[MediaTranscoder] Worker error:", error.message));
+  reconciliationTimer = setInterval(() => { void reconcilePendingPostMedia(); }, 30_000);
+  reconciliationTimer.unref?.();
+  streamReconciliationTimer = setInterval(() => { void reconcileStreamVideoStates(); }, 60_000);
+  streamReconciliationTimer.unref?.();
+  void reconcilePendingPostMedia();
   return mediaWorkerInstance;
 }
 
 async function closeMediaTranscoderWorker() {
   if (!mediaWorkerInstance) return;
+  if (reconciliationTimer) clearInterval(reconciliationTimer);
+  reconciliationTimer = null;
+  if (streamReconciliationTimer) clearInterval(streamReconciliationTimer);
+  streamReconciliationTimer = null;
   await mediaWorkerInstance.close();
   mediaWorkerInstance = null;
 }
 
-module.exports = { transcodeImageToCompatibleFormat: (rawKey) => downloadFromR2AsBuffer(rawKey).then((buffer) => transcodeImage(buffer, rawKey)), processDualAsset, deriveDisplayKey, startMediaTranscoderWorker, closeMediaTranscoderWorker };
+module.exports = { transcodeImageToCompatibleFormat: (rawKey) => downloadFromR2AsBuffer(rawKey).then((buffer) => transcodeImage(buffer, rawKey)), processDualAsset, deriveDisplayKey, startMediaTranscoderWorker, closeMediaTranscoderWorker, reconcilePendingPostMedia };

@@ -5,9 +5,13 @@
  */
 
 'use strict';
+/* global jest, describe, test, expect, beforeEach */
 
-const { trackEvent, processEventQueue, _validateEvent, _isDuplicateImpression, _EVENTS_QUEUE_KEY } = require('./feedAnalytics.service');
+const { trackEvent, processEventQueue, _validateEvent } = require('./feedAnalytics.service');
 const redis = require('../../../core/cache/redis');
+const validSessionId = '123e4567-e89b-12d3-a456-426614174000';
+const validUserId = '123e4567-e89b-12d3-a456-426614174001';
+const validItemId = '123e4567-e89b-12d3-a456-426614174002';
 
 const mockPipeline = {
   rpop: jest.fn(),
@@ -34,8 +38,8 @@ describe('feedAnalytics.service', () => {
 
     test('accepts valid DB types', () => {
       const res = _validateEvent({
-        event_type: 'like', item_id: 'i1', item_type: 'post',
-        user_id: 'u1', session_id: 's1', position: 0, context: 'home'
+        event_type: 'like', item_id: validItemId, item_type: 'post',
+        user_id: validUserId, session_id: validSessionId, position: 0, context: 'home'
       });
       expect(res.valid).toBe(true);
       expect(res.normalized.event_type).toBe('like');
@@ -43,18 +47,27 @@ describe('feedAnalytics.service', () => {
 
     test('maps schema-only types to DB types', () => {
       const res = _validateEvent({
-        event_type: 'dismiss', item_id: 'i1', item_type: 'post',
-        user_id: 'u1', session_id: 's1', position: 0, context: 'home'
+        event_type: 'dismiss', item_id: validItemId, item_type: 'post',
+        user_id: validUserId, session_id: validSessionId, position: 0, context: 'home'
       });
       expect(res.valid).toBe(true);
       expect(res.normalized.event_type).toBe('skip');
+    });
+
+    test('rejects a non-UUID session ID', () => {
+      const res = _validateEvent({
+        event_type: 'like', item_id: validItemId, item_type: 'post',
+        user_id: validUserId, session_id: 's1', position: 0, context: 'home'
+      });
+      expect(res.valid).toBe(false);
+      expect(res.errors).toContain('session_id must be a valid UUID');
     });
   });
 
   describe('trackEvent', () => {
     const validEvent = {
-      event_type: 'impression', item_id: 'i1', item_type: 'post',
-      user_id: 'u1', session_id: 's1', position: 0, context: 'home'
+      event_type: 'impression', item_id: validItemId, item_type: 'post',
+      user_id: validUserId, session_id: validSessionId, position: 0, context: 'home'
     };
 
     beforeEach(() => {

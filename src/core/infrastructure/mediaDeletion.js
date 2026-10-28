@@ -6,7 +6,11 @@ const redisClient = require("../cache/redis");
 async function deleteHybridMedia(records) {
   const items = (Array.isArray(records) ? records : [records]).filter(Boolean);
   const tasks = [];
-  const r2Items = items.flatMap((item) => [item.master_url, item.masterUrl, item.url].filter(Boolean));
+  const r2Items = items.flatMap((item) => [
+    item.master_url, item.masterUrl, item.url,
+    item.fallback_url, item.fallbackUrl, item.avif_url, item.avifUrl,
+    item.stream_thumbnail_url, item.streamThumbnailUrl,
+  ].filter(Boolean));
   if (r2Items.length) tasks.push(deleteMediaByUrls(r2Items));
   for (const item of items) {
     const masterUrl = item.master_url || item.masterUrl || item.url;

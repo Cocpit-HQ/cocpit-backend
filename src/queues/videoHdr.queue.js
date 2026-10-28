@@ -18,4 +18,11 @@ async function addVideoHdrJob({ rawMasterUrl, rawKey, ownerId }) {
   });
 }
 
-module.exports = { videoHdrQueue, addVideoHdrJob };
+async function addVideoFallbackJob({ rawMasterUrl, rawKey, ownerId }) {
+  const id = require("crypto").createHash("sha256").update(rawMasterUrl).digest("hex").slice(0, 32);
+  return videoHdrQueue.add("transcode-sdr-fallback", { rawMasterUrl, rawKey, ownerId }, {
+    jobId: `video-fallback-${id}`,
+  });
+}
+
+module.exports = { videoHdrQueue, addVideoHdrJob, addVideoFallbackJob };

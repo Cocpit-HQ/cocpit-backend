@@ -1,3 +1,7 @@
+/* global jest, describe, test, expect */
+// Importing the real pool starts a health check and schema updates. These room
+// tests only need the handler's in-memory socket behavior.
+jest.mock('../core/db/pool', () => ({ query: jest.fn() }));
 const notificationHandler = require('./notification.handler');
 
 describe('notification handler actor context rooms', () => {

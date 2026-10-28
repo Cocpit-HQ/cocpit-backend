@@ -24,6 +24,10 @@ const hasR2 = !!(
   process.env.R2_BUCKET_NAME &&
   (process.env.R2_CDN_BASE_URL || process.env.R2_PUBLIC_URL)
 );
+// Legacy post keys used raw/posts/{userId}/...; new keys are flat.
+const ownsPostKey = (rawKey, userId) =>
+  typeof rawKey === "string" &&
+  (rawKey.startsWith(`raw/posts/${userId}-`) || rawKey.startsWith(`raw/posts/${userId}/`));
 
 console.log(`[UploadRoutes] Cloudflare R2 Storage: ${hasR2 ? "ENABLED ✅ (Direct presigned + R2 multipart)" : "NOT CONFIGURED ⚠️"}`);
 
@@ -58,7 +62,7 @@ router.post("/upload/presign", requireAuth, async (req, res) => {
 
   try {
     validateUploadBatch([{ filename, contentType, size: Number(req.body.size) }]);
-    const ticket = await generatePresignedUploadUrl({ filename, contentType, size: Number(req.body.size), folder: `posts/${req.user.sub}` });
+    const ticket = await generatePresignedUploadUrl({ filename, contentType, size: Number(req.body.size), folder: "posts", ownerId: req.user.sub });
     console.log(`[UploadRoutes] /upload/presign issued for user ${req.user.sub}: ${ticket.rawKey}`);
 
     return res.json({
@@ -78,10 +82,10 @@ router.post("/upload/presign-batch", requireAuth, async (req, res) => {
     const files = req.body?.files;
     validateUploadBatch(files);
     const uploads = await Promise.all(files.map(async (file, index) => {
-      const ticket = await generatePresignedUploadUrl({ filename: file.filename || file.name, contentType: file.contentType || file.type, size: Number(file.size), folder: `posts/${req.user.sub}` });
+      const ticket = await generatePresignedUploadUrl({ filename: file.filename || file.name, contentType: file.contentType || file.type, size: Number(file.size), folder: "posts", ownerId: req.user.sub });
       return { ...ticket, index, filename: file.filename || file.name, contentType: file.contentType || file.type, size: Number(file.size), media_type: String(file.contentType || file.type).startsWith("video/") ? "video" : "image" };
     }));
-    return res.json({ uploads, maxImageBytes: MAX_IMAGE_BYTES, maxPostImageBytes: MAX_POST_IMAGE_BYTES, maxFiles: MAX_POST_MEDIA_COUNT });
+    return res.json({ uploads, registerOnPost: true, maxImageBytes: MAX_IMAGE_BYTES, maxPostImageBytes: MAX_POST_IMAGE_BYTES, maxFiles: MAX_POST_MEDIA_COUNT });
   } catch (error) {
     return res.status(400).json({ error: error.message });
   }
@@ -89,9 +93,8 @@ router.post("/upload/presign-batch", requireAuth, async (req, res) => {
 
 const { addTranscodeJob, getJobStatus } = require("../../queues/media.queue");
 
-// Queue a completed direct-to-R2 batch with one authenticated request. The
-// browser still uploads each original directly to R2; this call is the signal
-// that all PUTs have completed and the worker can begin processing them.
+// Verify a completed direct-to-R2 batch. The post transaction persists media
+// rows before queuing work; this prevents a worker completing before rows exist.
 router.post("/upload/process-batch", requireAuth, async (req, res) => {
   if (!hasR2) return res.status(503).json({ error: "R2 not configured" });
 
@@ -101,7 +104,7 @@ router.post("/upload/process-batch", requireAuth, async (req, res) => {
 
     const verifiedUploads = await Promise.all(uploads.map(async (upload) => {
       const { rawKey, rawMasterUrl, mediaType = "image" } = upload;
-      if (typeof rawKey !== "string" || !rawKey.startsWith(`raw/posts/${req.user.sub}/`) || rawMasterUrl !== getPublicUrl(rawKey)) {
+      if (!ownsPostKey(rawKey, req.user.sub) || rawMasterUrl !== getPublicUrl(rawKey)) {
         throw new Error("Upload does not belong to this user.");
       }
       if (!(await objectExistsInR2(rawKey))) throw new Error(`Raw file ${rawKey} was not found in R2.`);
@@ -113,10 +116,8 @@ router.post("/upload/process-batch", requireAuth, async (req, res) => {
       return { rawKey, rawMasterUrl, mediaType };
     }));
 
-    const queuedUploads = await Promise.all(verifiedUploads.map(async (upload) => {
-      const job = await addTranscodeJob({ ...upload, ownerId: req.user.sub });
+    const registeredUploads = verifiedUploads.map((upload) => {
       return {
-        jobId: job.id,
         status: "processing",
         url: upload.rawMasterUrl,
         master_url: upload.rawMasterUrl,
@@ -126,9 +127,9 @@ router.post("/upload/process-batch", requireAuth, async (req, res) => {
         avif_url: null,
         is_processed: false,
       };
-    }));
+    });
 
-    return res.status(202).json({ uploads: queuedUploads });
+    return res.status(202).json({ uploads: registeredUploads });
   } catch (error) {
     return res.status(400).json({ error: error.message });
   }
@@ -155,7 +156,7 @@ router.post("/upload/process", requireAuth, async (req, res) => {
   }
 
   // Verify the upload actually landed in R2 before processing
-  if (typeof rawKey !== "string" || !rawKey.startsWith(`raw/posts/${req.user.sub}/`) || rawMasterUrl !== getPublicUrl(rawKey)) {
+  if (!ownsPostKey(rawKey, req.user.sub) || rawMasterUrl !== getPublicUrl(rawKey)) {
     return res.status(403).json({ error: "Upload does not belong to this user." });
   }
   const exists = await objectExistsInR2(rawKey);
@@ -237,7 +238,7 @@ router.get("/upload/job/:jobId", requireAuth, async (req, res) => {
 // Fallback for callers unable to use direct presigned PUT
 // ─────────────────────────────────────────────────────────────────────────────
 const multer = require("multer");
-const postUpload = multer({ storage: createR2Storage({ folder: "raw/posts", filename: (req, file) => `${req.user.sub}/${Date.now()}-${randomUUID()}-${file.originalname.replace(/[^a-zA-Z0-9._-]/g, "_")}` }), limits: { fileSize: 100 * 1024 * 1024, files: MAX_POST_MEDIA_COUNT } });
+const postUpload = multer({ storage: createR2Storage({ folder: "raw/posts", filename: (req, file) => `${req.user.sub}-${Date.now()}-${randomUUID()}-${file.originalname.replace(/[^a-zA-Z0-9._-]/g, "_")}` }), limits: { fileSize: 100 * 1024 * 1024, files: MAX_POST_MEDIA_COUNT } });
 router.post(
   "/upload",
   requireAuth,
@@ -250,7 +251,7 @@ router.post(
       const urls = await Promise.all(files.map(async (file) => {
         const rawKey = file.key;
         const rawMasterUrl = file.path;
-        if (!rawKey || !rawKey.startsWith(`raw/posts/${req.user.sub}/`)) throw new Error("Upload key is not scoped to the authenticated user.");
+        if (!ownsPostKey(rawKey, req.user.sub)) throw new Error("Upload key is not scoped to the authenticated user.");
         const mediaType = file.mimetype?.startsWith("video/") || /\.(mp4|mov|webm)$/i.test(file.originalname) ? "video" : "image";
         if (mediaType === "image") validateImageBuffer(await downloadFromR2AsBuffer(rawKey), file.originalname, file.mimetype);
         if (syncProcessing && mediaType !== "video") {

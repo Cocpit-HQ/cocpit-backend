@@ -49,4 +49,13 @@ describe("Cloudflare Stream webhook signatures", () => {
     expect(staleError.status).toBe("ready");
     expect(pool.query.mock.calls[1][1][0]).toBe("ready");
   });
+
+  test("accepts ready state without an in-progress percentage", async () => {
+    process.env.CLOUDFLARE_STREAM_CUSTOMER_CODE = "customer-code";
+    pool.query.mockReset()
+      .mockResolvedValueOnce({ rows: [{ media_id: "media-2", post_id: "post-2" }], rowCount: 1 })
+      .mockResolvedValueOnce({ rows: [{ post_id: "post-2", visibility: "public", author_id: "user-2" }] });
+    const result = await handleStreamWebhook({ uid: "stream-2", readyToStream: true, status: { state: "ready" } });
+    expect(result.status).toBe("ready");
+  });
 });

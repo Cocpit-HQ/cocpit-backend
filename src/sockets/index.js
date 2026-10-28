@@ -54,7 +54,7 @@ module.exports.initSocket = async (httpServer) => {
 
   // Redis Adapter Setup
   const redisUrl = process.env.REDIS_URL ||
-    (process.env.REDIS_HOST ? `redis://${process.env.REDIS_HOST}:${process.env.REDIS_PORT || 6380}` : null);
+    (process.env.REDIS_HOST ? `redis://${process.env.REDIS_HOST}:${process.env.REDIS_PORT || 6379}` : null);
 
   if (redisUrl) {
     try {

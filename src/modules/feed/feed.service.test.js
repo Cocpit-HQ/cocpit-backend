@@ -5,6 +5,7 @@
  */
 
 'use strict';
+/* global jest, describe, test, expect, beforeEach */
 
 const { getFeed } = require('./feed.service');
 const feedCache = require('./cache/feedCache');
@@ -13,6 +14,11 @@ const feedSessionService = require('./session/feedSession.service');
 // Mock dependencies
 jest.mock('./cache/feedCache');
 jest.mock('./session/feedSession.service');
+jest.mock('../../core/cache/redis', () => ({}));
+jest.mock('../../core/db/pool', () => ({ query: jest.fn() }));
+jest.mock('../../utils/shareHydration', () => ({
+  hydrateShareCounts: jest.fn(async (rows) => rows),
+}));
 
 // Mock pipeline modules
 jest.mock('./candidates/candidateGenerator', () => ({
@@ -84,11 +90,14 @@ describe('feed.service', () => {
     feedCache.getFeedSlice.mockResolvedValue(null);
     feedCache.getHiddenSet.mockResolvedValue(['hidden-1']);
     const mockPool = {
-      query: jest.fn().mockResolvedValue({
-        rows: [
+      query: jest.fn((sql, params) => {
+        if (sql.includes('p.post_id = ANY($3::uuid[])')) {
+          return Promise.resolve({ rows: params[2].map((postId) => ({ post_id: postId, is_reported: false })) });
+        }
+        return Promise.resolve({ rows: [
           { id: 'c1', type: 'post', slot_type: 'organic', created_at: '2026-07-15T10:00:00.000Z' },
           { id: 'hidden-1', type: 'post', slot_type: 'organic', created_at: '2026-07-15T09:00:00.000Z' }
-        ]
+        ] });
       })
     };
     feedSessionService.getSession.mockResolvedValue({ session_id: 's1' });

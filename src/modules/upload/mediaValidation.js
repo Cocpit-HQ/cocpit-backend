@@ -71,6 +71,14 @@ function validateUploadBatch(files) {
     const type = expectedImageMime(name, declaredType);
     if (!name || !Number.isFinite(size) || size <= 0) throw new Error("Each upload must include a filename and positive size.");
     const videoMime = VIDEO_MIME_BY_EXTENSION[path.extname(name).toLowerCase()];
+    const extensionImageMime = IMAGE_MIME_BY_EXTENSION[path.extname(name).toLowerCase()];
+    const normalizedDeclaredType = declaredType === "image/jpg" ? "image/jpeg" : declaredType;
+    const heifFamily = (mime) => mime === "image/heic" || mime === "image/heif";
+    if (extensionImageMime && normalizedDeclaredType.startsWith("image/")
+        && normalizedDeclaredType !== extensionImageMime
+        && !(heifFamily(extensionImageMime) && heifFamily(normalizedDeclaredType))) {
+      throw new Error(`The declared media type does not match ${name}.`);
+    }
     if (videoMime) {
       if (declaredType && declaredType !== videoMime && declaredType !== "application/octet-stream") throw new Error(`The declared media type does not match ${name}.`);
       if (size > 100 * 1024 * 1024) throw new Error(`${name} exceeds the 100 MB video limit.`);

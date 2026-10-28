@@ -54,6 +54,46 @@ const { incrementUserHashtagScore } = require('../../services/recommendation.ser
 const DEFAULT_PAGE_SIZE = 20;    // B7 — fixed page size
 const FEED_SLICE_TTL    = 300;   // 5 minutes — per redis-key-registry.md
 const EXPLORATION_SLOTS = 3;     // slots requested from exploration pool
+const RECENT_OWN_POSTS = 5;
+
+// Refresh this small creator lane from PostgreSQL on every first-page read.
+// A Redis slice may have been written by an in-flight request after creation
+// invalidated it, so cache invalidation alone cannot guarantee visibility.
+async function includeRecentOwnPosts(items, userId, orgActorId, pool, limit = DEFAULT_PAGE_SIZE) {
+  if (!pool) return items;
+  try {
+    const ownPosts = await pool.query(
+      `SELECT post_id
+       FROM posts
+       WHERE is_active = TRUE
+         AND COALESCE(is_removed, FALSE) = FALSE
+         AND COALESCE(is_deleted, FALSE) = FALSE
+         AND status = 'published'
+         AND visibility = 'public'
+         AND created_at >= NOW() - INTERVAL '24 hours'
+         AND (($2::uuid IS NULL AND author_id = $1 AND author_org_id IS NULL)
+           OR ($2::uuid IS NOT NULL AND author_org_id = $2))
+       ORDER BY created_at DESC, post_id DESC
+       LIMIT $3`,
+      [userId, orgActorId, RECENT_OWN_POSTS]
+    );
+    const validOwnRows = ownPosts.rows.filter((row) => typeof row.post_id === 'string' && row.post_id.length > 0);
+    const ownIds = new Set(validOwnRows.map((row) => row.post_id));
+    const ownItems = validOwnRows.map((row, index) => ({
+      id: row.post_id,
+      type: 'post',
+      content: {},
+      author: { id: orgActorId || userId },
+      score: 0,
+      slot_type: 'organic',
+      position: index,
+    }));
+    return [...ownItems, ...items.filter((item) => !ownIds.has(item.id))].slice(0, limit);
+  } catch (error) {
+    console.warn('[feedService] Could not include recent own posts:', error.message);
+    return items.slice(0, limit);
+  }
+}
 
 // ---------------------------------------------------------------------------
 // ID-160/D1 — Actor-scoped cache/session identifier
@@ -102,7 +142,7 @@ function buildCacheScopeId(userId, orgActorId) {
  *   load (no cursor), so rerankCandidates skips the seen-set filter — see its own doc comment.
  * @returns {Promise<Array>}       - FeedItem[] from rerankingEngine
  */
-async function _runPipeline({ userId, scopeId, pool, session, isInitialPage, orgActorId = null }) {
+async function _runPipeline({ userId, scopeId, pool, session, isInitialPage }) {
   // ── Step 1: Generate candidates (all 4 sources) ───────────────────────────
   const candidates = await generateCandidates({ userId, pool });
   const totalCandidates = candidates.length;
@@ -140,43 +180,6 @@ async function _runPipeline({ userId, scopeId, pool, session, isInitialPage, org
     explorationCandidates,
     isInitialPage,
   );
-
-  // Always show the actor's newest posts in their own initial feed page. The
-  // social-graph candidate source intentionally excludes self-authored posts,
-  // so without this small injection a freshly published post can vanish as
-  // soon as the client's optimistic card is reconciled with the ranked feed.
-  if (isInitialPage && pool) {
-    try {
-      const ownPosts = await pool.query(
-        `SELECT post_id
-         FROM posts
-         WHERE is_active = TRUE
-           AND COALESCE(is_removed, FALSE) = FALSE
-           AND status = 'published'
-           AND visibility = 'public'
-           AND (($2::uuid IS NULL AND author_id = $1 AND author_org_id IS NULL)
-             OR ($2::uuid IS NOT NULL AND author_org_id = $2))
-         ORDER BY created_at DESC, post_id DESC
-         LIMIT 3`,
-        [userId, orgActorId]
-      );
-      const existingIds = new Set(feedItems.map((item) => item.id));
-      const ownItems = ownPosts.rows
-        .filter((row) => !existingIds.has(row.post_id))
-        .map((row, index) => ({
-          id: row.post_id,
-          type: 'post',
-          content: {},
-          author: { id: orgActorId || userId },
-          score: 0,
-          slot_type: 'organic',
-          position: index,
-        }));
-      feedItems = [...ownItems, ...feedItems];
-    } catch (error) {
-      console.warn('[feedService] Could not add the actor\'s latest posts to the first page:', error.message);
-    }
-  }
 
   return { feedItems, totalCandidates };
 }
@@ -406,7 +409,9 @@ async function getFeed({ userId, cursor = null, limit = DEFAULT_PAGE_SIZE, pool 
   // Falls through to the generation pipeline below instead.
   if (cachedSlice !== null && Array.isArray(cachedSlice) && cachedSlice.length > 0) {
     const nextCursor = session?.cursor ?? effectiveCursor;
-    const sliced = cachedSlice.slice(0, pageSize);
+    const sliced = isInitialPage
+      ? await includeRecentOwnPosts(cachedSlice, userId, orgActorId, pool, pageSize)
+      : cachedSlice.slice(0, pageSize);
     const hydratedSlicedItems = await _hydrateFeedItems(sliced, userId, pool, orgActorId);
     return _buildResponse(hydratedSlicedItems, session, true, nextCursor, 0);
   }
@@ -440,7 +445,9 @@ async function getFeed({ userId, cursor = null, limit = DEFAULT_PAGE_SIZE, pool 
   }
 
   // ── B7.4: Cache the assembled slice (TTL 5 min) ───────────────────────────
-  const slicedItems = feedItems.slice(0, pageSize);
+  const slicedItems = isInitialPage
+    ? await includeRecentOwnPosts(feedItems, userId, orgActorId, pool, pageSize)
+    : feedItems.slice(0, pageSize);
   const nextCursor = slicedItems.length > 0 ? uuidv4() : null;
   try {
     const ttl = slicedItems.length > 0 ? FEED_SLICE_TTL : 15;

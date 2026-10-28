@@ -38,8 +38,7 @@ async function handleStreamWebhook(payload) {
   const uid = payload?.uid;
   if (!uid || typeof uid !== "string") throw new Error("Stream webhook is missing its video UID.");
   const state = payload.status?.state;
-  const pctComplete = Number(payload.status?.pctComplete || 0);
-  const isReady = state === "ready" && payload.readyToStream === true && pctComplete >= 100;
+  const isReady = state === "ready" && payload.readyToStream === true;
   const isFailed = state === "error";
   if (!isReady && !isFailed) return { accepted: true, status: "processing" };
 
@@ -57,9 +56,9 @@ async function handleStreamWebhook(payload) {
        processing_error = $6
      WHERE stream_uid = $7
        AND (processing_status IS DISTINCT FROM 'ready' OR $1 = 'ready')
-     RETURNING media_id, post_id`,
-    [status, isReady, playback.hlsUrl, playback.dashUrl, payload.thumbnail || playback.thumbnailUrl,
-      isFailed ? String(payload.status?.errReasonText || payload.status?.errorReasonText || "Stream encoding failed.").slice(0, 500) : null, uid]
+     RETURNING media_id, post_id, master_url`,
+    [status, status === "ready", playback.hlsUrl, playback.dashUrl, payload.thumbnail || playback.thumbnailUrl,
+      status === "failed" ? String(payload.status?.errReasonText || payload.status?.errorReasonText || "Stream encoding failed.").slice(0, 500) : null, uid]
   );
   await cacheWebhookResult(uid, status, {
     streamUid: uid,
@@ -75,6 +74,13 @@ async function handleStreamWebhook(payload) {
     const posts = new Map(postRows.rows.map((post) => [post.post_id, post]));
     for (const row of rows.rows) {
       const post = posts.get(row.post_id);
+      if (status === "failed" && post?.author_id) {
+        const { ownedPostRawKey } = require("../../core/infrastructure/postMediaKey");
+        const { addVideoFallbackJob } = require("../../queues/videoHdr.queue");
+        const rawKey = ownedPostRawKey(row.master_url, post.author_id);
+        if (rawKey) void addVideoFallbackJob({ rawKey, rawMasterUrl: row.master_url, ownerId: post.author_id })
+          .catch((error) => console.error("[StreamWebhook] Could not queue SDR fallback:", error.message));
+      }
       const message = {
         postId: row.post_id,
         mediaId: row.media_id,

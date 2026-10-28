@@ -145,10 +145,12 @@ async function checkDbConnection() {
 
 // Initial check + periodic retry every 30 seconds
 let healthCheckInterval;
-(async () => {
-  await checkDbConnection();
-  healthCheckInterval = setInterval(checkDbConnection, 30_000);
-})();
+if (process.env.NODE_ENV !== "test") {
+  (async () => {
+    await checkDbConnection();
+    healthCheckInterval = setInterval(checkDbConnection, 30_000);
+  })();
+}
 
 pool.stopHealthCheck = () => {
   if (healthCheckInterval) clearInterval(healthCheckInterval);

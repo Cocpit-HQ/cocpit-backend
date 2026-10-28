@@ -8,6 +8,9 @@ const { logAudit } = require("../../core/infrastructure/audit.service");
 const redisClient = require("../../core/cache/redis");
 const { deleteObjectsFromR2 } = require("../../core/infrastructure/r2.client");
 const { deleteHybridMedia } = require("../../core/infrastructure/mediaDeletion");
+const { ownedPostRawKey } = require("../../core/infrastructure/postMediaKey");
+const { verifyDirectPostUploads } = require("../upload/postUploadTickets");
+const { addTranscodeJob } = require("../../queues/media.queue");
 const { checkOrgPermission } = require("../../core/utils/rbac");
 const { notifyOrgFollowers, notifyBroadcastToChildOrgs } = require("../../services/notification.service");
 const { logActivity, removeActivity } = require("../../core/services/activityLogger");
@@ -939,9 +942,9 @@ exports.createPost = async (req, res) => {
 
     // Image file size validation for post creation:
     // - Per-image limit: 10MB max per single image file
-    // - Total post upload limit: 120MB max cumulative size across all uploaded images (up to 12 images x 10MB)
+    // - Total post upload limit: 100MB cumulative across all uploaded images
     const MAX_SINGLE_IMAGE_SIZE = 10 * 1024 * 1024; // 10MB per single image limit
-    const MAX_TOTAL_IMAGE_SIZE = 120 * 1024 * 1024; // 120MB total post images limit
+    const MAX_TOTAL_IMAGE_SIZE = 100 * 1024 * 1024; // 100MB total post images limit
 
     // Reject any single image larger than 10MB
     const oversizedImage = imageFiles.find(f => f.size > MAX_SINGLE_IMAGE_SIZE);
@@ -957,7 +960,7 @@ exports.createPost = async (req, res) => {
     if (totalImageSize > MAX_TOTAL_IMAGE_SIZE) {
         cleanupFiles(uploadedFiles);
         return res.status(400).json({
-            message: "Total image upload size cannot exceed 120MB."
+            message: "Total image upload size cannot exceed 100MB."
         });
     }
 
@@ -1021,6 +1024,19 @@ exports.createPost = async (req, res) => {
     title = sanitizeContent(title);
     if (poll_options && Array.isArray(poll_options)) {
         poll_options = poll_options.map(opt => sanitizeContent(opt));
+    }
+
+    // Direct R2 post tickets are verified here so creating a post needs no
+    // extra registration request after the PUT. Existing callers without
+    // tickets keep their previous behavior.
+    const directUploads = Array.isArray(media_urls) ? media_urls.filter((item) => item && typeof item === "object" && item.rawKey) : [];
+    if (directUploads.length) {
+        try {
+            await verifyDirectPostUploads(media_urls, userId);
+        } catch (error) {
+            cleanupFiles(uploadedFiles);
+            return res.status(400).json({ message: error.message || "Invalid upload ticket." });
+        }
     }
 
     const client = await pool.connect();
@@ -1105,8 +1121,9 @@ exports.createPost = async (req, res) => {
             if (poll_options && poll_options.length > 0) {
                 post_type = 'poll';
             } else if (media_urls && Array.isArray(media_urls) && media_urls.length > 0) {
-                const firstUrl = media_urls[0];
-                post_type = firstUrl.toLowerCase().match(/\.(mp4|webm|mov)(\?|#|$)/) ? 'video' : 'image';
+                const firstItem = media_urls[0];
+                const firstUrl = typeof firstItem === 'string' ? firstItem : firstItem?.master_url || firstItem?.url || '';
+                post_type = firstItem?.media_type || (firstUrl.toLowerCase().match(/\.(mp4|webm|mov)(\?|#|$)/) ? 'video' : 'image');
             } else {
                 post_type = 'text';
             }
@@ -1300,7 +1317,17 @@ exports.createPost = async (req, res) => {
                 let isProcessed = !!(url && !url.includes('/raw/'));
                 let fallbackUrl = typeof mediaItem === 'object' && mediaItem !== null ? mediaItem.fallback_url || null : null;
                 let avifUrl = typeof mediaItem === 'object' && mediaItem !== null ? mediaItem.avif_url || null : null;
-                let processingStatus = currentStatusForMedia(url, mediaItem);
+                const ownedRawKey = ownedPostRawKey(masterUrl, userId);
+                if (typeof masterUrl === 'string' && masterUrl.includes('/raw/posts/') && !ownedRawKey) {
+                    throw new Error('Feed media must belong to the authenticated uploader.');
+                }
+                if (ownedRawKey) {
+                    url = masterUrl;
+                    isProcessed = false;
+                    fallbackUrl = null;
+                    avifUrl = null;
+                }
+                let processingStatus = ownedRawKey ? 'processing' : currentStatusForMedia(url, mediaItem);
                 let streamUid = typeof mediaItem === 'object' && mediaItem !== null ? mediaItem.stream_uid || null : null;
                 let streamHlsUrl = typeof mediaItem === 'object' && mediaItem !== null ? mediaItem.stream_hls_url || null : null;
                 let streamDashUrl = typeof mediaItem === 'object' && mediaItem !== null ? mediaItem.stream_dash_url || null : null;
@@ -1476,6 +1503,25 @@ exports.createPost = async (req, res) => {
 
         await client.query('COMMIT');
 
+        // The committed row is the durable processing intent. Do not hold up
+        // the create response for Redis; the media worker also reconciles
+        // processing rows if this API instance exits before enqueue succeeds.
+        const pendingMedia = createdMedia.filter((item) => item.processing_status === 'processing');
+        if (pendingMedia.length) {
+            void Promise.allSettled(pendingMedia.map((item) => {
+                const rawKey = ownedPostRawKey(item.master_url, userId);
+                if (!rawKey) return Promise.resolve();
+                return addTranscodeJob({
+                    rawKey, rawMasterUrl: item.master_url, mediaType: item.media_type,
+                    postId, ownerId: userId,
+                });
+            })).then((results) => {
+                results.forEach((result) => {
+                    if (result.status === 'rejected') console.error('[CreatePost] Media enqueue failed:', result.reason);
+                });
+            });
+        }
+
         // The initial ranked feed slice may have been cached before this post
         // was created. Force its next read to rebuild; feed.service also adds
         // the actor's newest published posts to that initial page.
@@ -1483,13 +1529,16 @@ exports.createPost = async (req, res) => {
             const feedService = require("../feed/feed.service");
             const { deleteFeedSlice } = require("../feed/cache/feedCache");
             const feedScopeId = feedService.buildCacheScopeId(userId, companyId);
-            await deleteFeedSlice(feedScopeId, "initial");
+            void deleteFeedSlice(feedScopeId, "initial").catch((cacheError) => {
+                console.warn("[CreatePost] Could not invalidate the initial feed slice:", cacheError.message);
+            });
         } catch (cacheError) {
             console.warn("[CreatePost] Could not invalidate the initial feed slice:", cacheError.message);
         }
 
         // Mentions in post content (fire-and-forget, after commit)
         if (content && typeof content === 'string') {
+            void (async () => {
             const mentionedUsernames = [];
             const regex1 = /@\[[^\]]+\]\(([^)]+)\)/g;
             let m;
@@ -1567,11 +1616,13 @@ exports.createPost = async (req, res) => {
                     }
                 }
             }
+            })().catch((mentionError) => console.error('[CreatePost] Mention notification failed:', mentionError));
         }
 
 
         // Notify followers with 'posts' preference enabled (fire-and-forget, after commit)
         if (companyId) {
+            void (async () => {
             // Real-time channel article update notification for subscribers
             if (post_type === 'article' && status === 'published') {
                 const newPostCreatedAt = postResult.rows[0].created_at;
@@ -1598,6 +1649,7 @@ exports.createPost = async (req, res) => {
             if (is_broadcast) {
                 notifyBroadcastToChildOrgs(companyId, postId, content).catch(err => console.error("Broadcast notification error:", err));
             }
+            })().catch((notificationError) => console.error('[CreatePost] Organization notification failed:', notificationError));
         }
 
         // Handle Hashtags asynchronously without outbox
@@ -2647,8 +2699,9 @@ exports.updatePostById = async (req, res) => {
 
         // 5. Update Media: The "Sync" approach
         let removedMediaRecords = [];
+        const newMediaJobs = [];
         if (Array.isArray(media_urls)) {
-            const existingMediaRes = await client.query(`SELECT media_id, url, master_url, stream_uid FROM post_media WHERE post_id = $1`, [postId]);
+            const existingMediaRes = await client.query(`SELECT media_id, url, master_url, fallback_url, avif_url, stream_thumbnail_url, stream_uid FROM post_media WHERE post_id = $1`, [postId]);
             const existingMedia = existingMediaRes.rows;
             const newMasterUrls = new Set(media_urls.map((mediaItem) => typeof mediaItem === 'object' && mediaItem !== null
                 ? (mediaItem.master_url || mediaItem.masterUrl || mediaItem.url)
@@ -2682,6 +2735,8 @@ exports.updatePostById = async (req, res) => {
                 const cachedAsset = cached ? JSON.parse(cached) : {};
                 const persistedUrl = cachedAsset.url || url;
                 const persistedStatus = cachedAsset.processingStatus || processingStatus;
+                const newRawKey = !existingByMasterUrl.has(masterUrl) && persistedStatus === 'processing'
+                    ? ownedPostRawKey(masterUrl, userId) : null;
                 await client.query(
                     `INSERT INTO post_media (post_id, url, media_type, width, height, master_url, format, bit_depth, is_processed, fallback_url, avif_url, processing_status,
                        stream_uid, stream_hls_url, stream_dash_url, stream_thumbnail_url, hdr_manifest_url, hdr_processing_status)
@@ -2694,6 +2749,7 @@ exports.updatePostById = async (req, res) => {
                         item.hdr_manifest_url || cachedAsset.hdrManifestUrl || null,
                         item.hdr_processing_status || cachedAsset.hdrProcessingStatus || null]
                 );
+                if (newRawKey) newMediaJobs.push({ rawKey: newRawKey, rawMasterUrl: masterUrl, mediaType: type, postId, ownerId: userId });
             }
         }
 
@@ -2719,6 +2775,14 @@ exports.updatePostById = async (req, res) => {
         }
 
         await client.query('COMMIT');
+
+        // Post edits use the same commit-before-queue rule as post creation.
+        // The media worker's periodic scan recovers jobs missed during a Redis outage.
+        void Promise.allSettled(newMediaJobs.map((job) => addTranscodeJob(job))).then((results) => {
+            results.forEach((result) => {
+                if (result.status === 'rejected') console.error('[updatePostById] Could not queue media:', result.reason);
+            });
+        });
 
         // Asynchronously delete removed source, HDR derivatives, and Stream asset.
         if (removedMediaRecords.length > 0) {
@@ -3002,7 +3066,7 @@ exports.deletePost = async (req, res) => {
 
         // Retrieve media URLs before deleting post
         const mediaRes = await client.query(
-            `SELECT media_id, url, master_url, stream_uid FROM post_media WHERE post_id = $1`,
+            `SELECT media_id, url, master_url, fallback_url, avif_url, stream_thumbnail_url, stream_uid FROM post_media WHERE post_id = $1`,
             [postId]
         );
         const mediaRecords = mediaRes.rows;

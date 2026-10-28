@@ -11,6 +11,7 @@
  */
 
 'use strict';
+/* global jest, describe, test, expect, beforeEach */
 
 // ─── Pinned Mock Setup (Must be declared before importing module under test) ───
 
@@ -155,6 +156,13 @@ describe('feed.integration.test.js — Full Pipeline Integration', () => {
 
     // Mock generic user_intent_scores query
     pool.query.mockImplementation((sql, params) => {
+      if (sql.includes('p.post_id = ANY($3::uuid[])')) {
+        const rows = params[2].map((postId) => ({ post_id: postId, is_reported: false }));
+        return Promise.resolve({ rows, rowCount: rows.length });
+      }
+      if (sql.includes("created_at >= NOW() - INTERVAL '24 hours'")) {
+        return Promise.resolve({ rows: [], rowCount: 0 });
+      }
       if (sql.includes('FROM posts') || sql.includes('FROM   posts') || sql.includes('posts')) {
         // Return 10 standard post items
         const posts = Array.from({ length: 10 }).map((_, i) => ({

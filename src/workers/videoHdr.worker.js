@@ -66,6 +66,9 @@ async function verifyVideoTools() {
   if (!`${stdout}\n${stderr}`.includes("libx265")) {
     throw new Error("The configured FFmpeg build does not include the libx265 encoder required for HDR HLS.");
   }
+  if (!`${stdout}\n${stderr}`.includes("libx264")) {
+    throw new Error("The configured FFmpeg build does not include the libx264 encoder required for SDR fallback.");
+  }
   return true;
 }
 
@@ -120,6 +123,41 @@ async function uploadDirectory(directory, keyPrefix) {
   return uploaded;
 }
 
+async function saveEarlyPoster(sourcePath, workdir, rawKey, rawMasterUrl, sourceInfo, ownerId) {
+  const posterPath = path.join(workdir, "poster.jpg");
+  const standardFilter = "scale=960:-2:flags=lanczos";
+  const hdrFilter = "zscale=t=linear:npl=100,format=gbrpf32le,tonemap=mobius:desat=0,zscale=t=bt709:m=bt709:p=bt709,format=yuv420p," + standardFilter;
+  try {
+    await run(process.env.FFMPEG_PATH || "ffmpeg", [
+      "-hide_banner", "-loglevel", "error", "-y", "-i", sourcePath,
+      "-map", "0:v:0", "-frames:v", "1", "-vf", sourceInfo.isHdr ? hdrFilter : standardFilter,
+      "-q:v", "3", "-map_metadata", "-1", posterPath,
+    ]);
+    const posterKey = rawKey.replace(/^raw\//, "display/").replace(/\.[^/.]+$/, "-poster.jpg");
+    const posterUrl = await uploadFileToR2({ key: posterKey, filePath: posterPath, contentType: "image/jpeg" });
+    const rows = await pool.query(
+      `UPDATE post_media SET stream_thumbnail_url = COALESCE(stream_thumbnail_url, $1)
+       WHERE master_url = $2 RETURNING media_id, post_id`, [posterUrl, rawMasterUrl]
+    );
+    await cacheHdrResult(rawMasterUrl, { streamThumbnailUrl: posterUrl });
+    if (rows.rows.length) await notifyPosterUpdate(rows.rows, ownerId, posterUrl);
+  } catch (error) {
+    console.warn(`[VideoHdrWorker] Could not make early poster: ${error.message}`);
+  }
+}
+
+async function notifyPosterUpdate(rows, ownerId, posterUrl) {
+  const socketService = require("../core/infrastructure/socket.service");
+  const posts = await pool.query("SELECT post_id, visibility, author_id FROM posts WHERE post_id = ANY($1::uuid[])", [[...new Set(rows.map((row) => row.post_id))]]);
+  const byId = new Map(posts.rows.map((post) => [post.post_id, post]));
+  for (const row of rows) {
+    const post = byId.get(row.post_id);
+    const payload = { postId: row.post_id, mediaId: row.media_id, media: { media_type: "video", stream_thumbnail_url: posterUrl } };
+    if (post?.visibility === "public") socketService.broadcastGlobal?.("media_processing_updated", payload);
+    else if (post?.author_id || ownerId) socketService.notifyUser?.(post?.author_id || ownerId, "media_processing_updated", payload);
+  }
+}
+
 function createMasterPlaylist(variants, transfer) {
   const range = transfer === "arib-std-b67" ? "HLG" : "PQ";
   const lines = ["#EXTM3U", "#EXT-X-VERSION:7"];
@@ -141,6 +179,7 @@ async function processHdrVideo({ rawMasterUrl, rawKey, ownerId }) {
     await fs.promises.mkdir(outputDir);
     await downloadR2Object(rawKey, sourcePath);
     const sourceInfo = await inspectVideo(sourcePath);
+    await saveEarlyPoster(sourcePath, workdir, rawKey, rawMasterUrl, sourceInfo, ownerId);
     if (!sourceInfo.isHdr) {
       await pool.query("UPDATE post_media SET hdr_processing_status = 'not_applicable' WHERE master_url = $1 OR url = $1", [rawMasterUrl]);
       await cacheHdrResult(rawMasterUrl, { hdrProcessingStatus: "not_applicable" });
@@ -183,6 +222,52 @@ async function processHdrVideo({ rawMasterUrl, rawKey, ownerId }) {
   }
 }
 
+async function processSdrFallback({ rawMasterUrl, rawKey, ownerId }) {
+  const workdir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "cocpit-sdr-recovery-"));
+  try {
+    const sourcePath = path.join(workdir, "source-video");
+    const fallbackPath = path.join(workdir, "fallback.mp4");
+    await downloadR2Object(rawKey, sourcePath);
+    const sourceInfo = await inspectVideo(sourcePath);
+    const scale = "scale=1920:1080:force_original_aspect_ratio=decrease:force_divisible_by=2";
+    const toneMap = "zscale=t=linear:npl=100,format=gbrpf32le,tonemap=mobius:desat=0,zscale=t=bt709:m=bt709:p=bt709,format=yuv420p,";
+    await run(process.env.FFMPEG_PATH || "ffmpeg", [
+      "-hide_banner", "-loglevel", "error", "-y", "-i", sourcePath,
+      "-map", "0:v:0", "-map", "0:a:0?", "-vf", `${sourceInfo.isHdr ? toneMap : ""}${scale}`,
+      "-c:v", "libx264", "-preset", "veryfast", "-crf", "19", "-pix_fmt", "yuv420p",
+      "-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709",
+      "-c:a", "aac", "-b:a", "160k", "-ac", "2", "-movflags", "+faststart",
+      "-map_metadata", "-1", fallbackPath,
+    ]);
+    const key = rawKey.replace(/^raw\//, "display/").replace(/\.[^/.]+$/, "-fallback.mp4");
+    const fallbackUrl = await uploadFileToR2({ key, filePath: fallbackPath, contentType: "video/mp4" });
+    const rows = await pool.query(
+      `UPDATE post_media SET fallback_url = $1, url = $1
+       WHERE master_url = $2 AND processing_status = 'failed'
+       RETURNING media_id, post_id`, [fallbackUrl, rawMasterUrl]
+    );
+    if (rows.rows.length) {
+      await cacheHdrResult(rawMasterUrl, { url: fallbackUrl, fallbackUrl, processingStatus: "failed" });
+      await notifyFallbackUpdate(rows.rows, ownerId, fallbackUrl);
+    }
+    return { fallbackUrl, updated: rows.rowCount };
+  } finally {
+    await fs.promises.rm(workdir, { recursive: true, force: true });
+  }
+}
+
+async function notifyFallbackUpdate(rows, ownerId, fallbackUrl) {
+  const socketService = require("../core/infrastructure/socket.service");
+  const posts = await pool.query("SELECT post_id, visibility, author_id FROM posts WHERE post_id = ANY($1::uuid[])", [[...new Set(rows.map((row) => row.post_id))]]);
+  const byId = new Map(posts.rows.map((post) => [post.post_id, post]));
+  for (const row of rows) {
+    const post = byId.get(row.post_id);
+    const payload = { postId: row.post_id, mediaId: row.media_id, processing_status: "failed", media: { media_type: "video", url: fallbackUrl, fallback_url: fallbackUrl } };
+    if (post?.visibility === "public") socketService.broadcastGlobal?.("media_processing_updated", payload);
+    else if (post?.author_id || ownerId) socketService.notifyUser?.(post?.author_id || ownerId, "media_processing_updated", payload);
+  }
+}
+
 async function cacheHdrResult(rawMasterUrl, fields) {
   if (!redisClient?.isOpen) return;
   const cacheKey = `media:conversion:${rawMasterUrl}`;
@@ -214,7 +299,8 @@ async function notifyHdrUpdate(rows, ownerId, status, hdrManifestUrl = null) {
 let hdrWorker;
 function startVideoHdrWorker() {
   if (hdrWorker) return hdrWorker;
-  hdrWorker = new Worker("video-hdr-transcode", (job) => processHdrVideo(job.data), {
+  hdrWorker = new Worker("video-hdr-transcode", (job) => job.name === "transcode-sdr-fallback"
+    ? processSdrFallback(job.data) : processHdrVideo(job.data), {
     connection: getRedisConnectionOptions(),
     concurrency: Number(process.env.HDR_WORKER_CONCURRENCY || 1),
   });
@@ -230,4 +316,4 @@ async function closeVideoHdrWorker() {
   hdrWorker = null;
 }
 
-module.exports = { inspectVideo, processHdrVideo, startVideoHdrWorker, closeVideoHdrWorker, createMasterPlaylist, verifyVideoTools };
+module.exports = { inspectVideo, processHdrVideo, processSdrFallback, startVideoHdrWorker, closeVideoHdrWorker, createMasterPlaylist, verifyVideoTools };

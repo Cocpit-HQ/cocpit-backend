@@ -64,6 +64,11 @@ async function createStreamVideoFromUrl({ url, creator, name }) {
   return { uid: result.uid, ...getStreamPlaybackUrls(result.uid) };
 }
 
+async function getStreamVideo(uid) {
+  if (!uid) throw new Error("Cloudflare Stream video UID is required.");
+  return streamRequest(`/${encodeURIComponent(uid)}`);
+}
+
 async function deleteStreamVideo(uid) {
   if (!uid) return;
   await streamRequest(`/${encodeURIComponent(uid)}`, { method: "DELETE" });
@@ -74,5 +79,6 @@ module.exports = {
   isStreamConfigured,
   getStreamPlaybackUrls,
   createStreamVideoFromUrl,
+  getStreamVideo,
   deleteStreamVideo,
 };
