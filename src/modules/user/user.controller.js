@@ -1405,12 +1405,6 @@ exports.getPublicProfileCommentedPosts = async (req, res) => {
     params.push(actorOrgId || null);
 
 
-    const rawType = req.headers["x-actor-type"] || req.actor?.type;
-    const type = typeof rawType === "string" ? rawType.trim().toUpperCase() : null;
-    const isOrgType = type === "ORGANIZATION" || type === "COMPANY" || type === "ORG";
-    const actorOrgId = isOrgType ? (req.headers["x-actor-id"] || req.headers["x-company-id"] || req.actor?.id || null) : null;
-    const orgActorParamIdx = params.length + 1;
-    params.push(actorOrgId || null);
 
     const query = `
       SELECT
