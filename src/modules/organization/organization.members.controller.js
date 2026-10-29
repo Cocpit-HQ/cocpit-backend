@@ -196,6 +196,15 @@ exports.acceptTeamsInvite = async (req, res) => {
         }
         const invite = inviteRes.rows[0];
 
+        // Verify organization is active
+        const orgActiveCheck = await client.query(
+            `SELECT org_id, is_deactivated, is_deleted, deletion_execute_at FROM organizations WHERE org_id = $1`,
+            [invite.org_id]
+        );
+        if (orgActiveCheck.rowCount === 0 || orgActiveCheck.rows[0].is_deleted || orgActiveCheck.rows[0].is_deactivated || orgActiveCheck.rows[0].deletion_execute_at) {
+            throw new AppError("This organization is currently deactivated or unavailable.", 400);
+        }
+
         // 2. Verify Email Match (Optional but recommended security)
         // Check if current user's email matches invite email? 
         // For now, let's assume possession of token is enough, or we can check.
@@ -709,6 +718,10 @@ exports.getUserPendingTeamsInvites = async (req, res, next) => {
              WHERE (oi.invited_user_id = $1 OR LOWER(oi.email) = LOWER($2)) 
                AND LOWER(oi.status::text) = 'pending' 
                AND oi.expires_at > NOW()
+               AND (o.is_deleted IS FALSE OR o.is_deleted IS NULL)
+               AND (o.is_deactivated IS FALSE OR o.is_deactivated IS NULL)
+               AND (o.is_suspended IS FALSE OR o.is_suspended IS NULL)
+               AND o.deletion_execute_at IS NULL
              ORDER BY oi.created_at DESC`,
             [userId, email]
         );

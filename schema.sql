@@ -340,6 +340,7 @@ CREATE TABLE IF NOT EXISTS organization_permission_keys (
 );
 
 CREATE TABLE organization_members (
+    member_id UUID DEFAULT gen_random_uuid(),
     org_id UUID REFERENCES organizations(org_id) ON DELETE CASCADE,
     user_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
     role_id UUID REFERENCES organization_roles(role_id) ON DELETE SET NULL,
@@ -1996,6 +1997,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_org_specialties_unique_active ON organizat
 
 -- 4. Core team flag + public title/description per member (People tab, Core Team section)
 ALTER TABLE organization_members
+    ADD COLUMN IF NOT EXISTS member_id UUID DEFAULT gen_random_uuid(),
     ADD COLUMN IF NOT EXISTS title VARCHAR(100),
     ADD COLUMN IF NOT EXISTS description TEXT,
     ADD COLUMN IF NOT EXISTS is_core_team BOOLEAN DEFAULT FALSE;

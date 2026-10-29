@@ -121,6 +121,7 @@ exports.getOrgProfile = async (req, res) => {
 
     const { orgId } = req.params;
     const viewerId = req.user?.sub || null;
+    const actorOrgId = (req.actor?.type === "ORGANIZATION" && req.actor?.orgId) ? req.actor.orgId : null;
 
     try {
         // 1. Resolve org
@@ -264,15 +265,23 @@ exports.getOrgProfile = async (req, res) => {
                         COALESCE(cc.comment_count, 0)::int AS comment_count,
                         COALESCE(pm.media, '[]'::json) AS media,
                         (
-                            SELECT COALESCE(comp_like.slug, u_like.account_name)
+                            SELECT COALESCE(comp_like.name, comp_like.slug, u_like.full_name, u_like.account_name)
                             FROM active_post_likes pl_sample
                             LEFT JOIN active_users u_like ON u_like.user_id = pl_sample.user_id
                             LEFT JOIN organizations comp_like ON comp_like.org_id = pl_sample.org_id
                             WHERE pl_sample.post_id = p.post_id
+                            AND NOT (
+                                ($3::uuid IS NOT NULL AND pl_sample.org_id IS NOT NULL AND pl_sample.org_id = $3::uuid)
+                                OR
+                                ($3::uuid IS NULL AND pl_sample.user_id = $2 AND pl_sample.org_id IS NULL)
+                            )
                             ORDER BY pl_sample.created_at DESC
                             LIMIT 1
                         ) AS sample_liker_username,
-                        EXISTS(SELECT 1 FROM active_post_likes pl WHERE pl.post_id = p.post_id AND pl.user_id = $2) AS is_liked,
+                        EXISTS(SELECT 1 FROM active_post_likes pl WHERE pl.post_id = p.post_id AND (
+                            ($3::uuid IS NOT NULL AND pl.org_id = $3::uuid)
+                            OR ($3::uuid IS NULL AND pl.user_id = $2 AND pl.org_id IS NULL)
+                        )) AS is_liked,
                         EXISTS(SELECT 1 FROM saved_post sp_me WHERE sp_me.post_id = p.post_id AND sp_me.user_id = $2 AND sp_me.org_id IS NULL) AS is_saved
                  FROM posts p
                  LEFT JOIN (
@@ -322,7 +331,7 @@ exports.getOrgProfile = async (req, res) => {
                      END ASC,
                      p.created_at DESC
                  LIMIT 3`,
-                [org.org_id, viewerId || null]
+                [org.org_id, viewerId || null, actorOrgId || null]
             ),
             // Organization links
             pool.query(

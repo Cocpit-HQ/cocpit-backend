@@ -180,3 +180,8 @@ CREATE TABLE IF NOT EXISTS organization_notification_settings (
 );
 
 CREATE INDEX IF NOT EXISTS idx_org_notification_settings_org_id ON organization_notification_settings(org_id);
+
+-- 19. organization_members: Add member_id column for surrogate identifier
+ALTER TABLE organization_members 
+    ADD COLUMN IF NOT EXISTS member_id UUID DEFAULT gen_random_uuid();
+

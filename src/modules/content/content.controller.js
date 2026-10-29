@@ -1636,13 +1636,13 @@ exports.getPostById = async (req, res) => {
     (SELECT COUNT(*) FROM active_post_likes pl WHERE pl.post_id = p.post_id)::int AS like_count,
 
     (
-        SELECT COALESCE(comp_like.slug, u_like.account_name)
+        SELECT COALESCE(comp_like.name, comp_like.slug, u_like.full_name, u_like.account_name)
         FROM active_post_likes pl_sample
         LEFT JOIN active_users u_like ON u_like.user_id = pl_sample.user_id
         LEFT JOIN organizations comp_like ON comp_like.org_id = pl_sample.org_id
         WHERE pl_sample.post_id = p.post_id
         AND NOT (
-            ($3::uuid IS NOT NULL AND pl_sample.org_id = $3::uuid)
+            ($3::uuid IS NOT NULL AND pl_sample.org_id IS NOT NULL AND pl_sample.org_id = $3::uuid)
             OR
             ($3::uuid IS NULL AND pl_sample.user_id = $2 AND pl_sample.org_id IS NULL)
         )
@@ -1736,7 +1736,7 @@ exports.getPostById = async (req, res) => {
     (
         SELECT COALESCE(
             json_agg(json_build_object(
-                'username', COALESCE(comp_like.slug, u_like.account_name),
+                'username', COALESCE(comp_like.name, comp_like.slug, u_like.full_name, u_like.account_name),
                 'avatar_url', COALESCE(comp_like.logo_url, u_like.avatar_url),
                 'is_company', (sub.org_id IS NOT NULL),
                 'is_organization', (sub.org_id IS NOT NULL)
@@ -1747,9 +1747,8 @@ exports.getPostById = async (req, res) => {
             SELECT pl_sample.user_id, pl_sample.org_id
             FROM active_post_likes pl_sample
             WHERE pl_sample.post_id = p.post_id
-              AND pl_sample.user_id IS NOT NULL
               AND NOT (
-                  ($3::uuid IS NOT NULL AND pl_sample.org_id = $3::uuid)
+                  ($3::uuid IS NOT NULL AND pl_sample.org_id IS NOT NULL AND pl_sample.org_id = $3::uuid)
                   OR
                   ($3::uuid IS NULL AND pl_sample.user_id = $2 AND pl_sample.org_id IS NULL)
               )
@@ -2047,7 +2046,7 @@ exports.getPostById = async (req, res) => {
                 'liked_users', (
                     SELECT COALESCE(
                         json_agg(json_build_object(
-                            'username', COALESCE(comp_like.slug, u_like.account_name),
+                            'username', COALESCE(comp_like.name, comp_like.slug, u_like.full_name, u_like.account_name),
                             'avatar_url', COALESCE(comp_like.logo_url, u_like.avatar_url),
                             'is_company', (sub.org_id IS NOT NULL),
                             'is_organization', (sub.org_id IS NOT NULL)
@@ -2058,9 +2057,8 @@ exports.getPostById = async (req, res) => {
                         SELECT pl_sample.user_id, pl_sample.org_id
                         FROM active_post_likes pl_sample
                         WHERE pl_sample.post_id = sp.post_id
-                          AND pl_sample.user_id IS NOT NULL
                           AND NOT (
-                              ($3::uuid IS NOT NULL AND pl_sample.org_id = $3::uuid)
+                              ($3::uuid IS NOT NULL AND pl_sample.org_id IS NOT NULL AND pl_sample.org_id = $3::uuid)
                               OR
                               ($3::uuid IS NULL AND pl_sample.user_id = $2 AND pl_sample.org_id IS NULL)
                           )
