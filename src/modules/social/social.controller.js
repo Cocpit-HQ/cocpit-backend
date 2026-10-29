@@ -665,16 +665,17 @@ exports.getCompanyFollowers = async (req, res) => {
 
         let viewerUserFollowsExpr = "FALSE";
         let viewerCompanyFollowsExpr = "FALSE";
+        let viewerIdx = null;
         const params = [companyId];
 
         if (viewerOrgId) {
             params.push(viewerOrgId);
-            const viewerIdx = params.length;
+            viewerIdx = params.length;
             viewerUserFollowsExpr = `EXISTS(SELECT 1 FROM organization_user_follows WHERE org_id = $${viewerIdx} AND user_id = u.user_id)`;
             viewerCompanyFollowsExpr = `EXISTS(SELECT 1 FROM organization_org_follows WHERE follower_org_id = $${viewerIdx} AND following_org_id = c.org_id)`;
         } else if (viewerUserId) {
             params.push(viewerUserId);
-            const viewerIdx = params.length;
+            viewerIdx = params.length;
             viewerUserFollowsExpr = `EXISTS(SELECT 1 FROM followers WHERE follower_id = $${viewerIdx} AND following_id = u.user_id)`;
             viewerCompanyFollowsExpr = `EXISTS(SELECT 1 FROM organization_followers WHERE user_id = $${viewerIdx} AND org_id = c.org_id)`;
         }
@@ -7029,16 +7030,17 @@ exports.getOrganizationFollowing = async (req, res) => {
 
         let viewerUserFollowsExpr = "FALSE";
         let viewerCompanyFollowsExpr = "FALSE";
+        let viewerIdx = null;
         const params = [orgId];
 
         if (viewerOrgId) {
             params.push(viewerOrgId);
-            const viewerIdx = params.length;
+            viewerIdx = params.length;
             viewerUserFollowsExpr = `EXISTS(SELECT 1 FROM organization_user_follows WHERE org_id = $${viewerIdx} AND user_id = u.user_id)`;
             viewerCompanyFollowsExpr = `EXISTS(SELECT 1 FROM organization_org_follows WHERE follower_org_id = $${viewerIdx} AND following_org_id = c.org_id)`;
         } else if (viewerUserId) {
             params.push(viewerUserId);
-            const viewerIdx = params.length;
+            viewerIdx = params.length;
             viewerUserFollowsExpr = `EXISTS(SELECT 1 FROM followers WHERE follower_id = $${viewerIdx} AND following_id = u.user_id)`;
             viewerCompanyFollowsExpr = `EXISTS(SELECT 1 FROM organization_followers WHERE user_id = $${viewerIdx} AND org_id = c.org_id)`;
         }
