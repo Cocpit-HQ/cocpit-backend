@@ -5205,13 +5205,6 @@ exports.getNotifications = async (req, res) => {
                     WHERE (b.blocker_id = $1 AND ((n.sender_id IS NOT NULL AND b.blocked_id = n.sender_id) OR (NULLIF(n.metadata->>'org_id', '')::uuid IS NOT NULL AND b.blocked_id = (n.metadata->>'org_id')::uuid)))
                        OR (b.blocked_id = $1 AND ((n.sender_id IS NOT NULL AND b.blocker_id = n.sender_id) OR (NULLIF(n.metadata->>'org_id', '')::uuid IS NOT NULL AND b.blocker_id = (n.metadata->>'org_id')::uuid)))
                 )
-                AND NOT EXISTS (
-                    SELECT 1
-                    FROM organization_notification_settings ons
-                    WHERE ons.org_id = $1
-                      AND ons.posts_enabled = false
-                      AND n.type = ANY(ARRAY['post', 'like', 'comment', 'reply', 'mention', 'post_tag', 'repost', 'share', 'channel_article', 'organization_post', 'story_comment', 'story_like'])
-                )
             `;
         } else {
             query += `
@@ -5223,14 +5216,25 @@ exports.getNotifications = async (req, res) => {
                     WHERE (b.blocker_id = $1 AND ((n.sender_id IS NOT NULL AND b.blocked_id = n.sender_id) OR (NULLIF(n.metadata->>'org_id', '')::uuid IS NOT NULL AND b.blocked_id = (n.metadata->>'org_id')::uuid)))
                        OR (b.blocked_id = $1 AND ((n.sender_id IS NOT NULL AND b.blocker_id = n.sender_id) OR (NULLIF(n.metadata->>'org_id', '')::uuid IS NOT NULL AND b.blocker_id = (n.metadata->>'org_id')::uuid)))
                 )
-                AND NOT EXISTS (
-                    SELECT 1
-                    FROM user_notification_preferences unp
-                    WHERE unp.user_id = $1
-                      AND (
-                          unp.all_notifications = false
-                          OR (unp.post_notifications = false AND n.type = ANY(ARRAY['post', 'like', 'comment', 'reply', 'mention', 'post_tag', 'repost', 'share', 'channel_article', 'organization_post', 'story_comment', 'story_like']))
-                      )
+                AND (
+                    n.type != 'organization_invite'
+                    OR EXISTS (
+                        SELECT 1 FROM organizations o
+                        WHERE o.org_id = COALESCE(NULLIF(n.metadata->>'org_id', ''), NULLIF(n.metadata->>'orgId', ''))::uuid
+                          AND (o.is_deleted IS FALSE OR o.is_deleted IS NULL)
+                          AND (o.is_deactivated IS FALSE OR o.is_deactivated IS NULL)
+                          AND (o.is_suspended IS FALSE OR o.is_suspended IS NULL)
+                          AND o.deletion_execute_at IS NULL
+                          AND (
+                              NULLIF(n.metadata->>'token', '') IS NULL
+                              OR EXISTS (
+                                  SELECT 1 FROM organization_invites oi
+                                  WHERE oi.token = n.metadata->>'token'
+                                    AND LOWER(oi.status::text) = 'pending'
+                                    AND oi.expires_at > NOW()
+                              )
+                          )
+                    )
                 )
                 AND (
                     n.type != 'organization_invite'

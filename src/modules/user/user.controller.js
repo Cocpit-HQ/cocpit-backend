@@ -1224,12 +1224,16 @@ exports.getPublicProfilePosts = async (req, res) => {
           )
       )
 
-      -- Hide posts (and reposts of posts) reported by the current user
+      -- Hide posts (and reposts of posts) reported by the current user or active organization
       AND ($${userParamIdx}::uuid IS NULL OR NOT EXISTS (
           SELECT 1 FROM reports r 
           WHERE r.target_type IN ('POST', 'ARTICLE', 'JOB', 'THOUGHT')
             AND (r.target_id = p.post_id OR r.target_id = p.shared_post_id OR r.target_id = p.shared_job_id)
-            AND r.reporter_id = $${userParamIdx}::uuid
+            AND (
+                ($${orgActorParamIdx}::uuid IS NOT NULL AND r.reporter_org_id = $${orgActorParamIdx}::uuid)
+                OR
+                ($${orgActorParamIdx}::uuid IS NULL AND r.reporter_id = $${userParamIdx}::uuid AND r.reporter_org_id IS NULL)
+            )
       ))
 
       -- Privacy Escalation: Hide reposts if original post's privacy tightened
@@ -1389,8 +1393,17 @@ exports.getPublicProfileCommentedPosts = async (req, res) => {
     params.push(limit);
     const limitIdx = idx;
 
+    // Viewer actor context (Company / Organization vs User)
+    const rawType = req.headers["x-actor-type"] || req.actor?.type;
+    const type = typeof rawType === "string" ? rawType.trim().toUpperCase() : null;
+    const isOrgType = type === "ORGANIZATION" || type === "COMPANY" || type === "ORG";
+    const actorOrgId = isOrgType ? (req.headers["x-actor-id"] || req.headers["x-company-id"] || req.headers["x-org-id"] || req.actor?.id || null) : null;
+
     const userParamIdx = params.length + 1;
+    const orgActorParamIdx = params.length + 2;
     params.push(currentUserId || null);
+    params.push(actorOrgId || null);
+
 
     const rawType = req.headers["x-actor-type"] || req.actor?.type;
     const type = typeof rawType === "string" ? rawType.trim().toUpperCase() : null;
@@ -1549,12 +1562,16 @@ exports.getPublicProfileCommentedPosts = async (req, res) => {
           )
       )
 
-      -- Hide posts (and reposts of posts) reported by the current user
+      -- Hide posts (and reposts of posts) reported by the current user or active organization
       AND ($${userParamIdx}::uuid IS NULL OR NOT EXISTS (
           SELECT 1 FROM reports r 
           WHERE r.target_type IN ('POST', 'ARTICLE', 'JOB', 'THOUGHT')
             AND (r.target_id = p.post_id OR r.target_id = p.shared_post_id OR r.target_id = p.shared_job_id)
-            AND r.reporter_id = $${userParamIdx}::uuid
+            AND (
+                ($${orgActorParamIdx}::uuid IS NOT NULL AND r.reporter_org_id = $${orgActorParamIdx}::uuid)
+                OR
+                ($${orgActorParamIdx}::uuid IS NULL AND r.reporter_id = $${userParamIdx}::uuid AND r.reporter_org_id IS NULL)
+            )
       ))
 
       -- Privacy Escalation: Hide reposts if original post's privacy tightened

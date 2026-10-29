@@ -994,6 +994,15 @@ exports.removeActivity = async (req, res) => {
                     actorOrgId = orgRes.rows[0].org_id;
                 }
             }
+
+            const { checkOrgPermission } = require('../../core/utils/rbac');
+            const hasPerm = await checkOrgPermission(pool, actorOrgId, req.user.sub, ['CREATE_POST', 'CREATE_CONTENT']);
+            if (!hasPerm) {
+                return res.status(403).json({
+                    success: false,
+                    message: "You do not have permission to interact with posts on behalf of this organization."
+                });
+            }
         }
         const targetId = isOrgActor ? actorOrgId : req.user.sub;
         const { type, id } = req.params;
@@ -1739,6 +1748,17 @@ exports.getUserReportById = async (req, res) => {
         const userId   = req.user.sub;
         const reportId = req.params.id;
 
+        const actorOrgId = req.actor?.type === "ORGANIZATION" ? (req.actor.orgId || req.headers["x-actor-id"]) : null;
+        const isOrgActor = !!actorOrgId;
+
+        let whereClause = "WHERE r.id = $1 AND r.reporter_id = $2 AND r.reporter_org_id IS NULL";
+        let queryParams = [reportId, userId];
+
+        if (isOrgActor) {
+            whereClause = "WHERE r.id = $1 AND r.reporter_org_id = $2";
+            queryParams = [reportId, actorOrgId];
+        }
+
         const result = await pool.query(
             `SELECT
                 r.id,
@@ -1769,8 +1789,8 @@ exports.getUserReportById = async (req, res) => {
             LEFT JOIN post_comments pc  ON r.target_type IN ('COMMENT', 'THOUGHT') AND r.target_id = pc.comment_id
             LEFT JOIN users cu          ON pc.author_id = cu.user_id
             LEFT JOIN organizations o   ON r.target_type = 'COMPANY' AND r.target_id = o.org_id
-            WHERE r.id = $1 AND r.reporter_id = $2`,
-            [reportId, userId]
+            ${whereClause}`,
+            queryParams
         );
 
         if (result.rowCount === 0) {
