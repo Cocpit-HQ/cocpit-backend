@@ -5177,22 +5177,27 @@ exports.getNotifications = async (req, res) => {
                 n.recipient_org_id as recipient_company_id,
                 CASE 
                     WHEN COALESCE(NULLIF(n.metadata->>'org_id', ''), NULLIF(n.metadata->>'orgId', '')) IS NOT NULL 
-                         AND n.type NOT IN ('community_invite_accepted', 'team_invite_accepted', 'offer_accepted', 'job_offer_declined', 'company_channel_subscriber') THEN c.name 
+                         AND n.type NOT IN ('community_invite_accepted', 'team_invite_accepted', 'offer_accepted', 'job_offer_declined', 'company_channel_subscriber') THEN 
+                         COALESCE(NULLIF(n.metadata->>'org_name', ''), NULLIF(n.metadata->>'orgName', ''), c.name)
                     ELSE u.display_name 
                 END as actor_name, 
                 CASE 
                     WHEN COALESCE(NULLIF(n.metadata->>'org_id', ''), NULLIF(n.metadata->>'orgId', '')) IS NOT NULL 
-                         AND n.type NOT IN ('community_invite_accepted', 'team_invite_accepted', 'offer_accepted', 'job_offer_declined', 'company_channel_subscriber') THEN c.logo_url 
+                         AND n.type NOT IN ('community_invite_accepted', 'team_invite_accepted', 'offer_accepted', 'job_offer_declined', 'company_channel_subscriber') THEN 
+                         COALESCE(NULLIF(n.metadata->>'org_logo', ''), NULLIF(n.metadata->>'orgLogo', ''), c.logo_url)
                     ELSE u.display_avatar 
                 END as actor_avatar,
-                COALESCE(c.slug, u.display_username) as actor_slug,
+                COALESCE(NULLIF(n.metadata->>'org_slug', ''), NULLIF(n.metadata->>'orgSlug', ''), c.slug, u.display_username) as actor_slug,
                 (COALESCE(NULLIF(n.metadata->>'org_id', ''), NULLIF(n.metadata->>'orgId', '')) IS NOT NULL 
                  AND n.type NOT IN ('community_invite_accepted', 'team_invite_accepted', 'offer_accepted', 'job_offer_declined', 'company_channel_subscriber')) as is_company_actor,
+                COALESCE(o_meta.created_by = n.user_id, (n.metadata->>'can_recover')::boolean, (n.metadata->>'is_owner')::boolean, FALSE) as can_recover,
+                COALESCE(o_meta.created_by = n.user_id, (n.metadata->>'is_owner')::boolean, FALSE) as is_owner,
                 cr.request_id as request_id, 
                 cr.status as request_status
             FROM notifications n 
-            LEFT JOIN user_display_profiles u ON n.sender_id = u.user_id 
+            LEFT JOIN user_display_profiles u ON COALESCE(n.sender_id, CASE WHEN n.type IN ('doc_verification_success', 'doc_verification_rejected') THEN n.user_id ELSE NULL END) = u.user_id 
             LEFT JOIN organization_display_profiles c ON COALESCE(NULLIF(n.metadata->>'org_id', ''), NULLIF(n.metadata->>'orgId', ''))::uuid = c.org_id
+            LEFT JOIN organizations o_meta ON COALESCE(NULLIF(n.metadata->>'org_id', ''), NULLIF(n.metadata->>'orgId', ''))::uuid = o_meta.org_id
             LEFT JOIN connection_requests cr ON n.sender_id = cr.sender_id AND n.user_id = cr.receiver_id AND cr.status = 'pending'
             WHERE 
         `;

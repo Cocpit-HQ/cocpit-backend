@@ -476,7 +476,7 @@ exports.leaveOrganization = async (req, res) => {
 
         // 1. Check existence and role with LEFT JOIN and organization creator
         const resMember = await client.query(
-            `SELECT om.member_id, om.status, om.role_id, oroles.name AS role_name, o.created_by
+            `SELECT om.member_id, om.status, om.role_id, oroles.name AS role_name, o.created_by, o.is_deactivated
              FROM organization_members om
              JOIN organizations o ON o.org_id = om.org_id
              LEFT JOIN organization_roles oroles ON om.role_id = oroles.role_id
@@ -490,6 +490,12 @@ exports.leaveOrganization = async (req, res) => {
         }
 
         const member = resMember.rows[0];
+
+        // Cannot leave a deactivated organization
+        if (member.is_deactivated) {
+            await client.query("ROLLBACK");
+            return res.status(400).json({ message: "Cannot leave a deactivated organization page" });
+        }
 
         // 2. Creator or Owner cannot leave
         const isOwner = member.created_by === userId || member.role_name?.toLowerCase() === 'owner';

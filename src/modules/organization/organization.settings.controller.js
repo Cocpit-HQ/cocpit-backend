@@ -675,26 +675,35 @@ exports.deactivateOrganization = async (req, res) => {
         });
 
         await client.query("COMMIT");
-
-        try {
-            const socketService = require("../../core/infrastructure/socket.service");
-            if (socketService && socketService.io) {
-                socketService.io.emit("ORGANIZATION_DEACTIVATED", { orgId });
-                socketService.io.emit("organization_deactivated", { orgId });
-                socketService.io.emit("org_status_changed", { orgId, status: "deactivated", action: "deactivated" });
-            }
-        } catch (sockErr) {
-            console.error("[deactivateOrganization] Socket emit error:", sockErr);
-        }
-
-        res.json({ success: true, message: "Organization page deactivated successfully" });
     } catch (err) {
         await client.query("ROLLBACK");
         console.error("Deactivate organization error:", err);
-        res.status(500).json({ message: "Internal server error" });
+        return res.status(500).json({ message: "Internal server error" });
     } finally {
         client.release();
     }
+
+    try {
+        const { notifyAllOrgStakeholders } = require("../../services/notification.service");
+        notifyAllOrgStakeholders(orgId, userId, 'company_deactivated').catch(e => {
+            console.error("[deactivateOrganization] Notification error:", e);
+        });
+    } catch (notifErr) {
+        console.error("[deactivateOrganization] Notification setup error:", notifErr);
+    }
+
+    try {
+        const socketService = require("../../core/infrastructure/socket.service");
+        if (socketService && socketService.io) {
+            socketService.io.emit("ORGANIZATION_DEACTIVATED", { orgId });
+            socketService.io.emit("organization_deactivated", { orgId });
+            socketService.io.emit("org_status_changed", { orgId, status: "deactivated", action: "deactivated" });
+        }
+    } catch (sockErr) {
+        console.error("[deactivateOrganization] Socket emit error:", sockErr);
+    }
+
+    return res.json({ success: true, message: "Organization page deactivated successfully" });
 };
 
 const maskEmailHelper = (email) => {
@@ -972,35 +981,44 @@ exports.reactivateOrganization = async (req, res) => {
         });
 
         await client.query("COMMIT");
-
-        // Broadcast real-time socket event to all connected sockets & organization members
-        try {
-            const socketService = require("../../core/infrastructure/socket.service");
-            if (socketService && socketService.io) {
-                socketService.io.emit("ORGANIZATION_REACTIVATED", { orgId });
-                socketService.io.emit("organization_reactivated", { orgId });
-                socketService.io.emit("org_status_changed", { orgId, status: "active", action: "reactivated" });
-            }
-            const membersRes = await pool.query(`SELECT user_id FROM organization_members WHERE org_id = $1`, [orgId]);
-            for (const m of membersRes.rows) {
-                socketService.notifyUser(m.user_id, 'org_status_changed', { orgId, status: 'active', action: 'reactivated' });
-            }
-        } catch (sErr) {
-            console.error("[ReactivateOrg] Socket notification error:", sErr);
-        }
-
-        res.json({
-            success: true,
-            message: "Organization page reactivated",
-            data: { id: orgId, pageStatus: "active" }
-        });
     } catch (err) {
         await client.query("ROLLBACK");
         console.error("Reactivate organization error:", err);
-        res.status(500).json({ message: "Internal server error" });
+        return res.status(500).json({ message: "Internal server error" });
     } finally {
         client.release();
     }
+
+    try {
+        const { notifyAllOrgStakeholders: notifyReactivated } = require("../../services/notification.service");
+        notifyReactivated(orgId, userId, 'company_reactivated').catch(e => {
+            console.error("[ReactivateOrg] Notification error:", e);
+        });
+    } catch (notifErr) {
+        console.error("[ReactivateOrg] Notification setup error:", notifErr);
+    }
+
+    // Broadcast real-time socket event to all connected sockets & organization members
+    try {
+        const socketService = require("../../core/infrastructure/socket.service");
+        if (socketService && socketService.io) {
+            socketService.io.emit("ORGANIZATION_REACTIVATED", { orgId });
+            socketService.io.emit("organization_reactivated", { orgId });
+            socketService.io.emit("org_status_changed", { orgId, status: "active", action: "reactivated" });
+        }
+        const membersRes = await pool.query(`SELECT user_id FROM organization_members WHERE org_id = $1`, [orgId]);
+        for (const m of membersRes.rows) {
+            socketService.notifyUser(m.user_id, 'org_status_changed', { orgId, status: 'active', action: 'reactivated' });
+        }
+    } catch (sErr) {
+        console.error("[ReactivateOrg] Socket notification error:", sErr);
+    }
+
+    return res.json({
+        success: true,
+        message: "Organization page reactivated",
+        data: { id: orgId, pageStatus: "active" }
+    });
 };
 
 

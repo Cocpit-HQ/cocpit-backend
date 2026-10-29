@@ -553,6 +553,7 @@ exports.updateOrganization = async (req, res) => {
 exports.deleteOrganization = async (req, res) => {
     const { orgId } = req.params;
     const userId = req.user.sub;
+    let deletionExecuteAt;
 
     const client = await pool.connect();
     try {
@@ -596,7 +597,7 @@ exports.deleteOrganization = async (req, res) => {
         const batchId = batchRes.rows[0].batch_id;
 
         // 2c. Schedule soft deletion
-        const deletionExecuteAt = new Date(Date.now() + 40 * 24 * 60 * 60 * 1000);
+        deletionExecuteAt = new Date(Date.now() + 40 * 24 * 60 * 60 * 1000);
         await client.query(
             `UPDATE organizations 
              SET is_deleted = TRUE, deleted_at = NOW(), deletion_scheduled_at = NOW(), deletion_execute_at = $1, deletion_batch_id = $2
@@ -632,32 +633,7 @@ exports.deleteOrganization = async (req, res) => {
             }
         });
 
-        // Deletion scheduled - recovery is handled via User Settings > Organizations (within 40-day grace period)
-
         await client.query("COMMIT");
-
-        // Broadcast real-time socket event to all connected sockets & organization members
-        try {
-            const socketService = require("../../core/infrastructure/socket.service");
-            if (socketService && socketService.io) {
-                socketService.io.emit("ORGANIZATION_DEACTIVATED", { orgId });
-                socketService.io.emit("organization_deactivated", { orgId });
-                socketService.io.emit("org_status_changed", { orgId, status: "deleted", action: "deleted" });
-            }
-            const membersRes = await pool.query(`SELECT user_id FROM organization_members WHERE org_id = $1`, [orgId]);
-            for (const m of membersRes.rows) {
-                socketService.notifyUser(m.user_id, 'org_status_changed', { orgId, status: 'deleted', action: 'deleted' });
-            }
-        } catch (sErr) {
-            console.error("[DeleteOrg] Socket notification error:", sErr);
-        }
-
-        res.json({
-            message: "Organization scheduled for deletion. Check your email for a recovery link.",
-            deletionDate: deletionExecuteAt
-        });
-
-
     } catch (err) {
         await client.query("ROLLBACK");
         console.error("Delete organization error:", err);
@@ -667,10 +643,40 @@ exports.deleteOrganization = async (req, res) => {
         if (err.message.startsWith("Forbidden")) {
             return res.status(403).json({ message: err.message });
         }
-        res.status(500).json({ message: "Internal server error" });
+        return res.status(500).json({ message: "Internal server error" });
     } finally {
         client.release();
     }
+
+    try {
+        const { notifyAllOrgStakeholders: notifyDelete } = require("../../services/notification.service");
+        notifyDelete(orgId, userId, 'company_deleted').catch(e => {
+            console.error("[DeleteOrg] Notification error:", e);
+        });
+    } catch (notifErr) {
+        console.error("[DeleteOrg] Notification setup error:", notifErr);
+    }
+
+    // Broadcast real-time socket event to all connected sockets & organization members
+    try {
+        const socketService = require("../../core/infrastructure/socket.service");
+        if (socketService && socketService.io) {
+            socketService.io.emit("ORGANIZATION_DEACTIVATED", { orgId });
+            socketService.io.emit("organization_deactivated", { orgId });
+            socketService.io.emit("org_status_changed", { orgId, status: "deleted", action: "deleted" });
+        }
+        const membersRes = await pool.query(`SELECT user_id FROM organization_members WHERE org_id = $1`, [orgId]);
+        for (const m of membersRes.rows) {
+            socketService.notifyUser(m.user_id, 'org_status_changed', { orgId, status: 'deleted', action: 'deleted' });
+        }
+    } catch (sErr) {
+        console.error("[DeleteOrg] Socket notification error:", sErr);
+    }
+
+    return res.json({
+        message: "Organization scheduled for deletion. Check your email for a recovery link.",
+        deletionDate: deletionExecuteAt
+    });
 };
 
 const maskEmail = (email) => {
@@ -876,6 +882,7 @@ exports.verifyOTPAndDeleteOrganization = async (req, res) => {
     const { orgId } = req.params;
     const userId = req.user.sub;
     const { otp } = req.body;
+    let deletionExecuteAt;
 
     if (!otp || String(otp).trim().length !== 6) {
         return res.status(400).json({ message: "6-digit verification code is required" });
@@ -947,7 +954,7 @@ exports.verifyOTPAndDeleteOrganization = async (req, res) => {
         const batchId = batchRes.rows[0].batch_id;
 
         // Schedule soft deletion (40 days grace period)
-        const deletionExecuteAt = new Date(Date.now() + 40 * 24 * 60 * 60 * 1000);
+        deletionExecuteAt = new Date(Date.now() + 40 * 24 * 60 * 60 * 1000);
         await client.query(
             `UPDATE organizations 
              SET is_deleted = TRUE, deleted_at = NOW(), deletion_scheduled_at = NOW(), deletion_execute_at = $1, deletion_batch_id = $2
@@ -985,43 +992,49 @@ exports.verifyOTPAndDeleteOrganization = async (req, res) => {
         });
 
         await client.query("COMMIT");
-
-        // 5. Deletion scheduled - recovery is handled via User Settings > Organizations (within 40-day grace period)
-
-        // Broadcast real-time socket event `org_deleted` and `org_status_changed`
-        try {
-            const socketService = require("../../core/infrastructure/socket.service");
-            if (socketService && socketService.io) {
-                socketService.io.emit("ORGANIZATION_DEACTIVATED", { orgId });
-                socketService.io.emit("organization_deactivated", { orgId });
-                socketService.io.emit("org_deleted", { orgId });
-                socketService.io.emit("org_status_changed", { orgId, status: "deleted", action: "deleted" });
-            }
-            socketService.notifyOrg(orgId, 'org_deleted', { orgId, deletedBy: userId });
-            const membersRes = await pool.query(`SELECT user_id FROM organization_members WHERE org_id = $1`, [orgId]);
-            for (const m of membersRes.rows) {
-                socketService.notifyUser(m.user_id, 'org_status_changed', { orgId, status: 'deleted', action: 'deleted' });
-            }
-        } catch (sErr) {
-            console.error("[DeleteOrg] Socket notification warning:", sErr);
-        }
-
-
-        res.json({
-            success: true,
-            message: "Organization scheduled for deletion",
-            deletionDate: deletionExecuteAt
-        });
     } catch (err) {
         await client.query("ROLLBACK");
         console.error("Verify OTP and delete org error:", err);
         if (err.statusCode) {
             return res.status(err.statusCode).json({ message: err.message });
         }
-        res.status(500).json({ message: err.message || "Internal server error" });
+        return res.status(500).json({ message: "Internal server error" });
     } finally {
         client.release();
     }
+
+    try {
+        const { notifyAllOrgStakeholders: notifyVerifyDelete } = require("../../services/notification.service");
+        notifyVerifyDelete(orgId, userId, 'company_deleted').catch(e => {
+            console.error("[VerifyOTPDeleteOrg] Notification error:", e);
+        });
+    } catch (notifErr) {
+        console.error("[VerifyOTPDeleteOrg] Notification setup error:", notifErr);
+    }
+
+    // Broadcast real-time socket event `org_deleted` and `org_status_changed`
+    try {
+        const socketService = require("../../core/infrastructure/socket.service");
+        if (socketService && socketService.io) {
+            socketService.io.emit("ORGANIZATION_DEACTIVATED", { orgId });
+            socketService.io.emit("organization_deactivated", { orgId });
+            socketService.io.emit("org_deleted", { orgId });
+            socketService.io.emit("org_status_changed", { orgId, status: "deleted", action: "deleted" });
+        }
+        socketService.notifyOrg(orgId, 'org_deleted', { orgId, deletedBy: userId });
+        const membersRes = await pool.query(`SELECT user_id FROM organization_members WHERE org_id = $1`, [orgId]);
+        for (const m of membersRes.rows) {
+            socketService.notifyUser(m.user_id, 'org_status_changed', { orgId, status: 'deleted', action: 'deleted' });
+        }
+    } catch (sErr) {
+        console.error("[DeleteOrg] Socket notification warning:", sErr);
+    }
+
+    return res.json({
+        success: true,
+        message: "Organization scheduled for deletion",
+        deletionDate: deletionExecuteAt
+    });
 };
 
 exports.restoreOrganization = async (req, res) => {
@@ -1192,34 +1205,45 @@ exports.getUserOrganizationsSettings = async (req, res) => {
                 relation: "owned",
                 createdOn: formatDateStr(o.created_at),
                 organizationType: o.entity_type === 'INSTITUTION' ? 'Institution' : 'Company',
-                pageStatus
+                pageStatus,
+                isDeactivated: Boolean(o.is_deactivated)
             };
         });
 
         // 2. Associated Orgs (User is member but NOT owner/creator)
         const assocRes = await client.query(
             `SELECT o.org_id AS id, o.slug, o.name, o.industry AS type, o.logo_url AS "logoUrl",
-                    om.joined_at, r.name AS role
+                    om.joined_at, r.name AS role,
+                    o.is_deactivated, o.is_deleted, o.deletion_execute_at
              FROM organizations o
              JOIN organization_members om ON o.org_id = om.org_id
              LEFT JOIN organization_roles r ON om.role_id = r.role_id
              WHERE om.user_id = $1 AND (o.created_by IS NULL OR o.created_by != $1)
-               AND om.status = 'ACTIVE' AND o.is_deleted = FALSE
+               AND om.status = 'ACTIVE'
+               AND (o.is_deleted = FALSE OR o.is_deleted IS NULL)
              ORDER BY om.joined_at DESC`,
             [userId]
         );
 
-        const associatedOrgs = assocRes.rows.map(o => ({
-            id: o.id,
-            slug: o.slug,
-            name: o.name,
-            type: o.type || "Company",
-            logoUrl: o.logoUrl || null,
-            relation: "associated",
-            joinedOn: formatDateStr(o.joined_at),
-            role: o.role || "Member",
-            pageStatus: "associated"
-        }));
+        const associatedOrgs = assocRes.rows.map(o => {
+            let pageStatus = "associated";
+            if (o.is_deactivated) {
+                pageStatus = "deactivated";
+            }
+
+            return {
+                id: o.id,
+                slug: o.slug,
+                name: o.name,
+                type: o.type || "Company",
+                logoUrl: o.logoUrl || null,
+                relation: "associated",
+                joinedOn: formatDateStr(o.joined_at),
+                role: o.role || "Member",
+                pageStatus,
+                isDeactivated: Boolean(o.is_deactivated)
+            };
+        });
 
         res.json({
             owned: ownedOrgs,
@@ -1523,35 +1547,44 @@ exports.verifyOTPAndRecoverOrganization = async (req, res) => {
         });
 
         await client.query("COMMIT");
-
-        // Broadcast real-time socket event to all connected sockets & organization members
-        try {
-            const socketService = require("../../core/infrastructure/socket.service");
-            if (socketService && socketService.io) {
-                socketService.io.emit("ORGANIZATION_REACTIVATED", { orgId });
-                socketService.io.emit("organization_reactivated", { orgId });
-                socketService.io.emit("org_status_changed", { orgId, status: "active", action: "recovered" });
-            }
-            const membersRes = await pool.query(`SELECT user_id FROM organization_members WHERE org_id = $1`, [orgId]);
-            for (const m of membersRes.rows) {
-                socketService.notifyUser(m.user_id, 'org_status_changed', { orgId, status: 'active', action: 'recovered' });
-            }
-        } catch (sErr) {
-            console.error("[RecoverOrg] Socket notification error:", sErr);
-        }
-
-        res.json({
-            success: true,
-            message: "Organization recovered successfully",
-            data: { id: orgId, pageStatus: "active" }
-        });
     } catch (err) {
         await client.query("ROLLBACK");
         console.error("Recover organization error:", err);
-        res.status(500).json({ message: "Internal server error" });
+        return res.status(500).json({ message: "Internal server error" });
     } finally {
         client.release();
     }
+
+    try {
+        const { notifyAllOrgStakeholders: notifyRecover } = require("../../services/notification.service");
+        notifyRecover(orgId, userId, 'company_recovered').catch(e => {
+            console.error("[RecoverOrg] Notification error:", e);
+        });
+    } catch (notifErr) {
+        console.error("[RecoverOrg] Notification setup error:", notifErr);
+    }
+
+    // Broadcast real-time socket event to all connected sockets & organization members
+    try {
+        const socketService = require("../../core/infrastructure/socket.service");
+        if (socketService && socketService.io) {
+            socketService.io.emit("ORGANIZATION_REACTIVATED", { orgId });
+            socketService.io.emit("organization_reactivated", { orgId });
+            socketService.io.emit("org_status_changed", { orgId, status: "active", action: "recovered" });
+        }
+        const membersRes = await pool.query(`SELECT user_id FROM organization_members WHERE org_id = $1`, [orgId]);
+        for (const m of membersRes.rows) {
+            socketService.notifyUser(m.user_id, 'org_status_changed', { orgId, status: 'active', action: 'recovered' });
+        }
+    } catch (sErr) {
+        console.error("[RecoverOrg] Socket notification error:", sErr);
+    }
+
+    return res.json({
+        success: true,
+        message: "Organization recovered successfully",
+        data: { id: orgId, pageStatus: "active" }
+    });
 };
 
 
@@ -1634,7 +1667,7 @@ const generateUniqueSlug = async (client, name, orgId) => {
 exports.getCountriesList = async (req, res) => {
     res.json({
         success: true,
-        countries: ["India", "UAE", "Japan"]
+        countries: ["India", "UAE"]
     });
 };
 
@@ -2408,8 +2441,10 @@ exports.publishNewOrganization = async (req, res) => {
         country_of_operation
     } = req.body;
 
-    if (description !== undefined && description !== null && typeof description === 'string' && description.length > 2000) {
-        return res.status(400).json({ success: false, message: "Description must not exceed 2000 characters." });
+    let cleanDescription = null;
+    if (description !== undefined && description !== null && typeof description === 'string') {
+        const normalized = description.replace(/\r\n/g, '\n').trim();
+        cleanDescription = normalized.length > 0 ? normalized.slice(0, 2000) : null;
     }
 
     const rawLoc = (
@@ -2526,7 +2561,7 @@ exports.publishNewOrganization = async (req, res) => {
             locCountry,
             locCity,
             cleanHeadline,
-            description || null,
+            cleanDescription,
             userId,
             initialVerificationStatus
         ]);
