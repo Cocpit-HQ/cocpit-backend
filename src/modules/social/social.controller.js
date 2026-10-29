@@ -4937,14 +4937,23 @@ exports.getMessages = async (req, res) => {
                 ) AS reactions,
                 (
                     SELECT COALESCE(json_agg(json_build_object(
-                        'user_id', u_mention.user_id,
-                        'full_name', u_mention.full_name,
-                        'account_name', u_mention.account_name
+                        'id', COALESCE(u_mention.user_id, o_mention.org_id),
+                        'user_id', COALESCE(u_mention.user_id, o_mention.org_id),
+                        'org_id', o_mention.org_id,
+                        'full_name', COALESCE(u_mention.full_name, o_mention.name),
+                        'account_name', COALESCE(u_mention.account_name, o_mention.slug),
+                        'is_company', (o_mention.org_id IS NOT NULL),
+                        'type', CASE WHEN o_mention.org_id IS NOT NULL THEN 'COMPANY' ELSE 'USER' END,
+                        'slug', o_mention.slug
+
+
                     )), '[]'::json)
                     FROM (
-                        SELECT DISTINCT (regexp_matches(COALESCE(m.text_content, ''), '@\\[[^\\]]+\\]\\(([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\\)', 'g'))[1]::uuid AS mentioned_id
+                        SELECT DISTINCT (regexp_matches(COALESCE(m.text_content, ''), '@\\[[^\\]]+\\]\\((?:(?:user|org|company):)?([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\\)', 'g'))[1]::uuid AS mentioned_id
                     ) mentions
-                    JOIN active_users u_mention ON u_mention.user_id = mentions.mentioned_id
+                    LEFT JOIN active_users u_mention ON u_mention.user_id = mentions.mentioned_id
+                    LEFT JOIN organizations o_mention ON o_mention.org_id = mentions.mentioned_id
+                    WHERE u_mention.user_id IS NOT NULL OR o_mention.org_id IS NOT NULL
                 ) AS mentioned_users
              FROM messages m
              LEFT JOIN user_display_profiles u ON m.sender_id = u.user_id

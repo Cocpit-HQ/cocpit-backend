@@ -97,7 +97,7 @@ const getPostHydrationSelect = (companyParamIdx, userParamIdx) => `
             'slug', o_mention.slug
         )), '[]'::json)
         FROM (
-            SELECT DISTINCT (regexp_matches(COALESCE(p.content, ''), '@\\[[^\\]]+\\]\\(([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\\)', 'g'))[1]::uuid AS mentioned_id
+            SELECT DISTINCT (regexp_matches(COALESCE(p.content, ''), '@\\[[^\\]]+\\]\\((?:(?:user|org|company):)?([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\\)', 'g'))[1]::uuid AS mentioned_id
         ) mentions
         LEFT JOIN active_users u_mention ON u_mention.user_id = mentions.mentioned_id
         LEFT JOIN organizations o_mention ON o_mention.org_id = mentions.mentioned_id
@@ -431,7 +431,7 @@ const getPostHydrationSelect = (companyParamIdx, userParamIdx) => `
                          'slug', o_mention.slug
                      )), '[]'::json)
                      FROM (
-                         SELECT DISTINCT (regexp_matches(COALESCE(sp.content, ''), '@\\[[^\\]]+\\]\\(([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\\)', 'g'))[1]::uuid AS mentioned_id
+                         SELECT DISTINCT (regexp_matches(COALESCE(sp.content, ''), '@\\[[^\\]]+\\]\\((?:(?:user|org|company):)?([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\\)', 'g'))[1]::uuid AS mentioned_id
                      ) mentions
                      LEFT JOIN active_users u_mention ON u_mention.user_id = mentions.mentioned_id
                      LEFT JOIN organizations o_mention ON o_mention.org_id = mentions.mentioned_id
