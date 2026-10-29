@@ -79,7 +79,7 @@ const getPostHydrationSelect = (companyParamIdx, userParamIdx) => `
     ) AS mentioned_users,
 
     COALESCE(
-        (SELECT json_agg(json_build_object('media_id', pm.media_id, 'url', pm.url, 'master_url', pm.master_url, 'media_type', pm.media_type, 'width', pm.width, 'height', pm.height, 'fallback_url', pm.fallback_url, 'avif_url', pm.avif_url, 'processing_status', pm.processing_status, 'stream_uid', pm.stream_uid, 'stream_hls_url', pm.stream_hls_url, 'stream_dash_url', pm.stream_dash_url, 'stream_thumbnail_url', pm.stream_thumbnail_url, 'hdr_manifest_url', pm.hdr_manifest_url, 'hdr_processing_status', pm.hdr_processing_status))
+        (SELECT json_agg(json_build_object('media_id', pm.media_id, 'url', pm.url, 'master_url', pm.master_url, 'media_type', pm.media_type, 'width', pm.width, 'height', pm.height, 'fallback_url', pm.fallback_url, 'avif_url', pm.avif_url, 'variants', pm.variants, 'processing_status', pm.processing_status, 'stream_uid', pm.stream_uid, 'stream_hls_url', pm.stream_hls_url, 'stream_dash_url', pm.stream_dash_url, 'stream_thumbnail_url', pm.stream_thumbnail_url, 'hdr_manifest_url', pm.hdr_manifest_url, 'hdr_processing_status', pm.hdr_processing_status, 'hdr_metadata_status', pm.hdr_metadata_status))
          FROM post_media pm WHERE pm.post_id = p.post_id),
         '[]'::json
     ) AS media,
@@ -378,7 +378,7 @@ const getPostHydrationSelect = (companyParamIdx, userParamIdx) => `
                                  'author_slug', COALESCE(sp_sp_comp.slug, sp_sp_u.account_name),
                                  'is_organization_post', (sp_sp.author_org_id IS NOT NULL)
                              ),
-                             'media', COALESCE((SELECT json_agg(json_build_object('media_id', pm.media_id, 'url', pm.url, 'master_url', pm.master_url, 'media_type', pm.media_type, 'width', pm.width, 'height', pm.height, 'fallback_url', pm.fallback_url, 'avif_url', pm.avif_url, 'processing_status', pm.processing_status, 'stream_uid', pm.stream_uid, 'stream_hls_url', pm.stream_hls_url, 'stream_dash_url', pm.stream_dash_url, 'stream_thumbnail_url', pm.stream_thumbnail_url, 'hdr_manifest_url', pm.hdr_manifest_url, 'hdr_processing_status', pm.hdr_processing_status)) FROM post_media pm WHERE pm.post_id = sp_sp.post_id), '[]'::json)
+                             'media', COALESCE((SELECT json_agg(json_build_object('media_id', pm.media_id, 'url', pm.url, 'master_url', pm.master_url, 'media_type', pm.media_type, 'width', pm.width, 'height', pm.height, 'fallback_url', pm.fallback_url, 'avif_url', pm.avif_url, 'variants', pm.variants, 'processing_status', pm.processing_status, 'stream_uid', pm.stream_uid, 'stream_hls_url', pm.stream_hls_url, 'stream_dash_url', pm.stream_dash_url, 'stream_thumbnail_url', pm.stream_thumbnail_url, 'hdr_manifest_url', pm.hdr_manifest_url, 'hdr_processing_status', pm.hdr_processing_status, 'hdr_metadata_status', pm.hdr_metadata_status)) FROM post_media pm WHERE pm.post_id = sp_sp.post_id), '[]'::json)
                          )
                          FROM posts sp_sp
                          LEFT JOIN active_users sp_sp_u ON sp_sp_u.user_id = sp_sp.author_id
@@ -400,7 +400,7 @@ const getPostHydrationSelect = (companyParamIdx, userParamIdx) => `
                      LEFT JOIN organizations o_mention ON o_mention.org_id = mentions.mentioned_id AND o_mention.is_deleted = FALSE
                      WHERE u_mention.user_id IS NOT NULL OR o_mention.org_id IS NOT NULL
                  ),
-                 'media', COALESCE((SELECT json_agg(json_build_object('media_id', pm.media_id, 'url', pm.url, 'master_url', pm.master_url, 'media_type', pm.media_type, 'width', pm.width, 'height', pm.height, 'fallback_url', pm.fallback_url, 'avif_url', pm.avif_url, 'processing_status', pm.processing_status, 'stream_uid', pm.stream_uid, 'stream_hls_url', pm.stream_hls_url, 'stream_dash_url', pm.stream_dash_url, 'stream_thumbnail_url', pm.stream_thumbnail_url, 'hdr_manifest_url', pm.hdr_manifest_url, 'hdr_processing_status', pm.hdr_processing_status)) FROM post_media pm WHERE pm.post_id = sp.post_id), '[]'::json),
+                 'media', COALESCE((SELECT json_agg(json_build_object('media_id', pm.media_id, 'url', pm.url, 'master_url', pm.master_url, 'media_type', pm.media_type, 'width', pm.width, 'height', pm.height, 'fallback_url', pm.fallback_url, 'avif_url', pm.avif_url, 'variants', pm.variants, 'processing_status', pm.processing_status, 'stream_uid', pm.stream_uid, 'stream_hls_url', pm.stream_hls_url, 'stream_dash_url', pm.stream_dash_url, 'stream_thumbnail_url', pm.stream_thumbnail_url, 'hdr_manifest_url', pm.hdr_manifest_url, 'hdr_processing_status', pm.hdr_processing_status, 'hdr_metadata_status', pm.hdr_metadata_status)) FROM post_media pm WHERE pm.post_id = sp.post_id), '[]'::json),
                  'achievement_image_url', sp_ai.cloudinary_url,
                  'like_count', (SELECT COUNT(*) FROM active_post_likes pl WHERE pl.post_id = sp.post_id)::int,
                  'sample_liker_username', (

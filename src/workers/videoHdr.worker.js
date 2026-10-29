@@ -6,7 +6,7 @@ const path = require("path");
 const crypto = require("crypto");
 const { pipeline } = require("stream/promises");
 const { promisify } = require("util");
-const { r2Client, uploadFileToR2, getPublicUrl } = require("../core/infrastructure/r2.client");
+const { r2Client, uploadFileToR2, getPublicUrl, deleteObjectsFromR2, deleteR2Prefix } = require("../core/infrastructure/r2.client");
 const { GetObjectCommand } = require("@aws-sdk/client-s3");
 const { getRedisConnectionOptions } = require("../queues/media.queue");
 const pool = require("../core/db/pool");
@@ -21,6 +21,68 @@ const RENDITIONS = [
   { height: 480, bitrate: "2.5M" },
   { height: 360, bitrate: "1.2M" },
 ];
+
+function rational(value) {
+  if (typeof value === 'number') return value;
+  if (typeof value !== 'string') return NaN;
+  const [numerator, denominator = '1'] = value.split('/').map(Number);
+  return denominator ? numerator / denominator : NaN;
+}
+
+function parseHdrMetadata(probe) {
+  const stream = probe.streams?.[0] || {};
+  const sideData = [
+    ...(stream.side_data_list || []),
+    ...(probe.frames || []).flatMap((frame) => frame.side_data_list || []),
+  ];
+  const mastering = sideData.find((item) => /mastering display metadata/i.test(item.side_data_type || ''));
+  const contentLight = sideData.find((item) => /content light level metadata/i.test(item.side_data_type || ''));
+  const dynamicMetadataTypes = [...new Set(sideData
+    .map((item) => item.side_data_type || '')
+    .filter((type) => /dovi|dolby vision|smpte2094|hdr10\+/i.test(type)))];
+  const dolbyVision = sideData.find((item) => /dovi|dolby vision/i.test(item.side_data_type || ''));
+  const coordinate = (value) => {
+    const scaled = Math.round(rational(value) * 50000);
+    return Number.isFinite(scaled) && scaled >= 0 && scaled <= 50000 ? scaled : null;
+  };
+  const luminance = (value) => {
+    const scaled = Math.round(rational(value) * 10000);
+    return Number.isFinite(scaled) && scaled >= 0 && scaled <= 100000000 ? scaled : null;
+  };
+  const values = mastering && [
+    mastering.green_x, mastering.green_y, mastering.blue_x, mastering.blue_y,
+    mastering.red_x, mastering.red_y, mastering.white_point_x, mastering.white_point_y,
+  ].map(coordinate);
+  const maxLum = mastering ? luminance(mastering.max_luminance) : null;
+  const minLum = mastering ? luminance(mastering.min_luminance) : null;
+  const masterDisplay = values?.every((value) => value !== null) && maxLum !== null && minLum !== null
+    ? `G(${values[0]},${values[1]})B(${values[2]},${values[3]})R(${values[4]},${values[5]})WP(${values[6]},${values[7]})L(${maxLum},${minLum})`
+    : null;
+  const maxContent = Number(contentLight?.max_content);
+  const maxAverage = Number(contentLight?.max_average);
+  const maxCll = Number.isInteger(maxContent) && maxContent >= 0 && maxContent <= 65535
+    && Number.isInteger(maxAverage) && maxAverage >= 0 && maxAverage <= 65535
+    ? `${maxContent},${maxAverage}` : null;
+  return {
+    masterDisplay,
+    maxCll,
+    masteringPeakNits: maxLum === null ? null : maxLum / 10000,
+    dynamicMetadataTypes,
+    dolbyVisionProfile: dolbyVision?.dv_profile != null && Number.isInteger(Number(dolbyVision.dv_profile)) ? Number(dolbyVision.dv_profile) : null,
+  };
+}
+
+function sdrToneMapFilter(sourceInfo) {
+  const peak = sourceInfo.masteringPeakNits || 1000;
+  const npl = Math.max(100, Math.min(4000, Math.round(peak)));
+  return `zscale=t=linear:npl=${npl},format=gbrpf32le,tonemap=mobius:desat=0,zscale=t=bt709:m=bt709:p=bt709,format=yuv420p,`;
+}
+
+async function postWasDeleted(postId) {
+  if (!postId) return false;
+  const result = await pool.query('SELECT 1 FROM posts WHERE post_id = $1 AND is_active = TRUE', [postId]);
+  return result.rowCount === 0;
+}
 
 function run(command, args, options = {}) {
   return new Promise((resolve, reject) => {
@@ -48,14 +110,16 @@ async function downloadR2Object(rawKey, destination) {
 
 async function inspectVideo(sourcePath) {
   const { stdout } = await execFile(process.env.FFPROBE_PATH || "ffprobe", [
-    "-v", "error", "-select_streams", "v:0", "-show_entries",
-    "stream=width,height,pix_fmt,color_transfer,color_primaries,color_space,profile,level",
+    "-v", "error", "-select_streams", "v:0", "-show_streams", "-show_frames",
+    "-read_intervals", "%+0.2",
     "-of", "json", sourcePath,
-  ], { maxBuffer: 1024 * 1024 });
-  const stream = JSON.parse(stdout).streams?.[0];
+  ], { maxBuffer: 4 * 1024 * 1024 });
+  const probe = JSON.parse(stdout);
+  const stream = probe.streams?.[0];
   if (!stream?.width || !stream?.height) throw new Error("Video has no readable video stream.");
   return {
     ...stream,
+    ...parseHdrMetadata(probe),
     isHdr: HDR_TRANSFERS.has(stream.color_transfer) && stream.color_primaries === "bt2020",
   };
 }
@@ -84,6 +148,15 @@ async function transcodeRendition(sourcePath, directory, sourceInfo, rendition) 
     "-colorspace", sourceInfo.color_space || "bt2020nc",
   ];
   const bitrate = rendition.bitrate;
+  const x265Params = [
+    `hdr-opt=${sourceInfo.color_transfer === 'smpte2084' ? 1 : 0}`,
+    'repeat-headers=1', 'colorprim=bt2020',
+    `transfer=${sourceInfo.color_transfer}`,
+    `colormatrix=${sourceInfo.color_space || 'bt2020nc'}`,
+    ...(sourceInfo.masterDisplay ? [`master-display=${sourceInfo.masterDisplay}`] : []),
+    ...(sourceInfo.maxCll ? [`max-cll=${sourceInfo.maxCll}`] : []),
+    ...(sourceInfo.color_transfer === 'arib-std-b67' ? ['atc-sei=18', 'pic-struct=0'] : []),
+  ].join(':');
   await run(process.env.FFMPEG_PATH || "ffmpeg", [
     "-hide_banner", "-loglevel", "error", "-y", "-i", sourcePath,
     "-map", "0:v:0", "-map", "0:a:0?",
@@ -91,8 +164,8 @@ async function transcodeRendition(sourcePath, directory, sourceInfo, rendition) 
     "-c:v", "libx265", "-preset", process.env.HDR_X265_PRESET || "medium",
     "-b:v", bitrate, "-maxrate", bitrate, "-bufsize", bitrate,
     "-pix_fmt", "yuv420p10le", "-tag:v", "hvc1",
-    "-x265-params", `hdr-opt=1:repeat-headers=1:colorprim=bt2020:transfer=${sourceInfo.color_transfer}:colormatrix=${sourceInfo.color_space || "bt2020nc"}`,
-    "-map_metadata", "0",
+    "-x265-params", x265Params,
+    "-map_metadata", "-1",
     ...colorArgs,
     "-c:a", "aac", "-b:a", "128k", "-ac", "2",
     "-f", "hls", "-hls_time", "4", "-hls_playlist_type", "vod",
@@ -101,9 +174,13 @@ async function transcodeRendition(sourcePath, directory, sourceInfo, rendition) 
   ]);
   const outputInfo = await execFile(process.env.FFPROBE_PATH || "ffprobe", [
     "-v", "error", "-select_streams", "v:0", "-show_entries",
-    "stream=width,height,level", "-of", "json", playlistPath,
-  ], { maxBuffer: 1024 * 1024 }).catch(() => ({ stdout: "{}" }));
+    "stream=width,height,level,pix_fmt,color_transfer,color_primaries,color_space", "-of", "json", playlistPath,
+  ], { maxBuffer: 1024 * 1024 });
   const streamInfo = JSON.parse(outputInfo.stdout).streams?.[0] || {};
+  if (streamInfo.color_transfer !== sourceInfo.color_transfer || streamInfo.color_primaries !== 'bt2020'
+      || streamInfo.pix_fmt !== 'yuv420p10le') {
+    throw new Error(`HDR rendition metadata mismatch for ${name}.`);
+  }
   const expectedWidth = Math.max(2, Math.floor((sourceInfo.width * height / sourceInfo.height) / 2) * 2);
   const outputHeight = streamInfo.height || height;
   return { name, height: outputHeight, bitrate, playlistPath, width: streamInfo.width || expectedWidth, level: streamInfo.level };
@@ -123,10 +200,10 @@ async function uploadDirectory(directory, keyPrefix) {
   return uploaded;
 }
 
-async function saveEarlyPoster(sourcePath, workdir, rawKey, rawMasterUrl, sourceInfo, ownerId) {
+async function saveEarlyPoster(sourcePath, workdir, rawKey, rawMasterUrl, sourceInfo, ownerId, postId) {
   const posterPath = path.join(workdir, "poster.jpg");
   const standardFilter = "scale=960:-2:flags=lanczos";
-  const hdrFilter = "zscale=t=linear:npl=100,format=gbrpf32le,tonemap=mobius:desat=0,zscale=t=bt709:m=bt709:p=bt709,format=yuv420p," + standardFilter;
+  const hdrFilter = sdrToneMapFilter(sourceInfo) + standardFilter;
   try {
     await run(process.env.FFMPEG_PATH || "ffmpeg", [
       "-hide_banner", "-loglevel", "error", "-y", "-i", sourcePath,
@@ -139,6 +216,10 @@ async function saveEarlyPoster(sourcePath, workdir, rawKey, rawMasterUrl, source
       `UPDATE post_media SET stream_thumbnail_url = COALESCE(stream_thumbnail_url, $1)
        WHERE master_url = $2 RETURNING media_id, post_id`, [posterUrl, rawMasterUrl]
     );
+    if (!rows.rows.length && await postWasDeleted(postId)) {
+      await deleteObjectsFromR2([posterKey]);
+      return;
+    }
     await cacheHdrResult(rawMasterUrl, { streamThumbnailUrl: posterUrl });
     if (rows.rows.length) await notifyPosterUpdate(rows.rows, ownerId, posterUrl);
   } catch (error) {
@@ -171,7 +252,7 @@ function createMasterPlaylist(variants, transfer) {
   return `${lines.join("\n")}\n`;
 }
 
-async function processHdrVideo({ rawMasterUrl, rawKey, ownerId }) {
+async function processHdrVideo({ rawMasterUrl, rawKey, ownerId, postId }) {
   const workdir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "cocpit-hdr-"));
   try {
     const sourcePath = path.join(workdir, "source-video");
@@ -179,9 +260,19 @@ async function processHdrVideo({ rawMasterUrl, rawKey, ownerId }) {
     await fs.promises.mkdir(outputDir);
     await downloadR2Object(rawKey, sourcePath);
     const sourceInfo = await inspectVideo(sourcePath);
-    await saveEarlyPoster(sourcePath, workdir, rawKey, rawMasterUrl, sourceInfo, ownerId);
+    if (sourceInfo.dynamicMetadataTypes.length) {
+      console.warn(`[VideoHdrWorker] ${sourceInfo.dynamicMetadataTypes.join(', ')} metadata cannot be preserved by the current re-encode; serving a tagged HDR base layer and keeping the R2 original.`);
+    }
+    // Profile 5 has no backward-compatible HDR10 base layer. Re-encoding it
+    // as ordinary HEVC would publish a misleading or visibly wrong HDR stream.
+    if (sourceInfo.dolbyVisionProfile === 5) {
+      await pool.query("UPDATE post_media SET hdr_processing_status = 'not_applicable', hdr_metadata_status = 'dynamic_unsupported' WHERE master_url = $1 OR url = $1", [rawMasterUrl]);
+      await cacheHdrResult(rawMasterUrl, { hdrProcessingStatus: 'not_applicable' });
+      return { hdrProcessingStatus: 'not_applicable', hdrMetadataStatus: 'dynamic_unsupported' };
+    }
+    await saveEarlyPoster(sourcePath, workdir, rawKey, rawMasterUrl, sourceInfo, ownerId, postId);
     if (!sourceInfo.isHdr) {
-      await pool.query("UPDATE post_media SET hdr_processing_status = 'not_applicable' WHERE master_url = $1 OR url = $1", [rawMasterUrl]);
+      await pool.query("UPDATE post_media SET hdr_processing_status = 'not_applicable', hdr_metadata_status = 'not_applicable' WHERE master_url = $1 OR url = $1", [rawMasterUrl]);
       await cacheHdrResult(rawMasterUrl, { hdrProcessingStatus: "not_applicable" });
       return { hdrProcessingStatus: "not_applicable" };
     }
@@ -201,10 +292,16 @@ async function processHdrVideo({ rawMasterUrl, rawKey, ownerId }) {
     const masterUrl = getPublicUrl(`${keyPrefix}/master.m3u8`);
     const update = await pool.query(
       `UPDATE post_media SET hdr_manifest_url = $1, hdr_processing_status = 'ready',
-         hdr_color_transfer = $2, hdr_width = $3, hdr_height = $4, hdr_error = NULL
+         hdr_color_transfer = $2, hdr_width = $3, hdr_height = $4, hdr_error = NULL,
+         hdr_metadata_status = $6
        WHERE master_url = $5 OR url = $5 RETURNING media_id, post_id`,
-      [masterUrl, sourceInfo.color_transfer, sourceInfo.width, sourceInfo.height, rawMasterUrl]
+      [masterUrl, sourceInfo.color_transfer, sourceInfo.width, sourceInfo.height, rawMasterUrl,
+        sourceInfo.dynamicMetadataTypes.length ? 'dynamic_not_preserved' : (sourceInfo.masterDisplay || sourceInfo.maxCll ? 'static_preserved' : 'color_tags_only')]
     );
+    if (!update.rows.length && await postWasDeleted(postId)) {
+      await deleteR2Prefix(keyPrefix);
+      return { hdrProcessingStatus: 'removed' };
+    }
     await cacheHdrResult(rawMasterUrl, { hdrManifestUrl: masterUrl, hdrProcessingStatus: "ready" });
     await notifyHdrUpdate(update.rows, ownerId, "ready", masterUrl);
     return { hdrManifestUrl: masterUrl, uploadedObjects: objectKeys.length };
@@ -222,7 +319,7 @@ async function processHdrVideo({ rawMasterUrl, rawKey, ownerId }) {
   }
 }
 
-async function processSdrFallback({ rawMasterUrl, rawKey, ownerId }) {
+async function processSdrFallback({ rawMasterUrl, rawKey, ownerId, postId }) {
   const workdir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "cocpit-sdr-recovery-"));
   try {
     const sourcePath = path.join(workdir, "source-video");
@@ -230,7 +327,7 @@ async function processSdrFallback({ rawMasterUrl, rawKey, ownerId }) {
     await downloadR2Object(rawKey, sourcePath);
     const sourceInfo = await inspectVideo(sourcePath);
     const scale = "scale=1920:1080:force_original_aspect_ratio=decrease:force_divisible_by=2";
-    const toneMap = "zscale=t=linear:npl=100,format=gbrpf32le,tonemap=mobius:desat=0,zscale=t=bt709:m=bt709:p=bt709,format=yuv420p,";
+    const toneMap = sdrToneMapFilter(sourceInfo);
     await run(process.env.FFMPEG_PATH || "ffmpeg", [
       "-hide_banner", "-loglevel", "error", "-y", "-i", sourcePath,
       "-map", "0:v:0", "-map", "0:a:0?", "-vf", `${sourceInfo.isHdr ? toneMap : ""}${scale}`,
@@ -246,6 +343,10 @@ async function processSdrFallback({ rawMasterUrl, rawKey, ownerId }) {
        WHERE master_url = $2 AND processing_status = 'failed'
        RETURNING media_id, post_id`, [fallbackUrl, rawMasterUrl]
     );
+    if (!rows.rows.length && await postWasDeleted(postId)) {
+      await deleteObjectsFromR2([key]);
+      return { updated: 0 };
+    }
     if (rows.rows.length) {
       await cacheHdrResult(rawMasterUrl, { url: fallbackUrl, fallbackUrl, processingStatus: "failed" });
       await notifyFallbackUpdate(rows.rows, ownerId, fallbackUrl);
@@ -316,4 +417,4 @@ async function closeVideoHdrWorker() {
   hdrWorker = null;
 }
 
-module.exports = { inspectVideo, processHdrVideo, processSdrFallback, startVideoHdrWorker, closeVideoHdrWorker, createMasterPlaylist, verifyVideoTools };
+module.exports = { inspectVideo, parseHdrMetadata, sdrToneMapFilter, processHdrVideo, processSdrFallback, startVideoHdrWorker, closeVideoHdrWorker, createMasterPlaylist, verifyVideoTools };

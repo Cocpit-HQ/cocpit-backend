@@ -110,10 +110,12 @@ async function downloadFromR2ToFile(key, filePath) {
 async function uploadFileToR2({ key, filePath, contentType, cacheControl = "public, max-age=31536000, immutable" }) {
   const bucket = getBucketName();
   if (!bucket) throw new Error("[R2Client] R2_BUCKET_NAME env var is not set.");
+  const { size } = await fs.promises.stat(filePath);
   await r2Client.send(new PutObjectCommand({
     Bucket: bucket,
     Key: key,
     Body: fs.createReadStream(filePath),
+    ContentLength: size,
     ContentType: contentType,
     CacheControl: cacheControl,
   }));
@@ -214,6 +216,16 @@ async function getObjectMetadataFromR2(key) {
   const bucket = getBucketName();
   if (!bucket) throw new Error("[R2Client] R2_BUCKET_NAME env var is not set.");
   return r2Client.send(new HeadObjectCommand({ Bucket: bucket, Key: key }));
+}
+
+async function listR2Objects(prefix, continuationToken) {
+  const bucket = getBucketName();
+  if (!bucket) throw new Error("[R2Client] R2_BUCKET_NAME env var is not set.");
+  return r2Client.send(new ListObjectsV2Command({
+    Bucket: bucket,
+    Prefix: prefix,
+    ContinuationToken: continuationToken,
+  }));
 }
 
 /**
@@ -355,6 +367,7 @@ module.exports = {
   deleteR2Prefix,
   objectExistsInR2,
   getObjectMetadataFromR2,
+  listR2Objects,
   deleteMediaByUrls,
 };
 

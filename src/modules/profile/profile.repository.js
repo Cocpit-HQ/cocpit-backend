@@ -42,9 +42,24 @@ const updateUserFields = async (userId, fields) => {
     await pool.query("COMMIT");
 };
 
-const updateAvatarUrl = async (userId, url) => {
-    await pool.query("UPDATE users SET avatar_url = $1 WHERE user_id = $2", [url, userId]);
+const replaceProfileImageUrl = async (userId, column, url) => {
+    if (!['avatar_url', 'cover_image_url'].includes(column)) throw new Error('Invalid profile image column');
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        const previous = await client.query(`SELECT ${column} FROM users WHERE user_id = $1 FOR UPDATE`, [userId]);
+        await client.query(`UPDATE users SET ${column} = $1 WHERE user_id = $2`, [url, userId]);
+        await client.query('COMMIT');
+        return previous.rows[0]?.[column] || null;
+    } catch (error) {
+        await client.query('ROLLBACK');
+        throw error;
+    } finally {
+        client.release();
+    }
 };
+
+const updateAvatarUrl = (userId, url) => replaceProfileImageUrl(userId, 'avatar_url', url);
 
 const updateProfileIndustry = async (userId, industry) => {
     await ensureProfileId(userId);
@@ -59,9 +74,7 @@ const getAvatarUrl = async (userId) => {
     return result.rows[0]?.avatar_url || null;
 };
 
-const updateCoverUrl = async (userId, url) => {
-    await pool.query("UPDATE users SET cover_image_url = $1 WHERE user_id = $2", [url, userId]);
-};
+const updateCoverUrl = (userId, url) => replaceProfileImageUrl(userId, 'cover_image_url', url);
 
 // ─── Identity ──────────────────────────────────────────────────────────────────
 
@@ -124,18 +137,40 @@ const getLatestResume = async (userId) => {
 };
 
 const replaceResume = async (userId, { originalname, path, mimetype, size }) => {
-    await pool.query(`DELETE FROM user_resumes WHERE user_id = $1`, [userId]);
-    const result = await pool.query(
-        `INSERT INTO user_resumes (user_id, file_name, file_url, file_type, file_size)
-     VALUES ($1, $2, $3, $4, $5) RETURNING *`,
-        [userId, originalname, path, mimetype, size]
-    );
-    return result.rows[0];
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        await client.query('SELECT user_id FROM users WHERE user_id = $1 FOR UPDATE', [userId]);
+        const previous = await client.query('DELETE FROM user_resumes WHERE user_id = $1 RETURNING file_url', [userId]);
+        const result = await client.query(
+            `INSERT INTO user_resumes (user_id, file_name, file_url, file_type, file_size)
+             VALUES ($1, $2, $3, $4, $5) RETURNING *`,
+            [userId, originalname, path, mimetype, size]
+        );
+        await client.query('COMMIT');
+        return { resume: result.rows[0], previousUrls: previous.rows.map((row) => row.file_url).filter(Boolean) };
+    } catch (error) {
+        await client.query('ROLLBACK');
+        throw error;
+    } finally {
+        client.release();
+    }
 };
 
 const deleteResume = async (userId) => {
-    const result = await pool.query(`DELETE FROM user_resumes WHERE user_id = $1 RETURNING *`, [userId]);
-    return result.rows[0] || null;
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        await client.query('SELECT user_id FROM users WHERE user_id = $1 FOR UPDATE', [userId]);
+        const result = await client.query('DELETE FROM user_resumes WHERE user_id = $1 RETURNING *', [userId]);
+        await client.query('COMMIT');
+        return result.rows[0] || null;
+    } catch (error) {
+        await client.query('ROLLBACK');
+        throw error;
+    } finally {
+        client.release();
+    }
 };
 
 // ─── Profile ID Helper ─────────────────────────────────────────────────────────
@@ -668,7 +703,8 @@ const getProjects = async (profileId) => {
     const mediaMap = {};
     mediaRes.rows.forEach(row => {
         if (!mediaMap[row.project_id]) mediaMap[row.project_id] = [];
-        const { project_id, display_order, ...mediaItem } = row;
+        const { project_id, ...mediaItem } = row;
+        delete mediaItem.display_order;
         mediaMap[project_id].push(mediaItem);
     });
 

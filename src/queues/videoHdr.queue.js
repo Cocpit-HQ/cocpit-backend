@@ -11,16 +11,16 @@ const videoHdrQueue = new Queue("video-hdr-transcode", {
   },
 });
 
-async function addVideoHdrJob({ rawMasterUrl, rawKey, ownerId }) {
+async function addVideoHdrJob({ rawMasterUrl, rawKey, ownerId, postId }) {
   const id = require("crypto").createHash("sha256").update(rawMasterUrl).digest("hex").slice(0, 32);
-  return videoHdrQueue.add("transcode-hdr", { rawMasterUrl, rawKey, ownerId }, {
+  return videoHdrQueue.add("transcode-hdr", { rawMasterUrl, rawKey, ownerId, postId }, {
     jobId: `video-hdr-${id}`,
   });
 }
 
-async function addVideoFallbackJob({ rawMasterUrl, rawKey, ownerId }) {
+async function addVideoFallbackJob({ rawMasterUrl, rawKey, ownerId, postId }) {
   const id = require("crypto").createHash("sha256").update(rawMasterUrl).digest("hex").slice(0, 32);
-  return videoHdrQueue.add("transcode-sdr-fallback", { rawMasterUrl, rawKey, ownerId }, {
+  return videoHdrQueue.add("transcode-sdr-fallback", { rawMasterUrl, rawKey, ownerId, postId }, {
     jobId: `video-fallback-${id}`,
   });
 }

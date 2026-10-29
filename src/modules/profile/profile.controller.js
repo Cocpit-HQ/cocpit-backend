@@ -8,6 +8,19 @@ const profileRepo = require("./profile.repository");
 const profileCalc = require("./profile.calculator");
 const { checkActorBlockStatus } = require("../../core/utils/blockCheck");
 const pool = require("../../core/db/pool");
+const { deleteMediaByUrls } = require("../../core/infrastructure/r2.client");
+
+async function deleteResumeWhenUnreferenced(url) {
+    if (!url) return;
+    const result = await pool.query(
+        `SELECT EXISTS (
+            SELECT 1 FROM user_resumes WHERE file_url = $1
+            UNION ALL SELECT 1 FROM job_applications WHERE resume_url = $1
+            UNION ALL SELECT 1 FROM project_media WHERE file_url = $1
+        ) AS referenced`, [url]
+    );
+    if (!result.rows[0]?.referenced) await deleteMediaByUrls(url);
+}
 const { handleExperienceOrgLink, handleEducationOrgLink, cleanupPreviousCompanyMemberships } = require("../../utils/orgLinkHelper");
 const { toTitleCase } = require("../../utils/nameNormalizer");
 
@@ -275,9 +288,11 @@ exports.uploadOrReplaceAvatar = async (req, res) => {
     try {
         if (!req.file) return res.status(400).json({ message: "No file uploaded" });
         const avatarUrl = req.file.path || req.file.secure_url;
-        await profileRepo.updateAvatarUrl(req.user.sub, avatarUrl);
+        const previousUrl = await profileRepo.updateAvatarUrl(req.user.sub, avatarUrl);
+        if (previousUrl && previousUrl !== avatarUrl) void deleteMediaByUrls(previousUrl).catch((error) => console.error('Old avatar cleanup failed:', error));
         res.json({ message: "Profile picture updated successfully", avatarUrl });
     } catch (err) {
+        if (req.file?.path) void deleteMediaByUrls(req.file.path).catch((error) => console.error('Unlinked avatar cleanup failed:', error));
         console.error("Avatar upload error:", err);
         res.status(500).json({ message: "Internal server error" });
     }
@@ -296,7 +311,8 @@ exports.getAvatar = async (req, res) => {
 
 exports.deleteAvatar = async (req, res) => {
     try {
-        await profileRepo.updateAvatarUrl(req.user.sub, null);
+        const previousUrl = await profileRepo.updateAvatarUrl(req.user.sub, null);
+        if (previousUrl) void deleteMediaByUrls(previousUrl).catch((error) => console.error('Deleted avatar cleanup failed:', error));
         res.json({ message: "Profile picture deleted successfully" });
     } catch (err) {
         console.error("Delete avatar error:", err);
@@ -310,9 +326,11 @@ exports.uploadOrReplaceCoverPhoto = async (req, res) => {
     try {
         if (!req.file) return res.status(400).json({ message: "No file uploaded" });
         const coverUrl = req.file.path || req.file.secure_url;
-        await profileRepo.updateCoverUrl(req.user.sub, coverUrl);
+        const previousUrl = await profileRepo.updateCoverUrl(req.user.sub, coverUrl);
+        if (previousUrl && previousUrl !== coverUrl) void deleteMediaByUrls(previousUrl).catch((error) => console.error('Old cover cleanup failed:', error));
         res.json({ message: "Cover photo updated successfully", coverUrl });
     } catch (err) {
+        if (req.file?.path) void deleteMediaByUrls(req.file.path).catch((error) => console.error('Unlinked cover cleanup failed:', error));
         console.error("Cover upload error:", err);
         res.status(500).json({ message: "Internal server error" });
     }
@@ -320,7 +338,8 @@ exports.uploadOrReplaceCoverPhoto = async (req, res) => {
 
 exports.deleteCoverPhoto = async (req, res) => {
     try {
-        await profileRepo.updateCoverUrl(req.user.sub, null);
+        const previousUrl = await profileRepo.updateCoverUrl(req.user.sub, null);
+        if (previousUrl) void deleteMediaByUrls(previousUrl).catch((error) => console.error('Deleted cover cleanup failed:', error));
         res.json({ message: "Cover photo deleted successfully" });
     } catch (err) {
         console.error("Delete cover error:", err);
@@ -474,9 +493,13 @@ exports.updateIdentity = async (req, res) => {
 exports.uploadOrReplaceResume = async (req, res) => {
     if (!req.file) return res.status(400).json({ message: "Resume file is required" });
     try {
-        const resume = await profileRepo.replaceResume(req.user.sub, req.file);
+        const { resume, previousUrls } = await profileRepo.replaceResume(req.user.sub, req.file);
+        for (const url of previousUrls.filter((oldUrl) => oldUrl !== resume.file_url)) {
+            void deleteResumeWhenUnreferenced(url).catch((error) => console.error('Old resume cleanup failed:', error));
+        }
         res.status(201).json({ message: "Resume uploaded successfully", resume });
     } catch (err) {
+        if (req.file?.path) void deleteMediaByUrls(req.file.path).catch((error) => console.error('Unlinked resume cleanup failed:', error));
         console.error("Upload/Replace resume error:", err);
         res.status(500).json({ message: "Failed to upload resume" });
     }
@@ -497,6 +520,7 @@ exports.deleteResume = async (req, res) => {
     try {
         const resume = await profileRepo.deleteResume(req.user.sub);
         if (!resume) return res.status(404).json({ message: "No resume found to delete" });
+        if (resume.file_url) void deleteResumeWhenUnreferenced(resume.file_url).catch((error) => console.error('Deleted resume cleanup failed:', error));
         res.json({ message: "Resume deleted successfully", resume });
     } catch (err) {
         console.error("Delete resume error:", err);

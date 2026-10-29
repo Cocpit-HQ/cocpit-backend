@@ -1,0 +1,7 @@
+BEGIN;
+
+ALTER TABLE post_media
+  ADD COLUMN IF NOT EXISTS variants JSONB NOT NULL DEFAULT '{}'::jsonb,
+  ADD COLUMN IF NOT EXISTS hdr_metadata_status TEXT;
+
+COMMIT;

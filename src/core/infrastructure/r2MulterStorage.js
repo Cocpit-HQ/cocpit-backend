@@ -1,9 +1,13 @@
-const { uploadBufferToR2, deleteObjectsFromR2 } = require("./r2.client");
+const { uploadFileToR2, deleteObjectsFromR2 } = require("./r2.client");
 const path = require("path");
+const fs = require("fs");
+const os = require("os");
+const { pipeline } = require("stream/promises");
 
 /**
  * Custom Multer Storage Engine for Cloudflare R2
- * Streams incoming multipart files directly to R2 and attaches public CDN URLs
+ * Spools incoming multipart files to bounded disk space, then streams them to R2.
+ * This keeps large uploads out of the Node.js heap and attaches public CDN URLs
  * to req.file.path, req.file.secure_url, and req.file.url for 100% backward compatibility
  * with all existing controllers (profile, avatars, covers, resumes, stories, events, etc.).
  */
@@ -18,20 +22,21 @@ class R2StorageEngine {
   }
 
   _handleFile(req, file, cb) {
-    const chunks = [];
-    file.stream.on("data", (chunk) => chunks.push(chunk));
-    file.stream.on("end", async () => {
+    void (async () => {
+      const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "cocpit-upload-"));
+      const tempPath = path.join(tempDir, "upload");
       try {
-        const buffer = Buffer.concat(chunks);
+        await pipeline(file.stream, fs.createWriteStream(tempPath));
+        const { size } = await fs.promises.stat(tempPath);
         const filename = typeof this.getFilename === "function" 
           ? this.getFilename(req, file) 
           : `${Date.now()}-${file.originalname}`;
         const safeFilename = String(filename).split("/").map((part) => part.replace(/[^a-zA-Z0-9._-]/g, "_")).join("/");
         const key = `${this.folder}/${safeFilename}`;
         
-        const publicUrl = await uploadBufferToR2({
+        const publicUrl = await uploadFileToR2({
           key,
-          body: buffer,
+          filePath: tempPath,
           contentType: file.mimetype,
         });
 
@@ -41,17 +46,18 @@ class R2StorageEngine {
           url: publicUrl,
           key,
           filename,
-          size: buffer.length,
+          size,
           mimetype: file.mimetype,
           originalname: file.originalname,
         });
       } catch (err) {
         console.error(`[R2StorageEngine] Error uploading ${file.originalname} to R2:`, err);
         cb(err);
+      } finally {
+        await fs.promises.unlink(tempPath).catch(() => {});
+        await fs.promises.rmdir(tempDir).catch(() => {});
       }
-    });
-
-    file.stream.on("error", (err) => cb(err));
+    })().catch(cb);
   }
 
   async _removeFile(req, file, cb) {

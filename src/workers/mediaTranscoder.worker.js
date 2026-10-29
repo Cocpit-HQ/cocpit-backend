@@ -12,6 +12,7 @@ const { addVideoHdrJob } = require("../queues/videoHdr.queue");
 
 const MAX_DISPLAY_PX = 2560;
 const MAX_INPUT_PIXELS = 100_000_000;
+const RESPONSIVE_WIDTHS = [480, 960, 1440];
 if (!libheif.HeifDecoder) throw new Error("HEIC/HEIF decoder failed to initialize.");
 
 function deriveDisplayKey(rawKey, extension = ".jpg") {
@@ -53,7 +54,11 @@ async function transcodeImage(rawBuffer, rawKey) {
   const height = decoded?.height || metadata.height;
   if (!width || !height || width * height > MAX_INPUT_PIXELS) throw new Error("Image dimensions exceed the processing limit.");
 
-  const base = sharp(input, options).rotate().resize({ width: MAX_DISPLAY_PX, height: MAX_DISPLAY_PX, fit: "inside", withoutEnlargement: true }).withIccProfile("p3");
+  // Preserve a source ICC profile when available. Raw HEIF pixels have no
+  // profile attached, so explicitly tag that decoder's RGB output as sRGB.
+  const base = sharp(input, options).rotate().resize({ width: MAX_DISPLAY_PX, height: MAX_DISPLAY_PX, fit: "inside", withoutEnlargement: true });
+  if (metadata.icc) base.keepIccProfile();
+  else base.withIccProfile("srgb");
   let hasAlpha = heif ? false : Boolean(metadata.hasAlpha);
   if (heif && !hasAlpha) {
     const pixels = decoded.input;
@@ -70,10 +75,36 @@ async function transcodeImage(rawBuffer, rawKey) {
   const fallbackKey = deriveDisplayKey(rawKey, fallbackExt);
   const fallbackUrl = await uploadBufferToR2({ key: fallbackKey, body: fallbackResult.data, contentType: fallbackMime });
 
+  const variants = { fallback: [], avif: [] };
+  const displayKeys = [fallbackKey];
+  const outputWidth = fallbackResult.info.width;
+  const widths = [...new Set([...RESPONSIVE_WIDTHS.filter((candidate) => candidate < outputWidth), Math.min(outputWidth, 1440)])];
+  for (const targetWidth of widths) {
+    let compatibleUrl = fallbackUrl;
+    if (targetWidth < outputWidth) {
+      const result = await (hasAlpha
+        ? base.clone().resize({ width: targetWidth, withoutEnlargement: true }).png({ compressionLevel: 9, effort: 7, palette: false }).toBuffer()
+        : base.clone().resize({ width: targetWidth, withoutEnlargement: true }).jpeg({ quality: 92, chromaSubsampling: "4:4:4", mozjpeg: true }).toBuffer());
+      const compatibleKey = deriveDisplayKey(rawKey, `-w${targetWidth}${fallbackExt}`);
+      compatibleUrl = await uploadBufferToR2({ key: compatibleKey, body: result, contentType: fallbackMime });
+      displayKeys.push(compatibleKey);
+    }
+    variants.fallback.push({ width: targetWidth, url: compatibleUrl });
+
+    const avif = await base.clone().resize({ width: targetWidth, withoutEnlargement: true })
+      .avif({ quality: 80, effort: 4 }).toBuffer();
+    const avifKey = deriveDisplayKey(rawKey, `-w${targetWidth}.avif`);
+    const avifUrl = await uploadBufferToR2({ key: avifKey, body: avif, contentType: "image/avif" });
+    displayKeys.push(avifKey);
+    variants.avif.push({ width: targetWidth, url: avifUrl });
+  }
+
   return {
     url: fallbackUrl,
     fallbackUrl,
-    avifUrl: null,
+    avifUrl: variants.avif.at(-1)?.url || null,
+    variants,
+    displayKeys,
     masterUrl: getPublicUrl(rawKey),
     mediaType: "image",
     width: fallbackResult.info.width,
@@ -96,12 +127,12 @@ async function processDualAsset({ rawKey, rawMasterUrl, mediaType = "image" }) {
 async function saveProcessingResult(rawMasterUrl, asset, status = "ready", errorMessage = null) {
   const result = await pool.query(
     `UPDATE post_media
-     SET url = $1, fallback_url = $2, avif_url = $3, width = $4, height = $5,
+     SET url = $1, fallback_url = $2, avif_url = $3, variants = $12::jsonb, width = $4, height = $5,
          format = $6, bit_depth = $7, is_processed = $8, processing_status = $9,
          processing_error = $10
      WHERE master_url = $11 OR url = $11
      RETURNING post_id, media_id`,
-    [asset.url, asset.fallbackUrl, asset.avifUrl, asset.width, asset.height, asset.format, asset.bitDepth, status === "ready", status, errorMessage, rawMasterUrl]
+    [asset.url, asset.fallbackUrl, asset.avifUrl, asset.width, asset.height, asset.format, asset.bitDepth, status === "ready", status, errorMessage, rawMasterUrl, JSON.stringify(asset.variants || {})]
   );
   return result.rows;
 }
@@ -121,6 +152,7 @@ async function notifyProcessingUpdate(rows, ownerId, status, mediaAsset = null) 
         url: mediaAsset.url,
         fallback_url: mediaAsset.fallbackUrl || null,
         avif_url: mediaAsset.avifUrl || null,
+        variants: mediaAsset.variants || null,
         width: mediaAsset.width || null,
         height: mediaAsset.height || null,
         media_type: mediaAsset.mediaType || "image",
@@ -142,6 +174,12 @@ let reconciliationTimer = null;
 let reconciliationRunning = false;
 let streamReconciliationTimer = null;
 let streamReconciliationRunning = false;
+
+async function postWasDeleted(postId) {
+  if (!postId) return false;
+  const result = await pool.query('SELECT 1 FROM posts WHERE post_id = $1 AND is_active = TRUE', [postId]);
+  return result.rowCount === 0;
+}
 
 async function reconcilePendingPostMedia() {
   if (reconciliationRunning) return;
@@ -209,10 +247,10 @@ async function reconcileStreamVideoStates() {
 function startMediaTranscoderWorker() {
   if (mediaWorkerInstance) return mediaWorkerInstance;
   mediaWorkerInstance = new Worker("media-transcode", async (job) => {
-    const { rawKey, rawMasterUrl, mediaType = "image", ownerId } = job.data;
+    const { rawKey, rawMasterUrl, mediaType = "image", ownerId, postId } = job.data;
     if (mediaType === "video") {
       if (!isStreamConfigured()) throw new Error("Cloudflare Stream is not fully configured for adaptive video playback.");
-      await addVideoHdrJob({ rawKey, rawMasterUrl, ownerId });
+      await addVideoHdrJob({ rawKey, rawMasterUrl, ownerId, postId });
       const streamResult = await createStreamVideoFromUrl({ url: rawMasterUrl, creator: ownerId, name: rawKey.split("/").pop() });
       const asset = {
         url: rawMasterUrl,
@@ -249,19 +287,29 @@ function startMediaTranscoderWorker() {
         [asset.streamUid, asset.streamHlsUrl, asset.streamDashUrl, asset.streamThumbnailUrl,
           asset.processingStatus, asset.processingStatus === "ready", rawMasterUrl]
       );
+      if (!rows.rows.length && await postWasDeleted(postId)) {
+        const { deleteHybridMedia } = require('../core/infrastructure/mediaDeletion');
+        await deleteHybridMedia({ masterUrl: rawMasterUrl, streamUid: asset.streamUid });
+        return asset;
+      }
       if (rows.rows.length) await notifyProcessingUpdate(rows.rows, ownerId, asset.processingStatus, asset);
       return asset;
     }
 
     const asset = await processDualAsset({ rawKey, rawMasterUrl, mediaType });
+    const rows = await saveProcessingResult(rawMasterUrl, asset);
+    if (!rows.length && await postWasDeleted(postId)) {
+      const { deleteHybridMedia } = require('../core/infrastructure/mediaDeletion');
+      await deleteHybridMedia({ masterUrl: rawMasterUrl });
+      return asset;
+    }
     try {
-      if (redisClient?.isOpen) {
+      if (rows.length && redisClient?.isOpen) {
         await redisClient.set(`media:conversion:${rawMasterUrl}`, JSON.stringify(asset), "EX", 86400);
       }
     } catch (error) {
       console.warn(`[MediaTranscoder] Redis result cache failed: ${error.message}`);
     }
-    const rows = await saveProcessingResult(rawMasterUrl, asset);
     await notifyProcessingUpdate(rows, ownerId, "ready", asset);
     return asset;
   }, { connection: redisConnection, concurrency: 3 });
@@ -271,33 +319,34 @@ function startMediaTranscoderWorker() {
     console.error(`[MediaTranscoder] Job ${job?.id} failed:`, error.message);
     if (!job || job.attemptsMade < (job.opts?.attempts || 1)) return;
     try {
-      if (redisClient?.isOpen) {
-        await redisClient.set(`media:conversion:${job.data.rawMasterUrl}`, JSON.stringify({
-          url: job.data.rawMasterUrl,
-          masterUrl: job.data.rawMasterUrl,
-          fallbackUrl: null,
-          avifUrl: null,
-          processingStatus: "failed",
-          error: String(error.message).slice(0, 500),
-        }), "EX", 86400);
-      }
-    } catch (redisErr) {
-      console.warn(`[MediaTranscoder] Redis failed cache error: ${redisErr.message}`);
-    }
-    try {
       const rows = await pool.query(
         `UPDATE post_media SET processing_status = 'failed', processing_error = $1,
            url = COALESCE(master_url, url), is_processed = FALSE
-         WHERE master_url = $2 RETURNING post_id, media_id, master_url`,
+         WHERE master_url = $2 AND processing_status = 'processing'
+         RETURNING post_id, media_id, master_url`,
         [String(error.message).slice(0, 500), job.data.rawMasterUrl]
       );
+      try {
+        if (rows.rows.length && redisClient?.isOpen) {
+          await redisClient.set(`media:conversion:${job.data.rawMasterUrl}`, JSON.stringify({
+            url: job.data.rawMasterUrl,
+            masterUrl: job.data.rawMasterUrl,
+            fallbackUrl: null,
+            avifUrl: null,
+            processingStatus: "failed",
+            error: String(error.message).slice(0, 500),
+          }), "EX", 86400);
+        }
+      } catch (redisErr) {
+        console.warn(`[MediaTranscoder] Redis failed cache error: ${redisErr.message}`);
+      }
       await notifyProcessingUpdate(rows.rows, job.data.ownerId, "failed", {
         url: rows.rows[0]?.master_url || job.data.rawMasterUrl,
         mediaType: job.data.mediaType || "image",
       });
       if (job.data.mediaType === "video" && rows.rows.length) {
         const { addVideoFallbackJob } = require("../queues/videoHdr.queue");
-        void addVideoFallbackJob({ rawKey: job.data.rawKey, rawMasterUrl: job.data.rawMasterUrl, ownerId: job.data.ownerId })
+        void addVideoFallbackJob({ rawKey: job.data.rawKey, rawMasterUrl: job.data.rawMasterUrl, ownerId: job.data.ownerId, postId: job.data.postId })
           .catch((queueError) => console.error("[MediaTranscoder] Could not queue SDR fallback:", queueError.message));
       }
     } catch (dbError) {
