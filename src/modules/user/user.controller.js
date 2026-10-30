@@ -1419,14 +1419,7 @@ exports.getPublicProfileCommentedPosts = async (req, res) => {
     const isOrgType = type === "ORGANIZATION" || type === "COMPANY" || type === "ORG";
     const actorOrgId = isOrgType ? (req.headers["x-actor-id"] || req.headers["x-company-id"] || req.headers["x-org-id"] || req.actor?.id || null) : null;
 
-    // Viewer actor context (Company / Organization vs User)
-    const rawType = req.headers["x-actor-type"] || req.actor?.type;
-    const type = typeof rawType === "string" ? rawType.trim().toUpperCase() : null;
-    const isOrgType = type === "ORGANIZATION" || type === "COMPANY" || type === "ORG";
-    const actorOrgId = isOrgType ? (req.headers["x-actor-id"] || req.headers["x-company-id"] || req.headers["x-org-id"] || req.actor?.id || null) : null;
-
     const userParamIdx = params.length + 1;
-    const orgActorParamIdx = params.length + 2;
     const orgActorParamIdx = params.length + 2;
     params.push(currentUserId || null);
     params.push(actorOrgId || null);
@@ -1727,13 +1720,6 @@ exports.getPublicProfileCommentedPosts = async (req, res) => {
 
     const userParamIdx = params.length + 1;
     params.push(currentUserId);
-
-    const rawType2 = req.headers["x-actor-type"] || req.actor?.type;
-    const type2 = typeof rawType2 === "string" ? rawType2.trim().toUpperCase() : null;
-    const isOrgType2 = type2 === "ORGANIZATION" || type2 === "COMPANY" || type2 === "ORG";
-    const actorOrgId2 = isOrgType2 ? (req.headers["x-actor-id"] || req.headers["x-company-id"] || req.actor?.id || null) : null;
-    const orgActorParamIdx = params.length + 1;
-    params.push(actorOrgId2 || null);
 
     const rawType2 = req.headers["x-actor-type"] || req.actor?.type;
     const type2 = typeof rawType2 === "string" ? rawType2.trim().toUpperCase() : null;

@@ -184,7 +184,6 @@ exports.followUser = async (req, res) => {
         });
         // Push notification for offline devices
         sendPush(followingId, followNotifData.senderName, followNotifData.text, { type: 'follow', userId: followerId }).catch(() => { });
-        sendPush(followingId, followNotifData.senderName, followNotifData.text, { type: 'follow', userId: followerId }).catch(() => { });
 
         // Logic for Connection Notification (if mutual)
         if (isConnected) {
@@ -394,7 +393,6 @@ exports.followCompany = async (req, res) => {
         const orgRes = await client.query(`SELECT name, created_by FROM organizations WHERE org_id = $1`, [companyId]);
         const orgName = orgRes.rows[0]?.name || "your company";
 
-
         // Find company admins to notify
         const adminsRes = await client.query(
             `SELECT user_id FROM organization_members WHERE org_id = $1 AND role_id IN (
@@ -409,14 +407,12 @@ exports.followCompany = async (req, res) => {
         const followerTitle = "New Follower";
         const followerText = `${userName} started following ${orgName}`;
 
-
         for (const adminId of notifyUsers) {
             const notifRes = await client.query(
                 `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata, recipient_org_id)
                  VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING notification_id, created_at`,
                 [adminId, userId, "company_follower", followerText, companyId, JSON.stringify({ title: followerTitle, orgId: companyId }), companyId]
             );
-
 
             const payload = {
                 type: "company_follower",
@@ -432,9 +428,7 @@ exports.followCompany = async (req, res) => {
                 timestamp: new Date().toISOString()
             };
 
-
             socketService.notifyUserScoped(adminId, "notification", payload, `org:${companyId}`);
-            sendPush(adminId, followerTitle, followerText, { type: "company_follower", companyId }).catch(() => { });
             sendPush(adminId, followerTitle, followerText, { type: "company_follower", companyId }).catch(() => { });
         }
 
@@ -459,7 +453,6 @@ exports.followCompany = async (req, res) => {
                     [adminId, adminId, "company_milestone", milestoneText, companyId, JSON.stringify({ title: milestoneTitle, orgId: companyId, followerCount }), companyId]
                 );
 
-
                 const payload = {
                     type: "company_milestone",
                     title: milestoneTitle,
@@ -472,9 +465,7 @@ exports.followCompany = async (req, res) => {
                     timestamp: new Date().toISOString()
                 };
 
-
                 socketService.notifyUserScoped(adminId, "notification", payload, `org:${companyId}`);
-                sendPush(adminId, milestoneTitle, milestoneText, { type: "company_milestone", companyId }).catch(() => { });
                 sendPush(adminId, milestoneTitle, milestoneText, { type: "company_milestone", companyId }).catch(() => { });
             }
         }
@@ -675,18 +666,15 @@ exports.getCompanyFollowers = async (req, res) => {
         let viewerUserFollowsExpr = "FALSE";
         let viewerCompanyFollowsExpr = "FALSE";
         let viewerIdx = null;
-        let viewerIdx = null;
         const params = [companyId];
 
         if (viewerOrgId) {
             params.push(viewerOrgId);
             viewerIdx = params.length;
-            viewerIdx = params.length;
             viewerUserFollowsExpr = `EXISTS(SELECT 1 FROM organization_user_follows WHERE org_id = $${viewerIdx} AND user_id = u.user_id)`;
             viewerCompanyFollowsExpr = `EXISTS(SELECT 1 FROM organization_org_follows WHERE follower_org_id = $${viewerIdx} AND following_org_id = c.org_id)`;
         } else if (viewerUserId) {
             params.push(viewerUserId);
-            viewerIdx = params.length;
             viewerIdx = params.length;
             viewerUserFollowsExpr = `EXISTS(SELECT 1 FROM followers WHERE follower_id = $${viewerIdx} AND following_id = u.user_id)`;
             viewerCompanyFollowsExpr = `EXISTS(SELECT 1 FROM organization_followers WHERE user_id = $${viewerIdx} AND org_id = c.org_id)`;
@@ -726,39 +714,6 @@ exports.getCompanyFollowers = async (req, res) => {
             const searchIdx = params.length;
             userQuery += ` AND (u.full_name ILIKE '%' || $${searchIdx} || '%')`;
             companyQuery += ` AND (c.name ILIKE '%' || $${searchIdx} || '%')`;
-        }
-
-        // Filter blocked users and companies
-        userQuery += `
-            AND NOT EXISTS (
-                SELECT 1 FROM blocks b
-                WHERE (b.blocker_id = $1 AND b.blocked_id = u.user_id)
-                   OR (b.blocker_id = u.user_id AND b.blocked_id = $1)
-            )
-        `;
-        companyQuery += `
-            AND NOT EXISTS (
-                SELECT 1 FROM blocks b
-                WHERE (b.blocker_id = $1 AND b.blocked_id = c.org_id)
-                   OR (b.blocker_id = c.org_id AND b.blocked_id = $1)
-            )
-        `;
-
-        if (viewerIdx) {
-            userQuery += `
-                AND NOT EXISTS (
-                    SELECT 1 FROM blocks b
-                    WHERE (b.blocker_id = $${viewerIdx} AND b.blocked_id = u.user_id)
-                       OR (b.blocker_id = u.user_id AND b.blocked_id = $${viewerIdx})
-                )
-            `;
-            companyQuery += `
-                AND NOT EXISTS (
-                    SELECT 1 FROM blocks b
-                    WHERE (b.blocker_id = $${viewerIdx} AND b.blocked_id = c.org_id)
-                       OR (b.blocker_id = c.org_id AND b.blocked_id = $${viewerIdx})
-                )
-            `;
         }
 
         // Filter blocked users and companies
@@ -974,35 +929,10 @@ exports.getFollowers = async (req, res) => {
             )
         `;
 
-        // Apply block filtering to followers
-        userQuery += ` 
-            AND NOT EXISTS (
-                SELECT 1 FROM blocks b 
-                WHERE (b.blocker_id = $1 AND b.blocked_id = u.user_id)
-                   OR (b.blocker_id = u.user_id AND b.blocked_id = $1)
-            )
-        `;
-        companyQuery += ` 
-            AND NOT EXISTS (
-                SELECT 1 FROM blocks b 
-                WHERE (b.blocker_id = $1 AND b.blocked_id = o.org_id)
-                   OR (b.blocker_id = o.org_id AND b.blocked_id = $1)
-            )
-        `;
-
         if (requesterIdx) {
             userQuery += ` 
                 AND NOT EXISTS (
                     SELECT 1 FROM blocks b 
-                    WHERE (b.blocker_id = $${requesterIdx} AND b.blocked_id = u.user_id)
-                       OR (b.blocker_id = u.user_id AND b.blocked_id = $${requesterIdx})
-                )
-            `;
-            companyQuery += ` 
-                AND NOT EXISTS (
-                    SELECT 1 FROM blocks b 
-                    WHERE (b.blocker_id = $${requesterIdx} AND b.blocked_id = o.org_id)
-                       OR (b.blocker_id = o.org_id AND b.blocked_id = $${requesterIdx})
                     WHERE (b.blocker_id = $${requesterIdx} AND b.blocked_id = u.user_id)
                        OR (b.blocker_id = u.user_id AND b.blocked_id = $${requesterIdx})
                 )
@@ -1152,35 +1082,10 @@ exports.getFollowing = async (req, res) => {
             )
         `;
 
-        // Apply block filtering to follows
-        userQuery += `
-            AND NOT EXISTS (
-                SELECT 1 FROM blocks b
-                WHERE (b.blocker_id = $1 AND b.blocked_id = u.user_id)
-                   OR (b.blocker_id = u.user_id AND b.blocked_id = $1)
-            )
-        `;
-        companyQuery += `
-            AND NOT EXISTS (
-                SELECT 1 FROM blocks b
-                WHERE (b.blocker_id = $1 AND b.blocked_id = c.org_id)
-                   OR (b.blocker_id = c.org_id AND b.blocked_id = $1)
-            )
-        `;
-
         if (viewerIdx) {
             userQuery += `
                 AND NOT EXISTS (
                     SELECT 1 FROM blocks b 
-                    WHERE (b.blocker_id = $${viewerIdx} AND b.blocked_id = u.user_id)
-                       OR (b.blocker_id = u.user_id AND b.blocked_id = $${viewerIdx})
-                )
-            `;
-            companyQuery += `
-                AND NOT EXISTS (
-                    SELECT 1 FROM blocks b 
-                    WHERE (b.blocker_id = $${viewerIdx} AND b.blocked_id = c.org_id)
-                       OR (b.blocker_id = c.org_id AND b.blocked_id = $${viewerIdx})
                     WHERE (b.blocker_id = $${viewerIdx} AND b.blocked_id = u.user_id)
                        OR (b.blocker_id = u.user_id AND b.blocked_id = $${viewerIdx})
                 )
@@ -1295,12 +1200,6 @@ exports.sendConnectionRequest = async (req, res) => {
             const req = pendingRequest.rows[0];
             if (req.sender_id === senderId) {
                 await client.query("ROLLBACK");
-                return res.status(200).json({
-                    message: "Connection request already sent",
-                    status: 'pending',
-                    relationship: 'pending_sent',
-                    connection_request_id: req.request_id
-                });
                 return res.status(200).json({
                     message: "Connection request already sent",
                     status: 'pending',
@@ -1491,18 +1390,7 @@ exports.sendConnectionRequest = async (req, res) => {
                 "SELECT request_id FROM connection_requests WHERE sender_id = $1 AND receiver_id = $2 AND status = 'pending'",
                 [senderId, receiverId]
             );
-            const existingReq = await client.query(
-                "SELECT request_id FROM connection_requests WHERE sender_id = $1 AND receiver_id = $2 AND status = 'pending'",
-                [senderId, receiverId]
-            );
             await client.query("ROLLBACK");
-            const existingId = existingReq.rows[0]?.request_id || null;
-            return res.status(200).json({
-                message: "Request already processing or sent",
-                status: 'pending',
-                relationship: 'pending_sent',
-                connection_request_id: existingId
-            });
             const existingId = existingReq.rows[0]?.request_id || null;
             return res.status(200).json({
                 message: "Request already processing or sent",
@@ -1569,14 +1457,8 @@ exports.sendConnectionRequest = async (req, res) => {
         });
         // Push notification for offline devices
         sendPush(receiverId, sender.full_name, completeNotification.text, { type: 'connection_request', userId: senderId }).catch(() => { });
-        sendPush(receiverId, sender.full_name, completeNotification.text, { type: 'connection_request', userId: senderId }).catch(() => { });
 
         // Emit relationship update to receiver (they now have a pending request from me)
-        socketService.notifyUser(receiverId, "relationshipUpdated", {
-            userId: senderId,
-            status: 'pending_received',
-            connection_request_id: newRequestId
-        });
         socketService.notifyUser(receiverId, "relationshipUpdated", {
             userId: senderId,
             status: 'pending_received',
@@ -1588,17 +1470,7 @@ exports.sendConnectionRequest = async (req, res) => {
             status: 'pending_sent',
             connection_request_id: newRequestId
         });
-        socketService.notifyUser(senderId, "relationshipUpdated", {
-            userId: receiverId,
-            status: 'pending_sent',
-            connection_request_id: newRequestId
-        });
 
-        return res.status(201).json({
-            message: "Connection request sent",
-            relationship: "pending_sent",
-            connection_request_id: newRequestId
-        });
         return res.status(201).json({
             message: "Connection request sent",
             relationship: "pending_sent",
@@ -1800,10 +1672,6 @@ exports.getConnectionCounts = async (req, res) => {
                     JOIN organizations o ON oi.org_id = o.org_id
                     WHERE (oi.invited_user_id = $1 OR LOWER(oi.email) = LOWER($2))
                       AND LOWER(oi.status::text) = 'pending' AND oi.expires_at > NOW()
-                      AND (o.is_deleted IS FALSE OR o.is_deleted IS NULL)
-                      AND (o.is_deactivated IS FALSE OR o.is_deactivated IS NULL)
-                      AND (o.is_suspended IS FALSE OR o.is_suspended IS NULL)
-                      AND o.deletion_execute_at IS NULL
                       AND (o.is_deleted IS FALSE OR o.is_deleted IS NULL)
                       AND (o.is_deactivated IS FALSE OR o.is_deactivated IS NULL)
                       AND (o.is_suspended IS FALSE OR o.is_suspended IS NULL)
@@ -2195,7 +2063,6 @@ exports.batchAcceptConnectionRequests = async (req, res) => {
             // Bulk INSERT mutual connections
             const userIds = Array(validUserRequests.length).fill(userId);
 
-
             await client.query(
                 `INSERT INTO connections (user_id, connected_user_id) 
                  SELECT * FROM UNNEST($1::uuid[], $2::uuid[]) ON CONFLICT DO NOTHING`,
@@ -2220,7 +2087,6 @@ exports.batchAcceptConnectionRequests = async (req, res) => {
             );
 
             const notificationTexts = validUserSenderIds.map(() => `${accepterName} accepted your connection request.`);
-
 
             // Notifications to senders
             await client.query(
@@ -2400,7 +2266,6 @@ exports.batchAcceptConnectionRequests = async (req, res) => {
                 };
                 socketService.notifyUser(sender_id, "notification", senderNotification);
                 sendPush(sender_id, accepterName, senderNotification.text, { type: 'connection_accepted', userId: userId }).catch(() => { });
-                sendPush(sender_id, accepterName, senderNotification.text, { type: 'connection_accepted', userId: userId }).catch(() => { });
                 socketService.notifyUser(sender_id, "relationshipUpdated", { userId: userId, status: 'connected' });
                 socketService.notifyUser(userId, "relationshipUpdated", { userId: sender_id, status: 'connected' });
             }
@@ -2449,7 +2314,6 @@ exports.batchDeclineConnectionRequests = async (req, res) => {
         const validOrgRequestIds = validOrgReqsRes.rows.map(r => r.request_id);
         const validOrgIds = validOrgReqsRes.rows.map(r => r.org_id);
 
-
         let totalProcessed = 0;
 
         if (validRequestIds.length > 0) {
@@ -2474,7 +2338,6 @@ exports.batchDeclineConnectionRequests = async (req, res) => {
                 socketService.notifyUser(userId, "relationshipUpdated", { userId: orgId, status: 'none', type: 'company' });
             }
         }
-
 
         await client.query("COMMIT");
         return res.status(200).json({ message: "Declined all requests.", processed: totalProcessed });
@@ -2547,7 +2410,6 @@ exports.handleConnectionRequest = async (req, res) => {
             isCompanyRequest = true;
             const invite = orgReqRes.rows[0];
             companyId = invite.org_id;
-
 
             // Re-map variables to match the user flow
             reqRes.rows = [{
@@ -2759,7 +2621,6 @@ exports.handleConnectionRequest = async (req, res) => {
             socketService.notifyUser(sender_id, "notification", senderNotification);
             // Push notification for offline devices
             sendPush(sender_id, accepterName, senderNotification.text, { type: 'connection_accepted', userId: receiver_id }).catch(() => { });
-            sendPush(sender_id, accepterName, senderNotification.text, { type: 'connection_accepted', userId: receiver_id }).catch(() => { });
 
             // Emit relationship update to both
             socketService.notifyUser(sender_id, "relationshipUpdated", { userId: receiver_id, status: 'connected' });
@@ -2811,10 +2672,6 @@ exports.cancelConnectionRequest = async (req, res) => {
              WHERE request_id = $1`,
             [actualRequestId]
         );
-
-        const receiverId = reqRes.rows[0].receiver_id;
-        socketService.notifyUser(receiverId, "relationshipUpdated", { userId: userId, status: 'none' });
-        socketService.notifyUser(userId, "relationshipUpdated", { userId: receiverId, status: 'none' });
 
         const receiverId = reqRes.rows[0].receiver_id;
         socketService.notifyUser(receiverId, "relationshipUpdated", { userId: userId, status: 'none' });
@@ -3736,7 +3593,6 @@ exports.sendMessage = async (req, res) => {
             if (authorCompanyId) {
                 // Company-to-User or Company-to-Company
                 const existingConv = targetIsCompany
-                const existingConv = targetIsCompany
                     ? await client.query(
                         `SELECT c.conversation_id
                          FROM conversations c
@@ -4226,7 +4082,6 @@ exports.sendMessage = async (req, res) => {
                 let customPushTitle = notificationTitle;
                 let customPushBody = notificationBody;
 
-
                 if (entity_type === 'job' || entity_type === 'job_application' || entity_type === 'offer') {
                     // Check if this is the first message REGARDING THIS SPECIFIC JOB/OFFER from this user
                     const jobMsgCountRes = await client.query(
@@ -4241,11 +4096,9 @@ exports.sendMessage = async (req, res) => {
                         let jobTitle = "a position";
                         const { sendCompanyJobChatEmail } = require("../../core/services/email.service");
 
-
                         if (entity_id) {
                             if (entity_type === 'offer') {
                                 const offerRes = await client.query(
-                                    `SELECT j.title FROM job_offers o JOIN jobs j ON o.job_id = j.job_id WHERE o.offer_id = $1`,
                                     `SELECT j.title FROM job_offers o JOIN jobs j ON o.job_id = j.job_id WHERE o.offer_id = $1`,
                                     [entity_id]
                                 );
@@ -4268,7 +4121,6 @@ exports.sendMessage = async (req, res) => {
                             const userRes = await client.query(`SELECT email FROM active_users WHERE user_id = $1`, [member.user_id]);
                             const userEmail = userRes.rows[0]?.email;
                             if (userEmail) {
-                                sendCompanyJobChatEmail(userEmail, orgName, senderName, jobTitle).catch(() => { });
                                 sendCompanyJobChatEmail(userEmail, orgName, senderName, jobTitle).catch(() => { });
                             }
                         }
@@ -4315,9 +4167,7 @@ exports.sendMessage = async (req, res) => {
                             }
                         }).catch(err => console.error("Error inserting message notification:", err));
 
-
                         // Push notification for offline devices
-                        sendPush(member.user_id, customPushTitle, customPushBody, { type: customNotifType, conversationId, senderId }).catch(() => { });
                         sendPush(member.user_id, customPushTitle, customPushBody, { type: customNotifType, conversationId, senderId }).catch(() => { });
                     }
                 }
@@ -4345,7 +4195,6 @@ exports.sendMessage = async (req, res) => {
                             let jobTitle = "a position";
                             const { sendJobApplicationChatEmail, sendJobOfferChatEmail } = require("../../core/services/email.service");
 
-
                             const userRes = await client.query(`SELECT email FROM active_users WHERE user_id = $1`, [targetUserId]);
                             const userEmail = userRes.rows[0]?.email;
 
@@ -4358,20 +4207,17 @@ exports.sendMessage = async (req, res) => {
                                 }
                                 customPushBody = `${senderName} wants to talk to you about ${jobTitle}.`;
                                 if (userEmail) sendJobApplicationChatEmail(userEmail, senderName, jobTitle).catch(() => { });
-                                if (userEmail) sendJobApplicationChatEmail(userEmail, senderName, jobTitle).catch(() => { });
                             } else if (entity_type === 'offer') {
                                 customNotifType = "job_offer_chat";
                                 customPushTitle = `${senderName} sent you a message about your offer`;
                                 if (entity_id) {
                                     const offerRes = await client.query(
                                         `SELECT j.title FROM job_offers o JOIN jobs j ON o.job_id = j.job_id WHERE o.offer_id = $1`,
-                                        `SELECT j.title FROM job_offers o JOIN jobs j ON o.job_id = j.job_id WHERE o.offer_id = $1`,
                                         [entity_id]
                                     );
                                     if (offerRes.rowCount > 0) jobTitle = offerRes.rows[0].title;
                                 }
                                 customPushBody = `${senderName} wants to talk to you about your offer for ${jobTitle}.`;
-                                if (userEmail) sendJobOfferChatEmail(userEmail, senderName, jobTitle).catch(() => { });
                                 if (userEmail) sendJobOfferChatEmail(userEmail, senderName, jobTitle).catch(() => { });
                             }
                         } else {
@@ -4410,7 +4256,6 @@ exports.sendMessage = async (req, res) => {
                         targetProfileType: 'USER'
                     }, targetActorScope);
                     // Push notification for offline devices
-                    sendPush(targetUserId, customPushTitle, customPushBody, { type: customNotifType, conversationId, senderId }).catch(() => { });
                     sendPush(targetUserId, customPushTitle, customPushBody, { type: customNotifType, conversationId, senderId }).catch(() => { });
                 }
             }
@@ -5092,23 +4937,14 @@ exports.getMessages = async (req, res) => {
                 ) AS reactions,
                 (
                     SELECT COALESCE(json_agg(json_build_object(
-                        'id', COALESCE(u_mention.user_id, o_mention.org_id),
-                        'user_id', COALESCE(u_mention.user_id, o_mention.org_id),
-                        'org_id', o_mention.org_id,
-                        'full_name', COALESCE(u_mention.full_name, o_mention.name),
-                        'account_name', COALESCE(u_mention.account_name, o_mention.slug),
-                        'is_company', (o_mention.org_id IS NOT NULL),
-                        'type', CASE WHEN o_mention.org_id IS NOT NULL THEN 'COMPANY' ELSE 'USER' END,
-                        'slug', o_mention.slug
-
-
+                        'user_id', u_mention.user_id,
+                        'full_name', u_mention.full_name,
+                        'account_name', u_mention.account_name
                     )), '[]'::json)
                     FROM (
-                        SELECT DISTINCT (regexp_matches(COALESCE(m.text_content, ''), '@\\[[^\\]]+\\]\\((?:(?:user|org|company):)?([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\\)', 'g'))[1]::uuid AS mentioned_id
+                        SELECT DISTINCT (regexp_matches(COALESCE(m.text_content, ''), '@\\[[^\\]]+\\]\\(([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\\)', 'g'))[1]::uuid AS mentioned_id
                     ) mentions
-                    LEFT JOIN active_users u_mention ON u_mention.user_id = mentions.mentioned_id
-                    LEFT JOIN organizations o_mention ON o_mention.org_id = mentions.mentioned_id
-                    WHERE u_mention.user_id IS NOT NULL OR o_mention.org_id IS NOT NULL
+                    JOIN active_users u_mention ON u_mention.user_id = mentions.mentioned_id
                 ) AS mentioned_users
              FROM messages m
              LEFT JOIN user_display_profiles u ON m.sender_id = u.user_id
@@ -5724,31 +5560,9 @@ exports.blockUser = async (req, res) => {
     const isOrgActor = req.actor?.type === "ORGANIZATION";
     const blockerId = isOrgActor ? req.actor.orgId : req.user?.sub;
     let targetId = req.params.id;
-    let targetId = req.params.id;
 
     if (!blockerId || !targetId) {
         return res.status(400).json({ message: "Invalid request parameters" });
-    }
-
-    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-    if (!uuidRegex.test(targetId)) {
-        const userResolve = await pool.query(
-            "SELECT user_id FROM users WHERE LOWER(account_name) = LOWER($1)",
-            [targetId]
-        );
-        if (userResolve.rowCount > 0) {
-            targetId = userResolve.rows[0].user_id;
-        } else {
-            const orgResolve = await pool.query(
-                "SELECT org_id FROM organizations WHERE LOWER(slug) = LOWER($1)",
-                [targetId]
-            );
-            if (orgResolve.rowCount > 0) {
-                targetId = orgResolve.rows[0].org_id;
-            } else {
-                return res.status(404).json({ message: "Account not found" });
-            }
-        }
     }
 
     const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -5855,13 +5669,11 @@ exports.blockUser = async (req, res) => {
                 // Delete followers (target user following org)
                 await client.query(
                     "DELETE FROM organization_followers WHERE (org_id = $1 AND user_id = $2) OR (org_id = $2 AND user_id = $1)",
-                    "DELETE FROM organization_followers WHERE (org_id = $1 AND user_id = $2) OR (org_id = $2 AND user_id = $1)",
                     [blockerId, targetId]
                 );
 
                 // Delete org follows (org following target user)
                 await client.query(
-                    "DELETE FROM organization_user_follows WHERE (org_id = $1 AND user_id = $2) OR (org_id = $2 AND user_id = $1)",
                     "DELETE FROM organization_user_follows WHERE (org_id = $1 AND user_id = $2) OR (org_id = $2 AND user_id = $1)",
                     [blockerId, targetId]
                 );
@@ -5886,8 +5698,6 @@ exports.blockUser = async (req, res) => {
                     `DELETE FROM notifications 
                      WHERE (user_id = $2::uuid AND (sender_id = $1::uuid OR metadata->>'org_id' = $1::text OR metadata->>'orgId' = $1::uuid::text))
                         OR (recipient_org_id = $1::uuid AND sender_id = $2::uuid)`,
-                     WHERE (user_id = $2::uuid AND (sender_id = $1::uuid OR metadata->>'org_id' = $1::text OR metadata->>'orgId' = $1::uuid::text))
-                        OR (recipient_org_id = $1::uuid AND sender_id = $2::uuid)`,
                     [blockerId, targetId]
                 );
             } else {
@@ -5907,24 +5717,19 @@ exports.blockUser = async (req, res) => {
                     [blockerId, targetId]
                 );
                 // Delete org follows / connections if targetId is an org (bidirectional)
-                // Delete org follows / connections if targetId is an org (bidirectional)
                 await client.query(
-                    "DELETE FROM organization_user_follows WHERE (user_id = $1 AND org_id = $2) OR (user_id = $2 AND org_id = $1)",
                     "DELETE FROM organization_user_follows WHERE (user_id = $1 AND org_id = $2) OR (user_id = $2 AND org_id = $1)",
                     [blockerId, targetId]
                 );
                 await client.query(
                     "DELETE FROM organization_followers WHERE (user_id = $1 AND org_id = $2) OR (user_id = $2 AND org_id = $1)",
-                    "DELETE FROM organization_followers WHERE (user_id = $1 AND org_id = $2) OR (user_id = $2 AND org_id = $1)",
                     [blockerId, targetId]
                 );
                 await client.query(
                     "DELETE FROM organization_connections WHERE (user_id = $1 AND org_id = $2) OR (user_id = $2 AND org_id = $1)",
-                    "DELETE FROM organization_connections WHERE (user_id = $1 AND org_id = $2) OR (user_id = $2 AND org_id = $1)",
                     [blockerId, targetId]
                 );
                 await client.query(
-                    "DELETE FROM organization_connection_requests WHERE (user_id = $1 AND org_id = $2) OR (user_id = $2 AND org_id = $1)",
                     "DELETE FROM organization_connection_requests WHERE (user_id = $1 AND org_id = $2) OR (user_id = $2 AND org_id = $1)",
                     [blockerId, targetId]
                 );
@@ -5937,8 +5742,6 @@ exports.blockUser = async (req, res) => {
                     `DELETE FROM notifications 
                      WHERE (user_id = $1::uuid AND (sender_id = $2::uuid OR metadata->>'org_id' = $2::text OR metadata->>'orgId' = $2::uuid::text))
                         OR (user_id = $2::uuid AND (sender_id = $1::uuid OR metadata->>'org_id' = $1::text OR metadata->>'orgId' = $1::uuid::text))`,
-                     WHERE (user_id = $1::uuid AND (sender_id = $2::uuid OR metadata->>'org_id' = $2::text OR metadata->>'orgId' = $2::uuid::text))
-                        OR (user_id = $2::uuid AND (sender_id = $1::uuid OR metadata->>'org_id' = $1::text OR metadata->>'orgId' = $1::uuid::text))`,
                     [blockerId, targetId]
                 );
             }
@@ -5946,10 +5749,6 @@ exports.blockUser = async (req, res) => {
             // Delete search history between blocker and target (both users and organizations)
             await client.query(
                 `DELETE FROM user_search_history 
-                 WHERE (user_id = $1::uuid AND (query_normalized = ('user:' || $2::text) OR profile_snapshot->>'id' = $2::text))
-                    OR (user_id = $2::uuid AND (query_normalized = ('user:' || $1::text) OR profile_snapshot->>'id' = $1::text))
-                    OR (org_id = $1::uuid AND (query_normalized = ('user:' || $2::text) OR profile_snapshot->>'id' = $2::text))
-                    OR (org_id = $2::uuid AND (query_normalized = ('user:' || $1::text) OR profile_snapshot->>'id' = $1::text))`,
                  WHERE (user_id = $1::uuid AND (query_normalized = ('user:' || $2::text) OR profile_snapshot->>'id' = $2::text))
                     OR (user_id = $2::uuid AND (query_normalized = ('user:' || $1::text) OR profile_snapshot->>'id' = $1::text))
                     OR (org_id = $1::uuid AND (query_normalized = ('user:' || $2::text) OR profile_snapshot->>'id' = $2::text))
@@ -6468,12 +6267,6 @@ exports.sendCompanyConnectionRequest = async (req, res) => {
                     message: "Request already exists",
                     connection_request_id: row.request_id
                 });
-                return res.status(200).json({
-                    status: 'pending_sent',
-                    relationship: 'pending_sent',
-                    message: "Request already exists",
-                    connection_request_id: row.request_id
-                });
             }
 
             // Clean up old rejected or accepted rows to allow fresh insert
@@ -6484,15 +6277,11 @@ exports.sendCompanyConnectionRequest = async (req, res) => {
 
         // 3. Create request
         const compInsertRes = await client.query(
-        const compInsertRes = await client.query(
             `INSERT INTO organization_connection_requests (org_id, user_id, initiated_by, message, status) 
-             VALUES ($1, $2, $3, $4, 'pending')
-             RETURNING request_id`,
              VALUES ($1, $2, $3, $4, 'pending')
              RETURNING request_id`,
             [companyId, targetUserId, initiatorId, message || null]
         );
-        const compRequestId = compInsertRes.rows[0]?.request_id || null;
         const compRequestId = compInsertRes.rows[0]?.request_id || null;
 
         // 4. Notifications
@@ -6534,25 +6323,8 @@ exports.sendCompanyConnectionRequest = async (req, res) => {
             status: 'pending_sent',
             connection_request_id: compRequestId
         });
-        socketService.notifyUser(targetUserId, "relationshipUpdated", {
-            userId: companyId,
-            status: 'pending_received',
-            type: 'company',
-            connection_request_id: compRequestId
-        });
-        socketService.notifyUser(initiatorId, "relationshipUpdated", {
-            userId: targetUserId,
-            status: 'pending_sent',
-            connection_request_id: compRequestId
-        });
 
         await client.query('COMMIT');
-        res.status(201).json({
-            status: 'pending_sent',
-            relationship: 'pending_sent',
-            message: "Request sent successfully",
-            connection_request_id: compRequestId
-        });
         res.status(201).json({
             status: 'pending_sent',
             relationship: 'pending_sent',
@@ -6997,10 +6769,8 @@ exports.upsertReaction = async (req, res) => {
                 const msgText = text_content || 'an attachment';
                 const formattedPreview = msgText.length > 40 ? msgText.substring(0, 40) + '...' : msgText;
 
-
                 const pushTitle = `${reaction.user_full_name} reacted to your message`;
                 const pushBody = `${reaction.user_full_name} reacted ${reaction.emoji} to: "${formattedPreview}"`;
-
 
                 // 1. Emit socket notification for toast (do not save to DB)
                 socketService.notifyUser(sender_id, "notification", {
@@ -7020,7 +6790,6 @@ exports.upsertReaction = async (req, res) => {
                     pushTitle,
                     pushBody,
                     { type: 'message_reaction', conversationId: conversation_id, messageId }
-                ).catch(() => { });
                 ).catch(() => { });
             }
 
@@ -7267,18 +7036,15 @@ exports.getOrganizationFollowing = async (req, res) => {
         let viewerUserFollowsExpr = "FALSE";
         let viewerCompanyFollowsExpr = "FALSE";
         let viewerIdx = null;
-        let viewerIdx = null;
         const params = [orgId];
 
         if (viewerOrgId) {
             params.push(viewerOrgId);
             viewerIdx = params.length;
-            viewerIdx = params.length;
             viewerUserFollowsExpr = `EXISTS(SELECT 1 FROM organization_user_follows WHERE org_id = $${viewerIdx} AND user_id = u.user_id)`;
             viewerCompanyFollowsExpr = `EXISTS(SELECT 1 FROM organization_org_follows WHERE follower_org_id = $${viewerIdx} AND following_org_id = c.org_id)`;
         } else if (viewerUserId) {
             params.push(viewerUserId);
-            viewerIdx = params.length;
             viewerIdx = params.length;
             viewerUserFollowsExpr = `EXISTS(SELECT 1 FROM followers WHERE follower_id = $${viewerIdx} AND following_id = u.user_id)`;
             viewerCompanyFollowsExpr = `EXISTS(SELECT 1 FROM organization_followers WHERE user_id = $${viewerIdx} AND org_id = c.org_id)`;
@@ -7291,11 +7057,6 @@ exports.getOrganizationFollowing = async (req, res) => {
             FROM organization_user_follows f
             JOIN active_users u ON f.user_id = u.user_id
             WHERE f.org_id = $1
-              AND NOT EXISTS (
-                  SELECT 1 FROM blocks b
-                  WHERE (b.blocker_id = $1 AND b.blocked_id = u.user_id)
-                     OR (b.blocker_id = u.user_id AND b.blocked_id = $1)
-              )
               AND NOT EXISTS (
                   SELECT 1 FROM blocks b
                   WHERE (b.blocker_id = $1 AND b.blocked_id = u.user_id)
@@ -7315,11 +7076,6 @@ exports.getOrganizationFollowing = async (req, res) => {
                   WHERE (b.blocker_id = $1 AND b.blocked_id = c.org_id)
                      OR (b.blocker_id = c.org_id AND b.blocked_id = $1)
               )
-              AND NOT EXISTS (
-                  SELECT 1 FROM blocks b
-                  WHERE (b.blocker_id = $1 AND b.blocked_id = c.org_id)
-                     OR (b.blocker_id = c.org_id AND b.blocked_id = $1)
-              )
         `;
 
         if (search && search.trim()) {
@@ -7327,23 +7083,6 @@ exports.getOrganizationFollowing = async (req, res) => {
             const searchIdx = params.length;
             userQuery += ` AND (u.full_name ILIKE $${searchIdx} OR u.headline ILIKE $${searchIdx})`;
             companyQuery += ` AND (c.name ILIKE $${searchIdx} OR c.industry ILIKE $${searchIdx})`;
-        }
-
-        if (viewerIdx) {
-            userQuery += `
-                AND NOT EXISTS (
-                    SELECT 1 FROM blocks b
-                    WHERE (b.blocker_id = $${viewerIdx} AND b.blocked_id = u.user_id)
-                       OR (b.blocker_id = u.user_id AND b.blocked_id = $${viewerIdx})
-                )
-            `;
-            companyQuery += `
-                AND NOT EXISTS (
-                    SELECT 1 FROM blocks b
-                    WHERE (b.blocker_id = $${viewerIdx} AND b.blocked_id = c.org_id)
-                       OR (b.blocker_id = c.org_id AND b.blocked_id = $${viewerIdx})
-                )
-            `;
         }
 
         if (viewerIdx) {
