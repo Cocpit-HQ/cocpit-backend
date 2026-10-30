@@ -1,9 +1,9 @@
 const Redis = require("ioredis");
 
-const redis = new Redis({
-  host: process.env.REDIS_HOST || "localhost",
-  port: process.env.REDIS_PORT || 6379,
-  db: parseInt(process.env.REDIS_DB || "0"), // 0=prod, 1=staging, 2=UAT
+const redisUrl = process.env.REDIS_URL || process.env.REDIS_PRIVATE_URL;
+
+const redisOptions = {
+  db: parseInt(process.env.REDIS_DB || "0", 10), // 0=prod, 1=staging, 2=UAT
   // Safety measures to avoid connection storms
   maxRetriesPerRequest: 0, // Fail fast instead of queuing up commands when down
   enableOfflineQueue: false, // Don't queue commands when Redis is unavailable
@@ -17,7 +17,17 @@ const redis = new Redis({
       return true;
     }
   },
-});
+};
+
+const redis = redisUrl
+  ? new Redis(redisUrl, redisOptions)
+  : new Redis({
+      host: process.env.REDIS_HOST || process.env.REDISHOST || "localhost",
+      port: parseInt(process.env.REDIS_PORT || process.env.REDISPORT || "6379", 10),
+      password: process.env.REDIS_PASSWORD || process.env.REDISPASSWORD || undefined,
+      username: process.env.REDIS_USER || process.env.REDISUSER || undefined,
+      ...redisOptions,
+    });
 
 // Compatibility helper for node-redis setEx
 redis.setEx = async (key, seconds, value) => {

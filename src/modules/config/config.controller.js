@@ -90,15 +90,33 @@ const toggleAIGeneration = async (req, res) => {
   }
 
   try {
-    const redis = require("../../core/db/redis");
-    if (redis.isOpen || redis.isReady) {
-      await redis.set("config:ai_generation_enabled", enabled ? "true" : "false");
-      return res.status(200).json({ 
-        message: `AI Generation has been ${enabled ? 'enabled' : 'disabled'}.`
-      });
-    } else {
-      return res.status(503).json({ message: "Redis is not connected" });
+    const redis = require("../../core/cache/redis");
+    const pool = require("../../core/db/pool");
+    const { updateFlagInMemory } = require("./featureFlags.service");
+
+    let redisUpdated = false;
+    if (redis.isOpen || redis.isReady || redis.status === 'ready') {
+      try {
+        await redis.set("config:ai_generation_enabled", enabled ? "true" : "false");
+        redisUpdated = true;
+      } catch (rErr) {
+        console.warn("Could not set Redis key for AI generation:", rErr.message);
+      }
     }
+
+    // Persist in feature_flags table in PostgreSQL
+    await pool.query(`
+      INSERT INTO feature_flags (flag_key, is_enabled)
+      VALUES ('ai_generation_enabled', $1)
+      ON CONFLICT (flag_key) DO UPDATE SET is_enabled = $1
+    `, [enabled]);
+
+    updateFlagInMemory('ai_generation_enabled', enabled);
+
+    return res.status(200).json({ 
+      message: `AI Generation has been ${enabled ? 'enabled' : 'disabled'}.${!redisUpdated ? ' (persisted in database; Redis offline)' : ''}`,
+      enabled
+    });
   } catch (err) {
     console.error("Toggle AI Generation error:", err);
     return res.status(500).json({ message: "Internal server error" });
@@ -113,15 +131,33 @@ const toggleFeedAlgorithm = async (req, res) => {
   }
 
   try {
-    const redis = require("../../core/cache/redis"); // use cache/redis
+    const redis = require("../../core/cache/redis");
+    const pool = require("../../core/db/pool");
+    const { updateFlagInMemory } = require("./featureFlags.service");
+
+    let redisUpdated = false;
     if (redis.isOpen || redis.isReady || redis.status === 'ready') {
-      await redis.set("config:feed_algorithm_enabled", enabled ? "true" : "false");
-      return res.status(200).json({ 
-        message: `Feed Algorithm has been ${enabled ? 'enabled' : 'disabled'} globally.`
-      });
-    } else {
-      return res.status(503).json({ message: "Redis is not connected" });
+      try {
+        await redis.set("config:feed_algorithm_enabled", enabled ? "true" : "false");
+        redisUpdated = true;
+      } catch (rErr) {
+        console.warn("Could not set Redis key for feed algorithm:", rErr.message);
+      }
     }
+
+    // Persist in feature_flags table in PostgreSQL so all instances receive real-time updates
+    await pool.query(`
+      INSERT INTO feature_flags (flag_key, is_enabled)
+      VALUES ('feed_algorithm_enabled', $1)
+      ON CONFLICT (flag_key) DO UPDATE SET is_enabled = $1
+    `, [enabled]);
+
+    updateFlagInMemory('feed_algorithm_enabled', enabled);
+
+    return res.status(200).json({ 
+      message: `Feed Algorithm has been ${enabled ? 'enabled' : 'disabled'} globally.${!redisUpdated ? ' (persisted in database; Redis offline)' : ''}`,
+      enabled
+    });
   } catch (err) {
     console.error("Toggle Feed Algorithm error:", err);
     return res.status(500).json({ message: "Internal server error" });

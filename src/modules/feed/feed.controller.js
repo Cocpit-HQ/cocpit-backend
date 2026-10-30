@@ -50,12 +50,20 @@ exports.getFeed = async (req, res, next) => {
     let algorithm = req.query.algorithm !== 'false';
     const rawLimit = req.query.limit;
 
-    // Check global algorithm override
+    // Check global algorithm override (DB feature flag + Redis override)
     try {
-      const redis = require('../../core/cache/redis');
-      const globalEnabled = await redis.get('config:feed_algorithm_enabled');
-      if (globalEnabled === 'false') {
+      const { getFlags } = require('../config/featureFlags.service');
+      const flags = getFlags();
+      if (flags && flags.feed_algorithm_enabled === false) {
         algorithm = false;
+      } else {
+        const redis = require('../../core/cache/redis');
+        if (redis.status === 'ready') {
+          const globalEnabled = await redis.get('config:feed_algorithm_enabled');
+          if (globalEnabled === 'false') {
+            algorithm = false;
+          }
+        }
       }
     } catch (err) {
       console.warn('Failed to check global feed algorithm config:', err.message);
