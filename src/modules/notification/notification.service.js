@@ -146,14 +146,14 @@ const notifyDocumentVerified = async (userId) => {
         if (userRes.rowCount === 0) return;
         const { email, full_name, account_name } = userRes.rows[0];
 
-        const username = account_name || full_name || "user";
+        const username = (full_name && full_name.trim()) || (account_name && account_name.trim()) || "user";
         const message = `Congratulations ${username}, we have successfully reviewed and verified your documents. Your profile is now verified.`;
 
-        // 1. Insert into notifications DB (system notification, sender_id is null)
+        // 1. Insert into notifications DB (sender_id set to verified user for avatar resolution)
         await pool.query(
             `INSERT INTO notifications (user_id, sender_id, type, text, metadata)
              VALUES ($1, $2, $3, $4, $5)`,
-            [userId, null, type, message, JSON.stringify({ title })]
+            [userId, userId, type, message, JSON.stringify({ title })]
         );
 
         // 2. Socket Notification
