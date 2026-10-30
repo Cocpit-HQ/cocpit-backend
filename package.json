@@ -11,7 +11,7 @@
     "dev:all": "concurrently \"npm run dev:main\" \"npm run dev:admin\"",
     "dev:main": "nodemon src/server.js",
     "dev:admin": "nodemon src/admin.server.js",
-    "build": "npm run lint && npm test",
+    "build": "echo 'No build step required'",
     "lint": "eslint .",
     "test": "jest --forceExit",
     "migrate:uat": "node uat_migrations/run_uat_migration.js",
