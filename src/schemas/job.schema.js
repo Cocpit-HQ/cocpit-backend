@@ -7,7 +7,13 @@ const createDraftSchema = z.object({
     title: z.string({
       required_error: "Title is required to create a draft",
     }).min(1, "Title cannot be empty"),
-    org_id: z.string().uuid("Invalid Organization ID").optional(),
+    org_id: z.string().uuid("Invalid Organization ID").optional().nullable(),
+    location: z.string().optional().nullable(),
+    job_type: z.string().optional().nullable(),
+    work_mode: z.string().optional().nullable(),
+    experience_label: z.string().optional().nullable(),
+    experience_min: z.union([z.number().int().nonnegative(), z.string().regex(/^\d+$/).transform(Number)]).optional().nullable(),
+    experience_max: z.union([z.number().int().nonnegative(), z.string().regex(/^\d+$/).transform(Number)]).optional().nullable(),
   }),
 });
 

@@ -471,9 +471,24 @@ exports.getJobById = async (req, res) => {
 
 exports.createJob = async (req, res) => {
   const userId = req.user.sub;
-  let { title, org_id } = req.body;
+  let {
+    title,
+    org_id,
+    location,
+    job_type,
+    work_mode,
+    experience_label,
+    experience_min,
+    experience_max
+  } = req.body;
 
   title = sanitizeContent(title);
+  const resolvedLocation = (location && typeof location === 'string') ? sanitizeContent(location.trim()) : null;
+  const resolvedJobType = (job_type && typeof job_type === 'string') ? sanitizeContent(job_type.trim()) : null;
+  const resolvedWorkMode = (work_mode && typeof work_mode === 'string') ? sanitizeContent(work_mode.trim()) : null;
+  const resolvedExperienceLabel = (experience_label && typeof experience_label === 'string') ? sanitizeContent(experience_label.trim()) : null;
+  const parsedExpMin = (experience_min !== undefined && experience_min !== null && experience_min !== '') ? parseInt(experience_min, 10) : null;
+  const parsedExpMax = (experience_max !== undefined && experience_max !== null && experience_max !== '') ? parseInt(experience_max, 10) : null;
 
   let requestedOrgId = null;
   let resolvedCompanyName = "";
@@ -517,6 +532,10 @@ exports.createJob = async (req, res) => {
       generated = await aiService.generateJobDescription({
         role: title,
         companyName: companyReplacement,
+        location: resolvedLocation,
+        experience: resolvedExperienceLabel,
+        work_type: resolvedJobType,
+        work_mode: resolvedWorkMode,
         jobId: null,
         companyId: org_id || null,
         userId: userId,
@@ -546,12 +565,15 @@ exports.createJob = async (req, res) => {
       education: generated.education || null,
     } : null;
 
+    const finalExpMin = (parsedExpMin !== null && !isNaN(parsedExpMin)) ? parsedExpMin : (generated?.experience_min || null);
+    const finalExpMax = (parsedExpMax !== null && !isNaN(parsedExpMax)) ? parsedExpMax : (generated?.experience_max || null);
+
     const jobRes = await client.query(
       `
       INSERT INTO jobs
-      (recruiter_id, title, company_name, org_id, posted_as_company, status, industry, description,
+      (recruiter_id, title, company_name, org_id, location, job_type, work_mode, experience_label, posted_as_company, status, industry, description,
        experience_min, experience_max, ai_extracted_requirements)
-      VALUES ($1, $2, $3, $4, $5, 'DRAFT', '', $6, $7, $8, $9)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'DRAFT', '', $10, $11, $12, $13)
       RETURNING *
       `,
       [
@@ -559,10 +581,14 @@ exports.createJob = async (req, res) => {
         title,
         resolvedCompanyName,
         requestedOrgId || null,
+        resolvedLocation,
+        resolvedJobType,
+        resolvedWorkMode,
+        resolvedExperienceLabel,
         postedAsCompany,
         aiDescription,
-        generated?.experience_min || null,
-        generated?.experience_max || null,
+        finalExpMin,
+        finalExpMax,
         aiRequirements ? JSON.stringify(aiRequirements) : null
       ]
     );
@@ -1629,9 +1655,10 @@ exports.getMyApplicationStats = async (req, res) => {
     const result = await pool.query(`
       SELECT 
         COUNT(*) as total_applied,
-        COUNT(*) FILTER (WHERE current_status ILIKE 'Shortlisted%') as shortlisted
-      FROM job_applications
-      WHERE applicant_id = $1
+        COUNT(*) FILTER (WHERE ja.current_status ILIKE 'Shortlisted%') as shortlisted
+      FROM job_applications ja
+      JOIN jobs j ON ja.job_id = j.job_id
+      WHERE ja.applicant_id = $1 AND ja.current_status != 'Withdrawn' AND j.is_active = TRUE
     `, [applicantId]);
 
     res.json({
@@ -1957,10 +1984,10 @@ exports.getDashboardStats = async (req, res) => {
            SELECT COUNT(*) 
            FROM job_applications ja 
            JOIN jobs j2 ON ja.job_id = j2.job_id 
-           WHERE ${actorOrgId ? "j2.org_id = $1" : "j2.recruiter_id = $1 AND j2.org_id IS NULL"}
+           WHERE (${actorOrgId ? "j2.org_id = $1" : "j2.recruiter_id = $1 AND j2.org_id IS NULL"}) AND j2.is_active = TRUE
         ) as "totalApplicants"
       FROM jobs j
-      WHERE ${actorOrgId ? "j.org_id = $1" : "j.recruiter_id = $1 AND j.org_id IS NULL"}
+      WHERE (${actorOrgId ? "j.org_id = $1" : "j.recruiter_id = $1 AND j.org_id IS NULL"}) AND j.is_active = TRUE
     `, [actorOrgId || userId]);
 
     const data = stats.rows[0];
@@ -2319,22 +2346,84 @@ exports.getJobRoles = async (req, res) => {
 
 exports.getIndustries = async (req, res) => {
   try {
-    const { q } = req.query;
+    const { q, cursor, limit = 8 } = req.query;
+    const pageSize = Math.min(Math.max(parseInt(limit) || 8, 1), 100);
     let query = `SELECT industry_name FROM industries_master`;
+    let values = [];
+    let conditions = [];
+
+    if (q) {
+      values.push(`%${q.trim()}%`);
+      conditions.push(`industry_name ILIKE $${values.length}`);
+    }
+
+    if (cursor) {
+      values.push(cursor.trim());
+      conditions.push(`industry_name > $${values.length}`);
+    }
+
+    if (conditions.length > 0) {
+      query += ` WHERE ` + conditions.join(` AND `);
+    }
+
+    values.push(pageSize + 1);
+    query += ` ORDER BY industry_name ASC LIMIT $${values.length}`;
+
+    const result = await pool.query(query, values);
+    const hasMore = result.rows.length > pageSize;
+    const items = hasMore ? result.rows.slice(0, pageSize) : result.rows;
+    const nextCursor = hasMore && items.length > 0 ? items[items.length - 1].industry_name : null;
+
+    res.json({
+      items: items.map(r => r.industry_name),
+      nextCursor,
+      hasMore
+    });
+  } catch (err) {
+    console.error("Error fetching industries:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+};
+
+exports.getCompanies = async (req, res) => {
+  try {
+    const { q, cursor, limit = 8 } = req.query;
+    const pageSize = Math.min(Math.max(parseInt(limit) || 8, 1), 100);
+
+    let query = `
+      SELECT DISTINCT TRIM(o.name) AS name
+      FROM organizations o
+      WHERE o.name IS NOT NULL
+        AND TRIM(o.name) != ''
+        AND o.is_deleted = FALSE
+    `;
     let values = [];
 
     if (q) {
-      query += ` WHERE industry_name ILIKE $1`;
-      values.push(`%${q}%`);
+      values.push(`%${q.trim()}%`);
+      query += ` AND o.name ILIKE $${values.length}`;
     }
 
-    query += ` ORDER BY industry_name ASC LIMIT 50`;
+    if (cursor) {
+      values.push(cursor.trim());
+      query += ` AND TRIM(o.name) > $${values.length}`;
+    }
+
+    values.push(pageSize + 1);
+    query += ` ORDER BY name ASC LIMIT $${values.length}`;
 
     const result = await pool.query(query, values);
+    const hasMore = result.rows.length > pageSize;
+    const items = hasMore ? result.rows.slice(0, pageSize) : result.rows;
+    const nextCursor = hasMore && items.length > 0 ? items[items.length - 1].name : null;
 
-    res.json(result.rows);
+    res.json({
+      items: items.map(r => r.name),
+      nextCursor,
+      hasMore
+    });
   } catch (err) {
-    console.error("Error fetching industries:", err);
+    console.error("Error fetching companies:", err);
     res.status(500).json({ error: "Internal server error" });
   }
 };
