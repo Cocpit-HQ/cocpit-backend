@@ -7,7 +7,7 @@ const socketService = require("../../core/infrastructure/socket.service");
 const { checkBlockStatus } = require("../../core/utils/blockCheck");
 const BlockModel = require("../../models/block.model");
 const { logAudit } = require("../../core/infrastructure/audit.service");
-const cloudinary = require("../../core/infrastructure/cloudinary.client");
+const { r2Client, hasR2, bucketName, deleteR2Asset, deleteR2Assets } = require("../../core/infrastructure/r2.client");
 const { checkOrgPermission } = require("../../core/utils/rbac");
 const { notifyOrgFollowers, notifyBroadcastToChildOrgs } = require("../../services/notification.service");
 const { logActivity, removeActivity } = require("../../core/services/activityLogger");
@@ -1442,7 +1442,11 @@ exports.createPost = async (req, res) => {
                     }
                 }
 
-                for (const handle of mentionedUsernames) {
+                for (const rawMention of mentionedUsernames) {
+                    const prefixMatch = rawMention.match(/^(user|org|company):(.+)$/i);
+                    const explicitType = prefixMatch ? prefixMatch[1].toLowerCase() : null;
+                    const handle = prefixMatch ? prefixMatch[2] : rawMention;
+                    if (explicitType === 'org' || explicitType === 'company') continue;
                     let userRes;
                     const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
                     if (UUID_REGEX.test(handle)) {
@@ -1615,15 +1619,20 @@ exports.getPostById = async (req, res) => {
 
     (
         SELECT COALESCE(json_agg(json_build_object(
+            'id', COALESCE(u_mention.user_id, o_mention.org_id),
             'user_id', COALESCE(u_mention.user_id, o_mention.org_id),
+            'org_id', o_mention.org_id,
             'full_name', COALESCE(u_mention.full_name, o_mention.name),
-            'account_name', COALESCE(u_mention.account_name, o_mention.slug)
+            'account_name', COALESCE(u_mention.account_name, o_mention.slug),
+            'is_company', (o_mention.org_id IS NOT NULL),
+            'type', CASE WHEN o_mention.org_id IS NOT NULL THEN 'COMPANY' ELSE 'USER' END,
+            'slug', o_mention.slug
         )), '[]'::json)
         FROM (
-            SELECT DISTINCT (regexp_matches(COALESCE(p.content, ''), '@\\[[^\\]]+\\]\\(([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\\)', 'g'))[1]::uuid AS mentioned_id
+            SELECT DISTINCT (regexp_matches(COALESCE(p.content, ''), '@\\[[^\\]]+\\]\\((?:(?:user|org|company):)?([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\\)', 'g'))[1]::uuid AS mentioned_id
         ) mentions
         LEFT JOIN active_users u_mention ON u_mention.user_id = mentions.mentioned_id
-        LEFT JOIN organizations o_mention ON o_mention.org_id = mentions.mentioned_id AND o_mention.is_deleted = FALSE
+        LEFT JOIN organizations o_mention ON o_mention.org_id = mentions.mentioned_id
         WHERE u_mention.user_id IS NOT NULL OR o_mention.org_id IS NOT NULL
     ) AS mentioned_users,
 
@@ -1631,13 +1640,13 @@ exports.getPostById = async (req, res) => {
     (SELECT COUNT(*) FROM active_post_likes pl WHERE pl.post_id = p.post_id)::int AS like_count,
 
     (
-        SELECT COALESCE(comp_like.slug, u_like.account_name)
+        SELECT COALESCE(comp_like.name, comp_like.slug, u_like.full_name, u_like.account_name)
         FROM active_post_likes pl_sample
         LEFT JOIN active_users u_like ON u_like.user_id = pl_sample.user_id
         LEFT JOIN organizations comp_like ON comp_like.org_id = pl_sample.org_id
         WHERE pl_sample.post_id = p.post_id
         AND NOT (
-            ($3::uuid IS NOT NULL AND pl_sample.org_id = $3::uuid)
+            ($3::uuid IS NOT NULL AND pl_sample.org_id IS NOT NULL AND pl_sample.org_id = $3::uuid)
             OR
             ($3::uuid IS NULL AND pl_sample.user_id = $2 AND pl_sample.org_id IS NULL)
         )
@@ -1731,7 +1740,7 @@ exports.getPostById = async (req, res) => {
     (
         SELECT COALESCE(
             json_agg(json_build_object(
-                'username', COALESCE(comp_like.slug, u_like.account_name),
+                'username', COALESCE(comp_like.name, comp_like.slug, u_like.full_name, u_like.account_name),
                 'avatar_url', COALESCE(comp_like.logo_url, u_like.avatar_url),
                 'is_company', (sub.org_id IS NOT NULL),
                 'is_organization', (sub.org_id IS NOT NULL)
@@ -1742,9 +1751,8 @@ exports.getPostById = async (req, res) => {
             SELECT pl_sample.user_id, pl_sample.org_id
             FROM active_post_likes pl_sample
             WHERE pl_sample.post_id = p.post_id
-              AND pl_sample.user_id IS NOT NULL
               AND NOT (
-                  ($3::uuid IS NOT NULL AND pl_sample.org_id = $3::uuid)
+                  ($3::uuid IS NOT NULL AND pl_sample.org_id IS NOT NULL AND pl_sample.org_id = $3::uuid)
                   OR
                   ($3::uuid IS NULL AND pl_sample.user_id = $2 AND pl_sample.org_id IS NULL)
               )
@@ -1918,15 +1926,20 @@ exports.getPostById = async (req, res) => {
                 ),
                 'mentioned_users', (
                     SELECT COALESCE(json_agg(json_build_object(
+                        'id', COALESCE(u_mention.user_id, o_mention.org_id),
                         'user_id', COALESCE(u_mention.user_id, o_mention.org_id),
+                        'org_id', o_mention.org_id,
                         'full_name', COALESCE(u_mention.full_name, o_mention.name),
-                        'account_name', COALESCE(u_mention.account_name, o_mention.slug)
+                        'account_name', COALESCE(u_mention.account_name, o_mention.slug),
+                        'is_company', (o_mention.org_id IS NOT NULL),
+                        'type', CASE WHEN o_mention.org_id IS NOT NULL THEN 'COMPANY' ELSE 'USER' END,
+                        'slug', o_mention.slug
                     )), '[]'::json)
                     FROM (
-                        SELECT DISTINCT (regexp_matches(COALESCE(sp.content, ''), '@\\[[^\\]]+\\]\\(([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\\)', 'g'))[1]::uuid AS mentioned_id
+                        SELECT DISTINCT (regexp_matches(COALESCE(sp.content, ''), '@\\[[^\\]]+\\]\\((?:(?:user|org|company):)?([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\\)', 'g'))[1]::uuid AS mentioned_id
                     ) mentions
                     LEFT JOIN active_users u_mention ON u_mention.user_id = mentions.mentioned_id
-                    LEFT JOIN organizations o_mention ON o_mention.org_id = mentions.mentioned_id AND o_mention.is_deleted = FALSE
+                    LEFT JOIN organizations o_mention ON o_mention.org_id = mentions.mentioned_id
                     WHERE u_mention.user_id IS NOT NULL OR o_mention.org_id IS NOT NULL
                 ),
                 'media', COALESCE(sp_media.media, '[]'::json),
@@ -1961,15 +1974,20 @@ exports.getPostById = async (req, res) => {
                              ),
                              'mentioned_users', (
                                  SELECT COALESCE(json_agg(json_build_object(
+                                     'id', COALESCE(u_mention.user_id, o_mention.org_id),
                                      'user_id', COALESCE(u_mention.user_id, o_mention.org_id),
+                                     'org_id', o_mention.org_id,
                                      'full_name', COALESCE(u_mention.full_name, o_mention.name),
-                                     'account_name', COALESCE(u_mention.account_name, o_mention.slug)
+                                     'account_name', COALESCE(u_mention.account_name, o_mention.slug),
+                                     'is_company', (o_mention.org_id IS NOT NULL),
+                                     'type', CASE WHEN o_mention.org_id IS NOT NULL THEN 'COMPANY' ELSE 'USER' END,
+                                     'slug', o_mention.slug
                                  )), '[]'::json)
                                  FROM (
-                                     SELECT DISTINCT (regexp_matches(COALESCE(sp_sp.content, ''), '@\\[[^\\]]+\\]\\(([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\\)', 'g'))[1]::uuid AS mentioned_id
+                                     SELECT DISTINCT (regexp_matches(COALESCE(sp_sp.content, ''), '@\\[[^\\]]+\\]\\((?:(?:user|org|company):)?([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\\)', 'g'))[1]::uuid AS mentioned_id
                                  ) mentions
                                  LEFT JOIN active_users u_mention ON u_mention.user_id = mentions.mentioned_id
-                                 LEFT JOIN organizations o_mention ON o_mention.org_id = mentions.mentioned_id AND o_mention.is_deleted = FALSE
+                                 LEFT JOIN organizations o_mention ON o_mention.org_id = mentions.mentioned_id
                                  WHERE u_mention.user_id IS NOT NULL OR o_mention.org_id IS NOT NULL
                              ),
                              'media', COALESCE((SELECT json_agg(json_build_object('url', pm.url, 'media_type', pm.media_type, 'width', pm.width, 'height', pm.height)) FROM post_media pm WHERE pm.post_id = sp_sp.post_id), '[]'::json)
@@ -2032,7 +2050,7 @@ exports.getPostById = async (req, res) => {
                 'liked_users', (
                     SELECT COALESCE(
                         json_agg(json_build_object(
-                            'username', COALESCE(comp_like.slug, u_like.account_name),
+                            'username', COALESCE(comp_like.name, comp_like.slug, u_like.full_name, u_like.account_name),
                             'avatar_url', COALESCE(comp_like.logo_url, u_like.avatar_url),
                             'is_company', (sub.org_id IS NOT NULL),
                             'is_organization', (sub.org_id IS NOT NULL)
@@ -2043,9 +2061,8 @@ exports.getPostById = async (req, res) => {
                         SELECT pl_sample.user_id, pl_sample.org_id
                         FROM active_post_likes pl_sample
                         WHERE pl_sample.post_id = sp.post_id
-                          AND pl_sample.user_id IS NOT NULL
                           AND NOT (
-                              ($3::uuid IS NOT NULL AND pl_sample.org_id = $3::uuid)
+                              ($3::uuid IS NOT NULL AND pl_sample.org_id IS NOT NULL AND pl_sample.org_id = $3::uuid)
                               OR
                               ($3::uuid IS NULL AND pl_sample.user_id = $2 AND pl_sample.org_id IS NULL)
                           )
@@ -2583,12 +2600,17 @@ exports.updatePostById = async (req, res) => {
 
         // 5. Update Media: The "Sync" approach
         if (Array.isArray(media_urls)) {
+            const oldMediaRes = await client.query(`SELECT url FROM post_media WHERE post_id = $1`, [postId]);
+            const oldUrls = oldMediaRes.rows.map(r => r.url).filter(Boolean);
+
             await client.query(`DELETE FROM post_media WHERE post_id = $1`, [postId]);
 
+            const newUrls = [];
             for (let i = 0; i < media_urls.length; i++) {
                 const item = media_urls[i];
                 const url = typeof item === 'object' && item !== null ? item.url : item;
                 if (!url) continue;
+                newUrls.push(url);
                 
                 const width = (parsedMediaMetadata[i] && parsedMediaMetadata[i].width) || (typeof item === 'object' && item !== null ? item.width : null);
                 const height = (parsedMediaMetadata[i] && parsedMediaMetadata[i].height) || (typeof item === 'object' && item !== null ? item.height : null);
@@ -2599,6 +2621,11 @@ exports.updatePostById = async (req, res) => {
        VALUES ($1, $2, $3, $4, $5)`,
                     [postId, url, type, width, height]
                 );
+            }
+
+            const removedUrls = oldUrls.filter(u => !newUrls.includes(u));
+            if (removedUrls.length > 0) {
+                deleteR2Assets(removedUrls).catch(err => console.error("[updatePostById] R2 cleanup error:", err.message));
             }
         }
 
@@ -2712,7 +2739,11 @@ WHERE p.post_id = $1;
                     }
                 }
 
-                for (const handle of mentionedUsernames) {
+                for (const rawMention of mentionedUsernames) {
+                    const prefixMatch = rawMention.match(/^(user|org|company):(.+)$/i);
+                    const explicitType = prefixMatch ? prefixMatch[1].toLowerCase() : null;
+                    const handle = prefixMatch ? prefixMatch[2] : rawMention;
+                    if (explicitType === 'org' || explicitType === 'company') continue;
                     let userRes;
                     const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
                     if (UUID_REGEX.test(handle)) {
@@ -2892,12 +2923,25 @@ exports.deletePost = async (req, res) => {
             }
         }
 
+        // Fetch post media for CDN/R2 cleanup
+        const mediaRes = await client.query(
+            `SELECT url FROM post_media WHERE post_id = $1`,
+            [postId]
+        );
+        const postUrls = mediaRes.rows.map(r => r.url).filter(Boolean);
+
         await client.query(
             `UPDATE posts SET is_active = FALSE WHERE post_id = $1 OR shared_post_id = $1`,
             [postId]
         );
 
         await client.query('COMMIT');
+
+        // Clean up media from Cloudflare R2
+        if (postUrls.length > 0) {
+            deleteR2Assets(postUrls).catch(err => console.error("[deletePost] R2 cleanup error:", err.message));
+        }
+
         res.status(200).json({ message: "Post deleted", deletedPostId: postId, id: postId });
 
     } catch (err) {
@@ -3700,8 +3744,18 @@ exports.addComment = async (req, res) => {
         }
 
         if (mentionedUsernames.length > 0) {
-            for (const handle of mentionedUsernames) {
-                const userRes = await pool.query(`SELECT user_id FROM users WHERE LOWER(account_name) = LOWER($1)`, [handle]);
+            for (const rawMention of mentionedUsernames) {
+                const prefixMatch = rawMention.match(/^(user|org|company):(.+)$/i);
+                const explicitType = prefixMatch ? prefixMatch[1].toLowerCase() : null;
+                const handle = prefixMatch ? prefixMatch[2] : rawMention;
+                if (explicitType === 'org' || explicitType === 'company') continue;
+                let userRes;
+                const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+                if (UUID_REGEX.test(handle)) {
+                    userRes = await pool.query(`SELECT user_id FROM users WHERE user_id = $1`, [handle]);
+                } else {
+                    userRes = await pool.query(`SELECT user_id FROM users WHERE LOWER(account_name) = LOWER($1)`, [handle]);
+                }
                 if (userRes.rowCount > 0) {
                     const mentionedUserId = userRes.rows[0].user_id;
 
@@ -4359,17 +4413,6 @@ exports.getComments = async (req, res) => {
 
         c.author_org_id,
         
-        (
-            SELECT COALESCE(json_agg(json_build_object(
-                'user_id', u_mention.user_id,
-                'full_name', u_mention.full_name,
-                'account_name', u_mention.account_name
-            )), '[]'::json)
-            FROM (
-                SELECT DISTINCT (regexp_matches(COALESCE(c.content, ''), '@\\[[^\\]]+\\]\\(([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\\)', 'g'))[1]::uuid AS mentioned_id
-            ) mentions
-            JOIN active_users u_mention ON u_mention.user_id = mentions.mentioned_id
-        ) AS mentioned_users,
 
         COALESCE(
           (SELECT COUNT(*)::int FROM active_comment_likes cl WHERE cl.comment_id = c.comment_id),
@@ -5156,12 +5199,11 @@ exports.deleteStory = async (req, res) => {
             return res.status(404).json({ message: "Story not found or unauthorized", storyId, userId });
         }
 
-        // Clean up Cloudinary asset in background
-        const { cld_public_id, media_type } = result.rows[0];
+        // Clean up storage asset in background (Cloudflare R2 or legacy Cloudinary)
+        const { cld_public_id } = result.rows[0];
         if (cld_public_id) {
-            const resourceType = media_type === 'video' ? 'video' : 'image';
-            cloudinary.uploader.destroy(cld_public_id, { resource_type: resourceType })
-                .catch(err => console.error(`[deleteStory] Cloudinary cleanup failed for ${cld_public_id}:`, err.message));
+            const key = cld_public_id.startsWith("stories/") ? cld_public_id : `stories/${cld_public_id}`;
+            deleteR2Asset(key).catch(err => console.error(`[deleteStory] R2 cleanup failed for ${cld_public_id}:`, err.message));
         }
 
         res.status(200).json({ message: "Story deleted", deletedStoryId: storyId });

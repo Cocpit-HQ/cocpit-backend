@@ -7,6 +7,8 @@ const authRepo = require("../auth/auth.repository");
 const { handleExperienceOrgLink, handleEducationOrgLink } = require("../../utils/orgLinkHelper");
 const aiService = require("../../services/ai.service");
 const cloudinary = require("../../core/infrastructure/cloudinary.client");
+const { r2Client, hasR2, bucketName, publicUrl } = require("../../core/infrastructure/r2.client");
+const { PutObjectCommand } = require("@aws-sdk/client-s3");
 const { toTitleCase } = require("../../utils/nameNormalizer");
 
 const ONBOARDING_STEPS = {
@@ -845,9 +847,23 @@ exports.parseResumeUpload = async (req, res) => {
 
         const sourceIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
 
-        // Upload to Cloudinary concurrently while parsing with AI
-        const uploadToCloudinary = () => {
+        // Upload to Cloudflare R2 / Cloudinary concurrently while parsing with AI
+        const uploadResumeFile = async () => {
+            if (hasR2 && r2Client) {
+                const envPrefix = req?.currentEnvironment || req?.headers?.['x-environment'] || process.env.R2_FOLDER_PREFIX || "uat";
+                const key = `${envPrefix.toLowerCase().trim()}/resumes/resume_${userId}_${Date.now()}.pdf`;
+                await r2Client.send(new PutObjectCommand({
+                    Bucket: bucketName,
+                    Key: key,
+                    Body: fileBuffer,
+                    ContentType: mimeType || "application/pdf"
+                }));
+                const url = `${publicUrl}/${key}`;
+                return { secure_url: url, path: url };
+            }
+
             return new Promise((resolve, reject) => {
+                if (!cloudinary?.uploader) return resolve(null);
                 const stream = cloudinary.uploader.upload_stream(
                     { folder: "resumes", resource_type: "raw", public_id: `resume_${userId}_${Date.now()}.pdf` },
                     (error, result) => {
@@ -860,26 +876,26 @@ exports.parseResumeUpload = async (req, res) => {
             });
         };
 
-        const [parsedData, cloudinaryResult] = await Promise.all([
+        const [parsedData, uploadResult] = await Promise.all([
             aiService.parseResume({
                 fileBuffer,
                 mimeType,
                 userId,
                 sourceIp
             }),
-            uploadToCloudinary().catch(e => {
-                console.error("Cloudinary upload failed:", e);
+            uploadResumeFile().catch(e => {
+                console.error("Storage resume upload failed:", e);
                 return null;
             })
         ]);
 
-        if (cloudinaryResult) {
+        if (uploadResult) {
             // Save to DB
             try {
                 await pool.query(
                     `INSERT INTO user_resumes (user_id, file_name, file_url, file_type, file_size)
                      VALUES ($1, $2, $3, $4, $5)`,
-                    [userId, req.file.originalname, cloudinaryResult.secure_url, mimeType, req.file.size]
+                    [userId, req.file.originalname, uploadResult.secure_url || uploadResult.path, mimeType, req.file.size]
                 );
             } catch (dbErr) {
                 console.error("Failed to save resume URL to DB:", dbErr);

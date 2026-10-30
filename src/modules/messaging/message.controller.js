@@ -1,6 +1,7 @@
 const pool = require("../../core/db/pool");
 const socketService = require("../../core/infrastructure/socket.service");
 const GroupChatService = require("../../services/groupChat.service"); // If logic is shared or similar
+const { deleteR2Assets } = require("../../core/infrastructure/r2.client");
 
 exports.deleteMessage = async (req, res) => {
     const { messageId } = req.params;
@@ -35,9 +36,12 @@ exports.deleteMessage = async (req, res) => {
             // Ideally check if user is participant of conversation (though accessing message implies it usually)
             // But let's skip for brevity or enhance security later if needed.
 
+            let deletedMediaUrls = [];
             if (deleteForEveryone) {
                 // DELETE FOR EVERYONE
-                // 1. Delete associated media
+                // 1. Fetch & delete associated media
+                const mediaRes = await client.query("SELECT media_url FROM message_media WHERE message_id = $1", [messageId]);
+                deletedMediaUrls = mediaRes.rows.map(r => r.media_url).filter(Boolean);
                 await client.query("DELETE FROM message_media WHERE message_id = $1", [messageId]);
 
                 // 2. Soft delete: Update message content
@@ -101,6 +105,9 @@ exports.deleteMessage = async (req, res) => {
             }
 
             await client.query("COMMIT");
+            if (deletedMediaUrls.length > 0) {
+                deleteR2Assets(deletedMediaUrls).catch(err => console.error("[deleteMessage] R2 cleanup error:", err.message));
+            }
             res.json({ success: true, message: "Message deleted" });
 
         } catch (err) {

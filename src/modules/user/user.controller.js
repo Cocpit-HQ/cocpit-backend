@@ -239,11 +239,23 @@ exports.getUserProfile = async (req, res) => {
     // Check if this UUID is an organization
     try {
       const orgCheck = await pool.query(
-        "SELECT org_id, slug, name FROM organizations WHERE org_id = $1::uuid AND is_deleted = FALSE",
+        "SELECT org_id, slug, name FROM organizations WHERE org_id = $1::uuid",
         [id]
       );
       if (orgCheck.rowCount > 0) {
         const org = orgCheck.rows[0];
+        const activeActorId = req.actor?.type === "ORGANIZATION" && req.actor?.orgId
+          ? req.actor.orgId
+          : (req.user?.sub || req.user?.user_id || req.user?.id);
+        if (activeActorId) {
+          const blockedByOrg = await pool.query(
+            "SELECT 1 FROM blocks WHERE blocker_id = $1 AND blocked_id = $2",
+            [org.org_id, activeActorId]
+          );
+          if (blockedByOrg.rowCount > 0) {
+            return res.status(404).json({ message: "User not found" });
+          }
+        }
         return res.status(404).json({
           message: "User not found",
           is_company: true,
@@ -251,7 +263,7 @@ exports.getUserProfile = async (req, res) => {
           org_id: org.org_id,
           slug: org.slug,
           name: org.name,
-          redirect_url: `/organization/${org.slug}`
+          redirect_url: `/organization/${org.org_id}`
         });
       }
     } catch (err) {
@@ -266,11 +278,23 @@ exports.getUserProfile = async (req, res) => {
       );
       if (resolveResult.rowCount === 0) {
         const orgRes = await pool.query(
-          "SELECT org_id, slug, name FROM organizations WHERE LOWER(slug) = LOWER($1) AND is_deleted = FALSE",
+          "SELECT org_id, slug, name FROM organizations WHERE LOWER(slug) = LOWER($1)",
           [id]
         );
         if (orgRes.rowCount > 0) {
           const org = orgRes.rows[0];
+          const activeActorId = req.actor?.type === "ORGANIZATION" && req.actor?.orgId
+            ? req.actor.orgId
+            : (req.user?.sub || req.user?.user_id || req.user?.id);
+          if (activeActorId) {
+            const blockedByOrg = await pool.query(
+              "SELECT 1 FROM blocks WHERE blocker_id = $1 AND blocked_id = $2",
+              [org.org_id, activeActorId]
+            );
+            if (blockedByOrg.rowCount > 0) {
+              return res.status(404).json({ message: "User handle not found" });
+            }
+          }
           return res.status(404).json({
             message: "User handle not found",
             is_company: true,
@@ -278,7 +302,7 @@ exports.getUserProfile = async (req, res) => {
             org_id: org.org_id,
             slug: org.slug,
             name: org.name,
-            redirect_url: `/organization/${org.slug}`
+            redirect_url: `/organization/${org.org_id}`
           });
         }
         return res.status(404).json({ message: "User handle not found" });
@@ -845,15 +869,20 @@ exports.getPublicProfilePosts = async (req, res) => {
         p.location,
         (
             SELECT COALESCE(json_agg(json_build_object(
+                'id', COALESCE(u_mention.user_id, o_mention.org_id),
                 'user_id', COALESCE(u_mention.user_id, o_mention.org_id),
+                'org_id', o_mention.org_id,
                 'full_name', COALESCE(u_mention.full_name, o_mention.name),
-                'account_name', COALESCE(u_mention.account_name, o_mention.slug)
+                'account_name', COALESCE(u_mention.account_name, o_mention.slug),
+                'is_company', (o_mention.org_id IS NOT NULL),
+                'type', CASE WHEN o_mention.org_id IS NOT NULL THEN 'COMPANY' ELSE 'USER' END,
+                'slug', o_mention.slug
             )), '[]'::json)
             FROM (
-                SELECT DISTINCT (regexp_matches(COALESCE(p.content, ''), '@\\[[^\\]]+\\]\\(([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\\)', 'g'))[1]::uuid AS mentioned_id
+                SELECT DISTINCT (regexp_matches(COALESCE(p.content, ''), '@\\[[^\\]]+\\]\\((?:(?:user|org|company):)?([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\\)', 'g'))[1]::uuid AS mentioned_id
             ) mentions
             LEFT JOIN active_users u_mention ON u_mention.user_id = mentions.mentioned_id
-            LEFT JOIN organizations o_mention ON o_mention.org_id = mentions.mentioned_id AND o_mention.is_deleted = FALSE
+            LEFT JOIN organizations o_mention ON o_mention.org_id = mentions.mentioned_id
             WHERE u_mention.user_id IS NOT NULL OR o_mention.org_id IS NOT NULL
         ) AS mentioned_users,
 
@@ -875,12 +904,22 @@ exports.getPublicProfilePosts = async (req, res) => {
         (SELECT COUNT(*) FROM posts sp_share WHERE sp_share.shared_post_id = p.post_id AND sp_share.is_active = TRUE AND (sp_share.is_removed IS FALSE OR sp_share.is_removed IS NULL))::int AS "rePostCount",
         (SELECT COUNT(*) FROM shares s WHERE s.entity_type IN ('post', 'article') AND s.entity_id = p.post_id::text)::int AS "sharePostCount",
         (
-            SELECT COALESCE(comp_like.slug, u_like.account_name)
+            SELECT COALESCE(comp_like.name, comp_like.slug, u_like.full_name, u_like.account_name)
+            SELECT COALESCE(comp_like.name, comp_like.slug, u_like.full_name, u_like.account_name)
             FROM active_post_likes pl_sample
             LEFT JOIN active_users u_like ON u_like.user_id = pl_sample.user_id
             LEFT JOIN organizations comp_like ON comp_like.org_id = pl_sample.org_id
             WHERE pl_sample.post_id = p.post_id
-            AND pl_sample.user_id IS DISTINCT FROM $${userParamIdx}
+            AND NOT (
+                ($${orgActorParamIdx}::uuid IS NOT NULL AND pl_sample.org_id IS NOT NULL AND pl_sample.org_id = $${orgActorParamIdx}::uuid)
+                OR
+                ($${orgActorParamIdx}::uuid IS NULL AND pl_sample.user_id = $${userParamIdx} AND pl_sample.org_id IS NULL)
+            )
+            AND NOT (
+                ($${orgActorParamIdx}::uuid IS NOT NULL AND pl_sample.org_id IS NOT NULL AND pl_sample.org_id = $${orgActorParamIdx}::uuid)
+                OR
+                ($${orgActorParamIdx}::uuid IS NULL AND pl_sample.user_id = $${userParamIdx} AND pl_sample.org_id IS NULL)
+            )
             ORDER BY pl_sample.created_at DESC
             LIMIT 1
         ) AS sample_liker_username,
@@ -938,7 +977,8 @@ exports.getPublicProfilePosts = async (req, res) => {
         (
             SELECT COALESCE(
                 json_agg(json_build_object(
-                    'username', COALESCE(comp_like.slug, u_like.account_name),
+                    'username', COALESCE(comp_like.name, comp_like.slug, u_like.full_name, u_like.account_name),
+                    'username', COALESCE(comp_like.name, comp_like.slug, u_like.full_name, u_like.account_name),
                     'avatar_url', CASE WHEN sub.org_id IS NOT NULL THEN comp_like.logo_url ELSE u_like.avatar_url END,
                     'is_company', (sub.org_id IS NOT NULL),
                     'is_organization', (sub.org_id IS NOT NULL)
@@ -949,10 +989,13 @@ exports.getPublicProfilePosts = async (req, res) => {
                 SELECT pl_sample.user_id, pl_sample.org_id
                 FROM active_post_likes pl_sample
                 WHERE pl_sample.post_id = p.post_id
-                  AND (
-                    ($${orgActorParamIdx}::uuid IS NOT NULL AND pl_sample.org_id != $${orgActorParamIdx}::uuid)
+                  AND NOT (
+                    ($${orgActorParamIdx}::uuid IS NOT NULL AND pl_sample.org_id IS NOT NULL AND pl_sample.org_id = $${orgActorParamIdx}::uuid)
+                  AND NOT (
+                    ($${orgActorParamIdx}::uuid IS NOT NULL AND pl_sample.org_id IS NOT NULL AND pl_sample.org_id = $${orgActorParamIdx}::uuid)
                     OR
-                    ($${orgActorParamIdx}::uuid IS NULL AND ($${userParamIdx}::uuid IS NULL OR pl_sample.user_id != $${userParamIdx}::uuid))
+                    ($${orgActorParamIdx}::uuid IS NULL AND ($${userParamIdx}::uuid IS NOT NULL AND pl_sample.user_id = $${userParamIdx}::uuid AND pl_sample.org_id IS NULL))
+                    ($${orgActorParamIdx}::uuid IS NULL AND ($${userParamIdx}::uuid IS NOT NULL AND pl_sample.user_id = $${userParamIdx}::uuid AND pl_sample.org_id IS NULL))
                   )
                 ORDER BY pl_sample.created_at DESC
                 LIMIT 3
@@ -1090,7 +1133,8 @@ exports.getPublicProfilePosts = async (req, res) => {
               'liked_users', (
                   SELECT COALESCE(
                       json_agg(json_build_object(
-                          'username', COALESCE(comp_like.slug, u_like.account_name),
+                          'username', COALESCE(comp_like.name, comp_like.slug, u_like.full_name, u_like.account_name),
+                          'username', COALESCE(comp_like.name, comp_like.slug, u_like.full_name, u_like.account_name),
                           'avatar_url', CASE WHEN sub.org_id IS NOT NULL THEN comp_like.logo_url ELSE u_like.avatar_url END,
                           'is_company', (sub.org_id IS NOT NULL),
                           'is_organization', (sub.org_id IS NOT NULL)
@@ -1101,10 +1145,13 @@ exports.getPublicProfilePosts = async (req, res) => {
                       SELECT pl_sample.user_id, pl_sample.org_id
                       FROM active_post_likes pl_sample
                       WHERE pl_sample.post_id = sp.post_id
-                        AND (
-                          ($${orgActorParamIdx}::uuid IS NOT NULL AND pl_sample.org_id != $${orgActorParamIdx}::uuid)
+                        AND NOT (
+                          ($${orgActorParamIdx}::uuid IS NOT NULL AND pl_sample.org_id IS NOT NULL AND pl_sample.org_id = $${orgActorParamIdx}::uuid)
+                        AND NOT (
+                          ($${orgActorParamIdx}::uuid IS NOT NULL AND pl_sample.org_id IS NOT NULL AND pl_sample.org_id = $${orgActorParamIdx}::uuid)
                           OR
-                          ($${orgActorParamIdx}::uuid IS NULL AND ($${userParamIdx}::uuid IS NULL OR pl_sample.user_id != $${userParamIdx}::uuid))
+                          ($${orgActorParamIdx}::uuid IS NULL AND ($${userParamIdx}::uuid IS NOT NULL AND pl_sample.user_id = $${userParamIdx}::uuid AND pl_sample.org_id IS NULL))
+                          ($${orgActorParamIdx}::uuid IS NULL AND ($${userParamIdx}::uuid IS NOT NULL AND pl_sample.user_id = $${userParamIdx}::uuid AND pl_sample.org_id IS NULL))
                         )
                       ORDER BY pl_sample.created_at DESC
                       LIMIT 3
@@ -1128,15 +1175,20 @@ exports.getPublicProfilePosts = async (req, res) => {
               ),
               'mentioned_users', (
                   SELECT COALESCE(json_agg(json_build_object(
+                      'id', COALESCE(u_mention.user_id, o_mention.org_id),
                       'user_id', COALESCE(u_mention.user_id, o_mention.org_id),
+                      'org_id', o_mention.org_id,
                       'full_name', COALESCE(u_mention.full_name, o_mention.name),
-                      'account_name', COALESCE(u_mention.account_name, o_mention.slug)
+                      'account_name', COALESCE(u_mention.account_name, o_mention.slug),
+                      'is_company', (o_mention.org_id IS NOT NULL),
+                      'type', CASE WHEN o_mention.org_id IS NOT NULL THEN 'COMPANY' ELSE 'USER' END,
+                      'slug', o_mention.slug
                   )), '[]'::json)
                   FROM (
-                      SELECT DISTINCT (regexp_matches(COALESCE(sp.content, ''), '@\\[[^\\]]+\\]\\(([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\\)', 'g'))[1]::uuid AS mentioned_id
+                      SELECT DISTINCT (regexp_matches(COALESCE(sp.content, ''), '@\\[[^\\]]+\\]\\((?:(?:user|org|company):)?([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\\)', 'g'))[1]::uuid AS mentioned_id
                   ) mentions
                   LEFT JOIN active_users u_mention ON u_mention.user_id = mentions.mentioned_id
-                  LEFT JOIN organizations o_mention ON o_mention.org_id = mentions.mentioned_id AND o_mention.is_deleted = FALSE
+                  LEFT JOIN organizations o_mention ON o_mention.org_id = mentions.mentioned_id
                   WHERE u_mention.user_id IS NOT NULL OR o_mention.org_id IS NOT NULL
               )
             )
@@ -1186,12 +1238,22 @@ exports.getPublicProfilePosts = async (req, res) => {
           )
       )
 
-      -- Hide posts (and reposts of posts) reported by the current user
+      -- Hide posts (and reposts of posts) reported by the current user or active organization
+      -- Hide posts (and reposts of posts) reported by the current user or active organization
       AND ($${userParamIdx}::uuid IS NULL OR NOT EXISTS (
           SELECT 1 FROM reports r 
           WHERE r.target_type IN ('POST', 'ARTICLE', 'JOB', 'THOUGHT')
             AND (r.target_id = p.post_id OR r.target_id = p.shared_post_id OR r.target_id = p.shared_job_id)
-            AND r.reporter_id = $${userParamIdx}::uuid
+            AND (
+                ($${orgActorParamIdx}::uuid IS NOT NULL AND r.reporter_org_id = $${orgActorParamIdx}::uuid)
+                OR
+                ($${orgActorParamIdx}::uuid IS NULL AND r.reporter_id = $${userParamIdx}::uuid AND r.reporter_org_id IS NULL)
+            )
+            AND (
+                ($${orgActorParamIdx}::uuid IS NOT NULL AND r.reporter_org_id = $${orgActorParamIdx}::uuid)
+                OR
+                ($${orgActorParamIdx}::uuid IS NULL AND r.reporter_id = $${userParamIdx}::uuid AND r.reporter_org_id IS NULL)
+            )
       ))
 
       -- Privacy Escalation: Hide reposts if original post's privacy tightened
@@ -1351,8 +1413,18 @@ exports.getPublicProfileCommentedPosts = async (req, res) => {
     params.push(limit);
     const limitIdx = idx;
 
+    // Viewer actor context (Company / Organization vs User)
+    const rawType = req.headers["x-actor-type"] || req.actor?.type;
+    const type = typeof rawType === "string" ? rawType.trim().toUpperCase() : null;
+    const isOrgType = type === "ORGANIZATION" || type === "COMPANY" || type === "ORG";
+    const actorOrgId = isOrgType ? (req.headers["x-actor-id"] || req.headers["x-company-id"] || req.headers["x-org-id"] || req.actor?.id || null) : null;
+
     const userParamIdx = params.length + 1;
+    const orgActorParamIdx = params.length + 2;
     params.push(currentUserId || null);
+    params.push(actorOrgId || null);
+
+
 
     const query = `
       SELECT
@@ -1401,7 +1473,8 @@ exports.getPublicProfileCommentedPosts = async (req, res) => {
               'liked_users', (
                   SELECT COALESCE(
                       json_agg(json_build_object(
-                          'username', COALESCE(comp_like.slug, u_like.account_name),
+                          'username', COALESCE(comp_like.name, comp_like.slug, u_like.full_name, u_like.account_name),
+                          'username', COALESCE(comp_like.name, comp_like.slug, u_like.full_name, u_like.account_name),
                           'avatar_url', CASE WHEN sub.org_id IS NOT NULL THEN comp_like.logo_url ELSE u_like.avatar_url END,
                           'is_company', (sub.org_id IS NOT NULL),
                           'is_organization', (sub.org_id IS NOT NULL)
@@ -1412,10 +1485,20 @@ exports.getPublicProfileCommentedPosts = async (req, res) => {
                       SELECT pl_sample.user_id, pl_sample.org_id
                       FROM active_post_likes pl_sample
                       WHERE pl_sample.post_id = sp.post_id
-                        AND pl_sample.user_id IS NOT NULL
-                        AND pl_sample.user_id != $${userParamIdx}::uuid
-                      ORDER BY pl_sample.created_at DESC
-                      LIMIT 3
+                        AND NOT (
+                            ($${orgActorParamIdx}::uuid IS NOT NULL AND pl_sample.org_id IS NOT NULL AND pl_sample.org_id = $${orgActorParamIdx}::uuid)
+                            OR
+                            ($${orgActorParamIdx}::uuid IS NULL AND pl_sample.user_id = $${userParamIdx} AND pl_sample.org_id IS NULL)
+                        )
+                        ORDER BY pl_sample.created_at DESC
+                        LIMIT 3
+                        AND NOT (
+                            ($${orgActorParamIdx}::uuid IS NOT NULL AND pl_sample.org_id IS NOT NULL AND pl_sample.org_id = $${orgActorParamIdx}::uuid)
+                            OR
+                            ($${orgActorParamIdx}::uuid IS NULL AND pl_sample.user_id = $${userParamIdx} AND pl_sample.org_id IS NULL)
+                        )
+                        ORDER BY pl_sample.created_at DESC
+                        LIMIT 3
                   ) sub
                   LEFT JOIN active_users u_like ON u_like.user_id = sub.user_id
                   LEFT JOIN organizations comp_like ON comp_like.org_id = sub.org_id
@@ -1501,12 +1584,22 @@ exports.getPublicProfileCommentedPosts = async (req, res) => {
           )
       )
 
-      -- Hide posts (and reposts of posts) reported by the current user
+      -- Hide posts (and reposts of posts) reported by the current user or active organization
+      -- Hide posts (and reposts of posts) reported by the current user or active organization
       AND ($${userParamIdx}::uuid IS NULL OR NOT EXISTS (
           SELECT 1 FROM reports r 
           WHERE r.target_type IN ('POST', 'ARTICLE', 'JOB', 'THOUGHT')
             AND (r.target_id = p.post_id OR r.target_id = p.shared_post_id OR r.target_id = p.shared_job_id)
-            AND r.reporter_id = $${userParamIdx}::uuid
+            AND (
+                ($${orgActorParamIdx}::uuid IS NOT NULL AND r.reporter_org_id = $${orgActorParamIdx}::uuid)
+                OR
+                ($${orgActorParamIdx}::uuid IS NULL AND r.reporter_id = $${userParamIdx}::uuid AND r.reporter_org_id IS NULL)
+            )
+            AND (
+                ($${orgActorParamIdx}::uuid IS NOT NULL AND r.reporter_org_id = $${orgActorParamIdx}::uuid)
+                OR
+                ($${orgActorParamIdx}::uuid IS NULL AND r.reporter_id = $${userParamIdx}::uuid AND r.reporter_org_id IS NULL)
+            )
       ))
 
       -- Privacy Escalation: Hide reposts if original post's privacy tightened
@@ -1628,6 +1721,13 @@ exports.getPublicProfileCommentedPosts = async (req, res) => {
     const userParamIdx = params.length + 1;
     params.push(currentUserId);
 
+    const rawType2 = req.headers["x-actor-type"] || req.actor?.type;
+    const type2 = typeof rawType2 === "string" ? rawType2.trim().toUpperCase() : null;
+    const isOrgType2 = type2 === "ORGANIZATION" || type2 === "COMPANY" || type2 === "ORG";
+    const actorOrgId2 = isOrgType2 ? (req.headers["x-actor-id"] || req.headers["x-company-id"] || req.actor?.id || null) : null;
+    const orgActorParamIdx = params.length + 1;
+    params.push(actorOrgId2 || null);
+
     const query = `
       SELECT
         p.post_id,
@@ -1669,7 +1769,8 @@ exports.getPublicProfileCommentedPosts = async (req, res) => {
         (
             SELECT COALESCE(
                 json_agg(json_build_object(
-                    'username', COALESCE(comp_like.slug, u_like.account_name),
+                    'username', COALESCE(comp_like.name, comp_like.slug, u_like.full_name, u_like.account_name),
+                    'username', COALESCE(comp_like.name, comp_like.slug, u_like.full_name, u_like.account_name),
                     'avatar_url', CASE WHEN sub.org_id IS NOT NULL THEN comp_like.logo_url ELSE u_like.avatar_url END,
                     'is_company', (sub.org_id IS NOT NULL),
                     'is_organization', (sub.org_id IS NOT NULL)
@@ -1680,8 +1781,16 @@ exports.getPublicProfileCommentedPosts = async (req, res) => {
                 SELECT pl_sample.user_id, pl_sample.org_id
                 FROM active_post_likes pl_sample
                 WHERE pl_sample.post_id = p.post_id
-                  AND pl_sample.user_id IS NOT NULL
-                  AND pl_sample.user_id != $${userParamIdx}::uuid
+                  AND NOT (
+                    ($${orgActorParamIdx}::uuid IS NOT NULL AND pl_sample.org_id IS NOT NULL AND pl_sample.org_id = $${orgActorParamIdx}::uuid)
+                    OR
+                    ($${orgActorParamIdx}::uuid IS NULL AND ($${userParamIdx}::uuid IS NOT NULL AND pl_sample.user_id = $${userParamIdx}::uuid AND pl_sample.org_id IS NULL))
+                  )
+                  AND NOT (
+                    ($${orgActorParamIdx}::uuid IS NOT NULL AND pl_sample.org_id IS NOT NULL AND pl_sample.org_id = $${orgActorParamIdx}::uuid)
+                    OR
+                    ($${orgActorParamIdx}::uuid IS NULL AND ($${userParamIdx}::uuid IS NOT NULL AND pl_sample.user_id = $${userParamIdx}::uuid AND pl_sample.org_id IS NULL))
+                  )
                 ORDER BY pl_sample.created_at DESC
                 LIMIT 3
             ) sub
@@ -2298,6 +2407,27 @@ exports.getSearchHistory = async (req, res) => {
       WHERE sh.user_id = $1
         AND (($2::uuid IS NULL AND sh.org_id IS NULL) OR (sh.org_id = $2::uuid))
         AND (sh.query_normalized NOT LIKE 'user:%' OR u.user_id IS NOT NULL OR o.org_id IS NOT NULL)
+        AND NOT EXISTS (
+          SELECT 1 FROM blocks b
+          WHERE (
+            -- Block between logged in user and target entity
+            (b.blocker_id = $1 AND b.blocked_id = COALESCE(u.user_id, o.org_id, CASE WHEN sh.profile_snapshot->>'id' ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' THEN (sh.profile_snapshot->>'id')::uuid ELSE NULL END))
+            OR (b.blocker_id = COALESCE(u.user_id, o.org_id, CASE WHEN sh.profile_snapshot->>'id' ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' THEN (sh.profile_snapshot->>'id')::uuid ELSE NULL END) AND b.blocked_id = $1)
+            -- Block between acting organization and target entity
+            OR ($2::uuid IS NOT NULL AND (
+              (b.blocker_id = $2 AND b.blocked_id = COALESCE(u.user_id, o.org_id, CASE WHEN sh.profile_snapshot->>'id' ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' THEN (sh.profile_snapshot->>'id')::uuid ELSE NULL END))
+              OR (b.blocker_id = COALESCE(u.user_id, o.org_id, CASE WHEN sh.profile_snapshot->>'id' ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' THEN (sh.profile_snapshot->>'id')::uuid ELSE NULL END) AND b.blocked_id = $2)
+            ))
+          )
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM organization_blocked_accounts oba
+          WHERE (
+            ($2::uuid IS NOT NULL AND oba.org_id = $2 AND oba.blocked_id = COALESCE(u.user_id, o.org_id, CASE WHEN sh.profile_snapshot->>'id' ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' THEN (sh.profile_snapshot->>'id')::uuid ELSE NULL END))
+            OR (oba.org_id = COALESCE(u.user_id, o.org_id, CASE WHEN sh.profile_snapshot->>'id' ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' THEN (sh.profile_snapshot->>'id')::uuid ELSE NULL END) AND oba.blocked_id = $1)
+            OR ($2::uuid IS NOT NULL AND oba.org_id = COALESCE(u.user_id, o.org_id, CASE WHEN sh.profile_snapshot->>'id' ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' THEN (sh.profile_snapshot->>'id')::uuid ELSE NULL END) AND oba.blocked_id = $2)
+          )
+        )
       ORDER BY sh.created_at DESC
     `;
     const result = await pool.query(query, [userId, orgId]);
@@ -2344,6 +2474,18 @@ exports.saveSearchHistory = async (req, res) => {
   
   // Make queryNormalized unique by profile ID to prevent collisions between users with identical names
   if (profileSnapshot && profileSnapshot.id) {
+    const targetId = profileSnapshot.id;
+    // Check if target entity is blocked (bi-directional for both personal user and org actor)
+    const blockCheck = await pool.query(
+      `SELECT 1 FROM blocks 
+       WHERE ((blocker_id = $1 AND blocked_id = $2) OR (blocker_id = $2 AND blocked_id = $1))
+          OR ($3::uuid IS NOT NULL AND ((blocker_id = $3 AND blocked_id = $2) OR (blocker_id = $2 AND blocked_id = $3)))
+       LIMIT 1`,
+      [userId, targetId, orgId]
+    );
+    if (blockCheck.rowCount > 0) {
+      return res.status(200).json({ success: true, message: "Blocked entity not saved to history" });
+    }
     queryNormalized = `user:${profileSnapshot.id}`;
   } else {
     queryNormalized = `query:${queryNormalized}`;

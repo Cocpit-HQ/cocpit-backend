@@ -4,35 +4,44 @@
 
 /**
  * Section 1: Basic Info (Max 30 points)
- * Evaluates 8 fields: full_name, headline, location, status (account_type), about, looking_for, availability, work_setup
+ * Evaluates 5 fields:
+ * - full_name (4 pts)
+ * - location (4 pts)
+ * - headline (6 pts)
+ * - status (account_type) (6 pts)
+ * - about (about_text) (10 pts)
  */
 function calculateBasicInfoScore(userProfile) {
     const fields = [
-        { key: "full_name", value: userProfile?.full_name },
-        { key: "headline", value: userProfile?.headline },
-        { key: "location", value: userProfile?.location },
-        { key: "status", value: userProfile?.account_type },
-        { key: "about", value: userProfile?.about_text },
-        { key: "looking_for", value: userProfile?.open_to },
-        { key: "availability", value: userProfile?.availability },
-        { key: "work_setup", value: userProfile?.work_preference }
+        { key: "full_name", value: userProfile?.full_name, weight: 4 },
+        { key: "location",  value: userProfile?.location,  weight: 4 },
+        { key: "headline",  value: userProfile?.headline,  weight: 6 },
+        { key: "status",    value: userProfile?.account_type || userProfile?.status, weight: 6 },
+        { key: "about",     value: userProfile?.about_text || userProfile?.about, weight: 10 },
+        // Previously included in 8-field scoring:
+        // { key: "looking_for", value: userProfile?.open_to },
+        // { key: "availability", value: userProfile?.availability },
+        // { key: "work_setup", value: userProfile?.work_preference }
     ];
 
     const filledFields = fields.filter(f => f.value && String(f.value).trim() !== "");
     const filledCount = filledFields.length;
     const totalCount = fields.length;
-    const missingFields = fields.filter(f => !f.value || String(f.value).trim() === "").map(f => f.key);
+    const missingFields = fields
+        .filter(f => !f.value || String(f.value).trim() === "")
+        .map(f => f.key);
 
-    // Linear scale: each field is worth 30/8 = 3.75 pts, rounded cleanly
-    // Tiers: 4/8 filled → 15 pts, 8/8 filled → 30 pts
-    let score = 0;
-    if (filledCount === totalCount) {
-        score = 30; // all filled: full 30 pts
-    } else if (filledCount >= 4) {
-        score = 15 + Math.round(((filledCount - 4) / (totalCount - 4)) * 15);
-    } else {
-        score = Math.round((filledCount / 4) * 15);
-    }
+    const score = filledFields.reduce((sum, f) => sum + f.weight, 0);
+
+    // Previously: linear scale (each field worth 30/8 = ~3.75 pts)
+    // let score = 0;
+    // if (filledCount === totalCount) {
+    //     score = 30; // all filled: full 30 pts
+    // } else if (filledCount >= 4) {
+    //     score = 15 + Math.round(((filledCount - 4) / (totalCount - 4)) * 15);
+    // } else {
+    //     score = Math.round((filledCount / 4) * 15);
+    // }
 
     return {
         score: Math.min(30, Math.max(0, score)),

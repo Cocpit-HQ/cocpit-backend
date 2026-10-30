@@ -994,6 +994,15 @@ exports.removeActivity = async (req, res) => {
                     actorOrgId = orgRes.rows[0].org_id;
                 }
             }
+
+            const { checkOrgPermission } = require('../../core/utils/rbac');
+            const hasPerm = await checkOrgPermission(pool, actorOrgId, req.user.sub, ['CREATE_POST', 'CREATE_CONTENT']);
+            if (!hasPerm) {
+                return res.status(403).json({
+                    success: false,
+                    message: "You do not have permission to interact with posts on behalf of this organization."
+                });
+            }
         }
         const targetId = isOrgActor ? actorOrgId : req.user.sub;
         const { type, id } = req.params;
@@ -1248,6 +1257,11 @@ exports.getNotificationPreferences = async (req, res) => {
                 jobs: true,
                 messages: true,
                 emails: true,
+                all_notifications: true,
+                post_notifications: true,
+                job_alerts: true,
+                message_notifications: true,
+                email_notifications: true,
             });
         }
 
@@ -1259,6 +1273,11 @@ exports.getNotificationPreferences = async (req, res) => {
             jobs: prefs.job_alerts ?? true,
             messages: prefs.message_notifications ?? true,
             emails: prefs.email_notifications ?? true,
+            all_notifications: prefs.all_notifications ?? true,
+            post_notifications: prefs.post_notifications ?? true,
+            job_alerts: prefs.job_alerts ?? true,
+            message_notifications: prefs.message_notifications ?? true,
+            email_notifications: prefs.email_notifications ?? true,
         });
     } catch (error) {
         console.error("Get notification preferences error:", error);
@@ -1273,21 +1292,34 @@ exports.getNotificationPreferences = async (req, res) => {
 exports.updateNotificationPreferences = async (req, res) => {
     try {
         const userId = req.user.sub;
-        const { all = true, posts = true, jobs = true, messages = true, emails = true } = req.body;
+        const body = req.body || {};
+
+        const all = body.all_notifications !== undefined ? body.all_notifications : (body.all !== undefined ? body.all : null);
+        const posts = body.post_notifications !== undefined ? body.post_notifications : (body.posts !== undefined ? body.posts : null);
+        const jobs = body.job_alerts !== undefined ? body.job_alerts : (body.jobs !== undefined ? body.jobs : null);
+        const messages = body.message_notifications !== undefined ? body.message_notifications : (body.messages !== undefined ? body.messages : null);
+        const emails = body.email_notifications !== undefined ? body.email_notifications : (body.emails !== undefined ? body.emails : null);
 
         await pool.query(
             `INSERT INTO user_notification_preferences
                 (user_id, all_notifications, post_notifications, job_alerts, message_notifications, email_notifications, updated_at)
-             VALUES ($1, $2, $3, $4, $5, $6, NOW())
+             VALUES ($1, COALESCE($2, true), COALESCE($3, true), COALESCE($4, true), COALESCE($5, true), COALESCE($6, true), NOW())
              ON CONFLICT (user_id) DO UPDATE SET
-                all_notifications = EXCLUDED.all_notifications,
-                post_notifications = EXCLUDED.post_notifications,
-                job_alerts = EXCLUDED.job_alerts,
-                message_notifications = EXCLUDED.message_notifications,
-                email_notifications = EXCLUDED.email_notifications,
+                all_notifications = COALESCE($2, user_notification_preferences.all_notifications),
+                post_notifications = COALESCE($3, user_notification_preferences.post_notifications),
+                job_alerts = COALESCE($4, user_notification_preferences.job_alerts),
+                message_notifications = COALESCE($5, user_notification_preferences.message_notifications),
+                email_notifications = COALESCE($6, user_notification_preferences.email_notifications),
                 updated_at = NOW()`,
             [userId, all, posts, jobs, messages, emails]
         );
+
+        const socketService = require("../../core/infrastructure/socket.service");
+        if (socketService && socketService.notifyUser) {
+            socketService.notifyUser(userId, "USER_NOTIFICATIONS_UPDATED", {
+                preferences: { all, posts, jobs, messages, emails, post_notifications: posts }
+            });
+        }
 
         return res.status(200).json({ success: true });
     } catch (error) {
@@ -1316,6 +1348,7 @@ exports.getBlockedUsers = async (req, res) => {
             const obaResult = await pool.query(
                 `SELECT oba.blocked_id, oba.blocked_type, oba.created_at,
                         COALESCE(u.full_name, u.account_name, o.name, 'Blocked Account') AS name,
+                        COALESCE(u.account_name, o.slug) AS account_name,
                         COALESCE(u.avatar_url, o.logo_url, '') AS avatar
                  FROM organization_blocked_accounts oba
                  LEFT JOIN users u ON oba.blocked_type = 'user' AND oba.blocked_id = u.user_id AND (u.is_deactivated IS FALSE OR u.is_deactivated IS NULL)
@@ -1329,9 +1362,14 @@ exports.getBlockedUsers = async (req, res) => {
             const map = new Map();
             for (const item of orgBlockedList) {
                 if (!item || !item.user_id) continue;
+                const isCompany = item.entity_type === 'COMPANY';
                 map.set(item.user_id, {
                     id: item.user_id,
-                    type: item.entity_type === 'COMPANY' ? 'company' : 'user',
+                    slug: item.account_name,
+                    account_name: item.account_name,
+                    type: isCompany ? 'company' : 'user',
+                    entity_type: isCompany ? 'COMPANY' : 'USER',
+                    isCompany,
                     name: item.full_name || item.account_name || "Blocked Account",
                     created_at: item.created_at || new Date().toISOString(),
                     avatar: item.avatar_url || "",
@@ -1339,9 +1377,14 @@ exports.getBlockedUsers = async (req, res) => {
             }
             for (const row of obaResult.rows) {
                 if (!map.has(row.blocked_id)) {
+                    const isCompany = row.blocked_type === 'company' || row.blocked_type === 'COMPANY';
                     map.set(row.blocked_id, {
                         id: row.blocked_id,
-                        type: row.blocked_type,
+                        slug: row.account_name,
+                        account_name: row.account_name,
+                        type: isCompany ? 'company' : 'user',
+                        entity_type: isCompany ? 'COMPANY' : 'USER',
+                        isCompany,
                         name: row.name,
                         date: row.created_at ? new Date(row.created_at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) : "Blocked recently",
                         avatar: row.avatar,
@@ -1359,13 +1402,20 @@ exports.getBlockedUsers = async (req, res) => {
 
         const formatted = blockedList
             .filter((item) => item && item.user_id)
-            .map((item) => ({
-                id: item.user_id,
-                type: item.entity_type === 'COMPANY' ? 'company' : 'user',
-                name: item.full_name || item.account_name || "User",
-                created_at: item.created_at || new Date().toISOString(),
-                avatar: item.avatar_url || "",
-            }));
+            .map((item) => {
+                const isCompany = item.entity_type === 'COMPANY';
+                return {
+                    id: item.user_id,
+                    slug: item.account_name,
+                    account_name: item.account_name,
+                    type: isCompany ? 'company' : 'user',
+                    entity_type: isCompany ? 'COMPANY' : 'USER',
+                    isCompany,
+                    name: item.full_name || item.account_name || "User",
+                    created_at: item.created_at || new Date().toISOString(),
+                    avatar: item.avatar_url || "",
+                };
+            });
 
         return res.status(200).json(formatted);
     } catch (error) {
@@ -1698,6 +1748,17 @@ exports.getUserReportById = async (req, res) => {
         const userId   = req.user.sub;
         const reportId = req.params.id;
 
+        const actorOrgId = req.actor?.type === "ORGANIZATION" ? (req.actor.orgId || req.headers["x-actor-id"]) : null;
+        const isOrgActor = !!actorOrgId;
+
+        let whereClause = "WHERE r.id = $1 AND r.reporter_id = $2 AND r.reporter_org_id IS NULL";
+        let queryParams = [reportId, userId];
+
+        if (isOrgActor) {
+            whereClause = "WHERE r.id = $1 AND r.reporter_org_id = $2";
+            queryParams = [reportId, actorOrgId];
+        }
+
         const result = await pool.query(
             `SELECT
                 r.id,
@@ -1728,8 +1789,8 @@ exports.getUserReportById = async (req, res) => {
             LEFT JOIN post_comments pc  ON r.target_type IN ('COMMENT', 'THOUGHT') AND r.target_id = pc.comment_id
             LEFT JOIN users cu          ON pc.author_id = cu.user_id
             LEFT JOIN organizations o   ON r.target_type = 'COMPANY' AND r.target_id = o.org_id
-            WHERE r.id = $1 AND r.reporter_id = $2`,
-            [reportId, userId]
+            ${whereClause}`,
+            queryParams
         );
 
         if (result.rowCount === 0) {

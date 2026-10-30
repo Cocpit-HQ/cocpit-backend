@@ -226,4 +226,171 @@ async function notifyBroadcastToChildOrgs(parentOrgId, postId, postContent) {
     }
 }
 
-module.exports = { notifyOrgFollowers, notifyBroadcastToChildOrgs };
+const ACTION_CONFIG = {
+    company_deactivated: {
+        title: "Company Deactivated",
+        textTemplate: (name) => `${name} has been deactivated.`
+    },
+    company_reactivated: {
+        title: "Company Reactivated",
+        textTemplate: (name) => `${name} has been reactivated.`
+    },
+    company_deleted: {
+        title: "Company Scheduled for Deletion",
+        textTemplate: (name) => `${name} has been scheduled for deletion.`
+    },
+    company_recovered: {
+        title: "Company Recovered",
+        textTemplate: (name) => `${name} has been recovered.`
+    }
+};
+
+/**
+ * Dispatches notifications to all stakeholders (Owner, Admins, and all Team Members)
+ * of an organization into their personal Notification Center when an organization's state changes.
+ *
+ * @param {string} orgId - Target organization ID
+ * @param {string} actorId - ID of user who performed the state change
+ * @param {string} actionType - 'company_deactivated' | 'company_reactivated' | 'company_deleted' | 'company_recovered'
+ */
+async function notifyAllOrgStakeholders(orgId, actorId, actionType) {
+    const config = ACTION_CONFIG[actionType];
+    if (!config) {
+        console.error(`notifyAllOrgStakeholders: Unknown actionType "${actionType}"`);
+        return;
+    }
+
+    try {
+        // 1. Fetch organization details using pool (decoupled from any caller transaction)
+        const orgRes = await pool.query(
+            `SELECT org_id, name, logo_url, slug, created_by FROM organizations WHERE org_id = $1`,
+            [orgId]
+        );
+        if (orgRes.rowCount === 0) return;
+        const org = orgRes.rows[0];
+
+        // 2. Fetch all unique stakeholders: Owner (created_by) + all active organization_members
+        const stakeholdersRes = await pool.query(
+            `SELECT created_by AS user_id FROM organizations WHERE org_id = $1 AND created_by IS NOT NULL
+             UNION
+             SELECT user_id FROM organization_members WHERE org_id = $1 AND (status = 'ACTIVE' OR status IS NULL) AND user_id IS NOT NULL`,
+            [org.org_id]
+        );
+
+        if (stakeholdersRes.rowCount === 0) return;
+
+        const notifText = config.textTemplate(org.name || "Company");
+        const baseMetadata = {
+            org_id: org.org_id,
+            orgId: org.org_id,
+            org_name: org.name,
+            orgName: org.name,
+            org_logo: org.logo_url,
+            orgLogo: org.logo_url,
+            org_slug: org.slug,
+            orgSlug: org.slug,
+            owner_id: org.created_by,
+            ownerId: org.created_by,
+            title: config.title
+        };
+
+        // 3. Prepare bulk insert into notifications table with recipient_org_id = NULL (personal feed)
+        const values = [];
+        const placeholders = [];
+        let paramIdx = 1;
+
+        for (const row of stakeholdersRes.rows) {
+            const isOwner = row.user_id === org.created_by;
+            const stakeholderMetadata = {
+                ...baseMetadata,
+                is_owner: isOwner,
+                isOwner: isOwner,
+                can_recover: isOwner,
+                canRecover: isOwner
+            };
+            const metadataJson = JSON.stringify(stakeholderMetadata);
+
+            placeholders.push(
+                `($${paramIdx}, $${paramIdx + 1}, $${paramIdx + 2}, $${paramIdx + 3}, $${paramIdx + 4}, $${paramIdx + 5}::jsonb, NULL)`
+            );
+            values.push(
+                row.user_id,             // user_id (personal feed)
+                actorId || null,         // sender_id
+                actionType,              // type
+                notifText,               // text
+                org.org_id,              // reference_id
+                metadataJson             // metadata
+            );
+            paramIdx += 6;
+        }
+
+        const insertQuery = `
+            INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata, recipient_org_id)
+            VALUES ${placeholders.join(", ")}
+            RETURNING notification_id, user_id
+        `;
+
+        const insertRes = await pool.query(insertQuery, values);
+
+        // 4. Dispatch real-time socket events and push notifications
+        let sendPush = null;
+        try {
+            sendPush = require("../modules/notification/notification.service").sendToUser;
+        } catch {
+            // Push service optional
+        }
+
+        const timestamp = new Date().toISOString();
+
+        for (const row of insertRes.rows) {
+            const isOwner = row.user_id === org.created_by;
+            const stakeholderMetadata = {
+                ...baseMetadata,
+                is_owner: isOwner,
+                isOwner: isOwner,
+                can_recover: isOwner,
+                canRecover: isOwner
+            };
+
+            // Real-time socket notification
+            try {
+                socketService.notifyUser(row.user_id, "notification", {
+                    notification_id: row.notification_id,
+                    type: actionType,
+                    text: notifText,
+                    reference_id: org.org_id,
+                    referenceId: org.org_id,
+                    actor_name: org.name,
+                    actor_avatar: org.logo_url,
+                    actor_slug: org.slug,
+                    is_company_actor: true,
+                    is_organization_actor: true,
+                    can_recover: isOwner,
+                    canRecover: isOwner,
+                    is_owner: isOwner,
+                    isOwner: isOwner,
+                    metadata: stakeholderMetadata,
+                    is_read: false,
+                    created_at: timestamp,
+                    recipient_org_id: null
+                });
+            } catch (sockErr) {
+                console.error(`[notifyAllOrgStakeholders] Socket emit error for user ${row.user_id}:`, sockErr.message);
+            }
+
+            // Mobile push notification
+            if (typeof sendPush === 'function') {
+                sendPush(row.user_id, config.title, notifText, {
+                    type: actionType,
+                    org_id: org.org_id
+                }).catch(err => console.error(`[Push Notification] Error sending to ${row.user_id}:`, err?.message));
+            }
+        }
+
+        console.log(`[notifyAllOrgStakeholders] Dispatched ${actionType} notifications to ${insertRes.rowCount} users for ${org.name}`);
+    } catch (err) {
+        console.error(`[notifyAllOrgStakeholders] Error dispatching ${actionType} for org ${orgId}:`, err);
+    }
+}
+
+module.exports = { notifyOrgFollowers, notifyBroadcastToChildOrgs, notifyAllOrgStakeholders };

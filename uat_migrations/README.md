@@ -65,7 +65,36 @@ Promotes `MANAGE_COMPANY_DETAILS` from a locked system key (`sort_order = 0`) to
 
 ---
 
+### `v1.8.0_uat_migration.sql`
+Brings UAT database schema into alignment for Release 1.8.0 (`organization_notification_settings`).
+
+#### Changes Included:
+1. **`organization_notification_settings` table & index**:
+   - Creates table for organization-wide notification preferences (`org_id` PK, `user_id`, `events_enabled`, `jobs_enabled`, `posts_enabled`, `messages_enabled`, `messages_chat_enabled`, `messages_jobs_enabled`, `email_enabled`, `push_enabled`, `created_at`, `updated_at`).
+   - Adds index `idx_org_notification_settings_org_id ON organization_notification_settings(org_id)`.
+
+---
+
 ## How to Run
+
+### Running v1.8.0 Migration
+
+#### Option 1: Using npm script (recommended)
+```bash
+npm run migrate:uat:v1.8.0
+```
+
+#### Option 2: Using Node runner directly
+```bash
+node uat_migrations/run_v1.8.0_migration.js
+```
+
+#### Option 3: Using `psql` directly
+```bash
+psql -h 192.168.1.50 -U swaroop -d cocpit_backend_uat -f uat_migrations/v1.8.0_uat_migration.sql
+```
+
+---
 
 ### Running v1.7.0 Migration
 

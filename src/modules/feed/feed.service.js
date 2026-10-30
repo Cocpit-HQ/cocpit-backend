@@ -112,8 +112,14 @@ async function _fetchChronologicalFeed(userId, cursor, limit, pool, orgActorId) 
       ${orgActorId ? `
       AND NOT EXISTS (
         SELECT 1 FROM blocks b
-        WHERE (b.is_org_block = true AND p.author_org_id IS NULL AND ((b.blocker_id = $2 AND b.blocked_id = p.author_id) OR (b.blocker_id = p.author_id AND b.blocked_id = $2)))
-           OR (b.is_org_block = true AND p.author_org_id IS NOT NULL AND ((b.blocker_id = p.author_org_id AND b.blocked_id = $2) OR (b.blocker_id = $2 AND b.blocked_id = p.author_org_id)))
+        WHERE (p.author_org_id IS NULL AND (
+                (b.is_org_block = true AND b.blocker_id = $2 AND b.blocked_id = p.author_id)
+             OR (b.is_org_block = false AND b.blocker_id = p.author_id AND b.blocked_id = $2)
+        ))
+        OR (p.author_org_id IS NOT NULL AND (
+                (b.blocker_id = p.author_org_id AND b.blocked_id = $2)
+             OR (b.blocker_id = $2 AND b.blocked_id = p.author_org_id)
+        ))
       )
       AND NOT EXISTS (
         SELECT 1 FROM reports r

@@ -196,6 +196,15 @@ exports.acceptTeamsInvite = async (req, res) => {
         }
         const invite = inviteRes.rows[0];
 
+        // Verify organization is active
+        const orgActiveCheck = await client.query(
+            `SELECT org_id, is_deactivated, is_deleted, deletion_execute_at FROM organizations WHERE org_id = $1`,
+            [invite.org_id]
+        );
+        if (orgActiveCheck.rowCount === 0 || orgActiveCheck.rows[0].is_deleted || orgActiveCheck.rows[0].is_deactivated || orgActiveCheck.rows[0].deletion_execute_at) {
+            throw new AppError("This organization is currently deactivated or unavailable.", 400);
+        }
+
         // 2. Verify Email Match (Optional but recommended security)
         // Check if current user's email matches invite email? 
         // For now, let's assume possession of token is enough, or we can check.
@@ -467,7 +476,7 @@ exports.leaveOrganization = async (req, res) => {
 
         // 1. Check existence and role with LEFT JOIN and organization creator
         const resMember = await client.query(
-            `SELECT om.member_id, om.status, om.role_id, oroles.name AS role_name, o.created_by
+            `SELECT om.member_id, om.status, om.role_id, oroles.name AS role_name, o.created_by, o.is_deactivated
              FROM organization_members om
              JOIN organizations o ON o.org_id = om.org_id
              LEFT JOIN organization_roles oroles ON om.role_id = oroles.role_id
@@ -481,6 +490,12 @@ exports.leaveOrganization = async (req, res) => {
         }
 
         const member = resMember.rows[0];
+
+        // Cannot leave a deactivated organization
+        if (member.is_deactivated) {
+            await client.query("ROLLBACK");
+            return res.status(400).json({ message: "Cannot leave a deactivated organization page" });
+        }
 
         // 2. Creator or Owner cannot leave
         const isOwner = member.created_by === userId || member.role_name?.toLowerCase() === 'owner';
@@ -709,6 +724,10 @@ exports.getUserPendingTeamsInvites = async (req, res, next) => {
              WHERE (oi.invited_user_id = $1 OR LOWER(oi.email) = LOWER($2)) 
                AND LOWER(oi.status::text) = 'pending' 
                AND oi.expires_at > NOW()
+               AND (o.is_deleted IS FALSE OR o.is_deleted IS NULL)
+               AND (o.is_deactivated IS FALSE OR o.is_deactivated IS NULL)
+               AND (o.is_suspended IS FALSE OR o.is_suspended IS NULL)
+               AND o.deletion_execute_at IS NULL
              ORDER BY oi.created_at DESC`,
             [userId, email]
         );

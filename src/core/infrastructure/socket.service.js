@@ -1,5 +1,6 @@
 const pool = require("../db/pool");
 const { getUserRoom, getConversationRoom, getStoryRoom, getOrgRoom, getPostRoom } = require("../utils/socketRooms");
+const { isNotificationAllowed, isOrgNotificationAllowed } = require("../utils/notificationPermission");
 
 class SocketService {
   constructor() {
@@ -142,19 +143,35 @@ class SocketService {
    * @param {string} event
    * @param {object} payload
    */
-  notifyUser(userId, event, payload) {
+  async notifyUser(userId, event, payload) {
     if (!this.io) {
       this._warnUninitialized();
       return;
+    }
+    if (event === "notification") {
+      try {
+        const allowed = await isNotificationAllowed(userId, payload?.type);
+        if (!allowed) return;
+      } catch (err) {
+        console.error("notifyUser permission check error:", err);
+      }
     }
     const room = getUserRoom(userId);
     this.io.to(room).emit(event, payload);
   }
 
-  notifyUserScoped(userId, event, payload, actorScope = null) {
+  async notifyUserScoped(userId, event, payload, actorScope = null) {
     if (!this.io) {
       this._warnUninitialized();
       return;
+    }
+    if (event === "notification") {
+      try {
+        const allowed = await isNotificationAllowed(userId, payload?.type);
+        if (!allowed) return;
+      } catch (err) {
+        console.error("notifyUserScoped permission check error:", err);
+      }
     }
 
     const room = getUserRoom(userId);
@@ -314,10 +331,18 @@ class SocketService {
    * @param {string} event
    * @param {object} payload
    */
-  notifyOrg(orgId, event, payload) {
+  async notifyOrg(orgId, event, payload) {
     if (!this.io) {
       this._warnUninitialized();
       return;
+    }
+    if (event === "notification") {
+      try {
+        const allowed = await isOrgNotificationAllowed(orgId, payload?.type);
+        if (!allowed) return;
+      } catch (err) {
+        console.error("notifyOrg permission check error:", err);
+      }
     }
     const room = getOrgRoom(orgId);
     this.io.to(room).emit(event, payload);

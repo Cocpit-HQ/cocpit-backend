@@ -10,6 +10,7 @@ const { checkBlockStatus, checkActorBlockStatus } = require("../../core/utils/bl
 const pool = require("../../core/db/pool");
 const { handleExperienceOrgLink, handleEducationOrgLink, cleanupPreviousCompanyMemberships } = require("../../utils/orgLinkHelper");
 const { toTitleCase } = require("../../utils/nameNormalizer");
+const { deleteR2Asset } = require("../../core/infrastructure/r2.client");
 
 // ─── Experience Validation Helpers ──────────────────────────────────────────────
 
@@ -224,8 +225,10 @@ exports.getMyProfile = async (req, res) => {
 
 exports.updateProfile = async (req, res) => {
     const userId = req.user.sub;
-    const { full_name, headline, job_title, company_name, school, degree, location, about_text, mobile_number,
+    const { full_name, headline, job_title, company_name, school, degree, location, about_text: rawAboutText, about: rawAbout, mobile_number,
         account_name, website, industry } = req.body;
+    const about_text = rawAboutText !== undefined ? rawAboutText : rawAbout;
+    if (about_text !== undefined) req.body.about_text = about_text;
 
     if (full_name) {
         if (full_name.trim().length < 3) return res.status(400).json({ message: "Full name must be at least 3 characters" });
@@ -238,7 +241,7 @@ exports.updateProfile = async (req, res) => {
     if (school && school.length > 100) return res.status(400).json({ message: "School cannot exceed 100 characters" });
     if (degree && degree.length > 100) return res.status(400).json({ message: "Degree cannot exceed 100 characters" });
     if (location && location.length > 150) return res.status(400).json({ message: "Location cannot exceed 150 characters" });
-    if (about_text && about_text.length > 500) return res.status(400).json({ message: "About section cannot exceed 500 characters" });
+    if (about_text && about_text.length > 2000) return res.status(400).json({ message: "About section cannot exceed 2000 characters" });
     if (website && website.length > 255) return res.status(400).json({ message: "Website cannot exceed 255 characters" });
     // Validate account_name (username) if provided
     if (account_name !== undefined) {
@@ -275,7 +278,11 @@ exports.uploadOrReplaceAvatar = async (req, res) => {
     try {
         if (!req.file) return res.status(400).json({ message: "No file uploaded" });
         const avatarUrl = req.file.path || req.file.secure_url;
+        const oldAvatar = await profileRepo.getAvatarUrl(req.user.sub);
         await profileRepo.updateAvatarUrl(req.user.sub, avatarUrl);
+        if (oldAvatar && oldAvatar !== avatarUrl) {
+            deleteR2Asset(oldAvatar).catch(err => console.error("[uploadOrReplaceAvatar] R2 cleanup error:", err.message));
+        }
         res.json({ message: "Profile picture updated successfully", avatarUrl });
     } catch (err) {
         console.error("Avatar upload error:", err);
@@ -296,7 +303,11 @@ exports.getAvatar = async (req, res) => {
 
 exports.deleteAvatar = async (req, res) => {
     try {
+        const oldAvatar = await profileRepo.getAvatarUrl(req.user.sub);
         await profileRepo.updateAvatarUrl(req.user.sub, null);
+        if (oldAvatar) {
+            deleteR2Asset(oldAvatar).catch(err => console.error("[deleteAvatar] R2 cleanup error:", err.message));
+        }
         res.json({ message: "Profile picture deleted successfully" });
     } catch (err) {
         console.error("Delete avatar error:", err);
@@ -310,7 +321,11 @@ exports.uploadOrReplaceCoverPhoto = async (req, res) => {
     try {
         if (!req.file) return res.status(400).json({ message: "No file uploaded" });
         const coverUrl = req.file.path || req.file.secure_url;
+        const oldCover = await profileRepo.getCoverUrl(req.user.sub);
         await profileRepo.updateCoverUrl(req.user.sub, coverUrl);
+        if (oldCover && oldCover !== coverUrl) {
+            deleteR2Asset(oldCover).catch(err => console.error("[uploadOrReplaceCoverPhoto] R2 cleanup error:", err.message));
+        }
         res.json({ message: "Cover photo updated successfully", coverUrl });
     } catch (err) {
         console.error("Cover upload error:", err);
@@ -320,7 +335,11 @@ exports.uploadOrReplaceCoverPhoto = async (req, res) => {
 
 exports.deleteCoverPhoto = async (req, res) => {
     try {
+        const oldCover = await profileRepo.getCoverUrl(req.user.sub);
         await profileRepo.updateCoverUrl(req.user.sub, null);
+        if (oldCover) {
+            deleteR2Asset(oldCover).catch(err => console.error("[deleteCoverPhoto] R2 cleanup error:", err.message));
+        }
         res.json({ message: "Cover photo deleted successfully" });
     } catch (err) {
         console.error("Delete cover error:", err);
@@ -474,7 +493,11 @@ exports.updateIdentity = async (req, res) => {
 exports.uploadOrReplaceResume = async (req, res) => {
     if (!req.file) return res.status(400).json({ message: "Resume file is required" });
     try {
+        const oldResume = await profileRepo.getResume(req.user.sub);
         const resume = await profileRepo.replaceResume(req.user.sub, req.file);
+        if (oldResume?.file_url && oldResume.file_url !== resume.file_url) {
+            deleteR2Asset(oldResume.file_url).catch(err => console.error("[uploadOrReplaceResume] R2 cleanup error:", err.message));
+        }
         res.status(201).json({ message: "Resume uploaded successfully", resume });
     } catch (err) {
         console.error("Upload/Replace resume error:", err);
@@ -497,6 +520,9 @@ exports.deleteResume = async (req, res) => {
     try {
         const resume = await profileRepo.deleteResume(req.user.sub);
         if (!resume) return res.status(404).json({ message: "No resume found to delete" });
+        if (resume.file_url) {
+            deleteR2Asset(resume.file_url).catch(err => console.error("[deleteResume] R2 cleanup error:", err.message));
+        }
         res.json({ message: "Resume deleted successfully", resume });
     } catch (err) {
         console.error("Delete resume error:", err);
@@ -526,6 +552,7 @@ exports.addExperience = async (req, res) => {
 
     // ── Basic validation ──────────────────────────────────────────────────────────
     if (title && title.length > 100) return res.status(400).json({ message: "Role cannot exceed 100 characters" });
+    if (description && description.length > 2000) return res.status(400).json({ message: "About cannot exceed 2000 characters" });
     if (!start_date) {
         return res.status(422).json({ message: "Start date is required" });
     }
@@ -668,6 +695,7 @@ exports.updateExperience = async (req, res) => {
 
         // ── Basic validation ──────────────────────────────────────────────────────
         if (title && title.length > 100) return res.status(400).json({ message: "Role cannot exceed 100 characters" });
+        if (description !== undefined && description !== null && description.length > 2000) return res.status(400).json({ message: "About cannot exceed 2000 characters" });
         if (!resolvedCurrent && !resolvedEnd) {
             return res.status(422).json({ message: "End date is required when not currently working" });
         }
@@ -803,6 +831,11 @@ exports.addEducation = async (req, res) => {
             return res.status(422).json({ message: "Validation failed", errors: [{ path: "school_name", message: "School/University cannot exceed 255 characters" }] });
         }
 
+        if (description && description.length > 2000) {
+            client.release();
+            return res.status(422).json({ message: "Validation failed", errors: [{ path: "description", message: "About cannot exceed 2000 characters" }] });
+        }
+
         let resolvedOrgId = school_org_id;
         if (!resolvedOrgId && school_name) {
             const orgMatch = await client.query(
@@ -864,6 +897,11 @@ exports.updateEducation = async (req, res) => {
         if (school_name && school_name.length > 255) {
             client.release();
             return res.status(422).json({ message: "Validation failed", errors: [{ path: "school_name", message: "School/University cannot exceed 255 characters" }] });
+        }
+
+        if (description !== undefined && description !== null && description.length > 2000) {
+            client.release();
+            return res.status(422).json({ message: "Validation failed", errors: [{ path: "description", message: "About cannot exceed 2000 characters" }] });
         }
 
         const resolvedSchoolName = school_name !== undefined ? school_name : existing.school_name;
@@ -1503,7 +1541,7 @@ const operationSchema = z.discriminatedUnion("type", [
             start_date: z.string(),
             end_date: z.string().nullable().optional(),
             is_current: z.boolean().optional(),
-            description: z.string().nullable().optional(),
+            description: z.string().max(2000, "About cannot exceed 2000 characters").nullable().optional(),
             org_id: z.string().uuid().nullable().optional(),
         }),
     }),
@@ -1519,7 +1557,7 @@ const operationSchema = z.discriminatedUnion("type", [
             start_date: z.string().optional(),
             end_date: z.string().nullable().optional(),
             is_current: z.boolean().optional(),
-            description: z.string().nullable().optional(),
+            description: z.string().max(2000, "About cannot exceed 2000 characters").nullable().optional(),
             org_id: z.string().uuid().nullable().optional(),
         }),
     }),
@@ -1857,6 +1895,10 @@ exports.addProject = async (req, res) => {
         errors.push({ path: "media", message: "A project can have at most 5 media items" });
     }
 
+    if (role_description && role_description.length > 2000) {
+        errors.push({ path: "role_description", message: "Role description cannot exceed 2000 characters" });
+    }
+
     if (errors.length > 0) {
         return res.status(422).json({ message: "Validation failed", errors });
     }
@@ -1930,6 +1972,10 @@ exports.updateProject = async (req, res) => {
 
     if (Array.isArray(media) && media.length > 5) {
         errors.push({ path: "media", message: "A project can have at most 5 media items" });
+    }
+
+    if (role_description && role_description.length > 2000) {
+        errors.push({ path: "role_description", message: "Role description cannot exceed 2000 characters" });
     }
 
     if (team_size !== undefined && team_size !== null && String(team_size).trim() !== "") {

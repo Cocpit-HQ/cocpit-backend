@@ -1,185 +1,316 @@
 const multer = require("multer");
+const multerS3 = require("multer-s3");
 const { CloudinaryStorage } = require("multer-storage-cloudinary");
 const cloudinary = require("../infrastructure/cloudinary.client");
+const { r2Client, hasR2, bucketName, publicUrl } = require("../infrastructure/r2.client");
+const fs = require("fs");
+const path = require("path");
 
-// --- Profile Avatar Upload ---
-const fs = require('fs');
-const path = require('path');
-
-// Ensure uploads directories exist
+// Ensure local uploads directories exist as fallback
 const createDir = (dir) => {
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
 };
 
-const uploadsDir = 'uploads';
-createDir(path.join(uploadsDir, 'avatars'));
-createDir(path.join(uploadsDir, 'posts'));
-createDir(path.join(uploadsDir, 'resumes'));
-createDir(path.join(uploadsDir, 'events'));
-createDir(path.join(uploadsDir, 'communities'));
+const uploadsDir = "uploads";
+createDir(path.join(uploadsDir, "avatars"));
+createDir(path.join(uploadsDir, "posts"));
+createDir(path.join(uploadsDir, "resumes"));
+createDir(path.join(uploadsDir, "events"));
+createDir(path.join(uploadsDir, "communities"));
+createDir(path.join(uploadsDir, "stories"));
+createDir(path.join(uploadsDir, "covers"));
+createDir(path.join(uploadsDir, "audio"));
+createDir(path.join(uploadsDir, "tasks"));
+createDir(path.join(uploadsDir, "project_media"));
+createDir(path.join(uploadsDir, "support"));
+createDir(path.join(uploadsDir, "verifications"));
 
+const hasCloudinary =
+  process.env.CLOUDINARY_CLOUD_NAME &&
+  process.env.CLOUDINARY_API_KEY &&
+  process.env.CLOUDINARY_API_SECRET;
+
+/**
+ * Wraps S3 storage engine so that info.location, info.path, and info.secure_url
+ * all point to the public Cloudflare R2 CDN URL. This guarantees 100% backward
+ * compatibility with all existing controllers expecting req.file.path or secure_url.
+ */
+function wrapS3Storage(baseStorage, publicBaseUrl) {
+  return {
+    _handleFile: function (req, file, cb) {
+      baseStorage._handleFile(req, file, function (err, info) {
+        if (err) return cb(err);
+        if (info && info.key && publicBaseUrl) {
+          const finalUrl = `${publicBaseUrl}/${info.key}`;
+          info.location = finalUrl;
+          info.path = finalUrl;
+          info.secure_url = finalUrl;
+        }
+        cb(null, info);
+      });
+    },
+    _removeFile: function (req, file, cb) {
+      baseStorage._removeFile(req, file, cb);
+    },
+  };
+}
+
+function getR2FolderPrefix(req) {
+  const env = req?.currentEnvironment || req?.headers?.["x-environment"] || process.env.R2_FOLDER_PREFIX || "uat";
+  return env.toLowerCase().trim();
+}
+
+/**
+ * Creates an S3 storage engine for a given folder and key generator
+ */
+function createR2StorageEngine(folderName, keyFn) {
+  const s3Engine = multerS3({
+    s3: r2Client,
+    bucket: bucketName,
+    contentType: multerS3.AUTO_CONTENT_TYPE,
+    key: (req, file, cb) => {
+      const prefix = getR2FolderPrefix(req);
+      if (keyFn) {
+        return keyFn(req, file, (err, subKey) => {
+          if (err) return cb(err);
+          const finalKey = (subKey && subKey.startsWith(`${prefix}/`)) ? subKey : `${prefix}/${subKey}`;
+          cb(null, finalKey);
+        });
+      }
+      const cleanName = file.originalname.replace(/[^a-zA-Z0-9.]/g, "_");
+      cb(null, `${prefix}/${folderName}/${Date.now()}-${cleanName}`);
+    },
+  });
+
+  return wrapS3Storage(s3Engine, publicUrl);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 1. Post Media Storage (Images & Videos)
+// ─────────────────────────────────────────────────────────────────────────────
 let storage;
-let avatarStorage;
-let resumeStorage;
-
-const hasCloudinary = process.env.CLOUDINARY_CLOUD_NAME && process.env.CLOUDINARY_API_KEY && process.env.CLOUDINARY_API_SECRET;
-
-if (hasCloudinary) {
+if (hasR2) {
+  storage = createR2StorageEngine("posts", (req, file, cb) => {
+    const cleanName = file.originalname.replace(/[^a-zA-Z0-9.]/g, "_");
+    cb(null, `posts/${Date.now()}-${cleanName}`);
+  });
+} else if (hasCloudinary) {
   storage = new CloudinaryStorage({
     cloudinary,
     params: async (req, file) => {
-      console.log("[UploadMiddleware] Processing file:", file.originalname, file.mimetype);
       const isVideo = file.mimetype.startsWith("video");
       return {
         folder: "posts",
         resource_type: isVideo ? "video" : "image",
-        public_id: `${Date.now()}-${file.originalname.replace(/[^a-zA-Z0-9.]/g, '_')}`,
+        public_id: `${Date.now()}-${file.originalname.replace(/[^a-zA-Z0-9.]/g, "_")}`,
       };
     },
   });
-
-  avatarStorage = new CloudinaryStorage({
-    cloudinary,
-    params: {
-      folder: "avatars",
-      resource_type: "image", // only images
-      public_id: (req, file) => `avatar-${req.user.sub}-${Date.now()}`,
-    },
-  });
-
-  resumeStorage = new CloudinaryStorage({
-    cloudinary,
-    params: {
-      folder: "resumes",
-      resource_type: "raw", // IMPORTANT for PDF/DOC
-      // Append extension for raw files so they have correct type when downloaded/viewed
-      public_id: (req, file) => `resume-${req.user.sub}-${Date.now()}${path.extname(file.originalname)}`,
-    },
-  });
 } else {
-  // Local Storage Fallback
   storage = multer.diskStorage({
-    destination: (req, file, cb) => {
-      cb(null, 'uploads/posts/');
-    },
+    destination: (req, file, cb) => cb(null, "uploads/posts/"),
     filename: (req, file, cb) => {
-      const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-      const ext = path.extname(file.originalname);
-      cb(null, file.fieldname + '-' + uniqueSuffix + ext);
-    }
-  });
-
-  avatarStorage = multer.diskStorage({
-    destination: (req, file, cb) => {
-      cb(null, 'uploads/avatars/');
+      const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
+      cb(null, file.fieldname + "-" + uniqueSuffix + path.extname(file.originalname));
     },
-    filename: (req, file, cb) => {
-      const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-      const ext = path.extname(file.originalname);
-      cb(null, 'avatar-' + uniqueSuffix + ext);
-    }
-  });
-
-  resumeStorage = multer.diskStorage({
-    destination: (req, file, cb) => {
-      cb(null, 'uploads/resumes/');
-    },
-    filename: (req, file, cb) => {
-      const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-      const ext = path.extname(file.originalname);
-      cb(null, 'resume-' + uniqueSuffix + ext);
-    }
   });
 }
 
 const upload = multer({ storage });
 
-const uploadResume = multer({
-  storage: resumeStorage,
-  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB limit
+const uploadPostMedia = multer({
+  storage: storage,
+  limits: { fileSize: 100 * 1024 * 1024 }, // 100MB limit for video/large files
   fileFilter: (req, file, cb) => {
     const allowed = [
-      "application/pdf",
-      "application/msword",
-      "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+      "image/jpeg", "image/jpg", "image/png", "image/webp", "image/heic", "image/heif",
+      "video/mp4", "video/mov", "video/quicktime",
     ];
     if (!allowed.includes(file.mimetype)) {
-      return cb(new Error("Invalid file format. Allowed: PDF, DOC, DOCX."));
+      return cb(new Error("Invalid file format. Allowed: JPEG, JPG, PNG, WEBP, HEIC, MP4, MOV."));
     }
     cb(null, true);
-  }
-});
+  },
+}).fields([{ name: "media", maxCount: 20 }, { name: "cover_media", maxCount: 1 }]);
 
-const uploadResumeMemory = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB limit
-  fileFilter: (req, file, cb) => {
-    const allowed = [
-      "application/pdf"
-    ];
-    if (!allowed.includes(file.mimetype)) {
-      return cb(new Error("Invalid file format. Allowed: PDF."));
-    }
-    cb(null, true);
-  }
-});
+// ─────────────────────────────────────────────────────────────────────────────
+// 2. Avatar Storage (Users, Orgs, Groups)
+// ─────────────────────────────────────────────────────────────────────────────
+let avatarStorage;
+if (hasR2) {
+  avatarStorage = createR2StorageEngine("avatars", (req, file, cb) => {
+    const sub = req.user?.sub || req.user?.user_id || "usr";
+    const ext = path.extname(file.originalname) || ".png";
+    cb(null, `avatars/avatar-${sub}-${Date.now()}${ext}`);
+  });
+} else if (hasCloudinary) {
+  avatarStorage = new CloudinaryStorage({
+    cloudinary,
+    params: {
+      folder: "avatars",
+      resource_type: "image",
+      public_id: (req, file) => `avatar-${req.user?.sub || "usr"}-${Date.now()}`,
+    },
+  });
+} else {
+  avatarStorage = multer.diskStorage({
+    destination: (req, file, cb) => cb(null, "uploads/avatars/"),
+    filename: (req, file, cb) => {
+      const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
+      cb(null, "avatar-" + uniqueSuffix + path.extname(file.originalname));
+    },
+  });
+}
 
 const uploadAvatar = multer({
   storage: avatarStorage,
   limits: { fileSize: 50 * 1024 * 1024 }, // 50MB limit
   fileFilter: (req, file, cb) => {
-    const allowed = ["image/jpeg", "image/jpg", "image/png", "image/webp", "image/heic",
-      "image/heif",];
+    const allowed = [
+      "image/jpeg", "image/jpg", "image/png", "image/webp", "image/heic", "image/heif",
+    ];
     if (!allowed.includes(file.mimetype)) {
-      return cb(new Error(" not supported file format"));
+      return cb(new Error("not supported file format"));
     }
     cb(null, true);
   },
 });
 
-// Event Banner Upload
-const eventBannerStorage = new CloudinaryStorage({
-  cloudinary,
-  params: {
-    folder: "events",       // store event banners separately
-    resource_type: "image", // only images for banner
-    public_id: (req, file) => `banner-${Date.now()}-${file.originalname.replace(/[^a-zA-Z0-9.]/g, '_')}`
-  }
+// ─────────────────────────────────────────────────────────────────────────────
+// 3. Resume Storage
+// ─────────────────────────────────────────────────────────────────────────────
+let resumeStorage;
+if (hasR2) {
+  resumeStorage = createR2StorageEngine("resumes", (req, file, cb) => {
+    const sub = req.user?.sub || "usr";
+    const ext = path.extname(file.originalname) || ".pdf";
+    cb(null, `resumes/resume-${sub}-${Date.now()}${ext}`);
+  });
+} else if (hasCloudinary) {
+  resumeStorage = new CloudinaryStorage({
+    cloudinary,
+    params: {
+      folder: "resumes",
+      resource_type: "raw",
+      public_id: (req, file) =>
+        `resume-${req.user?.sub || "usr"}-${Date.now()}${path.extname(file.originalname)}`,
+    },
+  });
+} else {
+  resumeStorage = multer.diskStorage({
+    destination: (req, file, cb) => cb(null, "uploads/resumes/"),
+    filename: (req, file, cb) => {
+      const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
+      cb(null, "resume-" + uniqueSuffix + path.extname(file.originalname));
+    },
+  });
+}
+
+const uploadResume = multer({
+  storage: resumeStorage,
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB limit
+  fileFilter: (req, file, cb) => {
+    const allowed = [
+      "application/pdf",
+      "application/msword",
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ];
+    if (!allowed.includes(file.mimetype)) {
+      return cb(new Error("Invalid file format. Allowed: PDF, DOC, DOCX."));
+    }
+    cb(null, true);
+  },
 });
 
-const uploadEventBanner = multer({ storage: eventBannerStorage, limits: { fileSize: 5 * 1024 * 1024 } }); // 5MB limit
+const uploadResumeMemory = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 10 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    const allowed = ["application/pdf"];
+    if (!allowed.includes(file.mimetype)) {
+      return cb(new Error("Invalid file format. Allowed: PDF."));
+    }
+    cb(null, true);
+  },
+});
 
-// Community Banner Upload
+// ─────────────────────────────────────────────────────────────────────────────
+// 4. Event & Community Banners
+// ─────────────────────────────────────────────────────────────────────────────
+let eventBannerStorage;
+if (hasR2) {
+  eventBannerStorage = createR2StorageEngine("events", (req, file, cb) => {
+    const cleanName = file.originalname.replace(/[^a-zA-Z0-9.]/g, "_");
+    cb(null, `events/banner-${Date.now()}-${cleanName}`);
+  });
+} else if (hasCloudinary) {
+  eventBannerStorage = new CloudinaryStorage({
+    cloudinary,
+    params: {
+      folder: "events",
+      resource_type: "image",
+      public_id: (req, file) =>
+        `banner-${Date.now()}-${file.originalname.replace(/[^a-zA-Z0-9.]/g, "_")}`,
+    },
+  });
+} else {
+  eventBannerStorage = multer.diskStorage({
+    destination: (req, file, cb) => cb(null, "uploads/events/"),
+    filename: (req, file, cb) => {
+      const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
+      cb(null, "event-" + uniqueSuffix + path.extname(file.originalname));
+    },
+  });
+}
+
+const uploadEventBanner = multer({
+  storage: eventBannerStorage,
+  limits: { fileSize: 10 * 1024 * 1024 },
+});
+
 let communityBannerStorage;
-if (hasCloudinary) {
+if (hasR2) {
+  communityBannerStorage = createR2StorageEngine("communities", (req, file, cb) => {
+    const cleanName = file.originalname.replace(/[^a-zA-Z0-9.]/g, "_");
+    cb(null, `communities/banner-${Date.now()}-${cleanName}`);
+  });
+} else if (hasCloudinary) {
   communityBannerStorage = new CloudinaryStorage({
     cloudinary,
     params: {
       folder: "communities",
       resource_type: "image",
-      public_id: (req, file) => `banner-${Date.now()}-${file.originalname.replace(/[^a-zA-Z0-9.]/g, '_')}`
-    }
+      public_id: (req, file) =>
+        `banner-${Date.now()}-${file.originalname.replace(/[^a-zA-Z0-9.]/g, "_")}`,
+    },
   });
 } else {
   communityBannerStorage = multer.diskStorage({
-    destination: (req, file, cb) => {
-      cb(null, 'uploads/communities/');
-    },
+    destination: (req, file, cb) => cb(null, "uploads/communities/"),
     filename: (req, file, cb) => {
-      const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-      const ext = path.extname(file.originalname);
-      cb(null, 'community-' + uniqueSuffix + ext);
-    }
+      const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
+      cb(null, "community-" + uniqueSuffix + path.extname(file.originalname));
+    },
   });
 }
 
-const uploadCommunityBanner = multer({ storage: communityBannerStorage, limits: { fileSize: 5 * 1024 * 1024 } }); // 5MB limit
+const uploadCommunityBanner = multer({
+  storage: communityBannerStorage,
+  limits: { fileSize: 10 * 1024 * 1024 },
+});
 
-// --- Story Upload Optimization ---
+// ─────────────────────────────────────────────────────────────────────────────
+// 5. Showcase Stories
+// ─────────────────────────────────────────────────────────────────────────────
 let storyStorage;
-if (hasCloudinary) {
+if (hasR2) {
+  storyStorage = createR2StorageEngine("stories", (req, file, cb) => {
+    const cleanName = file.originalname.replace(/[^a-zA-Z0-9.]/g, "_");
+    cb(null, `stories/story-${Date.now()}-${cleanName}`);
+  });
+} else if (hasCloudinary) {
   storyStorage = new CloudinaryStorage({
     cloudinary,
     params: async (req, file) => {
@@ -190,8 +321,8 @@ if (hasCloudinary) {
           resource_type: "video",
           allowed_formats: ["mp4", "mov", "webm"],
           eager: [
-            { streaming_profile: "hd", format: "m3u8" }, // HLS Playlist
-            { width: 720, aspectRatio: "9:16", crop: "fill", format: "jpg" } // Thumbnail
+            { streaming_profile: "hd", format: "m3u8" },
+            { width: 720, aspectRatio: "9:16", crop: "fill", format: "jpg" },
           ],
           eager_async: true,
         };
@@ -199,64 +330,59 @@ if (hasCloudinary) {
         return {
           folder: "stories",
           resource_type: "image",
-          // allowed_formats: ["jpg", "png", "jpeg", "webp"], // Optional restriction
-          transformation: [{ width: 1080, height: 1920, crop: "fit" }] // Standardize story size?
+          transformation: [{ width: 1080, height: 1920, crop: "fit" }],
         };
       }
     },
   });
 } else {
-  // Fallback for local dev without Cloudinary
   storyStorage = multer.diskStorage({
-    destination: (req, file, cb) => {
-      createDir(path.join(uploadsDir, 'stories'));
-      cb(null, 'uploads/stories/');
-    },
+    destination: (req, file, cb) => cb(null, "uploads/stories/"),
     filename: (req, file, cb) => {
-      const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-      const ext = path.extname(file.originalname);
-      cb(null, 'story-' + uniqueSuffix + ext);
-    }
+      const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
+      cb(null, "story-" + uniqueSuffix + path.extname(file.originalname));
+    },
   });
 }
 
 const uploadStory = multer({ storage: storyStorage });
 
-// --- Cover Photo Upload ---
+// ─────────────────────────────────────────────────────────────────────────────
+// 6. Cover Photos (User Profiles, Org Profiles, Folders)
+// ─────────────────────────────────────────────────────────────────────────────
 let coverStorage;
-
-if (hasCloudinary) {
+if (hasR2) {
+  coverStorage = createR2StorageEngine("covers", (req, file, cb) => {
+    const sub = req.user?.sub || "usr";
+    const ext = path.extname(file.originalname) || ".png";
+    cb(null, `covers/cover-${sub}-${Date.now()}${ext}`);
+  });
+} else if (hasCloudinary) {
   coverStorage = new CloudinaryStorage({
     cloudinary,
     params: {
       folder: "covers",
       resource_type: "image",
-      public_id: (req, file) => `cover-${req.user.sub}-${Date.now()}`,
+      public_id: (req, file) => `cover-${req.user?.sub || "usr"}-${Date.now()}`,
     },
   });
 } else {
   coverStorage = multer.diskStorage({
-    destination: (req, file, cb) => {
-      cb(null, 'uploads/covers/');
-    },
+    destination: (req, file, cb) => cb(null, "uploads/covers/"),
     filename: (req, file, cb) => {
-      const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-      const ext = path.extname(file.originalname);
-      cb(null, 'cover-' + uniqueSuffix + ext);
-    }
+      const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
+      cb(null, "cover-" + uniqueSuffix + path.extname(file.originalname));
+    },
   });
 }
-// Ensure directory exists for local
-if (!hasCloudinary) {
-  createDir(path.join(uploadsDir, 'covers'));
-}
-
 
 const uploadCover = multer({
   storage: coverStorage,
-  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB limit (larger than avatar)
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB limit
   fileFilter: (req, file, cb) => {
-    const allowed = ["image/jpeg", "image/jpg", "image/png", "image/webp", "image/heic", "image/heif"];
+    const allowed = [
+      "image/jpeg", "image/jpg", "image/png", "image/webp", "image/heic", "image/heif",
+    ];
     if (!allowed.includes(file.mimetype)) {
       return cb(new Error("Format not supported"));
     }
@@ -264,222 +390,236 @@ const uploadCover = multer({
   },
 });
 
-// --- Audio Upload (Voice Pitch) ---
+// ─────────────────────────────────────────────────────────────────────────────
+// 7. Audio Pitches & Job Applications
+// ─────────────────────────────────────────────────────────────────────────────
 let audioStorage;
-if (hasCloudinary) {
+if (hasR2) {
+  audioStorage = createR2StorageEngine("audio_pitches", (req, file, cb) => {
+    const sub = req.user?.sub || "usr";
+    const ext = path.extname(file.originalname) || ".webm";
+    cb(null, `audio_pitches/pitch-${sub}-${Date.now()}${ext}`);
+  });
+} else if (hasCloudinary) {
   audioStorage = new CloudinaryStorage({
     cloudinary,
     params: {
       folder: "audio_pitches",
-      resource_type: "video", // Cloudinary treats audio as video resource type usually for streaming
-      public_id: (req, file) => `pitch-${req.user.sub}-${Date.now()}`,
+      resource_type: "video",
+      public_id: (req, file) => `pitch-${req.user?.sub || "usr"}-${Date.now()}`,
     },
   });
 } else {
   audioStorage = multer.diskStorage({
-    destination: (req, file, cb) => {
-      createDir(path.join(uploadsDir, 'audio'));
-      cb(null, 'uploads/audio/');
-    },
+    destination: (req, file, cb) => cb(null, "uploads/audio/"),
     filename: (req, file, cb) => {
-      const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-      const ext = path.extname(file.originalname);
-      cb(null, 'pitch-' + uniqueSuffix + ext);
-    }
+      const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
+      cb(null, "pitch-" + uniqueSuffix + path.extname(file.originalname));
+    },
   });
-  if (!hasCloudinary) createDir(path.join(uploadsDir, 'audio'));
 }
 
-const uploadApplicationFiles = multer({
-  storage: hasCloudinary ? new CloudinaryStorage({
+let applicationFileStorage;
+if (hasR2) {
+  applicationFileStorage = createR2StorageEngine("resumes", (req, file, cb) => {
+    const sub = req.user?.sub || "usr";
+    const ext = path.extname(file.originalname) || ".pdf";
+    cb(null, `resumes/resume-${sub}-${Date.now()}${ext}`);
+  });
+} else if (hasCloudinary) {
+  applicationFileStorage = new CloudinaryStorage({
     cloudinary,
     params: async (req, file) => {
-      if (file.fieldname === 'resume') {
+      if (file.fieldname === "resume") {
         return {
           folder: "resumes",
           resource_type: "raw",
-          public_id: `resume-${req.user.sub}-${Date.now()}${path.extname(file.originalname)}`
+          public_id: `resume-${req.user?.sub || "usr"}-${Date.now()}${path.extname(file.originalname)}`,
         };
-
-      }
-    }
-  }) : multer.diskStorage({
-    destination: (req, file, cb) => {
-      if (file.fieldname === 'resume') {
-        cb(null, 'uploads/resumes/');
-
       }
     },
+  });
+} else {
+  applicationFileStorage = multer.diskStorage({
+    destination: (req, file, cb) => cb(null, "uploads/resumes/"),
     filename: (req, file, cb) => {
-      const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-      const ext = path.extname(file.originalname);
-      cb(null, file.fieldname + '-' + uniqueSuffix + ext);
-    }
-  }),
-  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB total buffer safety
+      const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
+      cb(null, file.fieldname + "-" + uniqueSuffix + path.extname(file.originalname));
+    },
+  });
+}
+
+const uploadApplicationFiles = multer({
+  storage: applicationFileStorage,
+  limits: { fileSize: 15 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
-    if (file.fieldname === 'resume') {
+    if (file.fieldname === "resume") {
       const allowed = [
         "application/pdf",
         "application/msword",
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        "image/png", "image/jpeg", "image/jpg"
+        "image/png", "image/jpeg", "image/jpg",
       ];
       if (!allowed.includes(file.mimetype)) return cb(new Error("Invalid resume format"));
-
     }
     cb(null, true);
-  }
-}).single('resume');
+  },
+}).single("resume");
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 8. Task Submissions
+// ─────────────────────────────────────────────────────────────────────────────
+let taskSubmissionStorage;
+if (hasR2) {
+  taskSubmissionStorage = createR2StorageEngine("task_submissions", (req, file, cb) => {
+    const sub = req.user?.sub || "usr";
+    const ext = path.extname(file.originalname) || ".webm";
+    cb(null, `task_submissions/task-${sub}-${Date.now()}${ext}`);
+  });
+} else if (hasCloudinary) {
+  taskSubmissionStorage = new CloudinaryStorage({
+    cloudinary,
+    params: async (req, file) => ({
+      folder: "task_submissions",
+      resource_type: "video",
+      public_id: `task-${req.user?.sub || "usr"}-${Date.now()}`,
+    }),
+  });
+} else {
+  taskSubmissionStorage = multer.diskStorage({
+    destination: (req, file, cb) => cb(null, "uploads/tasks/"),
+    filename: (req, file, cb) => {
+      const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
+      cb(null, "task-" + uniqueSuffix + (path.extname(file.originalname) || ".webm"));
+    },
+  });
+}
 
 const uploadTaskSubmission = multer({
-  storage: hasCloudinary ? new CloudinaryStorage({
-    cloudinary,
-    params: async (req, file) => {
-      // Use video resource type for audio/video submissions for better streaming/transcoding support
-      return {
-        folder: "task_submissions",
-        resource_type: "video",
-        public_id: `task-${req.user.sub}-${Date.now()}`
-      };
-    }
-  }) : multer.diskStorage({
-    destination: (req, file, cb) => {
-      createDir(path.join(uploadsDir, 'tasks'));
-      cb(null, 'uploads/tasks/');
-    },
-    filename: (req, file, cb) => {
-      const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-      const ext = path.extname(file.originalname) || '.webm';
-      cb(null, 'task-' + uniqueSuffix + ext);
-    }
-  }),
-  limits: { fileSize: 50 * 1024 * 1024 }, // 50MB limit as per frontend check
+  storage: taskSubmissionStorage,
+  limits: { fileSize: 50 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
     const allowed = [
       "audio/webm", "audio/mp4", "audio/mpeg", "audio/wav", "audio/ogg",
-      "video/webm", "video/mp4", "video/quicktime"
+      "video/webm", "video/mp4", "video/quicktime",
     ];
     if (!allowed.includes(file.mimetype)) {
       return cb(new Error("Invalid file format. Please upload video or audio."));
     }
     cb(null, true);
-  }
-}).single('file'); // Matches frontend field name
+  },
+}).single("file");
 
-// --- Chat Media Upload (Images, Video, PDF) ---
-const chatMediaStorage = new CloudinaryStorage({
-  cloudinary,
-  params: async (req, file) => {
-    let resource_type = "image"; // Default
+// ─────────────────────────────────────────────────────────────────────────────
+// 9. Chat Media (Images, Videos, Documents)
+// ─────────────────────────────────────────────────────────────────────────────
+let chatMediaStorage;
+if (hasR2) {
+  chatMediaStorage = createR2StorageEngine("chat", (req, file, cb) => {
     let folder = "chat_images";
-
     if (file.mimetype.startsWith("video/")) {
-      resource_type = "video";
       folder = "chat_videos";
-    } else if (file.mimetype === "application/pdf") {
-      resource_type = "raw"; // Cloudinary handles PDFs as 'raw' or 'image' (for thumbnail). 'raw' is safer for delivery.
-      // ACTUALLY: Cloudinary can treat PDF as image for preview.
-      // But for reliable file storage/download, 'raw' or 'auto' is best.
-      // Let's use 'auto' to let Cloudinary decide, OR specific.
-      // For PDF viewing, often 'image' resource type is used to generate thumbnails.
-      // Let's stick to 'auto' for flexibility if possible, but multer-storage-cloudinary needs specific.
-      resource_type = "raw";
-      folder = "chat_documents";
     } else if (
+      file.mimetype === "application/pdf" ||
       file.mimetype === "application/msword" ||
       file.mimetype === "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     ) {
-      resource_type = "raw";
       folder = "chat_documents";
     }
+    const sub = req.user?.sub || "usr";
+    const cleanName = file.originalname.replace(/[^a-zA-Z0-9.]/g, "_");
+    cb(null, `${folder}/chat-${sub}-${Date.now()}-${cleanName}`);
+  });
+} else if (hasCloudinary) {
+  chatMediaStorage = new CloudinaryStorage({
+    cloudinary,
+    params: async (req, file) => {
+      let resource_type = "image";
+      let folder = "chat_images";
 
-    return {
-      folder: folder,
-      resource_type: resource_type,
-      public_id: `chat-${req.user.sub}-${Date.now()}-${file.originalname.replace(/[^a-zA-Z0-9.]/g, '_')}`,
-      // format: file.mimetype === "application/pdf" ? "pdf" : undefined 
-    };
-  }
-});
+      if (file.mimetype.startsWith("video/")) {
+        resource_type = "video";
+        folder = "chat_videos";
+      } else if (
+        file.mimetype === "application/pdf" ||
+        file.mimetype === "application/msword" ||
+        file.mimetype === "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+      ) {
+        resource_type = "raw";
+        folder = "chat_documents";
+      }
+
+      return {
+        folder: folder,
+        resource_type: resource_type,
+        public_id: `chat-${req.user?.sub || "usr"}-${Date.now()}-${file.originalname.replace(/[^a-zA-Z0-9.]/g, "_")}`,
+      };
+    },
+  });
+} else {
+  chatMediaStorage = multer.diskStorage({
+    destination: (req, file, cb) => cb(null, "uploads/posts/"),
+    filename: (req, file, cb) => {
+      const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
+      cb(null, "chat-" + uniqueSuffix + path.extname(file.originalname));
+    },
+  });
+}
 
 const uploadChatMedia = multer({
   storage: chatMediaStorage,
-  limits: { fileSize: 100 * 1024 * 1024 }, // 100MB limit
+  limits: { fileSize: 100 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
     const allowed = [
       "image/jpeg", "image/png", "image/webp", "image/jpg",
       "video/mp4", "video/webm", "video/quicktime",
       "application/pdf",
       "application/msword",
-      "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     ];
     if (!allowed.includes(file.mimetype)) {
       return cb(new Error("Invalid file format. Allowed: JPEG, PNG, WEBP, MP4, WebM, PDF, DOC, DOCX."));
     }
     cb(null, true);
-  }
-});
-
-const postDiskStorage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, 'uploads/posts/');
   },
-  filename: (req, file, cb) => {
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-    const ext = path.extname(file.originalname);
-    cb(null, file.fieldname + '-' + uniqueSuffix + ext);
-  }
 });
 
-const uploadPostMedia = multer({
-  storage: storage,
-  limits: { fileSize: 100 * 1024 * 1024 }, // 100MB limit for video/large files
-  fileFilter: (req, file, cb) => {
-    const allowed = [
-      "image/jpeg", "image/jpg", "image/png", "image/webp", "image/heic", "image/heif",
-      "video/mp4", "video/mov", "video/quicktime"
-    ];
-    if (!allowed.includes(file.mimetype)) {
-      return cb(new Error("Invalid file format. Allowed: JPEG, JPG, PNG, WEBP, HEIC, MP4, MOV."));
-    }
-    cb(null, true);
-  }
-}).fields([{ name: "media", maxCount: 20 }, { name: "cover_media", maxCount: 1 }]);
-
-// --- Profile Project Media Upload Configuration ---
-createDir(path.join(uploadsDir, 'project_media'));
-
+// ─────────────────────────────────────────────────────────────────────────────
+// 10. Project Media
+// ─────────────────────────────────────────────────────────────────────────────
 let projectMediaStorage;
-if (hasCloudinary) {
+if (hasR2) {
+  projectMediaStorage = createR2StorageEngine("project_media", (req, file, cb) => {
+    const sub = req.user?.sub || "usr";
+    const cleanName = file.originalname.replace(/[^a-zA-Z0-9.]/g, "_");
+    cb(null, `project_media/proj-${sub}-${Date.now()}-${cleanName}`);
+  });
+} else if (hasCloudinary) {
   projectMediaStorage = new CloudinaryStorage({
     cloudinary,
     params: async (req, file) => {
       const isDoc = file.mimetype.startsWith("application/") || file.mimetype === "text/plain";
-      const cleanName = file.originalname.replace(/[^a-zA-Z0-9.]/g, '_');
+      const cleanName = file.originalname.replace(/[^a-zA-Z0-9.]/g, "_");
       return {
         folder: "project_media",
         resource_type: isDoc ? "raw" : "image",
-        public_id: `proj-${req.user?.sub || 'usr'}-${Date.now()}-${cleanName}`,
+        public_id: `proj-${req.user?.sub || "usr"}-${Date.now()}-${cleanName}`,
       };
-    }
+    },
   });
 } else {
   projectMediaStorage = multer.diskStorage({
-    destination: (req, file, cb) => {
-      cb(null, 'uploads/project_media/');
-    },
+    destination: (req, file, cb) => cb(null, "uploads/project_media/"),
     filename: (req, file, cb) => {
-      const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-      const ext = path.extname(file.originalname);
-      cb(null, 'proj-' + uniqueSuffix + ext);
-    }
+      const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
+      cb(null, "proj-" + uniqueSuffix + path.extname(file.originalname));
+    },
   });
 }
 
 const uploadProjectMedia = multer({
   storage: projectMediaStorage,
-  limits: { fileSize: 25 * 1024 * 1024 }, // 25MB safety limit
+  limits: { fileSize: 25 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
     const allowed = [
       "image/jpeg", "image/png", "image/webp", "image/jpg",
@@ -487,49 +627,49 @@ const uploadProjectMedia = multer({
       "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
       "application/vnd.ms-powerpoint",
       "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-      "text/plain"
+      "text/plain",
     ];
     if (!allowed.includes(file.mimetype)) {
       return cb(new Error("Invalid format. Allowed: Images, PDF, DOC, DOCX, PPT, PPTX, TXT."));
     }
     cb(null, true);
-  }
+  },
 });
 
-// --- Support Ticket Attachment Upload ---
-createDir(path.join(uploadsDir, 'support'));
-
+// ─────────────────────────────────────────────────────────────────────────────
+// 11. Support Ticket Attachments
+// ─────────────────────────────────────────────────────────────────────────────
 let supportStorage;
-if (hasCloudinary) {
+if (hasR2) {
+  supportStorage = createR2StorageEngine("support", (req, file, cb) => {
+    const sub = req.user?.sub || "user";
+    const cleanName = file.originalname.replace(/[^a-zA-Z0-9.]/g, "_");
+    cb(null, `support/ticket-${sub}-${Date.now()}-${cleanName}`);
+  });
+} else if (hasCloudinary) {
   supportStorage = new CloudinaryStorage({
     cloudinary,
     params: {
       folder: "support",
       resource_type: "image",
-      public_id: (req, file) => `ticket-${req.user?.sub || 'user'}-${Date.now()}`,
+      public_id: (req, file) => `ticket-${req.user?.sub || "user"}-${Date.now()}`,
     },
   });
 } else {
   supportStorage = multer.diskStorage({
-    destination: (req, file, cb) => {
-      cb(null, 'uploads/support/');
-    },
+    destination: (req, file, cb) => cb(null, "uploads/support/"),
     filename: (req, file, cb) => {
-      const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-      const ext = path.extname(file.originalname);
-      cb(null, 'ticket-' + uniqueSuffix + ext);
-    }
+      const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
+      cb(null, "ticket-" + uniqueSuffix + path.extname(file.originalname));
+    },
   });
 }
 
 const uploadSupportAttachment = multer({
   storage: supportStorage,
-  limits: { fileSize: 5 * 1024 * 1024 },
+  limits: { fileSize: 10 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
-    const allowed = [
-      "image/jpeg", "image/jpg", "image/png", "image/webp",
-      "application/pdf"
-    ];
+    const allowed = ["image/jpeg", "image/jpg", "image/png", "image/webp", "application/pdf"];
     const ext = path.extname(file.originalname).toLowerCase();
     if (!allowed.includes(file.mimetype) && ext !== ".pdf") {
       const err = new Error("Invalid format. Allowed formats: JPG, PNG, WEBP, PDF.");
@@ -540,50 +680,50 @@ const uploadSupportAttachment = multer({
   },
 });
 
-// --- Organization Verification Document Upload ---
-createDir(path.join(uploadsDir, 'verifications'));
-
+// ─────────────────────────────────────────────────────────────────────────────
+// 12. Organization Verification Documents
+// ─────────────────────────────────────────────────────────────────────────────
 let verificationDocumentStorage;
-if (hasCloudinary) {
+if (hasR2) {
+  verificationDocumentStorage = createR2StorageEngine("verifications", (req, file, cb) => {
+    const sub = req.user?.sub || "org";
+    const cleanName = file.originalname.replace(/[^a-zA-Z0-9.]/g, "_");
+    cb(null, `verifications/verify-${sub}-${Date.now()}-${cleanName}`);
+  });
+} else if (hasCloudinary) {
   verificationDocumentStorage = new CloudinaryStorage({
     cloudinary,
     params: async (req, file) => {
-      const isDoc = file.mimetype === "application/pdf" || 
-                    file.mimetype.startsWith("application/") || 
-                    file.mimetype === "text/plain";
-      const cleanName = file.originalname.replace(/[^a-zA-Z0-9.]/g, '_');
+      const isDoc =
+        file.mimetype === "application/pdf" ||
+        file.mimetype.startsWith("application/") ||
+        file.mimetype === "text/plain";
+      const cleanName = file.originalname.replace(/[^a-zA-Z0-9.]/g, "_");
       return {
         folder: "verifications",
         resource_type: isDoc ? "raw" : "image",
-        public_id: `verify-${req.user?.sub || 'org'}-${Date.now()}-${cleanName}`,
+        public_id: `verify-${req.user?.sub || "org"}-${Date.now()}-${cleanName}`,
       };
-    }
+    },
   });
 } else {
   verificationDocumentStorage = multer.diskStorage({
-    destination: (req, file, cb) => {
-      cb(null, 'uploads/verifications/');
-    },
+    destination: (req, file, cb) => cb(null, "uploads/verifications/"),
     filename: (req, file, cb) => {
-      const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-      const ext = path.extname(file.originalname);
-      cb(null, 'verify-' + uniqueSuffix + ext);
-    }
+      const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
+      cb(null, "verify-" + uniqueSuffix + path.extname(file.originalname));
+    },
   });
 }
 
 const uploadVerificationDocument = multer({
   storage: verificationDocumentStorage,
-  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB limit
+  limits: { fileSize: 15 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
     const allowedMimes = [
-      "image/jpeg",
-      "image/png",
-      "image/webp",
-      "image/jpg",
-      "application/pdf",
-      "application/msword",
-      "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+      "image/jpeg", "image/png", "image/webp", "image/jpg",
+      "application/pdf", "application/msword",
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     ];
     const allowedExts = [".pdf", ".png", ".jpg", ".jpeg", ".webp", ".doc", ".docx"];
     const ext = path.extname(file.originalname).toLowerCase();
@@ -593,7 +733,7 @@ const uploadVerificationDocument = multer({
       return cb(err);
     }
     cb(null, true);
-  }
+  },
 });
 
 module.exports = {
@@ -612,6 +752,5 @@ module.exports = {
   uploadProjectMedia,
   uploadSupportAttachment,
   uploadVerificationDocument,
-  uploadOrgVerificationDocument: uploadVerificationDocument
+  uploadOrgVerificationDocument: uploadVerificationDocument,
 };
-

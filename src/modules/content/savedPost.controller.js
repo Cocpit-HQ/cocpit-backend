@@ -101,16 +101,23 @@ exports.getFolders = async (req, res) => {
         let queryText;
         let queryParams;
 
+        const postCountSql = `(SELECT COUNT(*) FROM saved_post sp 
+                    JOIN posts p ON sp.post_id = p.post_id 
+                    LEFT JOIN organizations comp ON comp.org_id = p.author_org_id
+                    WHERE sp.folder_id = sf.folder_id 
+                      AND p.is_active = true 
+                      AND (p.is_removed IS FALSE OR p.is_removed IS NULL)
+                      AND (p.author_org_id IS NULL OR (comp.is_deleted = FALSE AND comp.is_deactivated = FALSE))
+                    )::int AS post_count`;
+
         if (isOrgActor) {
-            queryText = `SELECT sf.*, 
-                    (SELECT COUNT(*) FROM saved_post sp JOIN posts p ON sp.post_id = p.post_id WHERE sp.folder_id = sf.folder_id AND p.is_active = true AND (p.is_removed IS FALSE OR p.is_removed IS NULL))::int AS post_count
+            queryText = `SELECT sf.*, ${postCountSql}
              FROM saved_folders sf
              WHERE sf.org_id = $1::uuid
              ORDER BY sf.created_at DESC`;
             queryParams = [orgId];
         } else {
-            queryText = `SELECT sf.*, 
-                    (SELECT COUNT(*) FROM saved_post sp JOIN posts p ON sp.post_id = p.post_id WHERE sp.folder_id = sf.folder_id AND p.is_active = true AND (p.is_removed IS FALSE OR p.is_removed IS NULL))::int AS post_count
+            queryText = `SELECT sf.*, ${postCountSql}
              FROM saved_folders sf
              WHERE sf.user_id = $1 AND sf.org_id IS NULL
              ORDER BY sf.created_at DESC`;
@@ -320,6 +327,14 @@ exports.getSavedPosts = async (req, res) => {
             whereClause = `sp.user_id = $1 AND sp.org_id IS NULL AND p.is_active = true AND (p.is_removed IS FALSE OR p.is_removed IS NULL)`;
         }
 
+        whereClause += `
+            AND (p.author_org_id IS NULL OR (comp_auth.is_deleted = FALSE AND comp_auth.is_deactivated = FALSE))
+            AND (
+                p.shared_post_id IS NULL 
+                OR orig_p.author_org_id IS NULL 
+                OR (comp_orig.is_deleted = FALSE AND comp_orig.is_deactivated = FALSE)
+            )`;
+
         let queryText = `SELECT 
             p.*, 
             p.content AS content,
@@ -345,8 +360,14 @@ exports.getSavedPosts = async (req, res) => {
                         'author', json_build_object(
                             'user_id', COALESCE(orig_p.author_org_id, u_orig.user_id),
                             'full_name', COALESCE(comp_orig.name, u_orig.full_name),
-                            'avatar_url', CASE WHEN orig_p.author_org_id IS NOT NULL THEN comp_orig.logo_url ELSE u_orig.avatar_url END
+                            'avatar_url', CASE WHEN orig_p.author_org_id IS NOT NULL THEN comp_orig.logo_url ELSE u_orig.avatar_url END,
+                            'headline', CASE WHEN orig_p.author_org_id IS NOT NULL THEN comp_orig.headline ELSE u_orig.headline END,
+                            'slug', COALESCE(comp_orig.slug, u_orig.account_name),
+                            'is_company', (orig_p.author_org_id IS NOT NULL)
                         ),
+                        'author_org_id', orig_p.author_org_id,
+                        'isCompanyPost', (orig_p.author_org_id IS NOT NULL),
+                        'post_type', orig_p.post_type,
                         'media', COALESCE(
                             (SELECT json_agg(json_build_object('url', pm.url, 'media_type', pm.media_type)) 
                              FROM post_media pm WHERE pm.post_id = orig_p.post_id),

@@ -144,7 +144,7 @@ exports.createRole = async (req, res, next) => {
     const { name, color, description, permissions = [] } = req.body;
     const upperPermissions = (Array.isArray(permissions) ? permissions : [])
         .map(p => typeof p === 'string' ? p.toUpperCase().trim() : p)
-        .filter(p => p !== 'CHANNEL' && p !== 'CHANNELS' && p !== 'SETTINGS');
+        .filter(p => p !== 'CHANNEL' && p !== 'CHANNELS');
 
     if (!name) {
         return next(new AppError("Role name is required", 400));
@@ -175,7 +175,7 @@ exports.createRole = async (req, res, next) => {
         // Validate that permissions only contain keys from organization_permission_keys with sort_order > 0
         const invalidKeyCheck = await client.query(
             `SELECT permission_key FROM organization_permission_keys 
-             WHERE permission_key = ANY($1) AND sort_order = 0`,
+             WHERE permission_key = ANY($1) AND sort_order = 0 AND permission_key != 'SETTINGS'`,
             [upperPermissions]
         );
         if (invalidKeyCheck.rowCount > 0) {
@@ -222,7 +222,7 @@ exports.updateRole = async (req, res, next) => {
     const { name, color, description, permissions = [] } = req.body;
     const upperPermissions = (Array.isArray(permissions) ? permissions : [])
         .map(p => typeof p === 'string' ? p.toUpperCase().trim() : p)
-        .filter(p => p !== 'CHANNEL' && p !== 'CHANNELS' && p !== 'SETTINGS');
+        .filter(p => p !== 'CHANNEL' && p !== 'CHANNELS');
 
     // Validation: ACTIVITY_LOGS requires TEAMS
     if (upperPermissions.includes('ACTIVITY_LOGS') && !upperPermissions.includes('TEAMS')) {
@@ -264,7 +264,7 @@ exports.updateRole = async (req, res, next) => {
         // Validate permissions
         const invalidKeyCheck = await client.query(
             `SELECT permission_key FROM organization_permission_keys 
-             WHERE permission_key = ANY($1) AND sort_order = 0`,
+             WHERE permission_key = ANY($1) AND sort_order = 0 AND permission_key != 'SETTINGS'`,
             [upperPermissions]
         );
         if (invalidKeyCheck.rowCount > 0) {
@@ -346,6 +346,17 @@ exports.deleteRole = async (req, res, next) => {
             `DELETE FROM organization_members 
              WHERE org_id = $1 AND role_id = $2 AND status = 'PENDING_INVITE'`,
             [orgId, roleId]
+        );
+
+        // 3. Remove pending invite notifications for this deleted role
+        await client.query(
+            `DELETE FROM notifications 
+             WHERE type = 'organization_invite' 
+               AND reference_id = $1 
+               AND (metadata->>'token' IN (
+                   SELECT token FROM organization_invites WHERE org_id = $1 AND role_id = $2
+               ) OR (metadata->>'role' = $3))`,
+            [orgId, roleId, role.name]
         );
 
         // 3. Soft delete active/suspended members who were in this role by setting status = 'REMOVED' and role_id = NULL

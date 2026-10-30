@@ -3,6 +3,27 @@
  * Used to keep Public Feed and Hashtag Feed consistent.
  */
 
+const getLikerBlockFilter = (companyParamIdx, userParamIdx, plAlias = 'pl_sample') => `
+        AND NOT EXISTS (
+            SELECT 1 FROM blocks b 
+            WHERE (
+                -- When viewing as an organization
+                ($${companyParamIdx}::uuid IS NOT NULL AND (
+                    (b.is_org_block = true AND ${plAlias}.org_id IS NULL AND ((b.blocker_id = $${companyParamIdx}::uuid AND b.blocked_id = ${plAlias}.user_id) OR (b.blocker_id = ${plAlias}.user_id AND b.blocked_id = $${companyParamIdx}::uuid)))
+                    OR
+                    (${plAlias}.org_id IS NOT NULL AND ((b.blocker_id = ${plAlias}.org_id AND b.blocked_id = $${companyParamIdx}::uuid) OR (b.blocker_id = $${companyParamIdx}::uuid AND b.blocked_id = ${plAlias}.org_id)))
+                ))
+                OR
+                -- When viewing as an individual user
+                ($${companyParamIdx}::uuid IS NULL AND $${userParamIdx}::uuid IS NOT NULL AND (
+                    (b.is_org_block = false AND ${plAlias}.org_id IS NULL AND ((b.blocker_id = $${userParamIdx}::uuid AND b.blocked_id = ${plAlias}.user_id) OR (b.blocker_id = ${plAlias}.user_id AND b.blocked_id = $${userParamIdx}::uuid)))
+                    OR
+                    (${plAlias}.org_id IS NOT NULL AND ((b.blocker_id = ${plAlias}.org_id AND b.blocked_id = $${userParamIdx}::uuid) OR (b.blocker_id = $${userParamIdx}::uuid AND b.blocked_id = ${plAlias}.org_id)))
+                ))
+            )
+        )
+`;
+
 const getPostHydrationSelect = (companyParamIdx, userParamIdx) => `
     p.post_id,
     CASE WHEN p.post_type IN ('article', 'poll') THEN p.title ELSE NULL END AS title,
@@ -66,7 +87,9 @@ const getPostHydrationSelect = (companyParamIdx, userParamIdx) => `
 
     (
         SELECT COALESCE(json_agg(json_build_object(
+            'id', COALESCE(u_mention.user_id, o_mention.org_id),
             'user_id', COALESCE(u_mention.user_id, o_mention.org_id),
+            'org_id', o_mention.org_id,
             'full_name', COALESCE(u_mention.full_name, o_mention.name),
             'account_name', COALESCE(u_mention.account_name, o_mention.slug),
             'is_company', (o_mention.org_id IS NOT NULL),
@@ -74,10 +97,10 @@ const getPostHydrationSelect = (companyParamIdx, userParamIdx) => `
             'slug', o_mention.slug
         )), '[]'::json)
         FROM (
-            SELECT DISTINCT (regexp_matches(COALESCE(p.content, ''), '@\\[[^\\]]+\\]\\(([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\\)', 'g'))[1]::uuid AS mentioned_id
+            SELECT DISTINCT (regexp_matches(COALESCE(p.content, ''), '@\\[[^\\]]+\\]\\((?:(?:user|org|company):)?([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\\)', 'g'))[1]::uuid AS mentioned_id
         ) mentions
         LEFT JOIN active_users u_mention ON u_mention.user_id = mentions.mentioned_id
-        LEFT JOIN organizations o_mention ON o_mention.org_id = mentions.mentioned_id AND o_mention.is_deleted = FALSE
+        LEFT JOIN organizations o_mention ON o_mention.org_id = mentions.mentioned_id
         WHERE u_mention.user_id IS NOT NULL OR o_mention.org_id IS NOT NULL
     ) AS mentioned_users,
 
@@ -91,16 +114,17 @@ const getPostHydrationSelect = (companyParamIdx, userParamIdx) => `
     (
         -- Resolve human-readable display name for the sample liker preview:
         -- Use company name if liked by an organization, otherwise fall back to user's full name (instead of slugs/handles)
-        SELECT COALESCE(comp_like.name, u_like.full_name)
+        SELECT COALESCE(comp_like.name, comp_like.slug, u_like.full_name, u_like.account_name)
         FROM active_post_likes pl_sample
          LEFT JOIN active_users u_like ON u_like.user_id = pl_sample.user_id
         LEFT JOIN organizations comp_like ON comp_like.org_id = pl_sample.org_id
         WHERE pl_sample.post_id = p.post_id
         AND NOT (
-            ($${companyParamIdx}::uuid IS NOT NULL AND pl_sample.org_id = $${companyParamIdx}::uuid)
+            ($${companyParamIdx}::uuid IS NOT NULL AND pl_sample.org_id IS NOT NULL AND pl_sample.org_id = $${companyParamIdx}::uuid)
             OR
             ($${companyParamIdx}::uuid IS NULL AND pl_sample.user_id = $${userParamIdx} AND pl_sample.org_id IS NULL)
         )
+        ${getLikerBlockFilter(companyParamIdx, userParamIdx, 'pl_sample')}
         ORDER BY 
             (
                 $${userParamIdx}::uuid IS NOT NULL AND 
@@ -192,12 +216,12 @@ const getPostHydrationSelect = (companyParamIdx, userParamIdx) => `
             SELECT pl_sample.user_id, pl_sample.org_id
             FROM active_post_likes pl_sample
             WHERE pl_sample.post_id = p.post_id
-              AND pl_sample.user_id IS NOT NULL
               AND NOT (
-                  ($${companyParamIdx}::uuid IS NOT NULL AND pl_sample.org_id = $${companyParamIdx}::uuid)
+                  ($${companyParamIdx}::uuid IS NOT NULL AND pl_sample.org_id IS NOT NULL AND pl_sample.org_id = $${companyParamIdx}::uuid)
                   OR
                   ($${companyParamIdx}::uuid IS NULL AND pl_sample.user_id = $${userParamIdx}::uuid AND pl_sample.org_id IS NULL)
               )
+              ${getLikerBlockFilter(companyParamIdx, userParamIdx, 'pl_sample')}
             ORDER BY pl_sample.created_at DESC
             LIMIT 5
         ) sub
@@ -220,7 +244,10 @@ const getPostHydrationSelect = (companyParamIdx, userParamIdx) => `
     (
         EXISTS(
             SELECT 1 FROM saved_post sp_me 
-            WHERE sp_me.post_id = p.post_id 
+            WHERE (
+                sp_me.post_id = p.post_id 
+                OR (p.shared_post_id IS NOT NULL AND sp_me.post_id = p.shared_post_id)
+            )
             AND (
                 ($${companyParamIdx}::uuid IS NOT NULL AND sp_me.org_id = $${companyParamIdx}::uuid)
                 OR
@@ -394,15 +421,20 @@ const getPostHydrationSelect = (companyParamIdx, userParamIdx) => `
                  END,
                  'mentioned_users', (
                      SELECT COALESCE(json_agg(json_build_object(
+                         'id', COALESCE(u_mention.user_id, o_mention.org_id),
                          'user_id', COALESCE(u_mention.user_id, o_mention.org_id),
+                         'org_id', o_mention.org_id,
                          'full_name', COALESCE(u_mention.full_name, o_mention.name),
-                         'account_name', COALESCE(u_mention.account_name, o_mention.slug)
+                         'account_name', COALESCE(u_mention.account_name, o_mention.slug),
+                         'is_company', (o_mention.org_id IS NOT NULL),
+                         'type', CASE WHEN o_mention.org_id IS NOT NULL THEN 'COMPANY' ELSE 'USER' END,
+                         'slug', o_mention.slug
                      )), '[]'::json)
                      FROM (
-                         SELECT DISTINCT (regexp_matches(COALESCE(sp.content, ''), '@\\[[^\\]]+\\]\\(([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\\)', 'g'))[1]::uuid AS mentioned_id
+                         SELECT DISTINCT (regexp_matches(COALESCE(sp.content, ''), '@\\[[^\\]]+\\]\\((?:(?:user|org|company):)?([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\\)', 'g'))[1]::uuid AS mentioned_id
                      ) mentions
                      LEFT JOIN active_users u_mention ON u_mention.user_id = mentions.mentioned_id
-                     LEFT JOIN organizations o_mention ON o_mention.org_id = mentions.mentioned_id AND o_mention.is_deleted = FALSE
+                     LEFT JOIN organizations o_mention ON o_mention.org_id = mentions.mentioned_id
                      WHERE u_mention.user_id IS NOT NULL OR o_mention.org_id IS NOT NULL
                  ),
                  'media', COALESCE((SELECT json_agg(json_build_object('url', pm.url, 'media_type', pm.media_type, 'width', pm.width, 'height', pm.height)) FROM post_media pm WHERE pm.post_id = sp.post_id), '[]'::json),
@@ -419,6 +451,7 @@ const getPostHydrationSelect = (companyParamIdx, userParamIdx) => `
                          OR
                          ($${companyParamIdx}::uuid IS NULL AND pl_sample.user_id = $${userParamIdx} AND pl_sample.org_id IS NULL)
                      )
+                     ${getLikerBlockFilter(companyParamIdx, userParamIdx, 'pl_sample')}
                      ORDER BY 
                          (
                              $${userParamIdx}::uuid IS NOT NULL AND 
@@ -451,12 +484,12 @@ const getPostHydrationSelect = (companyParamIdx, userParamIdx) => `
                          SELECT pl_sample.user_id, pl_sample.org_id
                          FROM active_post_likes pl_sample
                          WHERE pl_sample.post_id = sp.post_id
-                           AND pl_sample.user_id IS NOT NULL
                            AND NOT (
-                               ($${companyParamIdx}::uuid IS NOT NULL AND pl_sample.org_id = $${companyParamIdx}::uuid)
+                               ($${companyParamIdx}::uuid IS NOT NULL AND pl_sample.org_id IS NOT NULL AND pl_sample.org_id = $${companyParamIdx}::uuid)
                                OR
                                ($${companyParamIdx}::uuid IS NULL AND pl_sample.user_id = $${userParamIdx}::uuid AND pl_sample.org_id IS NULL)
                            )
+                           ${getLikerBlockFilter(companyParamIdx, userParamIdx, 'pl_sample')}
                          ORDER BY pl_sample.created_at DESC
                          LIMIT 5
                      ) sub
@@ -660,16 +693,28 @@ const getPublicFeedWhere = (userParamIdx, companyParamIdx = null) => `
     ${companyParamIdx ? `
     AND NOT EXISTS (
         SELECT 1 FROM blocks b
-        WHERE (b.is_org_block = true AND p.author_org_id IS NULL AND ((b.blocker_id = $${companyParamIdx} AND b.blocked_id = p.author_id) OR (b.blocker_id = p.author_id AND b.blocked_id = $${companyParamIdx})))
-           OR (b.is_org_block = true AND p.author_org_id IS NOT NULL AND ((b.blocker_id = p.author_org_id AND b.blocked_id = $${companyParamIdx}) OR (b.blocker_id = $${companyParamIdx} AND b.blocked_id = p.author_org_id)))
+        WHERE (p.author_org_id IS NULL AND (
+                (b.is_org_block = true AND b.blocker_id = $${companyParamIdx} AND b.blocked_id = p.author_id)
+             OR (b.is_org_block = false AND b.blocker_id = p.author_id AND b.blocked_id = $${companyParamIdx})
+        ))
+        OR (p.author_org_id IS NOT NULL AND (
+                (b.blocker_id = p.author_org_id AND b.blocked_id = $${companyParamIdx})
+             OR (b.blocker_id = $${companyParamIdx} AND b.blocked_id = p.author_org_id)
+        ))
     )
     -- STRICT REPOST BLOCKING: Exclude repost if original author is blocked
     AND (
         p.shared_post_id IS NULL 
         OR NOT EXISTS (
             SELECT 1 FROM blocks b 
-            WHERE (b.is_org_block = true AND sp.author_org_id IS NULL AND ((b.blocker_id = $${companyParamIdx} AND b.blocked_id = sp.author_id) OR (b.blocker_id = sp.author_id AND b.blocked_id = $${companyParamIdx})))
-               OR (b.is_org_block = true AND sp.author_org_id IS NOT NULL AND ((b.blocker_id = sp.author_org_id AND b.blocked_id = $${companyParamIdx}) OR (b.blocker_id = $${companyParamIdx} AND b.blocked_id = sp.author_org_id)))
+            WHERE (sp.author_org_id IS NULL AND (
+                    (b.is_org_block = true AND b.blocker_id = $${companyParamIdx} AND b.blocked_id = sp.author_id)
+                 OR (b.is_org_block = false AND b.blocker_id = sp.author_id AND b.blocked_id = $${companyParamIdx})
+            ))
+            OR (sp.author_org_id IS NOT NULL AND (
+                    (b.blocker_id = sp.author_org_id AND b.blocked_id = $${companyParamIdx})
+                 OR (b.blocker_id = $${companyParamIdx} AND b.blocked_id = sp.author_org_id)
+            ))
         )
     )
     ` : `
@@ -725,4 +770,5 @@ module.exports = {
     getPostHydrationSelect,
     getPostHydrationJoins,
     getPublicFeedWhere,
+    getLikerBlockFilter,
 };

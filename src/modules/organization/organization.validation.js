@@ -54,7 +54,7 @@ const savePresenceSchema = z.object({
     country: z.string({ required_error: "Country is required" }).trim(),
     city: z.string({ required_error: "City is required" }).trim(),
     headline: z.string({ required_error: "Headline is required" }).trim().max(255, "Headline must not exceed 255 characters"),
-    description: z.string().trim().optional().nullable(),
+    description: z.string().trim().max(2000, "Description must not exceed 2000 characters").optional().nullable(),
   }),
 });
 

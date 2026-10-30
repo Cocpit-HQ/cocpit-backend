@@ -8,33 +8,8 @@ const deviceRepo = require("../device/device.repository");
 const pool = require("../../core/db/pool");
 const socketService = require("../../core/infrastructure/socket.service");
 const { sendDocumentVerifiedEmail, sendDocumentRejectedEmail, sendOrgDocumentVerifiedEmail, sendOrgDocumentRejectedEmail } = require("../../core/services/email.service");
+const { isNotificationAllowed, isOrgNotificationAllowed } = require("../../core/utils/notificationPermission");
 
-const isNotificationAllowed = async (userId, notificationType = "post") => {
-    try {
-        const res = await pool.query(
-            "SELECT all_notifications, post_notifications, job_alerts, message_notifications FROM user_notification_preferences WHERE user_id = $1",
-            [userId]
-        );
-        if (res.rowCount === 0) return true;
-
-        const pref = res.rows[0];
-        if (pref.all_notifications === false) return false;
-
-        if (["post", "like", "comment", "reply", "mention"].includes(notificationType) && pref.post_notifications === false) return false;
-        
-        const isJobAlert = notificationType === "job" || 
-                           notificationType.includes("application") || 
-                           notificationType.includes("offer");
-        if (isJobAlert && pref.job_alerts === false) return false;
-        
-        if (notificationType === "message" && pref.message_notifications === false) return false;
-
-        return true;
-    } catch (err) {
-        console.error("Error checking notification preferences:", err);
-        return true;
-    }
-};
 
 /**
  * Sends a push notification to all active devices of a user.
@@ -171,14 +146,14 @@ const notifyDocumentVerified = async (userId) => {
         if (userRes.rowCount === 0) return;
         const { email, full_name, account_name } = userRes.rows[0];
 
-        const username = account_name || full_name || "user";
+        const username = (full_name && full_name.trim()) || (account_name && account_name.trim()) || "user";
         const message = `Congratulations ${username}, we have successfully reviewed and verified your documents. Your profile is now verified.`;
 
-        // 1. Insert into notifications DB (system notification, sender_id is null)
+        // 1. Insert into notifications DB (sender_id set to verified user for avatar resolution)
         await pool.query(
             `INSERT INTO notifications (user_id, sender_id, type, text, metadata)
              VALUES ($1, $2, $3, $4, $5)`,
-            [userId, null, type, message, JSON.stringify({ title })]
+            [userId, userId, type, message, JSON.stringify({ title })]
         );
 
         // 2. Socket Notification
@@ -302,6 +277,8 @@ const notifyOrgDocumentRejected = async (orgId, reason) => {
 };
 
 module.exports = {
+    isNotificationAllowed,
+    isOrgNotificationAllowed,
     sendToUser,
     sendSilentPushToUser,
     notifyDocumentVerified,
