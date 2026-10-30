@@ -32,6 +32,7 @@ router.get("/users/me/posts", requireAuth, contentController.getMyPosts);
 // router.get("/users/me/posts/private", requireAuth, contentController.getMyPrivatePosts);
 
 // Posts (Image, Video, Article, Poll)
+router.post("/post/media/presign-urls", requireAuth, contentController.getPresignedMediaUrls);
 router.post("/post", requireAuth, uploadPostMedia, validate(createPostSchema), contentController.createPost);
 router.get("/post/:id", requireAuth, contentController.getPostById);
 router.put("/post/:id", requireAuth, uploadPostMedia, contentController.updatePostById);

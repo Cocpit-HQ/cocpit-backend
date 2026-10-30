@@ -474,12 +474,16 @@ CREATE INDEX idx_comment_likes_user_id ON comment_likes(user_id);
 
 CREATE TABLE post_media (
   media_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  post_id UUID REFERENCES posts(post_id) ON DELETE CASCADE,
+  post_id UUID NOT NULL REFERENCES posts(post_id) ON DELETE CASCADE,
   url TEXT NOT NULL,
-  media_type TEXT CHECK (media_type IN ('image', 'video')),
+  media_type TEXT NOT NULL CHECK (media_type IN ('image', 'video')),
+  order_index INT NOT NULL,
   aspect_ratio TEXT, -- e.g., '4:5'
   width INT,
-  height INT
+  height INT,
+  thumbnail_url TEXT,
+  duration_seconds NUMERIC(6,2),
+  CONSTRAINT uq_post_media_post_order UNIQUE (post_id, order_index)
 );
 
 CREATE TABLE stories (

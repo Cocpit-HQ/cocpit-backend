@@ -185,3 +185,11 @@ CREATE INDEX IF NOT EXISTS idx_org_notification_settings_org_id ON organization_
 ALTER TABLE organization_members 
     ADD COLUMN IF NOT EXISTS member_id UUID DEFAULT gen_random_uuid();
 
+-- 20. post_media: Add carousel slide ordering & video metadata (v1.9.0)
+ALTER TABLE post_media 
+    ADD COLUMN IF NOT EXISTS order_index INT DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS thumbnail_url TEXT,
+    ADD COLUMN IF NOT EXISTS duration_seconds NUMERIC(6,2);
+
+CREATE INDEX IF NOT EXISTS idx_post_media_post_order ON post_media(post_id, order_index);
+

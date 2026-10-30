@@ -1,3 +1,119 @@
+// --- DIRECT PRESIGNED MEDIA UPLOADS ---
+exports.getPresignedMediaUrls = async (req, res) => {
+    try {
+        const actorScope = getContentActorScope(req, req.body?.companyId || null);
+        const { userId } = actorScope;
+        const files = req.body?.files;
+
+        if (!Array.isArray(files) || files.length === 0) {
+            return res.status(400).json({ message: "Files array is required and cannot be empty." });
+        }
+
+        if (files.length > 12) {
+            return res.status(400).json({ message: "Maximum 12 attachments allowed per post." });
+        }
+
+        const ALLOWED_IMAGE_TYPES = [
+            "image/jpeg", "image/jpg", "image/png", "image/webp", "image/heic", "image/heif"
+        ];
+        const ALLOWED_VIDEO_TYPES = [
+            "video/mp4", "video/mov", "video/quicktime", "video/webm"
+        ];
+        const MAX_IMAGE_SIZE = 10 * 1024 * 1024;      // 10MB
+        const MAX_TOTAL_IMAGE_SIZE = 120 * 1024 * 1024; // 120MB
+        const MAX_VIDEO_SIZE = 100 * 1024 * 1024;     // 100MB
+
+        let videoCount = 0;
+        let totalImageSize = 0;
+
+        for (const f of files) {
+            const rawType = (f.contentType || f.mimetype || "").toLowerCase().trim();
+            const size = Number(f.size) || 0;
+            const isVideo = ALLOWED_VIDEO_TYPES.includes(rawType) || (f.filename && /\.(mp4|mov|webm)$/i.test(f.filename));
+            const isImage = ALLOWED_IMAGE_TYPES.includes(rawType) || (f.filename && /\.(jpe?g|png|webp|heic|heif)$/i.test(f.filename));
+
+            if (!isVideo && !isImage) {
+                return res.status(400).json({
+                    message: `Unsupported file type for "${f.filename || 'file'}". Allowed: JPEG, PNG, WEBP, HEIC, MP4, MOV, WEBM.`
+                });
+            }
+
+            if (isVideo) {
+                videoCount++;
+                if (size > MAX_VIDEO_SIZE) {
+                    return res.status(400).json({
+                        message: `Video "${f.filename || 'file'}" exceeds 100MB limit.`
+                    });
+                }
+            } else {
+                if (size > MAX_IMAGE_SIZE) {
+                    return res.status(400).json({
+                        message: `Image "${f.filename || 'file'}" exceeds 10MB limit.`
+                    });
+                }
+                totalImageSize += size;
+            }
+        }
+
+        if (videoCount > 4) {
+            return res.status(400).json({ message: "Maximum 4 videos allowed per post." });
+        }
+
+        if (totalImageSize > MAX_TOTAL_IMAGE_SIZE) {
+            return res.status(400).json({ message: "Total image size cannot exceed 120MB." });
+        }
+
+        const prefix = req?.currentEnvironment || req?.headers?.["x-environment"] || process.env.R2_FOLDER_PREFIX || "staging";
+        const { generatePresignedUploadUrl } = require("../../core/infrastructure/r2.client");
+        const crypto = require("crypto");
+        const filePathModule = require("path");
+
+        const items = [];
+        for (let i = 0; i < files.length; i++) {
+            const f = files[i];
+            const rawType = (f.contentType || f.mimetype || "").toLowerCase().trim();
+            const isVideo = ALLOWED_VIDEO_TYPES.includes(rawType) || (f.filename && /\.(mp4|mov|webm)$/i.test(f.filename));
+            const mediaType = isVideo ? "video" : "image";
+            
+            let ext = filePathModule.extname(f.filename || "").toLowerCase();
+            if (!ext) {
+                ext = isVideo ? ".mp4" : ".jpg";
+            }
+            const cleanName = (f.filename || `media-${i}`).replace(/[^a-zA-Z0-9.]/g, "_");
+            const fileKey = `${prefix.toLowerCase().trim()}/posts/${Date.now()}-${crypto.randomBytes(6).toString("hex")}-${cleanName}`;
+            const contentType = f.contentType || (isVideo ? "video/mp4" : "image/jpeg");
+
+            const presigned = await generatePresignedUploadUrl({
+                key: fileKey,
+                contentType,
+                expiresIn: 3600 // 1 hour valid
+            });
+
+            if (!presigned) {
+                throw new Error("Storage provider not configured or failed to generate upload URL");
+            }
+
+            items.push({
+                order_index: i,
+                filename: f.filename,
+                key: presigned.key,
+                upload_url: presigned.uploadUrl,
+                public_url: presigned.publicUrl,
+                media_type: mediaType,
+                content_type: contentType
+            });
+        }
+
+        return res.status(200).json({
+            success: true,
+            items
+        });
+    } catch (err) {
+        console.error("[getPresignedMediaUrls] Error:", err);
+        return res.status(500).json({ message: err.message || "Failed to generate presigned upload URLs" });
+    }
+};
+
 const { incrementUserHashtagScore } = require("../../services/recommendation.service");
 const { ur, vi } = require("zod/locales");
 const { sanitizeContent } = require("../../utils/contentSanitizer");
@@ -868,7 +984,13 @@ exports.createPost = async (req, res) => {
     }
 
     const { userId, orgId: companyId } = actorScope;
-    let { content, category, visibility, media_urls, post_type, title, poll_options, poll_duration, is_broadcast, location, achievement_image_id, status } = req.body; // category is name, media_urls is array
+    let { content, category, visibility, media_urls, media, post_type, title, poll_options, poll_duration, is_broadcast, location, achievement_image_id, status } = req.body;
+
+    if (media && typeof media === 'string') {
+        try {
+            media = JSON.parse(media);
+        } catch (e) { }
+    }
 
     if (media_urls && typeof media_urls === 'string') {
         try {
@@ -909,35 +1031,19 @@ exports.createPost = async (req, res) => {
         });
     };
 
-    // Custom file validations
-    if (videoFiles.length > 1) {
-        cleanupFiles(uploadedFiles);
-        return res.status(400).json({
-            message: "Only one video file is allowed"
-        });
-    }
-
-    if (videoFiles.length > 0 && imageFiles.length > 0) {
-        cleanupFiles(uploadedFiles);
-        return res.status(400).json({
-            message: "Cannot upload video and images together"
-        });
-    }
-
-    if (imageFiles.length > 12) {
-        cleanupFiles(uploadedFiles);
-        return res.status(400).json({
-            message: "Maximum 12 images allowed"
-        });
-    }
-
-    // Image file size validation for post creation:
-    // - Per-image limit: 10MB max per single image file
-    // - Total post upload limit: 120MB max cumulative size across all uploaded images (up to 12 images x 10MB)
+    // Size and count validation for uploaded files via multipart
     const MAX_SINGLE_IMAGE_SIZE = 10 * 1024 * 1024; // 10MB per single image limit
     const MAX_TOTAL_IMAGE_SIZE = 120 * 1024 * 1024; // 120MB total post images limit
+    const MAX_SINGLE_VIDEO_SIZE = 100 * 1024 * 1024; // 100MB per video limit
 
-    // Reject any single image larger than 10MB
+    const oversizedVideo = videoFiles.find(f => f.size > MAX_SINGLE_VIDEO_SIZE);
+    if (oversizedVideo) {
+        cleanupFiles(uploadedFiles);
+        return res.status(400).json({
+            message: `Video "${oversizedVideo.originalname || 'file'}" exceeds the 100MB limit.`
+        });
+    }
+
     const oversizedImage = imageFiles.find(f => f.size > MAX_SINGLE_IMAGE_SIZE);
     if (oversizedImage) {
         cleanupFiles(uploadedFiles);
@@ -946,7 +1052,6 @@ exports.createPost = async (req, res) => {
         });
     }
 
-    // Reject cumulative image upload size larger than 120MB
     const totalImageSize = imageFiles.reduce((sum, f) => sum + (f.size || 0), 0);
     if (totalImageSize > MAX_TOTAL_IMAGE_SIZE) {
         cleanupFiles(uploadedFiles);
@@ -954,6 +1059,8 @@ exports.createPost = async (req, res) => {
             message: "Total image upload size cannot exceed 120MB."
         });
     }
+
+
 
     // Map uploaded files to media URLs directly (already streamed by Multer middleware)
     if (post_type === 'article') {
@@ -996,13 +1103,62 @@ exports.createPost = async (req, res) => {
         
         const fileObjects = uploadedFiles.map((file, idx) => ({
             url: (file.path || file.secure_url || '').replace(/\\/g, "/"),
+            media_type: file.mimetype.startsWith('video/') ? 'video' : 'image',
+            order_index: idx,
+            thumbnail_url: null,
+            duration_seconds: null,
             width: (parsedMediaMetadata[idx] && parsedMediaMetadata[idx].width) || file.width || null,
             height: (parsedMediaMetadata[idx] && parsedMediaMetadata[idx].height) || file.height || null
         }));
-        if (videoFiles.length > 0) {
-            media_urls = [fileObjects[0]];
-        } else if (imageFiles.length > 0) {
-            media_urls = fileObjects;
+        media_urls = fileObjects;
+    }
+
+    // Build unified normalized media items from direct uploads, media_urls or media
+    let normalizedMediaItems = [];
+    const sourceMedia = (Array.isArray(media) && media.length > 0) ? media : ((Array.isArray(media_urls) && media_urls.length > 0) ? media_urls : []);
+
+    if (sourceMedia.length > 0 && post_type !== 'article') {
+        normalizedMediaItems = sourceMedia.map((item, idx) => {
+            if (typeof item === 'string') {
+                const isVid = item.toLowerCase().match(/\.(mp4|webm|mov)(\?|#|$)/i);
+                return {
+                    url: item,
+                    media_type: isVid ? 'video' : 'image',
+                    order_index: idx,
+                    thumbnail_url: null,
+                    duration_seconds: null,
+                    width: null,
+                    height: null
+                };
+            }
+            const isVid = item.media_type === 'video' || item.url?.toLowerCase().match(/\.(mp4|webm|mov)(\?|#|$)/i);
+            return {
+                url: item.url,
+                media_type: isVid ? 'video' : 'image',
+                order_index: typeof item.order_index === 'number' ? item.order_index : idx,
+                thumbnail_url: (item.thumbnail_url && typeof item.thumbnail_url === 'string' && !item.thumbnail_url.startsWith('blob:')) ? item.thumbnail_url : null,
+                duration_seconds: item.duration_seconds !== undefined && item.duration_seconds !== null ? Number(item.duration_seconds) : null,
+                width: item.width || null,
+                height: item.height || null
+            };
+        }).filter(m => Boolean(m.url));
+
+        if (normalizedMediaItems.length > 12) {
+            cleanupFiles(uploadedFiles);
+            return res.status(400).json({ message: "Maximum 12 attachments allowed per post." });
+        }
+
+        const postVideos = normalizedMediaItems.filter(m => m.media_type === 'video');
+        if (postVideos.length > 4) {
+            cleanupFiles(uploadedFiles);
+            return res.status(400).json({ message: "Maximum 4 videos allowed per post." });
+        }
+
+        for (const v of postVideos) {
+            if (v.duration_seconds && v.duration_seconds > 240.0) {
+                cleanupFiles(uploadedFiles);
+                return res.status(400).json({ message: "Video duration cannot exceed 4 minutes (240 seconds)." });
+            }
         }
     }
 
@@ -1108,12 +1264,23 @@ exports.createPost = async (req, res) => {
         if (!post_type) {
             if (poll_options && poll_options.length > 0) {
                 post_type = 'poll';
+            } else if (normalizedMediaItems.length > 0) {
+                const hasImages = normalizedMediaItems.some(m => m.media_type === 'image');
+                const videoCount = normalizedMediaItems.filter(m => m.media_type === 'video').length;
+                if (videoCount === 1 && !hasImages) {
+                    post_type = 'video';
+                } else {
+                    post_type = 'image';
+                }
             } else if (media_urls && Array.isArray(media_urls) && media_urls.length > 0) {
-                const firstUrl = media_urls[0];
-                post_type = firstUrl.toLowerCase().match(/\.(mp4|webm|mov)(\?|#|$)/) ? 'video' : 'image';
+                const firstItem = media_urls[0];
+                const firstUrl = typeof firstItem === 'object' && firstItem !== null ? firstItem.url : firstItem;
+                post_type = firstUrl?.toLowerCase().match(/\.(mp4|webm|mov)(\?|#|$)/) ? 'video' : 'image';
             } else {
                 post_type = 'text';
             }
+        } else if (post_type === 'carousel' || post_type === 'photo') {
+            post_type = 'image';
         }
 
         // Post content validation for normal text posts
@@ -1287,17 +1454,25 @@ exports.createPost = async (req, res) => {
         }
 
         let type;
-        // 3. Insert Media (Parallel Optimized)
-        if (media_urls && Array.isArray(media_urls) && media_urls.length > 0) {
-            const mediaPromises = media_urls.map(mediaItem => {
-                const url = typeof mediaItem === 'string' ? mediaItem : mediaItem.url;
-                const width = mediaItem.width || null;
-                const height = mediaItem.height || null;
-                let currentType = url.toLowerCase().match(/\.(mp4|webm|mov)(\?|#|$)/) ? 'video' : 'image';
-                type = currentType; // Keep a reference to one type for response (legacy behavior)
+        // 3. Insert Media with order_index, thumbnail_url, and duration_seconds
+        const itemsToInsert = normalizedMediaItems.length > 0 ? normalizedMediaItems : (Array.isArray(media_urls) ? media_urls.map((m, i) => ({
+            url: typeof m === 'string' ? m : m.url,
+            media_type: (typeof m === 'string' ? m : m.url)?.toLowerCase().match(/\.(mp4|webm|mov)(\?|#|$)/i) ? 'video' : 'image',
+            order_index: i,
+            thumbnail_url: typeof m === 'object' && m.thumbnail_url && !m.thumbnail_url.startsWith('blob:') ? m.thumbnail_url : null,
+            duration_seconds: typeof m === 'object' ? m.duration_seconds || null : null,
+            width: typeof m === 'object' ? m.width || null : null,
+            height: typeof m === 'object' ? m.height || null : null,
+        })) : []);
+
+        if (itemsToInsert.length > 0) {
+            itemsToInsert.sort((a, b) => (a.order_index ?? 0) - (b.order_index ?? 0));
+            const mediaPromises = itemsToInsert.map((item, idx) => {
+                type = item.media_type;
                 return client.query(
-                    `INSERT INTO post_media (post_id, url, media_type, width, height) VALUES ($1, $2, $3, $4, $5)`,
-                    [postId, url, currentType, width, height]
+                    `INSERT INTO post_media (post_id, url, media_type, width, height, order_index, thumbnail_url, duration_seconds) 
+                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+                    [postId, item.url, item.media_type, item.width, item.height, idx, item.thumbnail_url, item.duration_seconds]
                 );
             });
             await Promise.all(mediaPromises);
@@ -1823,8 +1998,12 @@ exports.getPostById = async (req, res) => {
                     'url', pm.url,
                     'media_type', pm.media_type,
                     'width', pm.width,
-                    'height', pm.height
+                    'height', pm.height,
+                    'order_index', pm.order_index,
+                    'thumbnail_url', pm.thumbnail_url,
+                    'duration_seconds', pm.duration_seconds
                 )
+                ORDER BY pm.order_index ASC
             )
             FROM post_media pm
             WHERE pm.post_id = p.post_id
@@ -2598,28 +2777,49 @@ exports.updatePostById = async (req, res) => {
             }
         }
 
-        // 5. Update Media: The "Sync" approach
-        if (Array.isArray(media_urls)) {
+        // 5. Update Media: The "Sync" approach with order_index
+        const updateMediaSource = (Array.isArray(req.body.media) && req.body.media.length > 0) ? req.body.media : media_urls;
+        if (Array.isArray(updateMediaSource)) {
             const oldMediaRes = await client.query(`SELECT url FROM post_media WHERE post_id = $1`, [postId]);
             const oldUrls = oldMediaRes.rows.map(r => r.url).filter(Boolean);
 
             await client.query(`DELETE FROM post_media WHERE post_id = $1`, [postId]);
 
             const newUrls = [];
-            for (let i = 0; i < media_urls.length; i++) {
-                const item = media_urls[i];
-                const url = typeof item === 'object' && item !== null ? item.url : item;
-                if (!url) continue;
-                newUrls.push(url);
-                
-                const width = (parsedMediaMetadata[i] && parsedMediaMetadata[i].width) || (typeof item === 'object' && item !== null ? item.width : null);
-                const height = (parsedMediaMetadata[i] && parsedMediaMetadata[i].height) || (typeof item === 'object' && item !== null ? item.height : null);
-                
-                const type = url.match(/\.(mp4|webm|mov)(\?|#|$)/i) ? "video" : "image";
+            const normalizedUpdateItems = updateMediaSource.map((item, idx) => {
+                if (typeof item === 'string') {
+                    const isVid = item.toLowerCase().match(/\.(mp4|webm|mov)(\?|#|$)/i);
+                    return {
+                        url: item,
+                        media_type: isVid ? 'video' : 'image',
+                        order_index: idx,
+                        thumbnail_url: null,
+                        duration_seconds: null,
+                        width: null,
+                        height: null
+                    };
+                }
+                const isVid = item.media_type === 'video' || item.url?.toLowerCase().match(/\.(mp4|webm|mov)(\?|#|$)/i);
+                return {
+                    url: item.url,
+                    media_type: isVid ? 'video' : 'image',
+                    order_index: typeof item.order_index === 'number' ? item.order_index : idx,
+                    thumbnail_url: (item.thumbnail_url && typeof item.thumbnail_url === 'string' && !item.thumbnail_url.startsWith('blob:')) ? item.thumbnail_url : null,
+                    duration_seconds: item.duration_seconds !== undefined && item.duration_seconds !== null ? Number(item.duration_seconds) : null,
+                    width: (parsedMediaMetadata[idx] && parsedMediaMetadata[idx].width) || item.width || null,
+                    height: (parsedMediaMetadata[idx] && parsedMediaMetadata[idx].height) || item.height || null
+                };
+            }).filter(m => Boolean(m.url));
+
+            normalizedUpdateItems.sort((a, b) => a.order_index - b.order_index);
+
+            for (let i = 0; i < normalizedUpdateItems.length; i++) {
+                const m = normalizedUpdateItems[i];
+                newUrls.push(m.url);
                 await client.query(
-                    `INSERT INTO post_media (post_id, url, media_type, width, height)
-       VALUES ($1, $2, $3, $4, $5)`,
-                    [postId, url, type, width, height]
+                    `INSERT INTO post_media (post_id, url, media_type, width, height, order_index, thumbnail_url, duration_seconds)
+                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+                    [postId, m.url, m.media_type, m.width, m.height, i, m.thumbnail_url, m.duration_seconds]
                 );
             }
 
@@ -2667,8 +2867,11 @@ SELECT
             'url', pm.url,
             'media_type', pm.media_type,
             'width', pm.width,
-            'height', pm.height
-        )) FROM post_media pm WHERE pm.post_id = p.post_id),
+            'height', pm.height,
+            'order_index', pm.order_index,
+            'thumbnail_url', pm.thumbnail_url,
+            'duration_seconds', pm.duration_seconds
+        ) ORDER BY pm.order_index ASC) FROM post_media pm WHERE pm.post_id = p.post_id),
         '[]'::json
     ) AS media,
     -- Corrected Poll Subquery
