@@ -61,8 +61,17 @@ const submitJobSchema = z.object({
   }),
 });
 
+const sendOfferSchema = z.object({
+  body: z.object({
+    jobId: z.string({ required_error: "jobId is required" }),
+    userId: z.string({ required_error: "userId is required" }),
+    message: z.string().max(255, "Note cannot exceed 255 characters.").optional().nullable(),
+  }),
+});
+
 module.exports = {
   createDraftSchema,
   updateDraftSchema,
   submitJobSchema,
+  sendOfferSchema,
 };

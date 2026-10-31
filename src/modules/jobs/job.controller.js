@@ -2346,8 +2346,8 @@ exports.getJobRoles = async (req, res) => {
 
 exports.getIndustries = async (req, res) => {
   try {
-    const { q, cursor, limit = 8 } = req.query;
-    const pageSize = Math.min(Math.max(parseInt(limit) || 8, 1), 100);
+    const { q, cursor, limit = 50 } = req.query;
+    const pageSize = Math.min(Math.max(parseInt(limit) || 50, 1), 100);
     let query = `SELECT industry_name FROM industries_master`;
     let values = [];
     let conditions = [];

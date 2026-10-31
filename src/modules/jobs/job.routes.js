@@ -8,7 +8,7 @@ const { requireRoles } = require("../../core/middlewares/role.middleware");
 const { requireOrgPermission, requireCompanyPermission } = require("../../core/middlewares/organization.auth.middleware");
 const { uploadApplicationFiles, uploadTaskSubmission } = require("../../core/middlewares/upload.middleware");
 const { validate } = require("../../core/middlewares/validation.middleware");
-const { createDraftSchema, updateDraftSchema, submitJobSchema } = require("../../schemas/job.schema");
+const { createDraftSchema, updateDraftSchema, submitJobSchema, sendOfferSchema } = require("../../schemas/job.schema");
 const { createAIRateLimiter, createAutosaveRateLimiter } = require("../../core/middlewares/rateLimiter.middleware");
 
 // Initialise the AI rate limiter once (3 generations per user per minute)
@@ -72,7 +72,7 @@ router.put("/:id", requireAuth, jobController.updateJob);
 router.delete("/:id", requireAuth, jobController.deleteJob);
 
 // Direct Job Offers
-router.post("/companies/:companyId/offers", requireAuth, requireCompanyPermission("MANAGE_JOBS"), offerController.sendJobOffer);
+router.post("/companies/:companyId/offers", requireAuth, requireCompanyPermission("MANAGE_JOBS"), validate(sendOfferSchema), offerController.sendJobOffer);
 router.get("/companies/:companyId/offers/sent", requireAuth, requireCompanyPermission("VIEW_JOBS"), offerController.getCompanySentOffers);
 router.get("/companies/:companyId/offers/job/:jobId/recipients", requireAuth, requireCompanyPermission("VIEW_JOBS"), offerController.getCompanyOfferRecipients);
 router.get("/companies/:companyId/offers/check/:targetUserId", requireAuth, requireCompanyPermission("VIEW_JOBS"), offerController.checkOfferStatus);
@@ -84,7 +84,7 @@ router.get("/offers/sent", requireAuth, offerController.getRecruiterSentOffers);
 router.get("/offers/check/:targetUserId", requireAuth, offerController.checkOfferStatus);
 router.get("/offers/job/:jobId/recipients", requireAuth, offerController.getCompanyOfferRecipients);
 router.get("/offers/:offerId", requireAuth, offerController.getOfferDetail);
-router.post("/offers", requireAuth, offerController.sendJobOffer);
+router.post("/offers", requireAuth, validate(sendOfferSchema), offerController.sendJobOffer);
 
 // Application Management
 // PUT  /applications/:id/status  — moved to applications/application.routes.js
