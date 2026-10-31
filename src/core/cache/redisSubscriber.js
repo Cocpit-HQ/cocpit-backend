@@ -4,14 +4,29 @@ const socketService = require('../infrastructure/socket.service');
 
 // Create a dedicated Redis client for subscribing since it blocks other commands
 const redisUrl = process.env.REDIS_URL || 'redis://127.0.0.1:6379';
-const subscriber = new Redis(redisUrl);
+const subscriber = new Redis(redisUrl, {
+  maxRetriesPerRequest: null,
+  retryStrategy(times) {
+    return Math.min(times * 100, 3000);
+  }
+});
+
+let hasLoggedSubscriberError = false;
 
 subscriber.on('connect', () => {
   console.log('✅ Redis Subscriber connected');
+  hasLoggedSubscriberError = false;
 });
 
 subscriber.on('error', (err) => {
-  console.error('🔥 Redis Subscriber error:', err.message);
+  if (err.code === 'ECONNREFUSED') {
+    if (!hasLoggedSubscriberError) {
+      console.warn('⚠️ Redis Subscriber unavailable. Running without pub/sub cache.');
+      hasLoggedSubscriberError = true;
+    }
+  } else {
+    console.error('🔥 Redis Subscriber error:', err.message);
+  }
 });
 
 // Subscribe to channels

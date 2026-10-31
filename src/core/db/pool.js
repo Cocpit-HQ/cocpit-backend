@@ -22,7 +22,7 @@ const poolConfig = (process.env.DATABASE_URL && process.env.DATABASE_URL.trim().
     // Connection limits & timeouts
     max: 30,                          // max clients in pool (was 15 — too low under load)
     idleTimeoutMillis: 20000,         // release idle clients after 20s
-    connectionTimeoutMillis: 5000,    // fail fast if pool is exhausted
+    connectionTimeoutMillis: 20000,   // 20s to allow remote cloud DB handshake
     statement_timeout: 60000,         // kill any query running > 60s
     query_timeout: 60000,             // node-postgres client-side query timeout
   }
@@ -35,7 +35,7 @@ const poolConfig = (process.env.DATABASE_URL && process.env.DATABASE_URL.trim().
     // ─── Connection pool limits ───────────────────────────────────────────────
     max: 30,                          // max clients (was 15 — too low under load)
     idleTimeoutMillis: 20000,         // release idle clients after 20s
-    connectionTimeoutMillis: 5000,    // fail fast if pool is exhausted
+    connectionTimeoutMillis: 20000,   // 20s to allow remote cloud DB handshake
     // ─── Server-side timeouts (sent to Postgres on every new connection) ──────
     statement_timeout: 60000,         // kill any query running > 60s
     query_timeout: 60000,             // node-postgres client-side query timeout

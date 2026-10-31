@@ -9,7 +9,7 @@ const getPoolConfig = (dbUrl, host, port, user, password, dbName) => {
       ssl: isProduction ? { rejectUnauthorized: false } : false,
       max: 15,
       idleTimeoutMillis: 30000,
-      connectionTimeoutMillis: 5000,
+      connectionTimeoutMillis: 20000,
     };
   }
   return {
@@ -20,7 +20,7 @@ const getPoolConfig = (dbUrl, host, port, user, password, dbName) => {
     database: dbName,
     max: 15,
     idleTimeoutMillis: 30000,
-    connectionTimeoutMillis: 5000,
+    connectionTimeoutMillis: 20000,
     ssl: false,
   };
 };
