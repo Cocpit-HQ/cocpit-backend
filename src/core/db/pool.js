@@ -12,11 +12,15 @@ const isProduction = process.env.NODE_ENV === "production";
 
 // hello this is new comment
 // Prefer DATABASE_URL if present, else fallback to individual vars
-// FORCE: Using individual vars to ensure we connect to correct DB host (ignoring potential wrong system DATABASE_URL)
+const isInternalHost = Boolean(
+  (process.env.DATABASE_URL && (process.env.DATABASE_URL.includes('.railway.internal') || process.env.DATABASE_URL.includes('localhost') || process.env.DATABASE_URL.includes('127.0.0.1'))) ||
+  (process.env.DB_HOST && (process.env.DB_HOST.includes('.railway.internal') || process.env.DB_HOST.includes('localhost') || process.env.DB_HOST.includes('127.0.0.1')))
+);
+
 const poolConfig = (process.env.DATABASE_URL && process.env.DATABASE_URL.trim().length > 0)
   ? {
     connectionString: process.env.DATABASE_URL,
-    ssl: isProduction
+    ssl: (isProduction && !isInternalHost)
       ? { rejectUnauthorized: false }
       : false,
     // Connection limits & timeouts

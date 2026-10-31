@@ -4,6 +4,7 @@ const redisUrl = process.env.REDIS_URL || process.env.REDIS_PRIVATE_URL;
 
 const redisOptions = {
   db: parseInt(process.env.REDIS_DB || "0", 10), // 0=prod, 1=staging, 2=UAT
+  family: 0, // Enable dual-stack IPv4/IPv6 for Railway private mesh
   // Safety measures to avoid connection storms
   maxRetriesPerRequest: 0, // Fail fast instead of queuing up commands when down
   enableOfflineQueue: false, // Don't queue commands when Redis is unavailable

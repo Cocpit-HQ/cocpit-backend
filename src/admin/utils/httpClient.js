@@ -1,9 +1,11 @@
 const axios = require('axios');
 const axiosRetry = require('axios-retry').default;
 
+const mainApiBase = (process.env.MAIN_API_INTERNAL_URL || process.env.MAIN_API_URL || `http://localhost:5000`).replace(/\/$/, '');
+
 // Configure the internal API client
 const httpClient = axios.create({
-  baseURL: `http://localhost:${process.env.PORT || 5000}/api/internal`, // Points to Main API
+  baseURL: `${mainApiBase}/api/internal`, // Points to Main API
   timeout: 5000, // 5 seconds strict timeout
   headers: {
     'x-internal-api-secret': process.env.INTERNAL_API_SECRET
