@@ -47,52 +47,56 @@ require('./modules/config/featureFlags.service').initFlagsFromRedis();
 
 // startSessionTimeoutWorker();
 
-// Start simple job expiry worker (Every 15 minutes)
-setInterval(() => {
-  processJobExpirations();
-}, 15 * 60 * 1000);
+// Background Cron Workers
+const runWorkers = process.env.RUN_WORKERS_IN_API !== "false";
 
-// Start story expiry & cleanup worker (Every 15 minutes)
-setInterval(() => {
-  processStoryExpirations();
-}, 15 * 60 * 1000);
+if (runWorkers) {
+  // Start simple job expiry worker (Every 15 minutes)
+  setInterval(() => {
+    processJobExpirations();
+  }, 15 * 60 * 1000);
 
-// Start Intent Layer Sweep (Every 5 minutes)
-setInterval(() => {
-  sweepActivityLogs();
-}, 5 * 60 * 1000);
+  // Start story expiry & cleanup worker (Every 15 minutes)
+  setInterval(() => {
+    processStoryExpirations();
+  }, 15 * 60 * 1000);
 
-// Start Intent Layer Daily Decay (Every 24 hours)
-setInterval(() => {
-  runDailyDecay();
-}, 24 * 60 * 60 * 1000);
+  // Start Intent Layer Sweep (Every 5 minutes)
+  setInterval(() => {
+    sweepActivityLogs();
+  }, 5 * 60 * 1000);
 
-// Start Profile Incomplete Nudge Worker (Every 1 day)
-processProfileNudges(); // Run immediately on boot
-setInterval(() => {
-  processProfileNudges();
-}, 24 * 60 * 60 * 1000);
+  // Start Intent Layer Daily Decay (Every 24 hours)
+  setInterval(() => {
+    runDailyDecay();
+  }, 24 * 60 * 60 * 1000);
 
-// Start Unread Messages Nudge Worker (Every 1 day)
-processUnreadMessagesNudges(); // Run immediately on boot
-setInterval(() => {
-  processUnreadMessagesNudges();
-}, 24 * 60 * 60 * 1000);
+  // Stagger startup executions by a few seconds to prevent DDL/DML deadlocks on boot
+  setTimeout(() => processProfileNudges(), 10000);
+  setInterval(() => {
+    processProfileNudges();
+  }, 24 * 60 * 60 * 1000);
 
-// Start Job Offer Expiry Worker (Every 1 day)
-processOfferExpiryNudges(); // Run immediately on boot
-setInterval(() => {
-  processOfferExpiryNudges();
-}, 24 * 60 * 60 * 1000);
+  setTimeout(() => processUnreadMessagesNudges(), 12000);
+  setInterval(() => {
+    processUnreadMessagesNudges();
+  }, 24 * 60 * 60 * 1000);
 
-// Analytics Aggregation Cron — runs every 10 seconds
-const ANALYTICS_CRON_INTERVAL = 60 * 60 * 1000; // 1 hour
-// const ANALYTICS_CRON_INTERVAL = 10 * 1000; // 10 seconds
+  setTimeout(() => processOfferExpiryNudges(), 14000);
+  setInterval(() => {
+    processOfferExpiryNudges();
+  }, 24 * 60 * 60 * 1000);
 
-processAnalyticsAggregations(); // run once immediately on startup
-setInterval(() => {
-  processAnalyticsAggregations().catch(err => console.error("[AnalyticsCron] Error:", err));
-}, ANALYTICS_CRON_INTERVAL);
+  const ANALYTICS_CRON_INTERVAL = 60 * 60 * 1000; // 1 hour
+  setTimeout(() => {
+    processAnalyticsAggregations().catch(err => console.error("[AnalyticsCron] Error:", err));
+  }, 5000);
+  setInterval(() => {
+    processAnalyticsAggregations().catch(err => console.error("[AnalyticsCron] Error:", err));
+  }, ANALYTICS_CRON_INTERVAL);
+} else {
+  console.log("ℹ️ Background cron workers disabled in API process (RUN_WORKERS_IN_API=false)");
+}
 
 // B9.5 — Feed background worker (exploration pool refresh + analytics queue drain)
 // Interval configurable via FEED_WORKER_INTERVAL_MS (default: 5 minutes)
