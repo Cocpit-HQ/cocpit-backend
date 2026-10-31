@@ -300,7 +300,8 @@ exports.restoreFeedPost = async (req, res) => {
 
     // Notify Main API to emit Socket.io notification
     try {
-      await fetch('http://localhost:5000/internal/v1/appeals/notify', {
+      const mainApiUrl = (process.env.MAIN_API_INTERNAL_URL || process.env.MAIN_API_URL || 'http://localhost:5000').replace(/\/$/, '');
+      await fetch(`${mainApiUrl}/internal/v1/appeals/notify`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -349,7 +350,8 @@ exports.rejectFeedPostAppeal = async (req, res) => {
 
     // Notify Main API to emit Socket.io notification
     try {
-      await fetch('http://localhost:5000/internal/v1/appeals/notify', {
+      const mainApiUrl = (process.env.MAIN_API_INTERNAL_URL || process.env.MAIN_API_URL || 'http://localhost:5000').replace(/\/$/, '');
+      await fetch(`${mainApiUrl}/internal/v1/appeals/notify`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

@@ -3,10 +3,15 @@ const { Pool } = require("pg");
 const isProduction = process.env.NODE_ENV === "production";
 
 const getPoolConfig = (dbUrl, host, port, user, password, dbName) => {
+  const isInternal = Boolean(
+    (dbUrl && (dbUrl.includes('.railway.internal') || dbUrl.includes('localhost') || dbUrl.includes('127.0.0.1'))) ||
+    (host && (host.includes('.railway.internal') || host.includes('localhost') || host.includes('127.0.0.1')))
+  );
+
   if (dbUrl && dbUrl.trim().length > 0) {
     return {
       connectionString: dbUrl,
-      ssl: isProduction ? { rejectUnauthorized: false } : false,
+      ssl: (isProduction && !isInternal) ? { rejectUnauthorized: false } : false,
       max: 15,
       idleTimeoutMillis: 30000,
       connectionTimeoutMillis: 5000,

@@ -4,7 +4,14 @@ const socketService = require('../infrastructure/socket.service');
 
 // Create a dedicated Redis client for subscribing since it blocks other commands
 const redisUrl = process.env.REDIS_URL || 'redis://127.0.0.1:6379';
-const subscriber = new Redis(redisUrl);
+const subscriber = new Redis(redisUrl, {
+  family: 0, // Enable dual-stack IPv4/IPv6 for Railway private mesh
+  maxRetriesPerRequest: null,
+  retryStrategy(times) {
+    const delay = Math.min(times * 100, 3000);
+    return delay;
+  },
+});
 
 subscriber.on('connect', () => {
   console.log('✅ Redis Subscriber connected');
