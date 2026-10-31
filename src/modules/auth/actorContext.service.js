@@ -46,10 +46,27 @@ const buildOrganizationActor = (organization) => {
     };
 };
 
-const buildUserActor = (userId) => ({
-    type: "USER",
-    id: userId,
-});
+const buildUserActor = async (userId) => {
+    try {
+        const result = await pool.query(
+            "SELECT full_name, avatar_url, is_identity_verified FROM users WHERE user_id = $1",
+            [userId]
+        );
+        const user = result.rows[0];
+        return {
+            type: "USER",
+            id: userId,
+            name: user?.full_name || undefined,
+            avatar_url: user?.avatar_url || undefined,
+            is_identity_verified: Boolean(user?.is_identity_verified),
+        };
+    } catch (e) {
+        return {
+            type: "USER",
+            id: userId,
+        };
+    }
+};
 
 async function getOrganizationsForUser(userId) {
     const result = await pool.query(
@@ -104,7 +121,7 @@ async function getActorContext(userId, rawActorCookie) {
     }
 
     return {
-        actor: buildUserActor(userId),
+        actor: await buildUserActor(userId),
         organizations,
         source: "default_user",
         clearCookie: Boolean(parsedCookie),
@@ -116,7 +133,7 @@ async function setActorContext(userId, actorInput) {
 
     if (actorInput?.type === "USER") {
         return {
-            actor: buildUserActor(userId),
+            actor: await buildUserActor(userId),
             organizations,
             source: "explicit_user",
             cookieValue: null,
