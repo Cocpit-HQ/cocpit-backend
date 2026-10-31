@@ -197,11 +197,12 @@ async function addToHiddenSet(userId, itemIds) {
   if (!userId) throw new Error("addToHiddenSet: userId is required");
   if (!Array.isArray(itemIds) || itemIds.length === 0) return;
 
-  const key = keys.hiddenSet(userId);
+  const orgMatch = typeof userId === 'string' ? userId.match(/:org:([a-f0-9-]+)/i) : null;
+  const targetKey = orgMatch ? keys.hiddenSet(`org:${orgMatch[1]}`) : keys.hiddenSet(userId);
 
   const pipeline = redis.pipeline();
-  pipeline.sadd(key, ...itemIds);
-  pipeline.expire(key, TTL.SEEN_SET); // Use same TTL as seen set
+  pipeline.sadd(targetKey, ...itemIds);
+  pipeline.expire(targetKey, TTL.SEEN_SET); // Use same TTL as seen set
   await pipeline.exec();
 }
 
@@ -215,6 +216,17 @@ async function removeFromHiddenSet(userId, itemIds) {
   if (!userId) throw new Error("removeFromHiddenSet: userId is required");
   if (!Array.isArray(itemIds) || itemIds.length === 0) return;
 
+  const orgMatch = typeof userId === 'string' ? userId.match(/:org:([a-f0-9-]+)/i) : null;
+  if (orgMatch) {
+    const orgKey = keys.hiddenSet(`org:${orgMatch[1]}`);
+    const personalKey = keys.hiddenSet(userId);
+    await Promise.all([
+      redis.srem(orgKey, ...itemIds),
+      redis.srem(personalKey, ...itemIds)
+    ]);
+    return;
+  }
+
   const key = keys.hiddenSet(userId);
   await redis.srem(key, ...itemIds);
 }
@@ -226,6 +238,17 @@ async function removeFromHiddenSet(userId, itemIds) {
  */
 async function getHiddenSet(userId) {
   if (!userId) throw new Error("getHiddenSet: userId is required");
+
+  const orgMatch = typeof userId === 'string' ? userId.match(/:org:([a-f0-9-]+)/i) : null;
+  if (orgMatch) {
+    const orgKey = keys.hiddenSet(`org:${orgMatch[1]}`);
+    const personalKey = keys.hiddenSet(userId);
+    const [orgMembers, personalMembers] = await Promise.all([
+      redis.smembers(orgKey),
+      redis.smembers(personalKey)
+    ]);
+    return Array.from(new Set([...(orgMembers || []), ...(personalMembers || [])]));
+  }
 
   const key = keys.hiddenSet(userId);
   return redis.smembers(key);

@@ -2406,13 +2406,30 @@ CREATE TABLE user_verifications (
 
 -- 6. user_post_feedback: Feed interaction mechanism
 CREATE TABLE IF NOT EXISTS user_post_feedback (
-    user_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
-    post_id UUID REFERENCES posts(post_id) ON DELETE CASCADE,
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    org_id UUID REFERENCES organizations(org_id) ON DELETE CASCADE DEFAULT NULL,
+    post_id UUID NOT NULL REFERENCES posts(post_id) ON DELETE CASCADE,
     feedback_type VARCHAR(20) NOT NULL CHECK (feedback_type IN ('INTERESTED', 'NOT_INTERESTED')),
     created_at TIMESTAMPTZ DEFAULT now(),
-    updated_at TIMESTAMPTZ DEFAULT now(),
-    PRIMARY KEY (user_id, post_id)
+    updated_at TIMESTAMPTZ DEFAULT now()
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_user_post_feedback_personal 
+ON user_post_feedback (user_id, post_id) 
+WHERE org_id IS NULL;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_user_post_feedback_org 
+ON user_post_feedback (org_id, post_id) 
+WHERE org_id IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_user_post_feedback_filter_org 
+ON user_post_feedback (org_id, post_id) 
+WHERE feedback_type = 'NOT_INTERESTED';
+
+CREATE INDEX IF NOT EXISTS idx_user_post_feedback_filter_user 
+ON user_post_feedback (user_id, post_id) 
+WHERE org_id IS NULL AND feedback_type = 'NOT_INTERESTED';
 
 -- 7. user_search_history: Persistent recent search tracking
 CREATE TABLE IF NOT EXISTS user_search_history (
@@ -2440,3 +2457,24 @@ CREATE TABLE IF NOT EXISTS community_invitations (
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
+
+
+-- organization_deactivation_history: Tracks organizations automatically deactivated by personal account deactivation
+CREATE TABLE IF NOT EXISTS organization_deactivation_history (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    org_id UUID NOT NULL REFERENCES organizations(org_id) ON DELETE CASCADE,
+    user_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    deactivation_event_id UUID NOT NULL,
+    reason VARCHAR(50) NOT NULL DEFAULT 'PERSONAL_ACCOUNT',
+    deactivated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    restored_at TIMESTAMPTZ DEFAULT NULL
+);
+
+-- Index for rapid retrieval during user login / account reactivation
+CREATE INDEX IF NOT EXISTS idx_org_deactivation_history_user_unrecovered
+    ON organization_deactivation_history (user_id, restored_at)
+    WHERE restored_at IS NULL;
+
+-- Index for organization lifecycle lookup
+CREATE INDEX IF NOT EXISTS idx_org_deactivation_history_org_id 
+    ON organization_deactivation_history (org_id);

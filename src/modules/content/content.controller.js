@@ -1623,11 +1623,12 @@ exports.createPost = async (req, res) => {
                     const handle = prefixMatch ? prefixMatch[2] : rawMention;
                     if (explicitType === 'org' || explicitType === 'company') continue;
                     let userRes;
+                    const cleanHandle = String(handle || '').replace(/^(user|org|company):/i, '').trim();
                     const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-                    if (UUID_REGEX.test(handle)) {
-                        userRes = await pool.query(`SELECT user_id FROM users WHERE user_id = $1`, [handle]);
+                    if (UUID_REGEX.test(cleanHandle)) {
+                        userRes = await pool.query(`SELECT user_id FROM users WHERE user_id = $1`, [cleanHandle]);
                     } else {
-                        userRes = await pool.query(`SELECT user_id FROM users WHERE LOWER(account_name) = LOWER($1)`, [handle]);
+                        userRes = await pool.query(`SELECT user_id FROM users WHERE LOWER(account_name) = LOWER($1)`, [cleanHandle]);
                     }
                     if (userRes.rowCount > 0) {
                         const mentionedUserId = userRes.rows[0].user_id;
@@ -1804,7 +1805,7 @@ exports.getPostById = async (req, res) => {
             'slug', o_mention.slug
         )), '[]'::json)
         FROM (
-            SELECT DISTINCT (regexp_matches(COALESCE(p.content, ''), '@\\[[^\\]]+\\]\\((?:(?:user|org|company):)?([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\\)', 'g'))[1]::uuid AS mentioned_id
+            SELECT DISTINCT (regexp_matches(COALESCE(p.content, ''), '@\[[^\]]+\]\((?:(?:user|org|company):)?([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\)', 'g'))[1]::uuid AS mentioned_id
         ) mentions
         LEFT JOIN active_users u_mention ON u_mention.user_id = mentions.mentioned_id
         LEFT JOIN organizations o_mention ON o_mention.org_id = mentions.mentioned_id
@@ -2948,11 +2949,12 @@ WHERE p.post_id = $1;
                     const handle = prefixMatch ? prefixMatch[2] : rawMention;
                     if (explicitType === 'org' || explicitType === 'company') continue;
                     let userRes;
+                    const cleanHandle = String(handle || '').replace(/^(user|org|company):/i, '').trim();
                     const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-                    if (UUID_REGEX.test(handle)) {
-                        userRes = await pool.query(`SELECT user_id FROM users WHERE user_id = $1`, [handle]);
+                    if (UUID_REGEX.test(cleanHandle)) {
+                        userRes = await pool.query(`SELECT user_id FROM users WHERE user_id = $1`, [cleanHandle]);
                     } else {
-                        userRes = await pool.query(`SELECT user_id FROM users WHERE LOWER(account_name) = LOWER($1)`, [handle]);
+                        userRes = await pool.query(`SELECT user_id FROM users WHERE LOWER(account_name) = LOWER($1)`, [cleanHandle]);
                     }
                     if (userRes.rowCount > 0) {
                         const mentionedUserId = userRes.rows[0].user_id;
@@ -4616,6 +4618,17 @@ exports.getComments = async (req, res) => {
 
         c.author_org_id,
         
+        (
+            SELECT COALESCE(json_agg(json_build_object(
+                'user_id', u_mention.user_id,
+                'full_name', u_mention.full_name,
+                'account_name', u_mention.account_name
+            )), '[]'::json)
+            FROM (
+                SELECT DISTINCT (regexp_matches(COALESCE(c.content, ''), '@\[[^\]]+\]\((?:(?:user|org|company):)?([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\)', 'g'))[1]::uuid AS mentioned_id
+            ) mentions
+            JOIN active_users u_mention ON u_mention.user_id = mentions.mentioned_id
+        ) AS mentioned_users,
 
         COALESCE(
           (SELECT COUNT(*)::int FROM active_comment_likes cl WHERE cl.comment_id = c.comment_id),

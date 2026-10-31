@@ -494,7 +494,7 @@ exports.leaveOrganization = async (req, res) => {
         // Cannot leave a deactivated organization
         if (member.is_deactivated) {
             await client.query("ROLLBACK");
-            return res.status(400).json({ message: "Cannot leave a deactivated organization page" });
+            return res.status(400).json({ message: "Cannot leave an organization that is currently deactivated" });
         }
 
         // 2. Creator or Owner cannot leave
