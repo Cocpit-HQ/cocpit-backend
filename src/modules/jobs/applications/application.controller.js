@@ -125,8 +125,11 @@ exports.getApplicantList = async (req, res) => {
       name:          row.name,
       headline:      row.headline || '',
       avatarUrl:     row.avatarUrl || null,
+      accountName:   row.accountName || null,
       location:      row.location || '',
       email:         row.email,
+      resumeUrl:     row.resumeUrl || null,
+      resumeName:    row.resumeName || null,
       status:        row.status,
       appliedAt:     row.appliedAt,
       matchScore:    row.matchScore ?? null,   // null = AI analysis pending
@@ -272,11 +275,13 @@ exports.getApplicationDetail = async (req, res) => {
         // Resolve experience fields (with live job fallback if needed)
         let expMin   = job_snapshot.experienceMin   ?? null;
         let expMax   = job_snapshot.experienceMax   ?? null;
-        let expLabel = job_snapshot.experienceLabel ?? null;
+        let expLabel = job_snapshot.experienceLabel ?? job_snapshot.experienceLevel ?? job_snapshot.experience_label ?? job_snapshot.experience_level ?? null;
 
         if (expMin === null && expMax === null && !expLabel) {
           const jobIdRes = await pool.query(
-            `SELECT j.experience_min, j.experience_max, j.experience_label
+            `SELECT j.experience_min, j.experience_max,
+                    COALESCE(j.experience_label, j.experience_level) AS experience_label,
+                    j.experience_level
              FROM job_applications ja
              JOIN jobs j ON j.job_id = ja.job_id
              WHERE ja.application_id = $1`,
@@ -285,11 +290,13 @@ exports.getApplicationDetail = async (req, res) => {
           if (jobIdRes.rowCount > 0) {
             expMin   = jobIdRes.rows[0].experience_min   ?? null;
             expMax   = jobIdRes.rows[0].experience_max   ?? null;
-            expLabel = jobIdRes.rows[0].experience_label ?? null;
+            expLabel = jobIdRes.rows[0].experience_label || jobIdRes.rows[0].experience_level || null;
           }
         }
 
-        const totalYears = calculateTotalExperienceYears(candidate_snapshot.experience || []);
+        const totalYears = (candidate_snapshot.experience && candidate_snapshot.experience.length > 0)
+          ? calculateTotalExperienceYears(candidate_snapshot.experience)
+          : (candidate_snapshot.totalExperienceYears ?? 0);
         const experienceJson = compareExperience(totalYears, expMin, expMax, expLabel);
         if (experienceJson.status === 'MATCHES') experienceJson.status = 'ALIGNED';
 
@@ -335,15 +342,16 @@ exports.getApplicationDetail = async (req, res) => {
       email:         detail.email,
       phone:         detail.phone || null,
       avatarUrl:     detail.avatarUrl || null,
+      accountName:   detail.accountName || null,
       isDeactivated: detail.isDeactivated || false,
       headline:      detail.headline || '',
       location:      detail.location || '',
       about:         detail.about || null,
       coverNote:     detail.coverNote || null,
       resumeUrl:     detail.resumeUrl,
-      resumeName:    detail.resumeUrl
+      resumeName:    detail.resumeName || (detail.resumeUrl
         ? detail.resumeUrl.split('/').pop()
-        : 'Resume.pdf',
+        : 'Resume.pdf'),
       status:        detail.status,
       appliedAt:     detail.appliedAt,
       skills:        detail.skills   || [],
@@ -571,11 +579,13 @@ exports.getAnalysis = async (req, res) => {
         // Resolve experience fields (with live job fallback if needed)
         let expMin   = job_snapshot.experienceMin   ?? null;
         let expMax   = job_snapshot.experienceMax   ?? null;
-        let expLabel = job_snapshot.experienceLabel ?? null;
+        let expLabel = job_snapshot.experienceLabel ?? job_snapshot.experienceLevel ?? job_snapshot.experience_label ?? job_snapshot.experience_level ?? null;
 
         if (expMin === null && expMax === null && !expLabel) {
           const jobIdRes = await pool.query(
-            `SELECT j.experience_min, j.experience_max, j.experience_label
+            `SELECT j.experience_min, j.experience_max,
+                    COALESCE(j.experience_label, j.experience_level) AS experience_label,
+                    j.experience_level
              FROM job_applications ja
              JOIN jobs j ON j.job_id = ja.job_id
              WHERE ja.application_id = $1`,
@@ -584,11 +594,13 @@ exports.getAnalysis = async (req, res) => {
           if (jobIdRes.rowCount > 0) {
             expMin   = jobIdRes.rows[0].experience_min   ?? null;
             expMax   = jobIdRes.rows[0].experience_max   ?? null;
-            expLabel = jobIdRes.rows[0].experience_label ?? null;
+            expLabel = jobIdRes.rows[0].experience_label || jobIdRes.rows[0].experience_level || null;
           }
         }
 
-        const totalYears = calculateTotalExperienceYears(candidate_snapshot.experience || []);
+        const totalYears = (candidate_snapshot.experience && candidate_snapshot.experience.length > 0)
+          ? calculateTotalExperienceYears(candidate_snapshot.experience)
+          : (candidate_snapshot.totalExperienceYears ?? 0);
         const experienceJson = compareExperience(totalYears, expMin, expMax, expLabel);
         if (experienceJson.status === 'MATCHES') experienceJson.status = 'ALIGNED';
 

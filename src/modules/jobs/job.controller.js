@@ -1024,7 +1024,7 @@ exports.applyJob = async (req, res) => {
         WHERE p.user_id = $1 ORDER BY end_date DESC LIMIT 2`, [userId]),
       client.query(`
         SELECT title, description, experience_min, experience_max,
-               experience_label, location, ai_extracted_requirements, org_id, recruiter_id, status, is_active
+               experience_label, experience_level, location, ai_extracted_requirements, org_id, recruiter_id, status, is_active
         FROM jobs WHERE job_id = $1`, [id]),
     ]);
 
@@ -1130,13 +1130,14 @@ exports.applyJob = async (req, res) => {
     const candidateLocation = req.body.location || null;
 
     // 5. Calculate backend score
+    const resolvedExpLabel = job.experience_label || job.experience_level || null;
     const backendScore = calculateBackendScore({
       candidateSkills,
       totalYears,
       jobRequirements: job.ai_extracted_requirements,
       experienceMin: job.experience_min,
       experienceMax: job.experience_max,
-      experienceLabel: job.experience_label,
+      experienceLabel: resolvedExpLabel,
     });
 
     // 6. INSERT job_applications
@@ -1182,7 +1183,8 @@ exports.applyJob = async (req, res) => {
       title: job.title,
       experienceMin: job.experience_min,
       experienceMax: job.experience_max,
-      experienceLabel: job.experience_label,
+      experienceLabel: resolvedExpLabel,
+      experienceLevel: job.experience_level || null,
       skills: job.ai_extracted_requirements?.skills || [],
       education: job.ai_extracted_requirements?.education,
     };
@@ -2147,6 +2149,7 @@ exports.updateJob = async (req, res) => {
     work_mode,
     // company_type removed
     experience_level,
+    experience_label,
     industry,
     easy_apply,
     actively_hiring,
@@ -2166,6 +2169,8 @@ exports.updateJob = async (req, res) => {
   const safeMaxSalary = (maxSalary === "" || maxSalary === null || maxSalary === undefined) ? 0 : parseInt(maxSalary);
   const safeExperienceMin = (experience_min === "" || experience_min === null || experience_min === undefined) ? null : parseInt(experience_min);
   const safeExperienceMax = (experience_max === "" || experience_max === null || experience_max === undefined) ? null : parseInt(experience_max);
+  const resolvedExpLevel = (experience_level && typeof experience_level === 'string') ? sanitizeContent(experience_level.trim()) : null;
+  const resolvedExpLabel = (experience_label && typeof experience_label === 'string') ? sanitizeContent(experience_label.trim()) : (resolvedExpLevel || null);
 
   const client = await pool.connect();
 
@@ -2219,7 +2224,7 @@ exports.updateJob = async (req, res) => {
         title = $1, company_name = $2, location = $3,
         description = $4, salary_min = $5, salary_max = $6,
         job_type = $7, work_mode = $8, company_type = $9,
-        experience_level = $10, about_company = null, industry = $11,
+        experience_level = $10, experience_label = $19, about_company = null, industry = $11,
         easy_apply = $12, actively_hiring = $13, org_id = $14,
         posted_as_company = $15, experience_min = $16, experience_max = $17,
         updated_at = NOW()
@@ -2230,9 +2235,10 @@ exports.updateJob = async (req, res) => {
         title, resolvedCompanyName, location,
         description, safeMinSalary, safeMaxSalary,
         job_type, work_mode, null,
-        experience_level, industry,
+        resolvedExpLevel || resolvedExpLabel, industry,
         easy_apply, actively_hiring, org_id || null,
-        !!org_id, safeExperienceMin, safeExperienceMax, id
+        !!org_id, safeExperienceMin, safeExperienceMax, id,
+        resolvedExpLabel || resolvedExpLevel
       ]
     );
 

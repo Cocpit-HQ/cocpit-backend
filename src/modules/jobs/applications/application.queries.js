@@ -65,6 +65,7 @@ async function getApplicantList(jobId, filters = {}) {
       CASE WHEN u.is_deactivated = TRUE OR u.user_id IS NULL THEN 'Unknown User' ELSE ja.full_name END AS "name",
       CASE WHEN u.is_deactivated = TRUE OR u.user_id IS NULL THEN NULL ELSE ja.email END AS "email",
       CASE WHEN u.is_deactivated = TRUE OR u.user_id IS NULL THEN NULL ELSE u.avatar_url END AS "avatarUrl",
+      CASE WHEN u.is_deactivated = TRUE OR u.user_id IS NULL THEN NULL ELSE u.account_name END AS "accountName",
       u.headline,
       u.location,
       ja.current_status            AS "status",
@@ -73,7 +74,9 @@ async function getApplicantList(jobId, filters = {}) {
       ja.screening_type            AS "screeningType",
       ja.screening_submitted_at    AS "screeningSubmittedAt",
       aaa.match_score              AS "matchScore",
-      aaa.analysis_type            AS "analysisType"
+      aaa.analysis_type            AS "analysisType",
+      ja.resume_url                AS "resumeUrl",
+      COALESCE(ja.resume_file_name, (SELECT resume_file_name FROM user_resume_history urh WHERE urh.user_id = ja.applicant_id AND urh.resume_url = ja.resume_url LIMIT 1), 'Resume.pdf') AS "resumeName"
     FROM job_applications ja
     LEFT JOIN active_users u ON ja.applicant_id = u.user_id
     LEFT JOIN LATERAL (
@@ -102,6 +105,7 @@ async function getApplicationDetail(applicationId, recruiterId) {
       CASE WHEN u.is_deactivated = TRUE OR u.user_id IS NULL THEN NULL ELSE ja.email END AS "email",
       CASE WHEN u.is_deactivated = TRUE OR u.user_id IS NULL THEN NULL ELSE ja.phone END AS "phone",
       CASE WHEN u.is_deactivated = TRUE OR u.user_id IS NULL THEN NULL ELSE u.avatar_url END AS "avatarUrl",
+      CASE WHEN u.is_deactivated = TRUE OR u.user_id IS NULL THEN NULL ELSE u.account_name END AS "accountName",
       CASE WHEN u.is_deactivated = TRUE OR u.user_id IS NULL THEN TRUE ELSE FALSE END AS "isDeactivated",
       u.headline,
       u.location,
