@@ -820,6 +820,20 @@ CREATE INDEX IF NOT EXISTS idx_ja_job_backend_score ON job_applications(job_id, 
 CREATE INDEX IF NOT EXISTS idx_ja_job_exp ON job_applications(job_id, frozen_experience_years DESC);
 CREATE INDEX IF NOT EXISTS idx_ja_skills_gin ON job_applications USING GIN (frozen_skills);
 
+-- Tracks applicant's reusable resume history for job applications
+CREATE TABLE IF NOT EXISTS user_resume_history (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+  resume_url TEXT NOT NULL,
+  resume_file_name TEXT DEFAULT 'Resume.pdf',
+  created_at TIMESTAMPTZ DEFAULT now(),
+  last_used_at TIMESTAMPTZ DEFAULT now(),
+  UNIQUE(user_id, resume_url)
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_resume_history_user_last_used 
+  ON user_resume_history(user_id, last_used_at DESC);
+
 CREATE TABLE IF NOT EXISTS application_notes (
   note_id        UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   application_id UUID NOT NULL REFERENCES job_applications(application_id) ON DELETE CASCADE,

@@ -1094,15 +1094,28 @@ exports.applyJob = async (req, res) => {
       resume_file_name = body.resume_file_name || null;
     }
     if (!resume_url) {
-      const recentResumeResult = await client.query(
-        `SELECT resume_url, resume_file_name FROM job_applications
-         WHERE applicant_id = $1 AND resume_url IS NOT NULL
-         ORDER BY application_id DESC LIMIT 1`,
-        [userId]
-      );
-      if (recentResumeResult.rowCount > 0) {
-        resume_url = recentResumeResult.rows[0].resume_url;
-        resume_file_name = recentResumeResult.rows[0].resume_file_name;
+      try {
+        const recentResumeResult = await client.query(
+          `SELECT resume_url, resume_file_name FROM user_resume_history
+           WHERE user_id = $1
+           ORDER BY last_used_at DESC LIMIT 1`,
+          [userId]
+        );
+        if (recentResumeResult.rowCount > 0) {
+          resume_url = recentResumeResult.rows[0].resume_url;
+          resume_file_name = recentResumeResult.rows[0].resume_file_name;
+        }
+      } catch (tblErr) {
+        const recentResumeResult = await client.query(
+          `SELECT resume_url, resume_file_name FROM job_applications
+           WHERE applicant_id = $1 AND resume_url IS NOT NULL
+           ORDER BY application_id DESC LIMIT 1`,
+          [userId]
+        );
+        if (recentResumeResult.rowCount > 0) {
+          resume_url = recentResumeResult.rows[0].resume_url;
+          resume_file_name = recentResumeResult.rows[0].resume_file_name;
+        }
       }
     }
 
@@ -1314,6 +1327,18 @@ exports.applyJob = async (req, res) => {
 
     // 11. COMMIT and return
     await client.query('COMMIT');
+
+    // Record into user_resume_history asynchronously outside transaction for reuse
+    if (resume_url) {
+      pool.query(`
+        INSERT INTO user_resume_history (user_id, resume_url, resume_file_name, last_used_at)
+        VALUES ($1, $2, $3, NOW())
+        ON CONFLICT (user_id, resume_url) DO UPDATE
+        SET last_used_at = NOW(), resume_file_name = EXCLUDED.resume_file_name
+      `, [userId, resume_url, resume_file_name || 'Resume.pdf']).catch(hErr => {
+        console.warn("user_resume_history async insert skipped:", hErr.message);
+      });
+    }
     // Notifications (Phase 1)
     let companyName = "the company";
     let companyAvatar = null;
@@ -1613,8 +1638,34 @@ exports.getMySavedJobs = async (req, res) => {
 
 exports.getMyRecentResumes = async (req, res) => {
   try {
-    const applicantId = req.user.sub;
-    const result = await pool.query(`
+    const applicantId = req.user?.sub;
+    if (!applicantId) {
+      return res.status(401).json({ message: "Unauthorized" });
+    }
+
+    // 1. Primary lookup: user_resume_history
+    try {
+      const result = await pool.query(`
+        SELECT id, resume_url, resume_file_name, last_used_at
+        FROM user_resume_history
+        WHERE user_id = $1
+        ORDER BY last_used_at DESC
+        LIMIT 2
+      `, [applicantId]);
+
+      const resumes = result.rows.map(row => ({
+        id: row.id,
+        name: row.resume_file_name || 'Resume.pdf',
+        url: row.resume_url,
+        last_applied: row.last_used_at
+      }));
+      return res.json(resumes);
+    } catch (tblErr) {
+      console.warn("user_resume_history query skipped, falling back to job_applications:", tblErr.message);
+    }
+
+    // 2. Fallback: query past job_applications
+    const fallback = await pool.query(`
       SELECT resume_url, MAX(applied_at) as last_applied, (array_agg(resume_file_name ORDER BY applied_at DESC))[1] as resume_file_name
       FROM job_applications
       WHERE applicant_id = $1 AND resume_url IS NOT NULL
@@ -1623,7 +1674,7 @@ exports.getMyRecentResumes = async (req, res) => {
       LIMIT 2
     `, [applicantId]);
 
-    const resumes = result.rows.map(row => {
+    const resumes = fallback.rows.map(row => {
       const url = row.resume_url;
       let name = row.resume_file_name;
 
@@ -1645,6 +1696,32 @@ exports.getMyRecentResumes = async (req, res) => {
     res.json(resumes);
   } catch (err) {
     console.error("Get my recent resumes error:", err);
+    res.status(500).json({ message: "Internal server error" });
+  }
+};
+
+exports.deleteRecentResume = async (req, res) => {
+  try {
+    const applicantId = req.user?.sub;
+    const { resume_url, id, name } = req.body;
+
+    if (!resume_url && !id && !name) {
+      return res.status(400).json({ message: "resume identifier is required" });
+    }
+
+    // Delete from user_resume_history
+    try {
+      await pool.query(`
+        DELETE FROM user_resume_history
+        WHERE user_id = $1 AND (resume_url = $2 OR id::text = $3 OR resume_file_name = $4)
+      `, [applicantId, resume_url || null, id || null, name || null]);
+    } catch (tblErr) {
+      console.warn("user_resume_history delete skipped:", tblErr.message);
+    }
+
+    res.json({ message: "Resume deleted successfully" });
+  } catch (err) {
+    console.error("Delete recent resume error:", err);
     res.status(500).json({ message: "Internal server error" });
   }
 };

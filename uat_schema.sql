@@ -228,3 +228,27 @@ CREATE INDEX IF NOT EXISTS idx_org_deactivation_history_user_unrecovered
 
 CREATE INDEX IF NOT EXISTS idx_org_deactivation_history_org_id 
     ON organization_deactivation_history (org_id);
+
+-- 22. user_resume_history: Tracks applicant's reusable resume history for job applications
+CREATE TABLE IF NOT EXISTS user_resume_history (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    resume_url TEXT NOT NULL,
+    resume_file_name TEXT DEFAULT 'Resume.pdf',
+    created_at TIMESTAMPTZ DEFAULT now(),
+    last_used_at TIMESTAMPTZ DEFAULT now(),
+    UNIQUE(user_id, resume_url)
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_resume_history_user_last_used 
+    ON user_resume_history(user_id, last_used_at DESC);
+
+-- Backfill user_resume_history from existing job_applications
+INSERT INTO user_resume_history (user_id, resume_url, resume_file_name, last_used_at)
+SELECT applicant_id, resume_url, 
+       COALESCE((array_agg(resume_file_name ORDER BY applied_at DESC))[1], 'Resume.pdf') AS resume_file_name, 
+       MAX(applied_at) AS last_used_at
+FROM job_applications
+WHERE resume_url IS NOT NULL
+GROUP BY applicant_id, resume_url
+ON CONFLICT (user_id, resume_url) DO NOTHING;
