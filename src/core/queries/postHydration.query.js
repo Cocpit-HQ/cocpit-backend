@@ -97,7 +97,7 @@ const getPostHydrationSelect = (companyParamIdx, userParamIdx) => `
             'slug', o_mention.slug
         )), '[]'::json)
         FROM (
-            SELECT DISTINCT (regexp_matches(COALESCE(p.content, ''), '@\\[[^\\]]+\\]\\((?:(?:user|org|company):)?([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\\)', 'g'))[1]::uuid AS mentioned_id
+            SELECT DISTINCT (regexp_matches(COALESCE(p.content, ''), '@\[[^\]]+\]\((?:(?:user|org|company):)?([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\)', 'g'))[1]::uuid AS mentioned_id
         ) mentions
         LEFT JOIN active_users u_mention ON u_mention.user_id = mentions.mentioned_id
         LEFT JOIN organizations o_mention ON o_mention.org_id = mentions.mentioned_id
@@ -105,7 +105,7 @@ const getPostHydrationSelect = (companyParamIdx, userParamIdx) => `
     ) AS mentioned_users,
 
     COALESCE(
-        (SELECT json_agg(json_build_object('url', pm.url, 'media_type', pm.media_type, 'width', pm.width, 'height', pm.height)) 
+        (SELECT json_agg(json_build_object('url', pm.url, 'media_type', pm.media_type, 'width', pm.width, 'height', pm.height, 'order_index', pm.order_index, 'thumbnail_url', pm.thumbnail_url, 'duration_seconds', pm.duration_seconds) ORDER BY pm.order_index ASC) 
          FROM post_media pm WHERE pm.post_id = p.post_id),
         '[]'::json
     ) AS media,
@@ -410,7 +410,7 @@ const getPostHydrationSelect = (companyParamIdx, userParamIdx) => `
                                  'author_slug', COALESCE(sp_sp_comp.slug, sp_sp_u.account_name),
                                  'is_organization_post', (sp_sp.author_org_id IS NOT NULL)
                              ),
-                             'media', COALESCE((SELECT json_agg(json_build_object('url', pm.url, 'media_type', pm.media_type, 'width', pm.width, 'height', pm.height)) FROM post_media pm WHERE pm.post_id = sp_sp.post_id), '[]'::json)
+                             'media', COALESCE((SELECT json_agg(json_build_object('url', pm.url, 'media_type', pm.media_type, 'width', pm.width, 'height', pm.height, 'order_index', pm.order_index, 'thumbnail_url', pm.thumbnail_url, 'duration_seconds', pm.duration_seconds) ORDER BY pm.order_index ASC) FROM post_media pm WHERE pm.post_id = sp_sp.post_id), '[]'::json)
                          )
                          FROM posts sp_sp
                          LEFT JOIN active_users sp_sp_u ON sp_sp_u.user_id = sp_sp.author_id
@@ -437,7 +437,7 @@ const getPostHydrationSelect = (companyParamIdx, userParamIdx) => `
                      LEFT JOIN organizations o_mention ON o_mention.org_id = mentions.mentioned_id
                      WHERE u_mention.user_id IS NOT NULL OR o_mention.org_id IS NOT NULL
                  ),
-                 'media', COALESCE((SELECT json_agg(json_build_object('url', pm.url, 'media_type', pm.media_type, 'width', pm.width, 'height', pm.height)) FROM post_media pm WHERE pm.post_id = sp.post_id), '[]'::json),
+                 'media', COALESCE((SELECT json_agg(json_build_object('url', pm.url, 'media_type', pm.media_type, 'width', pm.width, 'height', pm.height, 'order_index', pm.order_index, 'thumbnail_url', pm.thumbnail_url, 'duration_seconds', pm.duration_seconds) ORDER BY pm.order_index ASC) FROM post_media pm WHERE pm.post_id = sp.post_id), '[]'::json),
                  'achievement_image_url', sp_ai.cloudinary_url,
                  'like_count', (SELECT COUNT(*) FROM active_post_likes pl WHERE pl.post_id = sp.post_id)::int,
                  'sample_liker_username', (
@@ -734,6 +734,22 @@ const getPublicFeedWhere = (userParamIdx, companyParamIdx = null) => `
                OR (b.is_org_block = false AND sp.author_org_id IS NOT NULL AND (b.blocker_id = $${userParamIdx} AND b.blocked_id = sp.author_org_id))
         )
     )
+    `}
+    ${companyParamIdx ? `
+    AND NOT EXISTS (
+        SELECT 1 FROM user_post_feedback upf
+        WHERE (upf.post_id = p.post_id OR upf.post_id = p.shared_post_id)
+          AND upf.feedback_type = 'NOT_INTERESTED'
+          AND upf.org_id = $${companyParamIdx}::uuid
+    )
+    ` : `
+    AND ($${userParamIdx}::uuid IS NULL OR NOT EXISTS (
+        SELECT 1 FROM user_post_feedback upf
+        WHERE (upf.post_id = p.post_id OR upf.post_id = p.shared_post_id)
+          AND upf.feedback_type = 'NOT_INTERESTED'
+          AND upf.user_id = $${userParamIdx}::uuid
+          AND upf.org_id IS NULL
+    ))
     `}
     AND (
         p.shared_post_id IS NULL 

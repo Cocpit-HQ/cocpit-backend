@@ -68,34 +68,50 @@ const compareExperience = (actualExp, minExp, maxExp, label) => {
 };
 
 const getLatestEducation = (educationArray) => {
-  if (!educationArray || educationArray.length === 0) {
+  if (!educationArray || !Array.isArray(educationArray) || educationArray.length === 0) {
     return { degree: 'Not specified', class: '', summary: 'No education details provided.' };
   }
 
   const latest = educationArray[0];
-  const degreeStr = latest.degree || latest.title || latest.course || 'Degree';
-  const schoolStr = latest.school || latest.institute || latest.university || 'University';
-  
-  const formattedDegree = `${degreeStr} from ${schoolStr}`;
-  
-  let classStr = '';
-  if (latest.endDate) {
-    const year = new Date(latest.endDate).getFullYear();
-    if (!isNaN(year)) {
-      classStr = `CLASS OF ${year}`;
-    } else if (typeof latest.endDate === 'string' && latest.endDate.length === 4) {
-      classStr = `CLASS OF ${latest.endDate}`;
-    } else {
-      classStr = `ENDED ${latest.endDate}`;
-    }
-  } else if (latest.year) {
-    classStr = `CLASS OF ${latest.year}`;
+  const degreeStr = latest.degree || latest.title || latest.course;
+  const schoolStr = latest.school_name || latest.school || latest.institute || latest.university;
+
+  let formattedDegree = 'Not specified';
+  if (degreeStr && schoolStr) {
+    formattedDegree = `${degreeStr} from ${schoolStr}`;
+  } else if (degreeStr) {
+    formattedDegree = degreeStr;
+  } else if (schoolStr) {
+    formattedDegree = schoolStr;
   }
+
+  let classStr = '';
+  const dateVal = latest.end_date || latest.endDate || latest.year || latest.graduation_year || latest.graduationYear;
+  if (dateVal) {
+    const parsedDate = new Date(dateVal);
+    const year = parsedDate.getFullYear();
+    if (!isNaN(year) && year > 1900) {
+      classStr = `CLASS OF ${year}`;
+    } else if (typeof dateVal === 'string' && dateVal.length >= 4) {
+      const match = dateVal.match(/\b(19\d\d|20\d\d)\b/);
+      if (match) {
+        classStr = `CLASS OF ${match[1]}`;
+      } else {
+        classStr = `CLASS OF ${dateVal.slice(0, 4)}`;
+      }
+    } else if (typeof dateVal === 'number' && dateVal > 1900) {
+      classStr = `CLASS OF ${dateVal}`;
+    }
+  }
+
+  const summary = formattedDegree !== 'Not specified'
+    ? 'Qualification directly aligns with the role requirements.'
+    : 'No education details provided.';
 
   return {
     degree: formattedDegree,
     class: classStr,
-    summary: 'Candidate education details provided.',
+    summary,
   };
 };
 

@@ -22,7 +22,7 @@ const canSwitchToOrganization = (organization) => {
     const isExpired = organization?.expires_at && new Date(organization.expires_at) < new Date();
     const isOwner = Boolean(organization?.viewer_role_data?.is_owner);
     const hasActiveRole = Boolean(organization?.role && !organization.role.includes('_deleted_'));
-    return organization?.status === "ACTIVE" && !isExpired && (isOwner || hasActiveRole);
+    return (organization?.status === "ACTIVE" || isOwner) && !isExpired && (isOwner || hasActiveRole);
 };
 
 const buildOrganizationActor = (organization) => {
@@ -72,7 +72,7 @@ async function getOrganizationsForUser(userId) {
          WHERE cm.user_id = $1 
            AND c.is_deleted = FALSE 
            AND c.is_deactivated = FALSE 
-           AND cm.status = 'ACTIVE'
+           AND (cm.status = 'ACTIVE' OR c.created_by = $1)
            AND (c.created_by = $1 OR (cm.role_id IS NOT NULL AND cr.is_active = TRUE))
          ORDER BY c.created_at DESC`,
         [userId]

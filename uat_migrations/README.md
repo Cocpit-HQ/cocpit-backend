@@ -66,12 +66,62 @@ Promotes `MANAGE_COMPANY_DETAILS` from a locked system key (`sort_order = 0`) to
 ---
 
 ### `v1.8.0_uat_migration.sql`
-Brings UAT database schema into alignment for Release 1.8.0 (`organization_notification_settings`).
+Brings UAT database schema into alignment for Release 1.8.0 (`organization_notification_settings`, `organization_deactivation_history`, and `user_post_feedback` multi-actor support).
 
 #### Changes Included:
 1. **`organization_notification_settings` table & index**:
    - Creates table for organization-wide notification preferences (`org_id` PK, `user_id`, `events_enabled`, `jobs_enabled`, `posts_enabled`, `messages_enabled`, `messages_chat_enabled`, `messages_jobs_enabled`, `email_enabled`, `push_enabled`, `created_at`, `updated_at`).
    - Adds index `idx_org_notification_settings_org_id ON organization_notification_settings(org_id)`.
+2. **`organization_members.member_id` column**:
+   - Adds surrogate identifier column `member_id UUID DEFAULT gen_random_uuid()`.
+3. **`organization_deactivation_history` table & indexes**:
+   - Creates audit table tracking organizations automatically frozen during personal account deactivation.
+   - Adds index `idx_org_deactivation_history_user_unrecovered` for rapid login/reactivation retrieval.
+   - Adds index `idx_org_deactivation_history_org_id` for organization lifecycle tracking.
+4. **`user_post_feedback` table enhancements**:
+   - Adds `org_id UUID REFERENCES organizations(org_id) ON DELETE CASCADE DEFAULT NULL`.
+   - Adds surrogate `id UUID PRIMARY KEY`.
+   - Creates partial unique index `idx_user_post_feedback_personal` on `(user_id, post_id) WHERE org_id IS NULL`.
+   - Creates partial unique index `idx_user_post_feedback_org` on `(org_id, post_id) WHERE org_id IS NOT NULL`.
+   - Creates partial lookup indexes `idx_user_post_feedback_filter_org` and `idx_user_post_feedback_filter_user`.
+
+---
+
+### `v1.9.0_uat_migration.sql`
+Brings UAT database schema into alignment for Release 1.9.0 (Mixed Media Carousel: Images & Videos support).
+
+#### Changes Included:
+1. **`post_media` table**:
+   - Adds `order_index INT DEFAULT 0` column for deterministic carousel sequencing.
+   - Adds `thumbnail_url TEXT` column for video slide posters.
+   - Adds `duration_seconds NUMERIC(6,2)` column for video durations.
+   - Backfills existing records with sequential ordering per post.
+   - Creates index `idx_post_media_post_order ON post_media(post_id, order_index)`.
+
+---
+
+## How to Run
+
+### Running v1.9.0 Migration
+
+#### Option 1: Using npm script (recommended)
+```bash
+npm run migrate:uat:v1.9.0
+```
+
+#### Option 2: Using Node runner directly
+```bash
+node uat_migrations/run_v1.9.0_migration.js
+```
+
+#### Option 3: Using `psql` directly
+```bash
+psql -h 192.168.1.50 -U swaroop -d cocpit_backend_uat -f uat_migrations/v1.9.0_uat_migration.sql
+```
+
+---
+
+### Running v1.8.0 Migration
 
 ---
 

@@ -1029,8 +1029,9 @@ const MASTER_INDUSTRIES = [
 
 exports.getOnboardingOptions = async (req, res) => {
     const { slug } = req.params;
-    const { q = "" } = req.query;
+    const { q = "", cursor, limit = 50 } = req.query;
     const query = q.toLowerCase().trim();
+    const pageSize = Math.min(Math.max(parseInt(limit) || 50, 1), 100);
 
     try {
         if (slug === "status") {
@@ -1056,34 +1057,65 @@ exports.getOnboardingOptions = async (req, res) => {
 
         if (slug === "industries" || slug === "industry") {
             try {
-                // 1. Query the clean industries_master table for official industries
-                const masterRes = await pool.query(
-                    `SELECT industry_name AS label 
-                     FROM industries_master 
-                     WHERE industry_name ILIKE $1 
-                     ORDER BY industry_name ASC LIMIT 50`,
-                    [`%${query}%`]
-                );
-                
-                // If the DB returned results, return them!
-                if (masterRes.rows.length > 0) {
-                    const formatted = masterRes.rows.map(r => ({ id: r.label, label: r.label }));
-                    return res.status(200).json({ success: true, data: formatted });
+                let sql = `SELECT industry_name AS label FROM industries_master`;
+                const params = [];
+                const conditions = [];
+
+                if (query) {
+                    params.push(`%${query}%`);
+                    conditions.push(`industry_name ILIKE $${params.length}`);
                 }
-                
-                // If DB query worked but returned 0 results, fall through to fallback below...
+
+                if (cursor) {
+                    params.push(cursor.trim());
+                    conditions.push(`industry_name > $${params.length}`);
+                }
+
+                if (conditions.length > 0) {
+                    sql += ` WHERE ` + conditions.join(` AND `);
+                }
+
+                params.push(pageSize + 1);
+                sql += ` ORDER BY industry_name ASC LIMIT $${params.length}`;
+
+                const masterRes = await pool.query(sql, params);
+                const hasMore = masterRes.rows.length > pageSize;
+                const items = hasMore ? masterRes.rows.slice(0, pageSize) : masterRes.rows;
+                const nextCursor = hasMore && items.length > 0 ? items[items.length - 1].label : null;
+
+                if (items.length > 0 || cursor || query) {
+                    const formatted = items.map(r => ({ id: r.label, label: r.label }));
+                    return res.status(200).json({ 
+                        success: true, 
+                        data: formatted,
+                        nextCursor,
+                        hasMore
+                    });
+                }
             } catch (dbErr) {
                 console.error("Database error fetching industries, using fallback:", dbErr);
-                // Fall through to hardcoded list...
             }
 
-            // 2. THE FALLBACK: Hardcoded MASTER_INDUSTRIES array
-            const formattedFallback = MASTER_INDUSTRIES
-                .filter(name => !query || name.toLowerCase().includes(query))
-                .slice(0, 50)
-                .map(name => ({ id: name, label: name }));
+            // Fallback to MASTER_INDUSTRIES array with cursor & pageSize
+            let fallbackList = MASTER_INDUSTRIES;
+            if (query) {
+                fallbackList = fallbackList.filter(name => name.toLowerCase().includes(query));
+            }
+            if (cursor) {
+                const trimmedCursor = cursor.trim().toLowerCase();
+                fallbackList = fallbackList.filter(name => name.toLowerCase() > trimmedCursor);
+            }
+            const hasMore = fallbackList.length > pageSize;
+            const items = fallbackList.slice(0, pageSize);
+            const nextCursor = hasMore && items.length > 0 ? items[items.length - 1] : null;
 
-            return res.status(200).json({ success: true, data: formattedFallback });
+            const formattedFallback = items.map(name => ({ id: name, label: name }));
+            return res.status(200).json({ 
+                success: true, 
+                data: formattedFallback,
+                nextCursor,
+                hasMore
+            });
         }
 
         return res.status(400).json({ success: false, message: `Invalid options slug: ${slug}` });

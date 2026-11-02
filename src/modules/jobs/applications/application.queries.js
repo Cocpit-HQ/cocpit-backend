@@ -108,6 +108,7 @@ async function getApplicationDetail(applicationId, recruiterId) {
       u.about_text                 AS "about",
       ja.cover_note                AS "coverNote",
       ja.resume_url                AS "resumeUrl",
+      COALESCE(ja.resume_file_name, (SELECT resume_file_name FROM user_resume_history urh WHERE urh.user_id = ja.applicant_id AND urh.resume_url = ja.resume_url LIMIT 1), 'Resume.pdf') AS "resumeName",
       ja.current_status            AS "status",
       ja.applied_at                AS "appliedAt",
       ja.screening_required        AS "screeningRequired",

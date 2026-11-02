@@ -341,19 +341,50 @@ const loginUser = async ({ email, password, userAgent, ipAddress }) => {
     if (user.is_deactivated) {
         const pool = require("../../core/db/pool");
         await pool.query(`UPDATE users SET is_deactivated = FALSE, deactivated_at = NULL WHERE user_id = $1`, [user.user_id]);
-        const reactivatedOrgs = await pool.query(`UPDATE organizations SET is_deactivated = FALSE, deactivated_at = NULL WHERE created_by = $1 AND is_deleted = FALSE RETURNING org_id`, [user.user_id]);
 
-        // Restore organization memberships if org is not deleted and not deactivated
-        await pool.query(`
-            UPDATE organization_members om
-            SET status = 'ACTIVE', updated_at = NOW()
-            FROM organizations o
-            WHERE om.org_id = o.org_id
-              AND o.is_deleted = FALSE
-              AND o.is_deactivated = FALSE
-              AND om.user_id = $1
-              AND om.status = 'REMOVED'
-        `, [user.user_id]);
+        // Restore ONLY organizations that were automatically deactivated by personal account deactivation
+        const historyRes = await pool.query(
+            `SELECT id, org_id FROM organization_deactivation_history
+             WHERE user_id = $1 AND restored_at IS NULL AND reason = 'PERSONAL_ACCOUNT'`,
+            [user.user_id]
+        );
+
+        let reactivatedOrgIds = [];
+        if (historyRes.rowCount > 0) {
+            const candidateOrgIds = historyRes.rows.map(r => r.org_id);
+            const historyIds = historyRes.rows.map(r => r.id);
+
+            // Restore only organizations that are still owned by this user and not deleted
+            const orgUpdateRes = await pool.query(
+                `UPDATE organizations 
+                 SET is_deactivated = FALSE, deactivated_at = NULL, updated_at = NOW() 
+                 WHERE org_id = ANY($1::uuid[]) AND created_by = $2 AND is_deleted = FALSE 
+                 RETURNING org_id`,
+                [candidateOrgIds, user.user_id]
+            );
+            reactivatedOrgIds = orgUpdateRes.rows.map(r => r.org_id);
+
+            // Mark history records as restored
+            await pool.query(
+                `UPDATE organization_deactivation_history
+                 SET restored_at = NOW()
+                 WHERE id = ANY($1::uuid[])`,
+                [historyIds]
+            );
+        }
+
+        // Restore organization memberships ONLY for the reactivated organizations
+        if (reactivatedOrgIds.length > 0) {
+            await pool.query(`
+                UPDATE organization_members om
+                SET status = 'ACTIVE', updated_at = NOW()
+                FROM organizations o
+                WHERE om.org_id = o.org_id
+                  AND om.org_id = ANY($1::uuid[])
+                  AND om.user_id = $2
+                  AND om.status = 'REMOVED'
+            `, [reactivatedOrgIds, user.user_id]);
+        }
 
         // Reset unread count for group conversations by updating last_read_at to NOW()
         await pool.query(`
@@ -369,10 +400,10 @@ const loginUser = async ({ email, password, userAgent, ipAddress }) => {
         if (socketService.io) {
             socketService.io.emit('user_reactivated', { userId: user.user_id });
             socketService.io.emit('USER_REACTIVATED', { userId: user.user_id });
-            for (const r of reactivatedOrgs.rows) {
-                socketService.io.emit("ORGANIZATION_REACTIVATED", { orgId: r.org_id });
-                socketService.io.emit("organization_reactivated", { orgId: r.org_id });
-                socketService.io.emit("org_status_changed", { orgId: r.org_id, status: "active", action: "reactivated" });
+            for (const orgId of reactivatedOrgIds) {
+                socketService.io.emit("ORGANIZATION_REACTIVATED", { orgId });
+                socketService.io.emit("organization_reactivated", { orgId });
+                socketService.io.emit("org_status_changed", { orgId, status: "active", action: "reactivated" });
             }
         }
     }
@@ -646,19 +677,50 @@ const socialLogin = async ({ provider, idToken, accountType, fullName: clientFul
     if (user.is_deactivated) {
         const pool = require("../../core/db/pool");
         await pool.query(`UPDATE users SET is_deactivated = FALSE, deactivated_at = NULL WHERE user_id = $1`, [user.user_id]);
-        const reactivatedOrgs = await pool.query(`UPDATE organizations SET is_deactivated = FALSE, deactivated_at = NULL WHERE created_by = $1 AND is_deleted = FALSE RETURNING org_id`, [user.user_id]);
 
-        // Restore organization memberships if org is not deleted and not deactivated
-        await pool.query(`
-            UPDATE organization_members om
-            SET status = 'ACTIVE', updated_at = NOW()
-            FROM organizations o
-            WHERE om.org_id = o.org_id
-              AND o.is_deleted = FALSE
-              AND o.is_deactivated = FALSE
-              AND om.user_id = $1
-              AND om.status = 'REMOVED'
-        `, [user.user_id]);
+        // Restore ONLY organizations that were automatically deactivated by personal account deactivation
+        const historyRes = await pool.query(
+            `SELECT id, org_id FROM organization_deactivation_history
+             WHERE user_id = $1 AND restored_at IS NULL AND reason = 'PERSONAL_ACCOUNT'`,
+            [user.user_id]
+        );
+
+        let reactivatedOrgIds = [];
+        if (historyRes.rowCount > 0) {
+            const candidateOrgIds = historyRes.rows.map(r => r.org_id);
+            const historyIds = historyRes.rows.map(r => r.id);
+
+            // Restore only organizations that are still owned by this user and not deleted
+            const orgUpdateRes = await pool.query(
+                `UPDATE organizations 
+                 SET is_deactivated = FALSE, deactivated_at = NULL, updated_at = NOW() 
+                 WHERE org_id = ANY($1::uuid[]) AND created_by = $2 AND is_deleted = FALSE 
+                 RETURNING org_id`,
+                [candidateOrgIds, user.user_id]
+            );
+            reactivatedOrgIds = orgUpdateRes.rows.map(r => r.org_id);
+
+            // Mark history records as restored
+            await pool.query(
+                `UPDATE organization_deactivation_history
+                 SET restored_at = NOW()
+                 WHERE id = ANY($1::uuid[])`,
+                [historyIds]
+            );
+        }
+
+        // Restore organization memberships ONLY for the reactivated organizations
+        if (reactivatedOrgIds.length > 0) {
+            await pool.query(`
+                UPDATE organization_members om
+                SET status = 'ACTIVE', updated_at = NOW()
+                FROM organizations o
+                WHERE om.org_id = o.org_id
+                  AND om.org_id = ANY($1::uuid[])
+                  AND om.user_id = $2
+                  AND om.status = 'REMOVED'
+            `, [reactivatedOrgIds, user.user_id]);
+        }
 
         // Reset unread count for group conversations by updating last_read_at to NOW()
         await pool.query(`
@@ -674,10 +736,10 @@ const socialLogin = async ({ provider, idToken, accountType, fullName: clientFul
         if (socketService.io) {
             socketService.io.emit('user_reactivated', { userId: user.user_id });
             socketService.io.emit('USER_REACTIVATED', { userId: user.user_id });
-            for (const r of reactivatedOrgs.rows) {
-                socketService.io.emit("ORGANIZATION_REACTIVATED", { orgId: r.org_id });
-                socketService.io.emit("organization_reactivated", { orgId: r.org_id });
-                socketService.io.emit("org_status_changed", { orgId: r.org_id, status: "active", action: "reactivated" });
+            for (const orgId of reactivatedOrgIds) {
+                socketService.io.emit("ORGANIZATION_REACTIVATED", { orgId });
+                socketService.io.emit("organization_reactivated", { orgId });
+                socketService.io.emit("org_status_changed", { orgId, status: "active", action: "reactivated" });
             }
         }
     }

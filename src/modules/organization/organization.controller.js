@@ -440,10 +440,6 @@ exports.updateOrganization = async (req, res) => {
         return res.status(400).json({ success: false, message: "Description must not exceed 2000 characters." });
     }
 
-    if (description !== undefined && description !== null && typeof description === 'string' && description.length > 2000) {
-        return res.status(400).json({ success: false, message: "Description must not exceed 2000 characters." });
-    }
-
     // Basic validation
     if (!name || name.trim().length < 2) {
         return res.status(400).json({ message: "Organization name must be at least 2 characters" });
@@ -1084,6 +1080,19 @@ exports.restoreOrganization = async (req, res) => {
             [tokenRow.org_id]
         );
 
+        
+        // Restore owner's membership status in organization_members
+        const orgOwnerRes = await client.query(`SELECT created_by FROM organizations WHERE org_id = $1`, [tokenRow.org_id]);
+        const orgOwnerId = orgOwnerRes.rows[0]?.created_by;
+        if (orgOwnerId) {
+            await client.query(
+                `UPDATE organization_members
+                 SET status = 'ACTIVE', updated_at = NOW()
+                 WHERE org_id = $1 AND user_id = $2`,
+                [tokenRow.org_id, orgOwnerId]
+            );
+        }
+
         // Mark token as used
         await client.query(
             `UPDATE organization_restoration_tokens SET used_at = NOW() WHERE id = $1`,
@@ -1537,6 +1546,14 @@ exports.verifyOTPAndRecoverOrganization = async (req, res) => {
             [orgId]
         );
 
+        // Restore owner's membership status in organization_members so company reappears in Actor Switcher
+        await client.query(
+            `UPDATE organization_members
+             SET status = 'ACTIVE', updated_at = NOW()
+             WHERE org_id = $1 AND user_id = $2`,
+            [orgId, userId]
+        );
+
         await logAudit(client, {
             entityId: orgId,
             entityType: 'ORGANIZATION',
@@ -1907,10 +1924,6 @@ exports.saveDraftPresence = async (req, res) => {
         headline,
         description
     } = req.body;
-
-    if (description !== undefined && description !== null && typeof description === 'string' && description.length > 2000) {
-        return res.status(400).json({ success: false, message: "Description must not exceed 2000 characters." });
-    }
 
     if (description !== undefined && description !== null && typeof description === 'string' && description.length > 2000) {
         return res.status(400).json({ success: false, message: "Description must not exceed 2000 characters." });

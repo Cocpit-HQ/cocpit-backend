@@ -144,6 +144,12 @@ async function _fetchChronologicalFeed(userId, cursor, limit, pool, orgActorId) 
           AND r.reporter_id = $4
           AND r.reporter_org_id = $2
       )
+      AND NOT EXISTS (
+        SELECT 1 FROM user_post_feedback upf
+        WHERE (upf.post_id = p.post_id OR upf.post_id = p.shared_post_id)
+          AND upf.feedback_type = 'NOT_INTERESTED'
+          AND upf.org_id = $2
+      )
       ` : `
       AND NOT EXISTS (
         SELECT 1 FROM blocks b
@@ -173,6 +179,13 @@ async function _fetchChronologicalFeed(userId, cursor, limit, pool, orgActorId) 
           AND r.target_type = 'POST' 
           AND r.reporter_id = $4
           AND r.reporter_org_id IS NULL
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM user_post_feedback upf
+        WHERE (upf.post_id = p.post_id OR upf.post_id = p.shared_post_id)
+          AND upf.feedback_type = 'NOT_INTERESTED'
+          AND upf.user_id = $4
+          AND upf.org_id IS NULL
       )
       `}
     ORDER BY p.created_at DESC
@@ -628,7 +641,19 @@ async function unhidePost({ userId, postId, sessionId, position, pool, orgActorI
 
   const scopeId = buildCacheScopeId(userId, orgActorId);
 
-  // 1. Remove from seenSet and hiddenSet
+  // 1. Remove from DB and Redis sets
+  if (pool) {
+    try {
+      if (orgActorId) {
+        await pool.query('DELETE FROM user_post_feedback WHERE org_id = $1 AND post_id = $2', [orgActorId, postId]);
+      } else {
+        await pool.query('DELETE FROM user_post_feedback WHERE user_id = $1 AND org_id IS NULL AND post_id = $2', [userId, postId]);
+      }
+    } catch (err) {
+      console.warn('[feedService] unhidePost DB delete failed:', err.message);
+    }
+  }
+
   try {
     await Promise.all([
       removeFromSeenSet(scopeId, [postId]),
@@ -677,12 +702,21 @@ async function submitFeedback({ userId, postId, feedbackType, sessionId, positio
 
   // 1. Upsert the permanent feedback to DB
   try {
-    await pool.query(`
-      INSERT INTO user_post_feedback (user_id, post_id, feedback_type, updated_at)
-      VALUES ($1, $2, $3, NOW())
-      ON CONFLICT (user_id, post_id) 
-      DO UPDATE SET feedback_type = EXCLUDED.feedback_type, updated_at = NOW()
-    `, [userId, postId, feedbackType]);
+    if (orgActorId) {
+      await pool.query(`
+        INSERT INTO user_post_feedback (user_id, org_id, post_id, feedback_type, updated_at)
+        VALUES ($1, $2, $3, $4, NOW())
+        ON CONFLICT (org_id, post_id) WHERE org_id IS NOT NULL
+        DO UPDATE SET feedback_type = EXCLUDED.feedback_type, user_id = EXCLUDED.user_id, updated_at = NOW()
+      `, [userId, orgActorId, postId, feedbackType]);
+    } else {
+      await pool.query(`
+        INSERT INTO user_post_feedback (user_id, org_id, post_id, feedback_type, updated_at)
+        VALUES ($1, NULL, $2, $3, NOW())
+        ON CONFLICT (user_id, post_id) WHERE org_id IS NULL
+        DO UPDATE SET feedback_type = EXCLUDED.feedback_type, updated_at = NOW()
+      `, [userId, postId, feedbackType]);
+    }
   } catch (err) {
     console.error('[feedService] submitFeedback DB upsert failed:', err.message);
     throw err;

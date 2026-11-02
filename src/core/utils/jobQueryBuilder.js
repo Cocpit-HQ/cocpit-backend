@@ -38,6 +38,8 @@ const buildJobFilters = (params, paramCountStart = 1) => {
         workMode,
         work_model,
         companyType,
+        company,
+        verified,
         industry,
         org_id,
     } = params;
@@ -265,6 +267,29 @@ const buildJobFilters = (params, paramCountStart = 1) => {
     applyMultiValue(employment_type || jobType, "j.job_type");
     applyMultiValue(work_model || workMode, "j.work_mode");
     applyMultiValue(companyType, "j.company_type");
+    if (company) {
+        const vals = company.split(",").map(v => v.trim()).filter(Boolean);
+        if (vals.length > 0) {
+            const placeholders = vals.map((_, i) => `LOWER($${currentIndex + i})`).join(", ");
+            conditions.push(`(
+                LOWER(j.company_name) = ANY(ARRAY[${placeholders}])
+                OR EXISTS (
+                    SELECT 1 FROM organizations o
+                    WHERE o.org_id = j.org_id
+                      AND LOWER(o.name) = ANY(ARRAY[${placeholders}])
+                )
+            )`);
+            values.push(...vals);
+            currentIndex += vals.length;
+        }
+    }
+    if (verified === "true") {
+        conditions.push(`EXISTS (
+            SELECT 1 FROM organizations o
+            WHERE o.org_id = j.org_id
+              AND o.verification_status IN ('VERIFIED', 'DOMAIN_VERIFIED')
+        )`);
+    }
     const rawIndustry = industry;
     if (rawIndustry) {
         const mappedIndustries = [];
