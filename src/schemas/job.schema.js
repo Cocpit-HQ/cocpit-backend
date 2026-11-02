@@ -38,7 +38,7 @@ const updateDraftSchema = z.object({
 // Used during POST /jobs/:id/submit
 const submitJobSchema = z.object({
   body: z.object({
-    title: z.string({ required_error: "Title is required" }).min(5, "Title must be at least 5 characters"),
+    title: z.string({ required_error: "Title is required" }).min(2, "Title must be at least 2 characters"),
     description: z.string({ required_error: "Description is required" }).min(100, "Description must be at least 100 characters"),
     location: z.string({ required_error: "Location is required" }).min(1, "Location cannot be empty"),
     industry: z.string({ required_error: "Industry is required" }).min(1, "Industry cannot be empty"),
