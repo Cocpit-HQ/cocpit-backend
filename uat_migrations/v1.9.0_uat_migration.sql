@@ -1,32 +1,48 @@
 -- ==============================================================================
 -- UAT Migration v1.9.0
 -- Target Database: cocpit_backend_uat (also applied to staging/production)
--- Prepared Date:  2026-10-30
--- Description: Mixed-Media Carousels (Images & Videos) support in post_media.
---              Adds order_index, thumbnail_url, and duration_seconds columns,
---              backfills order_index for existing records, and creates
---              composite index for deterministic ordering.
+-- Prepared Date:  2026-10-30 (Updated 2026-11-03)
+-- Description: 
+--   1. Mixed-Media Carousels (Images & Videos) support in post_media:
+--      Adds order_index, thumbnail_url, and duration_seconds columns,
+--      backfills order_index for existing records, and creates composite
+--      index for deterministic ordering.
+--   2. Jobs Explore & Recommendation System:
+--      - Adds org_id column to experiences table to link candidate work history
+--        with official organizations.
+--      - Creates idx_experiences_org_id and idx_experiences_current_org for
+--        rapid network affiliation graph traversals ("From your network").
+--      - Creates idx_jobs_active_created partial index on jobs for high-throughput
+--        listing retrieval and keyset cursor pagination across Explore categories.
+--      - Creates idx_job_saves_job_id on job_saves for O(1) saves_count aggregations
+--        in Featured opportunities quality scoring.
+--      - Creates idx_activity_job_views on user_activity_log for sub-millisecond
+--        retrieval of candidate Recently Viewed jobs.
 --
 -- Reference:
---   - schema.sql (Lines 475-487)
---   - uat_schema.sql
+--   - schema.sql (Lines 148-151, 475-487, 746-751, 924-927, 1742-1748)
+--   - uat_schema.sql (Section 20 & 23)
 -- ==============================================================================
 
 BEGIN;
 
--- 1. Add order_index column for deterministic carousel slide sequencing
+-- ------------------------------------------------------------------------------
+-- 1. Mixed-Media Carousels in post_media
+-- ------------------------------------------------------------------------------
+
+-- 1.1. Add order_index column for deterministic carousel slide sequencing
 ALTER TABLE post_media 
     ADD COLUMN IF NOT EXISTS order_index INT DEFAULT 0;
 
--- 2. Add thumbnail_url for video slide posters
+-- 1.2. Add thumbnail_url for video slide posters
 ALTER TABLE post_media 
     ADD COLUMN IF NOT EXISTS thumbnail_url TEXT;
 
--- 3. Add duration_seconds for video slide length
+-- 1.3. Add duration_seconds for video slide length
 ALTER TABLE post_media 
     ADD COLUMN IF NOT EXISTS duration_seconds NUMERIC(6,2);
 
--- 4. Backfill existing records that have NULL order_index using row_number() over (PARTITION BY post_id ORDER BY media_id)
+-- 1.4. Backfill existing records that have NULL order_index using row_number() over (PARTITION BY post_id ORDER BY media_id)
 WITH ranked_media AS (
     SELECT media_id, ROW_NUMBER() OVER (PARTITION BY post_id ORDER BY media_id) - 1 AS calc_order
     FROM post_media
@@ -37,8 +53,36 @@ SET order_index = rm.calc_order
 FROM ranked_media rm
 WHERE pm.media_id = rm.media_id;
 
--- 5. Create index on (post_id, order_index) for fast ordered retrieval
+-- 1.5. Create index on (post_id, order_index) for fast ordered retrieval
 CREATE INDEX IF NOT EXISTS idx_post_media_post_order ON post_media(post_id, order_index);
 
-COMMIT;
+-- ------------------------------------------------------------------------------
+-- 2. Jobs Explore & Recommendation System
+-- ------------------------------------------------------------------------------
 
+-- 2.1. experiences: Link work experience to organizations
+ALTER TABLE experiences 
+    ADD COLUMN IF NOT EXISTS org_id UUID REFERENCES organizations(org_id) ON DELETE SET NULL;
+
+CREATE INDEX IF NOT EXISTS idx_experiences_org_id 
+    ON experiences(org_id);
+
+CREATE INDEX IF NOT EXISTS idx_experiences_current_org 
+    ON experiences(org_id) 
+    WHERE is_current = TRUE AND org_id IS NOT NULL;
+
+-- 2.2. jobs: Composite partial index for active listings & keyset pagination
+CREATE INDEX IF NOT EXISTS idx_jobs_active_created 
+    ON jobs(created_at DESC, job_id DESC) 
+    WHERE is_active = TRUE AND status = 'ACTIVE';
+
+-- 2.3. job_saves: Reverse lookup index on job_id for saves_count aggregation
+CREATE INDEX IF NOT EXISTS idx_job_saves_job_id 
+    ON job_saves(job_id);
+
+-- 2.4. user_activity_log: Targeted partial index for instant "Recently Viewed" job retrieval
+CREATE INDEX IF NOT EXISTS idx_activity_job_views 
+    ON user_activity_log(user_id, entity_id, created_at DESC) 
+    WHERE action_type = 'view_job' AND entity_type = 'job';
+
+COMMIT;

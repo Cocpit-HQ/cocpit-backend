@@ -27,6 +27,8 @@ router.get("/companies", jobController.getCompanies);
 
 // Specific routes MUST come before /:id catch-all
 router.get("/recommendations", optionalAuth, jobController.getRecommendations);
+router.get("/explore/sections", optionalAuth, jobController.getExploreSections);
+router.get("/explore/sections/:category", optionalAuth, jobController.getExploreSectionDetail);
 router.get("/offers", optionalAuth, jobController.getJobOffers);
 router.get("/offers/me", requireAuth, offerController.getMyOffers);
 router.get("/stats", requireAuth, jobController.getDashboardStats);

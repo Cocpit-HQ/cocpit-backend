@@ -16,6 +16,7 @@ const aiService = require("../../services/ai.service");
 const { validateSchema, validateBusiness, validateContentSafety } = require("../../core/utils/aiValidation");
 const { extractRequirementsFromJDText } = require("../../services/jdExtractor.service");
 const { calculateBackendScore, calculateTotalExperienceYears, getLatestEducation } = require("./applications/application.utils");
+const jobRecommendationsService = require("./jobRecommendations.service");
 
 
 const getRequestedOrganizationActorId = (req, fallbackOrgId = null) => {
@@ -188,6 +189,8 @@ exports.getAllJobs = async (req, res) => {
         j.*,
         u.full_name AS recruiter_name,
         u.avatar_url AS recruiter_avatar,
+        COALESCE(c.name, j.company_name, u.full_name) AS company,
+        COALESCE(c.name, j.company_name, u.full_name) AS company_name,
         c.logo_url AS company_logo,
         COALESCE(c.logo_url, '') AS company_avatar,
         c.slug AS company_slug,
@@ -243,6 +246,8 @@ exports.getRecommendations = async (req, res) => {
         j.*,
         u.full_name AS recruiter_name,
         u.avatar_url AS recruiter_avatar,
+        COALESCE(c.name, j.company_name, u.full_name) AS company,
+        COALESCE(c.name, j.company_name, u.full_name) AS company_name,
         c.logo_url AS company_logo,
         COALESCE(c.logo_url, '') AS company_avatar,
         c.slug AS company_slug,
@@ -301,6 +306,63 @@ exports.getRecommendations = async (req, res) => {
   }
 };
 
+exports.getExploreSections = async (req, res) => {
+  try {
+    const userId = req.user?.sub || null;
+    const sections = await jobRecommendationsService.getExploreSections(userId);
+    return res.status(200).json({
+      success: true,
+      data: sections,
+    });
+  } catch (err) {
+    console.error("Get explore sections error:", err);
+    return res.status(500).json({
+      success: false,
+      error: "Failed to fetch explore job sections",
+    });
+  }
+};
+
+exports.getExploreSectionDetail = async (req, res) => {
+  try {
+    const { category } = req.params;
+    const userId = req.user?.sub || null;
+    const limit = req.query.limit;
+    const cursor = req.query.cursor || null;
+
+    if (!jobRecommendationsService.VALID_CATEGORIES.includes(category)) {
+      return res.status(400).json({
+        success: false,
+        error: `Invalid explore category '${category}'. Must be one of: ${jobRecommendationsService.VALID_CATEGORIES.join(', ')}`,
+        code: 'INVALID_CATEGORY',
+      });
+    }
+
+    const result = await jobRecommendationsService.getCategoryPaginated(category, userId, {
+      limit,
+      cursor,
+    });
+
+    return res.status(200).json({
+      success: true,
+      data: result,
+    });
+  } catch (err) {
+    console.error(`Get explore section '${req.params.category}' error:`, err);
+    if (err.code === 'INVALID_CATEGORY') {
+      return res.status(400).json({
+        success: false,
+        error: err.message,
+        code: err.code,
+      });
+    }
+    return res.status(500).json({
+      success: false,
+      error: "Failed to fetch category job listings",
+    });
+  }
+};
+
 const formatReplyTime = (interval) => {
   if (!interval) return null;
 
@@ -343,6 +405,8 @@ exports.getJobById = async (req, res) => {
         j.*,
         u.full_name AS recruiter_name,
         u.avatar_url AS recruiter_avatar,
+        COALESCE(c.name, j.company_name, u.full_name) AS company,
+        COALESCE(c.name, j.company_name, u.full_name) AS company_name,
         c.logo_url AS company_logo,
         COALESCE(c.logo_url, '') AS company_avatar,
         c.slug AS company_slug,
@@ -1579,6 +1643,8 @@ exports.getMySavedJobs = async (req, res) => {
         j.*, 
         u.full_name AS recruiter_name, 
         u.avatar_url AS recruiter_avatar,
+        COALESCE(c.name, j.company_name, u.full_name) AS company,
+        COALESCE(c.name, j.company_name, u.full_name) AS company_name,
         c.logo_url AS company_logo,
         COALESCE(c.logo_url, '') AS company_avatar,
         c.slug AS company_slug,
@@ -1880,6 +1946,8 @@ exports.getMyJobs = async (req, res) => {
         j.*, 
         u.full_name AS recruiter_name,
         u.avatar_url AS recruiter_avatar,
+        COALESCE(c.name, j.company_name, u.full_name) AS company,
+        COALESCE(c.name, j.company_name, u.full_name) AS company_name,
         c.logo_url AS company_logo,
         COALESCE(c.logo_url, '') AS company_avatar,
         c.slug AS company_slug,
