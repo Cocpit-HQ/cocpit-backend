@@ -136,7 +136,7 @@ const getRequestedOrganizationActorId = (req, fallbackOrgId = null) => {
     const actorOrgId = req.actor?.type === "ORGANIZATION" ? req.actor.orgId : null;
 
     if (actorOrgId) {
-        if (fallbackOrgId && actorOrgId !== fallbackOrgId) {
+        if (fallbackOrgId && actorOrgId !== fallbackOrgId && req.actor?.slug !== fallbackOrgId) {
             const err = new Error("Active organization actor does not match requested organization");
             err.statusCode = 403;
             throw err;
@@ -147,6 +147,10 @@ const getRequestedOrganizationActorId = (req, fallbackOrgId = null) => {
     // 2. Fallback to Passed companyId - but verify membership
     if (fallbackOrgId) {
         const userOrgs = req.userOrganizations || [];
+        const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(fallbackOrgId);
+        if (!isUuid && req.userOrganizationMap?.has(fallbackOrgId)) {
+            return req.userOrganizationMap.get(fallbackOrgId);
+        }
         if (!userOrgs.includes(fallbackOrgId)) {
             const err = new Error("You do not have permission to act as this organization");
             err.statusCode = 403;
