@@ -105,38 +105,86 @@ function formatJobItem(row) {
     ? (row.company_name || row.recruiter_name)
     : (row.recruiter_name || row.company_name);
 
+  const isClosed = row.status === 'CLOSED' || row.is_active === false;
+  const isAvailable = row.status !== 'CLOSED' && row.is_active !== false;
+  const isSaved = Boolean(row.isSaved || row.is_saved);
+  const hasApplied = Boolean(row.hasApplied || row.is_applied);
+  const appStatus = row.applicationStatus || row.application_status || null;
+  const applicantsCount = Number(row.applicants || row.applicants_count || 0);
+
   return {
+    // Primary identifiers & ownership
     id: row.job_id,
     job_id: row.job_id,
     org_id: row.org_id || undefined,
+    recruiter_id: row.recruiter_id || undefined,
+
+    // Core listing content
     title: row.title,
+    description: row.description || '',
     company: resolvedCompany,
     company_name: resolvedCompany,
     company_logo: row.company_logo || undefined,
+    company_avatar: row.company_logo || '',
     company_slug: row.company_slug || undefined,
     recruiter_name: row.recruiter_name || undefined,
     recruiter_avatar: row.recruiter_avatar || undefined,
     location: row.location || '',
     job_type: row.job_type || 'Full time',
+    work_type: row.job_type || 'Full time',
     work_mode: row.work_mode || 'Hybrid',
+    industry: row.industry || '',
+    tags: Array.isArray(row.tags) ? row.tags : (row.tags ? [row.tags] : []),
+    skills: Array.isArray(row.skills) ? row.skills : [],
+
+    // Compensation & formatting
     salary_min: row.salary_min,
     salary_max: row.salary_max,
     salary_currency: row.salary_currency || 'USD',
     salary_period: row.salary_period || 'YEARLY',
+    is_salary_negotiable: Boolean(row.is_salary_negotiable),
     salary_display: formatSalaryDisplay(row.salary_min, row.salary_max, row.salary_currency, row.salary_period),
-    posted_at: getRelativeTime(row.created_at),
-    created_at: row.created_at,
-    description: row.description || '',
+
+    // Experience & formatting
     experience_min: row.experience_min,
     experience_max: row.experience_max,
     experience_label: row.experience_label,
     experience_level: row.experience_level,
     experience: formatExperience(row),
-    is_saved: Boolean(row.isSaved),
-    is_applied: Boolean(row.hasApplied),
-    saves_count: row.saves_count || 0,
+
+    // Timestamps
+    posted_at: getRelativeTime(row.created_at),
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+    expires_at: row.expires_at,
+
+    // Status & Availability
+    status: row.status || 'ACTIVE',
+    is_active: row.is_active !== false,
+    is_available: isAvailable,
+    is_closed: isClosed,
+
+    // User interaction states (both camelCase and snake_case for full frontend compatibility)
+    is_saved: isSaved,
+    isSaved: isSaved,
+    is_applied: hasApplied,
+    hasApplied: hasApplied,
+    application_status: appStatus,
+    applicationStatus: appStatus,
+
+    // Offers & Applicants
+    is_offer: Boolean(row.is_offer),
+    offer_id: row.offer_id || null,
+    offerStatus: row.offerStatus || null,
+    offer_expires_at: row.offer_expires_at || null,
+    applicants: applicantsCount,
+    applicants_count: applicantsCount,
+    saves_count: Number(row.saves_count || 0),
+
+    // Category-specific enrichment
     quality_score: row.quality_score != null ? Math.round(Number(row.quality_score)) : undefined,
     match_score: row.match_score != null ? Math.round(Number(row.match_score)) : undefined,
+    recommended_badge: row.recommended_badge || '',
     network_badge: row.network_connection_name ? {
       connection_count: row.connection_count,
       primary_name: row.network_connection_name,
@@ -247,8 +295,10 @@ async function getFeaturedOpportunities(dbClient, userId, { limit = 10, cursor =
         c.logo_url AS company_logo,
         c.slug AS company_slug,
         (SELECT COUNT(*)::int FROM job_saves js_cnt WHERE js_cnt.job_id = j.job_id) AS saves_count,
+        (SELECT COUNT(*)::int FROM job_applications ja_count WHERE ja_count.job_id = j.job_id) AS applicants,
         ${userId ? '(js.user_id IS NOT NULL) AS "isSaved",' : 'FALSE AS "isSaved",'}
         ${userId ? '(ja.application_id IS NOT NULL AND ja.current_status != \'Withdrawn\') AS "hasApplied",' : 'FALSE AS "hasApplied",'}
+        ${userId ? 'ja.current_status AS "applicationStatus",' : 'NULL AS "applicationStatus",'}
         (
           -- Employer Quality (40 pts max)
           (CASE 
@@ -565,8 +615,10 @@ async function getBestMatches(dbClient, userId, { limit = 10, cursor = null } = 
       c.logo_url AS company_logo,
       c.slug AS company_slug,
       (SELECT ARRAY_AGG(LOWER(TRIM(s.name))) FROM job_skills js JOIN skills s ON js.skill_id = s.skill_id WHERE js.job_id = j.job_id) AS skills,
+      (SELECT COUNT(*)::int FROM job_applications ja_count WHERE ja_count.job_id = j.job_id) AS applicants,
       (js.user_id IS NOT NULL) AS "isSaved",
-      (ja.application_id IS NOT NULL AND ja.current_status != 'Withdrawn') AS "hasApplied"
+      (ja.application_id IS NOT NULL AND ja.current_status != 'Withdrawn') AS "hasApplied",
+      ja.current_status AS "applicationStatus"
     FROM jobs j
     LEFT JOIN active_users u ON j.recruiter_id = u.user_id
     LEFT JOIN organizations c ON j.org_id = c.org_id
@@ -763,8 +815,10 @@ async function getFromNetwork(dbClient, userId, { limit = 10, cursor = null } = 
           ELSE 3 
         END) AS freshness_tier,
         (CASE WHEN dc_recruiter.connection_id IS NOT NULL THEN 1 ELSE 2 END) AS direct_recruiter_tier,
+        (SELECT COUNT(*)::int FROM job_applications ja_count WHERE ja_count.job_id = j.job_id) AS applicants,
         (js.user_id IS NOT NULL) AS "isSaved",
-        (ja.application_id IS NOT NULL AND ja.current_status != 'Withdrawn') AS "hasApplied"
+        (ja.application_id IS NOT NULL AND ja.current_status != 'Withdrawn') AS "hasApplied",
+        ja.current_status AS "applicationStatus"
       FROM jobs j
       LEFT JOIN active_users u ON j.recruiter_id = u.user_id
       LEFT JOIN organizations c ON j.org_id = c.org_id
@@ -839,8 +893,10 @@ async function getRecentlyViewed(dbClient, userId, { limit = 10, cursor = null }
       c.logo_url AS company_logo,
       c.slug AS company_slug,
       latest_views.last_viewed_at,
+      (SELECT COUNT(*)::int FROM job_applications ja_count WHERE ja_count.job_id = j.job_id) AS applicants,
       (js.user_id IS NOT NULL) AS "isSaved",
-      (ja.application_id IS NOT NULL AND ja.current_status != 'Withdrawn') AS "hasApplied"
+      (ja.application_id IS NOT NULL AND ja.current_status != 'Withdrawn') AS "hasApplied",
+      ja.current_status AS "applicationStatus"
     FROM (
       SELECT 
         entity_id AS job_id,
@@ -950,6 +1006,7 @@ async function getCategoryPaginated(category, userId, { limit = 10, cursor = nul
 }
 
 module.exports = {
+  formatJobItem,
   CATEGORY_KEYS,
   VALID_CATEGORIES,
   CATEGORY_METADATA,
