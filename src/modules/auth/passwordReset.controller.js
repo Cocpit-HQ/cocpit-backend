@@ -1,3 +1,32 @@
+
+const pool = require("../../core/db/pool");
+const socketService = require("../../core/infrastructure/socket.service");
+
+async function dispatchPasswordResetNotification(userId) {
+    if (!userId) return;
+    try {
+        const notifText = "A password reset was requested for your account. If this wasn’t you, secure your account now.";
+        const notifRes = await pool.query(
+            `INSERT INTO notifications (user_id, sender_id, type, text, metadata)
+             VALUES ($1, NULL, 'password_reset_requested', $2, $3)
+             RETURNING notification_id, created_at`,
+            [userId, notifText, JSON.stringify({ reason: 'password_reset_request' })]
+        );
+
+        if (socketService && typeof socketService.notifyUser === 'function') {
+            socketService.notifyUser(userId, "notification", {
+                notification_id: notifRes.rows[0]?.notification_id,
+                type: "password_reset_requested",
+                text: notifText,
+                created_at: notifRes.rows[0]?.created_at || new Date().toISOString(),
+                is_read: false
+            });
+        }
+    } catch (err) {
+        console.error("Failed to create password_reset_requested notification:", err);
+    }
+}
+
 const passwordResetService = require("./passwordReset.service");
 const otpService = require("./otp.service");
 

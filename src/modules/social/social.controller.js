@@ -5177,19 +5177,19 @@ exports.getNotifications = async (req, res) => {
                 n.recipient_org_id as recipient_company_id,
                 CASE 
                     WHEN COALESCE(NULLIF(n.metadata->>'org_id', ''), NULLIF(n.metadata->>'orgId', '')) IS NOT NULL 
-                         AND n.type NOT IN ('community_invite_accepted', 'team_invite_accepted', 'offer_accepted', 'job_offer_declined', 'company_channel_subscriber') THEN 
+                         AND n.type NOT IN ('community_invite_accepted', 'team_invite_accepted', 'team_invite_declined', 'team_member_removed', 'offer_accepted', 'job_offer_declined', 'company_channel_subscriber') THEN 
                          COALESCE(NULLIF(n.metadata->>'org_name', ''), NULLIF(n.metadata->>'orgName', ''), c.name)
                     ELSE u.display_name 
                 END as actor_name, 
                 CASE 
                     WHEN COALESCE(NULLIF(n.metadata->>'org_id', ''), NULLIF(n.metadata->>'orgId', '')) IS NOT NULL 
-                         AND n.type NOT IN ('community_invite_accepted', 'team_invite_accepted', 'offer_accepted', 'job_offer_declined', 'company_channel_subscriber') THEN 
+                         AND n.type NOT IN ('community_invite_accepted', 'team_invite_accepted', 'team_invite_declined', 'team_member_removed', 'offer_accepted', 'job_offer_declined', 'company_channel_subscriber') THEN 
                          COALESCE(NULLIF(n.metadata->>'org_logo', ''), NULLIF(n.metadata->>'orgLogo', ''), c.logo_url)
                     ELSE u.display_avatar 
                 END as actor_avatar,
                 COALESCE(NULLIF(n.metadata->>'org_slug', ''), NULLIF(n.metadata->>'orgSlug', ''), c.slug, u.display_username) as actor_slug,
                 (COALESCE(NULLIF(n.metadata->>'org_id', ''), NULLIF(n.metadata->>'orgId', '')) IS NOT NULL 
-                 AND n.type NOT IN ('community_invite_accepted', 'team_invite_accepted', 'offer_accepted', 'job_offer_declined', 'company_channel_subscriber')) as is_company_actor,
+                 AND n.type NOT IN ('community_invite_accepted', 'team_invite_accepted', 'team_invite_declined', 'team_member_removed', 'offer_accepted', 'job_offer_declined', 'company_channel_subscriber')) as is_company_actor,
                 COALESCE(o_meta.created_by = n.user_id, (n.metadata->>'can_recover')::boolean, (n.metadata->>'is_owner')::boolean, FALSE) as can_recover,
                 COALESCE(o_meta.created_by = n.user_id, (n.metadata->>'is_owner')::boolean, FALSE) as is_owner,
                 cr.request_id as request_id, 
@@ -5202,9 +5202,13 @@ exports.getNotifications = async (req, res) => {
             WHERE 
         `;
 
+        const queryParams = [companyId || userId];
+
         if (companyId) {
+            queryParams.push(userId);
             query += `
-                n.recipient_org_id = $1
+                (n.recipient_org_id = $1 OR (n.user_id = $2 AND n.type IN ('team_member_removed', 'job_approved', 'job_rejected', 'company_ownership_transferred')))
+                AND (n.user_id IS NULL OR n.type NOT IN ('member_role_updated', 'company_ownership_transferred') OR n.user_id = $2 OR n.recipient_org_id = $1)
                 AND NOT EXISTS (
                     SELECT 1
                     FROM blocks b
@@ -5214,8 +5218,18 @@ exports.getNotifications = async (req, res) => {
             `;
         } else {
             query += `
-                n.user_id = $1
-                AND n.recipient_org_id IS NULL
+                (
+                    n.user_id = $1
+                    OR (
+                        n.user_id IS NULL
+                        AND n.recipient_org_id IN (
+                            SELECT org_id FROM organization_members WHERE user_id = $1 AND status = 'ACTIVE'
+                            UNION
+                            SELECT org_id FROM organizations WHERE created_by = $1
+                        )
+                    )
+                )
+                AND (n.recipient_org_id IS NULL OR n.type IN ('team_member_removed', 'member_role_updated', 'company_ownership_transferred', 'job_approved', 'job_rejected', 'team_invite_declined', 'team_invite_accepted', 'company_follower'))
                 AND NOT EXISTS (
                     SELECT 1
                     FROM blocks b
@@ -5267,10 +5281,10 @@ exports.getNotifications = async (req, res) => {
 
         query += ` ORDER BY n.created_at DESC`;
 
-        const result = await pool.query(query, [companyId || userId]);
+        const result = await pool.query(query, queryParams);
         let rows = result.rows;
-        if (companyId) {
-            // Deduplicate multi-admin notification copies for organization
+        {
+            // Deduplicate notification copies across org and personal feeds
             const seen = new Set();
             rows = rows.filter((n) => {
                 const key = `${n.type}:${n.reference_id || ''}:${n.sender_id || ''}:${n.text}`;

@@ -86,6 +86,10 @@ exports.getRoles = async (req, res, next) => {
 exports.getRoleById = async (req, res, next) => {
     const { orgId, roleId } = req.params;
     try {
+        const isRoleUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(roleId);
+        const isOrgUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(orgId);
+        const orgClause = isOrgUuid ? "r.org_id = $1" : "o.slug = $1";
+        const roleClause = isRoleUuid ? "r.role_id = $2" : "LOWER(r.name) = LOWER($2)";
         const result = await pool.query(
             `SELECT r.*, r.is_active AS "isActive", COUNT(DISTINCT u.user_id)::int AS member_count,
                     COALESCE(
@@ -113,7 +117,7 @@ exports.getRoleById = async (req, res, next) => {
                  AND oi.invited_user_id = m.user_id 
                  AND oi.status = 'PENDING'
              )
-             WHERE r.org_id = $1 AND r.role_id = $2 AND r.is_active = TRUE
+             WHERE ${orgClause} AND ${roleClause} AND r.is_active = TRUE
              GROUP BY r.role_id, o.created_by`,
             [orgId, roleId]
         );
@@ -295,6 +299,64 @@ exports.updateRole = async (req, res, next) => {
             action: 'UPDATE_ROLE',
             metadata: { roleName: updatedRole.name, permissions, roleId }
         });
+
+        // Notify active members of this role ONLY when role name is updated (not on permission changes)
+        const isNameChanged = Boolean(name && name.trim() && name.trim() !== role.name.trim());
+        if (isNameChanged) {
+            const membersRes = await client.query(
+                `SELECT user_id FROM organization_members WHERE org_id = $1 AND role_id = $2 AND status = 'ACTIVE' AND user_id != $3`,
+                [orgId, roleId, actorId]
+            );
+        if (membersRes.rowCount > 0) {
+            const orgRes = await client.query(`SELECT name, slug, logo_url FROM organizations WHERE org_id = $1`, [orgId]);
+            const org = orgRes.rows[0];
+            const companyName = org?.name || 'the company';
+            const notificationText = `Your role at ${companyName} has been updated to ${updatedRole.name}`;
+            const metadataPayload = {
+                orgId,
+                org_id: orgId,
+                orgName: companyName,
+                org_name: companyName,
+                orgSlug: org?.slug,
+                org_slug: org?.slug,
+                orgLogo: org?.logo_url,
+                org_logo: org?.logo_url,
+                roleId: updatedRole.role_id,
+                role_id: updatedRole.role_id,
+                roleName: updatedRole.name,
+                role_name: updatedRole.name,
+                role: updatedRole.name,
+                updatedBy: actorId
+            };
+
+            for (const row of membersRes.rows) {
+                // Note: recipient_org_id = orgId routes to organization actor, scoped to that specific role member (row.user_id)
+                const notifRes = await client.query(
+                    `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata, recipient_org_id)
+                     VALUES ($1, $2, 'member_role_updated', $3, $4, $5, $6)
+                     RETURNING notification_id, created_at`,
+                    [row.user_id, actorId, notificationText, orgId, JSON.stringify(metadataPayload), orgId]
+                );
+
+                if (socketService && typeof socketService.notifyUser === 'function') {
+                    socketService.notifyUser(row.user_id, "notification", {
+                        type: "member_role_updated",
+                        text: notificationText,
+                        from: actorId,
+                        sender_id: actorId,
+                        senderName: companyName,
+                        senderAvatar: org?.logo_url,
+                        referenceId: orgId,
+                        reference_id: orgId,
+                        metadata: metadataPayload,
+                        notification_id: notifRes.rows[0]?.notification_id,
+                        created_at: notifRes.rows[0]?.created_at ? notifRes.rows[0].created_at.toISOString() : new Date().toISOString(),
+                        is_read: false
+                    });
+                }
+            }
+        }
+        }
 
         await client.query("COMMIT");
         res.json(updatedRole);
@@ -693,6 +755,73 @@ exports.updateMemberRole = async (req, res, next) => {
             }
         });
 
+        // Dispatch notification to member about role update
+        if (userId) {
+            const orgRes = await client.query(
+                `SELECT name, slug, logo_url FROM organizations WHERE org_id = $1`,
+                [orgId]
+            );
+            const org = orgRes.rows[0];
+            const companyName = org?.name || 'the company';
+            const newRoleName = targetRole.name;
+            const notificationText = `Your role at ${companyName} has been updated to ${newRoleName}`;
+
+            const metadataPayload = {
+                orgId,
+                org_id: orgId,
+                orgName: companyName,
+                org_name: companyName,
+                orgSlug: org?.slug,
+                org_slug: org?.slug,
+                orgLogo: org?.logo_url,
+                org_logo: org?.logo_url,
+                roleId: targetRole.role_id || roleId,
+                role_id: targetRole.role_id || roleId,
+                roleName: newRoleName,
+                role_name: newRoleName,
+                role: newRoleName,
+                updatedBy: actorId
+            };
+
+            // Note: recipient_org_id = orgId routes to organization actor, scoped to this specific member (userId)
+            const notifRes = await client.query(
+                `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata, recipient_org_id)
+                 VALUES ($1, $2, 'member_role_updated', $3, $4, $5, $6)
+                 RETURNING notification_id, created_at`,
+                [userId, actorId, notificationText, orgId, JSON.stringify(metadataPayload), orgId]
+            );
+
+            if (socketService && typeof socketService.notifyUser === 'function') {
+                socketService.notifyUser(userId, "notification", {
+                    type: "member_role_updated",
+                    text: notificationText,
+                    from: actorId,
+                    sender_id: actorId,
+                    senderName: companyName,
+                    senderAvatar: org?.logo_url,
+                    referenceId: orgId,
+                    reference_id: orgId,
+                    metadata: metadataPayload,
+                    notification_id: notifRes.rows[0]?.notification_id,
+                    created_at: notifRes.rows[0]?.created_at ? notifRes.rows[0].created_at.toISOString() : new Date().toISOString(),
+                    is_read: false
+                });
+            }
+
+            try {
+                const { sendToUser } = require("../notification/notification.service");
+                if (typeof sendToUser === 'function') {
+                    await sendToUser(userId, "Role Updated", notificationText, {
+                        type: "member_role_updated",
+                        orgId,
+                        roleId: targetRole.role_id || roleId
+                    });
+                }
+            } catch (pushErr) {
+                console.warn("[updateMemberRole] Push notification skipped or failed:", pushErr.message);
+            }
+        }
+
         await client.query("COMMIT");
         res.json({ message: "Role assigned successfully", member: updateRes.rows[0] });
     } catch (err) {
@@ -768,8 +897,104 @@ exports.removeMember = async (req, res, next) => {
             }
         });
 
+        // Notification: "[User Name] was removed from [Company Name] by [Admin Name]."
+        const actorUserRes = await client.query(`SELECT full_name FROM users WHERE user_id = $1`, [actorId]);
+        const adminName = actorUserRes.rows[0]?.full_name || 'Admin';
+        const orgRes = await client.query(`SELECT name, slug, logo_url FROM organizations WHERE org_id = $1`, [orgId]);
+        const org = orgRes.rows[0];
+        const companyName = org?.name || 'the company';
+        const notificationText = `${targetUserName} was removed from ${companyName}`;
+
+        const metadataPayload = {
+            orgId,
+            org_id: orgId,
+            orgName: companyName,
+            org_name: companyName,
+            orgSlug: org?.slug,
+            org_slug: org?.slug,
+            orgLogo: org?.logo_url,
+            org_logo: org?.logo_url,
+            removedUserId: userId,
+            adminId: actorId,
+            adminName,
+            roleName: targetRoleData?.role_name
+        };
+
+        // Find all active members and owner of the organization
+        const orgMembersRes = await client.query(
+            `SELECT user_id FROM organization_members WHERE org_id = $1 AND status = 'ACTIVE'
+             UNION
+             SELECT created_by as user_id FROM organizations WHERE org_id = $1`,
+            [orgId]
+        );
+
+        // 1. Insert organization-level notification
+        const notifRes = await client.query(
+            `INSERT INTO notifications (recipient_org_id, user_id, sender_id, type, text, reference_id, metadata)
+             VALUES ($1, NULL, $2, 'team_member_removed', $3, $4, $5)
+             RETURNING notification_id, created_at`,
+            [orgId, actorId, notificationText, orgId, JSON.stringify(metadataPayload)]
+        );
+
+        // 2. Insert for all active members (including admin who removed them) so personal feed displays it
+        for (const m of orgMembersRes.rows) {
+            if (m.user_id && m.user_id !== userId) {
+                await client.query(
+                    `INSERT INTO notifications (recipient_org_id, user_id, sender_id, type, text, reference_id, metadata)
+                     VALUES ($1, $2, $3, 'team_member_removed', $4, $5, $6)`,
+                    [orgId, m.user_id, actorId, notificationText, orgId, JSON.stringify(metadataPayload)]
+                );
+            }
+        }
+
+        // 3. Also insert personal notification for the removed user (use "You were" instead of their name)
+        const personalNotificationText = `You were removed from ${companyName}`;
+        await client.query(
+            `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata)
+             VALUES ($1, $2, 'team_member_removed', $3, $4, $5)`,
+            [userId, actorId, personalNotificationText, orgId, JSON.stringify(metadataPayload)]
+        );
+
         await client.query("COMMIT");
         res.json({ message: "Member removed successfully" });
+
+        // Dispatch real-time socket notifications
+        try {
+            const socketService = require("../../core/infrastructure/socket.service");
+            const notifId = notifRes.rows[0]?.notification_id;
+            const notifCreatedAt = notifRes.rows[0]?.created_at ? notifRes.rows[0].created_at.toISOString() : new Date().toISOString();
+            const socketPayload = {
+                notification_id: notifId,
+                type: "team_member_removed",
+                text: notificationText,
+                sender_id: actorId,
+                senderName: adminName,
+                actor_name: adminName,
+                recipient_company_id: orgId,
+                recipient_org_id: orgId,
+                reference_id: orgId,
+                metadata: metadataPayload,
+                created_at: notifCreatedAt,
+                is_read: false
+            };
+
+            // Broadcast to the organization room
+            socketService.notifyOrg(orgId, "notification", socketPayload);
+
+            // Alert each active member directly (including the admin who removed them)
+            for (const m of orgMembersRes.rows) {
+                if (m.user_id && m.user_id !== userId) {
+                    socketService.notifyUser(m.user_id, "notification", socketPayload);
+                }
+            }
+
+            // Also alert the removed user directly
+            if (socketService && typeof socketService.notifyUser === 'function') {
+                socketService.notifyUser(userId, "notification", socketPayload);
+            }
+        } catch (socketErr) {
+            console.error("Failed to emit team_member_removed notification:", socketErr);
+        }
     } catch (err) {
         await client.query("ROLLBACK");
         next(err);
@@ -872,7 +1097,62 @@ exports.transferOwnership = async (req, res, next) => {
             }
         });
 
+        // 8b. Dispatch notification to the new Owner
+        const orgRes = await client.query(`SELECT name, slug, logo_url FROM organizations WHERE org_id = $1`, [orgId]);
+        const org = orgRes.rows[0];
+        const companyName = org?.name || 'the company';
+        const notificationText = `You are now the Owner of ${companyName}`;
+        const metadataPayload = {
+            orgId,
+            org_id: orgId,
+            orgName: companyName,
+            org_name: companyName,
+            orgSlug: org?.slug,
+            org_slug: org?.slug,
+            orgLogo: org?.logo_url,
+            org_logo: org?.logo_url,
+            previousOwnerId: actorId,
+            newOwnerId,
+            roleName: 'Owner'
+        };
+
+        const notifRes = await client.query(
+            `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata, recipient_org_id)
+             VALUES ($1, $2, 'company_ownership_transferred', $3, $4, $5, $6)
+             RETURNING notification_id, created_at`,
+            [newOwnerId, actorId, notificationText, orgId, JSON.stringify(metadataPayload), orgId]
+        );
+
         await client.query("COMMIT");
+
+        if (socketService && typeof socketService.notifyUser === 'function') {
+            socketService.notifyUser(newOwnerId, "notification", {
+                type: "company_ownership_transferred",
+                text: notificationText,
+                from: actorId,
+                sender_id: actorId,
+                senderName: companyName,
+                senderAvatar: org?.logo_url,
+                referenceId: orgId,
+                reference_id: orgId,
+                metadata: metadataPayload,
+                notification_id: notifRes.rows[0]?.notification_id,
+                created_at: notifRes.rows[0]?.created_at ? notifRes.rows[0].created_at.toISOString() : new Date().toISOString(),
+                is_read: false
+            });
+        }
+
+        try {
+            const { sendToUser } = require("../notification/notification.service");
+            if (typeof sendToUser === 'function') {
+                await sendToUser(newOwnerId, "Ownership Transferred", notificationText, {
+                    type: "company_ownership_transferred",
+                    orgId
+                });
+            }
+        } catch (pushErr) {
+            console.warn("[transferOwnership] Push notification skipped or failed:", pushErr.message);
+        }
 
         // 9. Emit Real-time Socket Events
         const socketPayload = {
