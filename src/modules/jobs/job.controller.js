@@ -836,8 +836,63 @@ exports.submitJob = async (req, res) => {
       [id, userId]
     );
 
+    // Notification: "Your job “[Job Title]” is now live."
+    const publishedJob = updated.rows[0];
+    const jobTitle = publishedJob.title || job.title;
+    const notificationText = `Your job ${jobTitle} is now live.`;
+    const metadataPayload = {
+      jobId: publishedJob.job_id,
+      job_id: publishedJob.job_id,
+      jobTitle,
+      companyName: publishedJob.company_name,
+      orgId: publishedJob.org_id || null,
+      org_id: publishedJob.org_id || null,
+      status: 'ACTIVE'
+    };
+
+    const notifRes = await client.query(
+      `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata, recipient_org_id)
+       VALUES ($1, $2, 'job_approved', $3, $4, $5, $6)
+       RETURNING notification_id, created_at`,
+      [userId, userId, notificationText, publishedJob.job_id, JSON.stringify(metadataPayload), publishedJob.org_id || null]
+    );
+
+    if (publishedJob.org_id) {
+      await client.query(
+        `INSERT INTO notifications (recipient_org_id, user_id, sender_id, type, text, reference_id, metadata)
+         VALUES ($1, NULL, $2, 'job_approved', $3, $4, $5)`,
+        [publishedJob.org_id, userId, notificationText, publishedJob.job_id, JSON.stringify(metadataPayload)]
+      );
+    }
+
     await client.query("COMMIT");
-    res.status(200).json({ message: "Job submitted for review", job: updated.rows[0] });
+    res.status(200).json({ message: "Job submitted for review", job: publishedJob });
+
+    // Real-time socket notification
+    try {
+      const socketService = require("../../core/infrastructure/socket.service");
+      const notifId = notifRes.rows[0]?.notification_id;
+      const notifCreatedAt = notifRes.rows[0]?.created_at ? notifRes.rows[0].created_at.toISOString() : new Date().toISOString();
+      const socketPayload = {
+        notification_id: notifId,
+        type: "job_approved",
+        text: notificationText,
+        sender_id: userId,
+        reference_id: publishedJob.job_id,
+        recipient_company_id: publishedJob.org_id || null,
+        recipient_org_id: publishedJob.org_id || null,
+        metadata: metadataPayload,
+        created_at: notifCreatedAt,
+        is_read: false
+      };
+
+      socketService.notifyUser(userId, "notification", socketPayload);
+      if (publishedJob.org_id) {
+        socketService.notifyOrg(publishedJob.org_id, "notification", socketPayload);
+      }
+    } catch (socketErr) {
+      console.error("Failed to emit job_approved notification:", socketErr);
+    }
   } catch (err) {
     await client.query("ROLLBACK");
     console.error(err);

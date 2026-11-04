@@ -133,6 +133,56 @@ exports.createOrganizationJob = async (req, res) => {
                 referenceId: job.job_id,
                 metadata: { job_title: title, location: location || null },
             }).catch(err => console.error("Job notification error:", err));
+
+            // Notification: "Your job “[Job Title]” is now live."
+            (async () => {
+                try {
+                    const notificationText = `Your job ${title} is now live.`;
+                    const metadataPayload = {
+                        jobId: job.job_id,
+                        job_id: job.job_id,
+                        jobTitle: title,
+                        companyName,
+                        orgId: companyId,
+                        org_id: companyId,
+                        status: 'ACTIVE'
+                    };
+
+                    const notifRes = await pool.query(
+                        `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata, recipient_org_id)
+                         VALUES ($1, $2, 'job_approved', $3, $4, $5, $6)
+                         RETURNING notification_id, created_at`,
+                        [userId, userId, notificationText, job.job_id, JSON.stringify(metadataPayload), companyId]
+                    );
+
+                    await pool.query(
+                        `INSERT INTO notifications (recipient_org_id, user_id, sender_id, type, text, reference_id, metadata)
+                         VALUES ($1, NULL, $2, 'job_approved', $3, $4, $5)`,
+                        [companyId, userId, notificationText, job.job_id, JSON.stringify(metadataPayload)]
+                    );
+
+                    const socketService = require("../../core/infrastructure/socket.service");
+                    const notifId = notifRes.rows[0]?.notification_id;
+                    const notifCreatedAt = notifRes.rows[0]?.created_at ? notifRes.rows[0].created_at.toISOString() : new Date().toISOString();
+                    const socketPayload = {
+                        notification_id: notifId,
+                        type: "job_approved",
+                        text: notificationText,
+                        sender_id: userId,
+                        reference_id: job.job_id,
+                        recipient_company_id: companyId,
+                        recipient_org_id: companyId,
+                        metadata: metadataPayload,
+                        created_at: notifCreatedAt,
+                        is_read: false
+                    };
+
+                    socketService.notifyUser(userId, "notification", socketPayload);
+                    socketService.notifyOrg(companyId, "notification", socketPayload);
+                } catch (notifErr) {
+                    console.error("Failed to dispatch job_approved notification in createOrganizationJob:", notifErr);
+                }
+            })();
         }
 
         res.status(201).json({
@@ -409,6 +459,59 @@ exports.updateOrganizationJob = async (req, res) => {
         );
 
         await client.query("COMMIT");
+
+        // Notification if job is published/active: "Your job “[Job Title]” is now live."
+        if (updatedJob.status === 'ACTIVE' && oldJobData.status !== 'ACTIVE') {
+            (async () => {
+                try {
+                    const jobTitle = updatedJob.title;
+                    const notificationText = `Your job ${jobTitle} is now live.`;
+                    const metadataPayload = {
+                        jobId: updatedJob.job_id,
+                        job_id: updatedJob.job_id,
+                        jobTitle,
+                        companyName: updatedJob.company_name,
+                        orgId: companyId,
+                        org_id: companyId,
+                        status: 'ACTIVE'
+                    };
+
+                    const notifRes = await pool.query(
+                        `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata, recipient_org_id)
+                         VALUES ($1, $2, 'job_approved', $3, $4, $5, $6)
+                         RETURNING notification_id, created_at`,
+                        [userId, userId, notificationText, updatedJob.job_id, JSON.stringify(metadataPayload), companyId]
+                    );
+
+                    await pool.query(
+                        `INSERT INTO notifications (recipient_org_id, user_id, sender_id, type, text, reference_id, metadata)
+                         VALUES ($1, NULL, $2, 'job_approved', $3, $4, $5)`,
+                        [companyId, userId, notificationText, updatedJob.job_id, JSON.stringify(metadataPayload)]
+                    );
+
+                    const socketService = require("../../core/infrastructure/socket.service");
+                    const notifId = notifRes.rows[0]?.notification_id;
+                    const notifCreatedAt = notifRes.rows[0]?.created_at ? notifRes.rows[0].created_at.toISOString() : new Date().toISOString();
+                    const socketPayload = {
+                        notification_id: notifId,
+                        type: "job_approved",
+                        text: notificationText,
+                        sender_id: userId,
+                        reference_id: updatedJob.job_id,
+                        recipient_company_id: companyId,
+                        recipient_org_id: companyId,
+                        metadata: metadataPayload,
+                        created_at: notifCreatedAt,
+                        is_read: false
+                    };
+
+                    socketService.notifyUser(userId, "notification", socketPayload);
+                    socketService.notifyOrg(companyId, "notification", socketPayload);
+                } catch (notifErr) {
+                    console.error("Failed to dispatch job_approved notification in updateOrganizationJob:", notifErr);
+                }
+            })();
+        }
 
         res.status(200).json({ message: "Job updated successfully", job: updatedJob });
     } catch (err) {
