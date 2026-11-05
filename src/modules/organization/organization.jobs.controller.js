@@ -51,6 +51,7 @@ exports.createOrganizationJob = async (req, res) => {
         const companyName = companyRes.rows[0].name;
 
         // 2. Insert job
+        const isLive = status === "ACTIVE";
         const jobRes = await client.query(
             `
       INSERT INTO jobs
@@ -59,10 +60,11 @@ exports.createOrganizationJob = async (req, res) => {
         description, salary_min, salary_max, job_type,
         work_mode, experience_min, experience_level,
         experience_max, industry, easy_apply, actively_hiring,
-        posted_as_company, status, expires_at, salary_currency, salary_period, salary_visibility
+        posted_as_company, status, expires_at, salary_currency, salary_period, salary_visibility,
+        published_at
       )
       VALUES
-      ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
+      ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23)
       RETURNING *
       `,
             [
@@ -70,7 +72,8 @@ exports.createOrganizationJob = async (req, res) => {
                 description, salary_min, salary_max, job_type,
                 work_mode, experience_min || null, experience_level,
                 experience_max || null, industry, easy_apply, actively_hiring,
-                true, status, expires_at || null, salary_currency, salary_period, salary_visibility
+                true, status, expires_at || null, salary_currency, salary_period, salary_visibility,
+                isLive ? new Date() : null
             ]
         );
 
@@ -264,7 +267,7 @@ exports.getOrganizationJobs = async (req, res) => {
         }
 
         if (cursor) {
-            conditions.push(`j.created_at < $${paramCount}`);
+            conditions.push(`COALESCE(j.published_at, j.created_at) < $${paramCount}`);
             params.push(new Date(cursor));
             paramCount++;
         }
@@ -286,12 +289,12 @@ exports.getOrganizationJobs = async (req, res) => {
                 o.slug AS company_slug,
                 (SELECT COUNT(*)::int FROM job_applications ja_count WHERE ja_count.job_id = j.job_id AND ja_count.current_status != 'Withdrawn') as applicants_count,
                 (SELECT COUNT(*)::int FROM job_applications ja_count WHERE ja_count.job_id = j.job_id AND ja_count.current_status = 'Shortlisted') as shortlisted_count,
-                (SELECT COUNT(*)::int FROM job_offers jo_count WHERE jo_count.job_id = j.job_id) as offers_count
+                (SELECT COUNT(*)::int FROM job_offers jo_count WHERE jo_count.job_id = j.job_id AND jo_count.status != 'withdrawn') as offers_count
             FROM jobs j
             LEFT JOIN active_users u ON j.recruiter_id = u.user_id
             LEFT JOIN organizations o ON j.org_id = o.org_id
             ${whereClause}
-            ORDER BY j.created_at DESC
+            ORDER BY COALESCE(j.published_at, j.created_at) DESC
             ${limitClause}
         `;
 
@@ -316,7 +319,7 @@ exports.getOrganizationJobs = async (req, res) => {
             const rows = result.rows;
             const hasMore = rows.length > Number(limit);
             const jobs = hasMore ? rows.slice(0, Number(limit)) : rows;
-            const nextCursor = jobs.length > 0 ? jobs[jobs.length - 1].created_at : null;
+            const nextCursor = jobs.length > 0 ? (jobs[jobs.length - 1].published_at || jobs[jobs.length - 1].created_at) : null;
             const counts = countsResult.rows[0] || { all: 0, active: 0, closed: 0, draft: 0, inReview: 0 };
 
             return res.status(200).json({
@@ -407,6 +410,7 @@ exports.updateOrganizationJob = async (req, res) => {
         }
 
         // 3. Update Job
+        const isPublishing = nextStatus === 'ACTIVE' && (oldJobData.status === 'DRAFT' || !oldJobData.published_at);
         const updateRes = await client.query(`
             UPDATE jobs
             SET title = COALESCE($1, title),
@@ -428,13 +432,21 @@ exports.updateOrganizationJob = async (req, res) => {
                 is_active = COALESCE($17, is_active),
                 experience_min = COALESCE($18, experience_min),
                 experience_max = COALESCE($19, experience_max),
+                published_at = CASE
+                    WHEN $21::boolean THEN NOW()
+                    ELSE published_at
+                END,
+                created_at = CASE
+                    WHEN $21::boolean AND status = 'DRAFT' THEN NOW()
+                    ELSE created_at
+                END,
                 updated_at = NOW()
             WHERE job_id = $20
             RETURNING *
         `, [
             title, location, description, salary_min, salary_max, salary_currency, salary_period, salary_visibility,
             job_type, work_mode, experience_level, industry, easy_apply, actively_hiring, status, expires_at, is_active,
-            experience_min, experience_max, jobId
+            experience_min, experience_max, jobId, isPublishing
         ]);
 
         const updatedJob = updateRes.rows[0];

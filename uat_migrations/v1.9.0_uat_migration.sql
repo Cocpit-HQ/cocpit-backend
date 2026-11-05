@@ -1,7 +1,7 @@
 -- ==============================================================================
 -- UAT Migration v1.9.0
 -- Target Database: cocpit_backend_uat (also applied to staging/production)
--- Prepared Date:  2026-10-30 (Updated 2026-11-03)
+-- Prepared Date:  2026-10-30 (Updated 2026-11-05)
 -- Description: 
 --   1. Mixed-Media Carousels (Images & Videos) support in post_media:
 --      Adds order_index, thumbnail_url, and duration_seconds columns,
@@ -23,6 +23,12 @@
 --      - Creates idx_user_resume_history_user_last_used index for instant lookup
 --        by applicant ordered by most recent use.
 --      - Backfills user_resume_history from existing job_applications.
+--   4. Job Publishing Timing Support (published_at):
+--      - Adds published_at TIMESTAMPTZ column to jobs table to track the exact
+--        moment a job listing transitions from draft to active/live.
+--      - Backfills published_at from created_at for existing ACTIVE jobs.
+--      - Creates idx_jobs_published_at and idx_jobs_coalesce_published_created
+--        indexes for chronological feed ranking, cursor pagination, and date filters.
 --
 -- Reference:
 --   - schema.sql (Lines 148-151, 475-487, 746-751, 830-842, 924-927, 1742-1748)
@@ -118,5 +124,25 @@ FROM job_applications
 WHERE resume_url IS NOT NULL
 GROUP BY applicant_id, resume_url
 ON CONFLICT (user_id, resume_url) DO NOTHING;
+
+-- ------------------------------------------------------------------------------
+-- 4. Job Publishing Timing Support (published_at)
+-- ------------------------------------------------------------------------------
+
+-- 4.1. Add published_at column to jobs table
+ALTER TABLE jobs 
+    ADD COLUMN IF NOT EXISTS published_at TIMESTAMPTZ NULL;
+
+-- 4.2. Backfill published_at for existing ACTIVE jobs from created_at
+UPDATE jobs 
+SET published_at = created_at 
+WHERE status = 'ACTIVE' AND published_at IS NULL;
+
+-- 4.3. Indexes for fast ordering and filtering by published timestamp
+CREATE INDEX IF NOT EXISTS idx_jobs_published_at 
+    ON jobs(published_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_jobs_coalesce_published_created 
+    ON jobs((COALESCE(published_at, created_at)) DESC);
 
 COMMIT;

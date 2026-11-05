@@ -5207,8 +5207,14 @@ exports.getNotifications = async (req, res) => {
         if (companyId) {
             queryParams.push(userId);
             query += `
-                (n.recipient_org_id = $1 OR (n.user_id = $2 AND n.type IN ('team_member_removed', 'job_approved', 'job_rejected', 'company_ownership_transferred')))
-                AND (n.user_id IS NULL OR n.type NOT IN ('member_role_updated', 'company_ownership_transferred') OR n.user_id = $2 OR n.recipient_org_id = $1)
+                (
+                    n.recipient_org_id = $1 
+                    OR (
+                        n.recipient_org_id IS NULL 
+                        AND COALESCE(NULLIF(n.metadata->>'org_id', ''), NULLIF(n.metadata->>'orgId', ''))::uuid = $1
+                    )
+                )
+                AND (n.user_id IS NULL OR n.user_id = $2)
                 AND NOT EXISTS (
                     SELECT 1
                     FROM blocks b
@@ -5218,18 +5224,9 @@ exports.getNotifications = async (req, res) => {
             `;
         } else {
             query += `
-                (
-                    n.user_id = $1
-                    OR (
-                        n.user_id IS NULL
-                        AND n.recipient_org_id IN (
-                            SELECT org_id FROM organization_members WHERE user_id = $1 AND status = 'ACTIVE'
-                            UNION
-                            SELECT org_id FROM organizations WHERE created_by = $1
-                        )
-                    )
-                )
-                AND (n.recipient_org_id IS NULL OR n.type IN ('team_member_removed', 'member_role_updated', 'company_ownership_transferred', 'job_approved', 'job_rejected', 'team_invite_declined', 'team_invite_accepted', 'company_follower'))
+                n.user_id = $1
+                AND n.recipient_org_id IS NULL
+                AND n.type != 'organization_post'
                 AND NOT EXISTS (
                     SELECT 1
                     FROM blocks b
@@ -5362,7 +5359,15 @@ exports.markNotificationRead = async (req, res) => {
         const result = await pool.query(
             `UPDATE notifications
              SET is_read = TRUE
-             WHERE notification_id = $1 AND user_id = $2 AND recipient_org_id IS NULL
+             WHERE notification_id = $1
+               AND (
+                 user_id = $2
+                 OR recipient_org_id IN (
+                     SELECT org_id FROM organization_members WHERE user_id = $2 AND status = 'ACTIVE'
+                     UNION
+                     SELECT org_id FROM organizations WHERE created_by = $2
+                 )
+               )
              RETURNING *`,
             [id, userId]
         );
@@ -5468,7 +5473,17 @@ exports.deleteNotification = async (req, res) => {
         }
 
         const result = await pool.query(
-            `DELETE FROM notifications WHERE notification_id = $1 AND user_id = $2 AND recipient_org_id IS NULL RETURNING notification_id`,
+            `DELETE FROM notifications
+             WHERE notification_id = $1
+               AND (
+                 user_id = $2
+                 OR recipient_org_id IN (
+                     SELECT org_id FROM organization_members WHERE user_id = $2 AND status = 'ACTIVE'
+                     UNION
+                     SELECT org_id FROM organizations WHERE created_by = $2
+                 )
+               )
+             RETURNING notification_id`,
             [id, userId]
         );
 

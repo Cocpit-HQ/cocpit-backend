@@ -111,6 +111,11 @@ Brings UAT database schema into alignment for Release 1.9.0 (Mixed Media Carouse
    - Creates `user_resume_history` table to store applicant reusable resumes.
    - Creates index `idx_user_resume_history_user_last_used ON user_resume_history(user_id, last_used_at DESC)`.
    - Backfills `user_resume_history` records from existing `job_applications`.
+7. **`jobs` table (`published_at`)**:
+   - Adds `published_at TIMESTAMPTZ` column to track actual publication timestamp (distinguishing live date from initial draft creation).
+   - Backfills `published_at` from `created_at` for all active jobs.
+   - Creates index `idx_jobs_published_at ON jobs(published_at DESC)`.
+   - Creates composite index `idx_jobs_coalesce_published_created ON jobs((COALESCE(published_at, created_at)) DESC)`.
 
 ---
 

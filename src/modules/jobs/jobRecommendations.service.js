@@ -153,7 +153,8 @@ function formatJobItem(row) {
     experience: formatExperience(row),
 
     // Timestamps
-    posted_at: getRelativeTime(row.created_at),
+    posted_at: getRelativeTime(row.published_at || row.created_at),
+    published_at: row.published_at || null,
     created_at: row.created_at,
     updated_at: row.updated_at,
     expires_at: row.expires_at,
@@ -233,11 +234,12 @@ function buildCommonEligibilityPredicate(userId, paramIndex = 1) {
         AND ja.current_status != 'Withdrawn'
     )`);
 
-    // Universal offer exclusion
+    // Universal offer exclusion (exclude non-withdrawn offers)
     conditions.push(`NOT EXISTS (
       SELECT 1 FROM job_offers jo 
       WHERE jo.job_id = j.job_id 
         AND jo.user_id = ${userParamIdx}
+        AND jo.status != 'withdrawn'
     )`);
 
     // Bi-directional block check
@@ -340,10 +342,10 @@ async function getFeaturedOpportunities(dbClient, userId, { limit = 10, cursor =
           -- Job Freshness (25 pts max)
           (
             CASE 
-              WHEN j.created_at >= NOW() - INTERVAL '24 HOURS' THEN 25
-              WHEN j.created_at >= NOW() - INTERVAL '3 DAYS' THEN 20
-              WHEN j.created_at >= NOW() - INTERVAL '7 DAYS' THEN 15
-              WHEN j.created_at >= NOW() - INTERVAL '14 DAYS' THEN 10
+              WHEN COALESCE(j.published_at, j.created_at) >= NOW() - INTERVAL '24 HOURS' THEN 25
+              WHEN COALESCE(j.published_at, j.created_at) >= NOW() - INTERVAL '3 DAYS' THEN 20
+              WHEN COALESCE(j.published_at, j.created_at) >= NOW() - INTERVAL '7 DAYS' THEN 15
+              WHEN COALESCE(j.published_at, j.created_at) >= NOW() - INTERVAL '14 DAYS' THEN 10
               ELSE 5
             END
           )
@@ -357,7 +359,7 @@ async function getFeaturedOpportunities(dbClient, userId, { limit = 10, cursor =
     )
     SELECT * FROM scored_jobs
     WHERE 1=1 ${cursorFilter}
-    ORDER BY quality_score DESC, saves_count DESC, created_at DESC, job_id DESC
+    ORDER BY quality_score DESC, saves_count DESC, COALESCE(published_at, created_at) DESC, job_id DESC
     LIMIT ${pLimit};
   `;
 
@@ -810,8 +812,8 @@ async function getFromNetwork(dbClient, userId, { limit = 10, cursor = null } = 
         COALESCE(ocs.primary_tier, 1) AS primary_tier,
         COALESCE(ocs.earliest_affiliation_date, j.created_at) AS affiliation_date,
         (CASE 
-          WHEN j.created_at >= NOW() - INTERVAL '14 DAYS' THEN 1 
-          WHEN j.created_at >= NOW() - INTERVAL '30 DAYS' THEN 2 
+          WHEN COALESCE(j.published_at, j.created_at) >= NOW() - INTERVAL '14 DAYS' THEN 1 
+          WHEN COALESCE(j.published_at, j.created_at) >= NOW() - INTERVAL '30 DAYS' THEN 2 
           ELSE 3 
         END) AS freshness_tier,
         (CASE WHEN dc_recruiter.connection_id IS NOT NULL THEN 1 ELSE 2 END) AS direct_recruiter_tier,
@@ -831,7 +833,7 @@ async function getFromNetwork(dbClient, userId, { limit = 10, cursor = null } = 
     )
     SELECT * FROM network_jobs
     WHERE 1=1 ${cursorFilter}
-    ORDER BY freshness_tier ASC, direct_recruiter_tier ASC, connection_count DESC, created_at DESC, job_id DESC
+    ORDER BY freshness_tier ASC, direct_recruiter_tier ASC, connection_count DESC, COALESCE(published_at, created_at) DESC, job_id DESC
     LIMIT ${pLimit};
   `;
 

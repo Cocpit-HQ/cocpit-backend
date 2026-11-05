@@ -171,9 +171,9 @@ exports.getAllJobs = async (req, res) => {
 
     let paramCount = nextIndex;
 
-    // Pagination (Cursor-based on created_at)
+    // Pagination (Cursor-based on published_at or created_at)
     if (cursor) {
-      conditions.push(`j.created_at < $${paramCount}`);
+      conditions.push(`COALESCE(j.published_at, j.created_at) < $${paramCount}`);
       params.push(new Date(cursor));
       paramCount++;
     }
@@ -207,9 +207,9 @@ exports.getAllJobs = async (req, res) => {
       LEFT JOIN organizations c ON j.org_id = c.org_id
       ${userId ? "LEFT JOIN job_saves js ON js.job_id = j.job_id AND js.user_id = $1" : ""}
       ${userId ? "LEFT JOIN job_applications ja ON ja.job_id = j.job_id AND ja.applicant_id = $1" : ""}
-      ${userId ? "LEFT JOIN job_offers jo ON jo.job_id = j.job_id AND jo.user_id = $1" : ""}
+      ${userId ? "LEFT JOIN job_offers jo ON jo.job_id = j.job_id AND jo.user_id = $1 AND jo.status != 'withdrawn'" : ""}
       ${whereClause}
-      ORDER BY j.created_at DESC
+      ORDER BY COALESCE(j.published_at, j.created_at) DESC
       ${limitClause}
     `;
 
@@ -260,7 +260,7 @@ exports.getRecommendations = async (req, res) => {
       LEFT JOIN organizations c ON j.org_id = c.org_id
       ${userId ? "LEFT JOIN job_saves js ON js.job_id = j.job_id AND js.user_id = $1" : ""}
       ${userId ? "LEFT JOIN job_applications ja ON ja.job_id = j.job_id AND ja.applicant_id = $1" : ""}
-      ${userId ? "LEFT JOIN job_offers jo ON jo.job_id = j.job_id AND jo.user_id = $1" : ""}
+      ${userId ? "LEFT JOIN job_offers jo ON jo.job_id = j.job_id AND jo.user_id = $1 AND jo.status != 'withdrawn'" : ""}
       WHERE j.is_active = TRUE AND j.status = 'ACTIVE' AND u.user_id IS NOT NULL AND (j.org_id IS NOT NULL OR u.is_deactivated = FALSE) AND (j.org_id IS NULL OR (c.is_deleted = FALSE AND c.is_deactivated = FALSE))
       ${userId ? "AND j.recruiter_id != $1" : ""}
       ${userId ? "AND (ja.application_id IS NULL OR ja.current_status = 'Withdrawn')" : ""}
@@ -432,7 +432,7 @@ exports.getJobById = async (req, res) => {
       ${userId ? 'LEFT JOIN job_applications ja ON ja.job_id = j.job_id AND ja.applicant_id = $2' : ''}
       ${userId ? 'LEFT JOIN organization_followers of ON of.org_id = j.org_id AND of.user_id = $2' : ''}
       ${userId ? 'LEFT JOIN followers uf ON uf.following_id = j.recruiter_id AND uf.follower_id = $2' : ''}
-      ${userId ? 'LEFT JOIN job_offers jo ON jo.job_id = j.job_id AND jo.user_id = $2' : ''}
+      ${userId ? 'LEFT JOIN job_offers jo ON jo.job_id = j.job_id AND jo.user_id = $2 AND jo.status != \'withdrawn\'' : ''}
       WHERE j.job_id = $1
       AND u.user_id IS NOT NULL 
       AND (j.org_id IS NOT NULL OR u.is_deactivated = FALSE)
@@ -808,7 +808,7 @@ exports.submitJob = async (req, res) => {
     let updated;
     if (!job.ai_extracted_requirements) {
       const extracted = await extractRequirementsFromJDText(job.description);
-      const setClauses = ["status = 'ACTIVE'", "ai_extracted_requirements = $2", "created_at = NOW()"];
+      const setClauses = ["status = 'ACTIVE'", "ai_extracted_requirements = $2", "published_at = NOW()", "created_at = NOW()"];
       const params = [id, JSON.stringify(extracted)];
       // Only set experience_min from extraction if the job doesn't already have one
       if (extracted.experience_min !== null && (job.experience_min === null || job.experience_min === undefined)) {
@@ -821,7 +821,7 @@ exports.submitJob = async (req, res) => {
       );
     } else {
       updated = await client.query(
-        `UPDATE jobs SET status = 'ACTIVE', created_at = NOW() WHERE job_id = $1 RETURNING *`,
+        `UPDATE jobs SET status = 'ACTIVE', published_at = NOW(), created_at = NOW() WHERE job_id = $1 RETURNING *`,
         [id]
       );
     }
@@ -984,7 +984,11 @@ const performLifecycleAction = async (req, res, actionName, targetStatus, allowe
     }
 
     const updated = await client.query(
-      `UPDATE jobs SET status = $1 WHERE job_id = $2 RETURNING *`,
+      `UPDATE jobs 
+       SET status = $1,
+           published_at = CASE WHEN $1 = 'ACTIVE' AND published_at IS NULL THEN NOW() ELSE published_at END,
+           created_at = CASE WHEN $1 = 'ACTIVE' AND (status = 'DRAFT' OR status = 'UNDER_REVIEW') THEN NOW() ELSE created_at END
+       WHERE job_id = $2 RETURNING *`,
       [targetStatus, id]
     );
 
@@ -1717,7 +1721,7 @@ exports.getMySavedJobs = async (req, res) => {
       LEFT JOIN active_users u ON j.recruiter_id = u.user_id
       LEFT JOIN organizations c ON j.org_id = c.org_id
       LEFT JOIN job_applications ja ON ja.job_id = j.job_id AND ja.applicant_id = $1
-      LEFT JOIN job_offers jo ON jo.job_id = j.job_id AND jo.user_id = $1
+      LEFT JOIN job_offers jo ON jo.job_id = j.job_id AND jo.user_id = $1 AND jo.status != 'withdrawn'
       WHERE js.user_id = $1 AND j.is_active = TRUE AND u.user_id IS NOT NULL AND (j.org_id IS NOT NULL OR u.is_deactivated = FALSE) AND (j.org_id IS NULL OR (c.is_deleted = FALSE AND c.is_deactivated = FALSE))
         AND NOT EXISTS (
           SELECT 1 FROM blocks b
@@ -1898,7 +1902,7 @@ exports.getMyApplications = async (req, res) => {
         JOIN jobs j ON ja.job_id = j.job_id
         LEFT JOIN users u ON j.recruiter_id = u.user_id
         LEFT JOIN job_saves js ON j.job_id = js.job_id AND js.user_id = $1
-        LEFT JOIN job_offers jo ON j.job_id = jo.job_id AND jo.user_id = $1
+        LEFT JOIN job_offers jo ON j.job_id = jo.job_id AND jo.user_id = $1 AND jo.status != 'withdrawn'
         WHERE ja.applicant_id = $1 AND ja.current_status != 'Withdrawn' AND j.is_active = TRUE
     `;
 
@@ -2008,7 +2012,7 @@ exports.getMyJobs = async (req, res) => {
         c.slug AS company_slug,
         (SELECT COUNT(*)::int FROM job_applications ja_count WHERE ja_count.job_id = j.job_id AND ja_count.current_status != 'Withdrawn') as applicants_count,
         (SELECT COUNT(*)::int FROM job_applications ja_count WHERE ja_count.job_id = j.job_id AND ja_count.current_status = 'Shortlisted') as shortlisted_count,
-        (SELECT COUNT(*)::int FROM job_offers jo_count WHERE jo_count.job_id = j.job_id) as offers_count
+        (SELECT COUNT(*)::int FROM job_offers jo_count WHERE jo_count.job_id = j.job_id AND jo_count.status != 'withdrawn') as offers_count
       FROM jobs j
       LEFT JOIN active_users u ON j.recruiter_id = u.user_id
       LEFT JOIN organizations c ON j.org_id = c.org_id
@@ -2100,7 +2104,7 @@ exports.getMyJobs = async (req, res) => {
         fromDate = new Date(new Date().setMonth(new Date().getMonth() - 1));
       }
       if (fromDate) {
-        query += ` AND j.created_at >= $${paramCount}`;
+        query += ` AND COALESCE(j.published_at, j.created_at) >= $${paramCount}`;
         params.push(fromDate);
         paramCount++;
       }
@@ -2118,12 +2122,12 @@ exports.getMyJobs = async (req, res) => {
 
     // Cursor-based pagination
     if (cursor) {
-      query += ` AND j.created_at < $${paramCount}`;
+      query += ` AND COALESCE(j.published_at, j.created_at) < $${paramCount}`;
       params.push(new Date(cursor));
       paramCount++;
     }
 
-    query += ` ORDER BY j.created_at DESC`;
+    query += ` ORDER BY COALESCE(j.published_at, j.created_at) DESC`;
 
     // Fetch limit + 1 to determine hasMore
     const fetchLimit = Number(limit) + 1;
@@ -2152,7 +2156,7 @@ exports.getMyJobs = async (req, res) => {
     const rows = result.rows;
     const hasMore = rows.length > Number(limit);
     const jobs = hasMore ? rows.slice(0, Number(limit)) : rows;
-    const nextCursor = jobs.length > 0 ? jobs[jobs.length - 1].created_at : null;
+    const nextCursor = jobs.length > 0 ? (jobs[jobs.length - 1].published_at || jobs[jobs.length - 1].created_at) : null;
     const counts = countsResult.rows[0] || { all: 0, active: 0, closed: 0, draft: 0, inReview: 0 };
 
     res.json({

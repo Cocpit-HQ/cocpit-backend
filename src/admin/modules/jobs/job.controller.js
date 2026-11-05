@@ -58,6 +58,9 @@ exports.getJobs = async (req, res) => {
         jobs.ai_extracted_requirements,
         jobs.moderation_status,
         jobs.rejection_reason,
+        jobs.published_at,
+        jobs.created_at,
+        jobs.updated_at,
         u.full_name AS recruiter_name,
         u.email AS recruiter_email,
         o.name AS organization_name
@@ -65,7 +68,7 @@ exports.getJobs = async (req, res) => {
       LEFT JOIN users u ON jobs.recruiter_id = u.user_id
       LEFT JOIN organizations o ON jobs.org_id = o.org_id
       ${whereClause}
-      ORDER BY jobs.created_at DESC
+      ORDER BY COALESCE(jobs.published_at, jobs.created_at) DESC
       LIMIT $${queryParams.length + 1} OFFSET $${queryParams.length + 2}
     `;
 
@@ -109,7 +112,9 @@ exports.moderateJob = async (req, res) => {
 
     const query = `
       UPDATE jobs 
-      SET status = $1, moderation_status = $2, is_active = $3, rejection_reason = $5
+      SET status = $1, moderation_status = $2, is_active = $3, rejection_reason = $5,
+          published_at = CASE WHEN $1 = 'ACTIVE' AND published_at IS NULL THEN NOW() ELSE published_at END,
+          created_at = CASE WHEN $1 = 'ACTIVE' AND (status = 'DRAFT' OR status = 'UNDER_REVIEW') THEN NOW() ELSE created_at END
       WHERE job_id = $4
       RETURNING *
     `;

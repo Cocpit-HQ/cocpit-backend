@@ -140,6 +140,22 @@ async function runMigration() {
     `);
     console.log('9. Index idx_user_resume_history:       ', resumeIdxRes.rowCount > 0 ? 'PASS' : 'FAIL');
 
+    // 10. Check jobs.published_at column and index
+    const jobPubColRes = await client.query(`
+      SELECT column_name 
+      FROM information_schema.columns 
+      WHERE table_name = 'jobs' AND column_name = 'published_at'
+    `);
+    const hasPublishedAtCol = jobPubColRes.rowCount > 0;
+    console.log('10. Column jobs.published_at:           ', hasPublishedAtCol ? 'PASS' : 'FAIL');
+
+    const jobPubIdxRes = await client.query(`
+      SELECT indexname FROM pg_indexes 
+      WHERE tablename = 'jobs' AND indexname = 'idx_jobs_published_at'
+    `);
+    const hasPublishedAtIdx = jobPubIdxRes.rowCount > 0;
+    console.log('    Index idx_jobs_published_at:        ', hasPublishedAtIdx ? 'PASS' : 'FAIL');
+
     const allPassed =
       foundColumns.length === 3 &&
       indexRes.rowCount > 0 &&
@@ -149,10 +165,12 @@ async function runMigration() {
       saveIdxRes.rowCount > 0 &&
       actIdxRes.rowCount > 0 &&
       hasResumeTable &&
-      resumeIdxRes.rowCount > 0;
+      resumeIdxRes.rowCount > 0 &&
+      hasPublishedAtCol &&
+      hasPublishedAtIdx;
 
     if (allPassed) {
-      console.log('\nVerification PASS: All v1.9.0 columns, tables, and recommendation indexes verified successfully.');
+      console.log('\nVerification PASS: All v1.9.0 columns, tables, recommendation indexes, and job published_at support verified successfully.');
     } else {
       console.error('\nVerification FAIL: One or more v1.9.0 columns, tables, or indexes missing.');
       process.exit(1);

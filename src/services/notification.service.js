@@ -24,6 +24,8 @@ const CATEGORY_COLUMN_MAP = {
  * @param {object} notificationData - { type, text, referenceId, metadata }
  */
 async function notifyOrgFollowers(orgId, category, notificationData) {
+    // Disabled: Do not send organization follower notifications to personal feeds
+    return;
     const column = CATEGORY_COLUMN_MAP[category];
     if (!column) {
         console.error(`notifyOrgFollowers: Unknown category "${category}"`);
