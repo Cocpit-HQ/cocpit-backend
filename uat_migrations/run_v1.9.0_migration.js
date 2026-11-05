@@ -124,6 +124,22 @@ async function runMigration() {
     `);
     console.log('7. Index idx_activity_job_views:        ', actIdxRes.rowCount > 0 ? 'PASS' : 'FAIL');
 
+    // 8. Check user_resume_history table
+    const resumeTableRes = await client.query(`
+      SELECT table_name 
+      FROM information_schema.tables 
+      WHERE table_name = 'user_resume_history'
+    `);
+    const hasResumeTable = resumeTableRes.rowCount > 0;
+    console.log('8. Table user_resume_history:           ', hasResumeTable ? 'PASS' : 'FAIL');
+
+    // 9. Check idx_user_resume_history_user_last_used index
+    const resumeIdxRes = await client.query(`
+      SELECT indexname FROM pg_indexes 
+      WHERE tablename = 'user_resume_history' AND indexname = 'idx_user_resume_history_user_last_used'
+    `);
+    console.log('9. Index idx_user_resume_history:       ', resumeIdxRes.rowCount > 0 ? 'PASS' : 'FAIL');
+
     const allPassed =
       foundColumns.length === 3 &&
       indexRes.rowCount > 0 &&
@@ -131,12 +147,14 @@ async function runMigration() {
       foundExpIndexes.length === 2 &&
       jobIdxRes.rowCount > 0 &&
       saveIdxRes.rowCount > 0 &&
-      actIdxRes.rowCount > 0;
+      actIdxRes.rowCount > 0 &&
+      hasResumeTable &&
+      resumeIdxRes.rowCount > 0;
 
     if (allPassed) {
       console.log('\nVerification PASS: All v1.9.0 columns, tables, and recommendation indexes verified successfully.');
     } else {
-      console.error('\nVerification FAIL: One or more v1.9.0 columns or indexes missing.');
+      console.error('\nVerification FAIL: One or more v1.9.0 columns, tables, or indexes missing.');
       process.exit(1);
     }
   } catch (err) {

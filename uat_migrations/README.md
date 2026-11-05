@@ -88,7 +88,7 @@ Brings UAT database schema into alignment for Release 1.8.0 (`organization_notif
 ---
 
 ### `v1.9.0_uat_migration.sql`
-Brings UAT database schema into alignment for Release 1.9.0 (Mixed Media Carousel: Images & Videos support, and Jobs Explore & Recommendation System).
+Brings UAT database schema into alignment for Release 1.9.0 (Mixed Media Carousel: Images & Videos support, Jobs Explore & Recommendation System, and Reusable Resume History).
 
 #### Changes Included:
 1. **`post_media` table**:
@@ -107,6 +107,10 @@ Brings UAT database schema into alignment for Release 1.9.0 (Mixed Media Carouse
    - Creates reverse lookup index `idx_job_saves_job_id ON job_saves(job_id)` to optimize `saves_count` aggregation queries used by the Featured opportunities quality heuristic.
 5. **`user_activity_log` table**:
    - Creates targeted partial index `idx_activity_job_views ON user_activity_log(user_id, entity_id, created_at DESC) WHERE action_type = 'view_job' AND entity_type = 'job'` for sub-millisecond retrieval of candidate Recently Viewed jobs.
+6. **`user_resume_history` table**:
+   - Creates `user_resume_history` table to store applicant reusable resumes.
+   - Creates index `idx_user_resume_history_user_last_used ON user_resume_history(user_id, last_used_at DESC)`.
+   - Backfills `user_resume_history` records from existing `job_applications`.
 
 ---
 
@@ -130,33 +134,6 @@ psql -h 192.168.1.50 -U swaroop -d cocpit_backend_uat -f uat_migrations/v1.9.0_u
 ```
 
 ---
-
-## How to Run
-
-### Running v1.9.0 Migration
-
-#### Option 1: Using npm script (recommended)
-```bash
-npm run migrate:uat:v1.9.0
-```
-
-#### Option 2: Using Node runner directly
-```bash
-node uat_migrations/run_v1.9.0_migration.js
-```
-
-#### Option 3: Using `psql` directly
-```bash
-psql -h 192.168.1.50 -U swaroop -d cocpit_backend_uat -f uat_migrations/v1.9.0_uat_migration.sql
-```
-
----
-
-### Running v1.8.0 Migration
-
----
-
-## How to Run
 
 ### Running v1.8.0 Migration
 
