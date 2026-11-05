@@ -129,6 +129,51 @@ exports.moderateJob = async (req, res) => {
       `Moderated job "${job.title}" by "${job.company_name}": status set to ${modStatusVal}`
     );
 
+    // Send notifications to job recruiter/owner
+    if (job.recruiter_id) {
+      try {
+        const isApproved = modStatusVal === 'APPROVED';
+        const notifType = isApproved ? 'job_approved' : 'job_rejected';
+        const notifText = isApproved
+          ? `Your job ${job.title} is now live.`
+          : `Your job ${job.title} wasn’t approved. Reason: ${rejection_reason || 'Not specified'}.`;
+
+        const metadataPayload = {
+          jobId: job.job_id,
+          job_id: job.job_id,
+          jobTitle: job.title,
+          companyName: job.company_name,
+          orgId: job.org_id,
+          org_id: job.org_id,
+          status: modStatusVal,
+          rejectionReason: rejection_reason
+        };
+
+        const notifRes = await req.db.query(
+          `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata)
+           VALUES ($1, $2, $3, $4, $5, $6)
+           RETURNING notification_id, created_at`,
+          [job.recruiter_id, req.user.userId, notifType, notifText, job.job_id, JSON.stringify(metadataPayload)]
+        );
+
+        const socketService = require('../../../core/infrastructure/socket.service');
+        if (socketService && typeof socketService.notifyUser === 'function') {
+          socketService.notifyUser(job.recruiter_id, "notification", {
+            notification_id: notifRes.rows[0]?.notification_id,
+            type: notifType,
+            text: notifText,
+            sender_id: req.user.userId,
+            reference_id: job.job_id,
+            metadata: metadataPayload,
+            created_at: notifRes.rows[0]?.created_at || new Date().toISOString(),
+            is_read: false
+          });
+        }
+      } catch (notifErr) {
+        console.error("Failed to dispatch job moderation notification:", notifErr);
+      }
+    }
+
     res.json({
       message: `Job successfully ${modStatusVal.toLowerCase()}`,
       job

@@ -97,6 +97,9 @@ const hasActorPermission = (permissions = [], permission) => {
 };
 
 async function getOrganizationMembership(orgId, userId, queryable = pool) {
+    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(orgId);
+    const whereClause = isUuid ? "cm.org_id = $1 AND cm.user_id = $2" : "o.slug = $1 AND cm.user_id = $2";
+
     const result = await queryable.query(
         `SELECT
             cm.org_id,
@@ -110,11 +113,12 @@ async function getOrganizationMembership(orgId, userId, queryable = pool) {
             cr.is_active AS role_is_active,
             o.is_deactivated,
             o.is_deleted,
-            o.created_by
+            o.created_by,
+            o.slug
          FROM organization_members cm
          LEFT JOIN organization_roles cr ON cm.role_id = cr.role_id
          JOIN organizations o ON cm.org_id = o.org_id
-         WHERE cm.org_id = $1 AND cm.user_id = $2`,
+         WHERE ${whereClause}`,
         [orgId, userId]
     );
 
@@ -167,11 +171,14 @@ function buildOrganizationActor(orgId, userId, member, source) {
     const permissions = (Array.isArray(rawPermissions) ? rawPermissions : [])
         .map(p => String(p).toUpperCase().trim());
 
+    const canonicalOrgId = member.org_id || orgId;
+
     return {
         type: "ORGANIZATION",
-        id: orgId,
+        id: canonicalOrgId,
         userId,
-        orgId,
+        orgId: canonicalOrgId,
+        slug: member.slug || null,
         roleId: member.role_id || null,
         permissions,
         roleName: member.role_name,
@@ -187,10 +194,12 @@ async function resolveActorContextForRequest(req) {
 
     try {
         const orgsRes = await pool.query(
-            "SELECT org_id FROM organization_members WHERE user_id = $1 AND status = 'ACTIVE'",
+            "SELECT cm.org_id, o.slug FROM organization_members cm JOIN organizations o ON cm.org_id = o.org_id WHERE cm.user_id = $1 AND cm.status = 'ACTIVE'",
             [userId]
         );
         req.userOrganizations = orgsRes.rows.map(r => r.org_id);
+        req.userOrganizationSlugs = orgsRes.rows.map(r => r.slug).filter(Boolean);
+        req.userOrganizationMap = new Map(orgsRes.rows.map(r => [r.slug, r.org_id]));
     } catch (e) {
         console.error("Failed to pre-fetch user organizations:", e);
         req.userOrganizations = [];
