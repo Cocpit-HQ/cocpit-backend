@@ -160,6 +160,14 @@ CREATE INDEX IF NOT EXISTS idx_jobs_published_at
 CREATE INDEX IF NOT EXISTS idx_jobs_coalesce_published_created 
     ON jobs((COALESCE(published_at, created_at)) DESC);
 
+-- 4.4. Add actively_hiring column and index for Company Search actively hiring filter
+ALTER TABLE jobs 
+    ADD COLUMN IF NOT EXISTS actively_hiring BOOLEAN DEFAULT false;
+
+CREATE INDEX IF NOT EXISTS idx_jobs_actively_hiring 
+    ON jobs(org_id, actively_hiring) 
+    WHERE (status = 'ACTIVE' OR is_active = TRUE);
+
 -- ------------------------------------------------------------------------------
 -- 5. Global Search Trigram Indexing (pg_trgm)
 -- ------------------------------------------------------------------------------
@@ -236,7 +244,30 @@ CREATE TABLE IF NOT EXISTS industries_master (
 
 CREATE INDEX IF NOT EXISTS idx_industries_name ON industries_master (industry_name);
 
--- 7.3. Profiles: Add working_industry and work_mode for people filtering
+-- 7.3. Organizations: Add institution fields & refresh active_organizations view
+ALTER TABLE organizations 
+    ADD COLUMN IF NOT EXISTS entity_type VARCHAR(20) DEFAULT 'COMPANY',
+    ADD COLUMN IF NOT EXISTS institution_type VARCHAR(50),
+    ADD COLUMN IF NOT EXISTS established_year INTEGER,
+    ADD COLUMN IF NOT EXISTS campus_location VARCHAR(255),
+    ADD COLUMN IF NOT EXISTS verified_edu BOOLEAN DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS auto_verify_domains VARCHAR(255)[] DEFAULT '{}';
+
+-- Idempotent backfill: fix institution_type for existing INSTITUTION records
+UPDATE organizations
+SET institution_type = LOWER(TRIM(industry)),
+    industry = NULL
+WHERE entity_type = 'INSTITUTION'
+  AND institution_type IS NULL
+  AND industry IS NOT NULL
+  AND TRIM(industry) != '';
+
+-- Recreate active_organizations view to expose the newly added institution columns
+CREATE OR REPLACE VIEW active_organizations AS 
+SELECT * FROM organizations 
+WHERE (is_deleted IS FALSE OR is_deleted IS NULL);
+
+-- 7.4. Profiles: Add working_industry and work_mode for people filtering
 ALTER TABLE profiles 
     ADD COLUMN IF NOT EXISTS working_industry TEXT;
 
@@ -250,8 +281,84 @@ END $$;
 ALTER TABLE profiles 
     ADD COLUMN IF NOT EXISTS work_mode job_work_mode;
 
--- 7.4. Jobs: Allow drafts to be created without industry
+-- 7.5. Jobs: Allow drafts to be created without industry
 ALTER TABLE jobs 
     ALTER COLUMN industry DROP NOT NULL;
+
+-- 7.6. Master Data Seeding: Initial Job Roles (from seedRoles.js)
+INSERT INTO job_roles_master (role_name, category) VALUES
+    ('Founder', 'Leadership'),
+    ('CEO', 'Leadership'),
+    ('CTO', 'Leadership'),
+    ('COO', 'Leadership'),
+    ('Director', 'Management'),
+    ('Manager', 'Management'),
+    ('Executive', 'Management'),
+    ('Software Engineer', 'Engineering'),
+    ('Frontend Developer', 'Engineering'),
+    ('Backend Developer', 'Engineering'),
+    ('Full Stack Developer', 'Engineering'),
+    ('Mobile Developer', 'Engineering'),
+    ('Data Scientist', 'Data'),
+    ('Data Analyst', 'Data'),
+    ('Machine Learning Engineer', 'Engineering'),
+    ('Product Manager', 'Product'),
+    ('Project Manager', 'Management'),
+    ('UI/UX Designer', 'Design'),
+    ('Product Designer', 'Design'),
+    ('Graphic Designer', 'Design'),
+    ('Marketing Manager', 'Marketing'),
+    ('Digital Marketing Specialist', 'Marketing'),
+    ('Sales Representative', 'Sales'),
+    ('Account Executive', 'Sales'),
+    ('Customer Success Manager', 'Customer Support'),
+    ('Human Resources Manager', 'HR'),
+    ('Recruiter', 'HR'),
+    ('Financial Analyst', 'Finance'),
+    ('Accountant', 'Finance'),
+    ('Business Analyst', 'Business'),
+    ('DevOps Engineer', 'Engineering'),
+    ('System Administrator', 'IT'),
+    ('Technical Support Specialist', 'IT')
+ON CONFLICT (role_name) DO NOTHING;
+
+-- 7.7. Master Data Seeding: Initial Industries (from seedIndustries.js)
+INSERT INTO industries_master (industry_name) VALUES
+    ('Information Technology and Services'),
+    ('Computer Software'),
+    ('Software Development'),
+    ('Internet'),
+    ('Financial Services'),
+    ('Banking'),
+    ('Hospital & Health Care'),
+    ('Education Management'),
+    ('Higher Education'),
+    ('E-Learning'),
+    ('Marketing and Advertising'),
+    ('Management Consulting'),
+    ('Human Resources'),
+    ('Staffing and Recruiting'),
+    ('Design'),
+    ('Graphic Design'),
+    ('Media Production'),
+    ('Telecommunications'),
+    ('Automotive'),
+    ('Real Estate'),
+    ('Retail'),
+    ('Hospitality'),
+    ('Accounting'),
+    ('Civil Engineering'),
+    ('Mechanical or Industrial Engineering'),
+    ('Electrical/Electronic Manufacturing'),
+    ('Pharmaceuticals'),
+    ('Biotechnology'),
+    ('Logistics and Supply Chain'),
+    ('Insurance'),
+    ('Venture Capital & Private Equity'),
+    ('Law Practice'),
+    ('Legal Services'),
+    ('Non-Profit Organization Management'),
+    ('Other')
+ON CONFLICT (industry_name) DO NOTHING;
 
 COMMIT;

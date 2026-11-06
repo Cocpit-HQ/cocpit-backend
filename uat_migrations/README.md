@@ -111,11 +111,26 @@ Brings UAT database schema into alignment for Release 1.9.0 (Mixed Media Carouse
    - Creates `user_resume_history` table to store applicant reusable resumes.
    - Creates index `idx_user_resume_history_user_last_used ON user_resume_history(user_id, last_used_at DESC)`.
    - Backfills `user_resume_history` records from existing `job_applications`.
-7. **`jobs` table (`published_at`)**:
+7. **`jobs` table (`published_at` & `actively_hiring`)**:
    - Adds `published_at TIMESTAMPTZ` column to track actual publication timestamp (distinguishing live date from initial draft creation).
    - Backfills `published_at` from `created_at` for all active jobs.
    - Creates index `idx_jobs_published_at ON jobs(published_at DESC)`.
    - Creates composite index `idx_jobs_coalesce_published_created ON jobs((COALESCE(published_at, created_at)) DESC)`.
+   - Adds `actively_hiring BOOLEAN DEFAULT false` column and index `idx_jobs_actively_hiring` for Company Search filter.
+8. **`organizations` table (Institution Fields & View Refresh)**:
+   - Adds `entity_type`, `institution_type`, `established_year`, `campus_location`, `verified_edu`, `auto_verify_domains` columns.
+   - Backfills `institution_type` for existing `INSTITUTION` records and refreshes `active_organizations` view.
+9. **Global Search Engine & Trigram Indexes**:
+   - Ensures `pg_trgm` extension.
+   - Creates GIN trigram indexes on `users` (`full_name`, `account_name`), `organizations` (`name`), `jobs` (`title`, `company_name`), and public `posts` (`content`).
+10. **Hashtags Global Search & Multi-Mode Ranking Indexes**:
+    - Creates GIN trigram index on `hashtags.tag`.
+    - Creates composite B-Tree indexes on `hashtags` (`posts_count`, `usage_count`, `created_at`, `last_used_at`).
+11. **Search Filter Master Tables & Canonical Seeds**:
+    - Creates `job_roles_master` and `industries_master` reference tables.
+    - Seeds initial canonical job roles and industries.
+    - Adds `profiles.working_industry` and `profiles.work_mode`.
+    - Relaxes `jobs.industry` NOT NULL constraint to support draft listings.
 
 ---
 

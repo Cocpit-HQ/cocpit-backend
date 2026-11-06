@@ -279,7 +279,7 @@ CREATE INDEX IF NOT EXISTS idx_activity_job_views
     ON user_activity_log(user_id, entity_id, created_at DESC) 
     WHERE action_type = 'view_job' AND entity_type = 'job';
 
--- 24. jobs: Add published_at column and indexes for job publishing timing
+-- 24. jobs: Add published_at column and indexes for job publishing timing & actively hiring
 ALTER TABLE jobs 
     ADD COLUMN IF NOT EXISTS published_at TIMESTAMPTZ NULL;
 
@@ -289,7 +289,28 @@ CREATE INDEX IF NOT EXISTS idx_jobs_published_at
 CREATE INDEX IF NOT EXISTS idx_jobs_coalesce_published_created 
     ON jobs((COALESCE(published_at, created_at)) DESC);
 
--- 25. Reference Tables: Job Roles & Industries Master
+ALTER TABLE jobs 
+    ADD COLUMN IF NOT EXISTS actively_hiring BOOLEAN DEFAULT false;
+
+CREATE INDEX IF NOT EXISTS idx_jobs_actively_hiring 
+    ON jobs(org_id, actively_hiring) 
+    WHERE (status = 'ACTIVE' OR is_active = TRUE);
+
+-- 25. user_resume_history: Reusable Resume History table & indexes
+CREATE TABLE IF NOT EXISTS user_resume_history (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    resume_url TEXT NOT NULL,
+    resume_file_name TEXT DEFAULT 'Resume.pdf',
+    created_at TIMESTAMPTZ DEFAULT now(),
+    last_used_at TIMESTAMPTZ DEFAULT now(),
+    UNIQUE(user_id, resume_url)
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_resume_history_user_last_used 
+    ON user_resume_history(user_id, last_used_at DESC);
+
+-- 26. Reference Tables: Job Roles & Industries Master
 CREATE TABLE IF NOT EXISTS job_roles_master (
     role_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     role_name VARCHAR(255) UNIQUE NOT NULL,
@@ -307,7 +328,20 @@ CREATE TABLE IF NOT EXISTS industries_master (
 
 CREATE INDEX IF NOT EXISTS idx_industries_name ON industries_master (industry_name);
 
--- 26. profiles: Add working_industry & work_mode for people filtering
+-- 27. organizations: Institution fields & active_organizations view refresh
+ALTER TABLE organizations 
+    ADD COLUMN IF NOT EXISTS entity_type VARCHAR(20) DEFAULT 'COMPANY',
+    ADD COLUMN IF NOT EXISTS institution_type VARCHAR(50),
+    ADD COLUMN IF NOT EXISTS established_year INTEGER,
+    ADD COLUMN IF NOT EXISTS campus_location VARCHAR(255),
+    ADD COLUMN IF NOT EXISTS verified_edu BOOLEAN DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS auto_verify_domains VARCHAR(255)[] DEFAULT '{}';
+
+CREATE OR REPLACE VIEW active_organizations AS 
+SELECT * FROM organizations 
+WHERE (is_deleted IS FALSE OR is_deleted IS NULL);
+
+-- 28. profiles: Add working_industry & work_mode for people filtering
 ALTER TABLE profiles 
     ADD COLUMN IF NOT EXISTS working_industry TEXT;
 
@@ -324,7 +358,7 @@ ALTER TABLE profiles
 ALTER TABLE jobs 
     ALTER COLUMN industry DROP NOT NULL;
 
--- 27. Global Search Engine & Trigram Indexes (pg_trgm)
+-- 29. Global Search Engine & Trigram Indexes (pg_trgm)
 CREATE EXTENSION IF NOT EXISTS pg_trgm;
 
 CREATE INDEX IF NOT EXISTS idx_users_full_name_trgm 
@@ -348,7 +382,7 @@ CREATE INDEX IF NOT EXISTS idx_posts_content_trgm
       AND is_active = TRUE 
       AND visibility = 'public';
 
--- 28. Hashtags Global Search & Multi-Mode Ranking Indexes
+-- 30. Hashtags Global Search & Multi-Mode Ranking Indexes
 CREATE INDEX IF NOT EXISTS idx_hashtags_tag_trgm 
     ON hashtags USING GIN (tag gin_trgm_ops);
 

@@ -10,7 +10,17 @@ const { Pool } = require('pg');
 const path = require('path');
 require('dotenv').config({ path: path.resolve(__dirname, '../.env') });
 
-const pool = require('../src/core/db/pool');
+const targetDb = process.env.UAT_DB_NAME || 'cocpit_backend_uat';
+
+const pool = new Pool({
+  connectionString: process.env.UAT_DATABASE_URL,
+  host: process.env.UAT_DB_HOST || process.env.DB_HOST || 'localhost',
+  port: process.env.UAT_DB_PORT ? Number(process.env.UAT_DB_PORT) : (process.env.DB_PORT ? Number(process.env.DB_PORT) : 5432),
+  user: process.env.UAT_DB_USER || process.env.DB_USER,
+  password: process.env.UAT_DB_PASSWORD || process.env.DB_PASSWORD,
+  database: targetDb,
+  connectionTimeoutMillis: 10000,
+});
 
 const INDEX_DEFINITIONS = [
   {
