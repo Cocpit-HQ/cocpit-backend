@@ -69,9 +69,16 @@ const sendOfferSchema = z.object({
   }),
 });
 
+const applyJobSchema = z.object({
+  body: z.object({
+    cover_note: z.string().max(1000, "Note cannot exceed 1,000 characters").optional().nullable(),
+  }).passthrough(),
+});
+
 module.exports = {
   createDraftSchema,
   updateDraftSchema,
   submitJobSchema,
   sendOfferSchema,
+  applyJobSchema,
 };
