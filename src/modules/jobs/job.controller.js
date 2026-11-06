@@ -1103,10 +1103,18 @@ exports.applyJob = async (req, res) => {
 
   // Take other fields from request body (guard against undefined body e.g. missing Content-Type)
   const body = req.body || {};
-  let { full_name, email, phone, mobile_number, cover_note } = body;
+  let { full_name, email, phone, mobile_number, cover_note, coverLetter, cover_letter } = body;
+
+  const rawCoverNote = cover_note || coverLetter || cover_letter;
+  if (rawCoverNote && typeof rawCoverNote === 'string' && rawCoverNote.length > 1000) {
+    return res.status(400).json({ message: "Note cannot exceed 1,000 characters" });
+  }
 
   // Sanitize user-generated content
-  cover_note = sanitizeContent(cover_note) || null;
+  cover_note = sanitizeContent(rawCoverNote) || null;
+  if (cover_note && cover_note.length > 1000) {
+    return res.status(400).json({ message: "Note cannot exceed 1,000 characters" });
+  }
   const contactPhone = phone || mobile_number || null;
 
   const client = await pool.connect();

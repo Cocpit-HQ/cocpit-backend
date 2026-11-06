@@ -222,6 +222,7 @@ exports.getOrganizationJobs = async (req, res) => {
         let conditions = ["j.org_id = $1", "j.is_active = TRUE"];
         let params = [resolvedOrgId];
         let paramCount = 2;
+        let authUserIndex = null;
 
         if (scope === 'public') {
             // Public fetching requires company to be verified and not suspended
@@ -236,6 +237,7 @@ exports.getOrganizationJobs = async (req, res) => {
                     WHERE (j.org_id IS NOT NULL AND ((b.blocker_id = $${paramCount} AND b.blocked_id = j.org_id) OR (b.blocker_id = j.org_id AND b.blocked_id = $${paramCount})))
                        OR (j.recruiter_id IS NOT NULL AND ((b.blocker_id = $${paramCount} AND b.blocked_id = j.recruiter_id) OR (b.blocker_id = j.recruiter_id AND b.blocked_id = $${paramCount})))
                 )`);
+                authUserIndex = paramCount;
                 params.push(userId);
                 paramCount++;
             }
@@ -287,12 +289,23 @@ exports.getOrganizationJobs = async (req, res) => {
                 o.logo_url AS company_logo,
                 COALESCE(o.logo_url, '') AS company_avatar,
                 o.slug AS company_slug,
+                ${authUserIndex ? `(js.user_id IS NOT NULL) AS "isSaved", (js.user_id IS NOT NULL) AS is_saved,` : `FALSE AS "isSaved", FALSE AS is_saved,`}
+                ${authUserIndex ? `(ja.application_id IS NOT NULL AND ja.current_status != 'Withdrawn') AS "hasApplied", (ja.application_id IS NOT NULL AND ja.current_status != 'Withdrawn') AS is_applied,` : `FALSE AS "hasApplied", FALSE AS is_applied,`}
+                ${authUserIndex ? `ja.current_status AS "applicationStatus", ja.current_status AS application_status,` : `NULL AS "applicationStatus", NULL AS application_status,`}
                 (SELECT COUNT(*)::int FROM job_applications ja_count WHERE ja_count.job_id = j.job_id AND ja_count.current_status != 'Withdrawn') as applicants_count,
                 (SELECT COUNT(*)::int FROM job_applications ja_count WHERE ja_count.job_id = j.job_id AND ja_count.current_status = 'Shortlisted') as shortlisted_count,
                 (SELECT COUNT(*)::int FROM job_offers jo_count WHERE jo_count.job_id = j.job_id AND jo_count.status != 'withdrawn') as offers_count
             FROM jobs j
             LEFT JOIN active_users u ON j.recruiter_id = u.user_id
             LEFT JOIN organizations o ON j.org_id = o.org_id
+            ${authUserIndex ? `LEFT JOIN job_saves js ON js.job_id = j.job_id AND js.user_id = $${authUserIndex}` : ""}
+            ${authUserIndex ? `LEFT JOIN LATERAL (
+                SELECT application_id, current_status 
+                FROM job_applications 
+                WHERE job_id = j.job_id AND applicant_id = $${authUserIndex}
+                ORDER BY applied_at DESC 
+                LIMIT 1
+            ) ja ON TRUE` : ""}
             ${whereClause}
             ORDER BY COALESCE(j.published_at, j.created_at) DESC
             ${limitClause}
