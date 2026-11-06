@@ -306,6 +306,8 @@ describe('Job Recommendations Unit Tests', () => {
       const { whereClause, params } = buildCommonEligibilityPredicate('user-uuid-123', 1);
       expect(params).toEqual(['user-uuid-123']);
       expect(whereClause).toContain('j.recruiter_id != $1');
+      expect(whereClause).toContain('FROM organization_members om_own');
+      expect(whereClause).toContain('FROM organizations o_own');
       expect(whereClause).toContain('FROM job_applications ja');
       expect(whereClause).toContain("ja.current_status != 'Withdrawn'");
       expect(whereClause).toContain('FROM job_offers jo');

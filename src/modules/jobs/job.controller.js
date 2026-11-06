@@ -156,6 +156,29 @@ exports.getAllJobs = async (req, res) => {
       conditions.push(`j.recruiter_id != $1`);
       conditions.push(`(ja.application_id IS NULL OR ja.current_status = 'Withdrawn')`);
       conditions.push(`jo.offer_id IS NULL`);
+      conditions.push(`(
+        j.org_id IS NULL OR (
+          NOT EXISTS (
+            SELECT 1 FROM organizations o_own
+            WHERE o_own.org_id = j.org_id AND o_own.created_by = $1
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM organization_members om_own
+            LEFT JOIN organization_roles cr_own ON om_own.role_id = cr_own.role_id
+            WHERE om_own.org_id = j.org_id
+              AND om_own.user_id = $1
+              AND (om_own.status = 'ACTIVE' OR om_own.status IS NULL)
+              AND (om_own.expires_at IS NULL OR om_own.expires_at > NOW())
+              AND (
+                LOWER(COALESCE(cr_own.name, om_own.role, '')) IN ('admin', 'owner')
+                OR cr_own.permissions::text LIKE '%*%'
+                OR cr_own.permissions::text LIKE '%MANAGE_COMPANY%'
+                OR cr_own.permissions::text LIKE '%MANAGE_ORGANIZATION%'
+                OR cr_own.permissions::text LIKE '%POST_JOBS%'
+              )
+          )
+        )
+      )`);
       conditions.push(`NOT EXISTS (
         SELECT 1 FROM blocks b
         WHERE (j.org_id IS NOT NULL AND ((b.blocker_id = $1 AND b.blocked_id = j.org_id) OR (b.blocker_id = j.org_id AND b.blocked_id = $1)))
@@ -263,6 +286,29 @@ exports.getRecommendations = async (req, res) => {
       ${userId ? "LEFT JOIN job_offers jo ON jo.job_id = j.job_id AND jo.user_id = $1 AND jo.status != 'withdrawn'" : ""}
       WHERE j.is_active = TRUE AND j.status = 'ACTIVE' AND u.user_id IS NOT NULL AND (j.org_id IS NOT NULL OR u.is_deactivated = FALSE) AND (j.org_id IS NULL OR (c.is_deleted = FALSE AND c.is_deactivated = FALSE))
       ${userId ? "AND j.recruiter_id != $1" : ""}
+      ${userId ? `AND (
+        j.org_id IS NULL OR (
+          NOT EXISTS (
+            SELECT 1 FROM organizations o_own
+            WHERE o_own.org_id = j.org_id AND o_own.created_by = $1
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM organization_members om_own
+            LEFT JOIN organization_roles cr_own ON om_own.role_id = cr_own.role_id
+            WHERE om_own.org_id = j.org_id
+              AND om_own.user_id = $1
+              AND (om_own.status = 'ACTIVE' OR om_own.status IS NULL)
+              AND (om_own.expires_at IS NULL OR om_own.expires_at > NOW())
+              AND (
+                LOWER(COALESCE(cr_own.name, om_own.role, '')) IN ('admin', 'owner')
+                OR cr_own.permissions::text LIKE '%*%'
+                OR cr_own.permissions::text LIKE '%MANAGE_COMPANY%'
+                OR cr_own.permissions::text LIKE '%MANAGE_ORGANIZATION%'
+                OR cr_own.permissions::text LIKE '%POST_JOBS%'
+              )
+          )
+        )
+      )` : ""}
       ${userId ? "AND (ja.application_id IS NULL OR ja.current_status = 'Withdrawn')" : ""}
       ${userId ? "AND jo.offer_id IS NULL" : ""}
       ${userId ? `AND NOT EXISTS (

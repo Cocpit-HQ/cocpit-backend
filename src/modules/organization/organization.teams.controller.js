@@ -204,7 +204,7 @@ exports.createRole = async (req, res, next) => {
             actorId,
             actorRole,
             action: 'CREATE_ROLE',
-            metadata: { roleName: name, permissions: upperPermissions }
+            metadata: { roleName: name, permissions: upperPermissions, roleId: newRole.role_id }
         });
 
         await client.query("COMMIT");
@@ -291,17 +291,47 @@ exports.updateRole = async (req, res, next) => {
 
         const updatedRole = updateRes.rows[0];
 
-        // Audit Log
-        await logAudit(client, {
-            entityId: orgId,
-            actorId,
-            actorRole,
-            action: 'UPDATE_ROLE',
-            metadata: { roleName: updatedRole.name, permissions, roleId }
-        });
+        // Track permission changes (SCRUM-1635)
+        const rawPrevPerms = Array.isArray(role.permissions)
+            ? role.permissions
+            : (typeof role.permissions === 'string' ? JSON.parse(role.permissions || '[]') : []);
+        const prevPerms = (Array.isArray(rawPrevPerms) ? rawPrevPerms : [])
+            .map(p => typeof p === 'string' ? p.toUpperCase().trim() : p)
+            .filter(p => p !== 'CHANNEL' && p !== 'CHANNELS');
 
-        // Notify active members of this role ONLY when role name is updated (not on permission changes)
+        const addedPerms = upperPermissions.filter(p => !prevPerms.includes(p));
+        const removedPerms = prevPerms.filter(p => !upperPermissions.includes(p));
+        const isPermissionsChanged = addedPerms.length > 0 || removedPerms.length > 0;
+
+        // Audit Log for Permission Changes (SCRUM-1635)
+        if (isPermissionsChanged) {
+            await logAudit(client, {
+                entityId: orgId,
+                actorId,
+                actorRole,
+                action: 'UPDATE_ROLE_PERMISSIONS',
+                metadata: {
+                    roleId,
+                    roleName: updatedRole.name,
+                    addedPermissions: addedPerms,
+                    removedPermissions: removedPerms,
+                    permissions: upperPermissions,
+                    previousPermissions: prevPerms
+                }
+            });
+        }
+
         const isNameChanged = Boolean(name && name.trim() && name.trim() !== role.name.trim());
+        // Log general role update if name changed or if permissions did not change
+        if (!isPermissionsChanged || isNameChanged) {
+            await logAudit(client, {
+                entityId: orgId,
+                actorId,
+                actorRole,
+                action: 'UPDATE_ROLE',
+                metadata: { roleName: updatedRole.name, permissions: upperPermissions, roleId }
+            });
+        }
         if (isNameChanged) {
             const membersRes = await client.query(
                 `SELECT user_id FROM organization_members WHERE org_id = $1 AND role_id = $2 AND status = 'ACTIVE' AND user_id != $3`,

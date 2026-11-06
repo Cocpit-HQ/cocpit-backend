@@ -281,6 +281,7 @@ exports.getOrganizationJobs = async (req, res) => {
 
         const whereClause = `WHERE ${conditions.join(" AND ")}`;
 
+        const currentUserId = req.user?.sub;
         const query = `
             SELECT 
                 j.*,
