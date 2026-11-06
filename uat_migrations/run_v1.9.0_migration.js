@@ -80,14 +80,99 @@ async function runMigration() {
         AND indexname = 'idx_post_media_post_order'
     `);
     console.log(
-      '2. Index idx_post_media_post_order:',
+      '2. Index idx_post_media_post_order:     ',
       indexRes.rowCount > 0 ? 'PASS' : 'FAIL'
     );
 
-    if (foundColumns.length === 3 && indexRes.rowCount > 0) {
-      console.log('\nVerification PASS: All v1.9.0 columns and index verified on post_media.');
+    // 3. Check experiences.org_id column
+    const expColRes = await client.query(`
+      SELECT column_name 
+      FROM information_schema.columns 
+      WHERE table_name = 'experiences' AND column_name = 'org_id'
+    `);
+    const hasOrgIdCol = expColRes.rowCount > 0;
+    console.log('3. Column experiences.org_id:           ', hasOrgIdCol ? 'PASS' : 'FAIL');
+
+    // 4. Check indexes on experiences
+    const expIdxRes = await client.query(`
+      SELECT indexname FROM pg_indexes 
+      WHERE tablename = 'experiences' 
+        AND indexname IN ('idx_experiences_org_id', 'idx_experiences_current_org')
+    `);
+    const foundExpIndexes = expIdxRes.rows.map(r => r.indexname);
+    console.log('4. Index idx_experiences_org_id:        ', foundExpIndexes.includes('idx_experiences_org_id') ? 'PASS' : 'FAIL');
+    console.log('   Index idx_experiences_current_org:    ', foundExpIndexes.includes('idx_experiences_current_org') ? 'PASS' : 'FAIL');
+
+    // 5. Check idx_jobs_active_created index on jobs
+    const jobIdxRes = await client.query(`
+      SELECT indexname FROM pg_indexes 
+      WHERE tablename = 'jobs' AND indexname = 'idx_jobs_active_created'
+    `);
+    console.log('5. Index idx_jobs_active_created (jobs):', jobIdxRes.rowCount > 0 ? 'PASS' : 'FAIL');
+
+    // 6. Check idx_job_saves_job_id on job_saves
+    const saveIdxRes = await client.query(`
+      SELECT indexname FROM pg_indexes 
+      WHERE tablename = 'job_saves' AND indexname = 'idx_job_saves_job_id'
+    `);
+    console.log('6. Index idx_job_saves_job_id:          ', saveIdxRes.rowCount > 0 ? 'PASS' : 'FAIL');
+
+    // 7. Check idx_activity_job_views on user_activity_log
+    const actIdxRes = await client.query(`
+      SELECT indexname FROM pg_indexes 
+      WHERE tablename = 'user_activity_log' AND indexname = 'idx_activity_job_views'
+    `);
+    console.log('7. Index idx_activity_job_views:        ', actIdxRes.rowCount > 0 ? 'PASS' : 'FAIL');
+
+    // 8. Check user_resume_history table
+    const resumeTableRes = await client.query(`
+      SELECT table_name 
+      FROM information_schema.tables 
+      WHERE table_name = 'user_resume_history'
+    `);
+    const hasResumeTable = resumeTableRes.rowCount > 0;
+    console.log('8. Table user_resume_history:           ', hasResumeTable ? 'PASS' : 'FAIL');
+
+    // 9. Check idx_user_resume_history_user_last_used index
+    const resumeIdxRes = await client.query(`
+      SELECT indexname FROM pg_indexes 
+      WHERE tablename = 'user_resume_history' AND indexname = 'idx_user_resume_history_user_last_used'
+    `);
+    console.log('9. Index idx_user_resume_history:       ', resumeIdxRes.rowCount > 0 ? 'PASS' : 'FAIL');
+
+    // 10. Check jobs.published_at column and index
+    const jobPubColRes = await client.query(`
+      SELECT column_name 
+      FROM information_schema.columns 
+      WHERE table_name = 'jobs' AND column_name = 'published_at'
+    `);
+    const hasPublishedAtCol = jobPubColRes.rowCount > 0;
+    console.log('10. Column jobs.published_at:           ', hasPublishedAtCol ? 'PASS' : 'FAIL');
+
+    const jobPubIdxRes = await client.query(`
+      SELECT indexname FROM pg_indexes 
+      WHERE tablename = 'jobs' AND indexname = 'idx_jobs_published_at'
+    `);
+    const hasPublishedAtIdx = jobPubIdxRes.rowCount > 0;
+    console.log('    Index idx_jobs_published_at:        ', hasPublishedAtIdx ? 'PASS' : 'FAIL');
+
+    const allPassed =
+      foundColumns.length === 3 &&
+      indexRes.rowCount > 0 &&
+      hasOrgIdCol &&
+      foundExpIndexes.length === 2 &&
+      jobIdxRes.rowCount > 0 &&
+      saveIdxRes.rowCount > 0 &&
+      actIdxRes.rowCount > 0 &&
+      hasResumeTable &&
+      resumeIdxRes.rowCount > 0 &&
+      hasPublishedAtCol &&
+      hasPublishedAtIdx;
+
+    if (allPassed) {
+      console.log('\nVerification PASS: All v1.9.0 columns, tables, recommendation indexes, and job published_at support verified successfully.');
     } else {
-      console.error('\nVerification FAIL: Columns or index missing.');
+      console.error('\nVerification FAIL: One or more v1.9.0 columns, tables, or indexes missing.');
       process.exit(1);
     }
   } catch (err) {
@@ -99,8 +184,8 @@ async function runMigration() {
   }
 }
 
-runMigration().catch((err) => {
-  console.error('Fatal execution error:', err);
-  process.exit(1);
-});
+if (require.main === module) {
+  runMigration();
+}
 
+module.exports = { runMigration };

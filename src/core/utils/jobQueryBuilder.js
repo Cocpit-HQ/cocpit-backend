@@ -257,7 +257,7 @@ const buildJobFilters = (params, paramCountStart = 1) => {
         if (daysAgo !== undefined) {
             const fromDate = new Date();
             fromDate.setDate(fromDate.getDate() - daysAgo);
-            conditions.push(`j.created_at >= $${currentIndex}`);
+            conditions.push(`COALESCE(j.published_at, j.created_at) >= $${currentIndex}`);
             values.push(fromDate);
             currentIndex++;
         }

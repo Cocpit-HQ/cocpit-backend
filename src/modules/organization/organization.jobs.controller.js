@@ -51,6 +51,7 @@ exports.createOrganizationJob = async (req, res) => {
         const companyName = companyRes.rows[0].name;
 
         // 2. Insert job
+        const isLive = status === "ACTIVE";
         const jobRes = await client.query(
             `
       INSERT INTO jobs
@@ -59,10 +60,11 @@ exports.createOrganizationJob = async (req, res) => {
         description, salary_min, salary_max, job_type,
         work_mode, experience_min, experience_level,
         experience_max, industry, easy_apply, actively_hiring,
-        posted_as_company, status, expires_at, salary_currency, salary_period, salary_visibility
+        posted_as_company, status, expires_at, salary_currency, salary_period, salary_visibility,
+        published_at
       )
       VALUES
-      ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
+      ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23)
       RETURNING *
       `,
             [
@@ -70,7 +72,8 @@ exports.createOrganizationJob = async (req, res) => {
                 description, salary_min, salary_max, job_type,
                 work_mode, experience_min || null, experience_level,
                 experience_max || null, industry, easy_apply, actively_hiring,
-                true, status, expires_at || null, salary_currency, salary_period, salary_visibility
+                true, status, expires_at || null, salary_currency, salary_period, salary_visibility,
+                isLive ? new Date() : null
             ]
         );
 
@@ -133,6 +136,56 @@ exports.createOrganizationJob = async (req, res) => {
                 referenceId: job.job_id,
                 metadata: { job_title: title, location: location || null },
             }).catch(err => console.error("Job notification error:", err));
+
+            // Notification: "Your job “[Job Title]” is now live."
+            (async () => {
+                try {
+                    const notificationText = `Your job ${title} is now live.`;
+                    const metadataPayload = {
+                        jobId: job.job_id,
+                        job_id: job.job_id,
+                        jobTitle: title,
+                        companyName,
+                        orgId: companyId,
+                        org_id: companyId,
+                        status: 'ACTIVE'
+                    };
+
+                    const notifRes = await pool.query(
+                        `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata, recipient_org_id)
+                         VALUES ($1, $2, 'job_approved', $3, $4, $5, $6)
+                         RETURNING notification_id, created_at`,
+                        [userId, userId, notificationText, job.job_id, JSON.stringify(metadataPayload), companyId]
+                    );
+
+                    await pool.query(
+                        `INSERT INTO notifications (recipient_org_id, user_id, sender_id, type, text, reference_id, metadata)
+                         VALUES ($1, NULL, $2, 'job_approved', $3, $4, $5)`,
+                        [companyId, userId, notificationText, job.job_id, JSON.stringify(metadataPayload)]
+                    );
+
+                    const socketService = require("../../core/infrastructure/socket.service");
+                    const notifId = notifRes.rows[0]?.notification_id;
+                    const notifCreatedAt = notifRes.rows[0]?.created_at ? notifRes.rows[0].created_at.toISOString() : new Date().toISOString();
+                    const socketPayload = {
+                        notification_id: notifId,
+                        type: "job_approved",
+                        text: notificationText,
+                        sender_id: userId,
+                        reference_id: job.job_id,
+                        recipient_company_id: companyId,
+                        recipient_org_id: companyId,
+                        metadata: metadataPayload,
+                        created_at: notifCreatedAt,
+                        is_read: false
+                    };
+
+                    socketService.notifyUser(userId, "notification", socketPayload);
+                    socketService.notifyOrg(companyId, "notification", socketPayload);
+                } catch (notifErr) {
+                    console.error("Failed to dispatch job_approved notification in createOrganizationJob:", notifErr);
+                }
+            })();
         }
 
         res.status(201).json({
@@ -214,7 +267,7 @@ exports.getOrganizationJobs = async (req, res) => {
         }
 
         if (cursor) {
-            conditions.push(`j.created_at < $${paramCount}`);
+            conditions.push(`COALESCE(j.published_at, j.created_at) < $${paramCount}`);
             params.push(new Date(cursor));
             paramCount++;
         }
@@ -236,12 +289,12 @@ exports.getOrganizationJobs = async (req, res) => {
                 o.slug AS company_slug,
                 (SELECT COUNT(*)::int FROM job_applications ja_count WHERE ja_count.job_id = j.job_id AND ja_count.current_status != 'Withdrawn') as applicants_count,
                 (SELECT COUNT(*)::int FROM job_applications ja_count WHERE ja_count.job_id = j.job_id AND ja_count.current_status = 'Shortlisted') as shortlisted_count,
-                (SELECT COUNT(*)::int FROM job_offers jo_count WHERE jo_count.job_id = j.job_id) as offers_count
+                (SELECT COUNT(*)::int FROM job_offers jo_count WHERE jo_count.job_id = j.job_id AND jo_count.status != 'withdrawn') as offers_count
             FROM jobs j
             LEFT JOIN active_users u ON j.recruiter_id = u.user_id
             LEFT JOIN organizations o ON j.org_id = o.org_id
             ${whereClause}
-            ORDER BY j.created_at DESC
+            ORDER BY COALESCE(j.published_at, j.created_at) DESC
             ${limitClause}
         `;
 
@@ -266,7 +319,7 @@ exports.getOrganizationJobs = async (req, res) => {
             const rows = result.rows;
             const hasMore = rows.length > Number(limit);
             const jobs = hasMore ? rows.slice(0, Number(limit)) : rows;
-            const nextCursor = jobs.length > 0 ? jobs[jobs.length - 1].created_at : null;
+            const nextCursor = jobs.length > 0 ? (jobs[jobs.length - 1].published_at || jobs[jobs.length - 1].created_at) : null;
             const counts = countsResult.rows[0] || { all: 0, active: 0, closed: 0, draft: 0, inReview: 0 };
 
             return res.status(200).json({
@@ -357,6 +410,7 @@ exports.updateOrganizationJob = async (req, res) => {
         }
 
         // 3. Update Job
+        const isPublishing = nextStatus === 'ACTIVE' && (oldJobData.status === 'DRAFT' || !oldJobData.published_at);
         const updateRes = await client.query(`
             UPDATE jobs
             SET title = COALESCE($1, title),
@@ -378,13 +432,21 @@ exports.updateOrganizationJob = async (req, res) => {
                 is_active = COALESCE($17, is_active),
                 experience_min = COALESCE($18, experience_min),
                 experience_max = COALESCE($19, experience_max),
+                published_at = CASE
+                    WHEN $21::boolean THEN NOW()
+                    ELSE published_at
+                END,
+                created_at = CASE
+                    WHEN $21::boolean AND status = 'DRAFT' THEN NOW()
+                    ELSE created_at
+                END,
                 updated_at = NOW()
             WHERE job_id = $20
             RETURNING *
         `, [
             title, location, description, salary_min, salary_max, salary_currency, salary_period, salary_visibility,
             job_type, work_mode, experience_level, industry, easy_apply, actively_hiring, status, expires_at, is_active,
-            experience_min, experience_max, jobId
+            experience_min, experience_max, jobId, isPublishing
         ]);
 
         const updatedJob = updateRes.rows[0];
@@ -409,6 +471,59 @@ exports.updateOrganizationJob = async (req, res) => {
         );
 
         await client.query("COMMIT");
+
+        // Notification if job is published/active: "Your job “[Job Title]” is now live."
+        if (updatedJob.status === 'ACTIVE' && oldJobData.status !== 'ACTIVE') {
+            (async () => {
+                try {
+                    const jobTitle = updatedJob.title;
+                    const notificationText = `Your job ${jobTitle} is now live.`;
+                    const metadataPayload = {
+                        jobId: updatedJob.job_id,
+                        job_id: updatedJob.job_id,
+                        jobTitle,
+                        companyName: updatedJob.company_name,
+                        orgId: companyId,
+                        org_id: companyId,
+                        status: 'ACTIVE'
+                    };
+
+                    const notifRes = await pool.query(
+                        `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata, recipient_org_id)
+                         VALUES ($1, $2, 'job_approved', $3, $4, $5, $6)
+                         RETURNING notification_id, created_at`,
+                        [userId, userId, notificationText, updatedJob.job_id, JSON.stringify(metadataPayload), companyId]
+                    );
+
+                    await pool.query(
+                        `INSERT INTO notifications (recipient_org_id, user_id, sender_id, type, text, reference_id, metadata)
+                         VALUES ($1, NULL, $2, 'job_approved', $3, $4, $5)`,
+                        [companyId, userId, notificationText, updatedJob.job_id, JSON.stringify(metadataPayload)]
+                    );
+
+                    const socketService = require("../../core/infrastructure/socket.service");
+                    const notifId = notifRes.rows[0]?.notification_id;
+                    const notifCreatedAt = notifRes.rows[0]?.created_at ? notifRes.rows[0].created_at.toISOString() : new Date().toISOString();
+                    const socketPayload = {
+                        notification_id: notifId,
+                        type: "job_approved",
+                        text: notificationText,
+                        sender_id: userId,
+                        reference_id: updatedJob.job_id,
+                        recipient_company_id: companyId,
+                        recipient_org_id: companyId,
+                        metadata: metadataPayload,
+                        created_at: notifCreatedAt,
+                        is_read: false
+                    };
+
+                    socketService.notifyUser(userId, "notification", socketPayload);
+                    socketService.notifyOrg(companyId, "notification", socketPayload);
+                } catch (notifErr) {
+                    console.error("Failed to dispatch job_approved notification in updateOrganizationJob:", notifErr);
+                }
+            })();
+        }
 
         res.status(200).json({ message: "Job updated successfully", job: updatedJob });
     } catch (err) {

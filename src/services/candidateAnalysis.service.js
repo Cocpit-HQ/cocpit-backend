@@ -36,12 +36,14 @@ const analyzeCandidate = async (applicationId, userId = null, orgId = null, sour
   //    that were frozen before experienceLabel was added).
   let expMin   = job_snapshot.experienceMin   ?? null;
   let expMax   = job_snapshot.experienceMax   ?? null;
-  let expLabel = job_snapshot.experienceLabel ?? null;
+  let expLabel = job_snapshot.experienceLabel ?? job_snapshot.experienceLevel ?? job_snapshot.experience_label ?? job_snapshot.experience_level ?? null;
 
   if (expMin === null && expMax === null && !expLabel) {
     // Fetch the application's job_id then read experience fields from jobs table
     const jobIdRes = await pool.query(
-      `SELECT j.experience_min, j.experience_max, j.experience_label
+      `SELECT j.experience_min, j.experience_max,
+              COALESCE(j.experience_label, j.experience_level) AS experience_label,
+              j.experience_level
        FROM job_applications ja
        JOIN jobs j ON j.job_id = ja.job_id
        WHERE ja.application_id = $1`,
@@ -50,11 +52,13 @@ const analyzeCandidate = async (applicationId, userId = null, orgId = null, sour
     if (jobIdRes.rowCount > 0) {
       expMin   = jobIdRes.rows[0].experience_min   ?? null;
       expMax   = jobIdRes.rows[0].experience_max   ?? null;
-      expLabel = jobIdRes.rows[0].experience_label ?? null;
+      expLabel = jobIdRes.rows[0].experience_label || jobIdRes.rows[0].experience_level || null;
     }
   }
 
-  const totalYears = calculateTotalExperienceYears(candidate_snapshot.experience || []);
+  const totalYears = (candidate_snapshot.experience && candidate_snapshot.experience.length > 0)
+    ? calculateTotalExperienceYears(candidate_snapshot.experience)
+    : (candidate_snapshot.totalExperienceYears ?? 0);
 
   const experienceJson = compareExperience(
     totalYears,

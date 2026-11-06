@@ -105,12 +105,11 @@ async function filterAllowedTaggedUserIds(client, actorUserId, actorOrgId, targe
     return allowedUserIds;
 }
 
-exports.syncPostTags = async (req, res) => {
-    const { postId, tags, companyId } = req.body;
-    const actorUserId = req.user?.sub || req.user?.user_id;
-
-    // Use empty array if tags is undefined
-    const validTags = Array.isArray(tags) ? tags : [];
+// Core business logic to synchronize post tags and trigger notifications
+async function syncPostTagsCore({ postId, tags, actorUserId, companyId, actorOrgId }) {
+    // Filter tags to valid UUIDs to prevent PostgreSQL syntax errors
+    const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    const validTags = (Array.isArray(tags) ? tags : []).filter(t => typeof t === 'string' && UUID_REGEX.test(t));
     const uniqueValidTags = [...new Set(validTags)];
     const notificationsToEmit = [];
 
@@ -119,7 +118,7 @@ exports.syncPostTags = async (req, res) => {
         await client.query('BEGIN');
 
         // Filter requested tags based on target users' tag_permission settings
-        const allowedTags = await filterAllowedTaggedUserIds(client, actorUserId, req.actor?.orgId, uniqueValidTags);
+        const allowedTags = await filterAllowedTaggedUserIds(client, actorUserId, actorOrgId || companyId, uniqueValidTags);
 
         // Capture currently active tags so we only notify for newly tagged users
         const existingTagsRes = await client.query(
@@ -184,7 +183,7 @@ exports.syncPostTags = async (req, res) => {
                 }
             }
 
-            const notificationText = "tagged you in a post";
+            const notificationText = "tagged you in a post.";
 
             for (const taggedUserId of filteredNewlyTaggedUserIds) {
                 const metadata = { post_id: postId, org_id: companyId || null };
@@ -216,18 +215,18 @@ exports.syncPostTags = async (req, res) => {
                         }
                     });
                 } else {
-                    // Target is an Organization: create notifications for its active team members
+                    // Set recipient_org_id so tagged organizations receive the notification in their notification center
                     const membersRes = await client.query(
-                        `SELECT user_id FROM organization_members WHERE org_id = $1 AND status = 'ACTIVE'`,
+                        `SELECT om.user_id FROM organization_members om WHERE om.org_id = $1 AND om.status = 'ACTIVE' UNION SELECT o.created_by AS user_id FROM organizations o WHERE o.org_id = $1 AND o.created_by IS NOT NULL`,
                         [taggedUserId]
                     );
 
                     for (const m of membersRes.rows) {
                         const notifRes = await client.query(
-                            `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata)
-                             VALUES ($1, $2, $3, $4, $5, $6)
+                            `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata, recipient_org_id)
+                             VALUES ($1, $2, $3, $4, $5, $6, $7)
                              RETURNING notification_id`,
-                            [m.user_id, actorUserId, "post_tag", notificationText, postId, JSON.stringify(metadata)]
+                            [m.user_id, actorUserId, "post_tag", notificationText, postId, JSON.stringify(metadata), taggedUserId]
                         );
 
                         notificationsToEmit.push({
@@ -242,7 +241,10 @@ exports.syncPostTags = async (req, res) => {
                                 senderAvatar,
                                 referenceId: postId,
                                 metadata,
-                                time: "Just now"
+                                time: "Just now",
+                                recipient_org_id: taggedUserId,
+                                targetCompanyId: taggedUserId,
+                                targetProfileType: 'COMPANY'
                             }
                         });
                     }
@@ -258,7 +260,10 @@ exports.syncPostTags = async (req, res) => {
                             senderAvatar,
                             referenceId: postId,
                             metadata,
-                            time: "Just now"
+                            time: "Just now",
+                            recipient_org_id: taggedUserId,
+                            targetCompanyId: taggedUserId,
+                            targetProfileType: 'COMPANY'
                         }
                     });
                 }
@@ -277,17 +282,39 @@ exports.syncPostTags = async (req, res) => {
             }
         }
 
-        return res.status(200).json({
-            message: "Tags synced successfully",
-            notified_count: notificationsToEmit.length
-        });
+        return { notified_count: notificationsToEmit.length };
 
     } catch (error) {
         await client.query('ROLLBACK');
-        console.error("Error syncing post tags:", error);
-        return res.status(500).json({ error: "Internal server error while syncing tags" });
+        console.error("Error in syncPostTagsCore:", error);
+        throw error;
     } finally {
         client.release();
+    }
+}
+
+exports.syncPostTagsCore = syncPostTagsCore;
+
+exports.syncPostTags = async (req, res) => {
+    const { postId, tags, companyId } = req.body;
+    const actorUserId = req.user?.sub || req.user?.user_id;
+
+    try {
+        const result = await syncPostTagsCore({
+            postId,
+            tags,
+            actorUserId,
+            companyId,
+            actorOrgId: req.actor?.orgId
+        });
+
+        return res.status(200).json({
+            message: "Tags synced successfully",
+            notified_count: result.notified_count
+        });
+    } catch (error) {
+        console.error("Error syncing post tags:", error);
+        return res.status(500).json({ error: "Internal server error while syncing tags" });
     }
 };
 

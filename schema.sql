@@ -147,6 +147,7 @@ CREATE TABLE experiences (
 
 -- Index for organization linking performance
 CREATE INDEX IF NOT EXISTS idx_experiences_org_id ON experiences(org_id);
+CREATE INDEX IF NOT EXISTS idx_experiences_current_org ON experiences(org_id) WHERE is_current = TRUE AND org_id IS NOT NULL;
 
 
 
@@ -746,6 +747,11 @@ WHERE status = 'ACTIVE';
 CREATE INDEX IF NOT EXISTS idx_jobs_company_status 
 ON jobs(org_id, status);
 
+-- Active jobs keyset pagination and recommendation eligibility index
+CREATE INDEX IF NOT EXISTS idx_jobs_active_created 
+ON jobs(created_at DESC, job_id DESC) 
+WHERE is_active = TRUE AND status = 'ACTIVE';
+
 CREATE TABLE event_outbox (
   event_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   topic VARCHAR(255) NOT NULL,
@@ -923,6 +929,8 @@ CREATE TABLE job_saves (
 
   PRIMARY KEY (user_id, job_id)
 );
+
+CREATE INDEX IF NOT EXISTS idx_job_saves_job_id ON job_saves(job_id);
 
 
 CREATE TABLE application_status_history (
@@ -1739,6 +1747,11 @@ ON user_activity_log(user_id, entity_type, created_at DESC);
 
 CREATE INDEX IF NOT EXISTS idx_activity_created 
 ON user_activity_log(created_at DESC);
+
+-- Targeted index for sub-millisecond Recently Viewed job history
+CREATE INDEX IF NOT EXISTS idx_activity_job_views 
+ON user_activity_log(user_id, entity_id, created_at DESC) 
+WHERE action_type = 'view_job' AND entity_type = 'job';
 
 CREATE TABLE user_activities (
   id SERIAL PRIMARY KEY,

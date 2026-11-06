@@ -88,7 +88,7 @@ Brings UAT database schema into alignment for Release 1.8.0 (`organization_notif
 ---
 
 ### `v1.9.0_uat_migration.sql`
-Brings UAT database schema into alignment for Release 1.9.0 (Mixed Media Carousel: Images & Videos support).
+Brings UAT database schema into alignment for Release 1.9.0 (Mixed Media Carousel: Images & Videos support, Jobs Explore & Recommendation System, and Reusable Resume History).
 
 #### Changes Included:
 1. **`post_media` table**:
@@ -97,6 +97,25 @@ Brings UAT database schema into alignment for Release 1.9.0 (Mixed Media Carouse
    - Adds `duration_seconds NUMERIC(6,2)` column for video durations.
    - Backfills existing records with sequential ordering per post.
    - Creates index `idx_post_media_post_order ON post_media(post_id, order_index)`.
+2. **`experiences` table**:
+   - Adds `org_id UUID REFERENCES organizations(org_id) ON DELETE SET NULL` column to link user work experience with official organizations.
+   - Creates index `idx_experiences_org_id ON experiences(org_id)`.
+   - Creates partial index `idx_experiences_current_org ON experiences(org_id) WHERE is_current = TRUE AND org_id IS NOT NULL` for rapid resolution of 1st-degree connections who currently work at hiring organizations ("From your network").
+3. **`jobs` table**:
+   - Creates partial composite index `idx_jobs_active_created ON jobs(created_at DESC, job_id DESC) WHERE is_active = TRUE AND status = 'ACTIVE'` for high-throughput listing retrieval and keyset pagination across all recommendation categories.
+4. **`job_saves` table**:
+   - Creates reverse lookup index `idx_job_saves_job_id ON job_saves(job_id)` to optimize `saves_count` aggregation queries used by the Featured opportunities quality heuristic.
+5. **`user_activity_log` table**:
+   - Creates targeted partial index `idx_activity_job_views ON user_activity_log(user_id, entity_id, created_at DESC) WHERE action_type = 'view_job' AND entity_type = 'job'` for sub-millisecond retrieval of candidate Recently Viewed jobs.
+6. **`user_resume_history` table**:
+   - Creates `user_resume_history` table to store applicant reusable resumes.
+   - Creates index `idx_user_resume_history_user_last_used ON user_resume_history(user_id, last_used_at DESC)`.
+   - Backfills `user_resume_history` records from existing `job_applications`.
+7. **`jobs` table (`published_at`)**:
+   - Adds `published_at TIMESTAMPTZ` column to track actual publication timestamp (distinguishing live date from initial draft creation).
+   - Backfills `published_at` from `created_at` for all active jobs.
+   - Creates index `idx_jobs_published_at ON jobs(published_at DESC)`.
+   - Creates composite index `idx_jobs_coalesce_published_created ON jobs((COALESCE(published_at, created_at)) DESC)`.
 
 ---
 
@@ -120,12 +139,6 @@ psql -h 192.168.1.50 -U swaroop -d cocpit_backend_uat -f uat_migrations/v1.9.0_u
 ```
 
 ---
-
-### Running v1.8.0 Migration
-
----
-
-## How to Run
 
 ### Running v1.8.0 Migration
 

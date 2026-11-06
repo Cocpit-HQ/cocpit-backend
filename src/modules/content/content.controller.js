@@ -136,7 +136,7 @@ const getRequestedOrganizationActorId = (req, fallbackOrgId = null) => {
     const actorOrgId = req.actor?.type === "ORGANIZATION" ? req.actor.orgId : null;
 
     if (actorOrgId) {
-        if (fallbackOrgId && actorOrgId !== fallbackOrgId) {
+        if (fallbackOrgId && actorOrgId !== fallbackOrgId && req.actor?.slug !== fallbackOrgId) {
             const err = new Error("Active organization actor does not match requested organization");
             err.statusCode = 403;
             throw err;
@@ -147,6 +147,10 @@ const getRequestedOrganizationActorId = (req, fallbackOrgId = null) => {
     // 2. Fallback to Passed companyId - but verify membership
     if (fallbackOrgId) {
         const userOrgs = req.userOrganizations || [];
+        const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(fallbackOrgId);
+        if (!isUuid && req.userOrganizationMap?.has(fallbackOrgId)) {
+            return req.userOrganizationMap.get(fallbackOrgId);
+        }
         if (!userOrgs.includes(fallbackOrgId)) {
             const err = new Error("You do not have permission to act as this organization");
             err.statusCode = 403;
@@ -973,6 +977,17 @@ exports.getMyPrivatePosts = async (req, res) => {
 //   }
 // };
 
+// Delegate post mention tag synchronization directly to postTags controller
+const { syncPostTagsCore } = require("./postTags.controller");
+
+const processPostMentionsAndTags = async (postId, content, actorUserId, actorOrgId) => {
+    if (!content || typeof content !== 'string') return;
+    const matches = Array.from(content.matchAll(/@\[[^\]]+\]\((?:(?:user|org|company):)?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\)/gi));
+    const tagIds = [...new Set(matches.map(m => m[1]))];
+    if (tagIds.length === 0) return;
+    await syncPostTagsCore({ postId, tags: tagIds, actorUserId, companyId: actorOrgId });
+};
+
 //--- POST INTEGRATION ---
 exports.createPost = async (req, res) => {
     let actorScope;
@@ -1585,7 +1600,12 @@ exports.createPost = async (req, res) => {
 
         await client.query('COMMIT');
 
-        // Mentions in post content (fire-and-forget, after commit)
+        // Trigger post tag notifications for mentioned users and organizations
+        if (content && typeof content === 'string') {
+            const currentActorOrgId = (typeof companyId !== 'undefined') ? companyId : ((typeof orgId !== 'undefined') ? orgId : null);
+            processPostMentionsAndTags(postId, content, userId, currentActorOrgId).catch(err => console.error("[MentionsAndTags] Error:", err));
+        }
+        if (false) // Legacy mention loop bypassed
         if (content && typeof content === 'string') {
             const mentionedUsernames = [];
             const regex1 = /@\[[^\]]+\]\(([^)]+)\)/g;
@@ -1686,6 +1706,8 @@ exports.createPost = async (req, res) => {
                     preview: previewText
                 }).catch(err => console.error("Error in broadcastChannelArticlePublished:", err));
             } else {
+                // Disabled: Do not send organization post notifications to personal feeds
+                /*
                 const companyNameRes = await pool.query(`SELECT name FROM organizations WHERE org_id = $1`, [companyId]);
                 const cName = companyNameRes.rows[0]?.name || 'An organization';
                 notifyOrgFollowers(companyId, "posts", {
@@ -1694,6 +1716,7 @@ exports.createPost = async (req, res) => {
                     referenceId: postId,
                     metadata: { post_title: title || content?.substring(0, 50) },
                 }).catch(err => console.error("Post notification error:", err));
+                */
             }
 
             // Broadcast: notify all members of all child orgs (fire-and-forget)
@@ -2911,7 +2934,12 @@ WHERE p.post_id = $1;
             }).catch(err => console.error("Error in broadcastChannelArticlePublished:", err));
         }
 
-        // Mentions in post content (fire-and-forget, after commit)
+        // Trigger post tag notifications for mentioned users and organizations
+        if (content && typeof content === 'string') {
+            const currentActorOrgId = (typeof companyId !== 'undefined') ? companyId : ((typeof orgId !== 'undefined') ? orgId : null);
+            processPostMentionsAndTags(postId, content, userId, currentActorOrgId).catch(err => console.error("[MentionsAndTags] Error:", err));
+        }
+        if (false) // Legacy mention loop bypassed
         if (content && typeof content === 'string') {
             const mentionedUsernames = [];
             const regex1 = /@\[[^\]]+\]\(([^)]+)\)/g;
@@ -2925,7 +2953,8 @@ WHERE p.post_id = $1;
             }
 
             if (mentionedUsernames.length > 0) {
-                console.log("[updatePostById] Mentions detected:", mentionedUsernames);
+                // Trigger post tag notifications for mentioned users and organizations
+                processPostMentionsAndTags(postId, content, userId, orgId).catch(err => console.error("[UpdatePost] Error processing post mentions and tags:", err));
                 // Fetch actor details
                 let actorName = "Someone";
                 let actorAvatar = null;

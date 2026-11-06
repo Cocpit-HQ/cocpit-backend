@@ -252,3 +252,29 @@ FROM job_applications
 WHERE resume_url IS NOT NULL
 GROUP BY applicant_id, resume_url
 ON CONFLICT (user_id, resume_url) DO NOTHING;
+
+-- 23. jobs_explore_recommendations: DB support & indexes for Jobs Explore & Recommendation Engine (v1.9.0)
+-- 23.1 experiences: Add org_id column to link candidate work history to organizations
+ALTER TABLE experiences 
+    ADD COLUMN IF NOT EXISTS org_id UUID REFERENCES organizations(org_id) ON DELETE SET NULL;
+
+CREATE INDEX IF NOT EXISTS idx_experiences_org_id 
+    ON experiences(org_id);
+
+CREATE INDEX IF NOT EXISTS idx_experiences_current_org 
+    ON experiences(org_id) 
+    WHERE is_current = TRUE AND org_id IS NOT NULL;
+
+-- 23.2 jobs: Composite partial index for active listings & keyset pagination
+CREATE INDEX IF NOT EXISTS idx_jobs_active_created 
+    ON jobs(created_at DESC, job_id DESC) 
+    WHERE is_active = TRUE AND status = 'ACTIVE';
+
+-- 23.3 job_saves: Reverse lookup index on job_id for saves_count aggregation
+CREATE INDEX IF NOT EXISTS idx_job_saves_job_id 
+    ON job_saves(job_id);
+
+-- 23.4 user_activity_log: Targeted partial index for instant "Recently Viewed" job retrieval
+CREATE INDEX IF NOT EXISTS idx_activity_job_views 
+    ON user_activity_log(user_id, entity_id, created_at DESC) 
+    WHERE action_type = 'view_job' AND entity_type = 'job';

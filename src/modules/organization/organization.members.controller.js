@@ -208,7 +208,7 @@ exports.acceptTeamsInvite = async (req, res) => {
         // 2. Verify Email Match (Optional but recommended security)
         // Check if current user's email matches invite email? 
         // For now, let's assume possession of token is enough, or we can check.
-        const userRes = await client.query(`SELECT email FROM users WHERE user_id = $1`, [userId]);
+        const userRes = await client.query(`SELECT full_name, email, avatar_url FROM users WHERE user_id = $1`, [userId]);
         if (userRes.rows[0].email !== invite.email) {
             console.warn(`[Invite] Email mismatch blocked: Invite ${invite.email} attempted by ${userRes.rows[0].email}`);
             throw new AppError(`This invitation was sent to ${invite.email}. You are logged in as ${userRes.rows[0].email}.`, 403);
@@ -272,7 +272,7 @@ exports.acceptTeamsInvite = async (req, res) => {
             const notifRes = await client.query(
                 `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata, recipient_org_id)
                  VALUES ($1, $2, 'team_invite_accepted', $3, $4, $5, $6) RETURNING notification_id, created_at`,
-                [invite.inviter_id, userId, notificationText, invite.org_id, JSON.stringify({ orgId: invite.org_id, role: invite.role }), invite.org_id]
+                [invite.inviter_id, userId, notificationText, invite.org_id, JSON.stringify({ orgId: invite.org_id, role: invite.role, roleId }), invite.org_id]
             );
 
             // Socket Push
@@ -286,7 +286,7 @@ exports.acceptTeamsInvite = async (req, res) => {
                     senderAvatar: inviteeProfile?.avatar_url,
                     referenceId: invite.org_id,
                     reference_id: invite.org_id,
-                    metadata: { orgId: invite.org_id, role: invite.role },
+                    metadata: { orgId: invite.org_id, role: invite.role, roleId },
                     notification_id: notifRes.rows[0]?.notification_id,
                     created_at: notifRes.rows[0]?.created_at ? notifRes.rows[0].created_at.toISOString() : new Date().toISOString(),
                     is_read: false
@@ -448,8 +448,104 @@ exports.removeMember = async (req, res) => {
             }
         });
 
+        // Notification: "[User Name] was removed from [Company Name] by [Admin Name]."
+        const actorUserRes = await client.query(`SELECT full_name FROM users WHERE user_id = $1`, [userId]);
+        const adminName = actorUserRes.rows[0]?.full_name || 'Admin';
+        const orgRes = await client.query(`SELECT name, slug, logo_url FROM organizations WHERE org_id = $1`, [companyId]);
+        const org = orgRes.rows[0];
+        const companyName = org?.name || 'the company';
+        const notificationText = `${targetUserName} was removed from ${companyName}`;
+
+        const metadataPayload = {
+            orgId: companyId,
+            org_id: companyId,
+            orgName: companyName,
+            org_name: companyName,
+            orgSlug: org?.slug,
+            org_slug: org?.slug,
+            orgLogo: org?.logo_url,
+            org_logo: org?.logo_url,
+            removedUserId: memberId,
+            adminId: userId,
+            adminName,
+            roleName: targetRole
+        };
+
+        // Find all active members and owner of the organization
+        const orgMembersRes = await client.query(
+            `SELECT user_id FROM organization_members WHERE org_id = $1 AND status = 'ACTIVE'
+             UNION
+             SELECT created_by as user_id FROM organizations WHERE org_id = $1`,
+            [companyId]
+        );
+
+        // 1. Insert organization-level notification
+        const notifRes = await client.query(
+            `INSERT INTO notifications (recipient_org_id, user_id, sender_id, type, text, reference_id, metadata)
+             VALUES ($1, NULL, $2, 'team_member_removed', $3, $4, $5)
+             RETURNING notification_id, created_at`,
+            [companyId, userId, notificationText, companyId, JSON.stringify(metadataPayload)]
+        );
+
+        // 2. Insert for all active members (including admin who removed them)
+        for (const m of orgMembersRes.rows) {
+            if (m.user_id && m.user_id !== memberId) {
+                await client.query(
+                    `INSERT INTO notifications (recipient_org_id, user_id, sender_id, type, text, reference_id, metadata)
+                     VALUES ($1, $2, $3, 'team_member_removed', $4, $5, $6)`,
+                    [companyId, m.user_id, userId, notificationText, companyId, JSON.stringify(metadataPayload)]
+                );
+            }
+        }
+
+        // 3. Also insert personal notification for the removed member (use "You were" instead of their name)
+        const personalNotificationText = `You were removed from ${companyName}`;
+        await client.query(
+            `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata)
+             VALUES ($1, $2, 'team_member_removed', $3, $4, $5)`,
+            [memberId, userId, personalNotificationText, companyId, JSON.stringify(metadataPayload)]
+        );
+
         await client.query("COMMIT");
         res.json({ message: "Member removed successfully" });
+
+        // Dispatch real-time socket notifications
+        try {
+            const socketService = require("../../core/infrastructure/socket.service");
+            const notifId = notifRes.rows[0]?.notification_id;
+            const notifCreatedAt = notifRes.rows[0]?.created_at ? notifRes.rows[0].created_at.toISOString() : new Date().toISOString();
+            const socketPayload = {
+                notification_id: notifId,
+                type: "team_member_removed",
+                text: notificationText,
+                sender_id: userId,
+                senderName: adminName,
+                actor_name: adminName,
+                recipient_company_id: companyId,
+                recipient_org_id: companyId,
+                reference_id: companyId,
+                metadata: metadataPayload,
+                created_at: notifCreatedAt,
+                is_read: false
+            };
+
+            // Broadcast to the organization room
+            socketService.notifyOrg(companyId, "notification", socketPayload);
+
+            // Alert each active member directly
+            for (const m of orgMembersRes.rows) {
+                if (m.user_id && m.user_id !== memberId) {
+                    socketService.notifyUser(m.user_id, "notification", socketPayload);
+                }
+            }
+
+            // Also alert the removed user directly
+            if (socketService && typeof socketService.notifyUser === 'function') {
+                socketService.notifyUser(memberId, "notification", socketPayload);
+            }
+        } catch (socketErr) {
+            console.error("Failed to emit team_member_removed notification in members controller:", socketErr);
+        }
 
     } catch (err) {
         await client.query("ROLLBACK");
@@ -638,7 +734,51 @@ exports.transferOwnership = async (req, res) => {
             }
         });
 
+        // Dispatch notification to the new Owner
+        const orgRes = await client.query(`SELECT name, slug, logo_url FROM organizations WHERE org_id = $1`, [companyId]);
+        const org = orgRes.rows[0];
+        const companyName = org?.name || 'the company';
+        const notificationText = `You are now the Owner of ${companyName}`;
+        const metadataPayload = {
+            orgId: companyId,
+            org_id: companyId,
+            orgName: companyName,
+            org_name: companyName,
+            orgSlug: org?.slug,
+            org_slug: org?.slug,
+            orgLogo: org?.logo_url,
+            org_logo: org?.logo_url,
+            previousOwnerId: userId,
+            newOwnerId,
+            roleName: 'Owner'
+        };
+
+        const notifRes = await client.query(
+            `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata, recipient_org_id)
+             VALUES ($1, $2, 'company_ownership_transferred', $3, $4, $5, $6)
+             RETURNING notification_id, created_at`,
+            [newOwnerId, userId, notificationText, companyId, JSON.stringify(metadataPayload), companyId]
+        );
+
         await client.query("COMMIT");
+
+        const socketService = require("../../core/infrastructure/socket.service");
+        if (socketService && typeof socketService.notifyUser === 'function') {
+            socketService.notifyUser(newOwnerId, "notification", {
+                type: "company_ownership_transferred",
+                text: notificationText,
+                from: userId,
+                sender_id: userId,
+                senderName: companyName,
+                senderAvatar: org?.logo_url,
+                referenceId: companyId,
+                reference_id: companyId,
+                metadata: metadataPayload,
+                notification_id: notifRes.rows[0]?.notification_id,
+                created_at: notifRes.rows[0]?.created_at ? notifRes.rows[0].created_at.toISOString() : new Date().toISOString(),
+                is_read: false
+            });
+        }
         res.json({ message: "Ownership transferred successfully" });
 
     } catch (err) {
@@ -799,8 +939,10 @@ exports.batchDeclineTeamInvites = async (req, res, next) => {
 
         await client.query("COMMIT");
 
-        // Emit socket events
+        // Emit socket events & notifications
         const socketService = require("../../core/infrastructure/socket.service");
+        const userFullName = userRes.rows[0]?.full_name || 'A user';
+
         for (const invite of validInvites) {
             socketService.notifyOrg(invite.org_id, "member_sync", {
                 action: "DECLINE",
@@ -808,6 +950,69 @@ exports.batchDeclineTeamInvites = async (req, res, next) => {
                 email: invite.email,
                 role: invite.role
             });
+
+            try {
+                let roleName = invite.role;
+                if (!roleName && invite.role_id) {
+                    const roleRes = await pool.query(`SELECT name FROM organization_roles WHERE role_id = $1`, [invite.role_id]);
+                    roleName = roleRes.rows[0]?.name;
+                }
+                roleName = roleName || 'Team Member';
+
+                const orgRes = await pool.query(`SELECT name, slug, logo_url FROM organizations WHERE org_id = $1`, [invite.org_id]);
+                const org = orgRes.rows[0];
+                const orgName = org?.name || 'the company';
+                const notificationText = `${userFullName} declined your invitation to join as ${roleName}`;
+
+                const metadataPayload = {
+                    orgId: invite.org_id,
+                    org_id: invite.org_id,
+                    orgName,
+                    org_name: orgName,
+                    orgSlug: org?.slug,
+                    org_slug: org?.slug,
+                    orgLogo: org?.logo_url,
+                    org_logo: org?.logo_url,
+                    roleName,
+                    role: roleName,
+                    userName: userFullName,
+                    user_name: userFullName,
+                    declinedUserId: userId
+                };
+
+                const notifRes = await pool.query(
+                    `INSERT INTO notifications (recipient_org_id, user_id, sender_id, type, text, reference_id, metadata)
+                     VALUES ($1, NULL, $2, 'team_invite_declined', $3, $4, $5)
+                     RETURNING notification_id, created_at`,
+                    [invite.org_id, userId, notificationText, invite.org_id, JSON.stringify(metadataPayload)]
+                );
+
+                const notifId = notifRes.rows[0]?.notification_id;
+                const notifCreatedAt = notifRes.rows[0]?.created_at ? notifRes.rows[0].created_at.toISOString() : new Date().toISOString();
+                const socketPayload = {
+                    notification_id: notifId,
+                    type: "team_invite_declined",
+                    text: notificationText,
+                    sender_id: userId,
+                    senderName: userFullName,
+                    senderAvatar: userRes.rows[0]?.avatar_url || null,
+                    actor_name: userFullName,
+                    actor_avatar: userRes.rows[0]?.avatar_url || null,
+                    recipient_company_id: invite.org_id,
+                    recipient_org_id: invite.org_id,
+                    reference_id: invite.org_id,
+                    metadata: metadataPayload,
+                    created_at: notifCreatedAt,
+                    is_read: false
+                };
+
+                socketService.notifyOrg(invite.org_id, "notification", socketPayload);
+                if (invite.inviter_id) {
+                    socketService.notifyUser(invite.inviter_id, "notification", socketPayload);
+                }
+            } catch (notifErr) {
+                console.error("Failed to dispatch batch decline notification:", notifErr);
+            }
         }
 
         res.json({ message: "Declined all page invitations.", processed: validInvites.length });
@@ -870,8 +1075,78 @@ exports.declineTeamsInvite = async (req, res, next) => {
             }
         });
 
+        // Notification to organization: "[User Name] declined your invitation to join as [Role]."
+        let roleName = invite.role;
+        if (!roleName && invite.role_id) {
+            const roleRes = await client.query(`SELECT name FROM organization_roles WHERE role_id = $1`, [invite.role_id]);
+            roleName = roleRes.rows[0]?.name;
+        }
+        roleName = roleName || 'Team Member';
+
+        const orgRes = await client.query(`SELECT name, slug, logo_url FROM organizations WHERE org_id = $1`, [invite.org_id]);
+        const org = orgRes.rows[0];
+        const orgName = org?.name || 'the company';
+        const userName = userRes.rows[0]?.full_name || 'A user';
+        const notificationText = `${userName} declined your invitation to join as ${roleName}`;
+
+        const metadataPayload = {
+            orgId: invite.org_id,
+            org_id: invite.org_id,
+            orgName,
+            org_name: orgName,
+            orgSlug: org?.slug,
+            org_slug: org?.slug,
+            orgLogo: org?.logo_url,
+            org_logo: org?.logo_url,
+            roleName,
+            role: roleName,
+            userName,
+            user_name: userName,
+            declinedUserId: userId
+        };
+
+        const notifRes = await client.query(
+            `INSERT INTO notifications (recipient_org_id, user_id, sender_id, type, text, reference_id, metadata)
+             VALUES ($1, NULL, $2, 'team_invite_declined', $3, $4, $5)
+             RETURNING notification_id, created_at`,
+            [invite.org_id, userId, notificationText, invite.org_id, JSON.stringify(metadataPayload)]
+        );
+
         await client.query("COMMIT");
         res.json({ message: "Invitation declined successfully" });
+
+        // Dispatch real-time socket notifications
+        try {
+            const socketService = require("../../core/infrastructure/socket.service");
+            const notifId = notifRes.rows[0]?.notification_id;
+            const notifCreatedAt = notifRes.rows[0]?.created_at ? notifRes.rows[0].created_at.toISOString() : new Date().toISOString();
+            const socketPayload = {
+                notification_id: notifId,
+                type: "team_invite_declined",
+                text: notificationText,
+                sender_id: userId,
+                senderName: userName,
+                senderAvatar: userRes.rows[0]?.avatar_url || null,
+                actor_name: userName,
+                actor_avatar: userRes.rows[0]?.avatar_url || null,
+                recipient_company_id: invite.org_id,
+                recipient_org_id: invite.org_id,
+                reference_id: invite.org_id,
+                metadata: metadataPayload,
+                created_at: notifCreatedAt,
+                is_read: false
+            };
+
+            // Broadcast to organization room so all active org members see it
+            socketService.notifyOrg(invite.org_id, "notification", socketPayload);
+
+            // Also notify inviter directly if present
+            if (invite.inviter_id) {
+                socketService.notifyUser(invite.inviter_id, "notification", socketPayload);
+            }
+        } catch (socketErr) {
+            console.error("Failed to emit notification on decline:", socketErr);
+        }
 
         // Emit member_sync socket event to the organization room
         try {
