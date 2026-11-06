@@ -169,5 +169,29 @@ describe('Job Explore Controller Tests', () => {
     });
   });
 
+  describe('GET /locations (getLocations)', () => {
+    test('returns paginated locations from jobs, orgs, and users', async () => {
+      const pool = require('../../../core/db/pool');
+      jest.spyOn(pool, 'query').mockResolvedValueOnce({
+        rows: [
+          { location: 'Bengaluru, Karnataka, India' },
+          { location: 'Mumbai, Maharashtra, India' },
+          { location: 'Pune, Maharashtra, India' },
+        ],
+      });
+
+      req.query = { limit: '2' };
+      await jobController.getLocations(req, res);
+
+      expect(res.json).toHaveBeenCalledWith({
+        items: ['Bengaluru, Karnataka, India', 'Mumbai, Maharashtra, India'],
+        nextCursor: 'Mumbai, Maharashtra, India',
+        hasMore: true,
+      });
+
+      pool.query.mockRestore();
+    });
+  });
+
 });
 

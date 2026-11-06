@@ -24,6 +24,8 @@ router.get("/", optionalAuth, jobController.getAllJobs);
 router.get("/roles", jobController.getJobRoles);
 router.get("/industries", jobController.getIndustries);
 router.get("/companies", jobController.getCompanies);
+router.get("/institutes", jobController.getInstitutes);
+router.get("/locations", jobController.getLocations);
 
 // Specific routes MUST come before /:id catch-all
 router.get("/recommendations", optionalAuth, jobController.getRecommendations);

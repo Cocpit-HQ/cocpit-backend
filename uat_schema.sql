@@ -278,3 +278,88 @@ CREATE INDEX IF NOT EXISTS idx_job_saves_job_id
 CREATE INDEX IF NOT EXISTS idx_activity_job_views 
     ON user_activity_log(user_id, entity_id, created_at DESC) 
     WHERE action_type = 'view_job' AND entity_type = 'job';
+
+-- 24. jobs: Add published_at column and indexes for job publishing timing
+ALTER TABLE jobs 
+    ADD COLUMN IF NOT EXISTS published_at TIMESTAMPTZ NULL;
+
+CREATE INDEX IF NOT EXISTS idx_jobs_published_at 
+    ON jobs(published_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_jobs_coalesce_published_created 
+    ON jobs((COALESCE(published_at, created_at)) DESC);
+
+-- 25. Reference Tables: Job Roles & Industries Master
+CREATE TABLE IF NOT EXISTS job_roles_master (
+    role_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    role_name VARCHAR(255) UNIQUE NOT NULL,
+    category VARCHAR(100),
+    created_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_job_roles_name ON job_roles_master (role_name);
+
+CREATE TABLE IF NOT EXISTS industries_master (
+    industry_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    industry_name VARCHAR(255) UNIQUE NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_industries_name ON industries_master (industry_name);
+
+-- 26. profiles: Add working_industry & work_mode for people filtering
+ALTER TABLE profiles 
+    ADD COLUMN IF NOT EXISTS working_industry TEXT;
+
+DO $$ 
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'job_work_mode') THEN
+        CREATE TYPE job_work_mode AS ENUM ('Remote', 'Hybrid', 'Onsite');
+    END IF;
+END $$;
+
+ALTER TABLE profiles 
+    ADD COLUMN IF NOT EXISTS work_mode job_work_mode;
+
+ALTER TABLE jobs 
+    ALTER COLUMN industry DROP NOT NULL;
+
+-- 27. Global Search Engine & Trigram Indexes (pg_trgm)
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+
+CREATE INDEX IF NOT EXISTS idx_users_full_name_trgm 
+    ON users USING GIN (full_name gin_trgm_ops);
+
+CREATE INDEX IF NOT EXISTS idx_users_account_name_trgm 
+    ON users USING GIN (account_name gin_trgm_ops);
+
+CREATE INDEX IF NOT EXISTS idx_companies_name_trgm 
+    ON organizations USING GIN (name gin_trgm_ops);
+
+CREATE INDEX IF NOT EXISTS idx_jobs_title_trgm 
+    ON jobs USING GIN (title gin_trgm_ops);
+
+CREATE INDEX IF NOT EXISTS idx_jobs_company_trgm 
+    ON jobs USING GIN (company_name gin_trgm_ops);
+
+CREATE INDEX IF NOT EXISTS idx_posts_content_trgm 
+    ON posts USING GIN (content gin_trgm_ops) 
+    WHERE (is_removed IS FALSE OR is_removed IS NULL) 
+      AND is_active = TRUE 
+      AND visibility = 'public';
+
+-- 28. Hashtags Global Search & Multi-Mode Ranking Indexes
+CREATE INDEX IF NOT EXISTS idx_hashtags_tag_trgm 
+    ON hashtags USING GIN (tag gin_trgm_ops);
+
+CREATE INDEX IF NOT EXISTS idx_hashtags_posts_count 
+    ON hashtags (posts_count DESC, usage_count DESC);
+
+CREATE INDEX IF NOT EXISTS idx_hashtags_usage_count 
+    ON hashtags (usage_count DESC, posts_count DESC);
+
+CREATE INDEX IF NOT EXISTS idx_hashtags_created_at 
+    ON hashtags (created_at DESC, hashtag_id DESC);
+
+CREATE INDEX IF NOT EXISTS idx_hashtags_last_used_at 
+    ON hashtags (last_used_at DESC NULLS LAST);

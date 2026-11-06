@@ -1,7 +1,7 @@
 -- ==============================================================================
 -- UAT Migration v1.9.0
 -- Target Database: cocpit_backend_uat (also applied to staging/production)
--- Prepared Date:  2026-10-30 (Updated 2026-11-05)
+-- Prepared Date:  2026-10-30 (Updated 2026-11-06)
 -- Description: 
 --   1. Mixed-Media Carousels (Images & Videos) support in post_media:
 --      Adds order_index, thumbnail_url, and duration_seconds columns,
@@ -29,10 +29,25 @@
 --      - Backfills published_at from created_at for existing ACTIVE jobs.
 --      - Creates idx_jobs_published_at and idx_jobs_coalesce_published_created
 --        indexes for chronological feed ranking, cursor pagination, and date filters.
+--   5. Global Search Trigram Indexing (pg_trgm):
+--      - Ensures pg_trgm extension for high-performance fuzzy substring matching.
+--      - Creates GIN trigram indexes on users (full_name, account_name),
+--        organizations (name), jobs (title, company_name), and posts (content on
+--        active public posts).
+--   6. Hashtag Global Search & Multi-Mode Ranking Indexes:
+--      - Creates GIN trigram index on hashtags.tag for rapid autocomplete.
+--      - Creates composite B-Tree indexes on hashtags for zero-cost multi-mode sorting
+--        (Popular, Most Used, Recently Added, Trending).
+--   7. Search Filter Master Tables & Profile Extensions:
+--      - Creates job_roles_master & industries_master reference lookup tables.
+--      - Adds working_industry & work_mode to profiles table for people filtering.
+--      - Relaxes jobs.industry NOT NULL constraint to support draft listings.
 --
 -- Reference:
---   - schema.sql (Lines 148-151, 475-487, 746-751, 830-842, 924-927, 1742-1748)
---   - uat_schema.sql (Section 20, 22 & 23)
+--   - schema.sql (Lines 148-151, 475-487, 746-751, 830-842, 924-927, 1742-1748, 1933-1960)
+--   - migrations/018_add_search_trgm_indexes.sql
+--   - migrations/019_add_hashtag_search_indexes.sql
+--   - uat_schema.sql (Sections 20, 22, 23, 24, 25, 26, 27)
 -- ==============================================================================
 
 BEGIN;
@@ -144,5 +159,99 @@ CREATE INDEX IF NOT EXISTS idx_jobs_published_at
 
 CREATE INDEX IF NOT EXISTS idx_jobs_coalesce_published_created 
     ON jobs((COALESCE(published_at, created_at)) DESC);
+
+-- ------------------------------------------------------------------------------
+-- 5. Global Search Trigram Indexing (pg_trgm)
+-- ------------------------------------------------------------------------------
+
+-- 5.1. Ensure Trigram Extension
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+
+-- 5.2. Users Trigram Indexes
+CREATE INDEX IF NOT EXISTS idx_users_full_name_trgm 
+    ON users USING GIN (full_name gin_trgm_ops);
+
+CREATE INDEX IF NOT EXISTS idx_users_account_name_trgm 
+    ON users USING GIN (account_name gin_trgm_ops);
+
+-- 5.3. Organizations Trigram Index
+CREATE INDEX IF NOT EXISTS idx_companies_name_trgm 
+    ON organizations USING GIN (name gin_trgm_ops);
+
+-- 5.4. Jobs Trigram Indexes
+CREATE INDEX IF NOT EXISTS idx_jobs_title_trgm 
+    ON jobs USING GIN (title gin_trgm_ops);
+
+CREATE INDEX IF NOT EXISTS idx_jobs_company_trgm 
+    ON jobs USING GIN (company_name gin_trgm_ops);
+
+-- 5.5. Public Post Content Partial GIN Index
+CREATE INDEX IF NOT EXISTS idx_posts_content_trgm 
+    ON posts USING GIN (content gin_trgm_ops) 
+    WHERE (is_removed IS FALSE OR is_removed IS NULL) 
+      AND is_active = TRUE 
+      AND visibility = 'public';
+
+-- ------------------------------------------------------------------------------
+-- 6. Hashtag Global Search & Multi-Mode Ranking Indexes
+-- ------------------------------------------------------------------------------
+
+-- 6.1. Trigram GIN index for fast substring/prefix match on hashtags
+CREATE INDEX IF NOT EXISTS idx_hashtags_tag_trgm 
+    ON hashtags USING GIN (tag gin_trgm_ops);
+
+-- 6.2. Composite B-Tree indexes for multi-mode sorting without sort overhead
+CREATE INDEX IF NOT EXISTS idx_hashtags_posts_count 
+    ON hashtags (posts_count DESC, usage_count DESC);
+
+CREATE INDEX IF NOT EXISTS idx_hashtags_usage_count 
+    ON hashtags (usage_count DESC, posts_count DESC);
+
+CREATE INDEX IF NOT EXISTS idx_hashtags_created_at 
+    ON hashtags (created_at DESC, hashtag_id DESC);
+
+CREATE INDEX IF NOT EXISTS idx_hashtags_last_used_at 
+    ON hashtags (last_used_at DESC NULLS LAST);
+
+-- ------------------------------------------------------------------------------
+-- 7. Search Filter Master Tables & Profile Extensions
+-- ------------------------------------------------------------------------------
+
+-- 7.1. Reference Tables: Job Roles Master
+CREATE TABLE IF NOT EXISTS job_roles_master (
+    role_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    role_name VARCHAR(255) UNIQUE NOT NULL,
+    category VARCHAR(100),
+    created_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_job_roles_name ON job_roles_master (role_name);
+
+-- 7.2. Reference Tables: Industries Master
+CREATE TABLE IF NOT EXISTS industries_master (
+    industry_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    industry_name VARCHAR(255) UNIQUE NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_industries_name ON industries_master (industry_name);
+
+-- 7.3. Profiles: Add working_industry and work_mode for people filtering
+ALTER TABLE profiles 
+    ADD COLUMN IF NOT EXISTS working_industry TEXT;
+
+DO $$ 
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'job_work_mode') THEN
+        CREATE TYPE job_work_mode AS ENUM ('Remote', 'Hybrid', 'Onsite');
+    END IF;
+END $$;
+
+ALTER TABLE profiles 
+    ADD COLUMN IF NOT EXISTS work_mode job_work_mode;
+
+-- 7.4. Jobs: Allow drafts to be created without industry
+ALTER TABLE jobs 
+    ALTER COLUMN industry DROP NOT NULL;
 
 COMMIT;
