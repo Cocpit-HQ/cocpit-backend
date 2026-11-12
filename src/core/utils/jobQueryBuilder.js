@@ -1,11 +1,10 @@
 /**
  * Builds parameterized SQL filter conditions for the jobs table (alias `j`).
  *
- * Multi-value filters (jobType, workMode, companyType, industry, experienceLevel)
- * accept comma-separated values and produce a SQL ANY(ARRAY[...]) OR filter.
- * Example: `?jobType=Full-time,Part-time` → `j.job_type = ANY(ARRAY[$n, $n+1])`
+ * Multi-value filters (job_type, work_mode, companyType, industry, experience_level)
+ * accept comma-separated or pipe-separated values and produce SQL filter clauses.
  *
- * Boolean filters (easyApply, activelyHiring) accept "true" | "false".
+ * Boolean filters (easyApply, activelyHiring, is_verified) accept "true" | "false" | boolean.
  * Omitting the param applies no filter (all jobs returned regardless of value).
  *
  * NOTE: `status` is intentionally NOT a public filter.
@@ -25,6 +24,8 @@ const buildJobFilters = (params, paramCountStart = 1) => {
         easyApply,
         activelyHiring,
         experienceLevel,
+        experience_level,
+        experience,
         experience_min,
         experience_max,
         minSalary,
@@ -32,14 +33,20 @@ const buildJobFilters = (params, paramCountStart = 1) => {
         salary_min,
         salary_max,
         salaryRanges,
+        salary_range,
+        salaryRange,
         datePosted,
+        date_posted,
         jobType,
+        job_type,
         employment_type,
         workMode,
+        work_mode,
         work_model,
         companyType,
         company,
         verified,
+        is_verified,
         industry,
         org_id,
     } = params;
@@ -48,17 +55,12 @@ const buildJobFilters = (params, paramCountStart = 1) => {
     let values = [];
     let currentIndex = paramCountStart;
 
-    // ─── Helper: multi-value OR filter (comma-separated input) ───────────────
-    // Single value  → exact match:       j.col = $n
-    // Multiple vals → ANY match:         j.col::text = ANY(ARRAY[$n, $n+1, ...])
-    // NOTE: The ::text cast on the column is required for PostgreSQL enum columns.
-    // Without it, pg infers the ARRAY as text[] and throws:
-    //   "operator does not exist: <enum_type> = text"
-    // Single-value path keeps the bare column reference since pg auto-casts
-    // unknown-typed parameters against enum columns without issue.
+    // ─── Helper: multi-value OR filter ───────────────────────────────────────
     const applyMultiValue = (rawValue, column) => {
         if (!rawValue) return;
-        const vals = rawValue.split(",").map(v => v.trim()).filter(Boolean);
+        const vals = (Array.isArray(rawValue) ? rawValue : String(rawValue).split(/[|,]/))
+            .map(v => String(v).trim())
+            .filter(Boolean);
         if (vals.length === 0) return;
         if (vals.length === 1) {
             conditions.push(`${column} = $${currentIndex}`);
@@ -76,65 +78,114 @@ const buildJobFilters = (params, paramCountStart = 1) => {
     // q / search / title are aliases — first truthy value wins
     const searchQuery = q || search || title;
     if (searchQuery) {
-        conditions.push(`(j.title ILIKE $${currentIndex} OR j.company_name ILIKE $${currentIndex})`);
+        conditions.push(`(j.title ILIKE $${currentIndex} OR j.company_name ILIKE $${currentIndex} OR (u.full_name IS NOT NULL AND u.full_name ILIKE $${currentIndex}))`);
         values.push(`%${searchQuery}%`);
         currentIndex++;
     }
 
     // ─── Location ────────────────────────────────────────────────────────────
     if (location) {
-        conditions.push(`j.location ILIKE $${currentIndex}`);
-        values.push(`%${location}%`);
-        currentIndex++;
+        const rawLocations = Array.isArray(location) ? location : String(location).split('|');
+        const locParts = rawLocations.map(s => String(s).trim()).filter(Boolean);
+        if (locParts.length > 0) {
+            const orClauses = [];
+            for (const part of locParts) {
+                const primaryCity = part.split(',')[0].trim();
+                orClauses.push(`j.location ILIKE $${currentIndex}`);
+                values.push(`%${primaryCity}%`);
+                currentIndex++;
+
+                const lowerCity = primaryCity.toLowerCase();
+                if (lowerCity === 'bengaluru') {
+                    orClauses.push(`j.location ILIKE $${currentIndex}`);
+                    values.push(`%Bangalore%`);
+                    currentIndex++;
+                } else if (lowerCity === 'bangalore') {
+                    orClauses.push(`j.location ILIKE $${currentIndex}`);
+                    values.push(`%Bengaluru%`);
+                    currentIndex++;
+                }
+            }
+            if (orClauses.length > 0) {
+                conditions.push(`(${orClauses.join(' OR ')})`);
+            }
+        }
     }
 
     // ─── Boolean toggles ─────────────────────────────────────────────────────
-    // "true"  → filter for true
-    // "false" → filter for false
-    // omitted → no filter applied (show all)
-    if (easyApply === "true") {
+    if (easyApply === "true" || easyApply === true) {
         conditions.push(`j.easy_apply = TRUE`);
-    } else if (easyApply === "false") {
+    } else if (easyApply === "false" || easyApply === false) {
         conditions.push(`j.easy_apply = FALSE`);
     }
 
-    if (activelyHiring === "true") {
+    if (activelyHiring === "true" || activelyHiring === true) {
         conditions.push(`j.actively_hiring = TRUE`);
-    } else if (activelyHiring === "false") {
+    } else if (activelyHiring === "false" || activelyHiring === false) {
         conditions.push(`j.actively_hiring = FALSE`);
     }
 
-    // ─── Experience level ─────────────
+    // ─── Experience level ────────────────────────────────────────────────────
+    const rawExperienceLevel = experience_level || experienceLevel || experience;
     let expCondition = null;
-    if (experienceLevel && experienceLevel !== "All Levels") {
-        const mappedLevels = [];
-        experienceLevel.split(",").map(v => v.trim()).filter(Boolean).forEach(val => {
-            const lowerVal = val.toLowerCase();
-            if (lowerVal === "fresher") {
-                mappedLevels.push("Fresher");
-            } else if (lowerVal === "junior") {
-                mappedLevels.push("Junior (1-3 yrs)");
-            } else if (lowerVal === "mid-level") {
-                mappedLevels.push("Mid-level (3-5 yrs)");
-            } else if (lowerVal === "senior") {
-                mappedLevels.push("Senior (5+ yrs)");
+    if (rawExperienceLevel && rawExperienceLevel !== "All Levels") {
+        const rawLevels = Array.isArray(rawExperienceLevel) ? rawExperienceLevel : String(rawExperienceLevel).split(/[|,]/);
+        const orClauses = [];
+
+        rawLevels.map(v => String(v).trim()).filter(Boolean).forEach(val => {
+            const lower = val.toLowerCase();
+            if (lower.includes('fresher') || lower.includes('entry') || lower === '0-2' || lower.includes('0 - 2')) {
+                orClauses.push(`(
+                    j.experience_label ILIKE '%fresher%'
+                    OR j.experience_label ILIKE '%0%2%'
+                    OR (
+                        (j.experience_min IS NOT NULL OR j.experience_max IS NOT NULL)
+                        AND COALESCE(j.experience_min, 0) = 0
+                        AND COALESCE(j.experience_max, j.experience_min, 0) <= 2
+                    )
+                )`);
+            } else if (lower.includes('junior') || lower.includes('1-3') || lower.includes('1 - 3')) {
+                orClauses.push(`(
+                    j.experience_label ILIKE '%junior%'
+                    OR j.experience_label ILIKE '%1%3%'
+                    OR (
+                        (j.experience_min IS NOT NULL OR j.experience_max IS NOT NULL)
+                        AND COALESCE(j.experience_min, j.experience_max) <= 3
+                        AND COALESCE(j.experience_max, j.experience_min) >= 1
+                        AND COALESCE(j.experience_max, 0) >= 2
+                        AND COALESCE(j.experience_min, 0) <= 2
+                    )
+                )`);
+            } else if (lower.includes('mid') || lower.includes('3-5') || lower.includes('3 - 5')) {
+                orClauses.push(`(
+                    j.experience_label ILIKE '%mid%'
+                    OR j.experience_label ILIKE '%3%5%'
+                    OR (
+                        (j.experience_min IS NOT NULL OR j.experience_max IS NOT NULL)
+                        AND COALESCE(j.experience_min, j.experience_max) <= 5
+                        AND COALESCE(j.experience_max, j.experience_min) >= 3
+                        AND COALESCE(j.experience_min, 0) >= 2
+                    )
+                )`);
+            } else if (lower.includes('senior') || lower.includes('5+') || lower.includes('5 +')) {
+                orClauses.push(`(
+                    j.experience_label ILIKE '%senior%'
+                    OR j.experience_label ILIKE '%5%'
+                    OR (
+                        (j.experience_min IS NOT NULL OR j.experience_max IS NOT NULL)
+                        AND COALESCE(j.experience_max, j.experience_min, 0) >= 5
+                        AND COALESCE(j.experience_min, 0) >= 4
+                    )
+                )`);
             } else {
-                mappedLevels.push(val);
+                orClauses.push(`j.experience_label ILIKE $${currentIndex}`);
+                values.push(`%${val}%`);
+                currentIndex++;
             }
         });
-        
-        const uniqueLevels = [...new Set(mappedLevels)];
-        if (uniqueLevels.length > 0) {
-            if (uniqueLevels.length === 1) {
-                expCondition = `j.experience_label = $${currentIndex}`;
-                values.push(uniqueLevels[0]);
-                currentIndex++;
-            } else {
-                const placeholders = uniqueLevels.map((_, i) => `$${currentIndex + i}`).join(", ");
-                expCondition = `j.experience_label::text = ANY(ARRAY[${placeholders}])`;
-                values.push(...uniqueLevels);
-                currentIndex += uniqueLevels.length;
-            }
+
+        if (orClauses.length > 0) {
+            expCondition = `(${orClauses.join(' OR ')})`;
         }
     }
 
@@ -162,49 +213,42 @@ const buildJobFilters = (params, paramCountStart = 1) => {
     }
 
     // ─── Named salary range filter (multi-select, OR logic) ──────────────────
-    // Accepts `salaryRanges` as a comma-separated list of named ranges.
-    // Example: `?salaryRanges=Under 3L,10L+`
-    // Each named range is expanded into numeric bounds, then combined via OR so
-    // a job is included if its salary overlaps ANY of the selected ranges.
-    //
     // Range map (INR):
-    //   Under 3L  → salary_max <= 300,000
+    //   Under 3L  → salary_min <= 300,000 (starting salary under 3L)
     //   3L-5L     → salary_min <= 500,000  AND salary_max >= 300,000
     //   6L-10L    → salary_min <= 1,000,000 AND salary_max >= 600,000
-    //   10L+      → salary_min >= 1,000,000
-    const SALARY_RANGE_MAP = {
-        "under 3l":  { max: 300000 },
-        "3l-5l":     { min: 300000, max: 500000 },
-        "6l-10l":    { min: 600000, max: 1000000 },
-        "10l+":      { min: 1000000 },
-    };
+    //   10L+      → salary_max >= 1,000,000
+    const rawSalaryRanges = salary_range || salaryRanges || salaryRange;
+    if (rawSalaryRanges) {
+        const rawList = Array.isArray(rawSalaryRanges) ? rawSalaryRanges : String(rawSalaryRanges).split(/[|,]/);
+        const selectedRanges = [];
 
-    if (salaryRanges) {
-        const selectedRanges = salaryRanges
-            .split(",")
-            .map(v => v.trim().toLowerCase())
-            .filter(Boolean)
-            .map(v => SALARY_RANGE_MAP[v])
-            .filter(Boolean);
+        rawList.map(v => String(v).trim().toLowerCase()).filter(Boolean).forEach(val => {
+            if (val.includes('under 3l') || val.includes('under 3') || val.includes('< 3') || val.includes('under 300k')) {
+                selectedRanges.push({ max: 300000 });
+            } else if (val.includes('3l-5l') || val.includes('3-5') || val.includes('3l - 5l') || val.includes('300k-500k')) {
+                selectedRanges.push({ min: 300000, max: 500000 });
+            } else if (val.includes('6l-10l') || val.includes('6-10') || val.includes('6l - 10l') || val.includes('600k-1000k')) {
+                selectedRanges.push({ min: 600000, max: 1000000 });
+            } else if (val.includes('10l+') || val.includes('10l +') || val.includes('> 10') || val.includes('1000k+')) {
+                selectedRanges.push({ min: 1000000 });
+            }
+        });
 
         if (selectedRanges.length > 0) {
             const rangeClauses = selectedRanges.map(range => {
                 if (range.min !== undefined && range.max !== undefined) {
-                    // Overlapping range: job overlaps [min, max] when
-                    //   job.salary_max >= min AND job.salary_min <= max
-                    const clause = `(j.salary_max >= $${currentIndex} AND j.salary_min <= $${currentIndex + 1})`;
+                    const clause = `(COALESCE(j.salary_max, j.salary_min) >= $${currentIndex} AND COALESCE(j.salary_min, j.salary_max) <= $${currentIndex + 1})`;
                     values.push(range.min, range.max);
                     currentIndex += 2;
                     return clause;
                 } else if (range.min !== undefined) {
-                    // Open upper bound: job salary_min >= min
-                    const clause = `j.salary_min >= $${currentIndex}`;
+                    const clause = `(COALESCE(j.salary_max, j.salary_min) >= $${currentIndex})`;
                     values.push(range.min);
                     currentIndex++;
                     return clause;
                 } else if (range.max !== undefined) {
-                    // Open lower bound: job salary_max <= max
-                    const clause = `j.salary_max <= $${currentIndex}`;
+                    const clause = `(COALESCE(j.salary_min, j.salary_max) <= $${currentIndex})`;
                     values.push(range.max);
                     currentIndex++;
                     return clause;
@@ -218,33 +262,29 @@ const buildJobFilters = (params, paramCountStart = 1) => {
         }
     }
 
-    // ─── Salary range (overlapping range logic) ───────────────────────────────
-    // A job overlaps [minSalary, maxSalary] when:
-    //   job.salary_max \>= minSalary  AND  job.salary_min \<= maxSalary
-    // Treat empty string as absent to avoid 0-value false positives.
-    const effMinSalary = salary_min !== undefined ? salary_min : minSalary;
-    const effMaxSalary = salary_max !== undefined ? salary_max : maxSalary;
+    // ─── Salary range (overlapping numeric range logic) ───────────────────────
+    const effMinSalary = salary_min !== undefined ? salary_min : (params.min_salary !== undefined ? params.min_salary : minSalary);
+    const effMaxSalary = salary_max !== undefined ? salary_max : (params.max_salary !== undefined ? params.max_salary : maxSalary);
     const min = effMinSalary ? Number(effMinSalary) : NaN;
     const max = effMaxSalary ? Number(effMaxSalary) : NaN;
 
     if (!isNaN(min) && !isNaN(max)) {
-        conditions.push(`j.salary_max >= $${currentIndex} AND j.salary_min <= $${currentIndex + 1}`);
+        conditions.push(`(COALESCE(j.salary_max, j.salary_min) >= $${currentIndex} AND COALESCE(j.salary_min, j.salary_max) <= $${currentIndex + 1})`);
         values.push(min, max);
         currentIndex += 2;
     } else if (!isNaN(min)) {
-        conditions.push(`j.salary_max >= $${currentIndex}`);
+        conditions.push(`(COALESCE(j.salary_max, j.salary_min) >= $${currentIndex})`);
         values.push(min);
         currentIndex++;
     } else if (!isNaN(max)) {
-        conditions.push(`j.salary_min <= $${currentIndex}`);
+        conditions.push(`(COALESCE(j.salary_min, j.salary_max) <= $${currentIndex})`);
         values.push(max);
         currentIndex++;
     }
 
     // ─── Date posted ──────────────────────────────────────────────────────────
-    // Case-insensitive lookup; unrecognised values are silently ignored.
-    // Accepted values and their day offsets:
-    if (datePosted) {
+    const rawDatePosted = date_posted || datePosted;
+    if (rawDatePosted) {
         const DATE_POSTED_DAYS = {
             "past 24 hours": 1,
             "today":         1,
@@ -253,7 +293,7 @@ const buildJobFilters = (params, paramCountStart = 1) => {
             "past month":    30,
             "last 30 days":  30,
         };
-        const daysAgo = DATE_POSTED_DAYS[datePosted.toLowerCase().trim()];
+        const daysAgo = DATE_POSTED_DAYS[String(rawDatePosted).toLowerCase().trim()];
         if (daysAgo !== undefined) {
             const fromDate = new Date();
             fromDate.setDate(fromDate.getDate() - daysAgo);
@@ -263,47 +303,108 @@ const buildJobFilters = (params, paramCountStart = 1) => {
         }
     }
 
-    // ─── Enum filters (all multi-value) ───────────────────────────────────────
-    applyMultiValue(employment_type || jobType, "j.job_type");
-    applyMultiValue(work_model || workMode, "j.work_mode");
-    applyMultiValue(companyType, "j.company_type");
-    if (company) {
-        const vals = company.split(",").map(v => v.trim()).filter(Boolean);
-        if (vals.length > 0) {
-            const placeholders = vals.map((_, i) => `LOWER($${currentIndex + i})`).join(", ");
-            conditions.push(`(
-                LOWER(j.company_name) = ANY(ARRAY[${placeholders}])
-                OR EXISTS (
-                    SELECT 1 FROM organizations o
-                    WHERE o.org_id = j.org_id
-                      AND LOWER(o.name) = ANY(ARRAY[${placeholders}])
-                )
-            )`);
-            values.push(...vals);
-            currentIndex += vals.length;
+    // ─── Job Type (multi-value, handles hyphen / space variants) ─────────────
+    const rawJobType = job_type || jobType || employment_type;
+    if (rawJobType) {
+        const rawTypes = Array.isArray(rawJobType) ? rawJobType : String(rawJobType).split(/[|,]/);
+        const mappedTypes = [];
+        rawTypes.map(t => String(t).trim().toLowerCase()).filter(Boolean).forEach(t => {
+            if (t === 'full-time' || t === 'full time' || t === 'fulltime') {
+                mappedTypes.push('full-time', 'full time');
+            } else if (t === 'part-time' || t === 'part time' || t === 'parttime') {
+                mappedTypes.push('part-time', 'part time');
+            } else {
+                mappedTypes.push(t);
+            }
+        });
+        const uniqueTypes = [...new Set(mappedTypes)];
+        if (uniqueTypes.length > 0) {
+            const placeholders = uniqueTypes.map((_, i) => `$${currentIndex + i}`).join(", ");
+            conditions.push(`LOWER(j.job_type::text) = ANY(ARRAY[${placeholders}])`);
+            values.push(...uniqueTypes);
+            currentIndex += uniqueTypes.length;
         }
     }
-    if (verified === "true") {
+
+    // ─── Work Mode (multi-value, handles Onsite / On-site variants) ───────────
+    const rawWorkMode = work_mode || workMode || work_model;
+    if (rawWorkMode) {
+        const rawModes = Array.isArray(rawWorkMode) ? rawWorkMode : String(rawWorkMode).split(/[|,]/);
+        const mappedModes = [];
+        rawModes.map(m => String(m).trim().toLowerCase()).filter(Boolean).forEach(m => {
+            if (m === 'onsite' || m === 'on-site') {
+                mappedModes.push('onsite', 'on-site');
+            } else {
+                mappedModes.push(m);
+            }
+        });
+        const uniqueModes = [...new Set(mappedModes)];
+        if (uniqueModes.length > 0) {
+            const placeholders = uniqueModes.map((_, i) => `$${currentIndex + i}`).join(", ");
+            conditions.push(`LOWER(j.work_mode::text) = ANY(ARRAY[${placeholders}])`);
+            values.push(...uniqueModes);
+            currentIndex += uniqueModes.length;
+        }
+    }
+
+    // ─── Company Type ────────────────────────────────────────────────────────
+    applyMultiValue(companyType, "j.company_type");
+
+    // ─── Company (exact & fuzzy matching with organizations join) ────────────
+    if (company) {
+        const rawCompanies = Array.isArray(company) ? company : String(company).split(/[|,]/);
+        const vals = rawCompanies.map(v => String(v).trim()).filter(Boolean);
+        if (vals.length > 0) {
+            const companyClauses = [];
+            for (const c of vals) {
+                companyClauses.push(`(
+                    TRIM(LOWER(j.company_name)) = LOWER($${currentIndex})
+                    OR j.company_name ILIKE $${currentIndex + 1}
+                    OR EXISTS (
+                        SELECT 1 FROM organizations o
+                        WHERE o.org_id = j.org_id
+                          AND (TRIM(LOWER(o.name)) = LOWER($${currentIndex}) OR o.name ILIKE $${currentIndex + 1})
+                    )
+                )`);
+                values.push(c, `%${c}%`);
+                currentIndex += 2;
+            }
+            conditions.push(`(${companyClauses.join(' OR ')})`);
+        }
+    }
+
+    // ─── Verified Organization ───────────────────────────────────────────────
+    const rawVerified = is_verified !== undefined ? is_verified : verified;
+    if (rawVerified === "true" || rawVerified === true) {
         conditions.push(`EXISTS (
             SELECT 1 FROM organizations o
             WHERE o.org_id = j.org_id
               AND o.verification_status IN ('VERIFIED', 'DOMAIN_VERIFIED')
         )`);
     }
+
+    // ─── Industry ────────────────────────────────────────────────────────────
     const rawIndustry = industry;
     if (rawIndustry) {
+        const indParts = Array.isArray(rawIndustry) ? rawIndustry : String(rawIndustry).split(/[|,]/);
         const mappedIndustries = [];
-        rawIndustry.split(",").map(v => v.trim()).filter(Boolean).forEach(val => {
-            const lowerVal = val.toLowerCase();
-            if (lowerVal === "tech" || lowerVal === "technology") {
-                mappedIndustries.push("Tech", "Technology");
-            } else {
-                mappedIndustries.push(val);
+        indParts.map(v => String(v).trim()).filter(Boolean).forEach(val => {
+            mappedIndustries.push(val);
+            if (val.includes(' ')) {
+                mappedIndustries.push(val.replace(/\s+/g, '_'));
+            } else if (val.includes('_')) {
+                mappedIndustries.push(val.replace(/_/g, ' '));
+            }
+            if (val.toLowerCase() === 'tech' || val.toLowerCase() === 'technology') {
+                mappedIndustries.push('Information Technology', 'information_technology');
             }
         });
         const uniqueIndustries = [...new Set(mappedIndustries)];
         if (uniqueIndustries.length > 0) {
-            applyMultiValue(uniqueIndustries.join(","), "j.industry");
+            const placeholders = uniqueIndustries.map((_, i) => `LOWER(TRIM($${currentIndex + i}))`).join(", ");
+            conditions.push(`LOWER(TRIM(j.industry)) = ANY(ARRAY[${placeholders}])`);
+            values.push(...uniqueIndustries);
+            currentIndex += uniqueIndustries.length;
         }
     }
 

@@ -8,7 +8,7 @@ const { requireRoles } = require("../../core/middlewares/role.middleware");
 const { requireOrgPermission, requireCompanyPermission } = require("../../core/middlewares/organization.auth.middleware");
 const { uploadApplicationFiles, uploadTaskSubmission } = require("../../core/middlewares/upload.middleware");
 const { validate } = require("../../core/middlewares/validation.middleware");
-const { createDraftSchema, updateDraftSchema, submitJobSchema, sendOfferSchema } = require("../../schemas/job.schema");
+const { createDraftSchema, updateDraftSchema, submitJobSchema, sendOfferSchema, applyJobSchema } = require("../../schemas/job.schema");
 const { createAIRateLimiter, createAutosaveRateLimiter } = require("../../core/middlewares/rateLimiter.middleware");
 
 // Initialise the AI rate limiter once (3 generations per user per minute)
@@ -24,6 +24,8 @@ router.get("/", optionalAuth, jobController.getAllJobs);
 router.get("/roles", jobController.getJobRoles);
 router.get("/industries", jobController.getIndustries);
 router.get("/companies", jobController.getCompanies);
+router.get("/institutes", jobController.getInstitutes);
+router.get("/locations", jobController.getLocations);
 
 // Specific routes MUST come before /:id catch-all
 router.get("/recommendations", optionalAuth, jobController.getRecommendations);
@@ -67,7 +69,7 @@ router.post("/:id/ai/actions", requireAuth, jobController.aiAction);
 // Rate limited: 3 generations per user per minute
 router.post("/:id/generate", requireAuth, aiRateLimiter, jobController.generateJD);
 
-router.post("/:id/apply", requireAuth, uploadApplicationFiles, jobController.applyJob);
+router.post("/:id/apply", requireAuth, uploadApplicationFiles, validate(applyJobSchema), jobController.applyJob);
 router.delete("/:id/apply", requireAuth, jobController.withdrawApplication);
 router.post("/:id/save", requireAuth, jobController.saveJob);
 router.delete("/:id/save", requireAuth, jobController.unsaveJob);

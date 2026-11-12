@@ -65,8 +65,14 @@ const sendOfferSchema = z.object({
   body: z.object({
     jobId: z.string({ required_error: "jobId is required" }),
     userId: z.string({ required_error: "userId is required" }),
-    message: z.string().max(255, "Note cannot exceed 255 characters.").optional().nullable(),
+    message: z.string().max(1000, "Note cannot exceed 1,000 characters.").optional().nullable(),
   }),
+});
+
+const applyJobSchema = z.object({
+  body: z.object({
+    cover_note: z.string().max(1000, "Note cannot exceed 1,000 characters").optional().nullable(),
+  }).passthrough(),
 });
 
 module.exports = {
@@ -74,4 +80,5 @@ module.exports = {
   updateDraftSchema,
   submitJobSchema,
   sendOfferSchema,
+  applyJobSchema,
 };

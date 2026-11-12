@@ -25,7 +25,7 @@ exports.searchUsers = async (req, res) => {
     return res.status(403).json({ message: "Search is currently disabled." });
   }
 
-  const { q, accountType, excludeJobId } = req.query;
+  const { q, accountType, excludeJobId, type, usersOnly } = req.query;
   const currentUserId = req.user.sub;
 
   if (!q || typeof q !== "string" || q.trim().length === 0) {
@@ -140,7 +140,35 @@ exports.searchUsers = async (req, res) => {
       )
     `;
 
-    const queryText = `
+    const isUsersOnly = Boolean(excludeJobId) || usersOnly === 'true' || type?.toUpperCase() === 'USER';
+
+    const queryText = isUsersOnly ? `
+      SELECT
+        u.user_id AS id,
+        u.full_name,
+        u.account_name,
+        u.headline,
+        u.avatar_url,
+        p.account_type,
+        'USER'::text as type,
+        NULL::text as slug,
+        NULL::text as industry,
+        COALESCE(u.tag_permission, 'everyone')::text AS tag_permission
+      FROM active_users u
+      LEFT JOIN profiles p ON u.user_id = p.user_id
+      WHERE u.is_deactivated = FALSE
+        AND (u.full_name ILIKE $2 OR u.account_name ILIKE $2)
+        AND u.full_name IS NOT NULL AND TRIM(u.full_name) <> ''
+        AND u.account_name IS NOT NULL AND TRIM(u.account_name) <> ''
+      ${userAccountFilter}
+      ${excludeJobFilter}
+      ${blockFilter}
+      ${tagPrivacyFilter}
+      ORDER BY 
+        CASE WHEN full_name ILIKE $${startsWithIdx} THEN 0 ELSE 1 END,
+        full_name ASC
+      LIMIT 50
+    ` : `
       SELECT * FROM (
         (
           SELECT

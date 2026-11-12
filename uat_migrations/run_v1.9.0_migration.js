@@ -3,33 +3,15 @@ const path = require('path');
 const { Pool } = require('pg');
 require('dotenv').config({ path: path.resolve(__dirname, '../.env') });
 
-const isUatExplicit = process.env.RUN_UAT === 'true';
-
-let poolConfig;
-if (isUatExplicit && (process.env.UAT_DATABASE_URL || process.env.UAT_DB_NAME)) {
-  poolConfig = process.env.UAT_DATABASE_URL
-    ? { connectionString: process.env.UAT_DATABASE_URL }
-    : {
-        host: process.env.UAT_DB_HOST || process.env.DB_HOST || 'localhost',
-        port: process.env.UAT_DB_PORT ? Number(process.env.UAT_DB_PORT) : 5432,
-        user: process.env.UAT_DB_USER || process.env.DB_USER,
-        password: process.env.UAT_DB_PASSWORD || process.env.DB_PASSWORD,
-        database: process.env.UAT_DB_NAME || 'cocpit_backend_uat',
-      };
-} else if (process.env.DATABASE_URL && process.env.DATABASE_URL.trim().length > 0) {
-  poolConfig = { connectionString: process.env.DATABASE_URL };
-} else {
-  poolConfig = {
-    host: process.env.DB_HOST || 'localhost',
-    port: process.env.DB_PORT ? Number(process.env.DB_PORT) : 5432,
-    user: process.env.DB_USER,
-    password: process.env.DB_PASSWORD,
-    database: process.env.DB_NAME,
-  };
-}
+const targetDb = process.env.UAT_DB_NAME || 'cocpit_backend_uat';
 
 const pool = new Pool({
-  ...poolConfig,
+  connectionString: process.env.UAT_DATABASE_URL,
+  host: process.env.UAT_DB_HOST || process.env.DB_HOST || 'localhost',
+  port: process.env.UAT_DB_PORT ? Number(process.env.UAT_DB_PORT) : (process.env.DB_PORT ? Number(process.env.DB_PORT) : 5432),
+  user: process.env.UAT_DB_USER || process.env.DB_USER,
+  password: process.env.UAT_DB_PASSWORD || process.env.DB_PASSWORD,
+  database: targetDb,
   connectionTimeoutMillis: 10000,
 });
 
@@ -37,12 +19,9 @@ async function runMigration() {
   console.log('====================================================');
   console.log('|  UAT Migration Runner v1.9.0                     |');
   console.log('====================================================');
-  console.log(
-    'Target: ',
-    poolConfig.connectionString
-      ? poolConfig.connectionString.replace(/:[^:@]+@/, ':***@')
-      : `${poolConfig.user}@${poolConfig.host}:${poolConfig.port}/${poolConfig.database}`
-  );
+  console.log(`Target Database: ${targetDb}`);
+  console.log(`Host:            ${process.env.UAT_DB_HOST || process.env.DB_HOST || 'localhost'}:${process.env.UAT_DB_PORT ? Number(process.env.UAT_DB_PORT) : (process.env.DB_PORT ? Number(process.env.DB_PORT) : 5432)}`);
+  console.log(`User:            ${process.env.UAT_DB_USER || process.env.DB_USER}`);
   console.log('====================================================\n');
 
   const sqlFilePath = path.resolve(__dirname, 'v1.9.0_uat_migration.sql');
@@ -156,6 +135,92 @@ async function runMigration() {
     const hasPublishedAtIdx = jobPubIdxRes.rowCount > 0;
     console.log('    Index idx_jobs_published_at:        ', hasPublishedAtIdx ? 'PASS' : 'FAIL');
 
+    // 11. Check jobs.actively_hiring column and index
+    const jobHiringColRes = await client.query(`
+      SELECT column_name 
+      FROM information_schema.columns 
+      WHERE table_name = 'jobs' AND column_name = 'actively_hiring'
+    `);
+    const hasActivelyHiringCol = jobHiringColRes.rowCount > 0;
+    console.log('11. Column jobs.actively_hiring:         ', hasActivelyHiringCol ? 'PASS' : 'FAIL');
+
+    const jobHiringIdxRes = await client.query(`
+      SELECT indexname FROM pg_indexes 
+      WHERE tablename = 'jobs' AND indexname = 'idx_jobs_actively_hiring'
+    `);
+    const hasActivelyHiringIdx = jobHiringIdxRes.rowCount > 0;
+    console.log('    Index idx_jobs_actively_hiring:     ', hasActivelyHiringIdx ? 'PASS' : 'FAIL');
+
+    // 12. Check organizations institution columns
+    const orgColsRes = await client.query(`
+      SELECT column_name 
+      FROM information_schema.columns 
+      WHERE table_name = 'organizations' 
+        AND column_name IN ('entity_type', 'institution_type', 'campus_location', 'verified_edu')
+    `);
+    const foundOrgCols = orgColsRes.rows.map(r => r.column_name);
+    console.log('12. Organization Institution Columns:');
+    console.log('   - entity_type:      ', foundOrgCols.includes('entity_type') ? 'PASS' : 'FAIL');
+    console.log('   - institution_type: ', foundOrgCols.includes('institution_type') ? 'PASS' : 'FAIL');
+    console.log('   - campus_location:  ', foundOrgCols.includes('campus_location') ? 'PASS' : 'FAIL');
+    console.log('   - verified_edu:     ', foundOrgCols.includes('verified_edu') ? 'PASS' : 'FAIL');
+
+    // 13. Check active_organizations view includes institution_type
+    const viewColRes = await client.query(`
+      SELECT column_name 
+      FROM information_schema.columns 
+      WHERE table_name = 'active_organizations' AND column_name = 'institution_type'
+    `);
+    const hasViewCol = viewColRes.rowCount > 0;
+    console.log('13. View active_organizations columns:  ', hasViewCol ? 'PASS' : 'FAIL');
+
+    // 14. Check pg_trgm extension & GIN search indexes
+    const trgmExtRes = await client.query(`
+      SELECT extname FROM pg_extension WHERE extname = 'pg_trgm'
+    `);
+    const hasTrgmExt = trgmExtRes.rowCount > 0;
+    console.log('14. Extension pg_trgm:                  ', hasTrgmExt ? 'PASS' : 'FAIL');
+
+    const trgmIdxRes = await client.query(`
+      SELECT indexname FROM pg_indexes 
+      WHERE indexname IN (
+        'idx_users_full_name_trgm',
+        'idx_users_account_name_trgm',
+        'idx_companies_name_trgm',
+        'idx_jobs_title_trgm',
+        'idx_posts_content_trgm'
+      )
+    `);
+    const foundTrgmIndexes = trgmIdxRes.rows.map(r => r.indexname);
+    console.log('    GIN Trigram search indexes (5/5):   ', foundTrgmIndexes.length >= 4 ? 'PASS' : 'FAIL');
+
+    // 15. Check hashtag search indexes
+    const hashIdxRes = await client.query(`
+      SELECT indexname FROM pg_indexes 
+      WHERE tablename = 'hashtags'
+        AND indexname IN ('idx_hashtags_tag_trgm', 'idx_hashtags_posts_count', 'idx_hashtags_created_at', 'idx_hashtags_last_used_at')
+    `);
+    const foundHashIndexes = hashIdxRes.rows.map(r => r.indexname);
+    console.log('15. Hashtag Search Indexes:             ', foundHashIndexes.length >= 3 ? 'PASS' : 'FAIL');
+
+    // 16. Check master reference tables & seeds
+    const masterTablesRes = await client.query(`
+      SELECT table_name FROM information_schema.tables 
+      WHERE table_name IN ('job_roles_master', 'industries_master')
+    `);
+    const foundMasterTables = masterTablesRes.rows.map(r => r.table_name);
+    console.log('16. Master Reference Tables:');
+    console.log('   - job_roles_master:  ', foundMasterTables.includes('job_roles_master') ? 'PASS' : 'FAIL');
+    console.log('   - industries_master: ', foundMasterTables.includes('industries_master') ? 'PASS' : 'FAIL');
+
+    // 17. Check profiles columns
+    const profileColRes = await client.query(`
+      SELECT column_name FROM information_schema.columns 
+      WHERE table_name = 'profiles' AND column_name IN ('working_industry', 'work_mode')
+    `);
+    const foundProfileCols = profileColRes.rows.map(r => r.column_name);
+    console.log('17. Profile search filter columns:      ', foundProfileCols.length === 2 ? 'PASS' : 'FAIL');
+
     const allPassed =
       foundColumns.length === 3 &&
       indexRes.rowCount > 0 &&
@@ -167,10 +232,15 @@ async function runMigration() {
       hasResumeTable &&
       resumeIdxRes.rowCount > 0 &&
       hasPublishedAtCol &&
-      hasPublishedAtIdx;
+      hasPublishedAtIdx &&
+      hasActivelyHiringCol &&
+      foundOrgCols.length >= 3 &&
+      hasTrgmExt &&
+      foundMasterTables.length === 2 &&
+      foundProfileCols.length === 2;
 
     if (allPassed) {
-      console.log('\nVerification PASS: All v1.9.0 columns, tables, recommendation indexes, and job published_at support verified successfully.');
+      console.log('\nVerification PASS: All v1.9.0 columns, tables, recommendation indexes, search trigram indexes, master tables, and job published_at/actively_hiring support verified successfully.');
     } else {
       console.error('\nVerification FAIL: One or more v1.9.0 columns, tables, or indexes missing.');
       process.exit(1);

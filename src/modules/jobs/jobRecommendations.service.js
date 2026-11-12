@@ -226,6 +226,31 @@ function buildCommonEligibilityPredicate(userId, paramIndex = 1) {
     // Candidate cannot view jobs they personally posted
     conditions.push(`(j.recruiter_id IS NULL OR j.recruiter_id != ${userParamIdx})`);
 
+    // Candidate cannot view jobs posted by an organization they administer or own
+    conditions.push(`(
+      j.org_id IS NULL OR (
+        NOT EXISTS (
+          SELECT 1 FROM organizations o_own
+          WHERE o_own.org_id = j.org_id AND o_own.created_by = ${userParamIdx}
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM organization_members om_own
+          LEFT JOIN organization_roles cr_own ON om_own.role_id = cr_own.role_id
+          WHERE om_own.org_id = j.org_id
+            AND om_own.user_id = ${userParamIdx}
+            AND (om_own.status = 'ACTIVE' OR om_own.status IS NULL)
+            AND (om_own.expires_at IS NULL OR om_own.expires_at > NOW())
+            AND (
+              LOWER(COALESCE(cr_own.name, om_own.role, '')) IN ('admin', 'owner')
+              OR cr_own.permissions::text LIKE '%*%'
+              OR cr_own.permissions::text LIKE '%MANAGE_COMPANY%'
+              OR cr_own.permissions::text LIKE '%MANAGE_ORGANIZATION%'
+              OR cr_own.permissions::text LIKE '%POST_JOBS%'
+            )
+        )
+      )
+    )`);
+
     // Universal application exclusion (Withdrawn applications remain visible)
     conditions.push(`NOT EXISTS (
       SELECT 1 FROM job_applications ja 

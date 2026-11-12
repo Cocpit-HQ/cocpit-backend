@@ -153,9 +153,35 @@ exports.getAllJobs = async (req, res) => {
     const { conditions, values, nextIndex } = buildJobFilters(req.query, userId ? 2 : 1);
 
     if (userId) {
-      conditions.push(`j.recruiter_id != $1`);
+      const isExplicitSearch = Boolean(req.query.q || req.query.search || req.query.title);
+      if (!isExplicitSearch) {
+        conditions.push(`j.recruiter_id != $1`);
+      }
       conditions.push(`(ja.application_id IS NULL OR ja.current_status = 'Withdrawn')`);
       conditions.push(`jo.offer_id IS NULL`);
+      conditions.push(`(
+        j.org_id IS NULL OR (
+          NOT EXISTS (
+            SELECT 1 FROM organizations o_own
+            WHERE o_own.org_id = j.org_id AND o_own.created_by = $1
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM organization_members om_own
+            LEFT JOIN organization_roles cr_own ON om_own.role_id = cr_own.role_id
+            WHERE om_own.org_id = j.org_id
+              AND om_own.user_id = $1
+              AND (om_own.status = 'ACTIVE' OR om_own.status IS NULL)
+              AND (om_own.expires_at IS NULL OR om_own.expires_at > NOW())
+              AND (
+                LOWER(COALESCE(cr_own.name, om_own.role, '')) IN ('admin', 'owner')
+                OR cr_own.permissions::text LIKE '%*%'
+                OR cr_own.permissions::text LIKE '%MANAGE_COMPANY%'
+                OR cr_own.permissions::text LIKE '%MANAGE_ORGANIZATION%'
+                OR cr_own.permissions::text LIKE '%POST_JOBS%'
+              )
+          )
+        )
+      )`);
       conditions.push(`NOT EXISTS (
         SELECT 1 FROM blocks b
         WHERE (j.org_id IS NOT NULL AND ((b.blocker_id = $1 AND b.blocked_id = j.org_id) OR (b.blocker_id = j.org_id AND b.blocked_id = $1)))
@@ -263,6 +289,29 @@ exports.getRecommendations = async (req, res) => {
       ${userId ? "LEFT JOIN job_offers jo ON jo.job_id = j.job_id AND jo.user_id = $1 AND jo.status != 'withdrawn'" : ""}
       WHERE j.is_active = TRUE AND j.status = 'ACTIVE' AND u.user_id IS NOT NULL AND (j.org_id IS NOT NULL OR u.is_deactivated = FALSE) AND (j.org_id IS NULL OR (c.is_deleted = FALSE AND c.is_deactivated = FALSE))
       ${userId ? "AND j.recruiter_id != $1" : ""}
+      ${userId ? `AND (
+        j.org_id IS NULL OR (
+          NOT EXISTS (
+            SELECT 1 FROM organizations o_own
+            WHERE o_own.org_id = j.org_id AND o_own.created_by = $1
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM organization_members om_own
+            LEFT JOIN organization_roles cr_own ON om_own.role_id = cr_own.role_id
+            WHERE om_own.org_id = j.org_id
+              AND om_own.user_id = $1
+              AND (om_own.status = 'ACTIVE' OR om_own.status IS NULL)
+              AND (om_own.expires_at IS NULL OR om_own.expires_at > NOW())
+              AND (
+                LOWER(COALESCE(cr_own.name, om_own.role, '')) IN ('admin', 'owner')
+                OR cr_own.permissions::text LIKE '%*%'
+                OR cr_own.permissions::text LIKE '%MANAGE_COMPANY%'
+                OR cr_own.permissions::text LIKE '%MANAGE_ORGANIZATION%'
+                OR cr_own.permissions::text LIKE '%POST_JOBS%'
+              )
+          )
+        )
+      )` : ""}
       ${userId ? "AND (ja.application_id IS NULL OR ja.current_status = 'Withdrawn')" : ""}
       ${userId ? "AND jo.offer_id IS NULL" : ""}
       ${userId ? `AND NOT EXISTS (
@@ -1103,10 +1152,18 @@ exports.applyJob = async (req, res) => {
 
   // Take other fields from request body (guard against undefined body e.g. missing Content-Type)
   const body = req.body || {};
-  let { full_name, email, phone, mobile_number, cover_note } = body;
+  let { full_name, email, phone, mobile_number, cover_note, coverLetter, cover_letter } = body;
+
+  const rawCoverNote = cover_note || coverLetter || cover_letter;
+  if (rawCoverNote && typeof rawCoverNote === 'string' && rawCoverNote.length > 1000) {
+    return res.status(400).json({ message: "Note cannot exceed 1,000 characters" });
+  }
 
   // Sanitize user-generated content
-  cover_note = sanitizeContent(cover_note) || null;
+  cover_note = sanitizeContent(rawCoverNote) || null;
+  if (cover_note && cover_note.length > 1000) {
+    return res.status(400).json({ message: "Note cannot exceed 1,000 characters" });
+  }
   const contactPhone = phone || mobile_number || null;
 
   const client = await pool.connect();
@@ -2534,20 +2591,39 @@ exports.submitTask = async (req, res) => {
 
 exports.getJobRoles = async (req, res) => {
   try {
-    const { q } = req.query;
+    const { q, cursor, limit = 50 } = req.query;
+    const pageSize = Math.min(Math.max(parseInt(limit) || 50, 1), 100);
     let query = `SELECT role_name, category FROM job_roles_master`;
     let values = [];
+    let conditions = [];
 
     if (q) {
-      query += ` WHERE role_name ILIKE $1`;
-      values.push(`%${q}%`);
+      values.push(`%${q.trim()}%`);
+      conditions.push(`role_name ILIKE $${values.length}`);
     }
 
-    query += ` ORDER BY role_name ASC LIMIT 10`;
+    if (cursor) {
+      values.push(cursor.trim());
+      conditions.push(`role_name > $${values.length}`);
+    }
+
+    if (conditions.length > 0) {
+      query += ` WHERE ` + conditions.join(` AND `);
+    }
+
+    values.push(pageSize + 1);
+    query += ` ORDER BY role_name ASC LIMIT $${values.length}`;
 
     const result = await pool.query(query, values);
+    const hasMore = result.rows.length > pageSize;
+    const items = hasMore ? result.rows.slice(0, pageSize) : result.rows;
+    const nextCursor = hasMore && items.length > 0 ? items[items.length - 1].role_name : null;
 
-    res.json(result.rows);
+    res.json({
+      items: items.map(r => r.role_name),
+      nextCursor,
+      hasMore
+    });
   } catch (err) {
     console.error("Error fetching job roles:", err);
     res.status(500).json({ error: "Internal server error" });
@@ -2634,6 +2710,120 @@ exports.getCompanies = async (req, res) => {
     });
   } catch (err) {
     console.error("Error fetching companies:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+};
+
+exports.getInstitutes = async (req, res) => {
+  try {
+    const { q, cursor, limit = 50 } = req.query;
+    const pageSize = Math.min(Math.max(parseInt(limit) || 50, 1), 100);
+
+    let query = `
+      WITH all_institutes AS (
+        SELECT DISTINCT TRIM(o.name) AS name
+        FROM organizations o
+        WHERE o.name IS NOT NULL
+          AND TRIM(o.name) != ''
+          AND (o.entity_type = 'INSTITUTION' OR o.institution_type IS NOT NULL)
+          AND o.is_deleted = FALSE
+        UNION
+        SELECT DISTINCT TRIM(ed.school_name) AS name
+        FROM educations ed
+        WHERE ed.school_name IS NOT NULL
+          AND TRIM(ed.school_name) != ''
+      )
+      SELECT name
+      FROM all_institutes
+      WHERE 1=1
+    `;
+    let values = [];
+
+    if (q) {
+      values.push(`%${q.trim()}%`);
+      query += ` AND name ILIKE $${values.length}`;
+    }
+
+    if (cursor) {
+      values.push(cursor.trim());
+      query += ` AND name > $${values.length}`;
+    }
+
+    values.push(pageSize + 1);
+    query += ` ORDER BY name ASC LIMIT $${values.length}`;
+
+    const result = await pool.query(query, values);
+    const hasMore = result.rows.length > pageSize;
+    const items = hasMore ? result.rows.slice(0, pageSize) : result.rows;
+    const nextCursor = hasMore && items.length > 0 ? items[items.length - 1].name : null;
+
+    res.json({
+      items: items.map(r => r.name),
+      nextCursor,
+      hasMore
+    });
+  } catch (err) {
+    console.error("Error fetching institutes:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+};
+
+exports.getLocations = async (req, res) => {
+  try {
+    const { q, cursor, limit = 20 } = req.query;
+    const pageSize = Math.min(Math.max(parseInt(limit) || 20, 1), 100);
+
+    let query = `
+      WITH all_locations AS (
+        SELECT DISTINCT TRIM(location) AS location
+        FROM jobs
+        WHERE location IS NOT NULL AND TRIM(location) != '' AND is_active = TRUE
+        UNION
+        SELECT DISTINCT TRIM(location) AS location
+        FROM organizations
+        WHERE location IS NOT NULL AND TRIM(location) != '' AND is_deleted = FALSE
+        UNION
+        SELECT DISTINCT
+          CONCAT_WS(', ', NULLIF(TRIM(city), ''), NULLIF(TRIM(country), '')) AS location
+        FROM organizations
+        WHERE city IS NOT NULL AND TRIM(city) != '' AND is_deleted = FALSE
+        UNION
+        SELECT DISTINCT
+          CONCAT_WS(', ', NULLIF(TRIM(location_city), ''), NULLIF(TRIM(location_state), ''), NULLIF(TRIM(location_country), '')) AS location
+        FROM users
+        WHERE location_city IS NOT NULL AND TRIM(location_city) != '' AND is_deactivated = FALSE
+      )
+      SELECT location
+      FROM all_locations
+      WHERE location IS NOT NULL AND location != ''
+    `;
+    let values = [];
+
+    if (q) {
+      values.push(`%${q.trim()}%`);
+      query += ` AND location ILIKE $${values.length}`;
+    }
+
+    if (cursor) {
+      values.push(cursor.trim());
+      query += ` AND location > $${values.length}`;
+    }
+
+    values.push(pageSize + 1);
+    query += ` ORDER BY location ASC LIMIT $${values.length}`;
+
+    const result = await pool.query(query, values);
+    const hasMore = result.rows.length > pageSize;
+    const items = hasMore ? result.rows.slice(0, pageSize) : result.rows;
+    const nextCursor = hasMore && items.length > 0 ? items[items.length - 1].location : null;
+
+    res.json({
+      items: items.map(r => r.location),
+      nextCursor,
+      hasMore
+    });
+  } catch (err) {
+    console.error("Error fetching locations:", err);
     res.status(500).json({ error: "Internal server error" });
   }
 };
