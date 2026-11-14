@@ -3164,9 +3164,26 @@ exports.deletePost = async (req, res) => {
         );
         const postUrls = mediaRes.rows.map(r => r.url).filter(Boolean);
 
+        // Find all post IDs to clean up (the post itself and any reposts/shares of it)
+        const relatedPostIds = [postId.toString()];
+        const sharedPostsRes = await client.query(
+            `SELECT post_id FROM posts WHERE shared_post_id = $1`,
+            [postId]
+        );
+        sharedPostsRes.rows.forEach(r => relatedPostIds.push(r.post_id.toString()));
+
         await client.query(
             `UPDATE posts SET is_active = FALSE WHERE post_id = $1 OR shared_post_id = $1`,
             [postId]
+        );
+
+        // Delete all notifications associated with this post and its shares (likes, comments, tags, mentions, etc.)
+        await client.query(
+            `DELETE FROM notifications 
+             WHERE reference_id = ANY($1::uuid[]) 
+                OR NULLIF(metadata->>'post_id', '') = ANY($1::text[]) 
+                OR NULLIF(metadata->>'postId', '') = ANY($1::text[])`,
+            [relatedPostIds]
         );
 
         await client.query('COMMIT');

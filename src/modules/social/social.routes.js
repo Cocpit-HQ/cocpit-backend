@@ -97,7 +97,10 @@ const featureFlagsService = require("../config/featureFlags.service");
 const blockIfNotificationsDisabled = (req, res, next) => {
     const flags = featureFlagsService.getFlags();
     const isCompanyActor = Boolean(
+        req.query.orgId ||
         req.query.companyId ||
+        req.body?.orgId ||
+        req.body?.companyId ||
         req.actor?.type === "ORGANIZATION" ||
         req.headers["x-actor-type"] === "ORGANIZATION"
     );

@@ -160,7 +160,7 @@ async function searchJobs(client, { queryParams, viewerId, orgActorId, limit = 1
       salaryDisplay = `From ₹${Math.round(item.salary_min / 1000)}k`;
     }
 
-    let cleanExp = '0-2 Yrs';
+    let cleanExp = '0-1 Yrs';
     if (item.experience_label && !item.experience_label.includes('null')) {
       cleanExp = item.experience_label;
     } else if (item.experience_min != null && item.experience_max != null) {

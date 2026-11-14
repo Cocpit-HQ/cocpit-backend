@@ -454,9 +454,11 @@ exports.getJobById = async (req, res) => {
         j.*,
         u.full_name AS recruiter_name,
         u.avatar_url AS recruiter_avatar,
+        u.headline AS recruiter_title,
         COALESCE(c.name, j.company_name, u.full_name) AS company,
         COALESCE(c.name, j.company_name, u.full_name) AS company_name,
         c.logo_url AS company_logo,
+        c.headline AS company_headline,
         COALESCE(c.logo_url, '') AS company_avatar,
         c.slug AS company_slug,
         ${userId ? '(js.user_id IS NOT NULL) AS "isSaved",' : 'FALSE AS "isSaved",'}
@@ -467,6 +469,9 @@ exports.getJobById = async (req, res) => {
         ${userId ? 'jo.expires_at AS "offer_expires_at",' : 'NULL AS "offer_expires_at",'}
         ${userId ? 'jo.offer_id AS "offer_id",' : 'NULL AS "offer_id",'}
         ${userId ? 'jo.message AS "recruiter_message",' : 'NULL AS "recruiter_message",'}
+        ${userId ? 'CASE WHEN j.org_id IS NOT NULL OR jo.org_id IS NOT NULL THEN COALESCE(c.name, j.company_name) ELSE COALESCE(u_sender.full_name, u.full_name) END AS "offer_sender_name",' : ''}
+        ${userId ? 'CASE WHEN j.org_id IS NOT NULL OR jo.org_id IS NOT NULL THEN c.logo_url ELSE COALESCE(u_sender.avatar_url, u.avatar_url) END AS "offer_sender_avatar",' : ''}
+        ${userId ? 'CASE WHEN j.org_id IS NOT NULL OR jo.org_id IS NOT NULL THEN c.headline ELSE COALESCE(u_sender.headline, u.headline) END AS "offer_sender_headline",' : ''}
         ${userId ? 'ja.application_id AS "applicationId",' : 'NULL AS "applicationId",'}
         ${userId ? 'ja.screening_required AS "screeningRequired",' : 'NULL AS "screeningRequired",'}
         ${userId ? 'ja.screening_type AS "screeningType",' : 'NULL AS "screeningType",'}
@@ -482,6 +487,7 @@ exports.getJobById = async (req, res) => {
       ${userId ? 'LEFT JOIN organization_followers of ON of.org_id = j.org_id AND of.user_id = $2' : ''}
       ${userId ? 'LEFT JOIN followers uf ON uf.following_id = j.recruiter_id AND uf.follower_id = $2' : ''}
       ${userId ? 'LEFT JOIN job_offers jo ON jo.job_id = j.job_id AND jo.user_id = $2 AND jo.status != \'withdrawn\'' : ''}
+      ${userId ? 'LEFT JOIN active_users u_sender ON jo.sent_by = u_sender.user_id' : ''}
       WHERE j.job_id = $1
       AND u.user_id IS NOT NULL 
       AND (j.org_id IS NOT NULL OR u.is_deactivated = FALSE)
@@ -678,8 +684,9 @@ exports.createJob = async (req, res) => {
       education: generated.education || null,
     } : null;
 
-    const finalExpMin = (parsedExpMin !== null && !isNaN(parsedExpMin)) ? parsedExpMin : (generated?.experience_min || null);
-    const finalExpMax = (parsedExpMax !== null && !isNaN(parsedExpMax)) ? parsedExpMax : (generated?.experience_max || null);
+    const finalExpMin = (parsedExpMin !== null && !isNaN(parsedExpMin)) ? parsedExpMin : (generated?.experience_min !== undefined && generated?.experience_min !== null ? generated.experience_min : 0);
+    const finalExpMax = (parsedExpMax !== null && !isNaN(parsedExpMax)) ? parsedExpMax : (generated?.experience_max !== undefined && generated?.experience_max !== null ? generated.experience_max : 1);
+    const finalExpLabel = resolvedExperienceLabel || 'Fresher';
 
     const jobRes = await client.query(
       `
@@ -697,7 +704,7 @@ exports.createJob = async (req, res) => {
         resolvedLocation,
         resolvedJobType,
         resolvedWorkMode,
-        resolvedExperienceLabel,
+        finalExpLabel,
         postedAsCompany,
         aiDescription,
         finalExpMin,
@@ -833,7 +840,7 @@ exports.submitJob = async (req, res) => {
   try {
     await client.query("BEGIN");
 
-    const jobRes = await client.query(`SELECT * FROM jobs WHERE job_id = $1`, [id]);
+    const jobRes = await client.query(`SELECT * FROM jobs WHERE job_id = $1 FOR UPDATE`, [id]);
     if (jobRes.rowCount === 0) {
       await client.query("ROLLBACK");
       return res.status(404).json({ message: "Job not found" });
@@ -849,31 +856,22 @@ exports.submitJob = async (req, res) => {
       }
     }
 
+    // Idempotency guard: If job is already ACTIVE, return cleanly without duplicate operations
+    if (job.status === 'ACTIVE') {
+      await client.query("COMMIT");
+      return res.status(200).json({ message: "Job is already active", job });
+    }
+
     if (job.status !== 'DRAFT') {
       await client.query("ROLLBACK");
       return res.status(400).json({ message: "Only DRAFT jobs can be submitted" });
     }
 
-    let updated;
-    if (!job.ai_extracted_requirements) {
-      const extracted = await extractRequirementsFromJDText(job.description);
-      const setClauses = ["status = 'ACTIVE'", "ai_extracted_requirements = $2", "published_at = NOW()", "created_at = NOW()"];
-      const params = [id, JSON.stringify(extracted)];
-      // Only set experience_min from extraction if the job doesn't already have one
-      if (extracted.experience_min !== null && (job.experience_min === null || job.experience_min === undefined)) {
-        setClauses.push("experience_min = $3");
-        params.push(extracted.experience_min);
-      }
-      updated = await client.query(
-        `UPDATE jobs SET ${setClauses.join(", ")} WHERE job_id = $1 RETURNING *`,
-        params
-      );
-    } else {
-      updated = await client.query(
-        `UPDATE jobs SET status = 'ACTIVE', published_at = NOW(), created_at = NOW() WHERE job_id = $1 RETURNING *`,
-        [id]
-      );
-    }
+    const setClauses = ["status = 'ACTIVE'", "published_at = NOW()", "created_at = NOW()"];
+    const updated = await client.query(
+      `UPDATE jobs SET ${setClauses.join(", ")} WHERE job_id = $1 RETURNING *`,
+      [id]
+    );
 
     await client.query(
       `INSERT INTO job_versions (job_id, changed_by, trigger_event, previous_data) VALUES ($1, $2, 'SUBMIT', $3)`,
@@ -916,6 +914,26 @@ exports.submitJob = async (req, res) => {
 
     await client.query("COMMIT");
     res.status(200).json({ message: "Job submitted for review", job: publishedJob });
+
+    // Background AI requirements extraction (decoupled to prevent delaying response)
+    if (!job.ai_extracted_requirements && job.description) {
+      setImmediate(async () => {
+        try {
+          const extracted = await extractRequirementsFromJDText(job.description, id, userId, job.org_id, req.ip);
+          if (extracted && (extracted.skills?.length || extracted.experience_min !== null)) {
+            const setClauses = ["ai_extracted_requirements = $2"];
+            const params = [id, JSON.stringify(extracted)];
+            if (extracted.experience_min !== null && (job.experience_min === null || job.experience_min === undefined)) {
+              setClauses.push("experience_min = $3");
+              params.push(extracted.experience_min);
+            }
+            await pool.query(`UPDATE jobs SET ${setClauses.join(", ")} WHERE job_id = $1`, params);
+          }
+        } catch (extractionErr) {
+          console.error(`[Job Extractor] Background extraction failed for job ${id}:`, extractionErr);
+        }
+      });
+    }
 
     // Real-time socket notification
     try {
@@ -1032,14 +1050,24 @@ const performLifecycleAction = async (req, res, actionName, targetStatus, allowe
       return res.status(400).json({ message: `Cannot ${actionName} job from status: ${job.status}` });
     }
 
-    const updated = await client.query(
-      `UPDATE jobs 
-       SET status = $1,
-           published_at = CASE WHEN $1 = 'ACTIVE' AND published_at IS NULL THEN NOW() ELSE published_at END,
-           created_at = CASE WHEN $1 = 'ACTIVE' AND (status = 'DRAFT' OR status = 'UNDER_REVIEW') THEN NOW() ELSE created_at END
-       WHERE job_id = $2 RETURNING *`,
-      [targetStatus, id]
-    );
+    let updateQuery;
+    if (targetStatus === 'ACTIVE') {
+      updateQuery = `
+        UPDATE jobs 
+        SET status = $1::varchar,
+            published_at = CASE WHEN published_at IS NULL THEN NOW() ELSE published_at END,
+            created_at = CASE WHEN (status = 'DRAFT' OR status = 'UNDER_REVIEW') THEN NOW() ELSE created_at END
+        WHERE job_id = $2 RETURNING *
+      `;
+    } else {
+      updateQuery = `
+        UPDATE jobs 
+        SET status = $1::varchar
+        WHERE job_id = $2 RETURNING *
+      `;
+    }
+
+    const updated = await client.query(updateQuery, [targetStatus, id]);
 
     await client.query(
       `INSERT INTO job_activity (job_id, actor_id, action) VALUES ($1, $2, $3)`,

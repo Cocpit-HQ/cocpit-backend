@@ -1303,10 +1303,11 @@ exports.getEducationList = async (req, res) => {
                     UNION ALL
                     SELECT e.name AS school_name, e.org_id, NULL::text AS logo_url
                     FROM matched_edus e
-                    WHERE e.org_id IS NULL 
-                       OR NOT EXISTS (
-                           SELECT 1 FROM matched_orgs o WHERE o.org_id = e.org_id
-                       )
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM matched_orgs o 
+                        WHERE (e.org_id IS NOT NULL AND o.org_id = e.org_id)
+                           OR LOWER(TRIM(o.name)) = LOWER(TRIM(e.name))
+                    )
                 ) combined_all
                 ORDER BY (CASE WHEN org_id IS NOT NULL THEN 0 ELSE 1 END) ASC, LOWER(TRIM(school_name)) ASC
                 LIMIT 50`;
@@ -1335,10 +1336,11 @@ exports.getEducationList = async (req, res) => {
                     UNION ALL
                     SELECT e.name AS school_name, e.org_id, NULL::text AS logo_url
                     FROM matched_edus e
-                    WHERE e.org_id IS NULL 
-                       OR NOT EXISTS (
-                           SELECT 1 FROM matched_orgs o WHERE o.org_id = e.org_id
-                       )
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM matched_orgs o 
+                        WHERE (e.org_id IS NOT NULL AND o.org_id = e.org_id)
+                           OR LOWER(TRIM(o.name)) = LOWER(TRIM(e.name))
+                    )
                 ) combined_all
                 ORDER BY (CASE WHEN org_id IS NOT NULL THEN 0 ELSE 1 END) ASC, LOWER(TRIM(school_name)) ASC
                 LIMIT 50`;
@@ -1442,10 +1444,11 @@ exports.getCompanyList = async (req, res) => {
                     UNION ALL
                     SELECT e.name AS company_name, e.org_id, NULL::text AS logo_url, NULL::integer AS established_year
                     FROM matched_exps e
-                    WHERE e.org_id IS NULL
-                       OR NOT EXISTS (
-                           SELECT 1 FROM matched_orgs o WHERE o.org_id = e.org_id
-                       )
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM matched_orgs o 
+                        WHERE (e.org_id IS NOT NULL AND o.org_id = e.org_id)
+                           OR LOWER(TRIM(o.name)) = LOWER(TRIM(e.name))
+                    )
                 ) combined_all
                 ORDER BY (CASE WHEN org_id IS NOT NULL THEN 0 ELSE 1 END) ASC, LOWER(TRIM(company_name)) ASC
                 LIMIT 50`;
@@ -1474,10 +1477,11 @@ exports.getCompanyList = async (req, res) => {
                     UNION ALL
                     SELECT e.name AS company_name, e.org_id, NULL::text AS logo_url, NULL::integer AS established_year
                     FROM matched_exps e
-                    WHERE e.org_id IS NULL
-                       OR NOT EXISTS (
-                           SELECT 1 FROM matched_orgs o WHERE o.org_id = e.org_id
-                       )
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM matched_orgs o 
+                        WHERE (e.org_id IS NOT NULL AND o.org_id = e.org_id)
+                           OR LOWER(TRIM(o.name)) = LOWER(TRIM(e.name))
+                    )
                 ) combined_all
                 ORDER BY (CASE WHEN org_id IS NOT NULL THEN 0 ELSE 1 END) ASC, LOWER(TRIM(company_name)) ASC
                 LIMIT 50`;
