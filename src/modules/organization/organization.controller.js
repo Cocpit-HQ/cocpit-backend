@@ -13,6 +13,85 @@ const { requireOrgPermission } = require("../../core/middlewares/organization.au
 const featureFlagsService = require("../config/featureFlags.service");
 const { toCityStateCountry } = require("./organization.profile.controller");
 
+/**
+ * Notifies users who have unassociated experiences or educations matching the newly created organization.
+ */
+async function notifyAssociatedUsersOnOrgCreated(client, org, creatorUserId) {
+    try {
+        const orgName = (org?.name || "").trim();
+        if (!orgName) return;
+
+        const isInstitution = org.entity_type === 'INSTITUTION';
+        
+        let findUsersQuery;
+        if (isInstitution) {
+            findUsersQuery = `
+                SELECT DISTINCT p.user_id
+                FROM educations ed
+                JOIN profiles p ON ed.profile_id = p.profile_id
+                WHERE ed.school_org_id IS NULL
+                  AND LOWER(TRIM(ed.school_name)) = LOWER(TRIM($1))
+                  AND p.user_id != $2
+            `;
+        } else {
+            findUsersQuery = `
+                SELECT DISTINCT p.user_id
+                FROM experiences ex
+                JOIN profiles p ON ex.profile_id = p.profile_id
+                WHERE ex.org_id IS NULL
+                  AND LOWER(TRIM(ex.company_name)) = LOWER(TRIM($1))
+                  AND p.user_id != $2
+            `;
+        }
+
+        const matchRes = await client.query(findUsersQuery, [orgName, creatorUserId]);
+        if (!matchRes.rows || matchRes.rows.length === 0) return;
+
+        const targetUserIds = matchRes.rows.map(r => r.user_id);
+        const entityLabel = isInstitution ? 'Institution' : 'Organisation';
+        const title = `Your ${entityLabel} Is on Cocpit!`;
+        const bodyText = `Your ${entityLabel.toLowerCase()}, ${orgName}, is now registered with its verified account on Cocpit. If you’re associated with it, please update your profile accordingly.`;
+        const metadata = {
+            title,
+            body: bodyText,
+            org_id: org.org_id,
+            org_name: orgName,
+            actor_name: orgName,
+            actor_avatar: org.logo_url || null,
+            actor_slug: org.slug || null,
+            slug: org.slug || null,
+            isCompanyActor: true,
+            entity_type: org.entity_type || (isInstitution ? 'INSTITUTION' : 'COMPANY')
+        };
+
+        for (const targetUserId of targetUserIds) {
+            await client.query(
+                `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata)
+                 VALUES ($1, $2, 'ORG_ONBOARDED', $3, $4, $5)`,
+                [targetUserId, creatorUserId, bodyText, org.org_id, JSON.stringify(metadata)]
+            );
+        }
+
+        const socketService = require("../../core/infrastructure/socket.service");
+        if (socketService) {
+            for (const targetUserId of targetUserIds) {
+                socketService.notifyUser(targetUserId, "notification", {
+                    title,
+                    text: bodyText,
+                    type: 'ORG_ONBOARDED',
+                    reference_id: org.org_id,
+                    actor_name: orgName,
+                    actor_avatar: org.logo_url || null,
+                    created_at: new Date().toISOString(),
+                    metadata
+                });
+            }
+        }
+    } catch (err) {
+        console.error("Error sending organization onboarding notifications:", err);
+    }
+}
+
 exports.createOrganization = async (req, res) => {
     const userId = req.user.sub;
     const { name, slug, email, industry, size, website, location, description, parent_org_id } = req.body;
@@ -145,6 +224,9 @@ exports.createOrganization = async (req, res) => {
             action: 'CREATE_ORGANIZATION',
             metadata: { name, slug, targetType: 'organization', targetId: company.org_id, targetName: name }
         });
+
+        // 7. Notify users with unassociated experiences/educations matching this organization
+        await notifyAssociatedUsersOnOrgCreated(client, company, userId);
 
         await client.query("COMMIT");
 
@@ -2667,6 +2749,9 @@ exports.publishNewOrganization = async (req, res) => {
                 targetName: name
             }
         });
+
+        // Notify users with unassociated experiences/educations matching this organization
+        await notifyAssociatedUsersOnOrgCreated(client, orgRes.rows[0], userId);
 
         await client.query("COMMIT");
 
