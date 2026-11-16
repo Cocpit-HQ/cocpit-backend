@@ -1,0 +1,6 @@
+node_modules
+coverage
+dist
+docker
+_work
+uat_migrations
