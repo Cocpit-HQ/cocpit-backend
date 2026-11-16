@@ -19,7 +19,7 @@
     "migrate:uat:v1.7.0": "node uat_migrations/run_v1.7.0_migration.js",
     "migrate:uat:v1.8.0": "node uat_migrations/run_v1.8.0_migration.js",
     "migrate:uat:v1.9.0": "node uat_migrations/run_v1.9.0_migration.js",
-    "prepare": "husky"
+    "prepare": "node -e \"if (process.env.NODE_ENV !== 'production') { try { require('child_process').execSync('npx husky', { stdio: 'inherit' }); } catch {} }\""
   },
   "keywords": [],
   "author": "",
