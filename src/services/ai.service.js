@@ -50,8 +50,8 @@ const FALLBACK_JD = {
     "Flexible work arrangements.",
     "Comprehensive health and wellness benefits."
   ],
-  experience_min: 1,
-  experience_max: 3,
+  experience_min: 0,
+  experience_max: 1,
   education: "Bachelor's degree or equivalent practical experience.",
   skills: ["Communication", "Teamwork", "Problem Solving", "Adaptability"],
   required_skills_keywords: ["Communication", "Teamwork", "Problem Solving", "Adaptability"]

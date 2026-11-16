@@ -24,7 +24,7 @@ exports.sendJobOffer = async (req, res) => {
         await client.query('BEGIN');
 
         const jobCheck = await client.query(
-            `SELECT job_id, title FROM jobs 
+            `SELECT job_id, title, org_id, recruiter_id FROM jobs 
              WHERE job_id = $1 AND is_active = TRUE 
                AND (org_id = $2 OR (org_id IS NULL AND recruiter_id = $3))`,
             [jobId, companyId || null, sentBy]
@@ -32,6 +32,21 @@ exports.sendJobOffer = async (req, res) => {
         if (jobCheck.rowCount === 0) {
             await client.query('ROLLBACK');
             return res.status(404).json({ message: "Job not found or does not belong to this company/recruiter" });
+        }
+
+        const targetOrgId = jobCheck.rows[0].org_id || companyId;
+        if (targetOrgId) {
+            // Check if recipient is owner or active member of this organization
+            const memberCheck = await client.query(
+                `SELECT 1 FROM organization_members WHERE org_id = $1 AND user_id = $2 AND status = 'ACTIVE'
+                 UNION
+                 SELECT 1 FROM organizations WHERE org_id = $1 AND created_by = $2`,
+                [targetOrgId, userId]
+            );
+            if (memberCheck.rowCount > 0) {
+                await client.query('ROLLBACK');
+                return res.status(400).json({ message: "You cannot send a job offer to an owner or member of this organization." });
+            }
         }
 
         // 2. Check for existing pending, accepted, or declined offer
@@ -138,13 +153,13 @@ exports.getMyOffers = async (req, res) => {
                 j.salary_period, j.job_type, j.work_mode, j.location, j.experience_level,
                 j.company_name, j.recruiter_id,
                 j.is_active, j.status as job_status,
-                COALESCE(c.name, j.company_name) as company_display_name, c.logo_url as company_logo, c.slug as company_slug,
-                u.full_name as sent_by_name,
-                u.avatar_url as sent_by_avatar,
-                u.headline as sent_by_headline
+                COALESCE(c.name, j.company_name) as company_display_name, c.logo_url as company_logo, c.headline as company_headline, c.slug as company_slug,
+                CASE WHEN jo.org_id IS NOT NULL OR j.org_id IS NOT NULL THEN COALESCE(c.name, j.company_name) ELSE u.full_name END as sent_by_name,
+                CASE WHEN jo.org_id IS NOT NULL OR j.org_id IS NOT NULL THEN c.logo_url ELSE u.avatar_url END as sent_by_avatar,
+                CASE WHEN jo.org_id IS NOT NULL OR j.org_id IS NOT NULL THEN c.headline ELSE u.headline END as sent_by_headline
             FROM job_offers jo
             JOIN jobs j ON jo.job_id = j.job_id
-            LEFT JOIN organizations c ON jo.org_id = c.org_id
+            LEFT JOIN organizations c ON COALESCE(jo.org_id, j.org_id) = c.org_id
             LEFT JOIN active_users u ON jo.sent_by = u.user_id
             WHERE jo.user_id = $1 AND j.is_active = TRUE AND jo.status != 'withdrawn'
         `;
@@ -272,7 +287,7 @@ exports.getCompanyOfferRecipients = async (req, res) => {
             query += ` WHERE jo.org_id = $1 AND jo.job_id = $2 AND jo.status != 'withdrawn' `;
             params = [companyId, jobId];
         } else {
-            query += ` WHERE jo.sent_by = $1 AND jo.job_id = $2 AND jo.status != 'withdrawn' `;
+            query += ` WHERE jo.sent_by = $1 AND jo.org_id IS NULL AND jo.job_id = $2 AND jo.status != 'withdrawn' `;
             params = [userId, jobId];
         }
         query += ` ORDER BY jo.created_at DESC `;
@@ -568,11 +583,13 @@ exports.getOfferDetail = async (req, res) => {
                 j.title, j.description, j.salary_min, j.salary_max, j.salary_currency,
                 j.salary_period, j.job_type, j.work_mode, j.location, j.experience_level,
                 j.about_company, j.company_name, j.industry, j.recruiter_id,
-                COALESCE(c.name, j.company_name) as company_display_name, c.logo_url as company_logo, c.slug as company_slug,
-                u.full_name as sent_by_name, u.avatar_url as sent_by_avatar
+                COALESCE(c.name, j.company_name) as company_display_name, c.logo_url as company_logo, c.headline as company_headline, c.slug as company_slug,
+                CASE WHEN jo.org_id IS NOT NULL OR j.org_id IS NOT NULL THEN COALESCE(c.name, j.company_name) ELSE u.full_name END as sent_by_name,
+                CASE WHEN jo.org_id IS NOT NULL OR j.org_id IS NOT NULL THEN c.logo_url ELSE u.avatar_url END as sent_by_avatar,
+                CASE WHEN jo.org_id IS NOT NULL OR j.org_id IS NOT NULL THEN c.headline ELSE u.headline END as sent_by_headline
             FROM job_offers jo
             JOIN jobs j ON jo.job_id = j.job_id
-            LEFT JOIN organizations c ON jo.org_id = c.org_id
+            LEFT JOIN organizations c ON COALESCE(jo.org_id, j.org_id) = c.org_id
             LEFT JOIN active_users u ON jo.sent_by = u.user_id
             WHERE jo.offer_id = $1 AND j.is_active = TRUE AND jo.status != 'withdrawn' AND (jo.user_id = $2 OR jo.sent_by = $2 OR (jo.org_id IS NOT NULL AND jo.org_id IN (
                 SELECT org_id FROM organization_members WHERE user_id = $2
@@ -662,7 +679,7 @@ exports.getRecruiterSentOffers = async (req, res) => {
             JOIN jobs j ON jo.job_id = j.job_id
             LEFT JOIN organizations c ON j.org_id = c.org_id
             LEFT JOIN active_users u ON j.recruiter_id = u.user_id
-            WHERE jo.sent_by = $1 AND j.is_active = TRUE AND jo.status != 'withdrawn'
+            WHERE jo.sent_by = $1 AND jo.org_id IS NULL AND j.org_id IS NULL AND j.is_active = TRUE AND jo.status != 'withdrawn'
             GROUP BY j.job_id, j.title, j.job_type, j.work_mode, j.location,
                      j.experience_level, j.salary_min, j.salary_max, j.salary_currency,
                      j.salary_period, j.company_name, j.description,
