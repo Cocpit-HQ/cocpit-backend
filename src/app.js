@@ -29,6 +29,7 @@ const placesRoutes = require("./modules/places/places.routes");
 const analyticsRoutes = require("./modules/analytics/analytics.routes");
 const settingsRoutes = require("./modules/settings/settings.routes");
 const userSettingsRoutes = require("./modules/user/userSettings.routes");
+const searchRoutes = require("./modules/search/search.routes");
 const { optionalAuth } = require("./core/middlewares/auth.middleware");
 const { enforceOnboarding } = require("./core/middlewares/onboarding.middleware");
 
@@ -135,6 +136,7 @@ app.use("/api/feed", feedRoutes);
 app.use("/api", analyticsRoutes);
 app.use("/api/settings", settingsRoutes);
 app.use("/api/user", userSettingsRoutes);
+app.use("/api/search", searchRoutes);
 const errorHandler = require("./core/middlewares/error.middleware");
 app.use(errorHandler);
 

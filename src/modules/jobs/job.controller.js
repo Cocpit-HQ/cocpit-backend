@@ -16,6 +16,7 @@ const aiService = require("../../services/ai.service");
 const { validateSchema, validateBusiness, validateContentSafety } = require("../../core/utils/aiValidation");
 const { extractRequirementsFromJDText } = require("../../services/jdExtractor.service");
 const { calculateBackendScore, calculateTotalExperienceYears, getLatestEducation } = require("./applications/application.utils");
+const jobRecommendationsService = require("./jobRecommendations.service");
 
 
 const getRequestedOrganizationActorId = (req, fallbackOrgId = null) => {
@@ -152,9 +153,35 @@ exports.getAllJobs = async (req, res) => {
     const { conditions, values, nextIndex } = buildJobFilters(req.query, userId ? 2 : 1);
 
     if (userId) {
-      conditions.push(`j.recruiter_id != $1`);
+      const isExplicitSearch = Boolean(req.query.q || req.query.search || req.query.title);
+      if (!isExplicitSearch) {
+        conditions.push(`j.recruiter_id != $1`);
+      }
       conditions.push(`(ja.application_id IS NULL OR ja.current_status = 'Withdrawn')`);
       conditions.push(`jo.offer_id IS NULL`);
+      conditions.push(`(
+        j.org_id IS NULL OR (
+          NOT EXISTS (
+            SELECT 1 FROM organizations o_own
+            WHERE o_own.org_id = j.org_id AND o_own.created_by = $1
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM organization_members om_own
+            LEFT JOIN organization_roles cr_own ON om_own.role_id = cr_own.role_id
+            WHERE om_own.org_id = j.org_id
+              AND om_own.user_id = $1
+              AND (om_own.status = 'ACTIVE' OR om_own.status IS NULL)
+              AND (om_own.expires_at IS NULL OR om_own.expires_at > NOW())
+              AND (
+                LOWER(COALESCE(cr_own.name, om_own.role, '')) IN ('admin', 'owner')
+                OR cr_own.permissions::text LIKE '%*%'
+                OR cr_own.permissions::text LIKE '%MANAGE_COMPANY%'
+                OR cr_own.permissions::text LIKE '%MANAGE_ORGANIZATION%'
+                OR cr_own.permissions::text LIKE '%POST_JOBS%'
+              )
+          )
+        )
+      )`);
       conditions.push(`NOT EXISTS (
         SELECT 1 FROM blocks b
         WHERE (j.org_id IS NOT NULL AND ((b.blocker_id = $1 AND b.blocked_id = j.org_id) OR (b.blocker_id = j.org_id AND b.blocked_id = $1)))
@@ -170,9 +197,9 @@ exports.getAllJobs = async (req, res) => {
 
     let paramCount = nextIndex;
 
-    // Pagination (Cursor-based on created_at)
+    // Pagination (Cursor-based on published_at or created_at)
     if (cursor) {
-      conditions.push(`j.created_at < $${paramCount}`);
+      conditions.push(`COALESCE(j.published_at, j.created_at) < $${paramCount}`);
       params.push(new Date(cursor));
       paramCount++;
     }
@@ -188,6 +215,8 @@ exports.getAllJobs = async (req, res) => {
         j.*,
         u.full_name AS recruiter_name,
         u.avatar_url AS recruiter_avatar,
+        COALESCE(c.name, j.company_name, u.full_name) AS company,
+        COALESCE(c.name, j.company_name, u.full_name) AS company_name,
         c.logo_url AS company_logo,
         COALESCE(c.logo_url, '') AS company_avatar,
         c.slug AS company_slug,
@@ -204,9 +233,9 @@ exports.getAllJobs = async (req, res) => {
       LEFT JOIN organizations c ON j.org_id = c.org_id
       ${userId ? "LEFT JOIN job_saves js ON js.job_id = j.job_id AND js.user_id = $1" : ""}
       ${userId ? "LEFT JOIN job_applications ja ON ja.job_id = j.job_id AND ja.applicant_id = $1" : ""}
-      ${userId ? "LEFT JOIN job_offers jo ON jo.job_id = j.job_id AND jo.user_id = $1" : ""}
+      ${userId ? "LEFT JOIN job_offers jo ON jo.job_id = j.job_id AND jo.user_id = $1 AND jo.status != 'withdrawn'" : ""}
       ${whereClause}
-      ORDER BY j.created_at DESC
+      ORDER BY COALESCE(j.published_at, j.created_at) DESC
       ${limitClause}
     `;
 
@@ -243,6 +272,8 @@ exports.getRecommendations = async (req, res) => {
         j.*,
         u.full_name AS recruiter_name,
         u.avatar_url AS recruiter_avatar,
+        COALESCE(c.name, j.company_name, u.full_name) AS company,
+        COALESCE(c.name, j.company_name, u.full_name) AS company_name,
         c.logo_url AS company_logo,
         COALESCE(c.logo_url, '') AS company_avatar,
         c.slug AS company_slug,
@@ -255,9 +286,32 @@ exports.getRecommendations = async (req, res) => {
       LEFT JOIN organizations c ON j.org_id = c.org_id
       ${userId ? "LEFT JOIN job_saves js ON js.job_id = j.job_id AND js.user_id = $1" : ""}
       ${userId ? "LEFT JOIN job_applications ja ON ja.job_id = j.job_id AND ja.applicant_id = $1" : ""}
-      ${userId ? "LEFT JOIN job_offers jo ON jo.job_id = j.job_id AND jo.user_id = $1" : ""}
+      ${userId ? "LEFT JOIN job_offers jo ON jo.job_id = j.job_id AND jo.user_id = $1 AND jo.status != 'withdrawn'" : ""}
       WHERE j.is_active = TRUE AND j.status = 'ACTIVE' AND u.user_id IS NOT NULL AND (j.org_id IS NOT NULL OR u.is_deactivated = FALSE) AND (j.org_id IS NULL OR (c.is_deleted = FALSE AND c.is_deactivated = FALSE))
       ${userId ? "AND j.recruiter_id != $1" : ""}
+      ${userId ? `AND (
+        j.org_id IS NULL OR (
+          NOT EXISTS (
+            SELECT 1 FROM organizations o_own
+            WHERE o_own.org_id = j.org_id AND o_own.created_by = $1
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM organization_members om_own
+            LEFT JOIN organization_roles cr_own ON om_own.role_id = cr_own.role_id
+            WHERE om_own.org_id = j.org_id
+              AND om_own.user_id = $1
+              AND (om_own.status = 'ACTIVE' OR om_own.status IS NULL)
+              AND (om_own.expires_at IS NULL OR om_own.expires_at > NOW())
+              AND (
+                LOWER(COALESCE(cr_own.name, om_own.role, '')) IN ('admin', 'owner')
+                OR cr_own.permissions::text LIKE '%*%'
+                OR cr_own.permissions::text LIKE '%MANAGE_COMPANY%'
+                OR cr_own.permissions::text LIKE '%MANAGE_ORGANIZATION%'
+                OR cr_own.permissions::text LIKE '%POST_JOBS%'
+              )
+          )
+        )
+      )` : ""}
       ${userId ? "AND (ja.application_id IS NULL OR ja.current_status = 'Withdrawn')" : ""}
       ${userId ? "AND jo.offer_id IS NULL" : ""}
       ${userId ? `AND NOT EXISTS (
@@ -298,6 +352,63 @@ exports.getRecommendations = async (req, res) => {
   } catch (err) {
     console.error("Get recommendations error:", err);
     res.status(500).json({ message: "Internal server error" });
+  }
+};
+
+exports.getExploreSections = async (req, res) => {
+  try {
+    const userId = req.user?.sub || null;
+    const sections = await jobRecommendationsService.getExploreSections(userId);
+    return res.status(200).json({
+      success: true,
+      data: sections,
+    });
+  } catch (err) {
+    console.error("Get explore sections error:", err);
+    return res.status(500).json({
+      success: false,
+      error: "Failed to fetch explore job sections",
+    });
+  }
+};
+
+exports.getExploreSectionDetail = async (req, res) => {
+  try {
+    const { category } = req.params;
+    const userId = req.user?.sub || null;
+    const limit = req.query.limit;
+    const cursor = req.query.cursor || null;
+
+    if (!jobRecommendationsService.VALID_CATEGORIES.includes(category)) {
+      return res.status(400).json({
+        success: false,
+        error: `Invalid explore category '${category}'. Must be one of: ${jobRecommendationsService.VALID_CATEGORIES.join(', ')}`,
+        code: 'INVALID_CATEGORY',
+      });
+    }
+
+    const result = await jobRecommendationsService.getCategoryPaginated(category, userId, {
+      limit,
+      cursor,
+    });
+
+    return res.status(200).json({
+      success: true,
+      data: result,
+    });
+  } catch (err) {
+    console.error(`Get explore section '${req.params.category}' error:`, err);
+    if (err.code === 'INVALID_CATEGORY') {
+      return res.status(400).json({
+        success: false,
+        error: err.message,
+        code: err.code,
+      });
+    }
+    return res.status(500).json({
+      success: false,
+      error: "Failed to fetch category job listings",
+    });
   }
 };
 
@@ -343,6 +454,8 @@ exports.getJobById = async (req, res) => {
         j.*,
         u.full_name AS recruiter_name,
         u.avatar_url AS recruiter_avatar,
+        COALESCE(c.name, j.company_name, u.full_name) AS company,
+        COALESCE(c.name, j.company_name, u.full_name) AS company_name,
         c.logo_url AS company_logo,
         COALESCE(c.logo_url, '') AS company_avatar,
         c.slug AS company_slug,
@@ -368,7 +481,7 @@ exports.getJobById = async (req, res) => {
       ${userId ? 'LEFT JOIN job_applications ja ON ja.job_id = j.job_id AND ja.applicant_id = $2' : ''}
       ${userId ? 'LEFT JOIN organization_followers of ON of.org_id = j.org_id AND of.user_id = $2' : ''}
       ${userId ? 'LEFT JOIN followers uf ON uf.following_id = j.recruiter_id AND uf.follower_id = $2' : ''}
-      ${userId ? 'LEFT JOIN job_offers jo ON jo.job_id = j.job_id AND jo.user_id = $2' : ''}
+      ${userId ? 'LEFT JOIN job_offers jo ON jo.job_id = j.job_id AND jo.user_id = $2 AND jo.status != \'withdrawn\'' : ''}
       WHERE j.job_id = $1
       AND u.user_id IS NOT NULL 
       AND (j.org_id IS NOT NULL OR u.is_deactivated = FALSE)
@@ -471,9 +584,24 @@ exports.getJobById = async (req, res) => {
 
 exports.createJob = async (req, res) => {
   const userId = req.user.sub;
-  let { title, org_id } = req.body;
+  let {
+    title,
+    org_id,
+    location,
+    job_type,
+    work_mode,
+    experience_label,
+    experience_min,
+    experience_max
+  } = req.body;
 
   title = sanitizeContent(title);
+  const resolvedLocation = (location && typeof location === 'string') ? sanitizeContent(location.trim()) : null;
+  const resolvedJobType = (job_type && typeof job_type === 'string') ? sanitizeContent(job_type.trim()) : null;
+  const resolvedWorkMode = (work_mode && typeof work_mode === 'string') ? sanitizeContent(work_mode.trim()) : null;
+  const resolvedExperienceLabel = (experience_label && typeof experience_label === 'string') ? sanitizeContent(experience_label.trim()) : null;
+  const parsedExpMin = (experience_min !== undefined && experience_min !== null && experience_min !== '') ? parseInt(experience_min, 10) : null;
+  const parsedExpMax = (experience_max !== undefined && experience_max !== null && experience_max !== '') ? parseInt(experience_max, 10) : null;
 
   let requestedOrgId = null;
   let resolvedCompanyName = "";
@@ -517,6 +645,10 @@ exports.createJob = async (req, res) => {
       generated = await aiService.generateJobDescription({
         role: title,
         companyName: companyReplacement,
+        location: resolvedLocation,
+        experience: resolvedExperienceLabel,
+        work_type: resolvedJobType,
+        work_mode: resolvedWorkMode,
         jobId: null,
         companyId: org_id || null,
         userId: userId,
@@ -546,12 +678,15 @@ exports.createJob = async (req, res) => {
       education: generated.education || null,
     } : null;
 
+    const finalExpMin = (parsedExpMin !== null && !isNaN(parsedExpMin)) ? parsedExpMin : (generated?.experience_min || null);
+    const finalExpMax = (parsedExpMax !== null && !isNaN(parsedExpMax)) ? parsedExpMax : (generated?.experience_max || null);
+
     const jobRes = await client.query(
       `
       INSERT INTO jobs
-      (recruiter_id, title, company_name, org_id, posted_as_company, status, industry, description,
+      (recruiter_id, title, company_name, org_id, location, job_type, work_mode, experience_label, posted_as_company, status, industry, description,
        experience_min, experience_max, ai_extracted_requirements)
-      VALUES ($1, $2, $3, $4, $5, 'DRAFT', '', $6, $7, $8, $9)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'DRAFT', '', $10, $11, $12, $13)
       RETURNING *
       `,
       [
@@ -559,10 +694,14 @@ exports.createJob = async (req, res) => {
         title,
         resolvedCompanyName,
         requestedOrgId || null,
+        resolvedLocation,
+        resolvedJobType,
+        resolvedWorkMode,
+        resolvedExperienceLabel,
         postedAsCompany,
         aiDescription,
-        generated?.experience_min || null,
-        generated?.experience_max || null,
+        finalExpMin,
+        finalExpMax,
         aiRequirements ? JSON.stringify(aiRequirements) : null
       ]
     );
@@ -718,7 +857,7 @@ exports.submitJob = async (req, res) => {
     let updated;
     if (!job.ai_extracted_requirements) {
       const extracted = await extractRequirementsFromJDText(job.description);
-      const setClauses = ["status = 'ACTIVE'", "ai_extracted_requirements = $2", "created_at = NOW()"];
+      const setClauses = ["status = 'ACTIVE'", "ai_extracted_requirements = $2", "published_at = NOW()", "created_at = NOW()"];
       const params = [id, JSON.stringify(extracted)];
       // Only set experience_min from extraction if the job doesn't already have one
       if (extracted.experience_min !== null && (job.experience_min === null || job.experience_min === undefined)) {
@@ -731,7 +870,7 @@ exports.submitJob = async (req, res) => {
       );
     } else {
       updated = await client.query(
-        `UPDATE jobs SET status = 'ACTIVE', created_at = NOW() WHERE job_id = $1 RETURNING *`,
+        `UPDATE jobs SET status = 'ACTIVE', published_at = NOW(), created_at = NOW() WHERE job_id = $1 RETURNING *`,
         [id]
       );
     }
@@ -746,8 +885,63 @@ exports.submitJob = async (req, res) => {
       [id, userId]
     );
 
+    // Notification: "Your job “[Job Title]” is now live."
+    const publishedJob = updated.rows[0];
+    const jobTitle = publishedJob.title || job.title;
+    const notificationText = `Your job ${jobTitle} is now live.`;
+    const metadataPayload = {
+      jobId: publishedJob.job_id,
+      job_id: publishedJob.job_id,
+      jobTitle,
+      companyName: publishedJob.company_name,
+      orgId: publishedJob.org_id || null,
+      org_id: publishedJob.org_id || null,
+      status: 'ACTIVE'
+    };
+
+    const notifRes = await client.query(
+      `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata, recipient_org_id)
+       VALUES ($1, $2, 'job_approved', $3, $4, $5, $6)
+       RETURNING notification_id, created_at`,
+      [userId, userId, notificationText, publishedJob.job_id, JSON.stringify(metadataPayload), publishedJob.org_id || null]
+    );
+
+    if (publishedJob.org_id) {
+      await client.query(
+        `INSERT INTO notifications (recipient_org_id, user_id, sender_id, type, text, reference_id, metadata)
+         VALUES ($1, NULL, $2, 'job_approved', $3, $4, $5)`,
+        [publishedJob.org_id, userId, notificationText, publishedJob.job_id, JSON.stringify(metadataPayload)]
+      );
+    }
+
     await client.query("COMMIT");
-    res.status(200).json({ message: "Job submitted for review", job: updated.rows[0] });
+    res.status(200).json({ message: "Job submitted for review", job: publishedJob });
+
+    // Real-time socket notification
+    try {
+      const socketService = require("../../core/infrastructure/socket.service");
+      const notifId = notifRes.rows[0]?.notification_id;
+      const notifCreatedAt = notifRes.rows[0]?.created_at ? notifRes.rows[0].created_at.toISOString() : new Date().toISOString();
+      const socketPayload = {
+        notification_id: notifId,
+        type: "job_approved",
+        text: notificationText,
+        sender_id: userId,
+        reference_id: publishedJob.job_id,
+        recipient_company_id: publishedJob.org_id || null,
+        recipient_org_id: publishedJob.org_id || null,
+        metadata: metadataPayload,
+        created_at: notifCreatedAt,
+        is_read: false
+      };
+
+      socketService.notifyUser(userId, "notification", socketPayload);
+      if (publishedJob.org_id) {
+        socketService.notifyOrg(publishedJob.org_id, "notification", socketPayload);
+      }
+    } catch (socketErr) {
+      console.error("Failed to emit job_approved notification:", socketErr);
+    }
   } catch (err) {
     await client.query("ROLLBACK");
     console.error(err);
@@ -839,7 +1033,11 @@ const performLifecycleAction = async (req, res, actionName, targetStatus, allowe
     }
 
     const updated = await client.query(
-      `UPDATE jobs SET status = $1 WHERE job_id = $2 RETURNING *`,
+      `UPDATE jobs 
+       SET status = $1,
+           published_at = CASE WHEN $1 = 'ACTIVE' AND published_at IS NULL THEN NOW() ELSE published_at END,
+           created_at = CASE WHEN $1 = 'ACTIVE' AND (status = 'DRAFT' OR status = 'UNDER_REVIEW') THEN NOW() ELSE created_at END
+       WHERE job_id = $2 RETURNING *`,
       [targetStatus, id]
     );
 
@@ -954,10 +1152,18 @@ exports.applyJob = async (req, res) => {
 
   // Take other fields from request body (guard against undefined body e.g. missing Content-Type)
   const body = req.body || {};
-  let { full_name, email, phone, mobile_number, cover_note } = body;
+  let { full_name, email, phone, mobile_number, cover_note, coverLetter, cover_letter } = body;
+
+  const rawCoverNote = cover_note || coverLetter || cover_letter;
+  if (rawCoverNote && typeof rawCoverNote === 'string' && rawCoverNote.length > 1000) {
+    return res.status(400).json({ message: "Note cannot exceed 1,000 characters" });
+  }
 
   // Sanitize user-generated content
-  cover_note = sanitizeContent(cover_note) || null;
+  cover_note = sanitizeContent(rawCoverNote) || null;
+  if (cover_note && cover_note.length > 1000) {
+    return res.status(400).json({ message: "Note cannot exceed 1,000 characters" });
+  }
   const contactPhone = phone || mobile_number || null;
 
   const client = await pool.connect();
@@ -998,7 +1204,7 @@ exports.applyJob = async (req, res) => {
         WHERE p.user_id = $1 ORDER BY end_date DESC LIMIT 2`, [userId]),
       client.query(`
         SELECT title, description, experience_min, experience_max,
-               experience_label, location, ai_extracted_requirements, org_id, recruiter_id, status, is_active
+               experience_label, experience_level, location, ai_extracted_requirements, org_id, recruiter_id, status, is_active
         FROM jobs WHERE job_id = $1`, [id]),
     ]);
 
@@ -1068,15 +1274,28 @@ exports.applyJob = async (req, res) => {
       resume_file_name = body.resume_file_name || null;
     }
     if (!resume_url) {
-      const recentResumeResult = await client.query(
-        `SELECT resume_url, resume_file_name FROM job_applications
-         WHERE applicant_id = $1 AND resume_url IS NOT NULL
-         ORDER BY application_id DESC LIMIT 1`,
-        [userId]
-      );
-      if (recentResumeResult.rowCount > 0) {
-        resume_url = recentResumeResult.rows[0].resume_url;
-        resume_file_name = recentResumeResult.rows[0].resume_file_name;
+      try {
+        const recentResumeResult = await client.query(
+          `SELECT resume_url, resume_file_name FROM user_resume_history
+           WHERE user_id = $1
+           ORDER BY last_used_at DESC LIMIT 1`,
+          [userId]
+        );
+        if (recentResumeResult.rowCount > 0) {
+          resume_url = recentResumeResult.rows[0].resume_url;
+          resume_file_name = recentResumeResult.rows[0].resume_file_name;
+        }
+      } catch (tblErr) {
+        const recentResumeResult = await client.query(
+          `SELECT resume_url, resume_file_name FROM job_applications
+           WHERE applicant_id = $1 AND resume_url IS NOT NULL
+           ORDER BY application_id DESC LIMIT 1`,
+          [userId]
+        );
+        if (recentResumeResult.rowCount > 0) {
+          resume_url = recentResumeResult.rows[0].resume_url;
+          resume_file_name = recentResumeResult.rows[0].resume_file_name;
+        }
       }
     }
 
@@ -1091,13 +1310,14 @@ exports.applyJob = async (req, res) => {
     const candidateLocation = req.body.location || null;
 
     // 5. Calculate backend score
+    const resolvedExpLabel = job.experience_label || job.experience_level || null;
     const backendScore = calculateBackendScore({
       candidateSkills,
       totalYears,
       jobRequirements: job.ai_extracted_requirements,
       experienceMin: job.experience_min,
       experienceMax: job.experience_max,
-      experienceLabel: job.experience_label,
+      experienceLabel: resolvedExpLabel,
     });
 
     // 6. INSERT job_applications
@@ -1143,7 +1363,8 @@ exports.applyJob = async (req, res) => {
       title: job.title,
       experienceMin: job.experience_min,
       experienceMax: job.experience_max,
-      experienceLabel: job.experience_label,
+      experienceLabel: resolvedExpLabel,
+      experienceLevel: job.experience_level || null,
       skills: job.ai_extracted_requirements?.skills || [],
       education: job.ai_extracted_requirements?.education,
     };
@@ -1288,6 +1509,18 @@ exports.applyJob = async (req, res) => {
 
     // 11. COMMIT and return
     await client.query('COMMIT');
+
+    // Record into user_resume_history asynchronously outside transaction for reuse
+    if (resume_url) {
+      pool.query(`
+        INSERT INTO user_resume_history (user_id, resume_url, resume_file_name, last_used_at)
+        VALUES ($1, $2, $3, NOW())
+        ON CONFLICT (user_id, resume_url) DO UPDATE
+        SET last_used_at = NOW(), resume_file_name = EXCLUDED.resume_file_name
+      `, [userId, resume_url, resume_file_name || 'Resume.pdf']).catch(hErr => {
+        console.warn("user_resume_history async insert skipped:", hErr.message);
+      });
+    }
     // Notifications (Phase 1)
     let companyName = "the company";
     let companyAvatar = null;
@@ -1526,6 +1759,8 @@ exports.getMySavedJobs = async (req, res) => {
         j.*, 
         u.full_name AS recruiter_name, 
         u.avatar_url AS recruiter_avatar,
+        COALESCE(c.name, j.company_name, u.full_name) AS company,
+        COALESCE(c.name, j.company_name, u.full_name) AS company_name,
         c.logo_url AS company_logo,
         COALESCE(c.logo_url, '') AS company_avatar,
         c.slug AS company_slug,
@@ -1543,7 +1778,7 @@ exports.getMySavedJobs = async (req, res) => {
       LEFT JOIN active_users u ON j.recruiter_id = u.user_id
       LEFT JOIN organizations c ON j.org_id = c.org_id
       LEFT JOIN job_applications ja ON ja.job_id = j.job_id AND ja.applicant_id = $1
-      LEFT JOIN job_offers jo ON jo.job_id = j.job_id AND jo.user_id = $1
+      LEFT JOIN job_offers jo ON jo.job_id = j.job_id AND jo.user_id = $1 AND jo.status != 'withdrawn'
       WHERE js.user_id = $1 AND j.is_active = TRUE AND u.user_id IS NOT NULL AND (j.org_id IS NOT NULL OR u.is_deactivated = FALSE) AND (j.org_id IS NULL OR (c.is_deleted = FALSE AND c.is_deactivated = FALSE))
         AND NOT EXISTS (
           SELECT 1 FROM blocks b
@@ -1587,8 +1822,34 @@ exports.getMySavedJobs = async (req, res) => {
 
 exports.getMyRecentResumes = async (req, res) => {
   try {
-    const applicantId = req.user.sub;
-    const result = await pool.query(`
+    const applicantId = req.user?.sub;
+    if (!applicantId) {
+      return res.status(401).json({ message: "Unauthorized" });
+    }
+
+    // 1. Primary lookup: user_resume_history
+    try {
+      const result = await pool.query(`
+        SELECT id, resume_url, resume_file_name, last_used_at
+        FROM user_resume_history
+        WHERE user_id = $1
+        ORDER BY last_used_at DESC
+        LIMIT 2
+      `, [applicantId]);
+
+      const resumes = result.rows.map(row => ({
+        id: row.id,
+        name: row.resume_file_name || 'Resume.pdf',
+        url: row.resume_url,
+        last_applied: row.last_used_at
+      }));
+      return res.json(resumes);
+    } catch (tblErr) {
+      console.warn("user_resume_history query skipped, falling back to job_applications:", tblErr.message);
+    }
+
+    // 2. Fallback: query past job_applications
+    const fallback = await pool.query(`
       SELECT resume_url, MAX(applied_at) as last_applied, (array_agg(resume_file_name ORDER BY applied_at DESC))[1] as resume_file_name
       FROM job_applications
       WHERE applicant_id = $1 AND resume_url IS NOT NULL
@@ -1597,7 +1858,7 @@ exports.getMyRecentResumes = async (req, res) => {
       LIMIT 2
     `, [applicantId]);
 
-    const resumes = result.rows.map(row => {
+    const resumes = fallback.rows.map(row => {
       const url = row.resume_url;
       let name = row.resume_file_name;
 
@@ -1623,15 +1884,42 @@ exports.getMyRecentResumes = async (req, res) => {
   }
 };
 
+exports.deleteRecentResume = async (req, res) => {
+  try {
+    const applicantId = req.user?.sub;
+    const { resume_url, id, name } = req.body;
+
+    if (!resume_url && !id && !name) {
+      return res.status(400).json({ message: "resume identifier is required" });
+    }
+
+    // Delete from user_resume_history
+    try {
+      await pool.query(`
+        DELETE FROM user_resume_history
+        WHERE user_id = $1 AND (resume_url = $2 OR id::text = $3 OR resume_file_name = $4)
+      `, [applicantId, resume_url || null, id || null, name || null]);
+    } catch (tblErr) {
+      console.warn("user_resume_history delete skipped:", tblErr.message);
+    }
+
+    res.json({ message: "Resume deleted successfully" });
+  } catch (err) {
+    console.error("Delete recent resume error:", err);
+    res.status(500).json({ message: "Internal server error" });
+  }
+};
+
 exports.getMyApplicationStats = async (req, res) => {
   try {
     const applicantId = req.user.sub;
     const result = await pool.query(`
       SELECT 
         COUNT(*) as total_applied,
-        COUNT(*) FILTER (WHERE current_status ILIKE 'Shortlisted%') as shortlisted
-      FROM job_applications
-      WHERE applicant_id = $1
+        COUNT(*) FILTER (WHERE ja.current_status ILIKE 'Shortlisted%') as shortlisted
+      FROM job_applications ja
+      JOIN jobs j ON ja.job_id = j.job_id
+      WHERE ja.applicant_id = $1 AND ja.current_status != 'Withdrawn' AND j.is_active = TRUE
     `, [applicantId]);
 
     res.json({
@@ -1671,7 +1959,7 @@ exports.getMyApplications = async (req, res) => {
         JOIN jobs j ON ja.job_id = j.job_id
         LEFT JOIN users u ON j.recruiter_id = u.user_id
         LEFT JOIN job_saves js ON j.job_id = js.job_id AND js.user_id = $1
-        LEFT JOIN job_offers jo ON j.job_id = jo.job_id AND jo.user_id = $1
+        LEFT JOIN job_offers jo ON j.job_id = jo.job_id AND jo.user_id = $1 AND jo.status != 'withdrawn'
         WHERE ja.applicant_id = $1 AND ja.current_status != 'Withdrawn' AND j.is_active = TRUE
     `;
 
@@ -1774,12 +2062,14 @@ exports.getMyJobs = async (req, res) => {
         j.*, 
         u.full_name AS recruiter_name,
         u.avatar_url AS recruiter_avatar,
+        COALESCE(c.name, j.company_name, u.full_name) AS company,
+        COALESCE(c.name, j.company_name, u.full_name) AS company_name,
         c.logo_url AS company_logo,
         COALESCE(c.logo_url, '') AS company_avatar,
         c.slug AS company_slug,
         (SELECT COUNT(*)::int FROM job_applications ja_count WHERE ja_count.job_id = j.job_id AND ja_count.current_status != 'Withdrawn') as applicants_count,
         (SELECT COUNT(*)::int FROM job_applications ja_count WHERE ja_count.job_id = j.job_id AND ja_count.current_status = 'Shortlisted') as shortlisted_count,
-        (SELECT COUNT(*)::int FROM job_offers jo_count WHERE jo_count.job_id = j.job_id) as offers_count
+        (SELECT COUNT(*)::int FROM job_offers jo_count WHERE jo_count.job_id = j.job_id AND jo_count.status != 'withdrawn') as offers_count
       FROM jobs j
       LEFT JOIN active_users u ON j.recruiter_id = u.user_id
       LEFT JOIN organizations c ON j.org_id = c.org_id
@@ -1871,7 +2161,7 @@ exports.getMyJobs = async (req, res) => {
         fromDate = new Date(new Date().setMonth(new Date().getMonth() - 1));
       }
       if (fromDate) {
-        query += ` AND j.created_at >= $${paramCount}`;
+        query += ` AND COALESCE(j.published_at, j.created_at) >= $${paramCount}`;
         params.push(fromDate);
         paramCount++;
       }
@@ -1889,12 +2179,12 @@ exports.getMyJobs = async (req, res) => {
 
     // Cursor-based pagination
     if (cursor) {
-      query += ` AND j.created_at < $${paramCount}`;
+      query += ` AND COALESCE(j.published_at, j.created_at) < $${paramCount}`;
       params.push(new Date(cursor));
       paramCount++;
     }
 
-    query += ` ORDER BY j.created_at DESC`;
+    query += ` ORDER BY COALESCE(j.published_at, j.created_at) DESC`;
 
     // Fetch limit + 1 to determine hasMore
     const fetchLimit = Number(limit) + 1;
@@ -1923,7 +2213,7 @@ exports.getMyJobs = async (req, res) => {
     const rows = result.rows;
     const hasMore = rows.length > Number(limit);
     const jobs = hasMore ? rows.slice(0, Number(limit)) : rows;
-    const nextCursor = jobs.length > 0 ? jobs[jobs.length - 1].created_at : null;
+    const nextCursor = jobs.length > 0 ? (jobs[jobs.length - 1].published_at || jobs[jobs.length - 1].created_at) : null;
     const counts = countsResult.rows[0] || { all: 0, active: 0, closed: 0, draft: 0, inReview: 0 };
 
     res.json({
@@ -1957,10 +2247,10 @@ exports.getDashboardStats = async (req, res) => {
            SELECT COUNT(*) 
            FROM job_applications ja 
            JOIN jobs j2 ON ja.job_id = j2.job_id 
-           WHERE ${actorOrgId ? "j2.org_id = $1" : "j2.recruiter_id = $1 AND j2.org_id IS NULL"}
+           WHERE (${actorOrgId ? "j2.org_id = $1" : "j2.recruiter_id = $1 AND j2.org_id IS NULL"}) AND j2.is_active = TRUE
         ) as "totalApplicants"
       FROM jobs j
-      WHERE ${actorOrgId ? "j.org_id = $1" : "j.recruiter_id = $1 AND j.org_id IS NULL"}
+      WHERE (${actorOrgId ? "j.org_id = $1" : "j.recruiter_id = $1 AND j.org_id IS NULL"}) AND j.is_active = TRUE
     `, [actorOrgId || userId]);
 
     const data = stats.rows[0];
@@ -2043,6 +2333,7 @@ exports.updateJob = async (req, res) => {
     work_mode,
     // company_type removed
     experience_level,
+    experience_label,
     industry,
     easy_apply,
     actively_hiring,
@@ -2062,6 +2353,8 @@ exports.updateJob = async (req, res) => {
   const safeMaxSalary = (maxSalary === "" || maxSalary === null || maxSalary === undefined) ? 0 : parseInt(maxSalary);
   const safeExperienceMin = (experience_min === "" || experience_min === null || experience_min === undefined) ? null : parseInt(experience_min);
   const safeExperienceMax = (experience_max === "" || experience_max === null || experience_max === undefined) ? null : parseInt(experience_max);
+  const resolvedExpLevel = (experience_level && typeof experience_level === 'string') ? sanitizeContent(experience_level.trim()) : null;
+  const resolvedExpLabel = (experience_label && typeof experience_label === 'string') ? sanitizeContent(experience_label.trim()) : (resolvedExpLevel || null);
 
   const client = await pool.connect();
 
@@ -2115,7 +2408,7 @@ exports.updateJob = async (req, res) => {
         title = $1, company_name = $2, location = $3,
         description = $4, salary_min = $5, salary_max = $6,
         job_type = $7, work_mode = $8, company_type = $9,
-        experience_level = $10, about_company = null, industry = $11,
+        experience_level = $10, experience_label = $19, about_company = null, industry = $11,
         easy_apply = $12, actively_hiring = $13, org_id = $14,
         posted_as_company = $15, experience_min = $16, experience_max = $17,
         updated_at = NOW()
@@ -2126,9 +2419,10 @@ exports.updateJob = async (req, res) => {
         title, resolvedCompanyName, location,
         description, safeMinSalary, safeMaxSalary,
         job_type, work_mode, null,
-        experience_level, industry,
+        resolvedExpLevel || resolvedExpLabel, industry,
         easy_apply, actively_hiring, org_id || null,
-        !!org_id, safeExperienceMin, safeExperienceMax, id
+        !!org_id, safeExperienceMin, safeExperienceMax, id,
+        resolvedExpLabel || resolvedExpLevel
       ]
     );
 
@@ -2297,20 +2591,39 @@ exports.submitTask = async (req, res) => {
 
 exports.getJobRoles = async (req, res) => {
   try {
-    const { q } = req.query;
+    const { q, cursor, limit = 50 } = req.query;
+    const pageSize = Math.min(Math.max(parseInt(limit) || 50, 1), 100);
     let query = `SELECT role_name, category FROM job_roles_master`;
     let values = [];
+    let conditions = [];
 
     if (q) {
-      query += ` WHERE role_name ILIKE $1`;
-      values.push(`%${q}%`);
+      values.push(`%${q.trim()}%`);
+      conditions.push(`role_name ILIKE $${values.length}`);
     }
 
-    query += ` ORDER BY role_name ASC LIMIT 10`;
+    if (cursor) {
+      values.push(cursor.trim());
+      conditions.push(`role_name > $${values.length}`);
+    }
+
+    if (conditions.length > 0) {
+      query += ` WHERE ` + conditions.join(` AND `);
+    }
+
+    values.push(pageSize + 1);
+    query += ` ORDER BY role_name ASC LIMIT $${values.length}`;
 
     const result = await pool.query(query, values);
+    const hasMore = result.rows.length > pageSize;
+    const items = hasMore ? result.rows.slice(0, pageSize) : result.rows;
+    const nextCursor = hasMore && items.length > 0 ? items[items.length - 1].role_name : null;
 
-    res.json(result.rows);
+    res.json({
+      items: items.map(r => r.role_name),
+      nextCursor,
+      hasMore
+    });
   } catch (err) {
     console.error("Error fetching job roles:", err);
     res.status(500).json({ error: "Internal server error" });
@@ -2319,22 +2632,198 @@ exports.getJobRoles = async (req, res) => {
 
 exports.getIndustries = async (req, res) => {
   try {
-    const { q } = req.query;
+    const { q, cursor, limit = 50 } = req.query;
+    const pageSize = Math.min(Math.max(parseInt(limit) || 50, 1), 100);
     let query = `SELECT industry_name FROM industries_master`;
+    let values = [];
+    let conditions = [];
+
+    if (q) {
+      values.push(`%${q.trim()}%`);
+      conditions.push(`industry_name ILIKE $${values.length}`);
+    }
+
+    if (cursor) {
+      values.push(cursor.trim());
+      conditions.push(`industry_name > $${values.length}`);
+    }
+
+    if (conditions.length > 0) {
+      query += ` WHERE ` + conditions.join(` AND `);
+    }
+
+    values.push(pageSize + 1);
+    query += ` ORDER BY industry_name ASC LIMIT $${values.length}`;
+
+    const result = await pool.query(query, values);
+    const hasMore = result.rows.length > pageSize;
+    const items = hasMore ? result.rows.slice(0, pageSize) : result.rows;
+    const nextCursor = hasMore && items.length > 0 ? items[items.length - 1].industry_name : null;
+
+    res.json({
+      items: items.map(r => r.industry_name),
+      nextCursor,
+      hasMore
+    });
+  } catch (err) {
+    console.error("Error fetching industries:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+};
+
+exports.getCompanies = async (req, res) => {
+  try {
+    const { q, cursor, limit = 8 } = req.query;
+    const pageSize = Math.min(Math.max(parseInt(limit) || 8, 1), 100);
+
+    let query = `
+      SELECT DISTINCT TRIM(o.name) AS name
+      FROM organizations o
+      WHERE o.name IS NOT NULL
+        AND TRIM(o.name) != ''
+        AND o.is_deleted = FALSE
+    `;
     let values = [];
 
     if (q) {
-      query += ` WHERE industry_name ILIKE $1`;
-      values.push(`%${q}%`);
+      values.push(`%${q.trim()}%`);
+      query += ` AND o.name ILIKE $${values.length}`;
     }
 
-    query += ` ORDER BY industry_name ASC LIMIT 50`;
+    if (cursor) {
+      values.push(cursor.trim());
+      query += ` AND TRIM(o.name) > $${values.length}`;
+    }
+
+    values.push(pageSize + 1);
+    query += ` ORDER BY name ASC LIMIT $${values.length}`;
 
     const result = await pool.query(query, values);
+    const hasMore = result.rows.length > pageSize;
+    const items = hasMore ? result.rows.slice(0, pageSize) : result.rows;
+    const nextCursor = hasMore && items.length > 0 ? items[items.length - 1].name : null;
 
-    res.json(result.rows);
+    res.json({
+      items: items.map(r => r.name),
+      nextCursor,
+      hasMore
+    });
   } catch (err) {
-    console.error("Error fetching industries:", err);
+    console.error("Error fetching companies:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+};
+
+exports.getInstitutes = async (req, res) => {
+  try {
+    const { q, cursor, limit = 50 } = req.query;
+    const pageSize = Math.min(Math.max(parseInt(limit) || 50, 1), 100);
+
+    let query = `
+      WITH all_institutes AS (
+        SELECT DISTINCT TRIM(o.name) AS name
+        FROM organizations o
+        WHERE o.name IS NOT NULL
+          AND TRIM(o.name) != ''
+          AND (o.entity_type = 'INSTITUTION' OR o.institution_type IS NOT NULL)
+          AND o.is_deleted = FALSE
+        UNION
+        SELECT DISTINCT TRIM(ed.school_name) AS name
+        FROM educations ed
+        WHERE ed.school_name IS NOT NULL
+          AND TRIM(ed.school_name) != ''
+      )
+      SELECT name
+      FROM all_institutes
+      WHERE 1=1
+    `;
+    let values = [];
+
+    if (q) {
+      values.push(`%${q.trim()}%`);
+      query += ` AND name ILIKE $${values.length}`;
+    }
+
+    if (cursor) {
+      values.push(cursor.trim());
+      query += ` AND name > $${values.length}`;
+    }
+
+    values.push(pageSize + 1);
+    query += ` ORDER BY name ASC LIMIT $${values.length}`;
+
+    const result = await pool.query(query, values);
+    const hasMore = result.rows.length > pageSize;
+    const items = hasMore ? result.rows.slice(0, pageSize) : result.rows;
+    const nextCursor = hasMore && items.length > 0 ? items[items.length - 1].name : null;
+
+    res.json({
+      items: items.map(r => r.name),
+      nextCursor,
+      hasMore
+    });
+  } catch (err) {
+    console.error("Error fetching institutes:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+};
+
+exports.getLocations = async (req, res) => {
+  try {
+    const { q, cursor, limit = 20 } = req.query;
+    const pageSize = Math.min(Math.max(parseInt(limit) || 20, 1), 100);
+
+    let query = `
+      WITH all_locations AS (
+        SELECT DISTINCT TRIM(location) AS location
+        FROM jobs
+        WHERE location IS NOT NULL AND TRIM(location) != '' AND is_active = TRUE
+        UNION
+        SELECT DISTINCT TRIM(location) AS location
+        FROM organizations
+        WHERE location IS NOT NULL AND TRIM(location) != '' AND is_deleted = FALSE
+        UNION
+        SELECT DISTINCT
+          CONCAT_WS(', ', NULLIF(TRIM(city), ''), NULLIF(TRIM(country), '')) AS location
+        FROM organizations
+        WHERE city IS NOT NULL AND TRIM(city) != '' AND is_deleted = FALSE
+        UNION
+        SELECT DISTINCT
+          CONCAT_WS(', ', NULLIF(TRIM(location_city), ''), NULLIF(TRIM(location_state), ''), NULLIF(TRIM(location_country), '')) AS location
+        FROM users
+        WHERE location_city IS NOT NULL AND TRIM(location_city) != '' AND is_deactivated = FALSE
+      )
+      SELECT location
+      FROM all_locations
+      WHERE location IS NOT NULL AND location != ''
+    `;
+    let values = [];
+
+    if (q) {
+      values.push(`%${q.trim()}%`);
+      query += ` AND location ILIKE $${values.length}`;
+    }
+
+    if (cursor) {
+      values.push(cursor.trim());
+      query += ` AND location > $${values.length}`;
+    }
+
+    values.push(pageSize + 1);
+    query += ` ORDER BY location ASC LIMIT $${values.length}`;
+
+    const result = await pool.query(query, values);
+    const hasMore = result.rows.length > pageSize;
+    const items = hasMore ? result.rows.slice(0, pageSize) : result.rows;
+    const nextCursor = hasMore && items.length > 0 ? items[items.length - 1].location : null;
+
+    res.json({
+      items: items.map(r => r.location),
+      nextCursor,
+      hasMore
+    });
+  } catch (err) {
+    console.error("Error fetching locations:", err);
     res.status(500).json({ error: "Internal server error" });
   }
 };

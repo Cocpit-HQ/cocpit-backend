@@ -12,21 +12,46 @@ const compareExperience = (actualExp, minExp, maxExp, label) => {
 
   // Fallback to label parsing if minExp and maxExp are missing
   if (minExp == null && maxExp == null && label) {
-    if (label.includes('Fresher')) {
-      minExp = 0; maxExp = 2;
-    } else if (label.includes('Junior (1-3 yrs)')) {
-      minExp = 1; maxExp = 3;
-    } else if (label.includes('Mid-level (3-5 yrs)')) {
-      minExp = 3; maxExp = 5;
-    } else if (label.includes('Senior (5+ yrs)')) {
-      minExp = 5; maxExp = null;
+    const cleanLabel = String(label).trim();
+    const lower = cleanLabel.toLowerCase();
+
+    if (lower.includes('fresher') || lower.includes('entry')) {
+      minExp = 0;
+      maxExp = 2;
+    } else {
+      const rangeMatch = cleanLabel.match(/(\d+)\s*-\s*(\d+)/);
+      if (rangeMatch) {
+        minExp = parseInt(rangeMatch[1], 10);
+        maxExp = parseInt(rangeMatch[2], 10);
+      } else {
+        const plusMatch = cleanLabel.match(/(\d+)\s*\+/);
+        if (plusMatch) {
+          minExp = parseInt(plusMatch[1], 10);
+          maxExp = null;
+        } else if (lower.includes('junior')) {
+          minExp = 1;
+          maxExp = 3;
+        } else if (lower.includes('mid')) {
+          minExp = 3;
+          maxExp = 5;
+        } else if (lower.includes('senior')) {
+          minExp = 5;
+          maxExp = null;
+        }
+      }
     }
   }
 
   // Format Required Range
   let requiredString = 'Not specified';
-  if (minExp != null && maxExp != null && minExp !== maxExp && maxExp > 0) {
-    requiredString = `${minExp}-${maxExp} Yrs`;
+  if (minExp != null && maxExp != null) {
+    if (minExp === 0 && (label && String(label).toLowerCase().includes('fresher'))) {
+      requiredString = 'Fresher';
+    } else if (minExp !== maxExp && maxExp > 0) {
+      requiredString = `${minExp}-${maxExp} Yrs`;
+    } else {
+      requiredString = `${minExp} Yrs`;
+    }
   } else if (minExp != null) {
     requiredString = `${minExp}+ Yrs`;
   } else if (maxExp != null) {
@@ -41,18 +66,14 @@ const compareExperience = (actualExp, minExp, maxExp, label) => {
 
   if (minExp != null || maxExp != null) {
     const effectiveMin = minExp || 0;
-    const effectiveMax = maxExp || 99; // effectively infinity
+    const effectiveMax = maxExp != null ? maxExp : 99; // effectively infinity
 
     if (actualYears > effectiveMax && effectiveMax < 99) {
       status = 'EXCEEDS';
       summary = 'Exceeds the maximum experience requirement for this role.';
     } else if (actualYears >= effectiveMin && (actualYears <= effectiveMax || effectiveMax === 99)) {
-      status = 'MATCHES';
+      status = 'ALIGNED';
       summary = 'Directly matches the required experience for this role.';
-      if (actualYears > effectiveMax && effectiveMax === 99) {
-        status = 'EXCEEDS';
-        summary = 'Exceeds the minimum experience requirement for this role.';
-      }
     } else {
       status = 'BELOW';
       summary = 'Does not meet the minimum experience requirement for this role.';
@@ -68,34 +89,50 @@ const compareExperience = (actualExp, minExp, maxExp, label) => {
 };
 
 const getLatestEducation = (educationArray) => {
-  if (!educationArray || educationArray.length === 0) {
+  if (!educationArray || !Array.isArray(educationArray) || educationArray.length === 0) {
     return { degree: 'Not specified', class: '', summary: 'No education details provided.' };
   }
 
   const latest = educationArray[0];
-  const degreeStr = latest.degree || latest.title || latest.course || 'Degree';
-  const schoolStr = latest.school || latest.institute || latest.university || 'University';
-  
-  const formattedDegree = `${degreeStr} from ${schoolStr}`;
-  
-  let classStr = '';
-  if (latest.endDate) {
-    const year = new Date(latest.endDate).getFullYear();
-    if (!isNaN(year)) {
-      classStr = `CLASS OF ${year}`;
-    } else if (typeof latest.endDate === 'string' && latest.endDate.length === 4) {
-      classStr = `CLASS OF ${latest.endDate}`;
-    } else {
-      classStr = `ENDED ${latest.endDate}`;
-    }
-  } else if (latest.year) {
-    classStr = `CLASS OF ${latest.year}`;
+  const degreeStr = latest.degree || latest.title || latest.course;
+  const schoolStr = latest.school_name || latest.school || latest.institute || latest.university;
+
+  let formattedDegree = 'Not specified';
+  if (degreeStr && schoolStr) {
+    formattedDegree = `${degreeStr} from ${schoolStr}`;
+  } else if (degreeStr) {
+    formattedDegree = degreeStr;
+  } else if (schoolStr) {
+    formattedDegree = schoolStr;
   }
+
+  let classStr = '';
+  const dateVal = latest.end_date || latest.endDate || latest.year || latest.graduation_year || latest.graduationYear;
+  if (dateVal) {
+    const parsedDate = new Date(dateVal);
+    const year = parsedDate.getFullYear();
+    if (!isNaN(year) && year > 1900) {
+      classStr = `CLASS OF ${year}`;
+    } else if (typeof dateVal === 'string' && dateVal.length >= 4) {
+      const match = dateVal.match(/\b(19\d\d|20\d\d)\b/);
+      if (match) {
+        classStr = `CLASS OF ${match[1]}`;
+      } else {
+        classStr = `CLASS OF ${dateVal.slice(0, 4)}`;
+      }
+    } else if (typeof dateVal === 'number' && dateVal > 1900) {
+      classStr = `CLASS OF ${dateVal}`;
+    }
+  }
+
+  const summary = formattedDegree !== 'Not specified'
+    ? 'Qualification directly aligns with the role requirements.'
+    : 'No education details provided.';
 
   return {
     degree: formattedDegree,
     class: classStr,
-    summary: 'Candidate education details provided.',
+    summary,
   };
 };
 
@@ -128,7 +165,7 @@ const calculateBackendScore = ({ candidateSkills, totalYears, jobRequirements, e
 
   // 2. Experience match (40% weight) — reuse existing compareExperience
   const expResult = compareExperience(totalYears, experienceMin, experienceMax, experienceLabel);
-  const expScore = expResult.status === 'MATCHES' ? 100
+  const expScore = (expResult.status === 'MATCHES' || expResult.status === 'ALIGNED') ? 100
                  : expResult.status === 'EXCEEDS' ? 90
                  : expResult.status === 'BELOW'   ? 30
                  : 50;

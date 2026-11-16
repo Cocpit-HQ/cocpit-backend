@@ -619,12 +619,28 @@ exports.deactivateAccount = async (req, res) => {
             [userId]
         );
 
-        // 2. Deactivate all owned company accounts that aren't deleted
+        // 2. Deactivate only active owned company accounts that aren't deleted or already deactivated
+        const crypto = require("crypto");
+        const deactivationEventId = crypto.randomUUID();
         const orgsRes = await client.query(
-            `UPDATE organizations SET is_deactivated = TRUE, deactivated_at = NOW(), updated_at = NOW() WHERE created_by = $1 AND is_deleted = FALSE RETURNING org_id`,
+            `UPDATE organizations 
+             SET is_deactivated = TRUE, deactivated_at = NOW(), updated_at = NOW() 
+             WHERE created_by = $1 AND is_deleted = FALSE AND is_deactivated = FALSE 
+             RETURNING org_id`,
             [userId]
         );
         const deactivatedOrgIds = orgsRes.rows.map((r) => r.org_id);
+
+        if (deactivatedOrgIds.length > 0) {
+            for (const orgId of deactivatedOrgIds) {
+                await client.query(
+                    `INSERT INTO organization_deactivation_history 
+                     (org_id, user_id, deactivation_event_id, reason, deactivated_at)
+                     VALUES ($1, $2, $3, 'PERSONAL_ACCOUNT', NOW())`,
+                    [orgId, userId, deactivationEventId]
+                );
+            }
+        }
 
         // 3. Mark organization memberships as REMOVED
         await client.query(
@@ -831,10 +847,14 @@ exports.getActivityLogs = async (req, res) => {
                  LEFT JOIN post_tags pt ON pt.post_id = p.post_id AND pt.tagged_user_id = $1::uuid AND pt.is_active_tag = true
                  LEFT JOIN users u ON p.author_id = u.user_id
                  LEFT JOIN organizations o ON p.author_org_id = o.org_id
+                 LEFT JOIN organizations o_target ON o_target.org_id = $1::uuid
                  WHERE (
                      pt.tag_id IS NOT NULL
                      OR (
-                         p.content ~ ('@\\[[^\\]]+\\]\\(' || $1::text || '\\)')
+                         (
+                             p.content ~* ('@\\[[^\\]]+\\]\\((?:org:)?' || $1::text || '\\)')
+                             OR (o_target.slug IS NOT NULL AND p.content ~* ('(@\\[[^\\]]+\\]\\(' || o_target.slug || '\\)|@' || o_target.slug || '\\b)'))
+                         )
                          AND NOT EXISTS (
                              SELECT 1 FROM post_tags pt_inactive
                              WHERE pt_inactive.post_id = p.post_id
@@ -872,10 +892,14 @@ exports.getActivityLogs = async (req, res) => {
                  LEFT JOIN post_tags pt ON pt.post_id = p.post_id AND pt.tagged_user_id = $1::uuid AND pt.is_active_tag = true
                  LEFT JOIN users u ON p.author_id = u.user_id
                  LEFT JOIN organizations o ON p.author_org_id = o.org_id
+                 LEFT JOIN users u_target ON u_target.user_id = $1::uuid
                  WHERE (
                      pt.tag_id IS NOT NULL
                      OR (
-                         p.content ~ ('@\\[[^\\]]+\\]\\(' || $1::text || '\\)')
+                         (
+                             p.content ~* ('@\\[[^\\]]+\\]\\((?:user:)?' || $1::text || '\\)')
+                             OR (u_target.account_name IS NOT NULL AND p.content ~* ('(@\\[[^\\]]+\\]\\(' || u_target.account_name || '\\)|@' || u_target.account_name || '\\b)'))
+                         )
                          AND NOT EXISTS (
                              SELECT 1 FROM post_tags pt_inactive
                              WHERE pt_inactive.post_id = p.post_id
@@ -1020,18 +1044,35 @@ exports.removeActivity = async (req, res) => {
                 );
             }
         } else if (type === "tag") {
+            const isTargetUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
             if (isOrgActor) {
-                await pool.query(
+                const updateRes = await pool.query(
                     `UPDATE post_tags SET is_active_tag = false, updated_at = NOW()
                      WHERE (post_id::text = $1 OR tag_id::text = $1) AND tagged_user_id = $2::uuid`,
                     [id, targetId]
                 );
+                if (updateRes.rowCount === 0 && isTargetUuid) {
+                    await pool.query(
+                        `INSERT INTO post_tags (post_id, tagged_user_id, is_active_tag, updated_at)
+                         VALUES ($1::uuid, $2::uuid, false, NOW())
+                         ON CONFLICT (post_id, tagged_user_id) DO UPDATE SET is_active_tag = false, updated_at = NOW()`,
+                        [id, targetId]
+                    );
+                }
             } else {
-                await pool.query(
+                const updateRes = await pool.query(
                     `UPDATE post_tags SET is_active_tag = false, updated_at = NOW()
-                     WHERE (post_id::text = $1 OR tag_id::text = $1) AND tagged_user_id = $2`,
+                     WHERE (post_id::text = $1 OR tag_id::text = $1) AND tagged_user_id = $2::uuid`,
                     [id, targetId]
                 );
+                if (updateRes.rowCount === 0 && isTargetUuid) {
+                    await pool.query(
+                        `INSERT INTO post_tags (post_id, tagged_user_id, is_active_tag, updated_at)
+                         VALUES ($1::uuid, $2::uuid, false, NOW())
+                         ON CONFLICT (post_id, tagged_user_id) DO UPDATE SET is_active_tag = false, updated_at = NOW()`,
+                        [id, targetId]
+                    );
+                }
             }
         }
 

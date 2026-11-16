@@ -155,6 +155,18 @@ exports.getOrganizationPosts = async (req, res) => {
               AND r.reporter_id = $${userParamIdx}::uuid
         )) `;
 
+        // Exclude posts marked as NOT_INTERESTED by current user or active organization
+        whereClause += ` AND ($${userParamIdx}::uuid IS NULL OR NOT EXISTS (
+            SELECT 1 FROM user_post_feedback upf
+            WHERE (upf.post_id = p.post_id OR upf.post_id = p.shared_post_id)
+              AND upf.feedback_type = 'NOT_INTERESTED'
+              AND (
+                  ($${orgActorParamIdx}::uuid IS NOT NULL AND upf.org_id = $${orgActorParamIdx}::uuid)
+                  OR
+                  ($${orgActorParamIdx}::uuid IS NULL AND upf.user_id = $${userParamIdx}::uuid AND upf.org_id IS NULL)
+              )
+        )) `;
+
         // 1. Cursor handling
         if (cursorCreatedAt && cursorPostId) {
             whereClause += ` AND (p.created_at, p.post_id) < ($${idx}, $${idx + 1})`;

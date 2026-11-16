@@ -1,4 +1,5 @@
-const { S3Client, DeleteObjectCommand, DeleteObjectsCommand } = require("@aws-sdk/client-s3");
+const { S3Client, DeleteObjectCommand, DeleteObjectsCommand, PutObjectCommand } = require("@aws-sdk/client-s3");
+const { getSignedUrl } = require("@aws-sdk/s3-request-presigner");
 
 const hasR2 = Boolean(
   process.env.R2_ACCOUNT_ID &&
@@ -122,6 +123,27 @@ async function deleteR2Assets(urlsOrKeys) {
   }
 }
 
+/**
+ * Generates an S3 presigned PUT URL for direct browser uploads to Cloudflare R2
+ */
+async function generatePresignedUploadUrl({ key, contentType, expiresIn = 900 }) {
+  if (!hasR2 || !r2Client || !key) return null;
+  const cleanKey = key.replace(/^\/+/, "");
+
+  const command = new PutObjectCommand({
+    Bucket: bucketName,
+    Key: cleanKey,
+    ContentType: contentType || "application/octet-stream",
+  });
+
+  const uploadUrl = await getSignedUrl(r2Client, command, { expiresIn });
+  return {
+    uploadUrl,
+    publicUrl: `${publicUrl}/${cleanKey}`,
+    key: cleanKey,
+  };
+}
+
 module.exports = {
   r2Client,
   hasR2,
@@ -131,4 +153,5 @@ module.exports = {
   checkR2AssetExists,
   deleteR2Asset,
   deleteR2Assets,
+  generatePresignedUploadUrl,
 };

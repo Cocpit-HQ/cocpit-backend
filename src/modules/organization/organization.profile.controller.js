@@ -899,20 +899,14 @@ async function calculateOrgDemographics(client, orgId, type, search, graduationY
            FROM experiences e
            JOIN profiles p ON e.profile_id = p.profile_id
            JOIN active_users u ON p.user_id = u.user_id
-           WHERE (
-               e.org_id = $1::uuid
-               OR (e.org_id IS NULL AND LOWER(TRIM(e.company_name)) = LOWER(TRIM((SELECT name FROM organizations WHERE org_id = $1::uuid))))
-           )
+           WHERE e.org_id = $1::uuid
              AND (e.is_current = TRUE OR e.end_date IS NULL)
              AND ($2::text IS NULL OR (u.full_name ILIKE $2::text OR e.title ILIKE $2::text))`
         : `SELECT DISTINCT ON (p.user_id) p.user_id
            FROM educations ed
            JOIN profiles p ON ed.profile_id = p.profile_id
            JOIN active_users u ON p.user_id = u.user_id
-           WHERE (
-               ed.school_org_id = $1::uuid
-               OR (ed.school_org_id IS NULL AND LOWER(TRIM(ed.school_name)) = LOWER(TRIM((SELECT name FROM organizations WHERE org_id = $1::uuid))))
-           )
+           WHERE ed.school_org_id = $1::uuid
              AND ($2::text IS NULL OR u.full_name ILIKE $2::text)
              AND ($3::int IS NULL OR EXTRACT(YEAR FROM ed.end_date)::int = $3::int)`;
 
@@ -1110,10 +1104,7 @@ exports.getOrgPeople = async (req, res) => {
                      FROM experiences e
                      JOIN profiles p ON e.profile_id = p.profile_id
                      JOIN active_users u ON p.user_id = u.user_id
-                     WHERE (
-                         e.org_id = $1::uuid
-                         OR (e.org_id IS NULL AND LOWER(TRIM(e.company_name)) = LOWER(TRIM((SELECT name FROM organizations WHERE org_id = $1::uuid))))
-                     )
+                     WHERE e.org_id = $1::uuid
                        AND (e.is_current = TRUE OR e.end_date IS NULL)
                        ${searchClause}
                      ORDER BY p.user_id, e.start_date DESC
@@ -1167,10 +1158,7 @@ exports.getOrgPeople = async (req, res) => {
                      FROM experiences e
                      JOIN profiles p ON e.profile_id = p.profile_id
                      JOIN active_users u ON p.user_id = u.user_id
-                     WHERE (
-                         e.org_id = $1::uuid
-                         OR (e.org_id IS NULL AND LOWER(TRIM(e.company_name)) = LOWER(TRIM((SELECT name FROM organizations WHERE org_id = $1::uuid))))
-                     )
+                     WHERE e.org_id = $1::uuid
                        AND (e.is_current = TRUE OR e.end_date IS NULL)
                        ${countSearchClause}
                  )
@@ -1324,10 +1312,7 @@ exports.getOrgAlumni = async (req, res) => {
                      FROM educations ed
                      JOIN profiles p ON ed.profile_id = p.profile_id
                      JOIN active_users u ON p.user_id = u.user_id
-                     WHERE (
-                         ed.school_org_id = $1::uuid
-                         OR (ed.school_org_id IS NULL AND LOWER(TRIM(ed.school_name)) = LOWER(TRIM((SELECT name FROM organizations WHERE org_id = $1::uuid))))
-                     )
+                     WHERE ed.school_org_id = $1::uuid
                        ${whereExtra}
                      ORDER BY p.user_id, ed.end_date DESC
                  ),
@@ -1380,10 +1365,7 @@ exports.getOrgAlumni = async (req, res) => {
                      FROM educations ed
                      JOIN profiles p ON ed.profile_id = p.profile_id
                      JOIN active_users u ON p.user_id = u.user_id
-                     WHERE (
-                         ed.school_org_id = $1::uuid
-                         OR (ed.school_org_id IS NULL AND LOWER(TRIM(ed.school_name)) = LOWER(TRIM((SELECT name FROM organizations WHERE org_id = $1::uuid))))
-                     )
+                     WHERE ed.school_org_id = $1::uuid
                        ${countWhereExtra}
                  )
                  SELECT

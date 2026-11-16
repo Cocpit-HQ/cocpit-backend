@@ -25,7 +25,7 @@ exports.searchUsers = async (req, res) => {
     return res.status(403).json({ message: "Search is currently disabled." });
   }
 
-  const { q, accountType, excludeJobId } = req.query;
+  const { q, accountType, excludeJobId, type, usersOnly } = req.query;
   const currentUserId = req.user.sub;
 
   if (!q || typeof q !== "string" || q.trim().length === 0) {
@@ -140,7 +140,35 @@ exports.searchUsers = async (req, res) => {
       )
     `;
 
-    const queryText = `
+    const isUsersOnly = Boolean(excludeJobId) || usersOnly === 'true' || type?.toUpperCase() === 'USER';
+
+    const queryText = isUsersOnly ? `
+      SELECT
+        u.user_id AS id,
+        u.full_name,
+        u.account_name,
+        u.headline,
+        u.avatar_url,
+        p.account_type,
+        'USER'::text as type,
+        NULL::text as slug,
+        NULL::text as industry,
+        COALESCE(u.tag_permission, 'everyone')::text AS tag_permission
+      FROM active_users u
+      LEFT JOIN profiles p ON u.user_id = p.user_id
+      WHERE u.is_deactivated = FALSE
+        AND (u.full_name ILIKE $2 OR u.account_name ILIKE $2)
+        AND u.full_name IS NOT NULL AND TRIM(u.full_name) <> ''
+        AND u.account_name IS NOT NULL AND TRIM(u.account_name) <> ''
+      ${userAccountFilter}
+      ${excludeJobFilter}
+      ${blockFilter}
+      ${tagPrivacyFilter}
+      ORDER BY 
+        CASE WHEN full_name ILIKE $${startsWithIdx} THEN 0 ELSE 1 END,
+        full_name ASC
+      LIMIT 50
+    ` : `
       SELECT * FROM (
         (
           SELECT
@@ -895,7 +923,7 @@ exports.getPublicProfilePosts = async (req, res) => {
         pc.name AS category_name,
 
         COALESCE(
-          (SELECT json_agg(json_build_object('url', pm.url, 'media_type', pm.media_type, 'width', pm.width, 'height', pm.height)) 
+          (SELECT json_agg(json_build_object('url', pm.url, 'media_type', pm.media_type, 'width', pm.width, 'height', pm.height, 'order_index', pm.order_index, 'thumbnail_url', pm.thumbnail_url, 'duration_seconds', pm.duration_seconds) ORDER BY pm.order_index ASC) 
            FROM post_media pm WHERE pm.post_id = p.post_id),
           '[]'::json
         ) AS media,
@@ -1062,7 +1090,7 @@ exports.getPublicProfilePosts = async (req, res) => {
                 'author_headline', CASE WHEN sp.author_org_id IS NOT NULL THEN sp_comp.headline ELSE sp_u.headline END,
                 'is_organization_post', (sp.author_org_id IS NOT NULL)
               ),
-              'media', COALESCE((SELECT json_agg(json_build_object('url', pm.url, 'media_type', pm.media_type, 'width', pm.width, 'height', pm.height)) FROM post_media pm WHERE pm.post_id = sp.post_id), '[]'::json),
+              'media', COALESCE((SELECT json_agg(json_build_object('url', pm.url, 'media_type', pm.media_type, 'width', pm.width, 'height', pm.height, 'order_index', pm.order_index, 'thumbnail_url', pm.thumbnail_url, 'duration_seconds', pm.duration_seconds) ORDER BY pm.order_index ASC) FROM post_media pm WHERE pm.post_id = sp.post_id), '[]'::json),
               'like_count', (SELECT COUNT(*) FROM active_post_likes pl WHERE pl.post_id = sp.post_id)::int,
               'comment_count', (SELECT COUNT(*) FROM active_post_comments pc WHERE pc.post_id = sp.post_id)::int,
               'rePostCount', (SELECT COUNT(*) FROM posts sp_share2 WHERE sp_share2.shared_post_id = sp.post_id AND sp_share2.is_active = TRUE AND (sp_share2.is_removed IS FALSE OR sp_share2.is_removed IS NULL))::int,
@@ -1233,6 +1261,18 @@ exports.getPublicProfilePosts = async (req, res) => {
                 ($${orgActorParamIdx}::uuid IS NOT NULL AND r.reporter_org_id = $${orgActorParamIdx}::uuid)
                 OR
                 ($${orgActorParamIdx}::uuid IS NULL AND r.reporter_id = $${userParamIdx}::uuid AND r.reporter_org_id IS NULL)
+            )
+      ))
+
+      -- Hide posts marked as NOT_INTERESTED by the current user or active organization
+      AND ($${userParamIdx}::uuid IS NULL OR NOT EXISTS (
+          SELECT 1 FROM user_post_feedback upf
+          WHERE (upf.post_id = p.post_id OR upf.post_id = p.shared_post_id)
+            AND upf.feedback_type = 'NOT_INTERESTED'
+            AND (
+                ($${orgActorParamIdx}::uuid IS NOT NULL AND upf.org_id = $${orgActorParamIdx}::uuid)
+                OR
+                ($${orgActorParamIdx}::uuid IS NULL AND upf.user_id = $${userParamIdx}::uuid AND upf.org_id IS NULL)
             )
       ))
 
@@ -1565,6 +1605,18 @@ exports.getPublicProfileCommentedPosts = async (req, res) => {
                 ($${orgActorParamIdx}::uuid IS NOT NULL AND r.reporter_org_id = $${orgActorParamIdx}::uuid)
                 OR
                 ($${orgActorParamIdx}::uuid IS NULL AND r.reporter_id = $${userParamIdx}::uuid AND r.reporter_org_id IS NULL)
+            )
+      ))
+
+      -- Hide posts marked as NOT_INTERESTED by the current user or active organization
+      AND ($${userParamIdx}::uuid IS NULL OR NOT EXISTS (
+          SELECT 1 FROM user_post_feedback upf
+          WHERE (upf.post_id = p.post_id OR upf.post_id = p.shared_post_id)
+            AND upf.feedback_type = 'NOT_INTERESTED'
+            AND (
+                ($${orgActorParamIdx}::uuid IS NOT NULL AND upf.org_id = $${orgActorParamIdx}::uuid)
+                OR
+                ($${orgActorParamIdx}::uuid IS NULL AND upf.user_id = $${userParamIdx}::uuid AND upf.org_id IS NULL)
             )
       ))
 

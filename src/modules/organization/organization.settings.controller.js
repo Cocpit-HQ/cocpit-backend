@@ -967,6 +967,22 @@ exports.reactivateOrganization = async (req, res) => {
             [orgId]
         );
 
+        // Close out any pending personal-account deactivation history for this organization
+        await client.query(
+            `UPDATE organization_deactivation_history 
+             SET restored_at = NOW() 
+             WHERE org_id = $1 AND restored_at IS NULL`,
+            [orgId]
+        );
+
+        // Restore owner's membership status to ACTIVE so the organization appears in the Actor Switcher
+        await client.query(
+            `UPDATE organization_members 
+             SET status = 'ACTIVE', updated_at = NOW() 
+             WHERE org_id = $1 AND user_id = $2`,
+            [orgId, userId]
+        );
+
         await logAudit(client, {
             entityId: orgId,
             entityType: 'ORGANIZATION',

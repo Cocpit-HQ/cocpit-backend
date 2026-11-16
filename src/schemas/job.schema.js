@@ -7,14 +7,20 @@ const createDraftSchema = z.object({
     title: z.string({
       required_error: "Title is required to create a draft",
     }).min(1, "Title cannot be empty"),
-    org_id: z.string().uuid("Invalid Organization ID").optional(),
+    org_id: z.string().uuid("Invalid Organization ID").optional().nullable(),
+    location: z.string().optional().nullable(),
+    job_type: z.string().optional().nullable(),
+    work_mode: z.string().optional().nullable(),
+    experience_label: z.string().optional().nullable(),
+    experience_min: z.union([z.number().int().nonnegative(), z.string().regex(/^\d+$/).transform(Number)]).optional().nullable(),
+    experience_max: z.union([z.number().int().nonnegative(), z.string().regex(/^\d+$/).transform(Number)]).optional().nullable(),
   }),
 });
 
 const updateDraftSchema = z.object({
   body: z.object({
     title: z.string().min(1, "Title cannot be empty").optional(),
-    description: z.string().optional(),
+    description: z.string().max(10000, "Description cannot exceed 10,000 characters").optional(),
     location: z.string().optional(),
     salary_min: z.number().int("Salary minimum must be an integer").nonnegative("Salary minimum cannot be negative").optional(),
     salary_max: z.number().int("Salary maximum must be an integer").nonnegative("Salary maximum cannot be negative").optional(),
@@ -32,8 +38,8 @@ const updateDraftSchema = z.object({
 // Used during POST /jobs/:id/submit
 const submitJobSchema = z.object({
   body: z.object({
-    title: z.string({ required_error: "Title is required" }).min(5, "Title must be at least 5 characters"),
-    description: z.string({ required_error: "Description is required" }).min(100, "Description must be at least 100 characters"),
+    title: z.string({ required_error: "Title is required" }).min(2, "Title must be at least 2 characters"),
+    description: z.string({ required_error: "Description is required" }).min(200, "Description must be at least 200 characters").max(10000, "Description cannot exceed 10,000 characters"),
     location: z.string({ required_error: "Location is required" }).min(1, "Location cannot be empty"),
     industry: z.string({ required_error: "Industry is required" }).min(1, "Industry cannot be empty"),
     salary_min: z.number({ required_error: "Minimum salary is required" }).int().nonnegative(),
@@ -55,8 +61,24 @@ const submitJobSchema = z.object({
   }),
 });
 
+const sendOfferSchema = z.object({
+  body: z.object({
+    jobId: z.string({ required_error: "jobId is required" }),
+    userId: z.string({ required_error: "userId is required" }),
+    message: z.string().max(1000, "Note cannot exceed 1,000 characters.").optional().nullable(),
+  }),
+});
+
+const applyJobSchema = z.object({
+  body: z.object({
+    cover_note: z.string().max(1000, "Note cannot exceed 1,000 characters").optional().nullable(),
+  }).passthrough(),
+});
+
 module.exports = {
   createDraftSchema,
   updateDraftSchema,
   submitJobSchema,
+  sendOfferSchema,
+  applyJobSchema,
 };

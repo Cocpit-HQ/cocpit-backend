@@ -25,7 +25,14 @@ const pool               = require("../../core/db/pool");
 // ID-160/D1 — see feed.service.js:buildCacheScopeId. Requests without
 // x-actor-type/x-actor-id (mobile clients today) resolve to `undefined`
 // here, so scopeId === userId — identical to pre-D1 behavior.
-const getOrgActorId = (req) => (req.actor?.type === "ORGANIZATION" ? req.actor.id : undefined);
+const getOrgActorId = (req) => {
+  if (req.actor?.type === "ORGANIZATION") return req.actor.id;
+  const headerType = (req.headers?.["x-actor-type"] || "").toUpperCase();
+  if (headerType === "ORGANIZATION" || headerType === "COMPANY" || headerType === "ORG") {
+    return req.headers?.["x-actor-id"] || req.headers?.["x-company-id"] || req.headers?.["x-org-id"];
+  }
+  return undefined;
+};
 
 // ─── GET /api/feed ────────────────────────────────────────────────────────────
 /**

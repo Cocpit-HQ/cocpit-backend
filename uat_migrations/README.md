@@ -66,16 +66,94 @@ Promotes `MANAGE_COMPANY_DETAILS` from a locked system key (`sort_order = 0`) to
 ---
 
 ### `v1.8.0_uat_migration.sql`
-Brings UAT database schema into alignment for Release 1.8.0 (`organization_notification_settings`).
+Brings UAT database schema into alignment for Release 1.8.0 (`organization_notification_settings`, `organization_deactivation_history`, and `user_post_feedback` multi-actor support).
 
 #### Changes Included:
 1. **`organization_notification_settings` table & index**:
    - Creates table for organization-wide notification preferences (`org_id` PK, `user_id`, `events_enabled`, `jobs_enabled`, `posts_enabled`, `messages_enabled`, `messages_chat_enabled`, `messages_jobs_enabled`, `email_enabled`, `push_enabled`, `created_at`, `updated_at`).
    - Adds index `idx_org_notification_settings_org_id ON organization_notification_settings(org_id)`.
+2. **`organization_members.member_id` column**:
+   - Adds surrogate identifier column `member_id UUID DEFAULT gen_random_uuid()`.
+3. **`organization_deactivation_history` table & indexes**:
+   - Creates audit table tracking organizations automatically frozen during personal account deactivation.
+   - Adds index `idx_org_deactivation_history_user_unrecovered` for rapid login/reactivation retrieval.
+   - Adds index `idx_org_deactivation_history_org_id` for organization lifecycle tracking.
+4. **`user_post_feedback` table enhancements**:
+   - Adds `org_id UUID REFERENCES organizations(org_id) ON DELETE CASCADE DEFAULT NULL`.
+   - Adds surrogate `id UUID PRIMARY KEY`.
+   - Creates partial unique index `idx_user_post_feedback_personal` on `(user_id, post_id) WHERE org_id IS NULL`.
+   - Creates partial unique index `idx_user_post_feedback_org` on `(org_id, post_id) WHERE org_id IS NOT NULL`.
+   - Creates partial lookup indexes `idx_user_post_feedback_filter_org` and `idx_user_post_feedback_filter_user`.
+
+---
+
+### `v1.9.0_uat_migration.sql`
+Brings UAT database schema into alignment for Release 1.9.0 (Mixed Media Carousel: Images & Videos support, Jobs Explore & Recommendation System, and Reusable Resume History).
+
+#### Changes Included:
+1. **`post_media` table**:
+   - Adds `order_index INT DEFAULT 0` column for deterministic carousel sequencing.
+   - Adds `thumbnail_url TEXT` column for video slide posters.
+   - Adds `duration_seconds NUMERIC(6,2)` column for video durations.
+   - Backfills existing records with sequential ordering per post.
+   - Creates index `idx_post_media_post_order ON post_media(post_id, order_index)`.
+2. **`experiences` table**:
+   - Adds `org_id UUID REFERENCES organizations(org_id) ON DELETE SET NULL` column to link user work experience with official organizations.
+   - Creates index `idx_experiences_org_id ON experiences(org_id)`.
+   - Creates partial index `idx_experiences_current_org ON experiences(org_id) WHERE is_current = TRUE AND org_id IS NOT NULL` for rapid resolution of 1st-degree connections who currently work at hiring organizations ("From your network").
+3. **`jobs` table**:
+   - Creates partial composite index `idx_jobs_active_created ON jobs(created_at DESC, job_id DESC) WHERE is_active = TRUE AND status = 'ACTIVE'` for high-throughput listing retrieval and keyset pagination across all recommendation categories.
+4. **`job_saves` table**:
+   - Creates reverse lookup index `idx_job_saves_job_id ON job_saves(job_id)` to optimize `saves_count` aggregation queries used by the Featured opportunities quality heuristic.
+5. **`user_activity_log` table**:
+   - Creates targeted partial index `idx_activity_job_views ON user_activity_log(user_id, entity_id, created_at DESC) WHERE action_type = 'view_job' AND entity_type = 'job'` for sub-millisecond retrieval of candidate Recently Viewed jobs.
+6. **`user_resume_history` table**:
+   - Creates `user_resume_history` table to store applicant reusable resumes.
+   - Creates index `idx_user_resume_history_user_last_used ON user_resume_history(user_id, last_used_at DESC)`.
+   - Backfills `user_resume_history` records from existing `job_applications`.
+7. **`jobs` table (`published_at` & `actively_hiring`)**:
+   - Adds `published_at TIMESTAMPTZ` column to track actual publication timestamp (distinguishing live date from initial draft creation).
+   - Backfills `published_at` from `created_at` for all active jobs.
+   - Creates index `idx_jobs_published_at ON jobs(published_at DESC)`.
+   - Creates composite index `idx_jobs_coalesce_published_created ON jobs((COALESCE(published_at, created_at)) DESC)`.
+   - Adds `actively_hiring BOOLEAN DEFAULT false` column and index `idx_jobs_actively_hiring` for Company Search filter.
+8. **`organizations` table (Institution Fields & View Refresh)**:
+   - Adds `entity_type`, `institution_type`, `established_year`, `campus_location`, `verified_edu`, `auto_verify_domains` columns.
+   - Backfills `institution_type` for existing `INSTITUTION` records and refreshes `active_organizations` view.
+9. **Global Search Engine & Trigram Indexes**:
+   - Ensures `pg_trgm` extension.
+   - Creates GIN trigram indexes on `users` (`full_name`, `account_name`), `organizations` (`name`), `jobs` (`title`, `company_name`), and public `posts` (`content`).
+10. **Hashtags Global Search & Multi-Mode Ranking Indexes**:
+    - Creates GIN trigram index on `hashtags.tag`.
+    - Creates composite B-Tree indexes on `hashtags` (`posts_count`, `usage_count`, `created_at`, `last_used_at`).
+11. **Search Filter Master Tables & Canonical Seeds**:
+    - Creates `job_roles_master` and `industries_master` reference tables.
+    - Seeds initial canonical job roles and industries.
+    - Adds `profiles.working_industry` and `profiles.work_mode`.
+    - Relaxes `jobs.industry` NOT NULL constraint to support draft listings.
 
 ---
 
 ## How to Run
+
+### Running v1.9.0 Migration
+
+#### Option 1: Using npm script (recommended)
+```bash
+npm run migrate:uat:v1.9.0
+```
+
+#### Option 2: Using Node runner directly
+```bash
+node uat_migrations/run_v1.9.0_migration.js
+```
+
+#### Option 3: Using `psql` directly
+```bash
+psql -h 192.168.1.50 -U swaroop -d cocpit_backend_uat -f uat_migrations/v1.9.0_uat_migration.sql
+```
+
+---
 
 ### Running v1.8.0 Migration
 

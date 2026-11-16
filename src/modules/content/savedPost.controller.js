@@ -344,13 +344,13 @@ exports.getSavedPosts = async (req, res) => {
             COALESCE(comp_auth.slug, u_auth.account_name) AS author_slug,
             CASE WHEN p.author_org_id IS NOT NULL THEN comp_auth.headline ELSE u_auth.headline END AS author_headline,
             COALESCE(
-                (SELECT json_agg(json_build_object('url', pm.url, 'media_type', pm.media_type)) 
+                (SELECT json_agg(json_build_object('url', pm.url, 'media_type', pm.media_type, 'order_index', pm.order_index, 'thumbnail_url', pm.thumbnail_url, 'duration_seconds', pm.duration_seconds) ORDER BY pm.order_index ASC) 
                  FROM post_media pm WHERE pm.post_id = p.post_id),
                 '[]'::json
             ) AS media,
             (SELECT pm.url FROM post_media pm WHERE pm.post_id = p.post_id AND pm.media_type = 'image' LIMIT 1) AS image_url,
             (SELECT pm.url FROM post_media pm WHERE pm.post_id = p.post_id LIMIT 1) AS post_url,
-            ARRAY(SELECT pm.url FROM post_media pm WHERE pm.post_id = p.post_id AND pm.media_type = 'image') AS images,
+            ARRAY(SELECT pm.url FROM post_media pm WHERE pm.post_id = p.post_id AND pm.media_type = 'image' ORDER BY pm.order_index ASC) AS images,
             CASE 
                 WHEN p.shared_post_id IS NOT NULL THEN
                     json_build_object(
@@ -369,7 +369,7 @@ exports.getSavedPosts = async (req, res) => {
                         'isCompanyPost', (orig_p.author_org_id IS NOT NULL),
                         'post_type', orig_p.post_type,
                         'media', COALESCE(
-                            (SELECT json_agg(json_build_object('url', pm.url, 'media_type', pm.media_type)) 
+                            (SELECT json_agg(json_build_object('url', pm.url, 'media_type', pm.media_type, 'order_index', pm.order_index, 'thumbnail_url', pm.thumbnail_url, 'duration_seconds', pm.duration_seconds) ORDER BY pm.order_index ASC) 
                              FROM post_media pm WHERE pm.post_id = orig_p.post_id),
                             '[]'::json
                         ),

@@ -46,13 +46,30 @@ CREATE OR REPLACE VIEW active_users AS SELECT * FROM users;
 
 -- 6. user_post_feedback: Feed interaction mechanism
 CREATE TABLE IF NOT EXISTS user_post_feedback (
-    user_id UUID REFERENCES users(user_id) ON DELETE CASCADE,
-    post_id UUID REFERENCES posts(post_id) ON DELETE CASCADE,
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    org_id UUID REFERENCES organizations(org_id) ON DELETE CASCADE DEFAULT NULL,
+    post_id UUID NOT NULL REFERENCES posts(post_id) ON DELETE CASCADE,
     feedback_type VARCHAR(20) NOT NULL CHECK (feedback_type IN ('INTERESTED', 'NOT_INTERESTED')),
     created_at TIMESTAMPTZ DEFAULT now(),
-    updated_at TIMESTAMPTZ DEFAULT now(),
-    PRIMARY KEY (user_id, post_id)
+    updated_at TIMESTAMPTZ DEFAULT now()
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_user_post_feedback_personal 
+ON user_post_feedback (user_id, post_id) 
+WHERE org_id IS NULL;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_user_post_feedback_org 
+ON user_post_feedback (org_id, post_id) 
+WHERE org_id IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_user_post_feedback_filter_org 
+ON user_post_feedback (org_id, post_id) 
+WHERE feedback_type = 'NOT_INTERESTED';
+
+CREATE INDEX IF NOT EXISTS idx_user_post_feedback_filter_user 
+ON user_post_feedback (user_id, post_id) 
+WHERE org_id IS NULL AND feedback_type = 'NOT_INTERESTED';
 
 -- 7. post_media: Add width and height columns
 ALTER TABLE post_media 
@@ -185,3 +202,198 @@ CREATE INDEX IF NOT EXISTS idx_org_notification_settings_org_id ON organization_
 ALTER TABLE organization_members 
     ADD COLUMN IF NOT EXISTS member_id UUID DEFAULT gen_random_uuid();
 
+
+-- 20. post_media: Add carousel slide ordering & video metadata (v1.9.0)
+ALTER TABLE post_media 
+    ADD COLUMN IF NOT EXISTS order_index INT DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS thumbnail_url TEXT,
+    ADD COLUMN IF NOT EXISTS duration_seconds NUMERIC(6,2);
+
+CREATE INDEX IF NOT EXISTS idx_post_media_post_order ON post_media(post_id, order_index);
+
+-- 21. organization_deactivation_history: Tracks organizations automatically deactivated by personal account deactivation
+CREATE TABLE IF NOT EXISTS organization_deactivation_history (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    org_id UUID NOT NULL REFERENCES organizations(org_id) ON DELETE CASCADE,
+    user_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    deactivation_event_id UUID NOT NULL,
+    reason VARCHAR(50) NOT NULL DEFAULT 'PERSONAL_ACCOUNT',
+    deactivated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    restored_at TIMESTAMPTZ DEFAULT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_org_deactivation_history_user_unrecovered
+    ON organization_deactivation_history (user_id, restored_at)
+    WHERE restored_at IS NULL;
+
+CREATE INDEX IF NOT EXISTS idx_org_deactivation_history_org_id 
+    ON organization_deactivation_history (org_id);
+
+-- 22. user_resume_history: Tracks applicant's reusable resume history for job applications
+CREATE TABLE IF NOT EXISTS user_resume_history (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    resume_url TEXT NOT NULL,
+    resume_file_name TEXT DEFAULT 'Resume.pdf',
+    created_at TIMESTAMPTZ DEFAULT now(),
+    last_used_at TIMESTAMPTZ DEFAULT now(),
+    UNIQUE(user_id, resume_url)
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_resume_history_user_last_used 
+    ON user_resume_history(user_id, last_used_at DESC);
+
+-- Backfill user_resume_history from existing job_applications
+INSERT INTO user_resume_history (user_id, resume_url, resume_file_name, last_used_at)
+SELECT applicant_id, resume_url, 
+       COALESCE((array_agg(resume_file_name ORDER BY applied_at DESC))[1], 'Resume.pdf') AS resume_file_name, 
+       MAX(applied_at) AS last_used_at
+FROM job_applications
+WHERE resume_url IS NOT NULL
+GROUP BY applicant_id, resume_url
+ON CONFLICT (user_id, resume_url) DO NOTHING;
+
+-- 23. jobs_explore_recommendations: DB support & indexes for Jobs Explore & Recommendation Engine (v1.9.0)
+-- 23.1 experiences: Add org_id column to link candidate work history to organizations
+ALTER TABLE experiences 
+    ADD COLUMN IF NOT EXISTS org_id UUID REFERENCES organizations(org_id) ON DELETE SET NULL;
+
+CREATE INDEX IF NOT EXISTS idx_experiences_org_id 
+    ON experiences(org_id);
+
+CREATE INDEX IF NOT EXISTS idx_experiences_current_org 
+    ON experiences(org_id) 
+    WHERE is_current = TRUE AND org_id IS NOT NULL;
+
+-- 23.2 jobs: Composite partial index for active listings & keyset pagination
+CREATE INDEX IF NOT EXISTS idx_jobs_active_created 
+    ON jobs(created_at DESC, job_id DESC) 
+    WHERE is_active = TRUE AND status = 'ACTIVE';
+
+-- 23.3 job_saves: Reverse lookup index on job_id for saves_count aggregation
+CREATE INDEX IF NOT EXISTS idx_job_saves_job_id 
+    ON job_saves(job_id);
+
+-- 23.4 user_activity_log: Targeted partial index for instant "Recently Viewed" job retrieval
+CREATE INDEX IF NOT EXISTS idx_activity_job_views 
+    ON user_activity_log(user_id, entity_id, created_at DESC) 
+    WHERE action_type = 'view_job' AND entity_type = 'job';
+
+-- 24. jobs: Add published_at column and indexes for job publishing timing & actively hiring
+ALTER TABLE jobs 
+    ADD COLUMN IF NOT EXISTS published_at TIMESTAMPTZ NULL;
+
+CREATE INDEX IF NOT EXISTS idx_jobs_published_at 
+    ON jobs(published_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_jobs_coalesce_published_created 
+    ON jobs((COALESCE(published_at, created_at)) DESC);
+
+ALTER TABLE jobs 
+    ADD COLUMN IF NOT EXISTS actively_hiring BOOLEAN DEFAULT false;
+
+CREATE INDEX IF NOT EXISTS idx_jobs_actively_hiring 
+    ON jobs(org_id, actively_hiring) 
+    WHERE (status = 'ACTIVE' OR is_active = TRUE);
+
+-- 25. user_resume_history: Reusable Resume History table & indexes
+CREATE TABLE IF NOT EXISTS user_resume_history (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    resume_url TEXT NOT NULL,
+    resume_file_name TEXT DEFAULT 'Resume.pdf',
+    created_at TIMESTAMPTZ DEFAULT now(),
+    last_used_at TIMESTAMPTZ DEFAULT now(),
+    UNIQUE(user_id, resume_url)
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_resume_history_user_last_used 
+    ON user_resume_history(user_id, last_used_at DESC);
+
+-- 26. Reference Tables: Job Roles & Industries Master
+CREATE TABLE IF NOT EXISTS job_roles_master (
+    role_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    role_name VARCHAR(255) UNIQUE NOT NULL,
+    category VARCHAR(100),
+    created_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_job_roles_name ON job_roles_master (role_name);
+
+CREATE TABLE IF NOT EXISTS industries_master (
+    industry_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    industry_name VARCHAR(255) UNIQUE NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_industries_name ON industries_master (industry_name);
+
+-- 27. organizations: Institution fields & active_organizations view refresh
+ALTER TABLE organizations 
+    ADD COLUMN IF NOT EXISTS entity_type VARCHAR(20) DEFAULT 'COMPANY',
+    ADD COLUMN IF NOT EXISTS institution_type VARCHAR(50),
+    ADD COLUMN IF NOT EXISTS established_year INTEGER,
+    ADD COLUMN IF NOT EXISTS campus_location VARCHAR(255),
+    ADD COLUMN IF NOT EXISTS verified_edu BOOLEAN DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS auto_verify_domains VARCHAR(255)[] DEFAULT '{}';
+
+CREATE OR REPLACE VIEW active_organizations AS 
+SELECT * FROM organizations 
+WHERE (is_deleted IS FALSE OR is_deleted IS NULL);
+
+-- 28. profiles: Add working_industry & work_mode for people filtering
+ALTER TABLE profiles 
+    ADD COLUMN IF NOT EXISTS working_industry TEXT;
+
+DO $$ 
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'job_work_mode') THEN
+        CREATE TYPE job_work_mode AS ENUM ('Remote', 'Hybrid', 'Onsite');
+    END IF;
+END $$;
+
+ALTER TABLE profiles 
+    ADD COLUMN IF NOT EXISTS work_mode job_work_mode;
+
+ALTER TABLE jobs 
+    ALTER COLUMN industry DROP NOT NULL;
+
+-- 29. Global Search Engine & Trigram Indexes (pg_trgm)
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+
+CREATE INDEX IF NOT EXISTS idx_users_full_name_trgm 
+    ON users USING GIN (full_name gin_trgm_ops);
+
+CREATE INDEX IF NOT EXISTS idx_users_account_name_trgm 
+    ON users USING GIN (account_name gin_trgm_ops);
+
+CREATE INDEX IF NOT EXISTS idx_companies_name_trgm 
+    ON organizations USING GIN (name gin_trgm_ops);
+
+CREATE INDEX IF NOT EXISTS idx_jobs_title_trgm 
+    ON jobs USING GIN (title gin_trgm_ops);
+
+CREATE INDEX IF NOT EXISTS idx_jobs_company_trgm 
+    ON jobs USING GIN (company_name gin_trgm_ops);
+
+CREATE INDEX IF NOT EXISTS idx_posts_content_trgm 
+    ON posts USING GIN (content gin_trgm_ops) 
+    WHERE (is_removed IS FALSE OR is_removed IS NULL) 
+      AND is_active = TRUE 
+      AND visibility = 'public';
+
+-- 30. Hashtags Global Search & Multi-Mode Ranking Indexes
+CREATE INDEX IF NOT EXISTS idx_hashtags_tag_trgm 
+    ON hashtags USING GIN (tag gin_trgm_ops);
+
+CREATE INDEX IF NOT EXISTS idx_hashtags_posts_count 
+    ON hashtags (posts_count DESC, usage_count DESC);
+
+CREATE INDEX IF NOT EXISTS idx_hashtags_usage_count 
+    ON hashtags (usage_count DESC, posts_count DESC);
+
+CREATE INDEX IF NOT EXISTS idx_hashtags_created_at 
+    ON hashtags (created_at DESC, hashtag_id DESC);
+
+CREATE INDEX IF NOT EXISTS idx_hashtags_last_used_at 
+    ON hashtags (last_used_at DESC NULLS LAST);

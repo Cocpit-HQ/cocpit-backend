@@ -198,6 +198,8 @@ exports.submitNewEmail = async (req, res) => {
         const authKey = isOrgActor ? `email_change_authorized:org:${actorId}` : `email_change_authorized:${actorId}`;
         const pendingKey = isOrgActor ? `pending_email_change:org:${actorId}` : `pending_email_change:${actorId}`;
 
+        // As per owner and manager requirements, old email verification step is commented out to allow direct new email verification. Uncomment if legacy flow is needed in future.
+        /*
         if (redisClient.isOpen) {
             const isAuthorized = await redisClient.get(authKey);
             if (!isAuthorized) {
@@ -207,6 +209,7 @@ exports.submitNewEmail = async (req, res) => {
                 });
             }
         }
+        */
 
         let currentEmail = "";
         if (isOrgActor) {

@@ -846,6 +846,11 @@ class GroupChatService {
         // Extract mentions (@Username)
         let mentionedUsernames = [];
         if (content) {
+            const regex1 = /@\[[^\]]+\]\(([^)]+)\)/g;
+            let m;
+            while ((m = regex1.exec(content)) !== null) {
+                if (!mentionedUsernames.includes(m[1])) mentionedUsernames.push(m[1]);
+            }
             const mentionMatches = content.match(/@([a-zA-Z0-9_]+)/g);
             mentionedUsernames = mentionMatches ? mentionMatches.map(m => m.substring(1)) : [];
         }
@@ -1049,7 +1054,11 @@ class GroupChatService {
                 if (
                     member.user_id !== senderId && 
                     member.account_name && 
-                    mentionedUsernames.some(u => u.toLowerCase() === member.account_name.toLowerCase())
+                    mentionedUsernames.some(u => {
+                        const clean = u.replace(/^(user|org|company):/i, '').toLowerCase();
+                        return (member.account_name && clean === member.account_name.toLowerCase()) ||
+                               (member.user_id && clean === String(member.user_id).toLowerCase());
+                    })
                 ) {
                     mentionedGroupMembers.push(member);
                 }

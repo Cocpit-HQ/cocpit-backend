@@ -10,6 +10,13 @@ const pool = new Pool({
 });
 
 const roles = [
+    { name: "Founder", category: "Leadership" },
+    { name: "CEO", category: "Leadership" },
+    { name: "CTO", category: "Leadership" },
+    { name: "COO", category: "Leadership" },
+    { name: "Director", category: "Management" },
+    { name: "Manager", category: "Management" },
+    { name: "Executive", category: "Management" },
     { name: "Software Engineer", category: "Engineering" },
     { name: "Frontend Developer", category: "Engineering" },
     { name: "Backend Developer", category: "Engineering" },

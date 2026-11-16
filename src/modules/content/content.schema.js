@@ -16,7 +16,6 @@ const updateCommentSchema = z.object({
   }).passthrough(),
 });
 
-
 const hideCommentSchema = z.object({
   params: z.object({
     commentId: z.string().uuid({ message: "Valid Comment ID is required" }),
@@ -68,7 +67,17 @@ const createPostSchema = z.object({
         }
       }
       return val;
-    }, z.array(z.string()).optional()),
+    }, z.array(z.any()).optional()),
+    media: z.preprocess((val) => {
+      if (typeof val === 'string') {
+        try {
+          return JSON.parse(val);
+        } catch {
+          return val;
+        }
+      }
+      return val;
+    }, z.array(z.any()).optional()),
   }).passthrough(),
 });
 
