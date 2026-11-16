@@ -22,7 +22,8 @@ const canSwitchToOrganization = (organization) => {
     const isExpired = organization?.expires_at && new Date(organization.expires_at) < new Date();
     const isOwner = Boolean(organization?.viewer_role_data?.is_owner);
     const hasActiveRole = Boolean(organization?.role && !organization.role.includes('_deleted_'));
-    return (organization?.status === "ACTIVE" || isOwner) && !isExpired && (isOwner || hasActiveRole);
+    const isSuspended = Boolean(organization?.is_suspended);
+    return (organization?.status === "ACTIVE" || isOwner) && !isExpired && (isOwner || hasActiveRole) && !isSuspended;
 };
 
 const buildOrganizationActor = (organization) => {

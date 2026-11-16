@@ -425,6 +425,29 @@ exports.getPrivacySettings = async (req, res) => {
                 [orgId]
             );
 
+            // Fetch organization verification status and reviewer notes/rejection reason
+            let verificationStatus = 'UNVERIFIED';
+            let rejectionReason = null;
+            let reviewNotes = null;
+            try {
+                const orgRes = await pool.query(
+                    `SELECT verification_status, review_notes FROM organizations WHERE org_id = $1`,
+                    [orgId]
+                );
+                if (orgRes.rowCount > 0) {
+                    verificationStatus = orgRes.rows[0].verification_status || 'UNVERIFIED';
+                    reviewNotes = orgRes.rows[0].review_notes || null;
+                    if (reviewNotes && reviewNotes.includes('[Reason:')) {
+                        const m = reviewNotes.match(/\[Reason:\s*([^\]]+)\]/i);
+                        if (m) rejectionReason = m[1].trim();
+                    }
+                }
+            } catch (verr) {
+                console.error("Error fetching org verification for privacy:", verr);
+            }
+
+            const isOrgVerified = ['VERIFIED', 'DOMAIN_VERIFIED', 'DOCUMENT_VERIFIED'].includes(verificationStatus);
+
             if (result.rowCount === 0) {
                 return res.status(200).json({
                     success: true,
@@ -441,6 +464,11 @@ exports.getPrivacySettings = async (req, res) => {
                         followersVisibility: "everyone",
                         message_permission: "everyone",
                         messagePermission: "everyone",
+                        is_identity_verified: isOrgVerified,
+                        is_verified: isOrgVerified,
+                        verification_status: verificationStatus,
+                        rejection_reason: rejectionReason,
+                        review_notes: reviewNotes,
                     },
                 });
             }
@@ -468,6 +496,11 @@ exports.getPrivacySettings = async (req, res) => {
                     followersVisibility,
                     message_permission: messagePermission,
                     messagePermission,
+                    is_identity_verified: isOrgVerified,
+                    is_verified: isOrgVerified,
+                    verification_status: verificationStatus,
+                    rejection_reason: rejectionReason,
+                    review_notes: reviewNotes,
                 },
             });
         }
@@ -476,7 +509,8 @@ exports.getPrivacySettings = async (req, res) => {
         const userId = req.user.sub;
         const result = await pool.query(
             `SELECT email, mobile_number, recovery_email,
-                    profile_show_email, profile_show_phone, tag_permission
+                    profile_show_email, profile_show_phone, tag_permission,
+                    is_identity_verified
              FROM users WHERE user_id = $1`,
             [userId]
         );
@@ -489,6 +523,30 @@ exports.getPrivacySettings = async (req, res) => {
         const showEmail = row.profile_show_email || false;
         const showPhone = row.profile_show_phone || false;
         const tagPermission = row.tag_permission || "everyone";
+        const isVerified = Boolean(row.is_identity_verified);
+
+        let verificationStatus = isVerified ? 'VERIFIED' : 'UNVERIFIED';
+        let rejectionReason = null;
+        try {
+            const verifRes = await pool.query(
+                `SELECT status, is_verified, rejection_reason FROM user_verifications 
+                 WHERE user_id = $1 ORDER BY created_at DESC LIMIT 1`,
+                [userId]
+            );
+            if (verifRes.rowCount > 0) {
+                const v = verifRes.rows[0];
+                if (v.is_verified || v.status === 'VERIFIED') {
+                    verificationStatus = 'VERIFIED';
+                } else if (v.status === 'REJECTED') {
+                    verificationStatus = 'REJECTED';
+                    rejectionReason = v.rejection_reason || null;
+                } else if (v.status === 'PENDING' || v.status === 'UNDER_REVIEW') {
+                    verificationStatus = 'PENDING';
+                }
+            }
+        } catch (e) {
+            console.error('Error fetching verification status in privacy:', e);
+        }
 
         return res.status(200).json({
             success: true,
@@ -502,6 +560,10 @@ exports.getPrivacySettings = async (req, res) => {
                 email: row.email,
                 mobile_number: row.mobile_number,
                 recovery_email: row.recovery_email,
+                is_identity_verified: isVerified || verificationStatus === 'VERIFIED',
+                is_verified: isVerified || verificationStatus === 'VERIFIED',
+                verification_status: verificationStatus,
+                rejection_reason: rejectionReason,
             },
         });
     } catch (error) {

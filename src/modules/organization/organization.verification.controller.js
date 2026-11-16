@@ -2,7 +2,7 @@ const pool = require("../../core/db/pool");
 const { checkOrgPermission } = require("../../core/utils/rbac");
 const socketService = require("../../core/infrastructure/socket.service");
 const { sendOrgDocumentSubmittedEmail } = require("../../core/services/email.service");
-const { sendToUser } = require("../notification/notification.service");
+const { sendToUser, notifyOrgDocumentVerified } = require("../notification/notification.service");
 
 const MONTH_MAP = { 
     "Jan": "01", "Feb": "02", "Mar": "03", "Apr": "04", 
@@ -312,7 +312,7 @@ exports.submitDocumentVerification = async (req, res) => {
 
         await client.query(
             `UPDATE organizations 
-             SET verification_status = 'VERIFIED', 
+             SET verification_status = 'DOCUMENT_PENDING', 
                  legal_name = $2, 
                  incorporation_date = $3 
              WHERE org_id = $1`,
@@ -324,15 +324,25 @@ exports.submitDocumentVerification = async (req, res) => {
         if (existing.rowCount > 0) {
             await client.query(
                 `UPDATE organization_verifications 
-                 SET document_urls = $1, verification_type = 'DOCUMENT', review_notes = NULL, reviewed_by = NULL, is_verified = TRUE, legal_name = $3, incorporation_date = $4
+                 SET document_urls = $1, verification_type = 'DOCUMENT', review_notes = NULL, reviewed_by = NULL, is_verified = FALSE, legal_name = $3, incorporation_date = $4
                  WHERE org_id = $2 AND is_verified = FALSE`,
                 [JSON.stringify(finalUrls), orgId, effectiveLegalName, incorpDateStr]
             );
         } else {
             await client.query(
                 `INSERT INTO organization_verifications (org_id, verification_type, document_urls, is_verified, legal_name, incorporation_date)
-                 VALUES ($1, 'DOCUMENT', $2, TRUE, $3, $4)`,
+                 VALUES ($1, 'DOCUMENT', $2, FALSE, $3, $4)`,
                 [orgId, JSON.stringify(finalUrls), effectiveLegalName, incorpDateStr]
+            );
+        }
+
+        // Save each document into organization_documents so Admin Panel can inspect individually
+        for (const docUrl of finalUrls) {
+            const docName = String(docUrl).split('/').pop() || 'verification_document';
+            await client.query(
+                `INSERT INTO organization_documents (org_id, document_url, document_name, document_type, status)
+                 VALUES ($1, $2, $3, 'DOCUMENT', 'PENDING')`,
+                [orgId, docUrl, docName]
             );
         }
 
@@ -343,49 +353,23 @@ exports.submitDocumentVerification = async (req, res) => {
             metadata: { count: finalUrls.length, legalName: effectiveLegalName, incorporationDate: incorpDateStr }
         });
 
-        // NOTIFICATION: Document Submitted
+        await client.query("COMMIT");
+
         let orgName = "the company";
-        const orgRes = await client.query("SELECT name, created_by FROM organizations WHERE org_id = $1", [orgId]);
-        if (orgRes.rowCount > 0) {
-            orgName = orgRes.rows[0].name;
-            const ownerId = orgRes.rows[0].created_by;
-            const userRes = await client.query("SELECT email FROM active_users WHERE user_id = $1", [ownerId]);
-            
-            if (userRes.rowCount > 0) {
-                const ownerEmail = userRes.rows[0].email;
-                const type = "org_doc_verification_submitted";
-                const title = "Documents submitted";
-                const message = `Your documents for "${orgName}" have been submitted and are under review.`;
-                const timestamp = new Date().toISOString();
-
-                // Insert into DB
-                const notifRes = await client.query(
-                    `INSERT INTO notifications (user_id, sender_id, type, text, metadata, recipient_org_id)
-                     VALUES ($1, $2, $3, $4, $5, $6) RETURNING notification_id, created_at`,
-                    [ownerId, ownerId, type, message, JSON.stringify({ title, orgId }), orgId]
-                );
-
-                // Socket notification (triggers toast in frontend)
-                socketService.notifyUser(ownerId, "notification", { 
-                    type, 
-                    title, 
-                    message, 
-                    timestamp,
-                    notification_id: notifRes.rows[0].notification_id,
-                    created_at: notifRes.rows[0].created_at.toISOString(),
-                    recipient_org_id: orgId
-                });
-
-                // Email notification
-                sendOrgDocumentSubmittedEmail(ownerEmail, orgName).catch(err => console.error("Email err:", err));
-                
-                // Push notification
-                sendToUser(ownerId, title, message, { type }).catch(() => {});
+        try {
+            const orgRes = await pool.query("SELECT name FROM organizations WHERE org_id = $1", [orgId]);
+            if (orgRes.rowCount > 0 && orgRes.rows[0].name) {
+                orgName = orgRes.rows[0].name;
             }
+        } catch (e) {
+            console.error("Failed to fetch org name:", e);
         }
 
-        await client.query("COMMIT");
-        res.json({ message: `Your documents for ${orgName} have been submitted and are under review.` });
+        return res.json({ 
+            success: true, 
+            verified: false, 
+            message: `Your documents for ${orgName} have been submitted and are under review by the admin.` 
+        });
     } catch (err) {
         await client.query("ROLLBACK");
         console.error("submitDocumentVerification error:", err);

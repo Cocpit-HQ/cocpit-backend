@@ -113,6 +113,7 @@ async function getOrganizationMembership(orgId, userId, queryable = pool) {
             cr.is_active AS role_is_active,
             o.is_deactivated,
             o.is_deleted,
+            o.is_suspended,
             o.created_by,
             o.slug
          FROM organization_members cm
@@ -142,6 +143,10 @@ function assertActiveMembership(member) {
 
     if (member.is_deactivated || member.is_deleted) {
         throw new AppError("This organization is currently unavailable.", 403);
+    }
+
+    if (member.is_suspended) {
+        throw new AppError("Your organization is currently suspended and cannot publish content.", 403);
     }
 
     if (member.status !== MEMBER_STATUS.ACTIVE) {

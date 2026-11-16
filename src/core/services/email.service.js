@@ -492,6 +492,69 @@ const sendSuspensionAppealEmail = async (email, fullName, appealToken, actionRea
     }
 };
 
+const sendOrganizationSuspendedEmail = async (email, creatorName, orgName, actionReason, appealToken = null) => {
+    if (!resend) {
+        console.warn("Email service is not configured (RESEND_API_KEY missing).");
+        return null;
+    }
+
+    const backendUrl = process.env.API_URL || "http://localhost:5000";
+    const appealLink = appealToken ? `${backendUrl}/appeal.html?token=${appealToken}` : null;
+
+    try {
+        const { data, error } = await resend.emails.send({
+            from: "Cocpit <noreply@cocpit.in>",
+            to: [email],
+            subject: `Notice: Your Organization "${orgName}" has been suspended`,
+            html: `
+                <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 560px; margin: 0 auto;">
+                    <div style="background: #e11d48; padding: 24px 32px; border-radius: 8px 8px 0 0;">
+                        <h2 style="color: #ffffff; margin: 0; font-size: 22px;">Cocpit Safety & Moderation</h2>
+                    </div>
+                    <div style="background: #f9f9f9; padding: 32px; border-radius: 0 0 8px 8px; border: 1px solid #e0e0e0;">
+                        <h3 style="margin-top: 0;">Hi ${creatorName || "there"},</h3>
+                        <p>We are writing to inform you that your organization <strong>"${orgName}"</strong> on Cocpit has been suspended by our administration and moderation team.</p>
+                        <p><strong>Reason for Suspension:</strong></p>
+                        <blockquote style="background: #fff0f2; border-left: 4px solid #e11d48; padding: 12px 16px; color: #9f1239; margin: 16px 0;">
+                            ${actionReason || "Violation of Community Guidelines and Platform Terms."}
+                        </blockquote>
+                        <p>While suspended:</p>
+                        <ul style="color: #555; padding-left: 20px;">
+                            <li>Members cannot switch to or manage this organization.</li>
+                            <li>Publishing content, jobs, and stories on behalf of this organization is blocked.</li>
+                            <li>The organization profile and its public posts are hidden from search and feeds.</li>
+                        </ul>
+                        ${appealLink ? `
+                        <p>If you believe this decision was made in error, you have the right to submit an appeal:</p>
+                        <div style="text-align: center; margin: 28px 0;">
+                            <a href="${appealLink}"
+                               style="background: #2563eb; color: #ffffff; padding: 14px 28px; text-decoration: none; border-radius: 6px; font-weight: bold; font-size: 15px; display: inline-block;">
+                                Submit Organization Appeal
+                            </a>
+                        </div>
+                        <p style="font-size: 13px; color: #888; text-align: center;">This appeal link is valid for 7 days and can be submitted once.</p>
+                        ` : `
+                        <p>If you believe this suspension was made in error or wish to appeal this decision, please reach out to our support team at <a href="mailto:support@cocpit.in" style="color: #2563eb;">support@cocpit.in</a>.</p>
+                        `}
+                        <hr style="border: none; border-top: 1px solid #e0e0e0; margin: 24px 0;">
+                        <p style="font-size: 12px; color: #aaa; text-align: center;">© ${new Date().getFullYear()} Cocpit. All rights reserved.</p>
+                    </div>
+                </div>
+            `,
+        });
+
+        if (error) {
+            console.error("Resend error (org suspension email):", error);
+            return null;
+        }
+
+        return data;
+    } catch (err) {
+        console.error("Failed to send org suspension email to:", email, err);
+        return null;
+    }
+};
+
 /**
  * Sends an organization deletion verification OTP to one or more recipient emails.
  * @param {string[]} recipients - Array of recipient email addresses
@@ -1063,6 +1126,7 @@ module.exports = {
     sendJobOfferChatEmail,
     sendCompanyJobChatEmail,
     sendSuspensionAppealEmail,
+    sendOrganizationSuspendedEmail,
     sendShortlistedEmail,
     sendOfferExpiringEmail,
     sendNewDeviceLoginEmail,

@@ -993,7 +993,8 @@ exports.createPost = async (req, res) => {
     let actorScope;
 
     try {
-        actorScope = getContentActorScope(req, req.body?.companyId || null);
+        const fallbackOrg = req.body?.companyId || req.body?.org_id || req.body?.author_org_id || null;
+        actorScope = getContentActorScope(req, fallbackOrg);
     } catch (err) {
         return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
     }
@@ -1076,6 +1077,18 @@ exports.createPost = async (req, res) => {
     }
 
 
+
+    const actingOrgId = companyId || req.body?.org_id || req.body?.author_org_id || req.body?.companyId || null;
+    if (actingOrgId) {
+        const orgCheck = await pool.query(
+            "SELECT is_suspended FROM organizations WHERE org_id = $1",
+            [actingOrgId]
+        );
+        if (orgCheck.rows[0]?.is_suspended) {
+            cleanupFiles(uploadedFiles);
+            return res.status(403).json({ error: "Your organization is currently suspended and cannot publish content." });
+        }
+    }
 
     // Map uploaded files to media URLs directly (already streamed by Multer middleware)
     if (post_type === 'article') {
@@ -2372,14 +2385,14 @@ WHERE p.post_id = $1
   AND (
       (p.author_org_id IS NULL AND u.is_deactivated = FALSE AND (u.is_deleted IS NULL OR u.is_deleted = FALSE))
       OR 
-      (p.author_org_id IS NOT NULL AND comp.is_deleted = FALSE AND comp.deletion_execute_at IS NULL AND comp.is_deactivated = FALSE)
+      (p.author_org_id IS NOT NULL AND comp.is_deleted = FALSE AND comp.deletion_execute_at IS NULL AND comp.is_deactivated = FALSE AND comp.is_suspended IS NOT TRUE)
   )
   AND (
       p.shared_post_id IS NULL 
       OR (
           (sp.author_org_id IS NULL AND sp_u.is_deactivated = FALSE AND (sp_u.is_deleted IS NULL OR sp_u.is_deleted = FALSE))
           OR
-          (sp.author_org_id IS NOT NULL AND sp_comp.is_deleted = FALSE AND sp_comp.is_deactivated = FALSE)
+          (sp.author_org_id IS NOT NULL AND sp_comp.is_deleted = FALSE AND sp_comp.is_deactivated = FALSE AND sp_comp.is_suspended IS NOT TRUE)
       )
   );
 `
@@ -2539,7 +2552,8 @@ exports.updatePostById = async (req, res) => {
     let actorScope;
 
     try {
-        actorScope = getContentActorScope(req, req.body?.companyId || null);
+        const fallbackOrg = req.body?.companyId || req.body?.org_id || req.body?.author_org_id || null;
+        actorScope = getContentActorScope(req, fallbackOrg);
     } catch (err) {
         return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
     }
@@ -2567,6 +2581,15 @@ exports.updatePostById = async (req, res) => {
             return res.status(404).json({ message: "Post not found" });
         }
         const { author_id, author_org_id, post_type: currentPostType, shared_post_id, shared_job_id, is_removed, is_deleted, is_unlisted, content: currentContent } = postCheck.rows[0];
+
+        const targetOrgId = author_org_id || orgId || req.body?.org_id || req.body?.author_org_id || req.body?.companyId || null;
+        if (targetOrgId) {
+            const orgCheck = await client.query("SELECT is_suspended FROM organizations WHERE org_id = $1", [targetOrgId]);
+            if (orgCheck.rows[0]?.is_suspended) {
+                await client.query('ROLLBACK');
+                return res.status(403).json({ error: "Your organization is currently suspended and cannot publish content." });
+            }
+        }
 
         // Infer / resolve new post_type
         let newPostType = post_type;
@@ -3287,12 +3310,24 @@ exports.voteInPoll = async (req, res) => {
     let actorScope;
 
     try {
-        actorScope = getContentActorScope(req, req.body?.companyId || null);
+        const fallbackOrg = req.body?.companyId || req.body?.org_id || req.body?.author_org_id || null;
+        actorScope = getContentActorScope(req, fallbackOrg);
     } catch (err) {
         return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
     }
 
     const { userId, orgId: companyId } = actorScope;
+    const actingOrgId = companyId || req.body?.org_id || req.body?.author_org_id || req.body?.companyId || null;
+
+    if (actingOrgId) {
+        const orgCheck = await pool.query(
+            "SELECT is_suspended FROM organizations WHERE org_id = $1",
+            [actingOrgId]
+        );
+        if (orgCheck.rows[0]?.is_suspended) {
+            return res.status(403).json({ error: "Your organization is currently suspended and cannot publish content." });
+        }
+    }
 
     try {
         // RBAC check: if acting as an organization, ensure member has permission
@@ -3360,12 +3395,24 @@ exports.removeVote = async (req, res) => {
     let actorScope;
 
     try {
-        actorScope = getContentActorScope(req, req.body?.companyId || null);
+        const fallbackOrg = req.body?.companyId || req.body?.org_id || req.body?.author_org_id || null;
+        actorScope = getContentActorScope(req, fallbackOrg);
     } catch (err) {
         return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
     }
 
     const { userId, orgId: companyId } = actorScope;
+    const actingOrgId = companyId || req.body?.org_id || req.body?.author_org_id || req.body?.companyId || null;
+
+    if (actingOrgId) {
+        const orgCheck = await pool.query(
+            "SELECT is_suspended FROM organizations WHERE org_id = $1",
+            [actingOrgId]
+        );
+        if (orgCheck.rows[0]?.is_suspended) {
+            return res.status(403).json({ error: "Your organization is currently suspended and cannot publish content." });
+        }
+    }
 
     try {
         // RBAC check: if acting as an organization, ensure member has permission
@@ -3418,12 +3465,24 @@ exports.toggleLike = async (req, res) => {
     let actorScope;
 
     try {
-        actorScope = getContentActorScope(req, req.body?.companyId || null);
+        const fallbackOrg = req.body?.companyId || req.body?.org_id || req.body?.author_org_id || null;
+        actorScope = getContentActorScope(req, fallbackOrg);
     } catch (err) {
         return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
     }
 
     const { userId, orgId: companyId } = actorScope;
+    const actingOrgId = companyId || req.body?.org_id || req.body?.author_org_id || req.body?.companyId || null;
+
+    if (actingOrgId) {
+        const orgCheck = await pool.query(
+            "SELECT is_suspended FROM organizations WHERE org_id = $1",
+            [actingOrgId]
+        );
+        if (orgCheck.rows[0]?.is_suspended) {
+            return res.status(403).json({ error: "Your organization is currently suspended and cannot publish content." });
+        }
+    }
 
     try {
         if (companyId) {
@@ -3668,12 +3727,24 @@ exports.addComment = async (req, res) => {
     let actorScope;
 
     try {
-        actorScope = getContentActorScope(req, req.body?.companyId || null);
+        const fallbackOrg = req.body?.companyId || req.body?.org_id || req.body?.author_org_id || null;
+        actorScope = getContentActorScope(req, fallbackOrg);
     } catch (err) {
         return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
     }
 
     const { userId, orgId: companyId } = actorScope;
+    const actingOrgId = companyId || req.body?.org_id || req.body?.author_org_id || req.body?.companyId || null;
+
+    if (actingOrgId) {
+        const orgCheck = await pool.query(
+            "SELECT is_suspended FROM organizations WHERE org_id = $1",
+            [actingOrgId]
+        );
+        if (orgCheck.rows[0]?.is_suspended) {
+            return res.status(403).json({ error: "Your organization is currently suspended and cannot publish content." });
+        }
+    }
 
     if (companyId) {
         const hasPerm = await checkOrgPermission(pool, companyId, userId, ['CREATE_POST', 'CREATE_CONTENT']);
@@ -4156,12 +4227,24 @@ exports.updateComment = async (req, res) => {
     let actorScope;
 
     try {
-        actorScope = getContentActorScope(req, req.body?.companyId || null);
+        const fallbackOrg = req.body?.companyId || req.body?.org_id || req.body?.author_org_id || null;
+        actorScope = getContentActorScope(req, fallbackOrg);
     } catch (err) {
         return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
     }
 
     const { userId, orgId: companyId } = actorScope;
+    const actingOrgId = companyId || req.body?.org_id || req.body?.author_org_id || req.body?.companyId || null;
+
+    if (actingOrgId) {
+        const orgCheck = await pool.query(
+            "SELECT is_suspended FROM organizations WHERE org_id = $1",
+            [actingOrgId]
+        );
+        if (orgCheck.rows[0]?.is_suspended) {
+            return res.status(403).json({ error: "Your organization is currently suspended and cannot publish content." });
+        }
+    }
 
     if (!commentId) {
         return res.status(400).json({ message: "commentId is required" });
@@ -4251,12 +4334,24 @@ exports.deleteComment = async (req, res) => {
     let actorScope;
 
     try {
-        actorScope = getContentActorScope(req, req.body?.companyId || null);
+        const fallbackOrg = req.body?.companyId || req.body?.org_id || req.body?.author_org_id || null;
+        actorScope = getContentActorScope(req, fallbackOrg);
     } catch (err) {
         return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
     }
 
     const { userId, orgId: companyId } = actorScope;
+    const actingOrgId = companyId || req.body?.org_id || req.body?.author_org_id || req.body?.companyId || null;
+
+    if (actingOrgId) {
+        const orgCheck = await pool.query(
+            "SELECT is_suspended FROM organizations WHERE org_id = $1",
+            [actingOrgId]
+        );
+        if (orgCheck.rows[0]?.is_suspended) {
+            return res.status(403).json({ error: "Your organization is currently suspended and cannot publish content." });
+        }
+    }
 
     if (!userId || !commentId) {
         return res.status(400).json({ message: "userId and commentId are required" });
@@ -4337,12 +4432,24 @@ exports.toggleCommentLike = async (req, res) => {
     let actorScope;
 
     try {
-        actorScope = getContentActorScope(req, req.body?.companyId || null);
+        const fallbackOrg = req.body?.companyId || req.body?.org_id || req.body?.author_org_id || null;
+        actorScope = getContentActorScope(req, fallbackOrg);
     } catch (err) {
         return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
     }
 
     const { userId, orgId: companyId } = actorScope;
+    const actingOrgId = companyId || req.body?.org_id || req.body?.author_org_id || req.body?.companyId || null;
+
+    if (actingOrgId) {
+        const orgCheck = await pool.query(
+            "SELECT is_suspended FROM organizations WHERE org_id = $1",
+            [actingOrgId]
+        );
+        if (orgCheck.rows[0]?.is_suspended) {
+            return res.status(403).json({ error: "Your organization is currently suspended and cannot publish content." });
+        }
+    }
 
     if (!commentId || !userId) {
         return res.status(400).json({ message: "Comment ID and user ID are required" });
@@ -4498,12 +4605,24 @@ exports.toggleCommentPin = async (req, res) => {
     let actorScope;
 
     try {
-        actorScope = getContentActorScope(req, req.body?.companyId || null);
+        const fallbackOrg = req.body?.companyId || req.body?.org_id || req.body?.author_org_id || null;
+        actorScope = getContentActorScope(req, fallbackOrg);
     } catch (err) {
         return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
     }
 
     const { userId, orgId: companyId } = actorScope;
+    const actingOrgId = companyId || req.body?.org_id || req.body?.author_org_id || req.body?.companyId || null;
+
+    if (actingOrgId) {
+        const orgCheck = await pool.query(
+            "SELECT is_suspended FROM organizations WHERE org_id = $1",
+            [actingOrgId]
+        );
+        if (orgCheck.rows[0]?.is_suspended) {
+            return res.status(403).json({ error: "Your organization is currently suspended and cannot publish content." });
+        }
+    }
 
     if (!commentId || !userId) {
         return res.status(400).json({ message: "Comment ID and user ID are required" });
@@ -4775,12 +4894,24 @@ exports.hideComment = async (req, res) => {
     let actorScope;
 
     try {
-        actorScope = getContentActorScope(req, req.body?.companyId || null);
+        const fallbackOrg = req.body?.companyId || req.body?.org_id || req.body?.author_org_id || null;
+        actorScope = getContentActorScope(req, fallbackOrg);
     } catch (err) {
         return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
     }
 
     const { userId, orgId: companyId } = actorScope;
+    const actingOrgId = companyId || req.body?.org_id || req.body?.author_org_id || req.body?.companyId || null;
+
+    if (actingOrgId) {
+        const orgCheck = await pool.query(
+            "SELECT is_suspended FROM organizations WHERE org_id = $1",
+            [actingOrgId]
+        );
+        if (orgCheck.rows[0]?.is_suspended) {
+            return res.status(403).json({ error: "Your organization is currently suspended and cannot publish content." });
+        }
+    }
 
     try {
         // Insert into hidden_comments
@@ -4812,12 +4943,24 @@ exports.unhideComment = async (req, res) => {
     let actorScope;
 
     try {
-        actorScope = getContentActorScope(req, req.body?.companyId || null);
+        const fallbackOrg = req.body?.companyId || req.body?.org_id || req.body?.author_org_id || null;
+        actorScope = getContentActorScope(req, fallbackOrg);
     } catch (err) {
         return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
     }
 
     const { userId, orgId: companyId } = actorScope;
+    const actingOrgId = companyId || req.body?.org_id || req.body?.author_org_id || req.body?.companyId || null;
+
+    if (actingOrgId) {
+        const orgCheck = await pool.query(
+            "SELECT is_suspended FROM organizations WHERE org_id = $1",
+            [actingOrgId]
+        );
+        if (orgCheck.rows[0]?.is_suspended) {
+            return res.status(403).json({ error: "Your organization is currently suspended and cannot publish content." });
+        }
+    }
 
     try {
         if (companyId) {
@@ -4850,6 +4993,17 @@ exports.getHiddenComments = async (req, res) => {
     }
 
     const { userId, orgId: companyId } = actorScope;
+    const actingOrgId = companyId || req.body?.org_id || req.body?.author_org_id || req.body?.companyId || null;
+
+    if (actingOrgId) {
+        const orgCheck = await pool.query(
+            "SELECT is_suspended FROM organizations WHERE org_id = $1",
+            [actingOrgId]
+        );
+        if (orgCheck.rows[0]?.is_suspended) {
+            return res.status(403).json({ error: "Your organization is currently suspended and cannot publish content." });
+        }
+    }
 
     try {
         const query = `
@@ -5317,6 +5471,17 @@ exports.createStory = async (req, res) => {
     }
 
     const { userId, orgId: companyId } = actorScope;
+    const actingOrgId = companyId || req.body?.org_id || req.body?.author_org_id || req.body?.companyId || null;
+
+    if (actingOrgId) {
+        const orgCheck = await pool.query(
+            "SELECT is_suspended FROM organizations WHERE org_id = $1",
+            [actingOrgId]
+        );
+        if (orgCheck.rows[0]?.is_suspended) {
+            return res.status(403).json({ error: "Your organization is currently suspended and cannot publish content." });
+        }
+    }
     if (!userId) {
         return res.status(401).json({ message: "Unauthorized: user not identified" });
     }
@@ -5480,7 +5645,8 @@ exports.viewStory = async (req, res) => {
     let actorScope;
 
     try {
-        actorScope = getContentActorScope(req, req.body?.companyId || null);
+        const fallbackOrg = req.body?.companyId || req.body?.org_id || req.body?.author_org_id || null;
+        actorScope = getContentActorScope(req, fallbackOrg);
     } catch (err) {
         return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
     }
