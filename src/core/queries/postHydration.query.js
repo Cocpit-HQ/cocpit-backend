@@ -688,7 +688,7 @@ const getPublicFeedWhere = (userParamIdx, companyParamIdx = null) => `
     AND (p.is_deleted IS FALSE OR p.is_deleted IS NULL)
     AND (p.is_unlisted IS FALSE OR p.is_unlisted IS NULL)
     AND (p.author_org_id IS NOT NULL OR (u.is_deactivated = FALSE AND (u.is_deleted IS NULL OR u.is_deleted = FALSE)))
-    AND (p.author_org_id IS NULL OR (comp.is_deleted = FALSE AND comp.is_deactivated = FALSE))
+    AND (p.author_org_id IS NULL OR (comp.is_deleted = FALSE AND comp.is_deactivated = FALSE AND comp.is_suspended IS NOT TRUE))
     AND p.is_community_article IS NOT TRUE
     ${companyParamIdx ? `
     AND NOT EXISTS (
@@ -755,7 +755,7 @@ const getPublicFeedWhere = (userParamIdx, companyParamIdx = null) => `
         p.shared_post_id IS NULL 
         OR (
             (sp.author_org_id IS NOT NULL OR (sp_u.is_deactivated = FALSE AND (sp_u.is_deleted IS NULL OR sp_u.is_deleted = FALSE)))
-            AND (sp.author_org_id IS NULL OR (sp_comp.is_deleted = FALSE AND sp_comp.is_deactivated = FALSE))
+            AND (sp.author_org_id IS NULL OR (sp_comp.is_deleted = FALSE AND sp_comp.is_deactivated = FALSE AND sp_comp.is_suspended IS NOT TRUE))
         )
     )
 

@@ -322,6 +322,10 @@ exports.getOrganization = async (req, res) => {
 
         const company = result.rows[0];
 
+        if (company.is_suspended) {
+            return res.status(403).json({ is_suspended: true, error: "This organization has been suspended." });
+        }
+
         // 1.5 Directional Block Check (User <-> Org, Org <-> Org)
         if (req.user || req.actor) {
             const activeActorId = req.actor?.type === "ORGANIZATION" && req.actor?.orgId
@@ -1712,7 +1716,7 @@ exports.searchOrganizations = async (req, res) => {
              SELECT org_id, name, slug, logo_url, entity_type, location, industry, headline,
                     similarity(name, $1) AS score
              FROM organizations 
-             WHERE (name ILIKE $2 OR slug ILIKE $2) AND is_deleted = FALSE
+             WHERE (name ILIKE $2 OR slug ILIKE $2) AND is_deleted = FALSE AND (is_suspended IS NOT TRUE)
         `;
         const queryParams = [rawSearchTerm, searchTerm];
 
@@ -2429,8 +2433,7 @@ exports.completeOnboardingFlow = async (req, res) => {
             finalVerificationStatus = 'DOCUMENT_PENDING';
             const docUrls = docsRes.rows.map(row => row.document_url);
             await client.query(
-                `INSERT INTO organization_verifications (org_id, verification_type, document_urls, is_verified, otp, expires_at)
-                 VALUES ($1, 'DOCUMENT', $2, FALSE, 'N/A', NOW() + INTERVAL '1 day')`,
+                `INSERT INTO organization_verifications (org_id, verification_type, document_urls, is_verified, otp, expires_at) VALUES ($1, 'DOCUMENT', $2, FALSE, 'N/A', NOW() + INTERVAL '1 day')`,
                 [orgId, JSON.stringify(docUrls)]
             );
         }
@@ -2629,7 +2632,7 @@ exports.publishNewOrganization = async (req, res) => {
             req.files.documents.length > 0 &&
             req.files.documents.some(doc => Boolean(doc && doc.path))
         );
-        const initialVerificationStatus = hasDocuments ? 'VERIFIED' : 'UNVERIFIED';
+        const initialVerificationStatus = hasDocuments ? 'DOCUMENT_PENDING' : 'UNVERIFIED';
 
         const insertQuery = `
             INSERT INTO organizations (
@@ -2729,8 +2732,7 @@ exports.publishNewOrganization = async (req, res) => {
             }
 
             await client.query(
-                `INSERT INTO organization_verifications (org_id, verification_type, document_urls, is_verified, otp, expires_at)
-                 VALUES ($1, 'DOCUMENT', $2, TRUE, 'N/A', NOW() + INTERVAL '1 day')`,
+                `INSERT INTO organization_verifications (org_id, verification_type, document_urls, is_verified, otp, expires_at) VALUES ($1, 'DOCUMENT', $2, FALSE, 'N/A', NOW() + INTERVAL '1 day')`,
                 [orgId, JSON.stringify(docUrls)]
             );
         }

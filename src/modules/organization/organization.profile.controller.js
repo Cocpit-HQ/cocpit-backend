@@ -66,8 +66,9 @@ async function resolveOrg(orgIdOrSlug) {
                 industry, size, website, location, location_formatted, phone, email,
                 description, entity_type, institution_type,
                 established_year, campus_location,
-                verification_status, email_verified, phone_verified,
-                country, city, created_at, updated_at, created_by
+                verification_status, review_notes, email_verified, phone_verified,
+                country, city, created_at, updated_at, created_by,
+                is_suspended
          FROM organizations
          WHERE ${isUuid ? 'org_id = $1::uuid' : 'slug = $1'}
            AND is_deleted = FALSE AND is_deactivated = FALSE`,
@@ -127,6 +128,9 @@ exports.getOrgProfile = async (req, res) => {
         // 1. Resolve org
         const org = await resolveOrg(orgId);
         if (!org) return res.status(404).json({ message: 'Organization not found' });
+        if (org.is_suspended) {
+            return res.status(403).json({ is_suspended: true, error: "This organization has been suspended." });
+        }
 
         // 1.5 Directional Block Check (User <-> Org, Org <-> Org, User <-> User)
         if (req.user || req.actor) {
@@ -681,11 +685,18 @@ exports.getOrgProfile = async (req, res) => {
 
         const displayLocation = toCityStateCountry(org.location_formatted || org.location || org.city, org.country || 'India');
 
+        let rejectionReason = null;
+        if (org.review_notes && org.review_notes.includes('[Reason:')) {
+            const m = org.review_notes.match(/\[Reason:\s*([^\]]+)\]/i);
+            if (m) rejectionReason = m[1].trim();
+        }
+
         return res.json({
             org: {
                 ...org,
                 location: displayLocation,
-                is_verified: ['DOMAIN_VERIFIED'].includes(org.verification_status),
+                is_verified: ['DOMAIN_VERIFIED', 'VERIFIED', 'DOCUMENT_VERIFIED'].includes(org.verification_status),
+                rejection_reason: rejectionReason,
                 following_count: counts.following_count || 0,
                 followers_count: counts.followers_count,
                 subscribers_count: counts.subscribers_count || 0,
@@ -735,6 +746,9 @@ exports.getOrgAbout = async (req, res) => {
     try {
         const org = await resolveOrg(orgId);
         if (!org) return res.status(404).json({ message: 'Organization not found' });
+        if (org.is_suspended) {
+            return res.status(403).json({ is_suspended: true, error: "This organization has been suspended." });
+        }
 
         if (req.user || req.actor) {
             const isBlocked = await checkActorBlockStatus(req, org.org_id);
@@ -832,6 +846,9 @@ exports.getOrgTeam = async (req, res) => {
     try {
         const org = await resolveOrg(orgId);
         if (!org) return res.status(404).json({ message: 'Organization not found' });
+        if (org.is_suspended) {
+            return res.status(403).json({ is_suspended: true, error: "This organization has been suspended." });
+        }
 
         if (req.user || req.actor) {
             const isBlocked = await checkActorBlockStatus(req, org.org_id);
@@ -1042,6 +1059,9 @@ exports.getOrgPeople = async (req, res) => {
     try {
         const org = await resolveOrg(orgId);
         if (!org) return res.status(404).json({ message: 'Organization not found' });
+        if (org.is_suspended) {
+            return res.status(403).json({ is_suspended: true, error: "This organization has been suspended." });
+        }
 
         if (req.user || req.actor) {
             const isBlocked = await checkActorBlockStatus(req, org.org_id);
@@ -1225,6 +1245,9 @@ exports.getOrgAlumni = async (req, res) => {
     try {
         const org = await resolveOrg(orgId);
         if (!org) return res.status(404).json({ message: 'Organization not found' });
+        if (org.is_suspended) {
+            return res.status(403).json({ is_suspended: true, error: "This organization has been suspended." });
+        }
 
         if (req.user || req.actor) {
             const isBlocked = await checkActorBlockStatus(req, org.org_id);

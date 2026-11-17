@@ -5,6 +5,8 @@ const userController = require('./user.controller');
 
 router.get('/roles', requireRoles(['Admin', 'Developer']), userController.getUserRoles);
 router.get('/', requireRoles(['Admin', 'Developer']), userController.getUsers);
+router.get('/verifications/queue', requireRoles(['Admin', 'Moderator', 'Developer']), userController.getVerificationQueue);
+router.post('/verifications/:id/review', requireRoles(['Admin', 'Moderator']), userController.reviewUserVerification);
 router.get('/:id', requireRoles(['Admin', 'Developer', 'Moderator']), userController.getUserDetails);
 router.post('/:id/warn', requireRoles(['Admin', 'Moderator']), userController.warnUser);
 router.post('/bulk-warn', requireRoles(['Admin', 'Moderator']), userController.bulkWarnUsers);

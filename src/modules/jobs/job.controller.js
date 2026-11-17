@@ -617,10 +617,19 @@ exports.createJob = async (req, res) => {
 
     if (requestedOrgId) {
       const orgRes = await pool.query('SELECT name FROM organizations WHERE org_id = $1', [requestedOrgId]);
-      if (orgRes.rows.length) resolvedCompanyName = orgRes.rows[0].name;
+      if (orgRes.rows.length) {
+        resolvedCompanyName = orgRes.rows[0].name;
+      }
     } else {
-      const userRes = await pool.query('SELECT full_name FROM users WHERE user_id = $1', [userId]);
-      if (userRes.rows.length) resolvedCompanyName = userRes.rows[0].full_name;
+      const userRes = await pool.query('SELECT full_name, is_identity_verified FROM users WHERE user_id = $1', [userId]);
+      if (userRes.rows.length) {
+        if (!userRes.rows[0].is_identity_verified) {
+          const err = new Error("Identity verification required to post jobs. Please complete verification in settings.");
+          err.statusCode = 403;
+          throw err;
+        }
+        resolvedCompanyName = userRes.rows[0].full_name;
+      }
     }
   } catch (err) {
     return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
@@ -854,12 +863,25 @@ exports.submitJob = async (req, res) => {
         await client.query("ROLLBACK");
         return res.status(403).json({ message: "Unauthorized" });
       }
+      const userRes = await client.query('SELECT is_identity_verified FROM users WHERE user_id = $1', [userId]);
+      if (!userRes.rows.length || !userRes.rows[0].is_identity_verified) {
+        await client.query("ROLLBACK");
+        return res.status(403).json({
+          message: "Identity verification required to post jobs. Please complete verification in settings.",
+          requiresVerification: true
+        });
+      }
     }
 
-    // Idempotency guard: If job is already ACTIVE, return cleanly without duplicate operations
-    if (job.status === 'ACTIVE') {
+    if (job.status === 'REJECTED' || job.moderation_status === 'REJECTED') {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ message: "Rejected jobs cannot be resubmitted." });
+    }
+
+    // Idempotency guard: If job is already ACTIVE or UNDER_REVIEW, return cleanly without duplicate operations
+    if (job.status === 'ACTIVE' || job.status === 'UNDER_REVIEW') {
       await client.query("COMMIT");
-      return res.status(200).json({ message: "Job is already active", job });
+      return res.status(200).json({ message: "Job is already submitted", job });
     }
 
     if (job.status !== 'DRAFT') {
@@ -867,9 +889,8 @@ exports.submitJob = async (req, res) => {
       return res.status(400).json({ message: "Only DRAFT jobs can be submitted" });
     }
 
-    const setClauses = ["status = 'ACTIVE'", "published_at = NOW()", "created_at = NOW()"];
     const updated = await client.query(
-      `UPDATE jobs SET ${setClauses.join(", ")} WHERE job_id = $1 RETURNING *`,
+      `UPDATE jobs SET status = 'UNDER_REVIEW', moderation_status = 'UNDER_REVIEW', is_active = true, rejection_reason = NULL, published_at = NOW(), created_at = NOW(), updated_at = NOW() WHERE job_id = $1 RETURNING *`,
       [id]
     );
 
@@ -883,10 +904,10 @@ exports.submitJob = async (req, res) => {
       [id, userId]
     );
 
-    // Notification: "Your job “[Job Title]” is now live."
+    // Notification: "Your job “[Job Title]” has been submitted for review."
     const publishedJob = updated.rows[0];
     const jobTitle = publishedJob.title || job.title;
-    const notificationText = `Your job ${jobTitle} is now live.`;
+    const notificationText = `Your job ${jobTitle} has been submitted for review.`;
     const metadataPayload = {
       jobId: publishedJob.job_id,
       job_id: publishedJob.job_id,
@@ -894,12 +915,12 @@ exports.submitJob = async (req, res) => {
       companyName: publishedJob.company_name,
       orgId: publishedJob.org_id || null,
       org_id: publishedJob.org_id || null,
-      status: 'ACTIVE'
+      status: 'UNDER_REVIEW'
     };
 
     const notifRes = await client.query(
       `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata, recipient_org_id)
-       VALUES ($1, $2, 'job_approved', $3, $4, $5, $6)
+       VALUES ($1, $2, 'job_submitted', $3, $4, $5, $6)
        RETURNING notification_id, created_at`,
       [userId, userId, notificationText, publishedJob.job_id, JSON.stringify(metadataPayload), publishedJob.org_id || null]
     );
@@ -907,7 +928,7 @@ exports.submitJob = async (req, res) => {
     if (publishedJob.org_id) {
       await client.query(
         `INSERT INTO notifications (recipient_org_id, user_id, sender_id, type, text, reference_id, metadata)
-         VALUES ($1, NULL, $2, 'job_approved', $3, $4, $5)`,
+         VALUES ($1, NULL, $2, 'job_submitted', $3, $4, $5)`,
         [publishedJob.org_id, userId, notificationText, publishedJob.job_id, JSON.stringify(metadataPayload)]
       );
     }
@@ -942,7 +963,7 @@ exports.submitJob = async (req, res) => {
       const notifCreatedAt = notifRes.rows[0]?.created_at ? notifRes.rows[0].created_at.toISOString() : new Date().toISOString();
       const socketPayload = {
         notification_id: notifId,
-        type: "job_approved",
+        type: "job_submitted",
         text: notificationText,
         sender_id: userId,
         reference_id: publishedJob.job_id,
@@ -958,7 +979,7 @@ exports.submitJob = async (req, res) => {
         socketService.notifyOrg(publishedJob.org_id, "notification", socketPayload);
       }
     } catch (socketErr) {
-      console.error("Failed to emit job_approved notification:", socketErr);
+      console.error("Failed to emit job_submitted notification:", socketErr);
     }
   } catch (err) {
     await client.query("ROLLBACK");
@@ -1250,7 +1271,7 @@ exports.applyJob = async (req, res) => {
     const BlockModel = require("../../models/block.model");
     const isOrgBlocked = job.org_id ? await BlockModel.isAnyBlocked(userId, job.org_id) : false;
     const isRecruiterBlocked = job.recruiter_id ? await BlockModel.isAnyBlocked(userId, job.recruiter_id) : false;
-    
+
     if (isOrgBlocked || isRecruiterBlocked) {
       await client.query("ROLLBACK");
       return res.status(404).json({ message: "Job not found" });
@@ -1420,13 +1441,13 @@ exports.applyJob = async (req, res) => {
     // --- Row 1 Notification: Application Thresholds ---
     if (job.org_id && totalApplications >= 10 && (totalApplications - 10) % 15 === 0) {
       const notifyUserIds = new Set();
-      
+
       const adminsRes = await client.query(
-          `SELECT cm.user_id FROM organization_members cm
+        `SELECT cm.user_id FROM organization_members cm
            JOIN organization_roles cr ON cm.role_id = cr.role_id
            WHERE cm.org_id = $1 AND cm.status = 'ACTIVE'
              AND (cr.permissions @> '["*"]'::jsonb OR cr.permissions @> '["MANAGE_JOBS"]'::jsonb)`,
-          [job.org_id]
+        [job.org_id]
       );
       adminsRes.rows.forEach(r => notifyUserIds.add(r.user_id));
       if (job.recruiter_id) notifyUserIds.add(job.recruiter_id);
@@ -1474,7 +1495,7 @@ exports.applyJob = async (req, res) => {
           "New application received",
           `"${totalApplications}" people have applied for "${job.title}". Review them now`,
           { type: 'new_application_threshold', referenceId: id }
-        ).catch(() => {});
+        ).catch(() => { });
       }
     }
 
@@ -1599,10 +1620,10 @@ exports.applyJob = async (req, res) => {
       const { sendToUser } = require('../../modules/notification/notification.service');
       // Using fire and forget, and sending a data-only silent push as requested in spec
       sendToUser(userId, "Application Submitted", text, {
-          type,
-          referenceId: id,
-          silent: 'true'
-      }).catch(() => {});
+        type,
+        referenceId: id,
+        silent: 'true'
+      }).catch(() => { });
 
     } catch (notifErr) {
       console.error("[applyJob] Failed to send notifications:", notifErr);
@@ -2110,11 +2131,17 @@ exports.getMyJobs = async (req, res) => {
 
     // Status filter (must come before pagination so we paginate filtered results)
     if (status && status.toUpperCase() !== 'ALL') {
-      // Map frontend "IN_REVIEW" to DB "IN REVIEW" (underscore -> space)
-      const dbStatus = status.replace(/_/g, ' ').toUpperCase();
-      query += ` AND j.status = $${paramCount}`;
-      params.push(dbStatus);
-      paramCount++;
+      const cleanStatus = status.trim().toUpperCase();
+      if (cleanStatus === 'REJECTED') {
+        query += ` AND (j.status = 'REJECTED' OR j.moderation_status = 'REJECTED')`;
+      } else if (cleanStatus === 'IN_REVIEW' || cleanStatus === 'IN REVIEW' || cleanStatus === 'UNDER_REVIEW') {
+        query += ` AND (j.status IN ('IN REVIEW', 'UNDER_REVIEW') OR j.moderation_status = 'UNDER_REVIEW') AND j.status != 'REJECTED' AND (j.moderation_status IS NULL OR j.moderation_status != 'REJECTED')`;
+      } else {
+        const dbStatus = status.replace(/_/g, ' ').toUpperCase();
+        query += ` AND j.status = $${paramCount}`;
+        params.push(dbStatus);
+        paramCount++;
+      }
     }
 
     // Optional filters
@@ -2226,7 +2253,8 @@ exports.getMyJobs = async (req, res) => {
         COUNT(*) FILTER (WHERE j.status = 'ACTIVE')::int AS "active",
         COUNT(*) FILTER (WHERE j.status = 'CLOSED')::int AS "closed",
         COUNT(*) FILTER (WHERE j.status = 'DRAFT')::int AS "draft",
-        COUNT(*) FILTER (WHERE j.status = 'IN REVIEW')::int AS "inReview"
+        COUNT(*) FILTER (WHERE (j.status IN ('IN REVIEW', 'UNDER_REVIEW') OR j.moderation_status = 'UNDER_REVIEW') AND j.status != 'REJECTED' AND (j.moderation_status IS NULL OR j.moderation_status != 'REJECTED'))::int AS "inReview",
+        COUNT(*) FILTER (WHERE j.status = 'REJECTED' OR j.moderation_status = 'REJECTED')::int AS "rejected"
       FROM jobs j
       WHERE j.recruiter_id = $1
         AND j.org_id IS NULL
@@ -2391,7 +2419,7 @@ exports.updateJob = async (req, res) => {
 
     // 1. Check ownership
     const checkRes = await client.query(
-      `SELECT org_id, recruiter_id, company_name, is_active FROM jobs WHERE job_id = $1`,
+      `SELECT org_id, recruiter_id, company_name, is_active, status, moderation_status FROM jobs WHERE job_id = $1`,
       [id]
     );
 
@@ -2400,7 +2428,14 @@ exports.updateJob = async (req, res) => {
       return res.status(404).json({ message: "Job not found" });
     }
 
-    const { org_id: dbOrgId, recruiter_id } = checkRes.rows[0];
+    const { org_id: dbOrgId, recruiter_id, status: jobStatus, moderation_status: jobModStatus } = checkRes.rows[0];
+
+    // Block updating rejected jobs
+    if (jobStatus === 'REJECTED' || jobModStatus === 'REJECTED') {
+      await client.query("ROLLBACK");
+      return res.status(403).json({ message: "Rejected jobs cannot be edited." });
+    }
+
     const _jobData = { org_id: dbOrgId, recruiter_id };
 
     // Personal job: only the creator can update

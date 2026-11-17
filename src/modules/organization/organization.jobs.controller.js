@@ -243,6 +243,7 @@ exports.getOrganizationJobs = async (req, res) => {
             }
 
             conditions.push("j.status = 'ACTIVE'");
+            conditions.push("(j.moderation_status = 'APPROVED' OR j.moderation_status IS NULL)");
             conditions.push("(j.expires_at IS NULL OR j.expires_at > NOW())");
         } else if (scope === 'internal') {
             // Allow all statuses, internal members only
@@ -259,10 +260,17 @@ exports.getOrganizationJobs = async (req, res) => {
 
             // Status filter for internal scope
             if (status && status.toUpperCase() !== 'ALL') {
-                const dbStatus = status.replace(/_/g, ' ').toUpperCase();
-                conditions.push(`j.status = $${paramCount}`);
-                params.push(dbStatus);
-                paramCount++;
+                const cleanStatus = status.trim().toUpperCase();
+                if (cleanStatus === 'REJECTED') {
+                    conditions.push(`(j.status = 'REJECTED' OR j.moderation_status = 'REJECTED')`);
+                } else if (cleanStatus === 'IN_REVIEW' || cleanStatus === 'IN REVIEW' || cleanStatus === 'UNDER_REVIEW') {
+                    conditions.push(`((j.status IN ('IN REVIEW', 'UNDER_REVIEW') OR j.moderation_status = 'UNDER_REVIEW') AND j.status != 'REJECTED' AND (j.moderation_status IS NULL OR j.moderation_status != 'REJECTED'))`);
+                } else {
+                    const dbStatus = status.replace(/_/g, ' ').toUpperCase();
+                    conditions.push(`j.status = $${paramCount}`);
+                    params.push(dbStatus);
+                    paramCount++;
+                }
             }
         } else {
             return res.status(400).json({ message: "Invalid scope parameter. Use 'public' or 'internal'." });
@@ -320,7 +328,8 @@ exports.getOrganizationJobs = async (req, res) => {
                     COUNT(*) FILTER (WHERE j.status = 'ACTIVE')::int AS "active",
                     COUNT(*) FILTER (WHERE j.status = 'CLOSED')::int AS "closed",
                     COUNT(*) FILTER (WHERE j.status = 'DRAFT')::int AS "draft",
-                    COUNT(*) FILTER (WHERE j.status = 'IN REVIEW')::int AS "inReview"
+                    COUNT(*) FILTER (WHERE (j.status IN ('IN REVIEW', 'UNDER_REVIEW') OR j.moderation_status = 'UNDER_REVIEW') AND j.status != 'REJECTED' AND (j.moderation_status IS NULL OR j.moderation_status != 'REJECTED'))::int AS "inReview",
+                    COUNT(*) FILTER (WHERE j.status = 'REJECTED' OR j.moderation_status = 'REJECTED')::int AS "rejected"
                 FROM jobs j
                 WHERE j.org_id = $1 AND j.is_active = TRUE
             `;

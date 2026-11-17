@@ -202,7 +202,6 @@ CREATE INDEX IF NOT EXISTS idx_org_notification_settings_org_id ON organization_
 ALTER TABLE organization_members 
     ADD COLUMN IF NOT EXISTS member_id UUID DEFAULT gen_random_uuid();
 
-
 -- 20. post_media: Add carousel slide ordering & video metadata (v1.9.0)
 ALTER TABLE post_media 
     ADD COLUMN IF NOT EXISTS order_index INT DEFAULT 0,
@@ -397,3 +396,17 @@ CREATE INDEX IF NOT EXISTS idx_hashtags_created_at
 
 CREATE INDEX IF NOT EXISTS idx_hashtags_last_used_at 
     ON hashtags (last_used_at DESC NULLS LAST);
+
+-- 31. Migration 021: Add user verification lifecycle columns and organization document status
+-- Purpose: PR #566 Admin Panel User & Org Verification
+
+-- 1. Add verification review lifecycle columns to user_verifications
+ALTER TABLE user_verifications 
+    ADD COLUMN IF NOT EXISTS document_type VARCHAR(100),
+    ADD COLUMN IF NOT EXISTS rejection_reason TEXT,
+    ADD COLUMN IF NOT EXISTS notes TEXT;
+
+-- 2. Ensure organization_documents has status column
+ALTER TABLE organization_documents
+    ADD COLUMN IF NOT EXISTS status VARCHAR(50) DEFAULT 'PENDING';
+
