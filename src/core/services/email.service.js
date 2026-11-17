@@ -80,62 +80,51 @@ const sendOTPEmail = async (email, otp, purpose = "signup") => {
 
 
 /**
- * Safely resolves the frontend base URL for email links.
- * Handles missing origins from mobile clients (Android/iOS) and prevents
- * localhost URLs from being sent when running on staging or production.
- * @param {string|null|undefined} clientOrigin
+ * Resolves the frontend URL for customer account emails.
+ * Uses localhost:3000 when testing locally, and official domains when deployed.
  * @returns {string}
  */
-const resolveFrontendUrl = (clientOrigin) => {
-    let fallbackEnvUrl = "http://localhost:3000";
-    if (process.env.NODE_ENV === "production") fallbackEnvUrl = "https://cocpit.in";
-    else if (process.env.NODE_ENV === "uat") fallbackEnvUrl = "https://uat.cocpit.in";
-    else if (process.env.NODE_ENV === "staging") fallbackEnvUrl = "https://staging.cocpit.in";
+const resolveFrontendUrl = () => {
+    let fallbackUrl = "http://localhost:3000";
+    if (process.env.NODE_ENV === "production") fallbackUrl = "https://cocpit.in";
+    else if (process.env.NODE_ENV === "uat") fallbackUrl = "https://uat.cocpit.in";
+    else if (process.env.NODE_ENV === "staging") fallbackUrl = "https://staging.cocpit.in";
 
-    const defaultUrl = process.env.APP_URL || process.env.FRONTEND_URL || fallbackEnvUrl;
-
-    if (!clientOrigin || clientOrigin === "null" || clientOrigin.startsWith("capacitor://") || clientOrigin.startsWith("ionic://")) {
-        return defaultUrl;
-    }
-
-    // If clientOrigin is localhost, but server is running in staging/prod/uat or has FRONTEND_URL set, do not send localhost in email
-    if (clientOrigin.includes("localhost") || clientOrigin.includes("127.0.0.1")) {
-        if (["production", "uat", "staging"].includes(process.env.NODE_ENV) || (defaultUrl && !defaultUrl.includes("localhost") && !defaultUrl.includes("127.0.0.1"))) {
-            return defaultUrl;
+    let baseUrl = fallbackUrl;
+    if (["production", "uat", "staging"].includes(process.env.NODE_ENV) && process.env.FRONTEND_URL) {
+        if (!process.env.FRONTEND_URL.includes("localhost") && !process.env.FRONTEND_URL.includes("192.168.")) {
+            baseUrl = process.env.FRONTEND_URL;
         }
     }
 
-    return clientOrigin;
+    return baseUrl.replace(/\/+$/, "");
 };
 
 /**
- * Safely resolves the public appeal submission URL for emails.
- * Uses clientOrigin (Origin header from request) with fallback to configured app URL,
- * preventing localhost URLs from leaking into emails when public/network hosts exist.
+ * Resolves the public appeal URL for suspension emails.
+ * Uses localhost:5000 when testing locally (where appeal.html and APIs are served).
+ * Automatically resolves to Staging, UAT, or Production when deployed.
  * @param {string} appealToken
- * @param {string|null|undefined} clientOrigin
  * @returns {string|null}
  */
-const resolveAppealUrl = (appealToken, clientOrigin = null) => {
+const resolveAppealUrl = (appealToken) => {
     if (!appealToken) return null;
 
-    let fallbackEnvUrl = "http://localhost:5000";
-    if (process.env.NODE_ENV === "production") fallbackEnvUrl = "https://cocpit.in";
-    else if (process.env.NODE_ENV === "uat") fallbackEnvUrl = "https://uat.cocpit.in";
-    else if (process.env.NODE_ENV === "staging") fallbackEnvUrl = "https://staging.cocpit.in";
+    let fallbackUrl = "http://localhost:5000/appeal.html";
+    if (process.env.NODE_ENV === "production") fallbackUrl = "https://cocpit.in/appeal.html";
+    else if (process.env.NODE_ENV === "uat") fallbackUrl = "https://uat.cocpit.in/appeal.html";
+    else if (process.env.NODE_ENV === "staging") fallbackUrl = "https://staging.cocpit.in/appeal.html";
 
-    const defaultUrl = process.env.PUBLIC_APPEAL_URL || process.env.API_URL || fallbackEnvUrl;
+    let baseUrl = fallbackUrl;
 
-    let baseUrl = clientOrigin;
-    if (!baseUrl || baseUrl === "null" || baseUrl.startsWith("capacitor://") || baseUrl.startsWith("ionic://")) {
-        baseUrl = defaultUrl;
-    } else if (baseUrl.includes("localhost") || baseUrl.includes("127.0.0.1")) {
-        if (["production", "uat", "staging"].includes(process.env.NODE_ENV) || (defaultUrl && !defaultUrl.includes("localhost") && !defaultUrl.includes("127.0.0.1"))) {
-            baseUrl = defaultUrl;
+    // On deployed environments, allow explicit PUBLIC_APPEAL_URL override if valid public host
+    if (["production", "uat", "staging"].includes(process.env.NODE_ENV) && process.env.PUBLIC_APPEAL_URL) {
+        if (!process.env.PUBLIC_APPEAL_URL.includes("localhost") && !process.env.PUBLIC_APPEAL_URL.includes("192.168.")) {
+            baseUrl = process.env.PUBLIC_APPEAL_URL;
         }
     }
 
-    baseUrl = (baseUrl || fallbackEnvUrl).replace(/\/+$/, "");
+    baseUrl = baseUrl.replace(/\/+$/, "");
     return baseUrl.includes("appeal.html")
         ? `${baseUrl}?token=${appealToken}`
         : `${baseUrl}/appeal.html?token=${appealToken}`;
