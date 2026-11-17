@@ -87,20 +87,58 @@ const sendOTPEmail = async (email, otp, purpose = "signup") => {
  * @returns {string}
  */
 const resolveFrontendUrl = (clientOrigin) => {
-    const defaultUrl = process.env.FRONTEND_URL || (process.env.NODE_ENV === "staging" ? "https://staging.cocpit.in" : "http://localhost:3000");
+    let fallbackEnvUrl = "http://localhost:3000";
+    if (process.env.NODE_ENV === "production") fallbackEnvUrl = "https://cocpit.in";
+    else if (process.env.NODE_ENV === "uat") fallbackEnvUrl = "https://uat.cocpit.in";
+    else if (process.env.NODE_ENV === "staging") fallbackEnvUrl = "https://staging.cocpit.in";
+
+    const defaultUrl = process.env.APP_URL || process.env.FRONTEND_URL || fallbackEnvUrl;
 
     if (!clientOrigin || clientOrigin === "null" || clientOrigin.startsWith("capacitor://") || clientOrigin.startsWith("ionic://")) {
         return defaultUrl;
     }
 
-    // If clientOrigin is localhost, but server is running in staging/prod or has FRONTEND_URL set, do not send localhost in email
+    // If clientOrigin is localhost, but server is running in staging/prod/uat or has FRONTEND_URL set, do not send localhost in email
     if (clientOrigin.includes("localhost") || clientOrigin.includes("127.0.0.1")) {
-        if (process.env.NODE_ENV === "staging" || process.env.NODE_ENV === "production" || process.env.FRONTEND_URL) {
+        if (["production", "uat", "staging"].includes(process.env.NODE_ENV) || (defaultUrl && !defaultUrl.includes("localhost") && !defaultUrl.includes("127.0.0.1"))) {
             return defaultUrl;
         }
     }
 
     return clientOrigin;
+};
+
+/**
+ * Safely resolves the public appeal submission URL for emails.
+ * Uses clientOrigin (Origin header from request) with fallback to configured app URL,
+ * preventing localhost URLs from leaking into emails when public/network hosts exist.
+ * @param {string} appealToken
+ * @param {string|null|undefined} clientOrigin
+ * @returns {string|null}
+ */
+const resolveAppealUrl = (appealToken, clientOrigin = null) => {
+    if (!appealToken) return null;
+
+    let fallbackEnvUrl = "http://localhost:5000";
+    if (process.env.NODE_ENV === "production") fallbackEnvUrl = "https://cocpit.in";
+    else if (process.env.NODE_ENV === "uat") fallbackEnvUrl = "https://uat.cocpit.in";
+    else if (process.env.NODE_ENV === "staging") fallbackEnvUrl = "https://staging.cocpit.in";
+
+    const defaultUrl = process.env.PUBLIC_APPEAL_URL || process.env.API_URL || fallbackEnvUrl;
+
+    let baseUrl = clientOrigin;
+    if (!baseUrl || baseUrl === "null" || baseUrl.startsWith("capacitor://") || baseUrl.startsWith("ionic://")) {
+        baseUrl = defaultUrl;
+    } else if (baseUrl.includes("localhost") || baseUrl.includes("127.0.0.1")) {
+        if (["production", "uat", "staging"].includes(process.env.NODE_ENV) || (defaultUrl && !defaultUrl.includes("localhost") && !defaultUrl.includes("127.0.0.1"))) {
+            baseUrl = defaultUrl;
+        }
+    }
+
+    baseUrl = (baseUrl || fallbackEnvUrl).replace(/\/+$/, "");
+    return baseUrl.includes("appeal.html")
+        ? `${baseUrl}?token=${appealToken}`
+        : `${baseUrl}/appeal.html?token=${appealToken}`;
 };
 
 /**
@@ -441,13 +479,12 @@ const sendRecoveryEmailOTP = async (email, otp) => {
     }
 };
 
-const sendSuspensionAppealEmail = async (email, fullName, appealToken, actionReason) => {
+const sendSuspensionAppealEmail = async (email, fullName, appealToken, actionReason, clientOrigin = null) => {
     if (!resend) {
         throw new Error("Email service is not configured (RESEND_API_KEY missing).");
     }
 
-    const backendUrl = process.env.API_URL || "http://localhost:5000";
-    const appealLink = `${backendUrl}/appeal.html?token=${appealToken}`;
+    const appealLink = resolveAppealUrl(appealToken, clientOrigin);
 
     try {
         const { data, error } = await resend.emails.send({
@@ -492,14 +529,13 @@ const sendSuspensionAppealEmail = async (email, fullName, appealToken, actionRea
     }
 };
 
-const sendOrganizationSuspendedEmail = async (email, creatorName, orgName, actionReason, appealToken = null) => {
+const sendOrganizationSuspendedEmail = async (email, creatorName, orgName, actionReason, appealToken = null, clientOrigin = null) => {
     if (!resend) {
         console.warn("Email service is not configured (RESEND_API_KEY missing).");
         return null;
     }
 
-    const backendUrl = process.env.API_URL || "http://localhost:5000";
-    const appealLink = appealToken ? `${backendUrl}/appeal.html?token=${appealToken}` : null;
+    const appealLink = appealToken ? resolveAppealUrl(appealToken, clientOrigin) : null;
 
     try {
         const { data, error } = await resend.emails.send({
@@ -1106,6 +1142,7 @@ const sendAccountDeletionCompletedEmail = async (email) => {
 };
 
 module.exports = {
+    resolveAppealUrl,
     sendOTPEmail,
     sendAccountDeletionEmail,
     sendOrganizationDeletionEmail,

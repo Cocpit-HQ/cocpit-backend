@@ -1031,9 +1031,12 @@ exports.reviewUserVerification = async (req, res) => {
       await createAuditLog(adminId, `USER_VERIFICATION_${status}`, `Verification review for user "${userName}": ${status}. Notes: ${fullNotes || 'None'}`);
 
       // 4. Send notification
+      const formattedReason = rejectionReason
+        ? `Reason: ${rejectionReason.replace(/\.*$/, '')}.`
+        : '';
       const notificationText = isVerified
         ? 'Your identity verification has been approved! You are now verified on Cocpit.'
-        : `Your identity verification was not approved. ${rejectionReason ? `Reason: ${rejectionReason}` : ''}`;
+        : `Your user verification is rejected.${formattedReason ? ` ${formattedReason}` : ''}`;
 
       await client.query(
         `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata)

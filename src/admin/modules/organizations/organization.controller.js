@@ -1251,7 +1251,7 @@ exports.getOrganizationIndustries = async (req, res) => {
 exports.getVerificationQueue = async (req, res) => {
   try {
     const db = getDb(req);
-    const { page = 1, limit = 50, search = '', status } = req.query;
+    const { page = 1, limit = 100, search = '', status } = req.query;
     const offset = (page - 1) * limit;
 
     let query = `
@@ -1291,7 +1291,17 @@ exports.getVerificationQueue = async (req, res) => {
     const countRes = await db.query(countQuery, params);
     const totalCount = parseInt(countRes.rows[0].count, 10);
 
-    query += ` ORDER BY o.created_at DESC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`;
+    query += ` ORDER BY 
+      CASE 
+        WHEN o.verification_status IN ('DOCUMENT_PENDING', 'UNDER_REVIEW', 'PENDING') THEN 1
+        WHEN (SELECT COUNT(*) FROM organization_documents WHERE org_id = o.org_id) > 0 THEN 2
+        ELSE 3
+      END ASC,
+      COALESCE(
+        (SELECT MAX(uploaded_at) FROM organization_documents WHERE org_id = o.org_id),
+        o.created_at
+      ) DESC
+      LIMIT $${params.length + 1} OFFSET $${params.length + 2}`;
     params.push(limit, offset);
 
     const result = await db.query(query, params);

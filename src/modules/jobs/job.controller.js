@@ -207,7 +207,7 @@ exports.getAllJobs = async (req, res) => {
     const limitClause = `LIMIT $${paramCount}`;
     params.push(Number(limit));
 
-    const baseWhere = `j.is_active = TRUE AND j.status = 'ACTIVE' AND u.user_id IS NOT NULL AND (j.org_id IS NOT NULL OR u.is_deactivated = FALSE) AND (j.org_id IS NULL OR (c.is_deleted = FALSE AND c.is_deactivated = FALSE))`;
+    const baseWhere = `j.is_active = TRUE AND j.status = 'ACTIVE' AND u.user_id IS NOT NULL AND (j.org_id IS NOT NULL OR u.is_deactivated = FALSE) AND (j.org_id IS NULL OR (c.is_deleted = FALSE AND c.is_deactivated = FALSE AND (c.is_suspended IS NOT TRUE)))`;
     const whereClause = conditions.length > 0 ? `WHERE ${baseWhere} AND ${conditions.join(" AND ")}` : `WHERE ${baseWhere}`;
 
     const query = `
@@ -293,7 +293,7 @@ exports.getRecommendations = async (req, res) => {
       ${userId ? "LEFT JOIN job_saves js ON js.job_id = j.job_id AND js.user_id = $1" : ""}
       ${userId ? "LEFT JOIN job_applications ja ON ja.job_id = j.job_id AND ja.applicant_id = $1" : ""}
       ${userId ? "LEFT JOIN job_offers jo ON jo.job_id = j.job_id AND jo.user_id = $1 AND jo.status != 'withdrawn'" : ""}
-      WHERE j.is_active = TRUE AND j.status = 'ACTIVE' AND u.user_id IS NOT NULL AND (j.org_id IS NOT NULL OR u.is_deactivated = FALSE) AND (j.org_id IS NULL OR (c.is_deleted = FALSE AND c.is_deactivated = FALSE))
+      WHERE j.is_active = TRUE AND j.status = 'ACTIVE' AND u.user_id IS NOT NULL AND (j.org_id IS NOT NULL OR u.is_deactivated = FALSE) AND (j.org_id IS NULL OR (c.is_deleted = FALSE AND c.is_deactivated = FALSE AND (c.is_suspended IS NOT TRUE)))
       ${userId ? "AND j.recruiter_id != $1" : ""}
       ${userId ? `AND (
         j.org_id IS NULL OR (
@@ -500,7 +500,7 @@ exports.getJobById = async (req, res) => {
       WHERE j.job_id = $1
       AND u.user_id IS NOT NULL 
       AND (j.org_id IS NOT NULL OR u.is_deactivated = FALSE)
-      AND (j.org_id IS NULL OR (c.is_deleted = FALSE AND c.is_deactivated = FALSE))
+      AND (j.org_id IS NULL OR (c.is_deleted = FALSE AND c.is_deactivated = FALSE AND (c.is_suspended IS NOT TRUE)))
       `,
       userId ? [resolvedJobId, userId] : [resolvedJobId]
     );
@@ -1669,6 +1669,7 @@ exports.getJobOffers = async (req, res) => {
 
     // Offers specific condition
     conditions.push('j.is_offer = TRUE');
+    conditions.push('(j.org_id IS NULL OR (c.is_deleted = FALSE AND c.is_deactivated = FALSE AND (c.is_suspended IS NOT TRUE)))');
 
     const params = userId ? [userId] : [];
     params.push(...values);
@@ -1699,6 +1700,7 @@ exports.getJobOffers = async (req, res) => {
         (SELECT COUNT(*)::int FROM job_offers jo_count WHERE jo_count.job_id = j.job_id AND jo_count.status != 'withdrawn') as offers_count
       FROM jobs j
       LEFT JOIN active_users u ON j.recruiter_id = u.user_id
+      LEFT JOIN organizations c ON j.org_id = c.org_id
       ${userId ? "LEFT JOIN job_saves js ON js.job_id = j.job_id AND js.user_id = $1" : ""}
       ${userId ? "LEFT JOIN job_applications ja ON ja.job_id = j.job_id AND ja.applicant_id = $1" : ""}
       ${whereClause}
@@ -1851,7 +1853,7 @@ exports.getMySavedJobs = async (req, res) => {
       LEFT JOIN organizations c ON j.org_id = c.org_id
       LEFT JOIN job_applications ja ON ja.job_id = j.job_id AND ja.applicant_id = $1
       LEFT JOIN job_offers jo ON jo.job_id = j.job_id AND jo.user_id = $1 AND jo.status != 'withdrawn'
-      WHERE js.user_id = $1 AND j.is_active = TRUE AND u.user_id IS NOT NULL AND (j.org_id IS NOT NULL OR u.is_deactivated = FALSE) AND (j.org_id IS NULL OR (c.is_deleted = FALSE AND c.is_deactivated = FALSE))
+      WHERE js.user_id = $1 AND j.is_active = TRUE AND u.user_id IS NOT NULL AND (j.org_id IS NOT NULL OR u.is_deactivated = FALSE) AND (j.org_id IS NULL OR (c.is_deleted = FALSE AND c.is_deactivated = FALSE AND (c.is_suspended IS NOT TRUE)))
         AND NOT EXISTS (
           SELECT 1 FROM blocks b
           WHERE (j.org_id IS NOT NULL AND ((b.blocker_id = $1 AND b.blocked_id = j.org_id) OR (b.blocker_id = j.org_id AND b.blocked_id = $1)))
@@ -2777,6 +2779,7 @@ exports.getCompanies = async (req, res) => {
       WHERE o.name IS NOT NULL
         AND TRIM(o.name) != ''
         AND o.is_deleted = FALSE
+        AND (o.is_suspended IS NOT TRUE)
     `;
     let values = [];
 
@@ -2822,6 +2825,7 @@ exports.getInstitutes = async (req, res) => {
           AND TRIM(o.name) != ''
           AND (o.entity_type = 'INSTITUTION' OR o.institution_type IS NOT NULL)
           AND o.is_deleted = FALSE
+          AND (o.is_suspended IS NOT TRUE)
         UNION
         SELECT DISTINCT TRIM(ed.school_name) AS name
         FROM educations ed
@@ -2876,12 +2880,12 @@ exports.getLocations = async (req, res) => {
         UNION
         SELECT DISTINCT TRIM(location) AS location
         FROM organizations
-        WHERE location IS NOT NULL AND TRIM(location) != '' AND is_deleted = FALSE
+        WHERE location IS NOT NULL AND TRIM(location) != '' AND is_deleted = FALSE AND (is_suspended IS NOT TRUE)
         UNION
         SELECT DISTINCT
           CONCAT_WS(', ', NULLIF(TRIM(city), ''), NULLIF(TRIM(country), '')) AS location
         FROM organizations
-        WHERE city IS NOT NULL AND TRIM(city) != '' AND is_deleted = FALSE
+        WHERE city IS NOT NULL AND TRIM(city) != '' AND is_deleted = FALSE AND (is_suspended IS NOT TRUE)
         UNION
         SELECT DISTINCT
           CONCAT_WS(', ', NULLIF(TRIM(location_city), ''), NULLIF(TRIM(location_state), ''), NULLIF(TRIM(location_country), '')) AS location

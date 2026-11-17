@@ -404,6 +404,7 @@ async function searchCompanies(client, { searchTerm, viewerId = null, orgActorId
       LEFT JOIN organization_privacy_settings ops ON ops.org_id = c.org_id
       LEFT JOIN organization_notification_settings ons ON ons.org_id = c.org_id
       WHERE c.name IS NOT NULL AND TRIM(c.name) <> ''
+        AND (c.is_suspended IS NOT TRUE)
         AND (c.entity_type IS NULL OR c.entity_type = 'COMPANY')
         AND (
           c.name ILIKE $1 

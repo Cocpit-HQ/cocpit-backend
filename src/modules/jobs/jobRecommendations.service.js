@@ -208,7 +208,7 @@ function buildCommonEligibilityPredicate(userId, paramIndex = 1) {
     `j.status = 'ACTIVE'`,
     `(j.expires_at IS NULL OR j.expires_at > NOW())`,
     `(
-      (j.org_id IS NOT NULL AND c.org_id IS NOT NULL AND (c.is_deleted IS FALSE OR c.is_deleted IS NULL) AND (c.is_deactivated IS FALSE OR c.is_deactivated IS NULL))
+      (j.org_id IS NOT NULL AND c.org_id IS NOT NULL AND (c.is_deleted IS FALSE OR c.is_deleted IS NULL) AND (c.is_deactivated IS FALSE OR c.is_deactivated IS NULL) AND (c.is_suspended IS NOT TRUE))
       OR
       (j.org_id IS NULL AND j.recruiter_id IS NOT NULL AND u.user_id IS NOT NULL AND (u.is_deactivated IS FALSE OR u.is_deactivated IS NULL))
     )`,
