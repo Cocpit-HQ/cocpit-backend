@@ -29,9 +29,9 @@
 
 const { v4: uuidv4 } = require('uuid');
 
-const { generateCandidates }      = require('./candidates/candidateGenerator');
-const { rankCandidates }          = require('./ranking/rankingCalculator');
-const { rerankCandidates }        = require('./reranking/rerankingEngine');
+const { generateCandidates } = require('./candidates/candidateGenerator');
+const { rankCandidates } = require('./ranking/rankingCalculator');
+const { rerankCandidates } = require('./reranking/rerankingEngine');
 const { getExplorationCandidates } = require('./exploration/explorationPool');
 const {
   getFeedSlice,
@@ -42,8 +42,17 @@ const {
   getHiddenSet,
   removeFromHiddenSet,
 } = require('./cache/feedCache');
-const { getSession, updateCursor, incrementSeenCount, createSession } = require('./session/feedSession.service');
-const { getPostHydrationSelect, getPostHydrationJoins, getPublicFeedWhere } = require('../../core/queries/postHydration.query');
+const {
+  getSession,
+  updateCursor,
+  incrementSeenCount,
+  createSession,
+} = require('./session/feedSession.service');
+const {
+  getPostHydrationSelect,
+  getPostHydrationJoins,
+  getPublicFeedWhere,
+} = require('../../core/queries/postHydration.query');
 const feedAnalytics = require('./analytics/feedAnalytics.service');
 const { incrementUserHashtagScore } = require('../../services/recommendation.service');
 
@@ -51,9 +60,9 @@ const { incrementUserHashtagScore } = require('../../services/recommendation.ser
 // Constants
 // ---------------------------------------------------------------------------
 
-const DEFAULT_PAGE_SIZE = 20;    // B7 — fixed page size
-const FEED_SLICE_TTL    = 300;   // 5 minutes — per redis-key-registry.md
-const EXPLORATION_SLOTS = 3;     // slots requested from exploration pool
+const DEFAULT_PAGE_SIZE = 20; // B7 — fixed page size
+const FEED_SLICE_TTL = 300; // 5 minutes — per redis-key-registry.md
+const EXPLORATION_SLOTS = 3; // slots requested from exploration pool
 
 // ---------------------------------------------------------------------------
 // ID-160/D1 — Actor-scoped cache/session identifier
@@ -93,7 +102,7 @@ function buildCacheScopeId(userId, orgActorId) {
  */
 async function _fetchChronologicalFeed(userId, cursor, limit, pool, orgActorId) {
   const scopeId = buildCacheScopeId(userId, orgActorId);
-  
+
   // Use timestamp string (e.g. ts:2026-07-15T10:00:00.000Z) or default to now
   let cursorTs = new Date().toISOString();
   if (cursor && cursor.startsWith('ts:')) {
@@ -109,7 +118,9 @@ async function _fetchChronologicalFeed(userId, cursor, limit, pool, orgActorId) 
       AND p.is_active = TRUE
       AND p.is_community_article IS NOT TRUE
       AND p.created_at < $1
-      ${orgActorId ? `
+      ${
+        orgActorId
+          ? `
       AND NOT EXISTS (
         SELECT 1 FROM blocks b
         WHERE (p.author_org_id IS NULL AND (
@@ -150,7 +161,8 @@ async function _fetchChronologicalFeed(userId, cursor, limit, pool, orgActorId) 
           AND upf.feedback_type = 'NOT_INTERESTED'
           AND upf.org_id = $2
       )
-      ` : `
+      `
+          : `
       AND NOT EXISTS (
         SELECT 1 FROM blocks b
         WHERE (b.is_org_block = false AND p.author_org_id IS NULL AND ((b.blocker_id = $2 AND b.blocked_id = p.author_id) OR (b.blocker_id = p.author_id AND b.blocked_id = $2)))
@@ -187,7 +199,8 @@ async function _fetchChronologicalFeed(userId, cursor, limit, pool, orgActorId) 
           AND upf.user_id = $4
           AND upf.org_id IS NULL
       )
-      `}
+      `
+      }
     ORDER BY p.created_at DESC
     LIMIT $3
   `;
@@ -199,7 +212,7 @@ async function _fetchChronologicalFeed(userId, cursor, limit, pool, orgActorId) 
     const hiddenSet = await getHiddenSet(scopeId);
     if (hiddenSet && hiddenSet.length > 0) {
       const hiddenIds = new Set(hiddenSet);
-      items = items.filter(item => !hiddenIds.has(item.id));
+      items = items.filter((item) => !hiddenIds.has(item.id));
     }
   } catch (err) {
     console.warn('[feedService] Failed to fetch hidden set for chronological feed:', err.message);
@@ -211,7 +224,7 @@ async function _fetchChronologicalFeed(userId, cursor, limit, pool, orgActorId) 
     type: item.type,
     slot_type: item.slot_type,
     position: index,
-    created_at: item.created_at
+    created_at: item.created_at,
   }));
 
   // Determine next cursor based on the last item's created_at
@@ -244,7 +257,7 @@ async function _fetchChronologicalFeed(userId, cursor, limit, pool, orgActorId) 
  *   load (no cursor), so rerankCandidates skips the seen-set filter — see its own doc comment.
  * @returns {Promise<Array>}       - FeedItem[] from rerankingEngine
  */
-async function _runPipeline({ userId, scopeId, limit, pool, session, isInitialPage }) {
+async function _runPipeline({ userId, scopeId, _limit, pool, session, isInitialPage }) {
   // ── Step 1: Generate candidates (all 4 sources) ───────────────────────────
   const candidates = await generateCandidates({ userId, pool });
   const totalCandidates = candidates.length;
@@ -280,7 +293,7 @@ async function _runPipeline({ userId, scopeId, limit, pool, session, isInitialPa
     session,
     opportunityCandidates,
     explorationCandidates,
-    isInitialPage,
+    isInitialPage
   );
 
   return { feedItems, totalCandidates };
@@ -294,7 +307,7 @@ async function _hydrateFeedItems(items, userId, pool, orgActorId = null) {
   if (!items || items.length === 0) return items;
   if (!pool) return items; // Can't hydrate without DB pool
 
-  const postIds = items.map(i => i.id).filter(Boolean);
+  const postIds = items.map((i) => i.id).filter(Boolean);
   if (postIds.length === 0) return items;
 
   try {
@@ -311,7 +324,7 @@ async function _hydrateFeedItems(items, userId, pool, orgActorId = null) {
     const params = [userId, orgActorId, postIds];
 
     const { rows } = await pool.query(query, params);
-    
+
     const { hydrateShareCounts } = require('../../utils/shareHydration');
     const hydratedRows = await hydrateShareCounts(rows);
 
@@ -320,10 +333,12 @@ async function _hydrateFeedItems(items, userId, pool, orgActorId = null) {
       rowMap.set(row.post_id, row);
     }
 
-    return items.map(item => ({
-      ...item,
-      post_data: rowMap.get(item.id) || null
-    })).filter(item => item.post_data && item.post_data.is_reported !== true);
+    return items
+      .map((item) => ({
+        ...item,
+        post_data: rowMap.get(item.id) || null,
+      }))
+      .filter((item) => item.post_data && item.post_data.is_reported !== true);
   } catch (err) {
     console.error('[feedService] Hydration failed:', err.message);
     return items;
@@ -347,97 +362,35 @@ async function _hydrateFeedItems(items, userId, pool, orgActorId = null) {
  * @returns {object}
  */
 function _buildResponse(items, session, cacheHit, nextCursor, totalCandidates = 0) {
-  const explorationSlots = items.filter(i => i.slot_type === 'exploration').length;
+  const explorationSlots = items.filter((i) => i.slot_type === 'exploration').length;
 
   return {
     ok: true,
     data: {
-      items:      items.map(item => ({
-        id:              item.id,
-        type:            item.type,
-        content:         item.content,
-        author:          item.author,
-        score:           item.score,
-        slot_type:       item.slot_type,
-        ranked_at:       item.ranked_at,
+      items: items.map((item) => ({
+        id: item.id,
+        type: item.type,
+        content: item.content,
+        author: item.author,
+        score: item.score,
+        slot_type: item.slot_type,
+        ranked_at: item.ranked_at,
         ranking_version: item.ranking_version,
-        position:        item.position,
-        post_data:       item.post_data,
+        position: item.position,
+        post_data: item.post_data,
       })),
-      cursor:     nextCursor,
-      has_more:   true,  // exhaustion detection is Day 5
+      cursor: nextCursor,
+      has_more: true, // exhaustion detection is Day 5
       session_id: session?.session_id ?? null,
-      served_at:  new Date().toISOString(),
+      served_at: new Date().toISOString(),
     },
     meta: {
-      total_candidates:   totalCandidates,
-      cache_hit:          cacheHit,
-      exploration_slots:  explorationSlots,
-      ranking_version:    '1.0.0',
+      total_candidates: totalCandidates,
+      cache_hit: cacheHit,
+      exploration_slots: explorationSlots,
+      ranking_version: '1.0.0',
     },
   };
-}
-
-// ---------------------------------------------------------------------------
-// Internal: fetch chronological feed (when algorithm = false)
-// ---------------------------------------------------------------------------
-
-async function _fetchChronologicalFeed(userId, cursor, limit, pool, orgActorId = null) {
-  if (!pool) return { items: [], nextCursor: null };
-
-  const scopeId = buildCacheScopeId(userId, orgActorId);
-
-  let hiddenSet = new Set();
-  try {
-    const hiddenArray = await getHiddenSet(scopeId);
-    hiddenSet = new Set(hiddenArray || []);
-  } catch (err) {
-    console.warn('[feedService] _fetchChronologicalFeed getHiddenSet failed:', err.message);
-  }
-
-  const fetchLimit = limit + 5;
-  const params = [fetchLimit];
-  let cursorCondition = '';
-
-  if (cursor && cursor !== 'initial') {
-    params.push(cursor);
-    cursorCondition = `AND p.created_at < $2`;
-  }
-
-  const query = `
-    SELECT p.post_id AS id, 'post' AS type, 'organic' AS slot_type, p.created_at
-    FROM posts p
-    WHERE (p.is_removed IS FALSE OR p.is_removed IS NULL)
-      AND (p.is_active IS TRUE OR p.is_active IS NULL)
-      AND (p.is_deleted IS FALSE OR p.is_deleted IS NULL)
-      AND (p.is_unlisted IS FALSE OR p.is_unlisted IS NULL)
-      AND NOT EXISTS (
-        SELECT 1 FROM users u WHERE u.user_id = p.author_id AND (u.is_deleted = true OR u.is_suspended = true OR u.deletion_execute_at IS NOT NULL)
-      )
-      AND NOT EXISTS (
-        SELECT 1 FROM organizations o WHERE o.org_id = p.author_org_id AND (o.is_deleted = true OR o.is_deactivated = true OR o.is_suspended = true)
-      )
-      ${cursorCondition}
-    ORDER BY p.created_at DESC, p.post_id DESC
-    LIMIT $1;
-  `;
-
-  try {
-    const { rows } = await pool.query(query, params);
-    
-    const rawItems = (rows || []).filter(r => !hiddenSet.has(r.id));
-    const items = rawItems.slice(0, limit);
-
-    const lastItem = items[items.length - 1];
-    const nextCursor = items.length >= limit && lastItem && lastItem.created_at
-      ? new Date(lastItem.created_at).toISOString()
-      : null;
-
-    return { items, nextCursor };
-  } catch (err) {
-    console.error('[feedService] _fetchChronologicalFeed failed:', err.message);
-    return { items: [], nextCursor: null };
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -464,22 +417,41 @@ async function _fetchChronologicalFeed(userId, cursor, limit, pool, orgActorId =
  *   hydration separate from the same human's personal feed.
  * @returns {Promise<object>}       - FeedResponse matching api-contracts.md
  */
-async function getFeed({ userId, cursor = null, limit = DEFAULT_PAGE_SIZE, pool = null, context = 'home', orgActorId = null, algorithm = true } = {}) {
+async function getFeed({
+  userId,
+  cursor = null,
+  limit = DEFAULT_PAGE_SIZE,
+  pool = null,
+  context = 'home',
+  orgActorId = null,
+  algorithm = true,
+} = {}) {
   if (!userId) throw new Error('feedService.getFeed: `userId` is required');
 
-  const pageSize = Math.min(Math.max(limit, 1), 50);  // enforce max from api-contracts.md
+  const pageSize = Math.min(Math.max(limit, 1), 50); // enforce max from api-contracts.md
   const effectiveCursor = cursor || 'initial';
   const scopeId = buildCacheScopeId(userId, orgActorId);
-  
+
   // ── 0. Chronological By-pass (algorithm=false) ────────────────────────────
   if (algorithm === false) {
     const chronoResult = await _fetchChronologicalFeed(userId, cursor, pageSize, pool, orgActorId);
-    const hydratedSlicedItems = await _hydrateFeedItems(chronoResult.items, userId, pool, orgActorId);
-    
+    const hydratedSlicedItems = await _hydrateFeedItems(
+      chronoResult.items,
+      userId,
+      pool,
+      orgActorId
+    );
+
     // We construct a mock session just to populate the response properly.
     const mockSession = { session_id: 'chrono-session' };
-    
-    return _buildResponse(hydratedSlicedItems, mockSession, false, chronoResult.nextCursor, chronoResult.items.length);
+
+    return _buildResponse(
+      hydratedSlicedItems,
+      mockSession,
+      false,
+      chronoResult.nextCursor,
+      chronoResult.items.length
+    );
   }
 
   // ID-160 follow-up: true only for a genuinely fresh page load (no cursor
@@ -502,7 +474,10 @@ async function getFeed({ userId, cursor = null, limit = DEFAULT_PAGE_SIZE, pool 
       session = await createSession(scopeId, context);
     }
   } catch (sessionErr) {
-    console.warn('[feedService] Session read failed, continuing with null session:', sessionErr.message);
+    console.warn(
+      '[feedService] Session read failed, continuing with null session:',
+      sessionErr.message
+    );
   }
 
   // ── Cache HIT: return immediately ─────────────────────────────────────────
@@ -517,11 +492,18 @@ async function getFeed({ userId, cursor = null, limit = DEFAULT_PAGE_SIZE, pool 
   }
 
   // ── B7.3: Cache MISS — run full generation pipeline ───────────────────────
-  let feedItems     = [];
+  let feedItems;
   let totalCandidates = 0;
 
   try {
-    const pipelineResult = await _runPipeline({ userId, scopeId, limit: pageSize, pool, session, isInitialPage });
+    const pipelineResult = await _runPipeline({
+      userId,
+      scopeId,
+      limit: pageSize,
+      pool,
+      session,
+      isInitialPage,
+    });
     feedItems = pipelineResult.feedItems;
     totalCandidates = pipelineResult.totalCandidates;
   } catch (pipelineErr) {
@@ -537,9 +519,9 @@ async function getFeed({ userId, cursor = null, limit = DEFAULT_PAGE_SIZE, pool 
         author: { id: c.authorId },
         score: c.score,
         slot_type: 'organic',
-        position: index
+        position: index,
       }));
-    } catch (fallbackErr) {
+    } catch {
       feedItems = [];
     }
   }
@@ -556,7 +538,7 @@ async function getFeed({ userId, cursor = null, limit = DEFAULT_PAGE_SIZE, pool 
 
   // ── Update session cursor + seen set ──────────────────────────────────────
   try {
-    const itemIds = slicedItems.map(i => i.id).filter(Boolean);
+    const itemIds = slicedItems.map((i) => i.id).filter(Boolean);
     await Promise.all([
       updateCursor(scopeId, nextCursor),
       itemIds.length > 0 ? addToSeenSet(scopeId, itemIds) : Promise.resolve(),
@@ -645,9 +627,15 @@ async function unhidePost({ userId, postId, sessionId, position, pool, orgActorI
   if (pool) {
     try {
       if (orgActorId) {
-        await pool.query('DELETE FROM user_post_feedback WHERE org_id = $1 AND post_id = $2', [orgActorId, postId]);
+        await pool.query('DELETE FROM user_post_feedback WHERE org_id = $1 AND post_id = $2', [
+          orgActorId,
+          postId,
+        ]);
       } else {
-        await pool.query('DELETE FROM user_post_feedback WHERE user_id = $1 AND org_id IS NULL AND post_id = $2', [userId, postId]);
+        await pool.query(
+          'DELETE FROM user_post_feedback WHERE user_id = $1 AND org_id IS NULL AND post_id = $2',
+          [userId, postId]
+        );
       }
     } catch (err) {
       console.warn('[feedService] unhidePost DB delete failed:', err.message);
@@ -657,7 +645,7 @@ async function unhidePost({ userId, postId, sessionId, position, pool, orgActorI
   try {
     await Promise.all([
       removeFromSeenSet(scopeId, [postId]),
-      removeFromHiddenSet(scopeId, [postId])
+      removeFromHiddenSet(scopeId, [postId]),
     ]);
   } catch (err) {
     console.warn('[feedService] unhidePost Redis sets update failed:', err.message);
@@ -673,7 +661,7 @@ async function unhidePost({ userId, postId, sessionId, position, pool, orgActorI
       session_id: sessionId || 'unknown_session',
       position: position || 0,
       context: 'home',
-      pool
+      pool,
     });
   } catch (err) {
     console.warn('[feedService] unhidePost trackEvent failed:', err.message);
@@ -681,7 +669,7 @@ async function unhidePost({ userId, postId, sessionId, position, pool, orgActorI
 
   // 3. Reverse the negative penalty (+5) to the user's hashtag score
   try {
-    await incrementUserHashtagScore(userId, 5, null, postId).catch(err => {
+    await incrementUserHashtagScore(userId, 5, null, postId).catch((err) => {
       console.warn('[feedService] unhidePost score penalty failed:', err.message);
     });
   } catch (err) {
@@ -695,7 +683,15 @@ async function unhidePost({ userId, postId, sessionId, position, pool, orgActorI
  * submitFeedback
  * Generic feedback mechanism for Interested / Not Interested
  */
-async function submitFeedback({ userId, postId, feedbackType, sessionId, position, pool, orgActorId = null }) {
+async function submitFeedback({
+  userId,
+  postId,
+  feedbackType,
+  sessionId,
+  position,
+  pool,
+  orgActorId = null,
+}) {
   if (!userId || !postId || !feedbackType) {
     throw new Error('submitFeedback: userId, postId, and feedbackType are required');
   }
@@ -703,19 +699,25 @@ async function submitFeedback({ userId, postId, feedbackType, sessionId, positio
   // 1. Upsert the permanent feedback to DB
   try {
     if (orgActorId) {
-      await pool.query(`
+      await pool.query(
+        `
         INSERT INTO user_post_feedback (user_id, org_id, post_id, feedback_type, updated_at)
         VALUES ($1, $2, $3, $4, NOW())
         ON CONFLICT (org_id, post_id) WHERE org_id IS NOT NULL
         DO UPDATE SET feedback_type = EXCLUDED.feedback_type, user_id = EXCLUDED.user_id, updated_at = NOW()
-      `, [userId, orgActorId, postId, feedbackType]);
+      `,
+        [userId, orgActorId, postId, feedbackType]
+      );
     } else {
-      await pool.query(`
+      await pool.query(
+        `
         INSERT INTO user_post_feedback (user_id, org_id, post_id, feedback_type, updated_at)
         VALUES ($1, NULL, $2, $3, NOW())
         ON CONFLICT (user_id, post_id) WHERE org_id IS NULL
         DO UPDATE SET feedback_type = EXCLUDED.feedback_type, updated_at = NOW()
-      `, [userId, postId, feedbackType]);
+      `,
+        [userId, postId, feedbackType]
+      );
     }
   } catch (err) {
     console.error('[feedService] submitFeedback DB upsert failed:', err.message);
@@ -735,7 +737,7 @@ async function submitFeedback({ userId, postId, feedbackType, sessionId, positio
         session_id: sessionId || 'unknown_session',
         position: position || 0,
         context: 'home',
-        pool
+        pool,
       });
     } catch (err) {
       console.warn('[feedService] submitFeedback trackEvent interested failed:', err.message);
@@ -744,23 +746,23 @@ async function submitFeedback({ userId, postId, feedbackType, sessionId, positio
     // 3a. Increment positive score (+5)
     try {
       await incrementUserHashtagScore(userId, 5, null, postId).catch(() => {});
-    } catch (err) {}
+    } catch {
+      // Non-fatal if hashtag score increment fails
+    }
 
     // 4a. If they were previously "NOT_INTERESTED", we should unhide it from Redis sets
     try {
       await Promise.all([
         removeFromSeenSet(scopeId, [postId]),
-        removeFromHiddenSet(scopeId, [postId])
+        removeFromHiddenSet(scopeId, [postId]),
       ]);
-    } catch (err) {}
-
+    } catch {
+      // Non-fatal if unhiding from Redis sets fails
+    }
   } else if (feedbackType === 'NOT_INTERESTED') {
     // 2b. Add to hiddenSet / seenSet
     try {
-      await Promise.all([
-        addToSeenSet(scopeId, [postId]),
-        addToHiddenSet(scopeId, [postId])
-      ]);
+      await Promise.all([addToSeenSet(scopeId, [postId]), addToHiddenSet(scopeId, [postId])]);
     } catch (err) {
       console.warn('[feedService] submitFeedback NOT_INTERESTED Redis failed:', err.message);
     }
@@ -775,7 +777,7 @@ async function submitFeedback({ userId, postId, feedbackType, sessionId, positio
         session_id: sessionId || 'unknown_session',
         position: position || 0,
         context: 'home',
-        pool
+        pool,
       });
     } catch (err) {
       console.warn('[feedService] submitFeedback trackEvent not_interested failed:', err.message);
@@ -784,7 +786,9 @@ async function submitFeedback({ userId, postId, feedbackType, sessionId, positio
     // 4b. Decrement score (-5)
     try {
       await incrementUserHashtagScore(userId, -5, null, postId).catch(() => {});
-    } catch (err) {}
+    } catch {
+      // Non-fatal if hashtag score decrement fails
+    }
   }
 
   return { ok: true };
