@@ -197,5 +197,69 @@ describe('Post Search Regression Tests: Hashtag & Posted By Filters', () => {
       expect(params).toContainEqual(['launch']);
     });
   });
+
+  describe('Org Post Filters: Employees & Mentions Our Company', () => {
+    test('filters by employees when searching as organization actor', async () => {
+      mockClient.query.mockResolvedValueOnce({ rows: [] });
+
+      await searchPosts(mockClient, {
+        searchTerm: 'update',
+        viewerId: '00000000-0000-0000-0000-000000000001',
+        orgActorId: '00000000-0000-0000-0000-000000000002',
+        queryParams: {
+          posted_by: 'employees',
+        },
+      });
+
+      expect(mockClient.query).toHaveBeenCalledTimes(1);
+      const [sql, params] = mockClient.query.mock.calls[0];
+
+      expect(sql).toContain('organization_members om');
+      expect(sql).toContain("om.status = 'ACTIVE'");
+      expect(params[2]).toBe('00000000-0000-0000-0000-000000000002');
+    });
+
+    test('filters by mentions_org when searching as organization actor', async () => {
+      mockClient.query.mockResolvedValueOnce({ rows: [] });
+
+      await searchPosts(mockClient, {
+        searchTerm: 'announcement',
+        viewerId: '00000000-0000-0000-0000-000000000001',
+        orgActorId: '00000000-0000-0000-0000-000000000002',
+        queryParams: {
+          mentions_org: 'true',
+        },
+      });
+
+      expect(mockClient.query).toHaveBeenCalledTimes(1);
+      const [sql] = mockClient.query.mock.calls[0];
+
+      expect(sql).toContain('organizations org_m');
+      expect(sql).toContain('org_m.org_id = $3::uuid');
+    });
+
+    test('filters by connections/following when searching as organization actor using org follows tables', async () => {
+      mockClient.query.mockResolvedValueOnce({ rows: [] });
+
+      await searchPosts(mockClient, {
+        searchTerm: 'hiring',
+        viewerId: '00000000-0000-0000-0000-000000000001',
+        orgActorId: '00000000-0000-0000-0000-000000000002',
+        queryParams: {
+          posted_by: 'connections',
+        },
+      });
+
+      expect(mockClient.query).toHaveBeenCalledTimes(1);
+      const [sql, params] = mockClient.query.mock.calls[0];
+
+      expect(sql).toContain('organization_org_follows oof');
+      expect(sql).toContain('oof.follower_org_id = $3::uuid');
+      expect(sql).toContain('organization_user_follows ouf');
+      expect(sql).toContain('ouf.org_id = $3::uuid');
+      expect(params[2]).toBe('00000000-0000-0000-0000-000000000002');
+    });
+  });
 });
+
 

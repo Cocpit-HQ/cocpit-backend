@@ -247,5 +247,60 @@ describe('Search Actor Context Regression Test Suite', () => {
       expect(result.items[0].context_signal).not.toBe('You studied here');
     });
   });
+
+  describe('3. Org Company Filters: Sector, Sub-type, and Specific Search', () => {
+    test('filters companies by sector', async () => {
+      mockClient.query.mockResolvedValueOnce({ rows: [] });
+
+      await searchCompanies(mockClient, {
+        searchTerm: 'tech',
+        queryParams: {
+          sector: ['Manufacturing', 'Wholesaler'],
+        },
+      });
+
+      expect(mockClient.query).toHaveBeenCalledTimes(1);
+      const [sql, params] = mockClient.query.mock.calls[0];
+
+      expect(sql).toContain('LOWER(c.sector) = ANY(');
+      expect(params).toContainEqual(['Manufacturing', 'Wholesaler']);
+    });
+
+    test('filters companies by specific_search keyword across profile text fields', async () => {
+      mockClient.query.mockResolvedValueOnce({ rows: [] });
+
+      await searchCompanies(mockClient, {
+        searchTerm: 'innovate',
+        queryParams: {
+          specific_search: 'robotics',
+        },
+      });
+
+      expect(mockClient.query).toHaveBeenCalledTimes(1);
+      const [sql, params] = mockClient.query.mock.calls[0];
+
+      expect(sql).toContain('c.headline ILIKE');
+      expect(sql).toContain('c.description ILIKE');
+      expect(sql).toContain('c.slogan ILIKE');
+      expect(params).toContain('%robotics%');
+    });
+
+    test('filters companies by is_verified filter in WHERE clause', async () => {
+      mockClient.query.mockResolvedValueOnce({ rows: [] });
+
+      await searchCompanies(mockClient, {
+        searchTerm: 'tech',
+        queryParams: {
+          is_verified: 'true',
+        },
+      });
+
+      expect(mockClient.query).toHaveBeenCalledTimes(1);
+      const [sql] = mockClient.query.mock.calls[0];
+
+      expect(sql).toContain("c.verification_status IN ('VERIFIED', 'DOMAIN_VERIFIED')");
+    });
+  });
 });
+
 

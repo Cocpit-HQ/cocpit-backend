@@ -63,7 +63,7 @@ async function resolveOrg(orgIdOrSlug) {
 
     const result = await pool.query(
         `SELECT org_id, name, slug, logo_url, cover_url, headline, slogan,
-                industry, size, website, location, location_formatted, phone, email,
+                industry, sector, size, website, location, location_formatted, phone, email,
                 description, entity_type, institution_type,
                 established_year, campus_location,
                 verification_status, review_notes, email_verified, phone_verified,
@@ -166,6 +166,7 @@ exports.getOrgProfile = async (req, res) => {
                             headline: org.headline,
                             slogan: org.slogan,
                             industry: org.industry,
+                            sector: org.sector || null,
                             entity_type: org.entity_type,
                             institution_type: org.institution_type,
                             verification_status: org.verification_status,
@@ -181,6 +182,7 @@ exports.getOrgProfile = async (req, res) => {
                             headline: org.headline,
                             slogan: org.slogan,
                             industry: org.industry,
+                            sector: org.sector || null,
                             entity_type: org.entity_type,
                             institution_type: org.institution_type,
                             verification_status: org.verification_status,
@@ -797,6 +799,7 @@ exports.getOrgAbout = async (req, res) => {
             slogan: org.slogan,
             website: org.website,
             industry: org.industry,
+            sector: org.sector || null,
             size: org.size,
             location: org.location_formatted || org.location || org.city,
             country: org.country,
@@ -1448,7 +1451,7 @@ exports.updateOrgProfile = async (req, res) => {
     const userId = req.user.sub;
 
     const {
-        name, headline, org_type, industry, institution_type, size, website, country, city, location, formattedAddress, latitude, longitude, placeId, established_year, keyOfferings
+        name, headline, org_type, industry, sector, institution_type, size, website, country, city, location, formattedAddress, latitude, longitude, placeId, established_year, keyOfferings
     } = req.body;
 
     // Validate name if provided
@@ -1543,6 +1546,9 @@ exports.updateOrgProfile = async (req, res) => {
         if (placeId !== undefined) addUpdate('location_place_id', placeId || null);
 
         addUpdate('established_year', established_year ? parseInt(established_year) : null);
+        if (sector !== undefined) {
+            addUpdate('sector', sector?.trim() || null);
+        }
 
         if (params.length === 0 && keyOfferings === undefined) {
             await client.query('ROLLBACK');
@@ -1556,14 +1562,14 @@ exports.updateOrgProfile = async (req, res) => {
                 UPDATE organizations
                 SET ${updates.join(', ')}, updated_at = NOW()
                 WHERE org_id = $${params.length} AND is_deleted = FALSE
-                RETURNING org_id, name, headline, industry, institution_type, size, website,
+                RETURNING org_id, name, headline, industry, sector, institution_type, size, website,
                           country, city, location, location_formatted, established_year, logo_url, cover_url,
                           entity_type, updated_at
             `;
             result = await client.query(query, params);
         } else {
             result = await client.query(
-                `SELECT org_id, name, headline, industry, institution_type, size, website,
+                `SELECT org_id, name, headline, industry, sector, institution_type, size, website,
                         country, city, location, location_formatted, established_year, logo_url, cover_url,
                         entity_type, updated_at
                  FROM organizations WHERE org_id = $1 AND is_deleted = FALSE`,

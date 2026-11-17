@@ -114,5 +114,69 @@ describe('People Search Regression Tests: Industry & Institute Filters', () => {
       expect(params).toContain('%UC Berkeley%');
     });
   });
+
+  describe('Org People Filters: Skills, Experience, Open to Work', () => {
+    test('filters people by skills (single and array)', async () => {
+      mockClient.query.mockResolvedValueOnce({ rows: [] });
+
+      await searchPeople(mockClient, {
+        searchTerm: 'john',
+        viewerId: '00000000-0000-0000-0000-000000000001',
+        queryParams: {
+          skills: ['React', 'Node.js'],
+        },
+      });
+
+      expect(mockClient.query).toHaveBeenCalledTimes(1);
+      const [sql, params] = mockClient.query.mock.calls[0];
+
+      expect(sql).toContain('user_skills us');
+      expect(sql).toContain('s_tab.name ILIKE $');
+      expect(params).toContain('%React%');
+      expect(params).toContain('%Node.js%');
+    });
+
+    test('filters people by experience ranges', async () => {
+      mockClient.query.mockResolvedValueOnce({ rows: [] });
+
+      await searchPeople(mockClient, {
+        searchTerm: 'john',
+        viewerId: '00000000-0000-0000-0000-000000000001',
+        queryParams: {
+          experience: ['1-3', '5-8'],
+        },
+      });
+
+      expect(mockClient.query).toHaveBeenCalledTimes(1);
+      const [sql, params] = mockClient.query.mock.calls[0];
+
+      expect(sql).toContain('FROM experiences exp');
+      expect(sql).toContain('SUM(');
+      expect(params).toContain(1);
+      expect(params).toContain(3);
+      expect(params).toContain(5);
+      expect(params).toContain(8);
+    });
+
+    test('filters people by open_to preference (Open to Work)', async () => {
+      mockClient.query.mockResolvedValueOnce({ rows: [] });
+
+      await searchPeople(mockClient, {
+        searchTerm: 'john',
+        viewerId: '00000000-0000-0000-0000-000000000001',
+        queryParams: {
+          open_to: ['Full-time', 'Freelance'],
+        },
+      });
+
+      expect(mockClient.query).toHaveBeenCalledTimes(1);
+      const [sql, params] = mockClient.query.mock.calls[0];
+
+      expect(sql).toContain('p.open_to ILIKE $');
+      expect(params).toContain('%Full-time%');
+      expect(params).toContain('%Freelance%');
+    });
+  });
 });
+
 

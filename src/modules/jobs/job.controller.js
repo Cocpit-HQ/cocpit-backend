@@ -2730,6 +2730,8 @@ exports.getJobRoles = async (req, res) => {
 exports.getIndustries = async (req, res) => {
   try {
     const { q, cursor, limit = 50 } = req.query;
+
+    // Flat list pagination across all industries
     const pageSize = Math.min(Math.max(parseInt(limit) || 50, 1), 100);
     let query = `SELECT industry_name FROM industries_master`;
     let values = [];
@@ -2818,19 +2820,24 @@ exports.getInstitutes = async (req, res) => {
     const pageSize = Math.min(Math.max(parseInt(limit) || 50, 1), 100);
 
     let query = `
-      WITH all_institutes AS (
-        SELECT DISTINCT TRIM(o.name) AS name
+      WITH all_sources AS (
+        SELECT TRIM(o.name) AS name, 1 AS priority
         FROM organizations o
         WHERE o.name IS NOT NULL
           AND TRIM(o.name) != ''
           AND (o.entity_type = 'INSTITUTION' OR o.institution_type IS NOT NULL)
           AND o.is_deleted = FALSE
           AND (o.is_suspended IS NOT TRUE)
-        UNION
-        SELECT DISTINCT TRIM(ed.school_name) AS name
+        UNION ALL
+        SELECT TRIM(ed.school_name) AS name, 2 AS priority
         FROM educations ed
         WHERE ed.school_name IS NOT NULL
           AND TRIM(ed.school_name) != ''
+      ),
+      all_institutes AS (
+        SELECT DISTINCT ON (LOWER(name)) name
+        FROM all_sources
+        ORDER BY LOWER(name) ASC, priority ASC, name ASC
       )
       SELECT name
       FROM all_institutes

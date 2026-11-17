@@ -2014,7 +2014,8 @@ exports.saveDraftPresence = async (req, res) => {
         longitude,
         placeId,
         headline,
-        description
+        description,
+        sector
     } = req.body;
 
     if (description !== undefined && description !== null && typeof description === 'string' && description.length > 2000) {
@@ -2084,14 +2085,15 @@ exports.saveDraftPresence = async (req, res) => {
                 location_place_id = COALESCE($10, location_place_id),
                 headline = $11,
                 description = $12,
+                sector = COALESCE($13, sector),
                 onboarding_step = 'VERIFICATION',
                 updated_at = NOW()
-            WHERE org_id = $13
+            WHERE org_id = $14
             RETURNING *
         `;
 
         await client.query(updateText, [
-            email, phone || null, website || null, size, locCountry, locCity, locationStr, locLat, locLng, locPlaceId, headline, description || null, orgId
+            email, phone || null, website || null, size, locCountry, locCity, locationStr, locLat, locLng, locPlaceId, headline, description || null, sector || null, orgId
         ]);
 
         await client.query("COMMIT");
@@ -2550,7 +2552,8 @@ exports.publishNewOrganization = async (req, res) => {
         description,
         type,
         entity_type,
-        country_of_operation
+        country_of_operation,
+        sector
     } = req.body;
 
     let cleanDescription = null;
@@ -2642,14 +2645,14 @@ exports.publishNewOrganization = async (req, res) => {
 
         const insertQuery = `
             INSERT INTO organizations (
-                name, slug, entity_type, established_year, industry, institution_type,
+                name, slug, entity_type, established_year, industry, sector, institution_type,
                 logo_url, email, phone, website, size,
                 location, location_formatted, location_lat, location_lng, location_place_id,
                 country, city,
                 headline, description, created_by, onboarding_step, onboarding_completed, email_verified, phone_verified,
                 verification_status
             ) VALUES (
-                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, 'COMPLETED', TRUE, TRUE, TRUE, $22
+                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, 'COMPLETED', TRUE, TRUE, TRUE, $23
             ) RETURNING *
         `;
 
@@ -2659,6 +2662,7 @@ exports.publishNewOrganization = async (req, res) => {
             isInstitution ? 'INSTITUTION' : (effectiveType || 'COMPANY'),
             establishedYearInt,
             finalIndustry,
+            sector || null,
             finalInstitutionType,
             logoUrl,
             email ? email.toLowerCase().trim() : null,
