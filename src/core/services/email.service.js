@@ -80,54 +80,76 @@ const sendOTPEmail = async (email, otp, purpose = "signup") => {
 
 
 /**
- * Resolves the frontend URL for customer account emails.
- * Uses localhost:3000 when testing locally, and official domains when deployed.
+ * Resolves the frontend URL for customer account emails using the Account Recovery pattern:
+ * Uses clientOrigin if public, otherwise falls back to Staging/UAT/Prod.
+ * @param {string|null|undefined} clientOrigin
  * @returns {string}
  */
-const resolveFrontendUrl = () => {
-    let fallbackUrl = "http://localhost:3000";
-    if (process.env.NODE_ENV === "production") fallbackUrl = "https://cocpit.in";
-    else if (process.env.NODE_ENV === "uat") fallbackUrl = "https://uat.cocpit.in";
-    else if (process.env.NODE_ENV === "staging") fallbackUrl = "https://staging.cocpit.in";
-
-    let baseUrl = fallbackUrl;
-    if (["production", "uat", "staging"].includes(process.env.NODE_ENV) && process.env.FRONTEND_URL) {
-        if (!process.env.FRONTEND_URL.includes("localhost") && !process.env.FRONTEND_URL.includes("192.168.")) {
-            baseUrl = process.env.FRONTEND_URL;
-        }
+const resolveFrontendUrl = (clientOrigin = null) => {
+    if (
+        clientOrigin &&
+        typeof clientOrigin === "string" &&
+        !clientOrigin.includes("localhost") &&
+        !clientOrigin.includes("127.0.0.1") &&
+        !clientOrigin.includes("192.168.") &&
+        !clientOrigin.includes("10.") &&
+        !clientOrigin.includes(":5173") &&
+        !clientOrigin.includes(":3000") &&
+        !clientOrigin.includes(":5000")
+    ) {
+        return clientOrigin.replace(/\/+$/, "");
     }
 
-    return baseUrl.replace(/\/+$/, "");
+    let fallbackUrl = "https://staging.cocpit.in";
+    if (process.env.NODE_ENV === "production") fallbackUrl = "https://cocpit.in";
+    else if (process.env.NODE_ENV === "uat") fallbackUrl = "https://uat.cocpit.in";
+    else if (process.env.FRONTEND_URL && !process.env.FRONTEND_URL.includes("localhost") && !process.env.FRONTEND_URL.includes("192.168.")) {
+        fallbackUrl = process.env.FRONTEND_URL;
+    }
+
+    return fallbackUrl.replace(/\/+$/, "");
 };
 
 /**
- * Resolves the public appeal URL for suspension emails.
- * Uses localhost:5000 when testing locally (where appeal.html and APIs are served).
- * Automatically resolves to Staging, UAT, or Production when deployed.
+ * Resolves the public appeal URL for suspension emails using the Account Recovery pattern:
+ * 1. If request originated from an authentic public web domain (Staging/UAT/Prod), use that origin directly.
+ * 2. If called from localhost or a private LAN IP (192.168.x.x), fallback cleanly to Staging (or UAT/Prod).
  * @param {string} appealToken
  * @returns {string|null}
  */
 const resolveAppealUrl = (appealToken) => {
     if (!appealToken) return null;
 
-    let fallbackUrl = "http://localhost:5000/appeal.html";
-    if (process.env.NODE_ENV === "production") fallbackUrl = "https://cocpit.in/appeal.html";
-    else if (process.env.NODE_ENV === "uat") fallbackUrl = "https://uat.cocpit.in/appeal.html";
-    else if (process.env.NODE_ENV === "staging") fallbackUrl = "https://staging.cocpit.in/appeal.html";
-
-    let baseUrl = fallbackUrl;
-
-    // On deployed environments, allow explicit PUBLIC_APPEAL_URL override if valid public host
-    if (["production", "uat", "staging"].includes(process.env.NODE_ENV) && process.env.PUBLIC_APPEAL_URL) {
-        if (!process.env.PUBLIC_APPEAL_URL.includes("localhost") && !process.env.PUBLIC_APPEAL_URL.includes("192.168.")) {
-            baseUrl = process.env.PUBLIC_APPEAL_URL;
-        }
+    // 1. If request originated from a real public web domain, use it directly (Account Recovery pattern)
+    if (
+        clientOrigin &&
+        typeof clientOrigin === "string" &&
+        !clientOrigin.includes("localhost") &&
+        !clientOrigin.includes("127.0.0.1") &&
+        !clientOrigin.includes("192.168.") &&
+        !clientOrigin.includes("10.") &&
+        !clientOrigin.includes(":5173") &&
+        !clientOrigin.includes(":3000") &&
+        !clientOrigin.includes(":5000")
+    ) {
+        const cleanOrigin = clientOrigin.replace(/\/+$/, "");
+        return cleanOrigin.includes("appeal.html")
+            ? `${cleanOrigin}?token=${appealToken}`
+            : `${cleanOrigin}/appeal.html?token=${appealToken}`;
     }
 
-    baseUrl = baseUrl.replace(/\/+$/, "");
-    return baseUrl.includes("appeal.html")
-        ? `${baseUrl}?token=${appealToken}`
-        : `${baseUrl}/appeal.html?token=${appealToken}`;
+    // 2. Otherwise, resolve via environment tier with Staging as standard default
+    let fallbackUrl = "https://staging.cocpit.in/appeal.html";
+    if (process.env.NODE_ENV === "production") fallbackUrl = "https://cocpit.in/appeal.html";
+    else if (process.env.NODE_ENV === "uat") fallbackUrl = "https://uat.cocpit.in/appeal.html";
+    else if (process.env.PUBLIC_APPEAL_URL && !process.env.PUBLIC_APPEAL_URL.includes("localhost") && !process.env.PUBLIC_APPEAL_URL.includes("192.168.")) {
+        fallbackUrl = process.env.PUBLIC_APPEAL_URL;
+    }
+
+    fallbackUrl = fallbackUrl.replace(/\/+$/, "");
+    return fallbackUrl.includes("appeal.html")
+        ? `${fallbackUrl}?token=${appealToken}`
+        : `${fallbackUrl}/appeal.html?token=${appealToken}`;
 };
 
 /**
