@@ -221,6 +221,8 @@ exports.getCompanySentOffers = async (req, res) => {
                 COUNT(jo.offer_id) FILTER (WHERE jo.status = 'accepted') AS accepted_count,
                 COUNT(jo.offer_id) FILTER (WHERE jo.status = 'declined') AS declined_count,
                 COUNT(jo.offer_id) FILTER (WHERE jo.status = 'withdrawn') AS withdrawn_count,
+                (SELECT COUNT(*)::int FROM job_applications ja_count WHERE ja_count.job_id = j.job_id AND ja_count.current_status != 'Withdrawn') AS applicants_count,
+                (SELECT COUNT(*)::int FROM job_applications ja_count WHERE ja_count.job_id = j.job_id AND ja_count.current_status = 'Shortlisted') AS shortlisted_count,
                 MAX(jo.created_at) AS latest_offer_at
             FROM job_offers jo
             JOIN jobs j ON jo.job_id = j.job_id
@@ -245,6 +247,8 @@ exports.getCompanySentOffers = async (req, res) => {
             accepted_count: Number(r.accepted_count),
             declined_count: Number(r.declined_count),
             withdrawn_count: Number(r.withdrawn_count),
+            applicants_count: Number(r.applicants_count || 0),
+            shortlisted_count: Number(r.shortlisted_count || 0),
         }));
 
         res.json(rows);
@@ -674,6 +678,8 @@ exports.getRecruiterSentOffers = async (req, res) => {
                 COUNT(jo.offer_id) FILTER (WHERE jo.status = 'accepted') AS accepted_count,
                 COUNT(jo.offer_id) FILTER (WHERE jo.status = 'declined') AS declined_count,
                 COUNT(jo.offer_id) FILTER (WHERE jo.status = 'withdrawn') AS withdrawn_count,
+                (SELECT COUNT(*)::int FROM job_applications ja_count WHERE ja_count.job_id = j.job_id AND ja_count.current_status != 'Withdrawn') AS applicants_count,
+                (SELECT COUNT(*)::int FROM job_applications ja_count WHERE ja_count.job_id = j.job_id AND ja_count.current_status = 'Shortlisted') AS shortlisted_count,
                 MAX(jo.created_at) AS latest_offer_at
             FROM job_offers jo
             JOIN jobs j ON jo.job_id = j.job_id
@@ -697,6 +703,8 @@ exports.getRecruiterSentOffers = async (req, res) => {
             accepted_count: Number(r.accepted_count),
             declined_count: Number(r.declined_count),
             withdrawn_count: Number(r.withdrawn_count),
+            applicants_count: Number(r.applicants_count || 0),
+            shortlisted_count: Number(r.shortlisted_count || 0),
         }));
 
         res.json(rows);
