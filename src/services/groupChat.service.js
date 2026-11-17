@@ -1,4 +1,5 @@
 const GroupChatModel = require("../models/groupChat.model");
+const { MAX_GROUP_MEMBERS } = require("../constants/groupChat.constants");
 const socketService = require("../core/infrastructure/socket.service"); // Assuming existing socket service
 const pool = require("../core/db/pool"); // For specific queries if model isn't enough or for transactions
 const { listConversationMuteStates } = require("./conversationMute.service");
@@ -54,6 +55,15 @@ function getPendingGroupInvitationsSql() {
 
 class GroupChatService {
     static async createGroup(adminId, { name, description, avatarUrl, members }) {
+        // Validate members limit (creator adminId takes 1 slot)
+        let uniqueMemberIds = [];
+        if (members && Array.isArray(members) && members.length > 0) {
+            uniqueMemberIds = [...new Set(members.filter(id => id && String(id) !== String(adminId)))];
+            if (uniqueMemberIds.length + 1 > MAX_GROUP_MEMBERS) {
+                throw new Error(`Group cannot exceed ${MAX_GROUP_MEMBERS} members (including group creator)`);
+            }
+        }
+
         // 1. Create Group
         const group = await GroupChatModel.createGroup({ adminId, name, description, avatarUrl });
 
@@ -75,16 +85,13 @@ class GroupChatService {
         });
 
         // 3. Invite other initial members
-        if (members && Array.isArray(members) && members.length > 0) {
-            for (const memberId of members) {
-                // Skip if admin is accidentally included in members list
-                if (memberId !== adminId) {
-                    try {
-                        // Use static call to inviteMember
-                        await GroupChatService.inviteMember(adminId, group.conversation_id, memberId);
-                    } catch (err) {
-                        console.error(`[GroupChatService] Initial invite failed for user ${memberId}:`, err.message);
-                    }
+        if (uniqueMemberIds.length > 0) {
+            for (const memberId of uniqueMemberIds) {
+                try {
+                    // Use static call to inviteMember
+                    await GroupChatService.inviteMember(adminId, group.conversation_id, memberId);
+                } catch (err) {
+                    console.error(`[GroupChatService] Initial invite failed for user ${memberId}:`, err.message);
                 }
             }
         }
@@ -107,6 +114,12 @@ class GroupChatService {
         // Check if already a member
         if (members.find(m => m.user_id == receiverId)) {
             throw new Error("User is already a member");
+        }
+
+        // Capacity check: Active members cannot exceed MAX_GROUP_MEMBERS
+        const activeCount = await GroupChatModel.getActiveMemberCount(groupId);
+        if (activeCount >= MAX_GROUP_MEMBERS) {
+            throw new Error(`Group has reached the maximum limit of ${MAX_GROUP_MEMBERS} members`);
         }
 
         // Check if invitation exists
@@ -137,7 +150,7 @@ class GroupChatService {
             last_message_id: null,
             last_message_text: `${inviter.full_name || 'A member'} invited you to join the group`,
             last_message_at: invitation.updated_at || invitation.created_at || new Date().toISOString(),
-            replyMessageId: null,
+            replied_msg_id: null,
             reply_message: null,
             invitation_id: invitation.invitation_id,
             request_source: 'group_invitation',
@@ -268,13 +281,7 @@ class GroupChatService {
             const activeAdminCount = adminCountRes.rows[0]?.count || 0;
             const assignedRole = activeAdminCount === 0 ? 'admin' : 'member';
 
-            // 3. Update invitation status
-            await client.query(
-                `UPDATE group_invitations SET status = 'accepted', updated_at = NOW() WHERE invitation_id = $1`,
-                [invitationId]
-            );
-
-            // 4. Add member with the determined role
+            // 3. Check if user is already an active member; if not, enforce MAX_GROUP_MEMBERS
             const activeRes = await client.query(
                 `SELECT * FROM conversation_participants 
                  WHERE conversation_id = $1 AND user_id = $2 AND left_at IS NULL`,
@@ -282,6 +289,12 @@ class GroupChatService {
             );
 
             if (activeRes.rowCount === 0) {
+                // Concurrency-safe capacity check under conversation FOR UPDATE lock
+                const activeMemberCount = await GroupChatModel.getActiveMemberCount(groupId, client);
+                if (activeMemberCount >= MAX_GROUP_MEMBERS) {
+                    throw new Error(`Group has reached the maximum limit of ${MAX_GROUP_MEMBERS} members`);
+                }
+
                 await client.query(
                     `INSERT INTO conversation_participants (conversation_id, user_id, role, joined_at, left_at) 
                      VALUES ($1, $2, $3, now(), NULL)`,
@@ -293,6 +306,12 @@ class GroupChatService {
                     [groupId, userId]
                 );
             }
+
+            // 4. Update invitation status
+            await client.query(
+                `UPDATE group_invitations SET status = 'accepted', updated_at = NOW() WHERE invitation_id = $1`,
+                [invitationId]
+            );
 
             // If promoted to admin, update conversations.admin_id
             if (assignedRole === 'admin') {
@@ -833,6 +852,117 @@ class GroupChatService {
             left_at: null
         };
     }
+
+    static async getGroupSharedContent(userId, groupId) {
+        // 1. Verify conversation exists and is active
+        const convRes = await pool.query(
+            "SELECT conversation_id FROM conversations WHERE conversation_id = $1 AND is_active = TRUE",
+            [groupId]
+        );
+        if (convRes.rowCount === 0) {
+            throw new Error("Group not found");
+        }
+
+        // 2. Fetch Media (images, videos, documents)
+        const mediaQuery = `
+            SELECT 
+                mm.media_id,
+                mm.url,
+                mm.media_type,
+                mm.filename,
+                mm.created_at,
+                m.message_id
+            FROM message_media mm
+            JOIN messages m ON mm.message_id = m.message_id
+            WHERE m.conversation_id = $1
+              AND (m.action_type IS NULL OR m.action_type NOT IN ('leave', 'remove', 'system'))
+            ORDER BY mm.created_at DESC
+            LIMIT 100
+        `;
+        const mediaRes = await pool.query(mediaQuery, [groupId]);
+
+        // 3. Fetch Shared Posts
+        const postsQuery = `
+            SELECT 
+                p.post_id,
+                COALESCE(p.content, p.title, '') as caption,
+                p.title,
+                p.post_type,
+                p.created_at,
+                p.author_id,
+                p.author_org_id,
+                COALESCE(org.name, u.full_name, 'Unknown') as author_name,
+                COALESCE(org.logo_url, u.avatar_url, NULL) as author_avatar,
+                (
+                    SELECT json_agg(json_build_object('url', pm.url, 'media_type', pm.media_type)) 
+                    FROM post_media pm 
+                    WHERE pm.post_id = p.post_id
+                ) as media,
+                m.created_at as shared_at,
+                m.message_id
+            FROM messages m
+            JOIN posts p ON m.shared_post_id = p.post_id
+            LEFT JOIN users u ON p.author_id = u.user_id
+            LEFT JOIN organizations org ON p.author_org_id = org.org_id
+            WHERE m.conversation_id = $1
+            ORDER BY m.created_at DESC
+            LIMIT 60
+        `;
+        const postsRes = await pool.query(postsQuery, [groupId]);
+
+        // 4. Fetch Shared Links from message text_content
+        const linksQuery = `
+            SELECT 
+                m.message_id,
+                m.text_content,
+                m.created_at
+            FROM messages m
+            WHERE m.conversation_id = $1
+              AND (m.text_content LIKE '%http://%' OR m.text_content LIKE '%https://%')
+            ORDER BY m.created_at DESC
+            LIMIT 100
+        `;
+        const linksRes = await pool.query(linksQuery, [groupId]);
+
+        const links = [];
+        const seenUrls = new Set();
+        const urlRegex = /https?:\/\/[^\s<>'"]+/gi;
+
+        for (const row of linksRes.rows) {
+            if (!row.text_content) continue;
+            const matches = row.text_content.match(urlRegex);
+            if (matches) {
+                for (const rawUrl of matches) {
+                    const cleanedUrl = rawUrl.replace(/[.,;!?)]+$/, "");
+                    if (!seenUrls.has(cleanedUrl)) {
+                        seenUrls.add(cleanedUrl);
+                        let domain = "";
+                        try {
+                            const parsed = new URL(cleanedUrl);
+                            domain = parsed.hostname.replace(/^www\./, "");
+                        } catch {
+                            domain = cleanedUrl.split("/")[2] || cleanedUrl;
+                        }
+                        links.push({
+                            id: `${row.message_id}-${links.length}`,
+                            message_id: row.message_id,
+                            url: cleanedUrl,
+                            domain: domain,
+                            title: domain,
+                            created_at: row.created_at
+                        });
+                    }
+                }
+            }
+        }
+
+        return {
+            media: mediaRes.rows || [],
+            posts: postsRes.rows || [],
+            links: links || []
+        };
+    }
+
     static async sendMessage(senderId, groupId, content, type, media = [], previewText = null, replyMessageId = null, shared_post_id = null, shared_profile_id = null, shared_profile_type = null, entity_type = null, entity_id = null) {
         // 1. Verify user is member of group
         const members = await GroupChatModel.getGroupMembers(groupId);
@@ -980,7 +1110,7 @@ class GroupChatService {
 
         const enrichedMessage = {
             ...message,
-            replyMessageId: replyMessageId || null,
+            replied_msg_id: replyMessageId || null,
             reply_message: replyMessageData,
             media: mediaRecords, // Include media in socket event
             sender_name: sender.full_name,

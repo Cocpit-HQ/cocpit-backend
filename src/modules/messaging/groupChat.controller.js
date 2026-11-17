@@ -27,7 +27,12 @@ exports.createGroup = async (req, res) => {
         res.status(201).json(group);
     } catch (err) {
         console.error("Create Group Error:", err);
-        res.status(500).json({ message: err.message });
+        const isClientError = err.message && (
+            err.message.includes("cannot exceed") ||
+            err.message.includes("maximum limit") ||
+            err.message.includes("is required")
+        );
+        res.status(isClientError ? 400 : 500).json({ message: err.message });
     }
 };
 
@@ -137,12 +142,14 @@ exports.sendMessage = async (req, res) => {
         const {
             content,
             replyMessageId,
+            replied_msg_id,
             shared_post_id,
             shared_profile_id,
             shared_profile_type,
             entity_type,
             entity_id
         } = req.body;
+        const effectiveReplyId = replied_msg_id || replyMessageId || null;
 
         let files = [];
         if (req.files) {
@@ -193,7 +200,7 @@ exports.sendMessage = async (req, res) => {
             messageType,
             media,
             previewText,
-            replyMessageId,
+            effectiveReplyId,
             shared_post_id,
             shared_profile_id,
             shared_profile_type,
@@ -215,6 +222,20 @@ exports.getGroupDetails = async (req, res) => {
         if (!details) return res.status(404).json({ message: "Group not found" });
         res.json(details);
     } catch (err) {
+        res.status(500).json({ message: err.message });
+    }
+}
+
+exports.getGroupSharedContent = async (req, res) => {
+    try {
+        const userId = req.user.sub || req.user.user_id;
+        const { groupId } = req.params;
+        const sharedContent = await GroupChatService.getGroupSharedContent(userId, groupId);
+        res.json(sharedContent);
+    } catch (err) {
+        if (err.message === "You are not a participant of this group") {
+            return res.status(403).json({ message: err.message });
+        }
         res.status(500).json({ message: err.message });
     }
 }

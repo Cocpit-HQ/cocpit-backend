@@ -13,7 +13,7 @@ const buildMuteState = (row) => {
     userId: row.user_id,
     companyId: row.org_id,
     isMuted: muteActive,
-    mutedUntil: row.muted_until,
+    mutedUntil: muteActive && mutedUntil ? row.muted_until : null,
     muteUpdatedAt: row.mute_updated_at,
   };
 };
@@ -74,9 +74,16 @@ const listConversationMuteStates = async (executor, conversationId) => {
 
 const updateConversationMuteState = async (
   executor,
-  { conversationId, userId, companyId = null, muted, mutedUntil = null }
+  { conversationId, userId, companyId = null, muted, mutedUntil = null, hours = null }
 ) => {
   const db = executor || pool;
+  let finalMutedUntil = mutedUntil;
+  if (muted && hours && typeof hours === "number" && hours > 0) {
+    finalMutedUntil = new Date(Date.now() + hours * 60 * 60 * 1000).toISOString();
+  } else if (!muted) {
+    finalMutedUntil = null;
+  }
+
   const result = await db.query(
     `
       UPDATE conversation_participants
@@ -100,7 +107,7 @@ const updateConversationMuteState = async (
         muted_until,
         mute_updated_at
     `,
-    [conversationId, userId, companyId, muted, mutedUntil]
+    [conversationId, userId, companyId, muted, finalMutedUntil]
   );
 
   return buildMuteState(result.rows[0] || null);

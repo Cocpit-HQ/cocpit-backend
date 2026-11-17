@@ -57,6 +57,24 @@ async function markConversationAsRead({ conversationId, userId, companyId = null
       throw err;
     }
 
+    // If this conversation is a pending chat request, suppress message read_at and "Seen" notification until accepted
+    const convStateRes = await client.query(
+      `SELECT is_requesting, is_group FROM conversations WHERE conversation_id = $1`,
+      [conversationId]
+    );
+    const isRequesting = convStateRes.rows[0]?.is_requesting || false;
+    const isGroup = convStateRes.rows[0]?.is_group || false;
+
+    if (isRequesting && !isGroup) {
+      await client.query("COMMIT");
+      const readAt = participation.rows[0].last_read_at || new Date().toISOString();
+      return {
+        readAt,
+        readCount: 0,
+        messageIds: [],
+      };
+    }
+
     const unreadMessagesRes = await client.query(
       `
       SELECT m.message_id

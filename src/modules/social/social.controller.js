@@ -3062,8 +3062,18 @@ exports.getConversations = async (req, res) => {
             `
 SELECT 
     c.*,
+    COALESCE(c.created_by, (
+        SELECT m_first.sender_id FROM messages m_first 
+        WHERE m_first.conversation_id = c.conversation_id 
+        ORDER BY m_first.created_at ASC LIMIT 1
+    )) as created_by,
     CASE WHEN $2::uuid IS NOT NULL OR cp_other.org_id IS NOT NULL THEN false ELSE c.is_requesting END as is_requesting,
     c.is_job_chat AS "isJobChat",
+    (
+        SELECT m_req.created_at FROM messages m_req 
+        WHERE m_req.conversation_id = c.conversation_id AND m_req.sender_id = $1 
+        ORDER BY m_req.created_at DESC LIMIT 1
+    ) as last_sender_message_at,
     -- Block Status
     CASE WHEN c.is_group THEN false ELSE EXISTS (
         SELECT 1 FROM blocks b 
@@ -3086,10 +3096,6 @@ SELECT
                 (cp_b.org_id IS NOT NULL AND ($2::uuid IS NULL OR cp_b.org_id != $2) AND b.blocker_id = cp_b.org_id)
               )
         )
-        OR
-        (cp_other.org_id IS NOT NULL AND COALESCE(raw_comp.is_deactivated, false) = true)
-        OR
-        (cp_other.user_id IS NOT NULL AND COALESCE(raw_u.is_deactivated, false) = true)
     ) END as is_blocked_by_other,
 
     -- Name logic: Use group name if group, else other participant's name (User or Company)
@@ -3183,6 +3189,8 @@ SELECT
     cp.is_active,
     cp.is_muted,
     cp.muted_until,
+    cp.is_pinned,
+    cp.pinned_at,
     
     -- Flag for deleted users
     CASE 
@@ -3219,7 +3227,7 @@ SELECT
         END, 
         c.updated_at
     ) AS last_message_at,
-    m.replied_msg_id AS "replyMessageId",
+    m.replied_msg_id,
     m.reply_message,
     COALESCE(cp.left_group_name, c.conversation_name) AS conversation_name,
     COALESCE(cp.left_group_avatar, c.group_avatar) AS group_avatar,
@@ -3297,7 +3305,27 @@ JOIN (
                AND cp_main.is_muted = TRUE
                AND (cp_main.muted_until IS NULL OR cp_main.muted_until > NOW())
            ) as is_muted,
-           MAX(CASE WHEN cp_main.left_at IS NULL THEN cp_main.muted_until ELSE NULL END) as muted_until
+           MAX(
+               CASE 
+                   WHEN cp_main.left_at IS NULL 
+                        AND cp_main.is_muted = TRUE 
+                        AND (cp_main.muted_until IS NULL OR cp_main.muted_until > NOW()) 
+                   THEN cp_main.muted_until 
+                   ELSE NULL 
+               END
+           ) as muted_until,
+           BOOL_OR(
+               cp_main.left_at IS NULL
+               AND cp_main.is_pinned = TRUE
+           ) as is_pinned,
+           MAX(
+               CASE 
+                   WHEN cp_main.left_at IS NULL 
+                        AND cp_main.is_pinned = TRUE 
+                   THEN cp_main.pinned_at 
+                   ELSE NULL 
+               END
+           ) as pinned_at
     FROM conversation_participants cp_main
     WHERE 
       -- Filter by User OR Company based on context
@@ -3435,12 +3463,14 @@ SELECT
     FALSE AS is_active,
     FALSE AS is_muted,
     NULL::timestamptz AS muted_until,
+    FALSE AS is_pinned,
+    NULL::timestamptz AS pinned_at,
     FALSE AS is_deleted_user,
     FALSE AS is_deactivated,
     NULL::uuid AS last_message_id,
     COALESCE(inviter.full_name, 'A member') || ' invited you to join the group' AS last_message_text,
     COALESCE(gi.updated_at, gi.created_at, c.updated_at) AS last_message_at,
-    NULL::uuid AS "replyMessageId",
+    NULL::uuid AS replied_msg_id,
     NULL::json AS reply_message,
     gi.invitation_id,
     (gi.updated_at > gi.created_at) AS is_read,
@@ -3503,6 +3533,8 @@ WHERE gi.invitee_id = $1
             const calculatedUnread = unreadMap[c.conversation_id] || 0;
             return {
                 ...c,
+                is_pinned: Boolean(c.is_pinned),
+                pinned_at: c.pinned_at || null,
                 // Determine online status for direct (non-group) conversations
                 onlineStatus: (function () {
                     if (c.is_group) return 'offline'; // groups don't have a single status
@@ -3514,12 +3546,14 @@ WHERE gi.invitee_id = $1
                     if (socketService.isUserOnline(otherId)) return 'online';
                     return 'offline';
                 })(),
-                is_requesting: c.is_requesting && (c.created_by === userId) ? false : c.is_requesting,
+                is_requesting: c.is_requesting,
                 timeAgo: timeAgo(c.updated_at),
                 unread_count: calculatedUnread,
                 is_read: c.is_read !== undefined ? c.is_read : calculatedUnread === 0,
             };
         }).sort((a, b) => {
+            if (a.is_pinned && !b.is_pinned) return -1;
+            if (!a.is_pinned && b.is_pinned) return 1;
             const left = new Date(a.last_message_at || a.updated_at || 0).getTime();
             const right = new Date(b.last_message_at || b.updated_at || 0).getTime();
             return right - left;
@@ -3621,7 +3655,8 @@ exports.sendMessage = async (req, res) => {
 
     const senderId = actorScope.userId;
     const authorCompanyId = actorScope.orgId;
-    const { targetUserId, text_content, shared_post_id, replyMessageId, shared_profile_id, shared_profile_type, entity_type, entity_id } = req.body;
+    const { targetUserId, text_content, shared_post_id, replyMessageId, replied_msg_id, shared_profile_id, shared_profile_type, entity_type, entity_id } = req.body;
+    const effectiveReplyMsgId = replied_msg_id || replyMessageId || null;
     const images = req.files; // Array of files from multer
 
     const trimmedText = text_content?.trim() || '';
@@ -3806,7 +3841,7 @@ exports.sendMessage = async (req, res) => {
             } else {
                 // User-to-User: original logic
                 const existingConv = await client.query(
-                    `SELECT c.conversation_id
+                    `SELECT c.conversation_id, c.is_requesting, c.created_by
                      FROM conversations c
                      JOIN conversation_participants cp1 ON c.conversation_id = cp1.conversation_id AND cp1.user_id = $1
                      JOIN conversation_participants cp2 ON c.conversation_id = cp2.conversation_id AND cp2.user_id = $2
@@ -3816,6 +3851,36 @@ exports.sendMessage = async (req, res) => {
 
                 if (existingConv.rowCount > 0) {
                     conversationId = existingConv.rows[0].conversation_id;
+
+                    // If request is still pending, sender can only send 1 message per 24 hours until accepted
+                    if (existingConv.rows[0].is_requesting) {
+                        if (!existingConv.rows[0].created_by) {
+                            await client.query(
+                                `UPDATE conversations SET created_by = $1 WHERE conversation_id = $2 AND created_by IS NULL`,
+                                [senderId, conversationId]
+                            );
+                        }
+
+                        const lastMsgCheck = await client.query(
+                            `SELECT created_at FROM messages
+                             WHERE conversation_id = $1 AND sender_id = $2
+                             ORDER BY created_at DESC
+                             LIMIT 1`,
+                            [conversationId, senderId]
+                        );
+
+                        if (lastMsgCheck.rowCount > 0) {
+                            const lastSentTime = new Date(lastMsgCheck.rows[0].created_at).getTime();
+                            const elapsedMs = Date.now() - lastSentTime;
+                            const twentyFourHoursMs = 24 * 60 * 60 * 1000;
+                            if (elapsedMs < twentyFourHoursMs) {
+                                await client.query('ROLLBACK');
+                                return res.status(403).json({
+                                    message: "You can’t send a chat request to this user right now. Please try again after 24 hours."
+                                });
+                            }
+                        }
+                    }
                 } else {
                     // Check if target is following sender
                     const followCheck = await client.query(
@@ -3917,7 +3982,7 @@ exports.sendMessage = async (req, res) => {
                     authorCompanyId || null,
                     authorCompanyId ? 'COMPANY' : 'USER',
                     sessionId,
-                    replyMessageId || null,
+                    effectiveReplyMsgId,
                     finalSharedProfileId,
                     finalSharedProfileType,
                     entity_type || null,
@@ -4029,7 +4094,7 @@ exports.sendMessage = async (req, res) => {
             if (targetIsCompany) {
                 const muteState = await getConversationMuteState(client, {
                     conversationId,
-                    userId: senderId,
+                    userId: null,
                     companyId: targetUserId,
                 });
                 targetNotificationMuted = !!muteState?.isMuted;
@@ -4045,7 +4110,7 @@ exports.sendMessage = async (req, res) => {
             await client.query('COMMIT');
 
             let replyMessageData = null;
-            if (replyMessageId) {
+            if (effectiveReplyMsgId) {
                 const rmRes = await client.query(`
                     SELECT 
                         rm.message_id, 
@@ -4057,7 +4122,7 @@ exports.sendMessage = async (req, res) => {
                     LEFT JOIN user_display_profiles ru ON rm.sender_id = ru.user_id
                     LEFT JOIN organization_display_profiles rc ON rm.author_org_id = rc.org_id
                     WHERE rm.message_id = $1
-                `, [replyMessageId]);
+                `, [effectiveReplyMsgId]);
                 if (rmRes.rowCount > 0) replyMessageData = rmRes.rows[0];
             }
 
@@ -4118,7 +4183,7 @@ exports.sendMessage = async (req, res) => {
 
             const messageData = {
                 ...newMessage,
-                replyMessageId: replyMessageId || null,
+                replied_msg_id: effectiveReplyMsgId,
                 reply_message: replyMessageData,
                 media: mediaRecords,
                 shared_post: sharedPostData,
@@ -4155,13 +4220,13 @@ exports.sendMessage = async (req, res) => {
                 is_blocked_by_other: false,
                 // Author context (who sent this particular message)
                 sender_id: senderId,
-                author_company_id: authorCompanyId || null,
+                author_org_id: authorCompanyId || null,
             };
 
             // ─── Receiver payload: other_user_* = SENDER info ───
             const receiverConvPayload = {
                 ...baseConvPayload,
-                is_requesting: convIsRequesting && (convCreatedBy === targetUserId) ? false : convIsRequesting,
+                is_requesting: convIsRequesting,
                 other_user_id: authorCompanyId ? authorCompanyId : senderId,
                 other_user_name: senderName,
                 other_user_avatar: senderAvatar,
@@ -4177,7 +4242,8 @@ exports.sendMessage = async (req, res) => {
             // ─── Sender payload: other_user_* = TARGET info ───
             const senderConvPayload = {
                 ...baseConvPayload,
-                is_requesting: convIsRequesting && (convCreatedBy === senderId) ? false : convIsRequesting,
+                is_requesting: convIsRequesting,
+                last_sender_message_at: newMessage.created_at,
                 other_user_id: targetUserId,
                 other_user_name: targetName,
                 other_user_avatar: targetAvatar,
@@ -4491,7 +4557,7 @@ exports.getConversationMuteState = async (req, res) => {
 
 exports.updateConversationMuteState = async (req, res) => {
     const { conversationId } = req.params;
-    const { muted, mutedUntil } = req.body || {};
+    const { muted, mutedUntil, hours } = req.body || {};
     let actorScope;
 
     if (typeof muted !== "boolean") {
@@ -4499,8 +4565,17 @@ exports.updateConversationMuteState = async (req, res) => {
     }
 
     let parsedMutedUntil = null;
+    let numericHours = null;
+
     if (muted) {
-        if (mutedUntil !== undefined && mutedUntil !== null && mutedUntil !== "") {
+        if (hours !== undefined && hours !== null) {
+            const parsedHours = Number(hours);
+            if (!Number.isFinite(parsedHours) || parsedHours <= 0) {
+                return res.status(400).json({ message: "hours must be a positive number" });
+            }
+            numericHours = parsedHours;
+            parsedMutedUntil = new Date(Date.now() + numericHours * 60 * 60 * 1000).toISOString();
+        } else if (mutedUntil !== undefined && mutedUntil !== null && mutedUntil !== "") {
             parsedMutedUntil = new Date(mutedUntil);
             if (Number.isNaN(parsedMutedUntil.getTime())) {
                 return res.status(400).json({ message: "mutedUntil must be a valid ISO date" });
@@ -4527,6 +4602,7 @@ exports.updateConversationMuteState = async (req, res) => {
             companyId,
             muted,
             mutedUntil: parsedMutedUntil,
+            hours: numericHours,
         });
 
         if (!muteState) {
@@ -4599,6 +4675,245 @@ exports.unmuteConversation = async (req, res) => {
         res.status(err.statusCode || 500).json({
             message: err.message || "Internal server error",
         });
+    }
+};
+
+exports.togglePinConversation = async (req, res) => {
+    const { conversationId } = req.params;
+    const { pinned } = req.body;
+    let actorScope;
+
+    try {
+        actorScope = getSocialActorScope(req, req.body?.companyId || req.query.companyId || null);
+    } catch (err) {
+        return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
+    }
+
+    if (typeof pinned !== "boolean") {
+        return res.status(400).json({ message: "pinned must be a boolean" });
+    }
+
+    const { userId, orgId: companyId } = actorScope;
+    const client = await pool.connect();
+
+    try {
+        await client.query("BEGIN");
+
+        // Verify conversation and participation
+        const verifyRes = await client.query(
+            `SELECT participant_id FROM conversation_participants
+             WHERE conversation_id = $1
+               AND left_at IS NULL
+               AND (
+                 ($3::uuid IS NOT NULL AND org_id = $3)
+                 OR
+                 ($3::uuid IS NULL AND user_id = $2)
+               )
+             LIMIT 1`,
+            [conversationId, userId, companyId]
+        );
+
+        if (verifyRes.rowCount === 0) {
+            await client.query("ROLLBACK");
+            return res.status(404).json({ message: "Conversation not found or access denied" });
+        }
+
+        if (pinned) {
+            // Enforce max 1 pinned conversation: unpin any other conversation for this actor
+            await client.query(
+                `UPDATE conversation_participants
+                 SET is_pinned = FALSE, pinned_at = NULL
+                 WHERE left_at IS NULL
+                   AND (
+                     ($2::uuid IS NOT NULL AND org_id = $2)
+                     OR
+                     ($2::uuid IS NULL AND user_id = $1)
+                   )
+                   AND is_pinned = TRUE`,
+                [userId, companyId]
+            );
+
+            // Pin this conversation
+            await client.query(
+                `UPDATE conversation_participants
+                 SET is_pinned = TRUE, pinned_at = NOW()
+                 WHERE conversation_id = $1
+                   AND left_at IS NULL
+                   AND (
+                     ($3::uuid IS NOT NULL AND org_id = $3)
+                     OR
+                     ($3::uuid IS NULL AND user_id = $2)
+                   )`,
+                [conversationId, userId, companyId]
+            );
+        } else {
+            // Unpin this conversation
+            await client.query(
+                `UPDATE conversation_participants
+                 SET is_pinned = FALSE, pinned_at = NULL
+                 WHERE conversation_id = $1
+                   AND left_at IS NULL
+                   AND (
+                     ($3::uuid IS NOT NULL AND org_id = $3)
+                     OR
+                     ($3::uuid IS NULL AND user_id = $2)
+                   )`,
+                [conversationId, userId, companyId]
+            );
+        }
+
+        await client.query("COMMIT");
+
+        // Real-time socket notification across all platforms / sessions
+        const payload = {
+            conversationId,
+            companyId: companyId || null,
+            is_pinned: pinned,
+        };
+
+        if (companyId) {
+            const members = await pool.query(
+                `SELECT user_id FROM organization_members WHERE org_id = $1 AND status = 'ACTIVE'`,
+                [companyId]
+            );
+            for (const member of members.rows) {
+                socketService.notifyUser(member.user_id, "conversation_pinned", payload);
+            }
+        } else {
+            socketService.notifyUser(userId, "conversation_pinned", payload);
+        }
+
+        return res.status(200).json({
+            conversationId,
+            is_pinned: pinned,
+            message: pinned ? "Conversation pinned successfully" : "Conversation unpinned successfully",
+        });
+    } catch (err) {
+        await client.query("ROLLBACK");
+        console.error("Toggle pin conversation error:", err);
+        return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
+    } finally {
+        client.release();
+    }
+};
+
+exports.togglePinMessage = async (req, res) => {
+    const { conversationId } = req.params;
+    const { messageId, pinned } = req.body;
+    let actorScope;
+
+    try {
+        actorScope = getSocialActorScope(req, req.body?.companyId || req.query.companyId || null);
+    } catch (err) {
+        return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
+    }
+
+    if (typeof pinned !== "boolean") {
+        return res.status(400).json({ message: "pinned must be a boolean" });
+    }
+
+    const { userId, orgId: companyId } = actorScope;
+    const client = await pool.connect();
+
+    try {
+        await client.query("BEGIN");
+
+        // 1. Verify user is an active participant in this conversation
+        const verifyRes = await client.query(
+            `SELECT participant_id FROM conversation_participants
+             WHERE conversation_id = $1
+               AND left_at IS NULL
+               AND (
+                 ($3::uuid IS NOT NULL AND org_id = $3)
+                 OR
+                 ($3::uuid IS NULL AND user_id = $2)
+               )
+             LIMIT 1`,
+            [conversationId, userId, companyId]
+        );
+
+        if (verifyRes.rowCount === 0) {
+            await client.query("ROLLBACK");
+            return res.status(404).json({ message: "Conversation not found or access denied" });
+        }
+
+        let pinnedMessageDetails = null;
+
+        if (pinned) {
+            if (!messageId) {
+                await client.query("ROLLBACK");
+                return res.status(400).json({ message: "messageId is required to pin a message" });
+            }
+
+            // 2. Verify message exists in this conversation and is not deleted
+            const msgRes = await client.query(
+                `SELECT m.message_id, m.text_content, m.sender_id, m.author_org_id, m.created_at, m.is_deleted_for_everyone,
+                        COALESCE(u.full_name, o.name, 'Someone') as sender_name
+                 FROM messages m
+                 LEFT JOIN users u ON u.user_id = m.sender_id
+                 LEFT JOIN organizations o ON o.org_id = m.author_org_id
+                 WHERE m.message_id = $1 AND m.conversation_id = $2`,
+                [messageId, conversationId]
+            );
+
+            if (msgRes.rowCount === 0) {
+                await client.query("ROLLBACK");
+                return res.status(404).json({ message: "Message not found in this conversation" });
+            }
+
+            if (msgRes.rows[0].is_deleted_for_everyone) {
+                await client.query("ROLLBACK");
+                return res.status(400).json({ message: "Cannot pin a deleted message" });
+            }
+
+            pinnedMessageDetails = msgRes.rows[0];
+
+            // 3. Atomically update conversation pinned message (replaces any previous pin)
+            await client.query(
+                `UPDATE conversations
+                 SET pinned_message_id = $1, pinned_at = NOW(), pinned_by = $2
+                 WHERE conversation_id = $3`,
+                [messageId, userId, conversationId]
+            );
+        } else {
+            // Unpin
+            await client.query(
+                `UPDATE conversations
+                 SET pinned_message_id = NULL, pinned_at = NULL, pinned_by = NULL
+                 WHERE conversation_id = $1`,
+                [conversationId]
+            );
+        }
+
+        await client.query("COMMIT");
+
+        // 4. Real-time WebSocket broadcasting to conversation room and participants
+        const payload = {
+            conversationId,
+            pinnedMessageId: pinned ? messageId : null,
+            is_pinned: pinned,
+            pinnedBy: userId,
+            pinnedAt: pinned ? new Date() : null,
+            message: pinnedMessageDetails,
+        };
+
+        socketService.notifyConversation(conversationId, "message_pinned", payload);
+        await socketService.notifyParticipants(conversationId, "message_pinned", payload, userId);
+
+        return res.status(200).json({
+            success: true,
+            conversationId,
+            pinnedMessageId: pinned ? messageId : null,
+            is_pinned: pinned,
+            message: pinned ? "Message pinned successfully" : "Message unpinned successfully",
+            pinnedMessage: pinnedMessageDetails,
+        });
+    } catch (err) {
+        await client.query("ROLLBACK");
+        console.error("Toggle pin message error:", err);
+        return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
+    } finally {
+        client.release();
     }
 };
 
@@ -4739,7 +5054,6 @@ exports.getMessages = async (req, res) => {
                 m.action_type,
                 m.target_id,
                 m.author_org_id,
-                m.author_org_id AS author_company_id,
                 m.is_deleted_for_everyone,
                 m.deleted_at,
                 (SELECT COUNT(*)::int FROM conversation_participants cp 
@@ -4771,10 +5085,32 @@ exports.getMessages = async (req, res) => {
                         AND (mr.read_at IS NOT NULL OR cp_r.last_read_at >= m.created_at)
                      ), 0
                  ) AS seen_count,
+                 (SELECT json_agg(json_build_object(
+                     'user_id', u_seen.user_id,
+                     'full_name', u_seen.display_name,
+                     'avatar_url', COALESCE(u_seen.display_avatar, raw_u_seen.avatar_url)
+                  ))
+                  FROM (
+                      SELECT DISTINCT ON (cp_r.user_id) cp_r.user_id, mr.read_at
+                      FROM conversation_participants cp_r
+                      LEFT JOIN message_reads mr ON mr.message_id = m.message_id AND mr.user_id = cp_r.user_id
+                      WHERE cp_r.conversation_id = m.conversation_id
+                        AND cp_r.left_at IS NULL
+                        AND cp_r.joined_at <= m.created_at
+                        AND (m.sender_id IS NULL OR cp_r.user_id != m.sender_id)
+                        AND (mr.read_at IS NOT NULL OR cp_r.last_read_at >= m.created_at)
+                      ORDER BY cp_r.user_id, mr.read_at ASC NULLS LAST
+                  ) seen_sub
+                  JOIN user_display_profiles u_seen ON seen_sub.user_id = u_seen.user_id
+                  JOIN users raw_u_seen ON seen_sub.user_id = raw_u_seen.user_id
+                  WHERE COALESCE(raw_u_seen.is_deactivated, false) = FALSE
+                    AND raw_u_seen.deletion_execute_at IS NULL
+                 ) AS seen_by,
                   CASE 
                       WHEN EXISTS (
                           SELECT 1 FROM blocks b 
-                          WHERE b.blocked_id = COALESCE($6::uuid, $4::uuid) AND (b.blocker_id = m.sender_id OR (m.author_org_id IS NOT NULL AND b.blocker_id = m.author_org_id))
+                          WHERE (b.blocked_id = COALESCE($6::uuid, $4::uuid) AND (b.blocker_id = m.sender_id OR (m.author_org_id IS NOT NULL AND b.blocker_id = m.author_org_id)))
+                             OR (b.blocker_id = COALESCE($6::uuid, $4::uuid) AND (b.blocked_id = m.sender_id OR (m.author_org_id IS NOT NULL AND b.blocked_id = m.author_org_id)))
                       ) THEN CASE WHEN m.author_org_id IS NOT NULL THEN 'Unknown Page' ELSE 'Unknown User' END
                       WHEN raw_u_msg.is_deactivated OR raw_u_msg.deletion_execute_at IS NOT NULL THEN 'Unknown User' 
                       WHEN m.author_org_id IS NOT NULL AND (c.name = 'Deleted Page' OR raw_org.is_deleted = TRUE OR raw_org.is_deactivated = TRUE) THEN 'Unknown Page'
@@ -4784,7 +5120,8 @@ exports.getMessages = async (req, res) => {
                 CASE 
                     WHEN EXISTS (
                         SELECT 1 FROM blocks b 
-                        WHERE b.blocked_id = COALESCE($6::uuid, $4::uuid) AND (b.blocker_id = m.sender_id OR (m.author_org_id IS NOT NULL AND b.blocker_id = m.author_org_id))
+                        WHERE (b.blocked_id = COALESCE($6::uuid, $4::uuid) AND (b.blocker_id = m.sender_id OR (m.author_org_id IS NOT NULL AND b.blocker_id = m.author_org_id)))
+                           OR (b.blocker_id = COALESCE($6::uuid, $4::uuid) AND (b.blocked_id = m.sender_id OR (m.author_org_id IS NOT NULL AND b.blocked_id = m.author_org_id)))
                     ) THEN 'User unavailable'
                     ELSE COALESCE(c.headline, '') 
                 END as sender_org_headline,
@@ -4792,7 +5129,8 @@ exports.getMessages = async (req, res) => {
                 CASE 
                     WHEN EXISTS (
                         SELECT 1 FROM blocks b 
-                        WHERE b.blocked_id = COALESCE($6::uuid, $4::uuid) AND (b.blocker_id = m.sender_id OR (m.author_org_id IS NOT NULL AND b.blocker_id = m.author_org_id))
+                        WHERE (b.blocked_id = COALESCE($6::uuid, $4::uuid) AND (b.blocker_id = m.sender_id OR (m.author_org_id IS NOT NULL AND b.blocker_id = m.author_org_id)))
+                           OR (b.blocker_id = COALESCE($6::uuid, $4::uuid) AND (b.blocked_id = m.sender_id OR (m.author_org_id IS NOT NULL AND b.blocked_id = m.author_org_id)))
                     ) THEN NULL
                     WHEN raw_u_msg.is_deactivated OR raw_u_msg.deletion_execute_at IS NOT NULL THEN NULL
                     WHEN m.author_org_id IS NOT NULL AND (c.name = 'Deleted Page' OR raw_org.is_deleted = TRUE OR raw_org.is_deactivated = TRUE) THEN NULL
@@ -4973,11 +5311,16 @@ exports.getMessages = async (req, res) => {
                           )
                     ) THEN true
 
-                    -- RULE: Message sent while block is active between sender and viewer (from block timestamp onward)
-                    WHEN m.sender_id IS NOT NULL AND EXISTS (
+                    -- RULE: Message sent while block is active between sender and viewer (bidirectional)
+                    WHEN (m.sender_id IS NOT NULL OR m.author_org_id IS NOT NULL) AND EXISTS (
                         SELECT 1 FROM blocks b
-                        WHERE b.blocker_id = m.sender_id AND b.blocked_id = COALESCE($6::uuid, $4::uuid)
-                          AND m.created_at >= b.created_at
+                        WHERE (
+                            (b.blocker_id = m.sender_id AND b.blocked_id = COALESCE($6::uuid, $4::uuid))
+                            OR (b.blocker_id = COALESCE($6::uuid, $4::uuid) AND b.blocked_id = m.sender_id)
+                            OR (m.author_org_id IS NOT NULL AND b.blocker_id = m.author_org_id AND b.blocked_id = COALESCE($6::uuid, $4::uuid))
+                            OR (m.author_org_id IS NOT NULL AND b.blocker_id = COALESCE($6::uuid, $4::uuid) AND b.blocked_id = m.author_org_id)
+                        )
+                        AND m.created_at >= b.created_at
                     ) THEN true
 
                     ELSE false
@@ -5036,7 +5379,7 @@ exports.getMessages = async (req, res) => {
                     ELSE NULL
                 END AS shared_profile,
                 EXISTS(SELECT 1 FROM message_delete md WHERE md.message_id = m.message_id AND md.user_id = $4) as is_deleted_for_me,
-                m.replied_msg_id AS "replyMessageId",
+                m.replied_msg_id,
                 CASE
                     WHEN m.replied_msg_id IS NOT NULL THEN
                         (SELECT json_build_object(
@@ -5193,6 +5536,24 @@ exports.deleteMessage = async (req, res) => {
                 [message_id]
             );
 
+            // If this message was pinned in the conversation, automatically unpin it
+            const unpinRes = await pool.query(
+                `UPDATE conversations
+                 SET pinned_message_id = NULL, pinned_at = NULL, pinned_by = NULL
+                 WHERE conversation_id = $1 AND pinned_message_id = $2
+                 RETURNING conversation_id`,
+                [conversation_id, message_id]
+            );
+            if (unpinRes.rowCount > 0) {
+                const pinPayload = {
+                    conversationId: conversation_id,
+                    pinnedMessageId: null,
+                    is_pinned: false,
+                };
+                socketService.notifyConversation(conversation_id, "message_pinned", pinPayload);
+                await socketService.notifyParticipants(conversation_id, "message_pinned", pinPayload, userId);
+            }
+
             // Notify all participants
             socketService.notifyConversation(conversation_id, "message_deleted", {
                 messageId: message_id,
@@ -5238,6 +5599,29 @@ exports.editMessage = async (req, res) => {
     try {
         const actorScope = getSocialActorScope(req, req.query.companyId || null);
         const companyId = actorScope.orgId;
+
+        // 1. Verify existence, ownership, and 15-minute edit window
+        const msgRes = await pool.query(
+            "SELECT message_id, created_at, sender_id, conversation_id FROM messages WHERE message_id = $1",
+            [message_id]
+        );
+
+        if (msgRes.rowCount === 0) {
+            return res.status(404).json({ message: "Message not found" });
+        }
+
+        const existingMsg = msgRes.rows[0];
+
+        if (existingMsg.sender_id !== userId) {
+            return res.status(403).json({ message: "Unauthorized to edit this message" });
+        }
+
+        const createdAt = new Date(existingMsg.created_at);
+        const now = new Date();
+        const diffMinutes = (now.getTime() - createdAt.getTime()) / (1000 * 60);
+        if (diffMinutes > 15) {
+            return res.status(403).json({ message: "Messages can only be edited within 15 minutes of sending" });
+        }
 
         const result = await pool.query(
             `UPDATE messages 

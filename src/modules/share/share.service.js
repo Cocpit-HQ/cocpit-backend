@@ -16,6 +16,7 @@ const redisClient = require("../../core/db/redis");
 const socketService = require("../../core/infrastructure/socket.service");
 const { resolveEntity, generateEntityUrl } = require("./entityResolver");
 const { validateShareRules } = require("./shareRules");
+const { getConversationMuteState } = require("../../services/conversationMute.service");
 
 // ─── Share Tracking (non-blocking) ──────────────────────────
 
@@ -184,6 +185,13 @@ async function shareViaMessage(senderId, { entityType, entityId, targetId, targe
         };
 
         // 8. Emit WebSocket events
+        const muteState = await getConversationMuteState(pool, {
+            conversationId,
+            userId: targetType === "company" ? null : targetId,
+            companyId: targetType === "company" ? targetId : null,
+        });
+        const isTargetMuted = !!muteState?.isMuted;
+
         if (targetType === "company") {
             const membersRes = await pool.query(
                 `SELECT user_id FROM organization_members WHERE org_id = $1 AND status = 'ACTIVE'`,
@@ -191,7 +199,21 @@ async function shareViaMessage(senderId, { entityType, entityId, targetId, targe
             );
             for (const member of membersRes.rows) {
                 socketService.notifyUser(member.user_id, "newMessage", socketPayload);
-                socketService.notifyUser(member.user_id, "notification", {
+                if (!isTargetMuted) {
+                    socketService.notifyUser(member.user_id, "notification", {
+                        type: "message",
+                        from: senderOrgId || senderId,
+                        senderName,
+                        senderAvatar,
+                        conversationId,
+                        text: previewText,
+                    });
+                }
+            }
+        } else {
+            socketService.notifyUser(targetId, "newMessage", socketPayload);
+            if (!isTargetMuted) {
+                socketService.notifyUser(targetId, "notification", {
                     type: "message",
                     from: senderOrgId || senderId,
                     senderName,
@@ -200,16 +222,6 @@ async function shareViaMessage(senderId, { entityType, entityId, targetId, targe
                     text: previewText,
                 });
             }
-        } else {
-            socketService.notifyUser(targetId, "newMessage", socketPayload);
-            socketService.notifyUser(targetId, "notification", {
-                type: "message",
-                from: senderOrgId || senderId,
-                senderName,
-                senderAvatar,
-                conversationId,
-                text: previewText,
-            });
         }
 
         return {

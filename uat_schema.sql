@@ -410,3 +410,29 @@ ALTER TABLE user_verifications
 ALTER TABLE organization_documents
     ADD COLUMN IF NOT EXISTS status VARCHAR(50) DEFAULT 'PENDING';
 
+
+-- 31. Server-Backed Cross-Platform Conversation Pinning
+ALTER TABLE conversation_participants
+    ADD COLUMN IF NOT EXISTS is_pinned BOOLEAN DEFAULT FALSE;
+
+ALTER TABLE conversation_participants
+    ADD COLUMN IF NOT EXISTS pinned_at TIMESTAMPTZ;
+
+CREATE INDEX IF NOT EXISTS idx_cp_pinned_user
+    ON conversation_participants (user_id, is_pinned)
+    WHERE is_pinned = TRUE;
+
+CREATE INDEX IF NOT EXISTS idx_cp_pinned_org
+    ON conversation_participants (org_id, is_pinned)
+    WHERE is_pinned = TRUE;
+
+-- 32. Server-Backed Cross-Platform Message Pinning
+ALTER TABLE conversations
+    ADD COLUMN IF NOT EXISTS pinned_message_id UUID REFERENCES messages(message_id) ON DELETE SET NULL,
+    ADD COLUMN IF NOT EXISTS pinned_at TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS pinned_by UUID REFERENCES users(user_id) ON DELETE SET NULL;
+
+CREATE INDEX IF NOT EXISTS idx_conversations_pinned_message
+    ON conversations (pinned_message_id)
+    WHERE pinned_message_id IS NOT NULL;
+

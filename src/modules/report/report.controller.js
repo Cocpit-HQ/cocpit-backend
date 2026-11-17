@@ -35,7 +35,7 @@ exports.createReport = async (req, res) => {
     return res.status(400).json({ message: "Provide either a reasonId or a customReason" });
   }
 
-  const validTypes = ["POST", "USER", "COMMENT", "COMPANY", "THOUGHT"];
+  const validTypes = ["POST", "USER", "COMMENT", "COMPANY", "THOUGHT", "GROUP"];
   if (!validTypes.includes(targetType)) {
     console.warn("[Report] Validation failed: Invalid targetType", { targetType });
     return res.status(400).json({ message: `Invalid targetType: ${targetType}` });
@@ -81,6 +81,9 @@ exports.createReport = async (req, res) => {
       case "THOUGHT":
       case "COMMENT":
         query = "SELECT author_id, author_org_id FROM post_comments WHERE comment_id = $1::uuid";
+        break;
+      case "GROUP":
+        query = "SELECT COALESCE(admin_id, created_by) AS author_id, NULL AS author_org_id FROM conversations WHERE conversation_id = $1::uuid AND is_group = TRUE";
         break;
       case "COMPANY":
         // For companies, check if reporter is an OWNER/ADMIN

@@ -34,6 +34,7 @@ router.put("/groups/:groupId/details", requireAuth, groupAdminMiddleware.require
 router.patch("/groups/:groupId/role", requireAuth, groupAdminMiddleware.requireGroupAdmin, groupChatCtrl.updateMemberRole);
 
 router.get("/groups/:groupId", requireAuth, groupChatCtrl.getGroupDetails);
+router.get("/groups/:groupId/shared-content", requireAuth, groupChatCtrl.getGroupSharedContent);
 router.delete("/groups/:groupId", requireAuth, groupChatCtrl.deleteGroup);
 router.post("/groups/:groupId/leave", requireAuth, groupChatCtrl.leaveGroup);
 router.post("/groups/:groupId/messages", requireAuth, require("../../core/middlewares/upload.middleware").uploadChatMedia.fields([

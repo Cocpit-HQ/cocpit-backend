@@ -11,6 +11,7 @@ const { checkBlockStatus } = require("../../core/utils/blockCheck");
 const { shareEntity } = require("./share.service");
 const { resolveEntity, resolveBatch } = require("./entityResolver");
 const { validateShareRules } = require("./shareRules");
+const { getConversationMuteState } = require("../../services/conversationMute.service");
 
 /**
  * POST /api/share
@@ -593,24 +594,33 @@ exports.shareProfile = async (req, res) => {
             ...(profileType === 'user' && sharedProfileData?.account_name ? { account_name: sharedProfileData.account_name } : {})
         };
 
-        // 7. Create Persistent Notification
-        if (receiverType === 'company') {
-            const adminsRes = await client.query(
-                `SELECT user_id FROM organization_members WHERE org_id = $1 AND status = 'ACTIVE' LIMIT 1`,
-                [receiverId]
-            );
-            const firstMemberId = adminsRes.rows[0]?.user_id || senderId;
-            await client.query(
-                `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata, recipient_org_id)
-                 VALUES ($1, $2, 'profile_share', $3, $4, $5, $6)`,
-                [firstMemberId, senderId, `${senderName} shared a ${profileType} profile with your organization`, profileId, JSON.stringify(notifMeta), receiverId]
-            );
-        } else {
-            await client.query(
-                `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata)
-                 VALUES ($1, $2, 'profile_share', $3, $4, $5)`,
-                [receiverId, senderId, `${senderName} shared a ${profileType} profile with you`, profileId, JSON.stringify(notifMeta)]
-            );
+        // 7. Check Mute Status & Create Persistent Notification if unmuted
+        const muteState = await getConversationMuteState(client, {
+            conversationId,
+            userId: receiverType === 'company' ? null : receiverId,
+            companyId: receiverType === 'company' ? receiverId : null,
+        });
+        const isReceiverMuted = !!muteState?.isMuted;
+
+        if (!isReceiverMuted) {
+            if (receiverType === 'company') {
+                const adminsRes = await client.query(
+                    `SELECT user_id FROM organization_members WHERE org_id = $1 AND status = 'ACTIVE' LIMIT 1`,
+                    [receiverId]
+                );
+                const firstMemberId = adminsRes.rows[0]?.user_id || senderId;
+                await client.query(
+                    `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata, recipient_org_id)
+                     VALUES ($1, $2, 'profile_share', $3, $4, $5, $6)`,
+                    [firstMemberId, senderId, `${senderName} shared a ${profileType} profile with your organization`, profileId, JSON.stringify(notifMeta), receiverId]
+                );
+            } else {
+                await client.query(
+                    `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata)
+                     VALUES ($1, $2, 'profile_share', $3, $4, $5)`,
+                    [receiverId, senderId, `${senderName} shared a ${profileType} profile with you`, profileId, JSON.stringify(notifMeta)]
+                );
+            }
         }
 
         await client.query('COMMIT');
@@ -632,31 +642,35 @@ exports.shareProfile = async (req, res) => {
             );
             for (const member of membersRes.rows) {
                 socketService.notifyUser(member.user_id, "newMessage", socketData);
-                socketService.notifyUser(member.user_id, "notification", {
+                if (!isReceiverMuted) {
+                    socketService.notifyUser(member.user_id, "notification", {
+                        type: "message",
+                        from: senderOrgId || senderId,
+                        senderName,
+                        senderAvatar,
+                        conversationId,
+                        text: `Shared a ${profileType} profile`,
+                        recipient_org_id: receiverId,
+                        isOrganizationNotification: true,
+                        is_organization_actor: !!senderOrgId,
+                        metadata: notifMeta
+                    });
+                }
+            }
+        } else {
+            socketService.notifyUser(receiverId, "newMessage", socketData);
+            if (!isReceiverMuted) {
+                socketService.notifyUser(receiverId, "notification", {
                     type: "message",
                     from: senderOrgId || senderId,
                     senderName,
                     senderAvatar,
                     conversationId,
                     text: `Shared a ${profileType} profile`,
-                    recipient_org_id: receiverId,
-                    isOrganizationNotification: true,
                     is_organization_actor: !!senderOrgId,
                     metadata: notifMeta
                 });
             }
-        } else {
-            socketService.notifyUser(receiverId, "newMessage", socketData);
-            socketService.notifyUser(receiverId, "notification", {
-                type: "message",
-                from: senderOrgId || senderId,
-                senderName,
-                senderAvatar,
-                conversationId,
-                text: `Shared a ${profileType} profile`,
-                is_organization_actor: !!senderOrgId,
-                metadata: notifMeta
-            });
         }
 
         res.status(200).json({

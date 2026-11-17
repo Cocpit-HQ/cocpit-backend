@@ -74,6 +74,8 @@ router.delete("/conversations/:id", requireAuth, socialController.deleteConversa
 router.get("/conversations/:conversationId/mute", requireAuth, socialController.getConversationMuteState);
 router.patch("/conversations/:conversationId/mute", requireAuth, socialController.updateConversationMuteState);
 router.patch("/conversations/:conversationId/unmute", requireAuth, socialController.unmuteConversation);
+router.patch("/conversations/:conversationId/pin", requireAuth, socialController.togglePinConversation);
+router.patch("/conversations/:conversationId/pin-message", requireAuth, socialController.togglePinMessage);
 router.patch("/conversations/:conversationId/category", requireAuth, socialController.toggleJobChatCategory);
 router.patch("/conversations/:conversationId/job-status", requireAuth, socialController.toggleJobChatCategory);
 
