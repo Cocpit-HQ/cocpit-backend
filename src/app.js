@@ -108,6 +108,28 @@ app.use(metricsMiddleware);
 app.get('/health', (req, res) => res.status(200).json({ status: 'ok', service: 'main-api' }));
 app.get('/metrics', metricsEndpoint);
 
+// Dedicated Internal Alerting Webhook (called by Grafana over Railway private network)
+app.post('/api/internal/alerts/webhook', async (req, res) => {
+  try {
+    const { sendAlertEmail } = require('./core/services/alertEmail.service');
+    const customTo = req.query.to
+      ? req.query.to
+          .split(',')
+          .map((e) => e.trim())
+          .filter(Boolean)
+      : null;
+    const result = await sendAlertEmail(req.body, customTo);
+    res.status(200).json({
+      status: 'ok',
+      message: 'Alert email sent via Resend HTTPS',
+      id: result.id,
+    });
+  } catch (err) {
+    console.error('Alert Webhook Error:', err.message);
+    res.status(500).json({ status: 'error', message: err.message });
+  }
+});
+
 app.use('/api/auth', authRoutes);
 app.use('/api/onboarding', onboardingRoutes);
 app.use('/api/config', configRoutes);
