@@ -3,22 +3,47 @@
  * Handles input validation, actor resolution, and JSON response formatting.
  */
 const searchService = require('./search.service');
+const pool = require('../../core/db/pool');
 
 const VALID_TYPES = ['all', 'people', 'jobs', 'companies', 'institutes', 'posts', 'hashtags'];
+
+const SECTOR_OPTIONS = [
+  'Manufacturing',
+  'Wholesaler',
+  'Retailer',
+  'Trading',
+  'Distribution',
+  'Services',
+];
+
+/**
+ * Returns dynamic list of sectors for organizations
+ * GET /api/search/meta/sectors
+ */
+exports.getSectors = (req, res) => {
+  return res.status(200).json({
+    success: true,
+    data: SECTOR_OPTIONS,
+  });
+};
 
 exports.globalSearch = async (req, res, next) => {
   try {
     const { q, type = 'all', limit, cursor, ...otherParams } = req.query;
 
-    // 1. Validation of search query
-    if (!q || typeof q !== 'string' || q.trim().length === 0) {
+    // 1. Validation of search category type
+    const normalizedType = (type || 'all').toLowerCase();
+    if (!VALID_TYPES.includes(normalizedType)) {
       return res.status(400).json({
         success: false,
-        message: "Search query parameter 'q' is required.",
+        message: `Invalid search type '${type}'. Supported types: ${VALID_TYPES.join(', ')}.`,
       });
     }
 
-    const trimmedQuery = q.trim();
+    // 2. Validation of search query
+    const rawQuery = typeof q === 'string' ? q : '';
+    const trimmedQuery = rawQuery.trim();
+
     if (trimmedQuery.length > 100) {
       return res.status(400).json({
         success: false,
@@ -26,12 +51,13 @@ exports.globalSearch = async (req, res, next) => {
       });
     }
 
-    // 2. Validation of search category type
-    const normalizedType = type.toLowerCase();
-    if (!VALID_TYPES.includes(normalizedType)) {
+    // Search query 'q' is required for 'all' mode.
+    // Category deep-dives (jobs, people, companies, institutes, posts, hashtags) allow
+    // browsing with or without filter facets when 'q' is empty.
+    if (normalizedType === 'all' && trimmedQuery.length === 0) {
       return res.status(400).json({
         success: false,
-        message: `Invalid search type '${type}'. Supported types: ${VALID_TYPES.join(', ')}.`,
+        message: "Search query parameter 'q' is required.",
       });
     }
 

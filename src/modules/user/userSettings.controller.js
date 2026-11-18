@@ -1713,9 +1713,10 @@ exports.getUserReports = async (req, res) => {
                     WHEN 'COMMENT' THEN CONCAT('Report about a comment by @', COALESCE(cu.account_name, 'unknown'))
                     WHEN 'THOUGHT' THEN CONCAT('Report about a thought by @', COALESCE(cu.account_name, 'unknown'))
                     WHEN 'COMPANY' THEN CONCAT('Reported company: ', COALESCE(o.name, 'unknown'))
+                    WHEN 'GROUP'   THEN CONCAT('Reported group: ', COALESCE(conv.conversation_name, 'Group Chat'))
                     ELSE 'Reported content'
                 END AS title,
-                COALESCE(u.account_name, po.name, pu.account_name, cu.account_name) AS reported_username,
+                COALESCE(u.account_name, po.name, pu.account_name, cu.account_name, conv.conversation_name) AS reported_username,
                 CASE WHEN p.post_type = 'article' OR pc_cat.name = 'Article' OR p.is_community_article = TRUE THEN 'article' WHEN p.post_type = 'poll' THEN 'poll' ELSE p.post_type::text END AS post_type,
                 (SELECT pm.url FROM post_media pm WHERE pm.post_id = p.post_id LIMIT 1) AS media_url,
                 (SELECT pm.media_type FROM post_media pm WHERE pm.post_id = p.post_id LIMIT 1) AS media_type
@@ -1729,6 +1730,7 @@ exports.getUserReports = async (req, res) => {
             LEFT JOIN post_comments pc  ON r.target_type IN ('COMMENT', 'THOUGHT') AND r.target_id = pc.comment_id
             LEFT JOIN users cu          ON pc.author_id = cu.user_id
             LEFT JOIN organizations o   ON r.target_type = 'COMPANY' AND r.target_id = o.org_id
+            LEFT JOIN conversations conv ON r.target_type = 'GROUP'  AND r.target_id = conv.conversation_id
             ${whereClause}
             ORDER BY r.created_at DESC
             LIMIT $2 OFFSET $3`,
@@ -1750,9 +1752,11 @@ exports.getUserReports = async (req, res) => {
                     ? 'User profile'
                     : (row.target_type === 'COMPANY'
                         ? 'Company profile'
-                        : (row.target_type
-                            ? row.target_type.charAt(0).toUpperCase() + row.target_type.slice(1).toLowerCase()
-                            : 'User profile')),
+                        : (row.target_type === 'GROUP'
+                            ? 'Group'
+                            : (row.target_type
+                                ? row.target_type.charAt(0).toUpperCase() + row.target_type.slice(1).toLowerCase()
+                                : 'User profile'))),
                 date:        formatDate(row.created_at),
                 reason:      row.reason_label,
                 title:       row.title,
@@ -1814,9 +1818,10 @@ exports.getUserReportById = async (req, res) => {
                     WHEN 'COMMENT' THEN CONCAT('Report about a comment by @', COALESCE(cu.account_name, 'unknown'))
                     WHEN 'THOUGHT' THEN CONCAT('Report about a thought by @', COALESCE(cu.account_name, 'unknown'))
                     WHEN 'COMPANY' THEN CONCAT('Reported company: ', COALESCE(o.name, 'unknown'))
+                    WHEN 'GROUP'   THEN CONCAT('Reported group: ', COALESCE(conv.conversation_name, 'Group Chat'))
                     ELSE 'Reported content'
                 END AS title,
-                COALESCE(u.account_name, po.name, pu.account_name, cu.account_name) AS reported_username,
+                COALESCE(u.account_name, po.name, pu.account_name, cu.account_name, conv.conversation_name) AS reported_username,
                 CASE WHEN p.post_type = 'article' OR pc_cat.name = 'Article' OR p.is_community_article = TRUE THEN 'article' WHEN p.post_type = 'poll' THEN 'poll' ELSE p.post_type::text END AS post_type,
                 (SELECT pm.url FROM post_media pm WHERE pm.post_id = p.post_id LIMIT 1) AS media_url,
                 (SELECT pm.media_type FROM post_media pm WHERE pm.post_id = p.post_id LIMIT 1) AS media_type
@@ -1830,6 +1835,7 @@ exports.getUserReportById = async (req, res) => {
             LEFT JOIN post_comments pc  ON r.target_type IN ('COMMENT', 'THOUGHT') AND r.target_id = pc.comment_id
             LEFT JOIN users cu          ON pc.author_id = cu.user_id
             LEFT JOIN organizations o   ON r.target_type = 'COMPANY' AND r.target_id = o.org_id
+            LEFT JOIN conversations conv ON r.target_type = 'GROUP'  AND r.target_id = conv.conversation_id
             ${whereClause}`,
             queryParams
         );
@@ -1861,9 +1867,11 @@ exports.getUserReportById = async (req, res) => {
                 ? 'User profile'
                 : (row.target_type === 'COMPANY'
                     ? 'Company profile'
-                    : (row.target_type
-                        ? row.target_type.charAt(0).toUpperCase() + row.target_type.slice(1).toLowerCase()
-                        : 'User profile')),
+                    : (row.target_type === 'GROUP'
+                        ? 'Group'
+                        : (row.target_type
+                            ? row.target_type.charAt(0).toUpperCase() + row.target_type.slice(1).toLowerCase()
+                            : 'User profile'))),
             date:        formatDate(row.created_at),
             reason:      row.reason_label,
             title:       row.title,

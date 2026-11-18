@@ -42,7 +42,7 @@ async function searchJobs(client, { queryParams, viewerId, orgActorId, limit = 1
   conditions.push(`j.is_active = TRUE`);
   conditions.push(`j.status = 'ACTIVE'`);
   conditions.push(`(j.org_id IS NOT NULL OR u.is_deactivated = FALSE)`);
-  conditions.push(`(j.org_id IS NULL OR (c.is_deleted = FALSE AND c.is_deactivated = FALSE))`);
+  conditions.push(`(j.org_id IS NULL OR (c.is_deleted = FALSE AND c.is_deactivated = FALSE AND (c.is_suspended IS NOT TRUE)))`);
 
   // Block enforcement
   if (viewerId && orgActorId) {

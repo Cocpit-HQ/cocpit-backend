@@ -116,5 +116,77 @@ describe('Hashtag Search Regression Tests: Multi-mode sorting and Recently Added
       expect(decoded.v).toBe('2026-11-06T12:00:00.000Z');
     });
   });
+
+  describe('Accurate Post Count Calculation (SCRUM-1656)', () => {
+    test('computes posts_count using correlated subquery on active public published posts', async () => {
+      mockClient.query.mockResolvedValueOnce({ rows: [] });
+
+      await searchHashtags(mockClient, {
+        searchTerm: 'tech',
+      });
+
+      const [sql] = mockClient.query.mock.calls[0];
+      expect(sql).toContain('SELECT COUNT(DISTINCT ph.post_id)::int');
+      expect(sql).toContain('FROM post_hashtags ph');
+      expect(sql).toContain('JOIN posts p ON p.post_id = ph.post_id');
+      expect(sql).toContain("p.visibility = 'public'");
+      expect(sql).toContain('p.is_active = TRUE');
+      expect(sql).toContain('(p.is_removed IS FALSE OR p.is_removed IS NULL)');
+      expect(sql).toContain('(p.is_deleted IS FALSE OR p.is_deleted IS NULL)');
+      expect(sql).toContain('(p.is_unlisted IS FALSE OR p.is_unlisted IS NULL)');
+      expect(sql).toContain("(p.status IS NULL OR p.status = 'published')");
+    });
+
+    test('accurately formats posts_display as "0 posts" when posts_count is 0 even if usage_count is 1', async () => {
+      mockClient.query.mockResolvedValueOnce({
+        rows: [
+          {
+            hashtag_id: '123',
+            tag: 'ghosttag',
+            posts_count: 0,
+            usage_count: 1,
+            created_at: new Date().toISOString(),
+            last_used_at: new Date().toISOString(),
+            effective_recent_at: new Date().toISOString(),
+            sort_rank: 0,
+            trending_score: 0,
+          },
+          {
+            hashtag_id: '456',
+            tag: 'singletag',
+            posts_count: 1,
+            usage_count: 5,
+            created_at: new Date().toISOString(),
+            last_used_at: new Date().toISOString(),
+            effective_recent_at: new Date().toISOString(),
+            sort_rank: 0,
+            trending_score: 0,
+          },
+          {
+            hashtag_id: '789',
+            tag: 'populartag',
+            posts_count: 1500,
+            usage_count: 2000,
+            created_at: new Date().toISOString(),
+            last_used_at: new Date().toISOString(),
+            effective_recent_at: new Date().toISOString(),
+            sort_rank: 0,
+            trending_score: 0,
+          },
+        ],
+      });
+
+      const result = await searchHashtags(mockClient, { searchTerm: 'tag' });
+      expect(result.items[0].posts_display).toBe('0 posts');
+      expect(result.items[0].posts_count).toBe(0);
+      expect(result.items[0].post_count).toBe(0);
+
+      expect(result.items[1].posts_display).toBe('1 post');
+      expect(result.items[1].posts_count).toBe(1);
+
+      expect(result.items[2].posts_display).toBe('1.5k posts');
+      expect(result.items[2].posts_count).toBe(1500);
+    });
+  });
 });
 

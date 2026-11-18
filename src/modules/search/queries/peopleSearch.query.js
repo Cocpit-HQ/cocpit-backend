@@ -265,6 +265,106 @@ async function searchPeople(client, { searchTerm, viewerId, orgActorId = null, l
     instituteClause = ` AND (${instParts.join(' OR ')})`;
   }
 
+  // Optional filter: Skills (matching profile skills in user_skills / skills)
+  let skillsClause = '';
+  const rawSkills = queryParams.skills || queryParams.skill;
+  const skillList = Array.isArray(rawSkills)
+    ? rawSkills.map(s => String(s).trim()).filter(Boolean)
+    : typeof rawSkills === 'string' && rawSkills.trim()
+    ? (rawSkills.includes('|') ? rawSkills.split('|') : rawSkills.split(',')).map(s => s.trim()).filter(Boolean)
+    : [];
+
+  if (skillList.length > 0) {
+    const skillParts = [];
+    for (const sk of skillList) {
+      params.push(`%${sk}%`);
+      const skIdx = params.length;
+      skillParts.push(`(
+        EXISTS (
+          SELECT 1 FROM user_skills us
+          JOIN skills s_tab ON us.skill_id = s_tab.skill_id
+          WHERE us.profile_id = p.profile_id
+            AND s_tab.name ILIKE $${skIdx}
+        )
+      )`);
+    }
+    if (skillParts.length > 0) {
+      skillsClause = ` AND (${skillParts.join(' OR ')})`;
+    }
+  }
+
+  // Optional filter: Experience range (0-1, 1-3, 3-5, 5-8, 8+)
+  let experienceClause = '';
+  const rawExp = queryParams.experience || queryParams.experience_level;
+  const expList = Array.isArray(rawExp)
+    ? rawExp.map(s => String(s).trim()).filter(Boolean)
+    : typeof rawExp === 'string' && rawExp.trim()
+    ? (rawExp.includes('|') ? rawExp.split('|') : rawExp.split(',')).map(s => s.trim()).filter(Boolean)
+    : [];
+
+  if (expList.length > 0) {
+    const expParts = [];
+    const EXP_MAP = {
+      '0-1': [0, 1], '0_1': [0, 1], '0–1': [0, 1], '0–1 yr': [0, 1], '0-1 yr': [0, 1], '0-1 years': [0, 1],
+      '1-3': [1, 3], '1_3': [1, 3], '1–3': [1, 3], '1–3 yrs': [1, 3], '1-3 yrs': [1, 3], '1-3 years': [1, 3],
+      '3-5': [3, 5], '3_5': [3, 5], '3–5': [3, 5], '3–5 yrs': [3, 5], '3-5 yrs': [3, 5], '3-5 years': [3, 5],
+      '5-8': [5, 8], '5_8': [5, 8], '5–8': [5, 8], '5–8 yrs': [5, 8], '5-8 yrs': [5, 8], '5-8 years': [5, 8],
+      '8+': [8, 999], '8_plus': [8, 999], '8+ yrs': [8, 999], '8+ years': [8, 999],
+    };
+
+    for (const exp of expList) {
+      const norm = exp.toLowerCase().replace(/–/g, '-');
+      const range = EXP_MAP[norm] || EXP_MAP[norm.replace(/\s+yrs?/i, '').replace(/\s+years?/i, '').trim()];
+      if (range) {
+        params.push(range[0], range[1]);
+        const minIdx = params.length - 1;
+        const maxIdx = params.length;
+        expParts.push(`(
+          COALESCE((
+            SELECT SUM(
+              EXTRACT(YEAR FROM AGE(COALESCE(exp.end_date, CURRENT_DATE), exp.start_date)) +
+              EXTRACT(MONTH FROM AGE(COALESCE(exp.end_date, CURRENT_DATE), exp.start_date)) / 12.0
+            )
+            FROM experiences exp
+            WHERE exp.profile_id = p.profile_id AND exp.start_date IS NOT NULL
+          ), 0) >= $${minIdx} AND
+          COALESCE((
+            SELECT SUM(
+              EXTRACT(YEAR FROM AGE(COALESCE(exp.end_date, CURRENT_DATE), exp.start_date)) +
+              EXTRACT(MONTH FROM AGE(COALESCE(exp.end_date, CURRENT_DATE), exp.start_date)) / 12.0
+            )
+            FROM experiences exp
+            WHERE exp.profile_id = p.profile_id AND exp.start_date IS NOT NULL
+          ), 0) < $${maxIdx}
+        )`);
+      }
+    }
+    if (expParts.length > 0) {
+      experienceClause = ` AND (${expParts.join(' OR ')})`;
+    }
+  }
+
+  // Optional filter: Open to work preferences (Full-time, Part-time, Internship, Freelance)
+  let openToClause = '';
+  const rawOpenTo = queryParams.open_to || queryParams.openTo || queryParams.looking_for;
+  const openToList = Array.isArray(rawOpenTo)
+    ? rawOpenTo.map(s => String(s).trim()).filter(Boolean)
+    : typeof rawOpenTo === 'string' && rawOpenTo.trim()
+    ? (rawOpenTo.includes('|') ? rawOpenTo.split('|') : rawOpenTo.split(',')).map(s => s.trim()).filter(Boolean)
+    : [];
+
+  if (openToList.length > 0) {
+    const openToParts = [];
+    for (const ot of openToList) {
+      params.push(`%${ot}%`);
+      const otIdx = params.length;
+      openToParts.push(`p.open_to ILIKE $${otIdx}`);
+    }
+    if (openToParts.length > 0) {
+      openToClause = ` AND (${openToParts.join(' OR ')})`;
+    }
+  }
+
   // Cursor pagination clause against (relevance_score DESC, LOWER(name) ASC, id ASC)
   let cursorClause = '';
   if (parsedCursor) {
@@ -465,6 +565,7 @@ async function searchPeople(client, { searchTerm, viewerId, orgActorId = null, l
         u.location_state,
         u.location_country,
         p.account_type,
+        p.open_to,
         ${followCheck} AS is_following,
         (SELECT COUNT(*)::int FROM connections c_cnt WHERE c_cnt.user_id = u.user_id) AS connections_count,
         ${connectionStatusSelect} AS connection_status,
@@ -502,6 +603,9 @@ async function searchPeople(client, { searchTerm, viewerId, orgActorId = null, l
         ${companyClause}
         ${industryClause}
         ${instituteClause}
+        ${skillsClause}
+        ${experienceClause}
+        ${openToClause}
     ),
     scored_candidates AS (
       SELECT
@@ -586,6 +690,7 @@ async function searchPeople(client, { searchTerm, viewerId, orgActorId = null, l
       mutual_avatars: mutualAvatars,
       context_signal: contextSignal,
       context_type: contextType,
+      open_to: item.open_to || null,
       relevance_score: item.relevance_score,
     };
   });

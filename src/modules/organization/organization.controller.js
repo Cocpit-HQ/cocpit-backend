@@ -1279,7 +1279,7 @@ exports.getUserOrganizationsSettings = async (req, res) => {
         // Hides orgs where 40-day recovery window has passed (deletion_execute_at <= NOW())
         const ownedRes = await client.query(
             `SELECT o.org_id AS id, o.slug, o.name, o.industry AS type, o.logo_url AS "logoUrl",
-                    o.created_at, o.entity_type, o.is_deleted, o.deletion_execute_at, o.is_deactivated
+                    o.created_at, o.entity_type, o.is_deleted, o.deletion_execute_at, o.is_deactivated, o.is_suspended
              FROM organizations o
              WHERE o.created_by = $1
                AND (o.is_deleted = FALSE OR (o.is_deleted = TRUE AND o.deletion_execute_at > NOW()))
@@ -1289,7 +1289,9 @@ exports.getUserOrganizationsSettings = async (req, res) => {
 
         const ownedOrgs = ownedRes.rows.map(o => {
             let pageStatus = "active";
-            if (o.is_deleted && o.deletion_execute_at && new Date(o.deletion_execute_at) > new Date()) {
+            if (o.is_suspended) {
+                pageStatus = "suspended";
+            } else if (o.is_deleted && o.deletion_execute_at && new Date(o.deletion_execute_at) > new Date()) {
                 pageStatus = "scheduled_for_deletion";
             } else if (o.is_deactivated) {
                 pageStatus = "deactivated";
@@ -1305,7 +1307,8 @@ exports.getUserOrganizationsSettings = async (req, res) => {
                 createdOn: formatDateStr(o.created_at),
                 organizationType: o.entity_type === 'INSTITUTION' ? 'Institution' : 'Company',
                 pageStatus,
-                isDeactivated: Boolean(o.is_deactivated)
+                isDeactivated: Boolean(o.is_deactivated),
+                isSuspended: Boolean(o.is_suspended)
             };
         });
 
@@ -1313,7 +1316,7 @@ exports.getUserOrganizationsSettings = async (req, res) => {
         const assocRes = await client.query(
             `SELECT o.org_id AS id, o.slug, o.name, o.industry AS type, o.logo_url AS "logoUrl",
                     om.joined_at, r.name AS role,
-                    o.is_deactivated, o.is_deleted, o.deletion_execute_at
+                    o.is_deactivated, o.is_deleted, o.deletion_execute_at, o.is_suspended
              FROM organizations o
              JOIN organization_members om ON o.org_id = om.org_id
              LEFT JOIN organization_roles r ON om.role_id = r.role_id
@@ -1326,7 +1329,9 @@ exports.getUserOrganizationsSettings = async (req, res) => {
 
         const associatedOrgs = assocRes.rows.map(o => {
             let pageStatus = "associated";
-            if (o.is_deactivated) {
+            if (o.is_suspended) {
+                pageStatus = "suspended";
+            } else if (o.is_deactivated) {
                 pageStatus = "deactivated";
             }
 
@@ -1340,7 +1345,8 @@ exports.getUserOrganizationsSettings = async (req, res) => {
                 joinedOn: formatDateStr(o.joined_at),
                 role: o.role || "Member",
                 pageStatus,
-                isDeactivated: Boolean(o.is_deactivated)
+                isDeactivated: Boolean(o.is_deactivated),
+                isSuspended: Boolean(o.is_suspended)
             };
         });
 
@@ -2008,7 +2014,8 @@ exports.saveDraftPresence = async (req, res) => {
         longitude,
         placeId,
         headline,
-        description
+        description,
+        sector
     } = req.body;
 
     if (description !== undefined && description !== null && typeof description === 'string' && description.length > 2000) {
@@ -2078,14 +2085,15 @@ exports.saveDraftPresence = async (req, res) => {
                 location_place_id = COALESCE($10, location_place_id),
                 headline = $11,
                 description = $12,
+                sector = COALESCE($13, sector),
                 onboarding_step = 'VERIFICATION',
                 updated_at = NOW()
-            WHERE org_id = $13
+            WHERE org_id = $14
             RETURNING *
         `;
 
         await client.query(updateText, [
-            email, phone || null, website || null, size, locCountry, locCity, locationStr, locLat, locLng, locPlaceId, headline, description || null, orgId
+            email, phone || null, website || null, size, locCountry, locCity, locationStr, locLat, locLng, locPlaceId, headline, description || null, sector || null, orgId
         ]);
 
         await client.query("COMMIT");
@@ -2544,7 +2552,8 @@ exports.publishNewOrganization = async (req, res) => {
         description,
         type,
         entity_type,
-        country_of_operation
+        country_of_operation,
+        sector
     } = req.body;
 
     let cleanDescription = null;
@@ -2636,14 +2645,14 @@ exports.publishNewOrganization = async (req, res) => {
 
         const insertQuery = `
             INSERT INTO organizations (
-                name, slug, entity_type, established_year, industry, institution_type,
+                name, slug, entity_type, established_year, industry, sector, institution_type,
                 logo_url, email, phone, website, size,
                 location, location_formatted, location_lat, location_lng, location_place_id,
                 country, city,
                 headline, description, created_by, onboarding_step, onboarding_completed, email_verified, phone_verified,
                 verification_status
             ) VALUES (
-                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, 'COMPLETED', TRUE, TRUE, TRUE, $22
+                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, 'COMPLETED', TRUE, TRUE, TRUE, $23
             ) RETURNING *
         `;
 
@@ -2653,6 +2662,7 @@ exports.publishNewOrganization = async (req, res) => {
             isInstitution ? 'INSTITUTION' : (effectiveType || 'COMPANY'),
             establishedYearInt,
             finalIndustry,
+            sector || null,
             finalInstitutionType,
             logoUrl,
             email ? email.toLowerCase().trim() : null,

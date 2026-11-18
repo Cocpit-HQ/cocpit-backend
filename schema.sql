@@ -646,7 +646,9 @@ CREATE TABLE conversation_participants (
   left_group_name TEXT DEFAULT NULL,
   left_group_avatar TEXT DEFAULT NULL,
   left_group_description TEXT DEFAULT NULL,
-  left_group_headline TEXT DEFAULT NULL
+  left_group_headline TEXT DEFAULT NULL,
+  is_pinned BOOLEAN DEFAULT FALSE,
+  pinned_at TIMESTAMPTZ
 );
 
 CREATE INDEX idx_cp_active_user ON conversation_participants (conversation_id, user_id) WHERE left_at IS NULL;
@@ -670,6 +672,13 @@ CREATE TABLE messages (
   read_at TIMESTAMPTZ,
   CONSTRAINT messages_shared_post_id_fkey FOREIGN KEY (shared_post_id) REFERENCES posts(post_id) ON DELETE SET NULL
 );
+
+ALTER TABLE conversations 
+  ADD COLUMN IF NOT EXISTS pinned_message_id UUID REFERENCES messages(message_id) ON DELETE SET NULL,
+  ADD COLUMN IF NOT EXISTS pinned_at TIMESTAMPTZ,
+  ADD COLUMN IF NOT EXISTS pinned_by UUID REFERENCES users(user_id) ON DELETE SET NULL;
+
+CREATE INDEX IF NOT EXISTS idx_conversations_pinned_message ON conversations(pinned_message_id) WHERE pinned_message_id IS NOT NULL;
 
 CREATE TABLE notifications (
   notification_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -1356,6 +1365,12 @@ ADD COLUMN IF NOT EXISTS muted_until TIMESTAMPTZ;
 
 ALTER TABLE conversation_participants
 ADD COLUMN IF NOT EXISTS mute_updated_at TIMESTAMPTZ;
+
+ALTER TABLE conversation_participants
+ADD COLUMN IF NOT EXISTS is_pinned BOOLEAN DEFAULT FALSE;
+
+ALTER TABLE conversation_participants
+ADD COLUMN IF NOT EXISTS pinned_at TIMESTAMPTZ;
 
 -- 4. Create message_delete table (per-user soft delete)
 CREATE TABLE IF NOT EXISTS message_delete (

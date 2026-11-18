@@ -112,15 +112,18 @@ exports.moderateJob = async (req, res) => {
       logAction = 'REJECT_JOB';
     }
 
-    const query = `
-      UPDATE jobs 
-      SET status = $1, moderation_status = $2, is_active = $3, rejection_reason = $5,
-          published_at = CASE WHEN $1 = 'ACTIVE' AND published_at IS NULL THEN NOW() ELSE published_at END,
-          created_at = CASE WHEN $1 = 'ACTIVE' AND (status = 'DRAFT' OR status = 'UNDER_REVIEW') THEN NOW() ELSE created_at END
-      WHERE job_id = $4
-      RETURNING *
-    `;
     const isActive = true;
+    const query = action === 'approve'
+      ? `UPDATE jobs
+         SET status = $1, moderation_status = $2, is_active = $3, rejection_reason = $5,
+             published_at = NOW(),
+             created_at = CASE WHEN (status = 'DRAFT' OR status = 'UNDER_REVIEW') THEN NOW() ELSE created_at END
+         WHERE job_id = $4
+         RETURNING *`
+      : `UPDATE jobs
+         SET status = $1, moderation_status = $2, is_active = $3, rejection_reason = $5
+         WHERE job_id = $4
+         RETURNING *`;
     const result = await req.db.query(query, [statusVal, modStatusVal, isActive, id, rejection_reason]);
 
     if (result.rows.length === 0) {
@@ -230,6 +233,21 @@ exports.moderateJob = async (req, res) => {
             created_at: notifRes.rows[0]?.created_at || new Date().toISOString(),
             is_read: false
           });
+        }
+
+        // Notify company followers when an organization job is approved and goes live
+        if (isApproved && job.org_id) {
+          try {
+            const { notifyCompanyFollowers } = require('../../../services/notification.service');
+            notifyCompanyFollowers(job.org_id, "jobs", {
+              type: "company_job",
+              text: `${job.company_name} posted a new job: ${job.title}`,
+              referenceId: job.job_id,
+              metadata: { job_title: job.title, location: job.location || null },
+            }).catch(err => console.error("Job notification error:", err));
+          } catch (e) {
+            console.warn("Failed to notify company followers on approval:", e.message);
+          }
         }
       } catch (notifErr) {
         console.error("Failed to dispatch job moderation notification:", notifErr);

@@ -91,7 +91,7 @@ async function getActorContext(userId, rawActorCookie) {
 
     if (parsedCookie?.type === "ORGANIZATION") {
         const organization = organizations.find(
-            (candidate) => (candidate.org_id || candidate.company_id) === parsedCookie.id
+            (candidate) => String(candidate.org_id || candidate.company_id).toLowerCase() === String(parsedCookie.id).toLowerCase()
         );
 
         if (organization && canSwitchToOrganization(organization)) {
@@ -129,7 +129,7 @@ async function setActorContext(userId, actorInput) {
     }
 
     const organization = organizations.find(
-        (candidate) => (candidate.org_id || candidate.company_id) === actorInput.id
+        (candidate) => String(candidate.org_id || candidate.company_id).toLowerCase() === String(actorInput.id).toLowerCase()
     );
 
     if (!organization) {

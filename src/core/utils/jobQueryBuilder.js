@@ -364,6 +364,7 @@ const buildJobFilters = (params, paramCountStart = 1) => {
                         SELECT 1 FROM organizations o
                         WHERE o.org_id = j.org_id
                           AND (TRIM(LOWER(o.name)) = LOWER($${currentIndex}) OR o.name ILIKE $${currentIndex + 1})
+                          AND (o.is_suspended IS NOT TRUE)
                     )
                 )`);
                 values.push(c, `%${c}%`);
@@ -380,6 +381,7 @@ const buildJobFilters = (params, paramCountStart = 1) => {
             SELECT 1 FROM organizations o
             WHERE o.org_id = j.org_id
               AND o.verification_status IN ('VERIFIED', 'DOMAIN_VERIFIED')
+              AND (o.is_suspended IS NOT TRUE)
         )`);
     }
 

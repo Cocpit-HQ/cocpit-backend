@@ -264,6 +264,24 @@ class GroupChatModel {
         return result.rows[0];
     }
 
+    static async getActiveMemberCount(groupId, client = pool) {
+        const query = `
+            SELECT COUNT(*)::int as count 
+            FROM conversation_participants cp
+            LEFT JOIN users u ON cp.user_id = u.user_id
+            LEFT JOIN organizations c ON cp.org_id = c.org_id
+            WHERE cp.conversation_id = $1 
+              AND cp.left_at IS NULL
+              AND (
+                  (cp.user_id IS NOT NULL AND (COALESCE(u.is_deactivated, false) = FALSE AND u.deletion_execute_at IS NULL))
+                  OR
+                  (cp.org_id IS NOT NULL AND COALESCE(c.is_deactivated, false) = FALSE AND COALESCE(c.is_deleted, false) = FALSE)
+              )
+        `;
+        const result = await client.query(query, [groupId]);
+        return result.rows[0]?.count || 0;
+    }
+
     static async getAdminCount(groupId) {
         const query = `
             SELECT COUNT(*)::int as count

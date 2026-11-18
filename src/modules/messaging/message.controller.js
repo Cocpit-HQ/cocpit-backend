@@ -5,7 +5,7 @@ const { deleteR2Assets } = require("../../core/infrastructure/r2.client");
 
 exports.deleteMessage = async (req, res) => {
     const { messageId } = req.params;
-    const { deleteForEveryone } = req.body; // boolean
+    const { deleteForEveryone } = req.body || {}; // boolean
     const userId = req.user.sub || req.user.user_id;
 
     try {
@@ -28,7 +28,7 @@ exports.deleteMessage = async (req, res) => {
 
             // 2. Validate permissions
             // Only sender can delete for everyone
-            if (deleteForEveryone && message.sender_id !== userId) {
+            if (deleteForEveryone && String(message.sender_id) !== String(userId)) {
                 await client.query("ROLLBACK");
                 return res.status(403).json({ message: "You can only delete your own messages for everyone" });
             }
@@ -40,8 +40,8 @@ exports.deleteMessage = async (req, res) => {
             if (deleteForEveryone) {
                 // DELETE FOR EVERYONE
                 // 1. Fetch & delete associated media
-                const mediaRes = await client.query("SELECT media_url FROM message_media WHERE message_id = $1", [messageId]);
-                deletedMediaUrls = mediaRes.rows.map(r => r.media_url).filter(Boolean);
+                const mediaRes = await client.query("SELECT url FROM message_media WHERE message_id = $1", [messageId]);
+                deletedMediaUrls = mediaRes.rows.map(r => r.url).filter(Boolean);
                 await client.query("DELETE FROM message_media WHERE message_id = $1", [messageId]);
 
                 // 2. Soft delete: Update message content
@@ -68,6 +68,7 @@ exports.deleteMessage = async (req, res) => {
 
                 // Emit to room
                 socketService.notifyConversation(conversationId, "message_deleted", socketPayload);
+                socketService.notifyConversation(conversationId, "message_deleted_for_everyone", socketPayload);
 
                 // Emit conversation-updated to refresh sidebar
                 socketService.notifyConversation(conversationId, "conversation-updated", {
@@ -95,6 +96,7 @@ exports.deleteMessage = async (req, res) => {
                 };
 
                 socketService.notifyUser(userId, "message_deleted", socketPayload);
+                socketService.notifyUser(userId, "message_deleted_for_me", socketPayload);
 
                 // Emit conversation-updated to refresh sidebar for THIS user
                 socketService.notifyUser(userId, "conversation-updated", {

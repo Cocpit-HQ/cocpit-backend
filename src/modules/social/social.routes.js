@@ -21,10 +21,10 @@ router.get("/organizations/:orgId/followers", optionalAuth, socialController.get
 router.delete("/organizations/:orgId/followers/:followerId", requireAuth, requireOrgPermission("MANAGE_MEMBERS"), socialController.removeCompanyFollower);
 
 // Organization Following Entities
-router.post("/organizations/:orgId/following/users/:userId", requireAuth, requireOrgPermission("MANAGE_COMPANY"), socialController.organizationFollowUser);
-router.delete("/organizations/:orgId/following/users/:userId", requireAuth, requireOrgPermission("MANAGE_COMPANY"), socialController.organizationUnfollowUser);
-router.post("/organizations/:orgId/following/organizations/:targetOrgId", requireAuth, requireOrgPermission("MANAGE_COMPANY"), socialController.organizationFollowOrganization);
-router.delete("/organizations/:orgId/following/organizations/:targetOrgId", requireAuth, requireOrgPermission("MANAGE_COMPANY"), socialController.organizationUnfollowOrganization);
+router.post("/organizations/:orgId/following/users/:userId", requireAuth, requireOrgPermission(["MANAGE_COMPANY_DETAILS", "MANAGE_COMPANY", "MANAGE_ORGANIZATION"]), socialController.organizationFollowUser);
+router.delete("/organizations/:orgId/following/users/:userId", requireAuth, requireOrgPermission(["MANAGE_COMPANY_DETAILS", "MANAGE_COMPANY", "MANAGE_ORGANIZATION"]), socialController.organizationUnfollowUser);
+router.post("/organizations/:orgId/following/organizations/:targetOrgId", requireAuth, requireOrgPermission(["MANAGE_COMPANY_DETAILS", "MANAGE_COMPANY", "MANAGE_ORGANIZATION"]), socialController.organizationFollowOrganization);
+router.delete("/organizations/:orgId/following/organizations/:targetOrgId", requireAuth, requireOrgPermission(["MANAGE_COMPANY_DETAILS", "MANAGE_COMPANY", "MANAGE_ORGANIZATION"]), socialController.organizationUnfollowOrganization);
 router.get("/organizations/:orgId/following", optionalAuth, socialController.getOrganizationFollowing);
 
 
@@ -74,6 +74,8 @@ router.delete("/conversations/:id", requireAuth, socialController.deleteConversa
 router.get("/conversations/:conversationId/mute", requireAuth, socialController.getConversationMuteState);
 router.patch("/conversations/:conversationId/mute", requireAuth, socialController.updateConversationMuteState);
 router.patch("/conversations/:conversationId/unmute", requireAuth, socialController.unmuteConversation);
+router.patch("/conversations/:conversationId/pin", requireAuth, socialController.togglePinConversation);
+router.patch("/conversations/:conversationId/pin-message", requireAuth, socialController.togglePinMessage);
 router.patch("/conversations/:conversationId/category", requireAuth, socialController.toggleJobChatCategory);
 router.patch("/conversations/:conversationId/job-status", requireAuth, socialController.toggleJobChatCategory);
 
