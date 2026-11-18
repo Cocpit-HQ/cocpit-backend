@@ -3,6 +3,7 @@ const { buildJobFilters } = require("../../core/utils/jobQueryBuilder");
 const { v4: uuidv4 } = require("uuid"); // Ensure unique ID generation for idempotency checks
 const { notifyCompanyFollowers } = require("../../services/notification.service");
 const { resolveOrg } = require("./organization.profile.controller");
+const { checkOrgPermission } = require("../../core/utils/rbac");
 
 exports.createOrganizationJob = async (req, res) => {
     const { orgId: companyId } = req.params;
@@ -263,6 +264,11 @@ exports.getOrganizationJobs = async (req, res) => {
                 return res.status(403).json({ message: "Forbidden: You are not a member of this organization" });
             }
 
+            const hasJobsPerm = await checkOrgPermission(pool, resolvedOrgId, req.user.sub, ['JOBS', 'VIEW_JOBS', 'POST_JOBS', 'MANAGE_JOBS']);
+            if (!hasJobsPerm) {
+                return res.status(403).json({ message: "Forbidden: You don't have permission to access jobs in this organization" });
+            }
+
             // Status filter for internal scope
             if (status && status.toUpperCase() !== 'ALL') {
                 const cleanStatus = status.trim().toUpperCase();
@@ -392,15 +398,15 @@ exports.updateOrganizationJob = async (req, res) => {
 
         const oldJobData = jobCheck.rows[0];
 
-        // 2a. Creator isolation: only job creator or admin-level can modify.
-        // Admin-level is determined by actor context (no role names assumed).
-        // req.actor is set by actor-context.middleware; req.member by requireOrgPermission middleware.
+        // 2a. Creator isolation: commented out per project flow so team members with job permissions can manage/delete any org job.
+        /*
         const _actorPerms = req.actor?.permissions || req.member?.permissions || [];
         const _isAdminLevel = _actorPerms.includes('*') || _actorPerms.includes('MANAGE_COMPANY');
         if (!_isAdminLevel && oldJobData.recruiter_id !== userId) {
             await client.query('ROLLBACK');
             return res.status(403).json({ message: 'You can only manage jobs that you created' });
         }
+        */
 
         // 2b. State Transition Rules Check
         if (status && oldJobData.status !== status) {
