@@ -9,12 +9,15 @@ const ADMIN_API_URL = process.env.ADMIN_API_URL || 'http://localhost:5001';
 
 // Request ID Middleware
 app.use((req, res, next) => {
+  if (req.url === '/health' || req.url === '/metrics') {
+    return next();
+  }
   const requestId = req.headers['x-request-id'] || uuidv4();
   // Ensure the header is set for the proxies to pick up automatically
   req.headers['x-request-id'] = requestId;
   // Send it back to the client as well
   res.setHeader('X-Request-ID', requestId);
-  
+
   console.log(`[Gateway] Request ID: ${requestId} -> ${req.method} ${req.url}`);
   next();
 });
@@ -25,35 +28,51 @@ app.get('/health', (req, res) => {
 });
 
 // Proxy to Admin API
-app.use('/api/admin', createProxyMiddleware({
-  target: ADMIN_API_URL,
-  changeOrigin: true,
-  // The middleware automatically forwards headers from req.headers, including our x-request-id
-  on: {
-    proxyRes: (proxyRes, req, res) => {
-      // Optional: Log response status
-      console.log(`[Gateway] Request ID: ${req.headers['x-request-id']} <- [Admin API] ${proxyRes.statusCode}`);
+app.use(
+  '/api/admin',
+  createProxyMiddleware({
+    target: ADMIN_API_URL,
+    changeOrigin: true,
+    // The middleware automatically forwards headers from req.headers, including our x-request-id
+    on: {
+      proxyRes: (proxyRes, req, _res) => {
+        // Optional: Log response status
+        console.log(
+          `[Gateway] Request ID: ${req.headers['x-request-id']} <- [Admin API] ${proxyRes.statusCode}`
+        );
+      },
+      error: (err, req, _res) => {
+        console.error(
+          `[Gateway] Request ID: ${req.headers['x-request-id']} - Error Proxying to Admin API:`,
+          err.message
+        );
+      },
     },
-    error: (err, req, res) => {
-      console.error(`[Gateway] Request ID: ${req.headers['x-request-id']} - Error Proxying to Admin API:`, err.message);
-    }
-  }
-}));
+  })
+);
 
 // Proxy to Main API (Everything else, including WebSockets)
-app.use('/', createProxyMiddleware({
-  target: MAIN_API_URL,
-  changeOrigin: true,
-  ws: true, // Enable WebSockets for Socket.io
-  on: {
-    proxyRes: (proxyRes, req, res) => {
-      console.log(`[Gateway] Request ID: ${req.headers['x-request-id']} <- [Main API] ${proxyRes.statusCode}`);
+app.use(
+  '/',
+  createProxyMiddleware({
+    target: MAIN_API_URL,
+    changeOrigin: true,
+    ws: true, // Enable WebSockets for Socket.io
+    on: {
+      proxyRes: (proxyRes, req, _res) => {
+        console.log(
+          `[Gateway] Request ID: ${req.headers['x-request-id']} <- [Main API] ${proxyRes.statusCode}`
+        );
+      },
+      error: (err, req, _res) => {
+        console.error(
+          `[Gateway] Request ID: ${req.headers['x-request-id']} - Error Proxying to Main API:`,
+          err.message
+        );
+      },
     },
-    error: (err, req, res) => {
-      console.error(`[Gateway] Request ID: ${req.headers['x-request-id']} - Error Proxying to Main API:`, err.message);
-    }
-  }
-}));
+  })
+);
 
 // Graceful Shutdown
 const server = app.listen(PORT, '0.0.0.0', () => {
