@@ -170,6 +170,26 @@ exports.getProfile = async (req, res) => {
             }
         }
 
+                let userVerificationStatus = u.is_identity_verified ? 'VERIFIED' : 'UNVERIFIED';
+        let userRejectionReason = null;
+        try {
+            const uvCheck = await pool.query(
+                "SELECT status, is_verified, rejection_reason FROM user_verifications WHERE user_id = $1 ORDER BY created_at DESC LIMIT 1",
+                [u.user_id]
+            );
+            if (uvCheck.rowCount > 0) {
+                const uv = uvCheck.rows[0];
+                if (uv.is_verified || uv.status === 'VERIFIED') userVerificationStatus = 'VERIFIED';
+                else if (uv.status === 'PENDING' || uv.status === 'UNDER_REVIEW') userVerificationStatus = 'PENDING';
+                else if (uv.status === 'REJECTED') {
+                    userVerificationStatus = 'REJECTED';
+                    userRejectionReason = uv.rejection_reason || null;
+                }
+            }
+        } catch (e) {
+            console.error('Error fetching user_verifications in getProfile:', e);
+        }
+
         res.json({
             user: {
                 id: u.user_id, account_name: u.account_name, name: u.full_name, headline: u.headline, avatar: u.avatar_url,
@@ -180,6 +200,8 @@ exports.getProfile = async (req, res) => {
                 account_type: u.account_type,
                 industry: u.industry,
                 is_identity_verified: u.is_identity_verified || false,
+                verification_status: userVerificationStatus,
+                rejection_reason: userRejectionReason,
                 followers_count: parseInt(counts.followers_count), following_count: parseInt(counts.following_count),
                 connections_count: parseInt(counts.connections_count),
                 open_to: u.open_to, availability: u.availability, work_preference: u.work_preference,
@@ -1301,12 +1323,9 @@ exports.getEducationList = async (req, res) => {
                     SELECT name AS school_name, org_id, logo_url
                     FROM matched_orgs
                     UNION ALL
-                    SELECT e.name AS school_name, e.org_id, NULL::text AS logo_url
+                    SELECT e.name AS school_name, NULL::uuid AS org_id, NULL::text AS logo_url
                     FROM matched_edus e
-                    WHERE e.org_id IS NULL 
-                       OR NOT EXISTS (
-                           SELECT 1 FROM matched_orgs o WHERE o.org_id = e.org_id
-                       )
+                    WHERE e.org_id IS NULL
                 ) combined_all
                 ORDER BY (CASE WHEN org_id IS NOT NULL THEN 0 ELSE 1 END) ASC, LOWER(TRIM(school_name)) ASC
                 LIMIT 50`;
@@ -1333,12 +1352,9 @@ exports.getEducationList = async (req, res) => {
                     SELECT name AS school_name, org_id, logo_url
                     FROM matched_orgs
                     UNION ALL
-                    SELECT e.name AS school_name, e.org_id, NULL::text AS logo_url
+                    SELECT e.name AS school_name, NULL::uuid AS org_id, NULL::text AS logo_url
                     FROM matched_edus e
-                    WHERE e.org_id IS NULL 
-                       OR NOT EXISTS (
-                           SELECT 1 FROM matched_orgs o WHERE o.org_id = e.org_id
-                       )
+                    WHERE e.org_id IS NULL
                 ) combined_all
                 ORDER BY (CASE WHEN org_id IS NOT NULL THEN 0 ELSE 1 END) ASC, LOWER(TRIM(school_name)) ASC
                 LIMIT 50`;
@@ -1440,12 +1456,9 @@ exports.getCompanyList = async (req, res) => {
                     SELECT name AS company_name, org_id, logo_url, established_year
                     FROM matched_orgs
                     UNION ALL
-                    SELECT e.name AS company_name, e.org_id, NULL::text AS logo_url, NULL::integer AS established_year
+                    SELECT e.name AS company_name, NULL::uuid AS org_id, NULL::text AS logo_url, NULL::integer AS established_year
                     FROM matched_exps e
                     WHERE e.org_id IS NULL
-                       OR NOT EXISTS (
-                           SELECT 1 FROM matched_orgs o WHERE o.org_id = e.org_id
-                       )
                 ) combined_all
                 ORDER BY (CASE WHEN org_id IS NOT NULL THEN 0 ELSE 1 END) ASC, LOWER(TRIM(company_name)) ASC
                 LIMIT 50`;
@@ -1472,12 +1485,9 @@ exports.getCompanyList = async (req, res) => {
                     SELECT name AS company_name, org_id, logo_url, established_year
                     FROM matched_orgs
                     UNION ALL
-                    SELECT e.name AS company_name, e.org_id, NULL::text AS logo_url, NULL::integer AS established_year
+                    SELECT e.name AS company_name, NULL::uuid AS org_id, NULL::text AS logo_url, NULL::integer AS established_year
                     FROM matched_exps e
                     WHERE e.org_id IS NULL
-                       OR NOT EXISTS (
-                           SELECT 1 FROM matched_orgs o WHERE o.org_id = e.org_id
-                       )
                 ) combined_all
                 ORDER BY (CASE WHEN org_id IS NOT NULL THEN 0 ELSE 1 END) ASC, LOWER(TRIM(company_name)) ASC
                 LIMIT 50`;

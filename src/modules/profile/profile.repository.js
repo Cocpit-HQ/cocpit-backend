@@ -203,10 +203,10 @@ const saveIdempotentResponse = async (requestId, statusCode, responseBody) => {
 const getExperiences = async (profileId) => {
     const result = await pool.query(
         `SELECT e.experience_id, e.profile_id, e.title, e.company_name, e.location, e.work_type, e.work_mode, e.start_date, e.end_date, e.is_current, e.description, e.created_at,
-                COALESCE(o.org_id, o_fallback.org_id) AS org_id,
-                COALESCE(o.logo_url, o_fallback.logo_url) AS logo_url,
-                COALESCE(o.name, o_fallback.name, e.company_name) AS org_name,
-                COALESCE(o.slug, o_fallback.slug) AS org_slug,
+                o.org_id,
+                o.logo_url,
+                COALESCE(o.name, e.company_name) AS org_name,
+                o.slug AS org_slug,
                 COALESCE(
                     (SELECT json_agg(s.name) 
                      FROM experience_skills es 
@@ -216,12 +216,6 @@ const getExperiences = async (profileId) => {
                 ) AS skills
          FROM experiences e 
          LEFT JOIN organizations o ON e.org_id = o.org_id AND o.is_deleted = FALSE
-         LEFT JOIN (
-             SELECT DISTINCT ON (LOWER(TRIM(name))) org_id, logo_url, name, slug
-             FROM organizations
-             WHERE entity_type = 'COMPANY' AND is_deleted = FALSE
-             ORDER BY LOWER(TRIM(name)), created_at ASC
-         ) o_fallback ON e.org_id IS NULL AND LOWER(TRIM(e.company_name)) = LOWER(TRIM(o_fallback.name))
          WHERE e.profile_id = $1 
          ORDER BY e.is_current DESC, e.start_date DESC, e.end_date DESC, e.experience_id DESC`,
         [profileId]

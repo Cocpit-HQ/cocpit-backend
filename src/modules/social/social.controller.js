@@ -30,7 +30,14 @@ const timeAgo = (date) => {
 };
 
 const getRequestedOrganizationActorId = (req, fallbackOrgId = null) => {
-    const actorOrgId = req.actor?.type === "ORGANIZATION" ? req.actor.orgId : null;
+    const explicitActorType = (req.actor?.type || req.headers["x-actor-type"] || "").toUpperCase();
+    const explicitActorId =
+        req.actor?.orgId ||
+        req.actor?.companyId ||
+        ((explicitActorType === "ORGANIZATION" || explicitActorType === "COMPANY")
+            ? (req.headers["x-actor-id"] || req.headers["x-org-id"] || req.headers["x-company-id"])
+            : null);
+    const actorOrgId = explicitActorId || null;
 
     if (actorOrgId && fallbackOrgId && actorOrgId !== fallbackOrgId) {
         const err = new Error("Active organization actor does not match requested organization");
@@ -360,19 +367,49 @@ exports.removeFollower = async (req, res) => {
 // Follow a company
 exports.followCompany = async (req, res) => {
     const userId = req.user.sub;
-    const companyId = req.params.companyId || req.params.orgId;
+    let orgId = req.params.orgId || req.params.companyId;
     const { sourcePostId } = req.body || {};
+
+    const explicitActorType = (req.actor?.type || req.headers["x-actor-type"] || "").toUpperCase();
+    const explicitActorId =
+        req.actor?.orgId ||
+        req.actor?.companyId ||
+        req.headers["x-actor-id"] ||
+        req.headers["x-org-id"] ||
+        req.headers["x-company-id"];
+    const isOrgFollower = Boolean(
+        (explicitActorType === "ORGANIZATION" || explicitActorType === "COMPANY") &&
+        explicitActorId
+    );
+    let followerOrgId = isOrgFollower ? explicitActorId : null;
 
     const client = await pool.connect();
     try {
         await client.query('BEGIN');
 
+        const uuidRegex = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+        if (!uuidRegex.test(orgId)) {
+            const slugRes = await client.query("SELECT org_id FROM organizations WHERE slug = $1 LIMIT 1", [orgId]);
+            if (slugRes?.rows?.length > 0) orgId = slugRes.rows[0].org_id;
+        }
+        if (followerOrgId && !uuidRegex.test(followerOrgId)) {
+            const slugRes = await client.query("SELECT org_id FROM organizations WHERE slug = $1 LIMIT 1", [followerOrgId]);
+            if (slugRes?.rows?.length > 0) followerOrgId = slugRes.rows[0].org_id;
+        }
+
         const result = await client.query(
             `INSERT INTO organization_followers (user_id, org_id, source_post_id) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING RETURNING *`,
-            [userId, companyId, sourcePostId || null]
+            [userId, orgId, sourcePostId || null]
         );
 
-        if (result.rowCount === 0) {
+        if (followerOrgId) {
+            await client.query(
+                `INSERT INTO organization_org_follows (follower_org_id, following_org_id, source_post_id) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
+                [followerOrgId, orgId, sourcePostId || null]
+            );
+        }
+
+        if (result.rowCount === 0 && !followerOrgId) {
             await client.query('ROLLBACK');
             return res.status(200).json({ message: "Already following" });
         }
@@ -382,58 +419,123 @@ exports.followCompany = async (req, res) => {
         await client.query(
             `INSERT INTO organization_notification_preferences (user_id, org_id)
              VALUES ($1, $2) ON CONFLICT DO NOTHING`,
-            [userId, companyId]
+            [userId, orgId]
         );
 
         // --- NOTIFICATIONS: company_follower and company_milestone ---
-        const userRes = await client.query(`SELECT full_name, avatar_url FROM active_users WHERE user_id = $1`, [userId]);
-        const userName = userRes.rows[0]?.full_name || "Someone";
-        const userAvatar = userRes.rows[0]?.avatar_url || null;
+        let followerName = "Someone";
+        let followerAvatar = null;
+        let followerSlug = null;
 
-        const orgRes = await client.query(`SELECT name, created_by FROM organizations WHERE org_id = $1`, [companyId]);
+        if (followerOrgId) {
+            const followerOrgRes = await client.query(`SELECT name, logo_url, slug FROM organizations WHERE org_id = $1`, [followerOrgId]);
+            if (followerOrgRes.rows[0]) {
+                followerName = followerOrgRes.rows[0].name || "An organization";
+                followerAvatar = followerOrgRes.rows[0].logo_url || null;
+                followerSlug = followerOrgRes.rows[0].slug || null;
+            }
+        } else {
+            const userRes = await client.query(`SELECT full_name, avatar_url FROM active_users WHERE user_id = $1`, [userId]);
+            followerName = userRes.rows[0]?.full_name || "Someone";
+            followerAvatar = userRes.rows[0]?.avatar_url || null;
+        }
+
+        const orgRes = await client.query(`SELECT name, created_by FROM organizations WHERE org_id = $1`, [orgId]);
         const orgName = orgRes.rows[0]?.name || "your company";
 
-        // Find company admins to notify
+        // Find company admins to notify (case-insensitive role check with fallback)
         const adminsRes = await client.query(
-            `SELECT user_id FROM organization_members WHERE org_id = $1 AND role_id IN (
-                SELECT role_id FROM organization_roles WHERE org_id = $1 AND name IN ('Owner', 'Admin')
-            )`,
-            [companyId]
+            `SELECT DISTINCT om.user_id 
+             FROM organization_members om 
+             LEFT JOIN organization_roles r ON om.role_id = r.role_id
+             WHERE om.org_id = $1 
+               AND (
+                   LOWER(COALESCE(r.name, '')) IN ('owner', 'admin')
+                   OR LOWER(COALESCE(om.role, '')) IN ('owner', 'admin')
+               )`,
+            [orgId]
         );
-        // Fallback to creator if no admins found
-        const notifyUsers = adminsRes.rowCount > 0 ? adminsRes.rows.map(r => r.user_id) : (orgRes.rows[0] ? [orgRes.rows[0].created_by] : []);
+        let notifyUsers = adminsRes.rows.map(r => r.user_id).filter(Boolean);
+        if (notifyUsers.length === 0) {
+            const fallbackRes = await client.query(
+                `SELECT created_by AS user_id FROM organizations WHERE org_id = $1 AND created_by IS NOT NULL
+                 UNION
+                 SELECT user_id FROM organization_members WHERE org_id = $1`,
+                [orgId]
+            );
+            notifyUsers = fallbackRes.rows.map(r => r.user_id).filter(Boolean);
+        }
 
-        // 1. company_follower Notification
-        const followerTitle = "New Follower";
-        const followerText = `${userName} started following ${orgName}`;
-
-        for (const adminId of notifyUsers) {
-            const notifRes = await client.query(
-                `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata, recipient_org_id)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING notification_id, created_at`,
-                [adminId, userId, "company_follower", followerText, companyId, JSON.stringify({ title: followerTitle, orgId: companyId }), companyId]
+        // 1. company_follower Notification:
+        // ONLY notify when a company follows another company (DO NOT show notification when regular user follows company)
+        if (followerOrgId) {
+            const existingNotif = await client.query(
+                `SELECT 1 FROM notifications WHERE type = 'company_follower' AND (metadata->>'followerOrgId' = $1 OR metadata->>'follower_org_id' = $1) AND recipient_org_id = $2 LIMIT 1`,
+                [followerOrgId, orgId]
             );
 
-            const payload = {
-                type: "company_follower",
-                title: followerTitle,
-                message: followerText,
-                from: userId,
-                senderName: userName,
-                senderAvatar: userAvatar,
-                targetProfileType: "COMPANY",
-                targetCompanyId: companyId,
-                notification_id: notifRes.rows[0].notification_id,
-                created_at: notifRes.rows[0].created_at.toISOString(),
-                timestamp: new Date().toISOString()
-            };
+            if (result.rowCount > 0 || existingNotif.rowCount === 0) {
+                const followerTitle = "New Follower";
+                const followerText = `${followerName} started following ${orgName}`;
+                const metadataObj = {
+                    title: followerTitle,
+                    orgId: followerOrgId,
+                    org_id: followerOrgId,
+                    targetOrgId: orgId,
+                    target_org_id: orgId,
+                    targetOrgName: orgName,
+                    target_org_name: orgName,
+                    followerName,
+                    follower_name: followerName,
+                    followerId: followerOrgId,
+                    follower_id: followerOrgId,
+                    followerOrgId,
+                    follower_org_id: followerOrgId,
+                    followerAvatar,
+                    follower_avatar: followerAvatar,
+                    followerSlug: followerSlug || undefined,
+                    follower_slug: followerSlug || undefined,
+                    isCompanyActor: true,
+                    is_company_actor: true,
+                };
 
-            socketService.notifyUserScoped(adminId, "notification", payload, `org:${companyId}`);
-            sendPush(adminId, followerTitle, followerText, { type: "company_follower", companyId }).catch(() => { });
+                for (const adminId of notifyUsers) {
+                    const notifRes = await client.query(
+                        `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata, recipient_org_id)
+                         VALUES ($1, $2, 'company_follower', $3, $4, $5, $6) RETURNING notification_id, created_at`,
+                        [adminId, userId, followerText, followerOrgId, JSON.stringify(metadataObj), orgId]
+                    );
+
+                    const payload = {
+                        type: "company_follower",
+                        title: followerTitle,
+                        message: followerText,
+                        text: followerText,
+                        from: followerOrgId,
+                        senderName: followerName,
+                        senderAvatar: followerAvatar,
+                        is_company_actor: true,
+                        actor_name: followerName,
+                        actor_avatar: followerAvatar,
+                        actor_slug: followerSlug,
+                        targetProfileType: "COMPANY",
+                        targetCompanyId: orgId,
+                        recipient_org_id: orgId,
+                        recipient_company_id: orgId,
+                        notification_id: notifRes.rows[0].notification_id,
+                        created_at: notifRes.rows[0].created_at.toISOString(),
+                        timestamp: new Date().toISOString()
+                    };
+
+                    socketService.notifyUserScoped(adminId, "notification", payload, `org:${orgId}`);
+                    sendPush(adminId, followerTitle, followerText, { type: "company_follower", companyId: orgId, orgId }).catch(() => { });
+                }
+                socketService.notifyOrg(orgId, "relationshipUpdated", { orgId: followerOrgId, status: 'followed' });
+            }
         }
 
         // 2. company_milestone Notification
-        const countRes = await client.query(`SELECT COUNT(*) FROM organization_followers WHERE org_id = $1`, [companyId]);
+        const countRes = await client.query(`SELECT COUNT(*) FROM organization_followers WHERE org_id = $1`, [orgId]);
         const followerCount = parseInt(countRes.rows[0].count, 10);
         let isMilestone = false;
         if (followerCount >= 1000) {
@@ -450,7 +552,7 @@ exports.followCompany = async (req, res) => {
                 const notifRes = await client.query(
                     `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata, recipient_org_id)
                      VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING notification_id, created_at`,
-                    [adminId, adminId, "company_milestone", milestoneText, companyId, JSON.stringify({ title: milestoneTitle, orgId: companyId, followerCount }), companyId]
+                    [adminId, adminId, "company_milestone", milestoneText, orgId, JSON.stringify({ title: milestoneTitle, orgId, followerCount }), orgId]
                 );
 
                 const payload = {
@@ -458,15 +560,15 @@ exports.followCompany = async (req, res) => {
                     title: milestoneTitle,
                     message: milestoneText,
                     targetProfileType: "COMPANY",
-                    targetCompanyId: companyId,
+                    targetCompanyId: orgId,
                     followerCount,
                     notification_id: notifRes.rows[0].notification_id,
                     created_at: notifRes.rows[0].created_at.toISOString(),
                     timestamp: new Date().toISOString()
                 };
 
-                socketService.notifyUserScoped(adminId, "notification", payload, `org:${companyId}`);
-                sendPush(adminId, milestoneTitle, milestoneText, { type: "company_milestone", companyId }).catch(() => { });
+                socketService.notifyUserScoped(adminId, "notification", payload, `org:${orgId}`);
+                sendPush(adminId, milestoneTitle, milestoneText, { type: "company_milestone", companyId: orgId, orgId }).catch(() => { });
             }
         }
 
@@ -476,7 +578,7 @@ exports.followCompany = async (req, res) => {
         try {
             if (redisClient.isOpen) {
                 await redisClient.del(`user:${userId}:following`);
-                await redisClient.del(`company:${companyId}:followers`);
+                await redisClient.del(`company:${orgId}:followers`);
             }
         } catch (cacheErr) {
             console.warn("[FOLLOW_COMPANY] Cache invalidation failed:", cacheErr.message);
@@ -496,49 +598,80 @@ exports.followCompany = async (req, res) => {
 // Unfollow a company
 exports.unfollowCompany = async (req, res) => {
     const userId = req.user.sub;
-    const companyId = req.params.companyId || req.params.orgId;
+    let orgId = req.params.orgId || req.params.companyId;
+
+    const explicitActorType = (req.actor?.type || req.headers["x-actor-type"] || "").toUpperCase();
+    const explicitActorId =
+        req.actor?.orgId ||
+        req.actor?.companyId ||
+        req.headers["x-actor-id"] ||
+        req.headers["x-org-id"] ||
+        req.headers["x-company-id"];
+    const isOrgFollower = Boolean(
+        (explicitActorType === "ORGANIZATION" || explicitActorType === "COMPANY") &&
+        explicitActorId
+    );
+    let followerOrgId = isOrgFollower ? explicitActorId : null;
 
     const client = await pool.connect();
     try {
         await client.query('BEGIN');
 
+        const uuidRegex = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+        if (!uuidRegex.test(orgId)) {
+            const slugRes = await client.query("SELECT org_id FROM organizations WHERE slug = $1 LIMIT 1", [orgId]);
+            if (slugRes?.rows?.length > 0) orgId = slugRes.rows[0].org_id;
+        }
+        if (followerOrgId && !uuidRegex.test(followerOrgId)) {
+            const slugRes = await client.query("SELECT org_id FROM organizations WHERE slug = $1 LIMIT 1", [followerOrgId]);
+            if (slugRes?.rows?.length > 0) followerOrgId = slugRes.rows[0].org_id;
+        }
+
         // 1. Remove Follower record
         const followResult = await client.query(
             `DELETE FROM organization_followers WHERE user_id = $1 AND org_id = $2 RETURNING *`,
-            [userId, companyId]
+            [userId, orgId]
         );
+
+        if (followerOrgId) {
+            await client.query(
+                `DELETE FROM organization_org_follows WHERE follower_org_id = $1 AND following_org_id = $2`,
+                [followerOrgId, orgId]
+            );
+            socketService.notifyOrg(orgId, "relationshipUpdated", { orgId: followerOrgId, status: 'none' });
+        }
 
         // 2. Remove Connection record
         const connResult = await client.query(
             `DELETE FROM organization_connections WHERE user_id = $1 AND org_id = $2`,
-            [userId, companyId]
+            [userId, orgId]
         );
 
         // 3. Clean up any Connection Requests (any status)
         const requestResult = await client.query(
             `DELETE FROM organization_connection_requests WHERE user_id = $1 AND org_id = $2`,
-            [userId, companyId]
+            [userId, orgId]
         );
 
         // 4. Remove notification preferences
         await client.query(
             `DELETE FROM organization_notification_preferences WHERE user_id = $1 AND org_id = $2`,
-            [userId, companyId]
+            [userId, orgId]
         );
 
         await client.query('COMMIT');
 
-        console.log(`[unfollowCompany] Cleanup details for user=${userId}, company=${companyId}:`);
+        console.log(`[unfollowCompany] Cleanup details for user=${userId}, company=${orgId}:`);
         console.log(` - organization_followers: ${followResult.rowCount} rows`);
         console.log(` - organization_connections: ${connResult.rowCount} rows`);
         console.log(` - organization_connection_requests: ${requestResult.rowCount} rows`);
 
         // --- ENHANCED LOGGING & NOTIFICATION ---
-        console.log(`[UNFOLLOW] user=${userId} unfollowed/disconnected company=${companyId}`);
+        console.log(`[UNFOLLOW] user=${userId} unfollowed/disconnected company=${orgId}`);
 
         // Notify the user who unfollowed
         socketService.notifyUser(userId, "relationshipUpdated", {
-            userId: companyId, status: 'none', type: 'company'
+            userId: orgId, status: 'none', type: 'company'
         });
 
         // 1. Invalidate Redis Cache (Production Hotfix)
@@ -546,9 +679,9 @@ exports.unfollowCompany = async (req, res) => {
             if (redisClient.isOpen) {
                 // Invalidate both user and company level caches if they exist
                 await redisClient.del(`user:${userId}:following`);
-                await redisClient.del(`company:${companyId}:followers`);
-                await redisClient.del(`company:${companyId}:connections`);
-                console.log(`[UNFOLLOW] Cache invalidated for user=${userId} and company=${companyId}`);
+                await redisClient.del(`company:${orgId}:followers`);
+                await redisClient.del(`company:${orgId}:connections`);
+                console.log(`[UNFOLLOW] Cache invalidated for user=${userId} and company=${orgId}`);
             }
         } catch (cacheErr) {
             console.warn("[UNFOLLOW] Cache invalidation failed:", cacheErr.message);
@@ -558,7 +691,7 @@ exports.unfollowCompany = async (req, res) => {
         try {
             const admins = await pool.query(
                 `SELECT user_id FROM organization_members WHERE org_id = $1`,
-                [companyId]
+                [orgId]
             );
             console.log(`[UNFOLLOW] Notifying ${admins.rowCount} company members`);
             for (const admin of admins.rows) {
@@ -5164,32 +5297,48 @@ exports.getNotifications = async (req, res) => {
     let actorScope;
 
     try {
-        actorScope = getSocialActorScope(req, req.query.companyId || null);
+        actorScope = getSocialActorScope(req, req.query.orgId || req.query.companyId || null);
     } catch (err) {
         return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
     }
 
-    const { userId, orgId: companyId } = actorScope;
+    const { userId, orgId } = actorScope;
 
     try {
         let query = `
             SELECT n.*, 
                 n.recipient_org_id as recipient_company_id,
+                n.recipient_org_id,
                 CASE 
+                    WHEN (n.metadata->>'isCompanyActor')::boolean = TRUE OR (n.metadata->>'is_company_actor')::boolean = TRUE THEN
+                         COALESCE(NULLIF(n.metadata->>'followerName', ''), NULLIF(n.metadata->>'follower_name', ''), f_org.name, u.display_name)
                     WHEN COALESCE(NULLIF(n.metadata->>'org_id', ''), NULLIF(n.metadata->>'orgId', '')) IS NOT NULL 
-                         AND n.type NOT IN ('community_invite_accepted', 'team_invite_accepted', 'team_invite_declined', 'team_member_removed', 'offer_accepted', 'job_offer_declined', 'company_channel_subscriber') THEN 
+                         AND n.type NOT IN ('community_invite_accepted', 'team_invite_accepted', 'team_invite_declined', 'team_member_removed', 'offer_accepted', 'job_offer_declined', 'company_channel_subscriber', 'company_follower', 'follow') THEN 
                          COALESCE(NULLIF(n.metadata->>'org_name', ''), NULLIF(n.metadata->>'orgName', ''), c.name)
                     ELSE u.display_name 
                 END as actor_name, 
                 CASE 
+                    WHEN (n.metadata->>'isCompanyActor')::boolean = TRUE OR (n.metadata->>'is_company_actor')::boolean = TRUE THEN
+                         COALESCE(NULLIF(n.metadata->>'followerAvatar', ''), NULLIF(n.metadata->>'follower_avatar', ''), NULLIF(n.metadata->>'followerLogo', ''), NULLIF(n.metadata->>'follower_logo', ''), f_org.logo_url, u.display_avatar)
                     WHEN COALESCE(NULLIF(n.metadata->>'org_id', ''), NULLIF(n.metadata->>'orgId', '')) IS NOT NULL 
-                         AND n.type NOT IN ('community_invite_accepted', 'team_invite_accepted', 'team_invite_declined', 'team_member_removed', 'offer_accepted', 'job_offer_declined', 'company_channel_subscriber') THEN 
+                         AND n.type NOT IN ('community_invite_accepted', 'team_invite_accepted', 'team_invite_declined', 'team_member_removed', 'offer_accepted', 'job_offer_declined', 'company_channel_subscriber', 'company_follower', 'follow') THEN 
                          COALESCE(NULLIF(n.metadata->>'org_logo', ''), NULLIF(n.metadata->>'orgLogo', ''), c.logo_url)
                     ELSE u.display_avatar 
                 END as actor_avatar,
-                COALESCE(NULLIF(n.metadata->>'org_slug', ''), NULLIF(n.metadata->>'orgSlug', ''), c.slug, u.display_username) as actor_slug,
-                (COALESCE(NULLIF(n.metadata->>'org_id', ''), NULLIF(n.metadata->>'orgId', '')) IS NOT NULL 
-                 AND n.type NOT IN ('community_invite_accepted', 'team_invite_accepted', 'team_invite_declined', 'team_member_removed', 'offer_accepted', 'job_offer_declined', 'company_channel_subscriber')) as is_company_actor,
+                CASE 
+                    WHEN (n.metadata->>'isCompanyActor')::boolean = TRUE OR (n.metadata->>'is_company_actor')::boolean = TRUE THEN
+                         COALESCE(NULLIF(n.metadata->>'followerSlug', ''), NULLIF(n.metadata->>'follower_slug', ''), f_org.slug, u.display_username)
+                    WHEN COALESCE(NULLIF(n.metadata->>'org_id', ''), NULLIF(n.metadata->>'orgId', '')) IS NOT NULL 
+                         AND n.type NOT IN ('community_invite_accepted', 'team_invite_accepted', 'team_invite_declined', 'team_member_removed', 'offer_accepted', 'job_offer_declined', 'company_channel_subscriber', 'company_follower', 'follow') THEN 
+                         COALESCE(NULLIF(n.metadata->>'org_slug', ''), NULLIF(n.metadata->>'orgSlug', ''), c.slug, u.display_username)
+                    ELSE COALESCE(u.display_username, c.slug)
+                END as actor_slug,
+                CASE
+                    WHEN (n.metadata->>'isCompanyActor')::boolean = TRUE OR (n.metadata->>'is_company_actor')::boolean = TRUE THEN TRUE
+                    WHEN COALESCE(NULLIF(n.metadata->>'org_id', ''), NULLIF(n.metadata->>'orgId', '')) IS NOT NULL 
+                         AND n.type NOT IN ('community_invite_accepted', 'team_invite_accepted', 'team_invite_declined', 'team_member_removed', 'offer_accepted', 'job_offer_declined', 'company_channel_subscriber', 'company_follower', 'follow') THEN TRUE
+                    ELSE FALSE
+                END as is_company_actor,
                 COALESCE(o_meta.created_by = n.user_id, (n.metadata->>'can_recover')::boolean, (n.metadata->>'is_owner')::boolean, FALSE) as can_recover,
                 COALESCE(o_meta.created_by = n.user_id, (n.metadata->>'is_owner')::boolean, FALSE) as is_owner,
                 cr.request_id as request_id, 
@@ -5197,14 +5346,15 @@ exports.getNotifications = async (req, res) => {
             FROM notifications n 
             LEFT JOIN user_display_profiles u ON COALESCE(n.sender_id, CASE WHEN n.type IN ('doc_verification_success', 'doc_verification_rejected') THEN n.user_id ELSE NULL END) = u.user_id 
             LEFT JOIN organization_display_profiles c ON COALESCE(NULLIF(n.metadata->>'org_id', ''), NULLIF(n.metadata->>'orgId', ''))::uuid = c.org_id
+            LEFT JOIN organization_display_profiles f_org ON COALESCE(NULLIF(n.metadata->>'follower_org_id', ''), NULLIF(n.metadata->>'followerOrgId', ''), NULLIF(n.metadata->>'followerId', ''), CASE WHEN (n.metadata->>'isCompanyActor')::boolean = TRUE OR (n.metadata->>'is_company_actor')::boolean = TRUE THEN n.sender_id::text ELSE NULL END)::uuid = f_org.org_id
             LEFT JOIN organizations o_meta ON COALESCE(NULLIF(n.metadata->>'org_id', ''), NULLIF(n.metadata->>'orgId', ''))::uuid = o_meta.org_id
             LEFT JOIN connection_requests cr ON n.sender_id = cr.sender_id AND n.user_id = cr.receiver_id AND cr.status = 'pending'
             WHERE 
         `;
 
-        const queryParams = [companyId || userId];
+        const queryParams = [orgId || userId];
 
-        if (companyId) {
+        if (orgId) {
             queryParams.push(userId);
             query += `
                 (
@@ -5212,9 +5362,23 @@ exports.getNotifications = async (req, res) => {
                     OR (
                         n.recipient_org_id IS NULL 
                         AND COALESCE(NULLIF(n.metadata->>'org_id', ''), NULLIF(n.metadata->>'orgId', ''))::uuid = $1
+                        AND n.type NOT IN ('like', 'comment', 'reply', 'repost', 'mention', 'post_tag', 'advocacy', 'channel_article', 'profile_share', 'company_connection_request', 'job_applied', 'job_shortlisted', 'job_rejected', 'job_reviewed', 'job_offer_withdrawn', 'job_offer_received', 'job_offer_expired')
                     )
                 )
-                AND (n.user_id IS NULL OR n.user_id = $2)
+                AND (
+                    n.type NOT IN ('member_role_updated')
+                    OR n.user_id IS NULL 
+                    OR n.user_id = $2
+                )
+                AND NOT (
+                    n.type = 'company_follower'
+                    AND (n.metadata->>'isCompanyActor')::boolean IS NOT TRUE
+                    AND (n.metadata->>'is_company_actor')::boolean IS NOT TRUE
+                )
+                AND NOT (
+                    n.sender_id = $2 
+                    AND n.type IN ('like', 'comment', 'reply', 'repost', 'mention', 'post_tag')
+                )
                 AND NOT EXISTS (
                     SELECT 1
                     FROM blocks b
@@ -5276,6 +5440,19 @@ exports.getNotifications = async (req, res) => {
             `;
         }
 
+        query += `
+            AND NOT EXISTS (
+                SELECT 1 FROM posts p
+                WHERE (
+                    n.reference_id = p.post_id 
+                    OR p.post_id::text = NULLIF(n.metadata->>'post_id', '') 
+                    OR p.post_id::text = NULLIF(n.metadata->>'postId', '')
+                )
+                AND p.is_active = FALSE
+                AND n.type IN ('like', 'comment', 'mention', 'reply', 'post_tag', 'repost', 'share', 'profile_share', 'advocacy', 'channel_article', 'company_post', 'organization_post')
+            )
+        `;
+
         query += ` ORDER BY n.created_at DESC`;
 
         const result = await pool.query(query, queryParams);
@@ -5313,15 +5490,15 @@ exports.markNotificationRead = async (req, res) => {
     let actorScope;
 
     try {
-        actorScope = getSocialActorScope(req, req.query?.companyId || req.body?.companyId || null);
+        actorScope = getSocialActorScope(req, req.query?.orgId || req.query?.companyId || req.body?.orgId || req.body?.companyId || null);
     } catch (err) {
         return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
     }
 
-    const { userId, orgId: companyId } = actorScope;
+    const { userId, orgId } = actorScope;
 
     try {
-        if (companyId) {
+        if (orgId) {
             const result = await pool.query(
                 `UPDATE notifications
                  SET is_read = TRUE
@@ -5335,19 +5512,21 @@ exports.markNotificationRead = async (req, res) => {
                      )
                    )
                  RETURNING *`,
-                [companyId, id]
+                [orgId, id]
             );
 
             if (result.rowCount === 0)
                 return res.status(404).json({ message: "Notification not found" });
 
-            socketService.notifyOrg(companyId, "notificationRead", {
+            socketService.notifyOrg(orgId, "notificationRead", {
                 notificationId: id,
-                companyId,
+                orgId,
+                companyId: orgId,
             });
             socketService.broadcastGlobal("notificationRead", {
                 notificationId: id,
-                companyId,
+                orgId,
+                companyId: orgId,
             });
 
             return res.json({
@@ -5394,22 +5573,22 @@ exports.markAllNotificationsRead = async (req, res) => {
     let actorScope;
 
     try {
-        actorScope = getSocialActorScope(req, req.body?.companyId || req.query?.companyId || null);
+        actorScope = getSocialActorScope(req, req.body?.orgId || req.body?.companyId || req.query?.orgId || req.query?.companyId || null);
     } catch (err) {
         return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
     }
 
-    const { userId, orgId: companyId } = actorScope;
+    const { userId, orgId } = actorScope;
 
     try {
-        if (companyId) {
+        if (orgId) {
             await pool.query(
                 `UPDATE notifications SET is_read = TRUE WHERE recipient_org_id = $1 AND is_read = FALSE`,
-                [companyId]
+                [orgId]
             );
 
-            socketService.notifyOrg(companyId, "allNotificationsRead", { companyId });
-            socketService.broadcastGlobal("allNotificationsRead", { companyId });
+            socketService.notifyOrg(orgId, "allNotificationsRead", { orgId, companyId: orgId });
+            socketService.broadcastGlobal("allNotificationsRead", { orgId, companyId: orgId });
 
             return res.json({ message: "All notifications marked as read" });
         }
@@ -5439,15 +5618,15 @@ exports.deleteNotification = async (req, res) => {
     let actorScope;
 
     try {
-        actorScope = getSocialActorScope(req, req.query?.companyId || req.body?.companyId || null);
+        actorScope = getSocialActorScope(req, req.query?.orgId || req.query?.companyId || req.body?.orgId || req.body?.companyId || null);
     } catch (err) {
         return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
     }
 
-    const { userId, orgId: companyId } = actorScope;
+    const { userId, orgId } = actorScope;
 
     try {
-        if (companyId) {
+        if (orgId) {
             const result = await pool.query(
                 `DELETE FROM notifications 
                  WHERE recipient_org_id = $1 
@@ -5460,14 +5639,14 @@ exports.deleteNotification = async (req, res) => {
                      )
                    )
                  RETURNING notification_id`,
-                [companyId, id]
+                [orgId, id]
             );
 
             if (result.rowCount === 0)
                 return res.status(404).json({ message: "Notification not found" });
 
-            socketService.notifyOrg(companyId, "notificationDeleted", { notificationId: id, companyId });
-            socketService.broadcastGlobal("notificationDeleted", { notificationId: id, companyId });
+            socketService.notifyOrg(orgId, "notificationDeleted", { notificationId: id, orgId, companyId: orgId });
+            socketService.broadcastGlobal("notificationDeleted", { notificationId: id, orgId, companyId: orgId });
 
             return res.json({ message: "Notification deleted" });
         }
@@ -5508,27 +5687,27 @@ exports.deleteNotificationsBulk = async (req, res) => {
     }
 
     try {
-        actorScope = getSocialActorScope(req, req.body?.companyId || req.query.companyId || null);
+        actorScope = getSocialActorScope(req, req.body?.orgId || req.body?.companyId || req.query?.orgId || req.query?.companyId || null);
     } catch (err) {
         return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
     }
 
-    const { userId, orgId: companyId } = actorScope;
+    const { userId, orgId } = actorScope;
 
     try {
-        if (companyId) {
+        if (orgId) {
             if (tab === 'all') {
                 // Clear all notifications for this organization
                 await pool.query(
                     `DELETE FROM notifications WHERE recipient_org_id = $1`,
-                    [companyId]
+                    [orgId]
                 );
             } else if (tab === 'jobs') {
                 await pool.query(
                     `DELETE FROM notifications 
                      WHERE recipient_org_id = $1 
                        AND (type = 'organization_job' OR type = 'job_offer' OR type LIKE '%job%' OR type LIKE '%application%' OR type LIKE '%offer%')`,
-                    [companyId]
+                    [orgId]
                 );
             } else {
                 await pool.query(
@@ -5542,12 +5721,12 @@ exports.deleteNotificationsBulk = async (req, res) => {
                              WHERE notification_id = ANY($2::uuid[]) AND recipient_org_id = $1
                          )
                        )`,
-                    [companyId, ids]
+                    [orgId, ids]
                 );
             }
 
-            socketService.notifyOrg(companyId, "notificationsCleared", { companyId, tab });
-            socketService.broadcastGlobal("notificationsCleared", { companyId, tab });
+            socketService.notifyOrg(orgId, "notificationsCleared", { orgId, companyId: orgId, tab });
+            socketService.broadcastGlobal("notificationsCleared", { orgId, companyId: orgId, tab });
 
             return res.json({ message: "Notifications deleted" });
         }
@@ -6949,13 +7128,87 @@ exports.checkContextSent = async (req, res) => {
 
 // Organization follows a user
 exports.organizationFollowUser = async (req, res) => {
-    const { orgId, userId } = req.params;
+    let { orgId, userId } = req.params;
     const { sourcePostId } = req.body || {};
+
+    const uuidRegex = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+    if (!uuidRegex.test(orgId)) {
+        const slugRes = await pool.query("SELECT org_id FROM organizations WHERE slug = $1 LIMIT 1", [orgId]);
+        if (slugRes?.rows?.length > 0) orgId = slugRes.rows[0].org_id;
+    }
     try {
-        await pool.query(
-            `INSERT INTO organization_user_follows (org_id, user_id, source_post_id) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
+        const result = await pool.query(
+            `INSERT INTO organization_user_follows (org_id, user_id, source_post_id) 
+             VALUES ($1, $2, $3) 
+             ON CONFLICT DO NOTHING 
+             RETURNING *`,
             [orgId, userId, sourcePostId || null]
         );
+
+        if (result.rowCount > 0) {
+            try {
+                const orgRes = await pool.query(
+                    `SELECT name, logo_url, slug FROM organizations WHERE org_id = $1`,
+                    [orgId]
+                );
+                const org = orgRes.rows[0];
+                const followerName = org?.name || "A company";
+                const followerAvatar = org?.logo_url || null;
+                const followerSlug = org?.slug || null;
+
+                const followerTitle = "New Follower";
+                const followerText = `${followerName} started following you`;
+                const metadataObj = {
+                    title: followerTitle,
+                    orgId,
+                    org_id: orgId,
+                    followerName,
+                    follower_name: followerName,
+                    followerId: orgId,
+                    follower_id: orgId,
+                    followerOrgId: orgId,
+                    follower_org_id: orgId,
+                    followerAvatar,
+                    follower_avatar: followerAvatar,
+                    followerSlug,
+                    follower_slug: followerSlug,
+                    isCompanyActor: true,
+                    is_company_actor: true,
+                };
+
+                const notifRes = await pool.query(
+                    `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata)
+                     VALUES ($1, $2, $3, $4, $5, $6) RETURNING notification_id, created_at`,
+                    [userId, orgId, "follow", followerText, orgId, JSON.stringify(metadataObj)]
+                );
+
+                const payload = {
+                    type: "follow",
+                    title: followerTitle,
+                    message: followerText,
+                    text: followerText,
+                    from: orgId,
+                    senderName: followerName,
+                    senderAvatar: followerAvatar,
+                    is_company_actor: true,
+                    actor_name: followerName,
+                    actor_avatar: followerAvatar,
+                    actor_slug: followerSlug,
+                    targetProfileType: "USER",
+                    targetUserId: userId,
+                    notification_id: notifRes.rows[0].notification_id,
+                    created_at: notifRes.rows[0].created_at.toISOString(),
+                    timestamp: new Date().toISOString()
+                };
+
+                socketService.notifyUser(userId, "notification", payload);
+                socketService.notifyUser(userId, "relationshipUpdated", { orgId, status: 'followed' });
+                sendPush(userId, followerName, "started following you", { type: "follow", orgId }).catch(() => { });
+            } catch (notifErr) {
+                console.error("Error creating organization follow user notification:", notifErr);
+            }
+        }
+
         res.status(200).json({ success: true, message: "Organization followed user" });
     } catch (err) {
         console.error("organizationFollowUser error:", err);
@@ -6971,6 +7224,7 @@ exports.organizationUnfollowUser = async (req, res) => {
             `DELETE FROM organization_user_follows WHERE org_id = $1 AND user_id = $2`,
             [orgId, userId]
         );
+        socketService.notifyUser(userId, "relationshipUpdated", { orgId, status: 'none' });
         res.status(200).json({ success: true, message: "Organization unfollowed user" });
     } catch (err) {
         console.error("organizationUnfollowUser error:", err);
@@ -6980,16 +7234,127 @@ exports.organizationUnfollowUser = async (req, res) => {
 
 // Organization follows an organization
 exports.organizationFollowOrganization = async (req, res) => {
-    const { orgId, targetOrgId } = req.params;
+    let { orgId, targetOrgId } = req.params;
     const { sourcePostId } = req.body || {};
+
+    const uuidRegex = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+    if (!uuidRegex.test(orgId)) {
+        const slugRes = await pool.query("SELECT org_id FROM organizations WHERE slug = $1 LIMIT 1", [orgId]);
+        if (slugRes?.rows?.length > 0) orgId = slugRes.rows[0].org_id;
+    }
+    if (!uuidRegex.test(targetOrgId)) {
+        const slugRes = await pool.query("SELECT org_id FROM organizations WHERE slug = $1 LIMIT 1", [targetOrgId]);
+        if (slugRes?.rows?.length > 0) targetOrgId = slugRes.rows[0].org_id;
+    }
+
     if (orgId === targetOrgId) {
         return res.status(400).json({ message: "Cannot follow yourself" });
     }
     try {
-        await pool.query(
-            `INSERT INTO organization_org_follows (follower_org_id, following_org_id, source_post_id) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
+        const result = await pool.query(
+            `INSERT INTO organization_org_follows (follower_org_id, following_org_id, source_post_id) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING RETURNING *`,
             [orgId, targetOrgId, sourcePostId || null]
         );
+
+        const existingNotif = await pool.query(
+            `SELECT 1 FROM notifications WHERE type = 'company_follower' AND (metadata->>'followerOrgId' = $1 OR metadata->>'follower_org_id' = $1) AND recipient_org_id = $2 LIMIT 1`,
+            [orgId, targetOrgId]
+        );
+
+        if (result.rowCount > 0 || existingNotif.rowCount === 0) {
+            try {
+                const actingUserId = req.user?.sub || req.user?.user_id;
+                const followerOrgRes = await pool.query(`SELECT name, logo_url, slug FROM organizations WHERE org_id = $1`, [orgId]);
+                const followerName = followerOrgRes.rows[0]?.name || "An organization";
+                const followerAvatar = followerOrgRes.rows[0]?.logo_url || null;
+                const followerSlug = followerOrgRes.rows[0]?.slug || null;
+
+                const targetOrgRes = await pool.query(`SELECT name, created_by FROM organizations WHERE org_id = $1`, [targetOrgId]);
+                const targetOrgName = targetOrgRes.rows[0]?.name || "your company";
+
+                const adminsRes = await pool.query(
+                    `SELECT DISTINCT om.user_id 
+                     FROM organization_members om 
+                     LEFT JOIN organization_roles r ON om.role_id = r.role_id
+                     WHERE om.org_id = $1 
+                       AND (
+                           LOWER(COALESCE(r.name, '')) IN ('owner', 'admin')
+                           OR LOWER(COALESCE(om.role, '')) IN ('owner', 'admin')
+                       )`,
+                    [targetOrgId]
+                );
+                let notifyUsers = adminsRes.rows.map(r => r.user_id).filter(Boolean);
+                if (notifyUsers.length === 0) {
+                    const fallbackRes = await pool.query(
+                        `SELECT created_by AS user_id FROM organizations WHERE org_id = $1 AND created_by IS NOT NULL
+                         UNION
+                         SELECT user_id FROM organization_members WHERE org_id = $1`,
+                        [targetOrgId]
+                    );
+                    notifyUsers = fallbackRes.rows.map(r => r.user_id).filter(Boolean);
+                }
+
+                const followerTitle = "New Follower";
+                const followerText = `${followerName} started following ${targetOrgName}`;
+                const metadataObj = {
+                    title: followerTitle,
+                    orgId: orgId, // Follower org ID
+                    org_id: orgId,
+                    targetOrgId,
+                    target_org_id: targetOrgId,
+                    targetOrgName,
+                    target_org_name: targetOrgName,
+                    followerName,
+                    follower_name: followerName,
+                    followerId: orgId,
+                    follower_id: orgId,
+                    followerOrgId: orgId,
+                    follower_org_id: orgId,
+                    followerAvatar,
+                    follower_avatar: followerAvatar,
+                    followerSlug,
+                    follower_slug: followerSlug,
+                    isCompanyActor: true,
+                    is_company_actor: true,
+                };
+
+                for (const adminId of notifyUsers) {
+                    const notifRes = await pool.query(
+                        `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata, recipient_org_id)
+                         VALUES ($1, $2, 'company_follower', $3, $4, $5, $6) RETURNING notification_id, created_at`,
+                        [adminId, actingUserId || null, followerText, orgId, JSON.stringify(metadataObj), targetOrgId]
+                    );
+
+                    const payload = {
+                        type: "company_follower",
+                        title: followerTitle,
+                        message: followerText,
+                        text: followerText,
+                        from: orgId,
+                        senderName: followerName,
+                        senderAvatar: followerAvatar,
+                        is_company_actor: true,
+                        actor_name: followerName,
+                        actor_avatar: followerAvatar,
+                        actor_slug: followerSlug,
+                        targetProfileType: "COMPANY",
+                        targetCompanyId: targetOrgId,
+                        recipient_org_id: targetOrgId,
+                        recipient_company_id: targetOrgId,
+                        notification_id: notifRes.rows[0].notification_id,
+                        created_at: notifRes.rows[0].created_at.toISOString(),
+                        timestamp: new Date().toISOString()
+                    };
+
+                    socketService.notifyUserScoped(adminId, "notification", payload, `org:${targetOrgId}`);
+                    sendPush(adminId, followerTitle, followerText, { type: "company_follower", companyId: targetOrgId }).catch(() => { });
+                }
+                socketService.notifyOrg(targetOrgId, "relationshipUpdated", { orgId, status: 'followed' });
+            } catch (notifErr) {
+                console.error("Error creating organization follow notification:", notifErr);
+            }
+        }
+
         res.status(200).json({ success: true, message: "Organization followed organization" });
     } catch (err) {
         console.error("organizationFollowOrganization error:", err);
@@ -6999,12 +7364,24 @@ exports.organizationFollowOrganization = async (req, res) => {
 
 // Organization unfollows an organization
 exports.organizationUnfollowOrganization = async (req, res) => {
-    const { orgId, targetOrgId } = req.params;
+    let { orgId, targetOrgId } = req.params;
+
+    const uuidRegex = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+    if (!uuidRegex.test(orgId)) {
+        const slugRes = await pool.query("SELECT org_id FROM organizations WHERE slug = $1 LIMIT 1", [orgId]);
+        if (slugRes?.rows?.length > 0) orgId = slugRes.rows[0].org_id;
+    }
+    if (!uuidRegex.test(targetOrgId)) {
+        const slugRes = await pool.query("SELECT org_id FROM organizations WHERE slug = $1 LIMIT 1", [targetOrgId]);
+        if (slugRes?.rows?.length > 0) targetOrgId = slugRes.rows[0].org_id;
+    }
+
     try {
         await pool.query(
             `DELETE FROM organization_org_follows WHERE follower_org_id = $1 AND following_org_id = $2`,
             [orgId, targetOrgId]
         );
+        socketService.notifyOrg(targetOrgId, "relationshipUpdated", { orgId, status: 'none' });
         res.status(200).json({ success: true, message: "Organization unfollowed organization" });
     } catch (err) {
         console.error("organizationUnfollowOrganization error:", err);

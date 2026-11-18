@@ -57,6 +57,18 @@ exports.searchUsers = async (req, res) => {
           WHERE jo.job_id = $${queryParams.length} AND jo.user_id = u.user_id
           AND jo.status IN ('pending', 'accepted', 'declined')
         )
+        AND NOT EXISTS (
+          SELECT 1 FROM jobs j
+          WHERE j.job_id = $${queryParams.length} AND (
+            j.recruiter_id = u.user_id
+            OR (
+              j.org_id IS NOT NULL AND (
+                EXISTS (SELECT 1 FROM organizations o WHERE o.org_id = j.org_id AND o.created_by = u.user_id)
+                OR EXISTS (SELECT 1 FROM organization_members om WHERE om.org_id = j.org_id AND om.user_id = u.user_id AND om.status = 'ACTIVE')
+              )
+            )
+          )
+        )
       `;
     }
 
@@ -208,7 +220,7 @@ exports.searchUsers = async (req, res) => {
             COALESCE(ops.tag_permission, 'everyone')::text AS tag_permission
           FROM organizations c
           LEFT JOIN organization_privacy_settings ops ON c.org_id = ops.org_id
-          WHERE c.is_deleted = FALSE AND c.is_deactivated = FALSE
+          WHERE c.is_deleted = FALSE AND c.is_deactivated = FALSE AND (c.is_suspended IS NOT TRUE)
           AND (c.name ILIKE $2 OR c.slug ILIKE $2)
           ${orgBlockFilter}
           ${orgTagPrivacyFilter}
@@ -2292,6 +2304,18 @@ exports.getSuggestedUsers = async (req, res) => {
           SELECT 1 FROM job_offers jo 
           WHERE jo.job_id = $2 AND jo.user_id = u.user_id
           AND jo.status IN ('pending', 'accepted', 'declined')
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM jobs j
+          WHERE j.job_id = $2 AND (
+            j.recruiter_id = u.user_id
+            OR (
+              j.org_id IS NOT NULL AND (
+                EXISTS (SELECT 1 FROM organizations o WHERE o.org_id = j.org_id AND o.created_by = u.user_id)
+                OR EXISTS (SELECT 1 FROM organization_members om WHERE om.org_id = j.org_id AND om.user_id = u.user_id AND om.status = 'ACTIVE')
+              )
+            )
+          )
         )
       `;
     }

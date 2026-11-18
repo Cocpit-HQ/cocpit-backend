@@ -201,10 +201,9 @@ async function searchPosts(client, { searchTerm, viewerId, orgActorId = null, li
       const postedByConditions = [];
 
       postedByList.forEach(pb => {
-        if (pb === 'connections') {
+        if (pb === 'connections' || pb === 'following') {
           postedByConditions.push(`(
-            p.author_org_id IS NULL AND
-            $2::uuid IS NOT NULL AND (
+            ($2::uuid IS NOT NULL AND p.author_org_id IS NULL AND (
               EXISTS (
                 SELECT 1 FROM connections c 
                 WHERE (c.user_id = $2::uuid AND c.connected_user_id = p.author_id)
@@ -215,7 +214,17 @@ async function searchPosts(client, { searchTerm, viewerId, orgActorId = null, li
                 JOIN followers f2 ON f1.follower_id = f2.following_id AND f1.following_id = f2.follower_id 
                 WHERE f1.follower_id = $2::uuid AND f1.following_id = p.author_id
               )
-            )
+            ))
+            OR ($3::uuid IS NOT NULL AND (
+              (p.author_org_id IS NOT NULL AND EXISTS (
+                SELECT 1 FROM organization_org_follows oof 
+                WHERE oof.follower_org_id = $3::uuid AND oof.following_org_id = p.author_org_id
+              ))
+              OR (p.author_id IS NOT NULL AND EXISTS (
+                SELECT 1 FROM organization_user_follows ouf 
+                WHERE ouf.org_id = $3::uuid AND ouf.user_id = p.author_id
+              ))
+            ))
           )`);
         } else if (pb === 'followers') {
           postedByConditions.push(`(
@@ -229,6 +238,17 @@ async function searchPosts(client, { searchTerm, viewerId, orgActorId = null, li
                 SELECT 1 FROM organization_followers ofol WHERE ofol.user_id = p.author_id AND ofol.org_id = $3::uuid
               )
             ))
+          )`);
+        } else if (pb === 'employees') {
+          postedByConditions.push(`(
+            $3::uuid IS NOT NULL AND
+            p.author_org_id IS NULL AND
+            EXISTS (
+              SELECT 1 FROM organization_members om
+              WHERE om.org_id = $3::uuid
+                AND om.user_id = p.author_id
+                AND (om.status = 'ACTIVE' OR om.status IS NULL)
+            )
           )`);
         } else if (pb === 'others') {
           postedByConditions.push(`(
@@ -247,8 +267,19 @@ async function searchPosts(client, { searchTerm, viewerId, orgActorId = null, li
                 SELECT 1 FROM followers f WHERE f.follower_id = p.author_id AND f.following_id = $2::uuid
               )
             ))
-            AND ($3::uuid IS NULL OR NOT EXISTS (
-              SELECT 1 FROM organization_followers ofol WHERE ofol.user_id = p.author_id AND ofol.org_id = $3::uuid
+            AND ($3::uuid IS NULL OR (
+              NOT EXISTS (
+                SELECT 1 FROM organization_followers ofol WHERE ofol.user_id = p.author_id AND ofol.org_id = $3::uuid
+              )
+              AND (p.author_org_id IS NULL OR NOT EXISTS (
+                SELECT 1 FROM organization_org_follows oof WHERE oof.follower_org_id = $3::uuid AND oof.following_org_id = p.author_org_id
+              ))
+              AND (p.author_id IS NULL OR NOT EXISTS (
+                SELECT 1 FROM organization_user_follows ouf WHERE ouf.org_id = $3::uuid AND ouf.user_id = p.author_id
+              ))
+              AND (p.author_id IS NULL OR NOT EXISTS (
+                SELECT 1 FROM organization_members om WHERE om.org_id = $3::uuid AND om.user_id = p.author_id AND (om.status = 'ACTIVE' OR om.status IS NULL)
+              ))
             ))
           )`);
         }
@@ -258,6 +289,38 @@ async function searchPosts(client, { searchTerm, viewerId, orgActorId = null, li
         postedByClause = `AND (${postedByConditions.join(' OR ')})`;
       }
     }
+  }
+
+  // 7. Mentions Our Company Filter Clause (org-actor only)
+  let mentionsOrgClause = '';
+  const isMentionsOrg = queryParams.mentions_org === true || queryParams.mentions_org === 'true' ||
+    queryParams.mentions_company === true || queryParams.mentions_company === 'true';
+  if (orgActorId && isMentionsOrg) {
+    mentionsOrgClause = `
+      AND (
+        -- 1. Explicit mention/tag recorded in post_tags table
+        EXISTS (
+          SELECT 1 FROM post_tags pt
+          WHERE pt.post_id = p.post_id
+            AND pt.tagged_user_id = $3::uuid
+            AND pt.is_active_tag = TRUE
+        )
+        -- 2. Structured markdown mention containing the org UUID: @[Name](org:<uuid>) or @[Name](<uuid>)
+        OR (p.content ILIKE ('%(' || $3::text || ')%') OR p.content ILIKE ('%(org:' || $3::text || ')%') OR p.content ILIKE ('%(company:' || $3::text || ')%'))
+        -- 3. Explicit @handle or @[Name] text mention in post content
+        OR EXISTS (
+          SELECT 1 FROM organizations org_m
+          WHERE org_m.org_id = $3::uuid
+            AND (
+              (org_m.slug IS NOT NULL AND p.content ILIKE ('%@' || org_m.slug || '%'))
+              OR (org_m.name IS NOT NULL AND (
+                p.content ILIKE ('%@[' || org_m.name || ']%')
+                OR p.content ILIKE ('%@' || org_m.name || '%')
+              ))
+            )
+        )
+      )
+    `;
   }
 
   const fetchLimit = Number(limit) + 1;
@@ -285,6 +348,7 @@ async function searchPosts(client, { searchTerm, viewerId, orgActorId = null, li
       ${contentTypeClause}
       ${hashtagClause}
       ${postedByClause}
+      ${mentionsOrgClause}
       -- Personal category privacy check (connections & author only)
       AND (
         pc.name != 'Personal' OR pc.name IS NULL

@@ -207,7 +207,7 @@ exports.getAllJobs = async (req, res) => {
     const limitClause = `LIMIT $${paramCount}`;
     params.push(Number(limit));
 
-    const baseWhere = `j.is_active = TRUE AND j.status = 'ACTIVE' AND u.user_id IS NOT NULL AND (j.org_id IS NOT NULL OR u.is_deactivated = FALSE) AND (j.org_id IS NULL OR (c.is_deleted = FALSE AND c.is_deactivated = FALSE))`;
+    const baseWhere = `j.is_active = TRUE AND j.status = 'ACTIVE' AND u.user_id IS NOT NULL AND (j.org_id IS NOT NULL OR u.is_deactivated = FALSE) AND (j.org_id IS NULL OR (c.is_deleted = FALSE AND c.is_deactivated = FALSE AND (c.is_suspended IS NOT TRUE)))`;
     const whereClause = conditions.length > 0 ? `WHERE ${baseWhere} AND ${conditions.join(" AND ")}` : `WHERE ${baseWhere}`;
 
     const query = `
@@ -227,7 +227,10 @@ exports.getAllJobs = async (req, res) => {
         ${userId ? 'jo.offer_id,' : 'NULL AS offer_id,'}
         ${userId ? 'CASE WHEN jo.status = \'pending\' AND jo.expires_at <= NOW() THEN \'expired\' ELSE jo.status END AS "offerStatus",' : 'NULL AS "offerStatus",'}
         ${userId ? 'jo.expires_at AS "offer_expires_at",' : 'NULL AS "offer_expires_at",'}
-        (SELECT COUNT(*)::int FROM job_applications ja_count WHERE ja_count.job_id = j.job_id) as applicants
+        (SELECT COUNT(*)::int FROM job_applications ja_count WHERE ja_count.job_id = j.job_id AND ja_count.current_status != 'Withdrawn') as applicants,
+        (SELECT COUNT(*)::int FROM job_applications ja_count WHERE ja_count.job_id = j.job_id AND ja_count.current_status != 'Withdrawn') as applicants_count,
+        (SELECT COUNT(*)::int FROM job_applications ja_count WHERE ja_count.job_id = j.job_id AND ja_count.current_status = 'Shortlisted') as shortlisted_count,
+        (SELECT COUNT(*)::int FROM job_offers jo_count WHERE jo_count.job_id = j.job_id AND jo_count.status != 'withdrawn') as offers_count
       FROM jobs j
       LEFT JOIN active_users u ON j.recruiter_id = u.user_id
       LEFT JOIN organizations c ON j.org_id = c.org_id
@@ -280,14 +283,17 @@ exports.getRecommendations = async (req, res) => {
         ${userId ? '(js.user_id IS NOT NULL) AS "isSaved",' : 'FALSE AS "isSaved",'}
         ${userId ? '(ja.application_id IS NOT NULL AND ja.current_status != \'Withdrawn\') AS "hasApplied",' : 'FALSE AS "hasApplied",'}
         ${userId ? 'ja.current_status AS "applicationStatus",' : 'NULL AS "applicationStatus",'}
-        (SELECT COUNT(*)::int FROM job_applications ja_count WHERE ja_count.job_id = j.job_id) as applicants
+        (SELECT COUNT(*)::int FROM job_applications ja_count WHERE ja_count.job_id = j.job_id AND ja_count.current_status != 'Withdrawn') as applicants,
+        (SELECT COUNT(*)::int FROM job_applications ja_count WHERE ja_count.job_id = j.job_id AND ja_count.current_status != 'Withdrawn') as applicants_count,
+        (SELECT COUNT(*)::int FROM job_applications ja_count WHERE ja_count.job_id = j.job_id AND ja_count.current_status = 'Shortlisted') as shortlisted_count,
+        (SELECT COUNT(*)::int FROM job_offers jo_count WHERE jo_count.job_id = j.job_id AND jo_count.status != 'withdrawn') as offers_count
       FROM jobs j
       LEFT JOIN active_users u ON j.recruiter_id = u.user_id
       LEFT JOIN organizations c ON j.org_id = c.org_id
       ${userId ? "LEFT JOIN job_saves js ON js.job_id = j.job_id AND js.user_id = $1" : ""}
       ${userId ? "LEFT JOIN job_applications ja ON ja.job_id = j.job_id AND ja.applicant_id = $1" : ""}
       ${userId ? "LEFT JOIN job_offers jo ON jo.job_id = j.job_id AND jo.user_id = $1 AND jo.status != 'withdrawn'" : ""}
-      WHERE j.is_active = TRUE AND j.status = 'ACTIVE' AND u.user_id IS NOT NULL AND (j.org_id IS NOT NULL OR u.is_deactivated = FALSE) AND (j.org_id IS NULL OR (c.is_deleted = FALSE AND c.is_deactivated = FALSE))
+      WHERE j.is_active = TRUE AND j.status = 'ACTIVE' AND u.user_id IS NOT NULL AND (j.org_id IS NOT NULL OR u.is_deactivated = FALSE) AND (j.org_id IS NULL OR (c.is_deleted = FALSE AND c.is_deactivated = FALSE AND (c.is_suspended IS NOT TRUE)))
       ${userId ? "AND j.recruiter_id != $1" : ""}
       ${userId ? `AND (
         j.org_id IS NULL OR (
@@ -454,9 +460,11 @@ exports.getJobById = async (req, res) => {
         j.*,
         u.full_name AS recruiter_name,
         u.avatar_url AS recruiter_avatar,
+        u.headline AS recruiter_title,
         COALESCE(c.name, j.company_name, u.full_name) AS company,
         COALESCE(c.name, j.company_name, u.full_name) AS company_name,
         c.logo_url AS company_logo,
+        c.headline AS company_headline,
         COALESCE(c.logo_url, '') AS company_avatar,
         c.slug AS company_slug,
         ${userId ? '(js.user_id IS NOT NULL) AS "isSaved",' : 'FALSE AS "isSaved",'}
@@ -467,13 +475,19 @@ exports.getJobById = async (req, res) => {
         ${userId ? 'jo.expires_at AS "offer_expires_at",' : 'NULL AS "offer_expires_at",'}
         ${userId ? 'jo.offer_id AS "offer_id",' : 'NULL AS "offer_id",'}
         ${userId ? 'jo.message AS "recruiter_message",' : 'NULL AS "recruiter_message",'}
+        ${userId ? 'CASE WHEN j.org_id IS NOT NULL OR jo.org_id IS NOT NULL THEN COALESCE(c.name, j.company_name) ELSE COALESCE(u_sender.full_name, u.full_name) END AS "offer_sender_name",' : ''}
+        ${userId ? 'CASE WHEN j.org_id IS NOT NULL OR jo.org_id IS NOT NULL THEN c.logo_url ELSE COALESCE(u_sender.avatar_url, u.avatar_url) END AS "offer_sender_avatar",' : ''}
+        ${userId ? 'CASE WHEN j.org_id IS NOT NULL OR jo.org_id IS NOT NULL THEN c.headline ELSE COALESCE(u_sender.headline, u.headline) END AS "offer_sender_headline",' : ''}
         ${userId ? 'ja.application_id AS "applicationId",' : 'NULL AS "applicationId",'}
         ${userId ? 'ja.screening_required AS "screeningRequired",' : 'NULL AS "screeningRequired",'}
         ${userId ? 'ja.screening_type AS "screeningType",' : 'NULL AS "screeningType",'}
         ${userId ? 'ja.screening_question AS "screeningQuestion",' : 'NULL AS "screeningQuestion",'}
         ${userId ? 'ja.screening_submitted_at AS "screeningSubmittedAt",' : 'NULL AS "screeningSubmittedAt",'}
         ${userId ? '(of.user_id IS NOT NULL OR uf.follower_id IS NOT NULL) AS "is_followed",' : 'FALSE AS "is_followed",'}
-        (SELECT COUNT(*)::int FROM job_applications ja_count WHERE ja_count.job_id = j.job_id) as applicants
+        (SELECT COUNT(*)::int FROM job_applications ja_count WHERE ja_count.job_id = j.job_id AND ja_count.current_status != 'Withdrawn') as applicants,
+        (SELECT COUNT(*)::int FROM job_applications ja_count WHERE ja_count.job_id = j.job_id AND ja_count.current_status != 'Withdrawn') as applicants_count,
+        (SELECT COUNT(*)::int FROM job_applications ja_count WHERE ja_count.job_id = j.job_id AND ja_count.current_status = 'Shortlisted') as shortlisted_count,
+        (SELECT COUNT(*)::int FROM job_offers jo_count WHERE jo_count.job_id = j.job_id AND jo_count.status != 'withdrawn') as offers_count
       FROM jobs j
       LEFT JOIN active_users u ON j.recruiter_id = u.user_id
       LEFT JOIN organizations c ON j.org_id = c.org_id
@@ -482,10 +496,11 @@ exports.getJobById = async (req, res) => {
       ${userId ? 'LEFT JOIN organization_followers of ON of.org_id = j.org_id AND of.user_id = $2' : ''}
       ${userId ? 'LEFT JOIN followers uf ON uf.following_id = j.recruiter_id AND uf.follower_id = $2' : ''}
       ${userId ? 'LEFT JOIN job_offers jo ON jo.job_id = j.job_id AND jo.user_id = $2 AND jo.status != \'withdrawn\'' : ''}
+      ${userId ? 'LEFT JOIN active_users u_sender ON jo.sent_by = u_sender.user_id' : ''}
       WHERE j.job_id = $1
       AND u.user_id IS NOT NULL 
       AND (j.org_id IS NOT NULL OR u.is_deactivated = FALSE)
-      AND (j.org_id IS NULL OR (c.is_deleted = FALSE AND c.is_deactivated = FALSE))
+      AND (j.org_id IS NULL OR (c.is_deleted = FALSE AND c.is_deactivated = FALSE AND (c.is_suspended IS NOT TRUE)))
       `,
       userId ? [resolvedJobId, userId] : [resolvedJobId]
     );
@@ -611,10 +626,19 @@ exports.createJob = async (req, res) => {
 
     if (requestedOrgId) {
       const orgRes = await pool.query('SELECT name FROM organizations WHERE org_id = $1', [requestedOrgId]);
-      if (orgRes.rows.length) resolvedCompanyName = orgRes.rows[0].name;
+      if (orgRes.rows.length) {
+        resolvedCompanyName = orgRes.rows[0].name;
+      }
     } else {
-      const userRes = await pool.query('SELECT full_name FROM users WHERE user_id = $1', [userId]);
-      if (userRes.rows.length) resolvedCompanyName = userRes.rows[0].full_name;
+      const userRes = await pool.query('SELECT full_name, is_identity_verified FROM users WHERE user_id = $1', [userId]);
+      if (userRes.rows.length) {
+        if (!userRes.rows[0].is_identity_verified) {
+          const err = new Error("Identity verification required to post jobs. Please complete verification in settings.");
+          err.statusCode = 403;
+          throw err;
+        }
+        resolvedCompanyName = userRes.rows[0].full_name;
+      }
     }
   } catch (err) {
     return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
@@ -678,8 +702,9 @@ exports.createJob = async (req, res) => {
       education: generated.education || null,
     } : null;
 
-    const finalExpMin = (parsedExpMin !== null && !isNaN(parsedExpMin)) ? parsedExpMin : (generated?.experience_min || null);
-    const finalExpMax = (parsedExpMax !== null && !isNaN(parsedExpMax)) ? parsedExpMax : (generated?.experience_max || null);
+    const finalExpMin = (parsedExpMin !== null && !isNaN(parsedExpMin)) ? parsedExpMin : (generated?.experience_min !== undefined && generated?.experience_min !== null ? generated.experience_min : 0);
+    const finalExpMax = (parsedExpMax !== null && !isNaN(parsedExpMax)) ? parsedExpMax : (generated?.experience_max !== undefined && generated?.experience_max !== null ? generated.experience_max : 1);
+    const finalExpLabel = resolvedExperienceLabel || 'Fresher';
 
     const jobRes = await client.query(
       `
@@ -697,7 +722,7 @@ exports.createJob = async (req, res) => {
         resolvedLocation,
         resolvedJobType,
         resolvedWorkMode,
-        resolvedExperienceLabel,
+        finalExpLabel,
         postedAsCompany,
         aiDescription,
         finalExpMin,
@@ -709,14 +734,18 @@ exports.createJob = async (req, res) => {
     const job = jobRes.rows[0];
 
     // Automatically add this new role to the master table for future autocomplete
-    // We use ON CONFLICT DO NOTHING to silently ignore it if it already exists
-    if (title) {
-      await client.query(
-        `INSERT INTO job_roles_master (role_name, category) 
-         VALUES ($1, 'Custom') 
-         ON CONFLICT (role_name) DO NOTHING`,
-        [title]
+    // Check case-insensitively to prevent duplicates like "project manager" vs "Project Manager"
+    if (title && title.trim()) {
+      const existingRole = await client.query(
+        `SELECT 1 FROM job_roles_master WHERE LOWER(TRIM(role_name)) = LOWER(TRIM($1)) LIMIT 1`,
+        [title.trim()]
       );
+      if (existingRole.rows.length === 0) {
+        await client.query(
+          `INSERT INTO job_roles_master (role_name, category) VALUES ($1, 'Custom') ON CONFLICT DO NOTHING`,
+          [title.trim()]
+        );
+      }
     }
 
     await client.query(
@@ -800,13 +829,17 @@ exports.updateDraft = async (req, res) => {
     const query = `UPDATE jobs SET ${setClauses.join(", ")} WHERE job_id = $${paramCount} RETURNING *`;
     const updatedJobRes = await pool.query(query, values);
 
-    if (updates.title) {
-      await pool.query(
-        `INSERT INTO job_roles_master (role_name, category) 
-         VALUES ($1, 'Custom') 
-         ON CONFLICT (role_name) DO NOTHING`,
-        [updates.title]
+    if (updates.title && updates.title.trim()) {
+      const existingRole = await pool.query(
+        `SELECT 1 FROM job_roles_master WHERE LOWER(TRIM(role_name)) = LOWER(TRIM($1)) LIMIT 1`,
+        [updates.title.trim()]
       );
+      if (existingRole.rows.length === 0) {
+        await pool.query(
+          `INSERT INTO job_roles_master (role_name, category) VALUES ($1, 'Custom') ON CONFLICT DO NOTHING`,
+          [updates.title.trim()]
+        );
+      }
     }
 
     if (updates.industry) {
@@ -833,7 +866,7 @@ exports.submitJob = async (req, res) => {
   try {
     await client.query("BEGIN");
 
-    const jobRes = await client.query(`SELECT * FROM jobs WHERE job_id = $1`, [id]);
+    const jobRes = await client.query(`SELECT * FROM jobs WHERE job_id = $1 FOR UPDATE`, [id]);
     if (jobRes.rowCount === 0) {
       await client.query("ROLLBACK");
       return res.status(404).json({ message: "Job not found" });
@@ -847,6 +880,25 @@ exports.submitJob = async (req, res) => {
         await client.query("ROLLBACK");
         return res.status(403).json({ message: "Unauthorized" });
       }
+      const userRes = await client.query('SELECT is_identity_verified FROM users WHERE user_id = $1', [userId]);
+      if (!userRes.rows.length || !userRes.rows[0].is_identity_verified) {
+        await client.query("ROLLBACK");
+        return res.status(403).json({
+          message: "Identity verification required to post jobs. Please complete verification in settings.",
+          requiresVerification: true
+        });
+      }
+    }
+
+    if (job.status === 'REJECTED' || job.moderation_status === 'REJECTED') {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ message: "Rejected jobs cannot be resubmitted." });
+    }
+
+    // Idempotency guard: If job is already ACTIVE or UNDER_REVIEW, return cleanly without duplicate operations
+    if (job.status === 'ACTIVE' || job.status === 'UNDER_REVIEW') {
+      await client.query("COMMIT");
+      return res.status(200).json({ message: "Job is already submitted", job });
     }
 
     if (job.status !== 'DRAFT') {
@@ -854,26 +906,10 @@ exports.submitJob = async (req, res) => {
       return res.status(400).json({ message: "Only DRAFT jobs can be submitted" });
     }
 
-    let updated;
-    if (!job.ai_extracted_requirements) {
-      const extracted = await extractRequirementsFromJDText(job.description);
-      const setClauses = ["status = 'ACTIVE'", "ai_extracted_requirements = $2", "published_at = NOW()", "created_at = NOW()"];
-      const params = [id, JSON.stringify(extracted)];
-      // Only set experience_min from extraction if the job doesn't already have one
-      if (extracted.experience_min !== null && (job.experience_min === null || job.experience_min === undefined)) {
-        setClauses.push("experience_min = $3");
-        params.push(extracted.experience_min);
-      }
-      updated = await client.query(
-        `UPDATE jobs SET ${setClauses.join(", ")} WHERE job_id = $1 RETURNING *`,
-        params
-      );
-    } else {
-      updated = await client.query(
-        `UPDATE jobs SET status = 'ACTIVE', published_at = NOW(), created_at = NOW() WHERE job_id = $1 RETURNING *`,
-        [id]
-      );
-    }
+    const updated = await client.query(
+      `UPDATE jobs SET status = 'UNDER_REVIEW', moderation_status = 'UNDER_REVIEW', is_active = true, rejection_reason = NULL, published_at = NOW(), created_at = NOW(), updated_at = NOW() WHERE job_id = $1 RETURNING *`,
+      [id]
+    );
 
     await client.query(
       `INSERT INTO job_versions (job_id, changed_by, trigger_event, previous_data) VALUES ($1, $2, 'SUBMIT', $3)`,
@@ -885,10 +921,10 @@ exports.submitJob = async (req, res) => {
       [id, userId]
     );
 
-    // Notification: "Your job “[Job Title]” is now live."
+    // Notification: "Your job “[Job Title]” has been submitted for review."
     const publishedJob = updated.rows[0];
     const jobTitle = publishedJob.title || job.title;
-    const notificationText = `Your job ${jobTitle} is now live.`;
+    const notificationText = `Your job ${jobTitle} has been submitted for review.`;
     const metadataPayload = {
       jobId: publishedJob.job_id,
       job_id: publishedJob.job_id,
@@ -896,12 +932,12 @@ exports.submitJob = async (req, res) => {
       companyName: publishedJob.company_name,
       orgId: publishedJob.org_id || null,
       org_id: publishedJob.org_id || null,
-      status: 'ACTIVE'
+      status: 'UNDER_REVIEW'
     };
 
     const notifRes = await client.query(
       `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata, recipient_org_id)
-       VALUES ($1, $2, 'job_approved', $3, $4, $5, $6)
+       VALUES ($1, $2, 'job_submitted', $3, $4, $5, $6)
        RETURNING notification_id, created_at`,
       [userId, userId, notificationText, publishedJob.job_id, JSON.stringify(metadataPayload), publishedJob.org_id || null]
     );
@@ -909,13 +945,33 @@ exports.submitJob = async (req, res) => {
     if (publishedJob.org_id) {
       await client.query(
         `INSERT INTO notifications (recipient_org_id, user_id, sender_id, type, text, reference_id, metadata)
-         VALUES ($1, NULL, $2, 'job_approved', $3, $4, $5)`,
+         VALUES ($1, NULL, $2, 'job_submitted', $3, $4, $5)`,
         [publishedJob.org_id, userId, notificationText, publishedJob.job_id, JSON.stringify(metadataPayload)]
       );
     }
 
     await client.query("COMMIT");
     res.status(200).json({ message: "Job submitted for review", job: publishedJob });
+
+    // Background AI requirements extraction (decoupled to prevent delaying response)
+    if (!job.ai_extracted_requirements && job.description) {
+      setImmediate(async () => {
+        try {
+          const extracted = await extractRequirementsFromJDText(job.description, id, userId, job.org_id, req.ip);
+          if (extracted && (extracted.skills?.length || extracted.experience_min !== null)) {
+            const setClauses = ["ai_extracted_requirements = $2"];
+            const params = [id, JSON.stringify(extracted)];
+            if (extracted.experience_min !== null && (job.experience_min === null || job.experience_min === undefined)) {
+              setClauses.push("experience_min = $3");
+              params.push(extracted.experience_min);
+            }
+            await pool.query(`UPDATE jobs SET ${setClauses.join(", ")} WHERE job_id = $1`, params);
+          }
+        } catch (extractionErr) {
+          console.error(`[Job Extractor] Background extraction failed for job ${id}:`, extractionErr);
+        }
+      });
+    }
 
     // Real-time socket notification
     try {
@@ -924,7 +980,7 @@ exports.submitJob = async (req, res) => {
       const notifCreatedAt = notifRes.rows[0]?.created_at ? notifRes.rows[0].created_at.toISOString() : new Date().toISOString();
       const socketPayload = {
         notification_id: notifId,
-        type: "job_approved",
+        type: "job_submitted",
         text: notificationText,
         sender_id: userId,
         reference_id: publishedJob.job_id,
@@ -940,7 +996,7 @@ exports.submitJob = async (req, res) => {
         socketService.notifyOrg(publishedJob.org_id, "notification", socketPayload);
       }
     } catch (socketErr) {
-      console.error("Failed to emit job_approved notification:", socketErr);
+      console.error("Failed to emit job_submitted notification:", socketErr);
     }
   } catch (err) {
     await client.query("ROLLBACK");
@@ -1032,14 +1088,24 @@ const performLifecycleAction = async (req, res, actionName, targetStatus, allowe
       return res.status(400).json({ message: `Cannot ${actionName} job from status: ${job.status}` });
     }
 
-    const updated = await client.query(
-      `UPDATE jobs 
-       SET status = $1,
-           published_at = CASE WHEN $1 = 'ACTIVE' AND published_at IS NULL THEN NOW() ELSE published_at END,
-           created_at = CASE WHEN $1 = 'ACTIVE' AND (status = 'DRAFT' OR status = 'UNDER_REVIEW') THEN NOW() ELSE created_at END
-       WHERE job_id = $2 RETURNING *`,
-      [targetStatus, id]
-    );
+    let updateQuery;
+    if (targetStatus === 'ACTIVE') {
+      updateQuery = `
+        UPDATE jobs 
+        SET status = $1::varchar,
+            published_at = CASE WHEN published_at IS NULL THEN NOW() ELSE published_at END,
+            created_at = CASE WHEN (status = 'DRAFT' OR status = 'UNDER_REVIEW') THEN NOW() ELSE created_at END
+        WHERE job_id = $2 RETURNING *
+      `;
+    } else {
+      updateQuery = `
+        UPDATE jobs 
+        SET status = $1::varchar
+        WHERE job_id = $2 RETURNING *
+      `;
+    }
+
+    const updated = await client.query(updateQuery, [targetStatus, id]);
 
     await client.query(
       `INSERT INTO job_activity (job_id, actor_id, action) VALUES ($1, $2, $3)`,
@@ -1222,7 +1288,7 @@ exports.applyJob = async (req, res) => {
     const BlockModel = require("../../models/block.model");
     const isOrgBlocked = job.org_id ? await BlockModel.isAnyBlocked(userId, job.org_id) : false;
     const isRecruiterBlocked = job.recruiter_id ? await BlockModel.isAnyBlocked(userId, job.recruiter_id) : false;
-    
+
     if (isOrgBlocked || isRecruiterBlocked) {
       await client.query("ROLLBACK");
       return res.status(404).json({ message: "Job not found" });
@@ -1392,13 +1458,13 @@ exports.applyJob = async (req, res) => {
     // --- Row 1 Notification: Application Thresholds ---
     if (job.org_id && totalApplications >= 10 && (totalApplications - 10) % 15 === 0) {
       const notifyUserIds = new Set();
-      
+
       const adminsRes = await client.query(
-          `SELECT cm.user_id FROM organization_members cm
+        `SELECT cm.user_id FROM organization_members cm
            JOIN organization_roles cr ON cm.role_id = cr.role_id
            WHERE cm.org_id = $1 AND cm.status = 'ACTIVE'
              AND (cr.permissions @> '["*"]'::jsonb OR cr.permissions @> '["MANAGE_JOBS"]'::jsonb)`,
-          [job.org_id]
+        [job.org_id]
       );
       adminsRes.rows.forEach(r => notifyUserIds.add(r.user_id));
       if (job.recruiter_id) notifyUserIds.add(job.recruiter_id);
@@ -1446,7 +1512,7 @@ exports.applyJob = async (req, res) => {
           "New application received",
           `"${totalApplications}" people have applied for "${job.title}". Review them now`,
           { type: 'new_application_threshold', referenceId: id }
-        ).catch(() => {});
+        ).catch(() => { });
       }
     }
 
@@ -1571,10 +1637,10 @@ exports.applyJob = async (req, res) => {
       const { sendToUser } = require('../../modules/notification/notification.service');
       // Using fire and forget, and sending a data-only silent push as requested in spec
       sendToUser(userId, "Application Submitted", text, {
-          type,
-          referenceId: id,
-          silent: 'true'
-      }).catch(() => {});
+        type,
+        referenceId: id,
+        silent: 'true'
+      }).catch(() => { });
 
     } catch (notifErr) {
       console.error("[applyJob] Failed to send notifications:", notifErr);
@@ -1603,6 +1669,7 @@ exports.getJobOffers = async (req, res) => {
 
     // Offers specific condition
     conditions.push('j.is_offer = TRUE');
+    conditions.push('(j.org_id IS NULL OR (c.is_deleted = FALSE AND c.is_deactivated = FALSE AND (c.is_suspended IS NOT TRUE)))');
 
     const params = userId ? [userId] : [];
     params.push(...values);
@@ -1627,9 +1694,13 @@ exports.getJobOffers = async (req, res) => {
         ${userId ? '(js.user_id IS NOT NULL) AS "isSaved",' : 'FALSE AS "isSaved",'}
         ${userId ? '(ja.application_id IS NOT NULL AND ja.current_status != \'Withdrawn\') AS "hasApplied",' : 'FALSE AS "hasApplied",'}
         ${userId ? 'ja.current_status AS "applicationStatus",' : 'NULL AS "applicationStatus",'}
-        (SELECT COUNT(*)::int FROM job_applications ja_count WHERE ja_count.job_id = j.job_id) as applicants
+        (SELECT COUNT(*)::int FROM job_applications ja_count WHERE ja_count.job_id = j.job_id AND ja_count.current_status != 'Withdrawn') as applicants,
+        (SELECT COUNT(*)::int FROM job_applications ja_count WHERE ja_count.job_id = j.job_id AND ja_count.current_status != 'Withdrawn') as applicants_count,
+        (SELECT COUNT(*)::int FROM job_applications ja_count WHERE ja_count.job_id = j.job_id AND ja_count.current_status = 'Shortlisted') as shortlisted_count,
+        (SELECT COUNT(*)::int FROM job_offers jo_count WHERE jo_count.job_id = j.job_id AND jo_count.status != 'withdrawn') as offers_count
       FROM jobs j
       LEFT JOIN active_users u ON j.recruiter_id = u.user_id
+      LEFT JOIN organizations c ON j.org_id = c.org_id
       ${userId ? "LEFT JOIN job_saves js ON js.job_id = j.job_id AND js.user_id = $1" : ""}
       ${userId ? "LEFT JOIN job_applications ja ON ja.job_id = j.job_id AND ja.applicant_id = $1" : ""}
       ${whereClause}
@@ -1767,7 +1838,10 @@ exports.getMySavedJobs = async (req, res) => {
         TRUE AS "isSaved",
         (ja.application_id IS NOT NULL AND ja.current_status != 'Withdrawn') AS "hasApplied",
         ja.current_status AS "applicationStatus",
-        (SELECT COUNT(*)::int FROM job_applications ja_count WHERE ja_count.job_id = j.job_id) as applicants,
+        (SELECT COUNT(*)::int FROM job_applications ja_count WHERE ja_count.job_id = j.job_id AND ja_count.current_status != 'Withdrawn') as applicants,
+        (SELECT COUNT(*)::int FROM job_applications ja_count WHERE ja_count.job_id = j.job_id AND ja_count.current_status != 'Withdrawn') as applicants_count,
+        (SELECT COUNT(*)::int FROM job_applications ja_count WHERE ja_count.job_id = j.job_id AND ja_count.current_status = 'Shortlisted') as shortlisted_count,
+        (SELECT COUNT(*)::int FROM job_offers jo_count WHERE jo_count.job_id = j.job_id AND jo_count.status != 'withdrawn') as offers_count,
         js.saved_at,
         (jo.offer_id IS NOT NULL) AS "is_offer",
         jo.offer_id,
@@ -1779,7 +1853,7 @@ exports.getMySavedJobs = async (req, res) => {
       LEFT JOIN organizations c ON j.org_id = c.org_id
       LEFT JOIN job_applications ja ON ja.job_id = j.job_id AND ja.applicant_id = $1
       LEFT JOIN job_offers jo ON jo.job_id = j.job_id AND jo.user_id = $1 AND jo.status != 'withdrawn'
-      WHERE js.user_id = $1 AND j.is_active = TRUE AND u.user_id IS NOT NULL AND (j.org_id IS NOT NULL OR u.is_deactivated = FALSE) AND (j.org_id IS NULL OR (c.is_deleted = FALSE AND c.is_deactivated = FALSE))
+      WHERE js.user_id = $1 AND j.is_active = TRUE AND u.user_id IS NOT NULL AND (j.org_id IS NOT NULL OR u.is_deactivated = FALSE) AND (j.org_id IS NULL OR (c.is_deleted = FALSE AND c.is_deactivated = FALSE AND (c.is_suspended IS NOT TRUE)))
         AND NOT EXISTS (
           SELECT 1 FROM blocks b
           WHERE (j.org_id IS NOT NULL AND ((b.blocker_id = $1 AND b.blocked_id = j.org_id) OR (b.blocker_id = j.org_id AND b.blocked_id = $1)))
@@ -2012,7 +2086,10 @@ exports.getMyApplications = async (req, res) => {
           jo.offer_id,
           CASE WHEN jo.status = 'pending' AND jo.expires_at <= NOW() THEN 'expired' ELSE jo.status END AS "offerStatus",
           jo.expires_at AS "offer_expires_at",
-          (SELECT COUNT(*)::int FROM job_applications ja_count WHERE ja_count.job_id = j.job_id) as applicants,
+          (SELECT COUNT(*)::int FROM job_applications ja_count WHERE ja_count.job_id = j.job_id AND ja_count.current_status != 'Withdrawn') as applicants,
+        (SELECT COUNT(*)::int FROM job_applications ja_count WHERE ja_count.job_id = j.job_id AND ja_count.current_status != 'Withdrawn') as applicants_count,
+        (SELECT COUNT(*)::int FROM job_applications ja_count WHERE ja_count.job_id = j.job_id AND ja_count.current_status = 'Shortlisted') as shortlisted_count,
+        (SELECT COUNT(*)::int FROM job_offers jo_count WHERE jo_count.job_id = j.job_id AND jo_count.status != 'withdrawn') as offers_count,
           ja.applied_at
         ${baseQuery}
         ${paginationClause}
@@ -2082,11 +2159,17 @@ exports.getMyJobs = async (req, res) => {
 
     // Status filter (must come before pagination so we paginate filtered results)
     if (status && status.toUpperCase() !== 'ALL') {
-      // Map frontend "IN_REVIEW" to DB "IN REVIEW" (underscore -> space)
-      const dbStatus = status.replace(/_/g, ' ').toUpperCase();
-      query += ` AND j.status = $${paramCount}`;
-      params.push(dbStatus);
-      paramCount++;
+      const cleanStatus = status.trim().toUpperCase();
+      if (cleanStatus === 'REJECTED') {
+        query += ` AND (j.status = 'REJECTED' OR j.moderation_status = 'REJECTED')`;
+      } else if (cleanStatus === 'IN_REVIEW' || cleanStatus === 'IN REVIEW' || cleanStatus === 'UNDER_REVIEW') {
+        query += ` AND (j.status IN ('IN REVIEW', 'UNDER_REVIEW') OR j.moderation_status = 'UNDER_REVIEW') AND j.status != 'REJECTED' AND (j.moderation_status IS NULL OR j.moderation_status != 'REJECTED')`;
+      } else {
+        const dbStatus = status.replace(/_/g, ' ').toUpperCase();
+        query += ` AND j.status = $${paramCount}`;
+        params.push(dbStatus);
+        paramCount++;
+      }
     }
 
     // Optional filters
@@ -2198,7 +2281,8 @@ exports.getMyJobs = async (req, res) => {
         COUNT(*) FILTER (WHERE j.status = 'ACTIVE')::int AS "active",
         COUNT(*) FILTER (WHERE j.status = 'CLOSED')::int AS "closed",
         COUNT(*) FILTER (WHERE j.status = 'DRAFT')::int AS "draft",
-        COUNT(*) FILTER (WHERE j.status = 'IN REVIEW')::int AS "inReview"
+        COUNT(*) FILTER (WHERE (j.status IN ('IN REVIEW', 'UNDER_REVIEW') OR j.moderation_status = 'UNDER_REVIEW') AND j.status != 'REJECTED' AND (j.moderation_status IS NULL OR j.moderation_status != 'REJECTED'))::int AS "inReview",
+        COUNT(*) FILTER (WHERE j.status = 'REJECTED' OR j.moderation_status = 'REJECTED')::int AS "rejected"
       FROM jobs j
       WHERE j.recruiter_id = $1
         AND j.org_id IS NULL
@@ -2363,7 +2447,7 @@ exports.updateJob = async (req, res) => {
 
     // 1. Check ownership
     const checkRes = await client.query(
-      `SELECT org_id, recruiter_id, company_name, is_active FROM jobs WHERE job_id = $1`,
+      `SELECT org_id, recruiter_id, company_name, is_active, status, moderation_status FROM jobs WHERE job_id = $1`,
       [id]
     );
 
@@ -2372,7 +2456,14 @@ exports.updateJob = async (req, res) => {
       return res.status(404).json({ message: "Job not found" });
     }
 
-    const { org_id: dbOrgId, recruiter_id } = checkRes.rows[0];
+    const { org_id: dbOrgId, recruiter_id, status: jobStatus, moderation_status: jobModStatus } = checkRes.rows[0];
+
+    // Block updating rejected jobs
+    if (jobStatus === 'REJECTED' || jobModStatus === 'REJECTED') {
+      await client.query("ROLLBACK");
+      return res.status(403).json({ message: "Rejected jobs cannot be edited." });
+    }
+
     const _jobData = { org_id: dbOrgId, recruiter_id };
 
     // Personal job: only the creator can update
@@ -2463,14 +2554,18 @@ exports.updateJob = async (req, res) => {
 
     await client.query("COMMIT");
 
-    if (title) {
+    if (title && title.trim()) {
       // Automatically add this new role to the master table if they update the title
-      await client.query(
-        `INSERT INTO job_roles_master (role_name, category) 
-         VALUES ($1, 'Custom') 
-         ON CONFLICT (role_name) DO NOTHING`,
-        [title]
+      const existingRole = await client.query(
+        `SELECT 1 FROM job_roles_master WHERE LOWER(TRIM(role_name)) = LOWER(TRIM($1)) LIMIT 1`,
+        [title.trim()]
       );
+      if (existingRole.rows.length === 0) {
+        await client.query(
+          `INSERT INTO job_roles_master (role_name, category) VALUES ($1, 'Custom') ON CONFLICT DO NOTHING`,
+          [title.trim()]
+        );
+      }
     }
 
     if (industry) {
@@ -2593,7 +2688,7 @@ exports.getJobRoles = async (req, res) => {
   try {
     const { q, cursor, limit = 50 } = req.query;
     const pageSize = Math.min(Math.max(parseInt(limit) || 50, 1), 100);
-    let query = `SELECT role_name, category FROM job_roles_master`;
+    let query = `SELECT MIN(role_name) AS role_name, MIN(category) AS category FROM job_roles_master`;
     let values = [];
     let conditions = [];
 
@@ -2610,6 +2705,8 @@ exports.getJobRoles = async (req, res) => {
     if (conditions.length > 0) {
       query += ` WHERE ` + conditions.join(` AND `);
     }
+
+    query += ` GROUP BY LOWER(TRIM(role_name))`;
 
     values.push(pageSize + 1);
     query += ` ORDER BY role_name ASC LIMIT $${values.length}`;
@@ -2633,6 +2730,8 @@ exports.getJobRoles = async (req, res) => {
 exports.getIndustries = async (req, res) => {
   try {
     const { q, cursor, limit = 50 } = req.query;
+
+    // Flat list pagination across all industries
     const pageSize = Math.min(Math.max(parseInt(limit) || 50, 1), 100);
     let query = `SELECT industry_name FROM industries_master`;
     let values = [];
@@ -2682,6 +2781,7 @@ exports.getCompanies = async (req, res) => {
       WHERE o.name IS NOT NULL
         AND TRIM(o.name) != ''
         AND o.is_deleted = FALSE
+        AND (o.is_suspended IS NOT TRUE)
     `;
     let values = [];
 
@@ -2720,18 +2820,24 @@ exports.getInstitutes = async (req, res) => {
     const pageSize = Math.min(Math.max(parseInt(limit) || 50, 1), 100);
 
     let query = `
-      WITH all_institutes AS (
-        SELECT DISTINCT TRIM(o.name) AS name
+      WITH all_sources AS (
+        SELECT TRIM(o.name) AS name, 1 AS priority
         FROM organizations o
         WHERE o.name IS NOT NULL
           AND TRIM(o.name) != ''
           AND (o.entity_type = 'INSTITUTION' OR o.institution_type IS NOT NULL)
           AND o.is_deleted = FALSE
-        UNION
-        SELECT DISTINCT TRIM(ed.school_name) AS name
+          AND (o.is_suspended IS NOT TRUE)
+        UNION ALL
+        SELECT TRIM(ed.school_name) AS name, 2 AS priority
         FROM educations ed
         WHERE ed.school_name IS NOT NULL
           AND TRIM(ed.school_name) != ''
+      ),
+      all_institutes AS (
+        SELECT DISTINCT ON (LOWER(name)) name
+        FROM all_sources
+        ORDER BY LOWER(name) ASC, priority ASC, name ASC
       )
       SELECT name
       FROM all_institutes
@@ -2781,12 +2887,12 @@ exports.getLocations = async (req, res) => {
         UNION
         SELECT DISTINCT TRIM(location) AS location
         FROM organizations
-        WHERE location IS NOT NULL AND TRIM(location) != '' AND is_deleted = FALSE
+        WHERE location IS NOT NULL AND TRIM(location) != '' AND is_deleted = FALSE AND (is_suspended IS NOT TRUE)
         UNION
         SELECT DISTINCT
           CONCAT_WS(', ', NULLIF(TRIM(city), ''), NULLIF(TRIM(country), '')) AS location
         FROM organizations
-        WHERE city IS NOT NULL AND TRIM(city) != '' AND is_deleted = FALSE
+        WHERE city IS NOT NULL AND TRIM(city) != '' AND is_deleted = FALSE AND (is_suspended IS NOT TRUE)
         UNION
         SELECT DISTINCT
           CONCAT_WS(', ', NULLIF(TRIM(location_city), ''), NULLIF(TRIM(location_state), ''), NULLIF(TRIM(location_country), '')) AS location

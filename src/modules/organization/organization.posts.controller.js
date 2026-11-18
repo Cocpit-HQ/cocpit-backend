@@ -96,6 +96,9 @@ exports.getOrganizationPosts = async (req, res) => {
         if (!org) {
             return res.status(404).json({ message: "Organization not found" });
         }
+        if (org.is_suspended) {
+            return res.status(403).json({ is_suspended: true, error: "This organization has been suspended.", posts: [] });
+        }
         const resolvedOrgId = org.org_id;
 
         let hasPrivateAccess = false;

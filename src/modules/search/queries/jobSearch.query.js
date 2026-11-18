@@ -42,7 +42,7 @@ async function searchJobs(client, { queryParams, viewerId, orgActorId, limit = 1
   conditions.push(`j.is_active = TRUE`);
   conditions.push(`j.status = 'ACTIVE'`);
   conditions.push(`(j.org_id IS NOT NULL OR u.is_deactivated = FALSE)`);
-  conditions.push(`(j.org_id IS NULL OR (c.is_deleted = FALSE AND c.is_deactivated = FALSE))`);
+  conditions.push(`(j.org_id IS NULL OR (c.is_deleted = FALSE AND c.is_deactivated = FALSE AND (c.is_suspended IS NOT TRUE)))`);
 
   // Block enforcement
   if (viewerId && orgActorId) {
@@ -160,7 +160,7 @@ async function searchJobs(client, { queryParams, viewerId, orgActorId, limit = 1
       salaryDisplay = `From ₹${Math.round(item.salary_min / 1000)}k`;
     }
 
-    let cleanExp = '0-2 Yrs';
+    let cleanExp = '0-1 Yrs';
     if (item.experience_label && !item.experience_label.includes('null')) {
       cleanExp = item.experience_label;
     } else if (item.experience_min != null && item.experience_max != null) {

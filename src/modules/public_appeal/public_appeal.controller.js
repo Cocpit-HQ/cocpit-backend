@@ -14,14 +14,18 @@ exports.verifyToken = async (req, res) => {
         at.expires_at,
         ma.action_id,
         ma.action_type,
+        ma.target_type,
+        ma.target_id,
         ma.reason,
         ma.duration_days,
         ma.created_at as suspended_at,
         u.user_id,
-        u.full_name as user_name
+        COALESCE(o.name, u.full_name) as user_name,
+        o.name as org_name
       FROM appeal_tokens at
       JOIN moderation_actions ma ON at.action_id = ma.action_id
-      JOIN users u ON ma.target_id = u.user_id AND ma.target_type = 'USER'
+      LEFT JOIN users u ON ma.target_id = u.user_id AND ma.target_type = 'USER'
+      LEFT JOIN organizations o ON ma.target_id = o.org_id AND ma.target_type = 'ORGANIZATION'
       WHERE at.token_hash = $1
     `;
 
@@ -98,8 +102,14 @@ exports.submitAppeal = async (req, res) => {
       return res.status(400).json({ error: 'An appeal has already been submitted for this action.' });
     }
 
-    const actionRes = await pool.query('SELECT target_id FROM moderation_actions WHERE action_id = $1', [tokenData.action_id]);
-    const userId = actionRes.rows[0].target_id;
+    const actionRes = await pool.query('SELECT target_type, target_id FROM moderation_actions WHERE action_id = $1', [tokenData.action_id]);
+    const { target_type, target_id } = actionRes.rows[0];
+
+    let userId = target_id;
+    if (target_type === 'ORGANIZATION') {
+      const orgRes = await pool.query('SELECT created_by FROM organizations WHERE org_id = $1', [target_id]);
+      userId = orgRes.rows[0]?.created_by || null;
+    }
 
     // 3. Insert the appeal
     await pool.query(

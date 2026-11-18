@@ -73,21 +73,19 @@ function getRelativeTime(dateString) {
   return `${Math.floor(diffDay / 365)}y ago`;
 }
 
-function formatSalaryDisplay(min, max, currency = 'USD', period = 'YEARLY') {
+function formatSalaryDisplay(min, max, currency = 'INR', period = 'YEARLY') {
   if (!min && !max) return '';
-  const symbol = currency === 'INR' ? '₹' : currency === 'EUR' ? '€' : currency === 'GBP' ? '£' : '$';
+  const symbol = '₹';
   const formatNum = (num) => {
     if (num >= 1000000) return `${(num / 1000000).toFixed(1).replace(/\.0$/, '')}M`;
     if (num >= 1000) return `${(num / 1000).toFixed(0)}k`;
     return num.toLocaleString();
   };
 
-  const periodSuffix = period === 'HOURLY' ? '/hr' : period === 'MONTHLY' ? '/mo' : '/yr';
-
   if (min && max) {
-    return `${symbol}${formatNum(min)} - ${symbol}${formatNum(max)}${periodSuffix}`;
+    return `${symbol}${formatNum(min)} - ${symbol}${formatNum(max)}`;
   }
-  return `${symbol}${formatNum(min || max)}${periodSuffix}`;
+  return `${symbol}${formatNum(min || max)}`;
 }
 
 function formatExperience(row) {
@@ -97,7 +95,7 @@ function formatExperience(row) {
   if (row.experience_label) return row.experience_label;
   if (row.experience_level) return row.experience_level;
   if (row.experience_min != null) return `${row.experience_min}+ Yrs`;
-  return '0-2 Yrs';
+  return '0-1 Yrs';
 }
 
 function formatJobItem(row) {
@@ -140,10 +138,10 @@ function formatJobItem(row) {
     // Compensation & formatting
     salary_min: row.salary_min,
     salary_max: row.salary_max,
-    salary_currency: row.salary_currency || 'USD',
+    salary_currency: row.salary_currency || 'INR',
     salary_period: row.salary_period || 'YEARLY',
     is_salary_negotiable: Boolean(row.is_salary_negotiable),
-    salary_display: formatSalaryDisplay(row.salary_min, row.salary_max, row.salary_currency, row.salary_period),
+    salary_display: formatSalaryDisplay(row.salary_min, row.salary_max, row.salary_currency || 'INR', row.salary_period),
 
     // Experience & formatting
     experience_min: row.experience_min,
@@ -210,7 +208,7 @@ function buildCommonEligibilityPredicate(userId, paramIndex = 1) {
     `j.status = 'ACTIVE'`,
     `(j.expires_at IS NULL OR j.expires_at > NOW())`,
     `(
-      (j.org_id IS NOT NULL AND c.org_id IS NOT NULL AND (c.is_deleted IS FALSE OR c.is_deleted IS NULL) AND (c.is_deactivated IS FALSE OR c.is_deactivated IS NULL))
+      (j.org_id IS NOT NULL AND c.org_id IS NOT NULL AND (c.is_deleted IS FALSE OR c.is_deleted IS NULL) AND (c.is_deactivated IS FALSE OR c.is_deactivated IS NULL) AND (c.is_suspended IS NOT TRUE))
       OR
       (j.org_id IS NULL AND j.recruiter_id IS NOT NULL AND u.user_id IS NOT NULL AND (u.is_deactivated IS FALSE OR u.is_deactivated IS NULL))
     )`,

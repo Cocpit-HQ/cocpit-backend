@@ -24,7 +24,7 @@ exports.sendJobOffer = async (req, res) => {
         await client.query('BEGIN');
 
         const jobCheck = await client.query(
-            `SELECT job_id, title FROM jobs 
+            `SELECT job_id, title, org_id, recruiter_id FROM jobs 
              WHERE job_id = $1 AND is_active = TRUE 
                AND (org_id = $2 OR (org_id IS NULL AND recruiter_id = $3))`,
             [jobId, companyId || null, sentBy]
@@ -32,6 +32,21 @@ exports.sendJobOffer = async (req, res) => {
         if (jobCheck.rowCount === 0) {
             await client.query('ROLLBACK');
             return res.status(404).json({ message: "Job not found or does not belong to this company/recruiter" });
+        }
+
+        const targetOrgId = jobCheck.rows[0].org_id || companyId;
+        if (targetOrgId) {
+            // Check if recipient is owner or active member of this organization
+            const memberCheck = await client.query(
+                `SELECT 1 FROM organization_members WHERE org_id = $1 AND user_id = $2 AND status = 'ACTIVE'
+                 UNION
+                 SELECT 1 FROM organizations WHERE org_id = $1 AND created_by = $2`,
+                [targetOrgId, userId]
+            );
+            if (memberCheck.rowCount > 0) {
+                await client.query('ROLLBACK');
+                return res.status(400).json({ message: "You cannot send a job offer to an owner or member of this organization." });
+            }
         }
 
         // 2. Check for existing pending, accepted, or declined offer
@@ -138,13 +153,13 @@ exports.getMyOffers = async (req, res) => {
                 j.salary_period, j.job_type, j.work_mode, j.location, j.experience_level,
                 j.company_name, j.recruiter_id,
                 j.is_active, j.status as job_status,
-                COALESCE(c.name, j.company_name) as company_display_name, c.logo_url as company_logo, c.slug as company_slug,
-                u.full_name as sent_by_name,
-                u.avatar_url as sent_by_avatar,
-                u.headline as sent_by_headline
+                COALESCE(c.name, j.company_name) as company_display_name, c.logo_url as company_logo, c.headline as company_headline, c.slug as company_slug,
+                CASE WHEN jo.org_id IS NOT NULL OR j.org_id IS NOT NULL THEN COALESCE(c.name, j.company_name) ELSE u.full_name END as sent_by_name,
+                CASE WHEN jo.org_id IS NOT NULL OR j.org_id IS NOT NULL THEN c.logo_url ELSE u.avatar_url END as sent_by_avatar,
+                CASE WHEN jo.org_id IS NOT NULL OR j.org_id IS NOT NULL THEN c.headline ELSE u.headline END as sent_by_headline
             FROM job_offers jo
             JOIN jobs j ON jo.job_id = j.job_id
-            LEFT JOIN organizations c ON jo.org_id = c.org_id
+            LEFT JOIN organizations c ON COALESCE(jo.org_id, j.org_id) = c.org_id
             LEFT JOIN active_users u ON jo.sent_by = u.user_id
             WHERE jo.user_id = $1 AND j.is_active = TRUE AND jo.status != 'withdrawn'
         `;
@@ -180,9 +195,69 @@ exports.getMyOffers = async (req, res) => {
  */
 exports.getCompanySentOffers = async (req, res) => {
     const { companyId } = req.params;
+    const { cursor } = req.query;
+    const isPaginated = req.query.cursor !== undefined || req.query.limit !== undefined;
+    const limitNum = Math.min(Math.max(parseInt(req.query.limit, 10) || 10, 1), 50);
 
     try {
-        const query = `
+        const queryParams = [companyId];
+        let cursorCondition = '';
+        let limitClause = '';
+
+        if (isPaginated) {
+            if (cursor) {
+                queryParams.push(new Date(cursor));
+                cursorCondition = `AND latest_offer_at < $${queryParams.length}`;
+            }
+            queryParams.push(limitNum + 1);
+            limitClause = `LIMIT $${queryParams.length}`;
+        }
+
+        const query = isPaginated ? `
+            WITH sent_offers_summary AS (
+                SELECT 
+                    j.job_id,
+                    j.title,
+                    j.job_type,
+                    j.work_mode,
+                    j.location,
+                    j.experience_level,
+                    j.salary_min,
+                    j.salary_max,
+                    j.salary_currency,
+                    j.salary_period,
+                    j.company_name,
+                    j.description,
+                    c.name AS company_display_name,
+                    c.logo_url AS company_logo,
+                    COALESCE(c.logo_url, '') AS company_avatar,
+                    c.slug AS company_slug,
+                    TRUE AS is_offer,
+                    COUNT(jo.offer_id) FILTER (WHERE jo.status != 'withdrawn') AS total_offers,
+                    COUNT(jo.offer_id) FILTER (WHERE jo.status = 'pending') AS pending_count,
+                    COUNT(jo.offer_id) FILTER (WHERE jo.status = 'accepted') AS accepted_count,
+                    COUNT(jo.offer_id) FILTER (WHERE jo.status = 'declined') AS declined_count,
+                    COUNT(jo.offer_id) FILTER (WHERE jo.status = 'withdrawn') AS withdrawn_count,
+                    (SELECT COUNT(*)::int FROM job_applications ja_count WHERE ja_count.job_id = j.job_id AND ja_count.current_status != 'Withdrawn') AS applicants_count,
+                    (SELECT COUNT(*)::int FROM job_applications ja_count WHERE ja_count.job_id = j.job_id AND ja_count.current_status = 'Shortlisted') AS shortlisted_count,
+                    MAX(jo.created_at) AS latest_offer_at
+                FROM job_offers jo
+                JOIN jobs j ON jo.job_id = j.job_id
+                JOIN organizations c ON j.org_id = c.org_id
+                LEFT JOIN active_users u ON j.recruiter_id = u.user_id
+                WHERE jo.org_id = $1 AND j.is_active = TRUE AND jo.status != 'withdrawn'
+                GROUP BY j.job_id, j.title, j.job_type, j.work_mode, j.location,
+                         j.experience_level, j.salary_min, j.salary_max, j.salary_currency,
+                         j.salary_period, j.company_name, j.description,
+                         c.name, c.logo_url, c.slug, u.avatar_url
+                HAVING COUNT(jo.offer_id) FILTER (WHERE jo.status != 'withdrawn') > 0
+            )
+            SELECT *, (SELECT COUNT(*)::int FROM sent_offers_summary) AS overall_count
+            FROM sent_offers_summary
+            WHERE 1=1 ${cursorCondition}
+            ORDER BY latest_offer_at DESC, job_id DESC
+            ${limitClause}
+        ` : `
             SELECT 
                 j.job_id,
                 j.title,
@@ -206,6 +281,8 @@ exports.getCompanySentOffers = async (req, res) => {
                 COUNT(jo.offer_id) FILTER (WHERE jo.status = 'accepted') AS accepted_count,
                 COUNT(jo.offer_id) FILTER (WHERE jo.status = 'declined') AS declined_count,
                 COUNT(jo.offer_id) FILTER (WHERE jo.status = 'withdrawn') AS withdrawn_count,
+                (SELECT COUNT(*)::int FROM job_applications ja_count WHERE ja_count.job_id = j.job_id AND ja_count.current_status != 'Withdrawn') AS applicants_count,
+                (SELECT COUNT(*)::int FROM job_applications ja_count WHERE ja_count.job_id = j.job_id AND ja_count.current_status = 'Shortlisted') AS shortlisted_count,
                 MAX(jo.created_at) AS latest_offer_at
             FROM job_offers jo
             JOIN jobs j ON jo.job_id = j.job_id
@@ -220,19 +297,45 @@ exports.getCompanySentOffers = async (req, res) => {
             ORDER BY latest_offer_at DESC
         `;
 
-        const result = await pool.query(query, [companyId]);
+        const result = await pool.query(query, queryParams);
 
-        // Cast counts to numbers (pg returns strings for aggregate)
-        const rows = result.rows.map(r => ({
+        if (!isPaginated) {
+            const rows = result.rows.map(r => ({
+                ...r,
+                total_offers: Number(r.total_offers),
+                pending_count: Number(r.pending_count),
+                accepted_count: Number(r.accepted_count),
+                declined_count: Number(r.declined_count),
+                withdrawn_count: Number(r.withdrawn_count),
+                applicants_count: Number(r.applicants_count || 0),
+                shortlisted_count: Number(r.shortlisted_count || 0),
+            }));
+            return res.json(rows);
+        }
+
+        const rows = result.rows;
+        const totalOffers = rows.length > 0 ? Number(rows[0].overall_count) : 0;
+        const hasMore = rows.length > limitNum;
+        const items = hasMore ? rows.slice(0, limitNum) : rows;
+        const nextCursor = (hasMore && items.length > 0) ? items[items.length - 1].latest_offer_at : null;
+
+        const mappedItems = items.map(r => ({
             ...r,
             total_offers: Number(r.total_offers),
             pending_count: Number(r.pending_count),
             accepted_count: Number(r.accepted_count),
             declined_count: Number(r.declined_count),
             withdrawn_count: Number(r.withdrawn_count),
+            applicants_count: Number(r.applicants_count || 0),
+            shortlisted_count: Number(r.shortlisted_count || 0),
         }));
 
-        res.json(rows);
+        res.json({
+            offers: mappedItems,
+            nextCursor,
+            hasMore,
+            totalOffers
+        });
     } catch (err) {
         console.error("Get company sent offers error:", err);
         res.status(500).json({ message: "Internal server error" });
@@ -272,7 +375,7 @@ exports.getCompanyOfferRecipients = async (req, res) => {
             query += ` WHERE jo.org_id = $1 AND jo.job_id = $2 AND jo.status != 'withdrawn' `;
             params = [companyId, jobId];
         } else {
-            query += ` WHERE jo.sent_by = $1 AND jo.job_id = $2 AND jo.status != 'withdrawn' `;
+            query += ` WHERE jo.sent_by = $1 AND jo.org_id IS NULL AND jo.job_id = $2 AND jo.status != 'withdrawn' `;
             params = [userId, jobId];
         }
         query += ` ORDER BY jo.created_at DESC `;
@@ -568,11 +671,13 @@ exports.getOfferDetail = async (req, res) => {
                 j.title, j.description, j.salary_min, j.salary_max, j.salary_currency,
                 j.salary_period, j.job_type, j.work_mode, j.location, j.experience_level,
                 j.about_company, j.company_name, j.industry, j.recruiter_id,
-                COALESCE(c.name, j.company_name) as company_display_name, c.logo_url as company_logo, c.slug as company_slug,
-                u.full_name as sent_by_name, u.avatar_url as sent_by_avatar
+                COALESCE(c.name, j.company_name) as company_display_name, c.logo_url as company_logo, c.headline as company_headline, c.slug as company_slug,
+                CASE WHEN jo.org_id IS NOT NULL OR j.org_id IS NOT NULL THEN COALESCE(c.name, j.company_name) ELSE u.full_name END as sent_by_name,
+                CASE WHEN jo.org_id IS NOT NULL OR j.org_id IS NOT NULL THEN c.logo_url ELSE u.avatar_url END as sent_by_avatar,
+                CASE WHEN jo.org_id IS NOT NULL OR j.org_id IS NOT NULL THEN c.headline ELSE u.headline END as sent_by_headline
             FROM job_offers jo
             JOIN jobs j ON jo.job_id = j.job_id
-            LEFT JOIN organizations c ON jo.org_id = c.org_id
+            LEFT JOIN organizations c ON COALESCE(jo.org_id, j.org_id) = c.org_id
             LEFT JOIN active_users u ON jo.sent_by = u.user_id
             WHERE jo.offer_id = $1 AND j.is_active = TRUE AND jo.status != 'withdrawn' AND (jo.user_id = $2 OR jo.sent_by = $2 OR (jo.org_id IS NOT NULL AND jo.org_id IN (
                 SELECT org_id FROM organization_members WHERE user_id = $2
@@ -631,9 +736,69 @@ exports.checkOfferStatus = async (req, res) => {
  */
 exports.getRecruiterSentOffers = async (req, res) => {
     const userId = req.user.sub;
+    const { cursor } = req.query;
+    const isPaginated = req.query.cursor !== undefined || req.query.limit !== undefined;
+    const limitNum = Math.min(Math.max(parseInt(req.query.limit, 10) || 10, 1), 50);
 
     try {
-        const query = `
+        const queryParams = [userId];
+        let cursorCondition = '';
+        let limitClause = '';
+
+        if (isPaginated) {
+            if (cursor) {
+                queryParams.push(new Date(cursor));
+                cursorCondition = `AND latest_offer_at < $${queryParams.length}`;
+            }
+            queryParams.push(limitNum + 1);
+            limitClause = `LIMIT $${queryParams.length}`;
+        }
+
+        const query = isPaginated ? `
+            WITH sent_offers_summary AS (
+                SELECT 
+                    j.job_id,
+                    j.title,
+                    j.job_type,
+                    j.work_mode,
+                    j.location,
+                    j.experience_level,
+                    j.salary_min,
+                    j.salary_max,
+                    j.salary_currency,
+                    j.salary_period,
+                    j.company_name,
+                    j.description,
+                    COALESCE(c.name, j.company_name) AS company_display_name,
+                    c.logo_url AS company_logo,
+                    COALESCE(c.logo_url, '') AS company_avatar,
+                    c.slug AS company_slug,
+                    TRUE AS is_offer,
+                    COUNT(jo.offer_id) FILTER (WHERE jo.status != 'withdrawn') AS total_offers,
+                    COUNT(jo.offer_id) FILTER (WHERE jo.status = 'pending') AS pending_count,
+                    COUNT(jo.offer_id) FILTER (WHERE jo.status = 'accepted') AS accepted_count,
+                    COUNT(jo.offer_id) FILTER (WHERE jo.status = 'declined') AS declined_count,
+                    COUNT(jo.offer_id) FILTER (WHERE jo.status = 'withdrawn') AS withdrawn_count,
+                    (SELECT COUNT(*)::int FROM job_applications ja_count WHERE ja_count.job_id = j.job_id AND ja_count.current_status != 'Withdrawn') AS applicants_count,
+                    (SELECT COUNT(*)::int FROM job_applications ja_count WHERE ja_count.job_id = j.job_id AND ja_count.current_status = 'Shortlisted') AS shortlisted_count,
+                    MAX(jo.created_at) AS latest_offer_at
+                FROM job_offers jo
+                JOIN jobs j ON jo.job_id = j.job_id
+                LEFT JOIN organizations c ON j.org_id = c.org_id
+                LEFT JOIN active_users u ON j.recruiter_id = u.user_id
+                WHERE jo.sent_by = $1 AND jo.org_id IS NULL AND j.org_id IS NULL AND j.is_active = TRUE AND jo.status != 'withdrawn'
+                GROUP BY j.job_id, j.title, j.job_type, j.work_mode, j.location,
+                         j.experience_level, j.salary_min, j.salary_max, j.salary_currency,
+                         j.salary_period, j.company_name, j.description,
+                         c.name, c.logo_url, c.slug, u.avatar_url
+                HAVING COUNT(jo.offer_id) FILTER (WHERE jo.status != 'withdrawn') > 0
+            )
+            SELECT *, (SELECT COUNT(*)::int FROM sent_offers_summary) AS overall_count
+            FROM sent_offers_summary
+            WHERE 1=1 ${cursorCondition}
+            ORDER BY latest_offer_at DESC, job_id DESC
+            ${limitClause}
+        ` : `
             SELECT 
                 j.job_id,
                 j.title,
@@ -657,12 +822,14 @@ exports.getRecruiterSentOffers = async (req, res) => {
                 COUNT(jo.offer_id) FILTER (WHERE jo.status = 'accepted') AS accepted_count,
                 COUNT(jo.offer_id) FILTER (WHERE jo.status = 'declined') AS declined_count,
                 COUNT(jo.offer_id) FILTER (WHERE jo.status = 'withdrawn') AS withdrawn_count,
+                (SELECT COUNT(*)::int FROM job_applications ja_count WHERE ja_count.job_id = j.job_id AND ja_count.current_status != 'Withdrawn') AS applicants_count,
+                (SELECT COUNT(*)::int FROM job_applications ja_count WHERE ja_count.job_id = j.job_id AND ja_count.current_status = 'Shortlisted') AS shortlisted_count,
                 MAX(jo.created_at) AS latest_offer_at
             FROM job_offers jo
             JOIN jobs j ON jo.job_id = j.job_id
             LEFT JOIN organizations c ON j.org_id = c.org_id
             LEFT JOIN active_users u ON j.recruiter_id = u.user_id
-            WHERE jo.sent_by = $1 AND j.is_active = TRUE AND jo.status != 'withdrawn'
+            WHERE jo.sent_by = $1 AND jo.org_id IS NULL AND j.org_id IS NULL AND j.is_active = TRUE AND jo.status != 'withdrawn'
             GROUP BY j.job_id, j.title, j.job_type, j.work_mode, j.location,
                      j.experience_level, j.salary_min, j.salary_max, j.salary_currency,
                      j.salary_period, j.company_name, j.description,
@@ -671,18 +838,45 @@ exports.getRecruiterSentOffers = async (req, res) => {
             ORDER BY latest_offer_at DESC
         `;
 
-        const result = await pool.query(query, [userId]);
+        const result = await pool.query(query, queryParams);
 
-        const rows = result.rows.map(r => ({
+        if (!isPaginated) {
+            const rows = result.rows.map(r => ({
+                ...r,
+                total_offers: Number(r.total_offers),
+                pending_count: Number(r.pending_count),
+                accepted_count: Number(r.accepted_count),
+                declined_count: Number(r.declined_count),
+                withdrawn_count: Number(r.withdrawn_count),
+                applicants_count: Number(r.applicants_count || 0),
+                shortlisted_count: Number(r.shortlisted_count || 0),
+            }));
+            return res.json(rows);
+        }
+
+        const rows = result.rows;
+        const totalOffers = rows.length > 0 ? Number(rows[0].overall_count) : 0;
+        const hasMore = rows.length > limitNum;
+        const items = hasMore ? rows.slice(0, limitNum) : rows;
+        const nextCursor = (hasMore && items.length > 0) ? items[items.length - 1].latest_offer_at : null;
+
+        const mappedItems = items.map(r => ({
             ...r,
             total_offers: Number(r.total_offers),
             pending_count: Number(r.pending_count),
             accepted_count: Number(r.accepted_count),
             declined_count: Number(r.declined_count),
             withdrawn_count: Number(r.withdrawn_count),
+            applicants_count: Number(r.applicants_count || 0),
+            shortlisted_count: Number(r.shortlisted_count || 0),
         }));
 
-        res.json(rows);
+        res.json({
+            offers: mappedItems,
+            nextCursor,
+            hasMore,
+            totalOffers
+        });
     } catch (err) {
         console.error("Get recruiter sent offers error:", err);
         res.status(500).json({ message: "Internal server error" });

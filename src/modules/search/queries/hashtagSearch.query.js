@@ -15,7 +15,7 @@ function encodeHashtagCursor(item, sortBy) {
         ? (item.effective_recent_at || item.last_used_at || item.created_at || new Date().toISOString())
         : sortBy === 'trending'
         ? (item.trending_score || 0)
-        : (item.posts_count || item.post_count || 0),
+        : (item.posts_count !== undefined ? Number(item.posts_count) : (item.post_count || 0)),
     t: (item.tag || '').toLowerCase(),
     id: item.id || item.hashtag_id,
   };
@@ -114,19 +114,17 @@ async function searchHashtags(client, { searchTerm, limit = 25, cursor = null, q
 
   // Order clause based on chosen mode
   let orderSql = '';
-  let trendingSelect = '';
+  let trendingSelect = '0 AS trending_score';
 
   switch (sortBy) {
     case 'trending':
-      trendingSelect = `
-        (
-          CASE 
-            WHEN h.last_used_at >= NOW() - INTERVAL '24 hours' THEN 100
-            WHEN h.last_used_at >= NOW() - INTERVAL '7 days' THEN 40
-            ELSE 0
-          END + COALESCE(h.posts_count, 0)
-        ) AS trending_score,
-      `;
+      trendingSelect = `(
+        CASE 
+          WHEN h.last_used_at >= NOW() - INTERVAL '24 hours' THEN 100
+          WHEN h.last_used_at >= NOW() - INTERVAL '7 days' THEN 40
+          ELSE 0
+        END + h.posts_count
+      ) AS trending_score`;
       orderSql = `ORDER BY sort_rank ASC, trending_score DESC, COALESCE(h.usage_count, 0) DESC, LOWER(h.tag) ASC, h.hashtag_id ASC`;
       break;
 
@@ -149,19 +147,38 @@ async function searchHashtags(client, { searchTerm, limit = 25, cursor = null, q
   const limitIdx = paramIdx++;
 
   const sql = `
-    WITH candidate_tags AS (
+    WITH filtered_tags AS (
       SELECT 
         h.hashtag_id,
         h.tag,
         COALESCE(h.usage_count, 0) AS usage_count,
-        COALESCE(h.posts_count, 0) AS posts_count,
+        COALESCE(
+          (
+            SELECT COUNT(DISTINCT ph.post_id)::int
+            FROM post_hashtags ph
+            JOIN posts p ON p.post_id = ph.post_id
+            WHERE ph.hashtag_id = h.hashtag_id
+              AND p.visibility = 'public'
+              AND p.is_active = TRUE
+              AND (p.is_removed IS FALSE OR p.is_removed IS NULL)
+              AND (p.is_deleted IS FALSE OR p.is_deleted IS NULL)
+              AND (p.is_unlisted IS FALSE OR p.is_unlisted IS NULL)
+              AND (p.status IS NULL OR p.status = 'published')
+          ),
+          0
+        ) AS posts_count,
         h.created_at,
         h.last_used_at,
         COALESCE(h.last_used_at, h.created_at) AS effective_recent_at,
-        ${trendingSelect}
         ${lexicalScoreSql}
       FROM hashtags h
-      WHERE ${whereSearchClause}
+      WHERE h.tag IS NOT NULL AND TRIM(h.tag) != '' AND ${whereSearchClause}
+    ),
+    candidate_tags AS (
+      SELECT 
+        h.*,
+        ${trendingSelect}
+      FROM filtered_tags h
     )
     SELECT *
     FROM candidate_tags h
@@ -183,7 +200,7 @@ async function searchHashtags(client, { searchTerm, limit = 25, cursor = null, q
 
   const formattedItems = items.map(item => {
     let postsDisplay = '0 posts';
-    const count = item.posts_count || item.usage_count || 0;
+    const count = Number(item.posts_count) || 0;
     if (count >= 1000) {
       postsDisplay = `${(count / 1000).toFixed(1)}k posts`;
     } else {
@@ -194,7 +211,7 @@ async function searchHashtags(client, { searchTerm, limit = 25, cursor = null, q
       id: item.hashtag_id,
       tag: item.tag,
       display_tag: item.tag.startsWith('#') ? item.tag : `#${item.tag}`,
-      usage_count: item.usage_count,
+      usage_count: Number(item.usage_count) || 0,
       post_count: count,
       posts_count: count,
       posts_display: postsDisplay,

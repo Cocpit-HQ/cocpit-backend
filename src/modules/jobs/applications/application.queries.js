@@ -35,8 +35,13 @@ async function getApplicantList(jobId, filters = {}) {
   let conditions = ['ja.job_id = $1'];
 
   if (status && status !== 'All') {
-    params.push(status);
-    conditions.push(`ja.current_status = $${params.length}`);
+    if (status === 'Noted') {
+      conditions.push(`ja.current_status != 'Withdrawn'`);
+      conditions.push(`EXISTS (SELECT 1 FROM application_notes an WHERE an.application_id = ja.application_id AND TRIM(an.body) != '')`);
+    } else {
+      params.push(status);
+      conditions.push(`ja.current_status = $${params.length}`);
+    }
   } else {
     conditions.push(`ja.current_status != 'Withdrawn'`);
   }
@@ -75,6 +80,19 @@ async function getApplicantList(jobId, filters = {}) {
       ja.screening_submitted_at    AS "screeningSubmittedAt",
       aaa.match_score              AS "matchScore",
       aaa.analysis_type            AS "analysisType",
+      EXISTS (
+        SELECT 1 FROM application_notes an 
+        WHERE an.application_id = ja.application_id 
+          AND TRIM(an.body) != ''
+      ) AS "hasNote",
+      (
+        SELECT an.body 
+        FROM application_notes an 
+        WHERE an.application_id = ja.application_id 
+          AND TRIM(an.body) != '' 
+        ORDER BY an.updated_at DESC 
+        LIMIT 1
+      ) AS "selfNote",
       ja.resume_url                AS "resumeUrl",
       COALESCE(ja.resume_file_name, (SELECT resume_file_name FROM user_resume_history urh WHERE urh.user_id = ja.applicant_id AND urh.resume_url = ja.resume_url LIMIT 1), 'Resume.pdf') AS "resumeName"
     FROM job_applications ja

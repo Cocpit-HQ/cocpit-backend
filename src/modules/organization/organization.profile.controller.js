@@ -63,11 +63,12 @@ async function resolveOrg(orgIdOrSlug) {
 
     const result = await pool.query(
         `SELECT org_id, name, slug, logo_url, cover_url, headline, slogan,
-                industry, size, website, location, location_formatted, phone, email,
+                industry, sector, size, website, location, location_formatted, phone, email,
                 description, entity_type, institution_type,
                 established_year, campus_location,
-                verification_status, email_verified, phone_verified,
-                country, city, created_at, updated_at, created_by
+                verification_status, review_notes, email_verified, phone_verified,
+                country, city, created_at, updated_at, created_by,
+                is_suspended
          FROM organizations
          WHERE ${isUuid ? 'org_id = $1::uuid' : 'slug = $1'}
            AND is_deleted = FALSE AND is_deactivated = FALSE`,
@@ -127,6 +128,9 @@ exports.getOrgProfile = async (req, res) => {
         // 1. Resolve org
         const org = await resolveOrg(orgId);
         if (!org) return res.status(404).json({ message: 'Organization not found' });
+        if (org.is_suspended) {
+            return res.status(403).json({ is_suspended: true, error: "This organization has been suspended." });
+        }
 
         // 1.5 Directional Block Check (User <-> Org, Org <-> Org, User <-> User)
         if (req.user || req.actor) {
@@ -162,6 +166,7 @@ exports.getOrgProfile = async (req, res) => {
                             headline: org.headline,
                             slogan: org.slogan,
                             industry: org.industry,
+                            sector: org.sector || null,
                             entity_type: org.entity_type,
                             institution_type: org.institution_type,
                             verification_status: org.verification_status,
@@ -177,6 +182,7 @@ exports.getOrgProfile = async (req, res) => {
                             headline: org.headline,
                             slogan: org.slogan,
                             industry: org.industry,
+                            sector: org.sector || null,
                             entity_type: org.entity_type,
                             institution_type: org.institution_type,
                             verification_status: org.verification_status,
@@ -681,11 +687,18 @@ exports.getOrgProfile = async (req, res) => {
 
         const displayLocation = toCityStateCountry(org.location_formatted || org.location || org.city, org.country || 'India');
 
+        let rejectionReason = null;
+        if (org.review_notes && org.review_notes.includes('[Reason:')) {
+            const m = org.review_notes.match(/\[Reason:\s*([^\]]+)\]/i);
+            if (m) rejectionReason = m[1].trim();
+        }
+
         return res.json({
             org: {
                 ...org,
                 location: displayLocation,
-                is_verified: ['DOMAIN_VERIFIED'].includes(org.verification_status),
+                is_verified: ['DOMAIN_VERIFIED', 'VERIFIED', 'DOCUMENT_VERIFIED'].includes(org.verification_status),
+                rejection_reason: rejectionReason,
                 following_count: counts.following_count || 0,
                 followers_count: counts.followers_count,
                 subscribers_count: counts.subscribers_count || 0,
@@ -735,6 +748,9 @@ exports.getOrgAbout = async (req, res) => {
     try {
         const org = await resolveOrg(orgId);
         if (!org) return res.status(404).json({ message: 'Organization not found' });
+        if (org.is_suspended) {
+            return res.status(403).json({ is_suspended: true, error: "This organization has been suspended." });
+        }
 
         if (req.user || req.actor) {
             const isBlocked = await checkActorBlockStatus(req, org.org_id);
@@ -783,6 +799,7 @@ exports.getOrgAbout = async (req, res) => {
             slogan: org.slogan,
             website: org.website,
             industry: org.industry,
+            sector: org.sector || null,
             size: org.size,
             location: org.location_formatted || org.location || org.city,
             country: org.country,
@@ -832,6 +849,9 @@ exports.getOrgTeam = async (req, res) => {
     try {
         const org = await resolveOrg(orgId);
         if (!org) return res.status(404).json({ message: 'Organization not found' });
+        if (org.is_suspended) {
+            return res.status(403).json({ is_suspended: true, error: "This organization has been suspended." });
+        }
 
         if (req.user || req.actor) {
             const isBlocked = await checkActorBlockStatus(req, org.org_id);
@@ -1042,6 +1062,9 @@ exports.getOrgPeople = async (req, res) => {
     try {
         const org = await resolveOrg(orgId);
         if (!org) return res.status(404).json({ message: 'Organization not found' });
+        if (org.is_suspended) {
+            return res.status(403).json({ is_suspended: true, error: "This organization has been suspended." });
+        }
 
         if (req.user || req.actor) {
             const isBlocked = await checkActorBlockStatus(req, org.org_id);
@@ -1225,6 +1248,9 @@ exports.getOrgAlumni = async (req, res) => {
     try {
         const org = await resolveOrg(orgId);
         if (!org) return res.status(404).json({ message: 'Organization not found' });
+        if (org.is_suspended) {
+            return res.status(403).json({ is_suspended: true, error: "This organization has been suspended." });
+        }
 
         if (req.user || req.actor) {
             const isBlocked = await checkActorBlockStatus(req, org.org_id);
@@ -1425,7 +1451,7 @@ exports.updateOrgProfile = async (req, res) => {
     const userId = req.user.sub;
 
     const {
-        name, headline, org_type, industry, institution_type, size, website, country, city, location, formattedAddress, latitude, longitude, placeId, established_year, keyOfferings
+        name, headline, org_type, industry, sector, institution_type, size, website, country, city, location, formattedAddress, latitude, longitude, placeId, established_year, keyOfferings
     } = req.body;
 
     // Validate name if provided
@@ -1520,6 +1546,9 @@ exports.updateOrgProfile = async (req, res) => {
         if (placeId !== undefined) addUpdate('location_place_id', placeId || null);
 
         addUpdate('established_year', established_year ? parseInt(established_year) : null);
+        if (sector !== undefined) {
+            addUpdate('sector', sector?.trim() || null);
+        }
 
         if (params.length === 0 && keyOfferings === undefined) {
             await client.query('ROLLBACK');
@@ -1533,14 +1562,14 @@ exports.updateOrgProfile = async (req, res) => {
                 UPDATE organizations
                 SET ${updates.join(', ')}, updated_at = NOW()
                 WHERE org_id = $${params.length} AND is_deleted = FALSE
-                RETURNING org_id, name, headline, industry, institution_type, size, website,
+                RETURNING org_id, name, headline, industry, sector, institution_type, size, website,
                           country, city, location, location_formatted, established_year, logo_url, cover_url,
                           entity_type, updated_at
             `;
             result = await client.query(query, params);
         } else {
             result = await client.query(
-                `SELECT org_id, name, headline, industry, institution_type, size, website,
+                `SELECT org_id, name, headline, industry, sector, institution_type, size, website,
                         country, city, location, location_formatted, established_year, logo_url, cover_url,
                         entity_type, updated_at
                  FROM organizations WHERE org_id = $1 AND is_deleted = FALSE`,

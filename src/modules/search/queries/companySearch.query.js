@@ -261,6 +261,48 @@ async function searchCompanies(client, { searchTerm, viewerId = null, orgActorId
     `;
   }
 
+  // Sector filter: Manufacturer, Wholesaler, Trader, etc.
+  let sectorClause = '';
+  const rawSector = queryParams.sector;
+  if (rawSector) {
+    const list = (Array.isArray(rawSector) ? rawSector : String(rawSector).split(/[,|]/))
+      .map(s => String(s).trim()).filter(Boolean);
+    if (list.length > 0) {
+      params.push(list);
+      sectorClause = ` AND LOWER(c.sector) = ANY(SELECT LOWER(unnest($${params.length}::text[])))`;
+    }
+  }
+
+  // Verification filter: Only verified companies (VERIFIED or DOMAIN_VERIFIED)
+  let verifiedClause = '';
+  const isVerified = queryParams.is_verified === true || queryParams.is_verified === 'true' ||
+                     queryParams.verified === true || queryParams.verified === 'true';
+  if (isVerified) {
+    verifiedClause = ` AND c.verification_status IN ('VERIFIED', 'DOMAIN_VERIFIED')`;
+  }
+
+  // Specific search: keyword searched in headline, description, slogan
+  let specificSearchClause = '';
+  const rawSpecific = queryParams.specific_search || queryParams.keyword;
+  if (rawSpecific && typeof rawSpecific === 'string' && rawSpecific.trim()) {
+    const kwList = rawSpecific.includes('|') ? rawSpecific.split('|') : [rawSpecific];
+    const kwParts = [];
+    for (const kw of kwList) {
+      const cleanKw = kw.trim();
+      if (!cleanKw) continue;
+      params.push(`%${cleanKw}%`);
+      const kIdx = params.length;
+      kwParts.push(`(
+        c.headline ILIKE $${kIdx}
+        OR c.description ILIKE $${kIdx}
+        OR c.slogan ILIKE $${kIdx}
+      )`);
+    }
+    if (kwParts.length > 0) {
+      specificSearchClause = ` AND (${kwParts.join(' OR ')})`;
+    }
+  }
+
   // Cursor pagination clause against (relevance_score DESC, LOWER(name) ASC, id ASC)
   let cursorClause = '';
   if (parsedCursor) {
@@ -365,6 +407,7 @@ async function searchCompanies(client, { searchTerm, viewerId = null, orgActorId
         c.location_formatted,
         c.city,
         c.country,
+        c.sector,
         ${followCheck} AS is_following,
         COALESCE(ops.message_permission, 'everyone') AS message_permission,
         COALESCE(ons.messages_enabled, TRUE) AS messages_enabled,
@@ -404,6 +447,7 @@ async function searchCompanies(client, { searchTerm, viewerId = null, orgActorId
       LEFT JOIN organization_privacy_settings ops ON ops.org_id = c.org_id
       LEFT JOIN organization_notification_settings ons ON ons.org_id = c.org_id
       WHERE c.name IS NOT NULL AND TRIM(c.name) <> ''
+        AND (c.is_suspended IS NOT TRUE)
         AND (c.entity_type IS NULL OR c.entity_type = 'COMPANY')
         AND (
           c.name ILIKE $1 
@@ -415,9 +459,12 @@ async function searchCompanies(client, { searchTerm, viewerId = null, orgActorId
         )
         ${blockFilter}
         ${industryClause}
+        ${sectorClause}
+        ${specificSearchClause}
         ${locationClause}
         ${sizeClause}
         ${activelyHiringClause}
+        ${verifiedClause}
     ),
     scored_candidates AS (
       SELECT
@@ -433,7 +480,7 @@ async function searchCompanies(client, { searchTerm, viewerId = null, orgActorId
               ELSE 0
             END)
           + (LEAST(connections_working_here, 6) * 15)
-          + (CASE WHEN verification_status = 'VERIFIED' THEN 30 ELSE 0 END)
+          + (CASE WHEN verification_status IN ('VERIFIED', 'DOMAIN_VERIFIED') THEN 30 ELSE 0 END)
         )::int AS relevance_score
       FROM candidate_pool
     )
@@ -514,6 +561,7 @@ async function searchCompanies(client, { searchTerm, viewerId = null, orgActorId
       headline: item.headline || null,
       industry: item.industry || 'Company',
       size: item.size,
+      sector: item.sector || null,
       logo: item.logo_url,
       logo_url: item.logo_url,
       entity_type: item.entity_type || 'COMPANY',

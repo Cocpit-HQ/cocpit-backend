@@ -1,3 +1,4 @@
+// Server Entry Point - Updated with verification review
 const path = require('path');
 require("dotenv").config({ path: path.resolve(__dirname, '../.env') });
 require("newrelic");

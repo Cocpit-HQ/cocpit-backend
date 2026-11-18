@@ -134,6 +134,9 @@ exports.getApplicantList = async (req, res) => {
       appliedAt:     row.appliedAt,
       matchScore:    row.matchScore ?? null,   // null = AI analysis pending
       analysisType:  row.analysisType || 'BACKEND', // BACKEND or GEMINI
+      hasNote:       Boolean(row.hasNote || (row.selfNote && row.selfNote.trim())),
+      selfNote:      row.selfNote || null,
+      note:          row.selfNote || null,
       screening: row.screeningRequired ? {
         required:    true,
         type:        row.screeningType,

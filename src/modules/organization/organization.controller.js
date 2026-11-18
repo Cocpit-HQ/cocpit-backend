@@ -13,6 +13,85 @@ const { requireOrgPermission } = require("../../core/middlewares/organization.au
 const featureFlagsService = require("../config/featureFlags.service");
 const { toCityStateCountry } = require("./organization.profile.controller");
 
+/**
+ * Notifies users who have unassociated experiences or educations matching the newly created organization.
+ */
+async function notifyAssociatedUsersOnOrgCreated(client, org, creatorUserId) {
+    try {
+        const orgName = (org?.name || "").trim();
+        if (!orgName) return;
+
+        const isInstitution = org.entity_type === 'INSTITUTION';
+        
+        let findUsersQuery;
+        if (isInstitution) {
+            findUsersQuery = `
+                SELECT DISTINCT p.user_id
+                FROM educations ed
+                JOIN profiles p ON ed.profile_id = p.profile_id
+                WHERE ed.school_org_id IS NULL
+                  AND LOWER(TRIM(ed.school_name)) = LOWER(TRIM($1))
+                  AND p.user_id != $2
+            `;
+        } else {
+            findUsersQuery = `
+                SELECT DISTINCT p.user_id
+                FROM experiences ex
+                JOIN profiles p ON ex.profile_id = p.profile_id
+                WHERE ex.org_id IS NULL
+                  AND LOWER(TRIM(ex.company_name)) = LOWER(TRIM($1))
+                  AND p.user_id != $2
+            `;
+        }
+
+        const matchRes = await client.query(findUsersQuery, [orgName, creatorUserId]);
+        if (!matchRes.rows || matchRes.rows.length === 0) return;
+
+        const targetUserIds = matchRes.rows.map(r => r.user_id);
+        const entityLabel = isInstitution ? 'Institution' : 'Organisation';
+        const title = `Your ${entityLabel} Is on Cocpit!`;
+        const bodyText = `Your ${entityLabel.toLowerCase()}, ${orgName}, is now registered with its verified account on Cocpit. If you’re associated with it, please update your profile accordingly.`;
+        const metadata = {
+            title,
+            body: bodyText,
+            org_id: org.org_id,
+            org_name: orgName,
+            actor_name: orgName,
+            actor_avatar: org.logo_url || null,
+            actor_slug: org.slug || null,
+            slug: org.slug || null,
+            isCompanyActor: true,
+            entity_type: org.entity_type || (isInstitution ? 'INSTITUTION' : 'COMPANY')
+        };
+
+        for (const targetUserId of targetUserIds) {
+            await client.query(
+                `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata)
+                 VALUES ($1, $2, 'ORG_ONBOARDED', $3, $4, $5)`,
+                [targetUserId, creatorUserId, bodyText, org.org_id, JSON.stringify(metadata)]
+            );
+        }
+
+        const socketService = require("../../core/infrastructure/socket.service");
+        if (socketService) {
+            for (const targetUserId of targetUserIds) {
+                socketService.notifyUser(targetUserId, "notification", {
+                    title,
+                    text: bodyText,
+                    type: 'ORG_ONBOARDED',
+                    reference_id: org.org_id,
+                    actor_name: orgName,
+                    actor_avatar: org.logo_url || null,
+                    created_at: new Date().toISOString(),
+                    metadata
+                });
+            }
+        }
+    } catch (err) {
+        console.error("Error sending organization onboarding notifications:", err);
+    }
+}
+
 exports.createOrganization = async (req, res) => {
     const userId = req.user.sub;
     const { name, slug, email, industry, size, website, location, description, parent_org_id } = req.body;
@@ -146,6 +225,9 @@ exports.createOrganization = async (req, res) => {
             metadata: { name, slug, targetType: 'organization', targetId: company.org_id, targetName: name }
         });
 
+        // 7. Notify users with unassociated experiences/educations matching this organization
+        await notifyAssociatedUsersOnOrgCreated(client, company, userId);
+
         await client.query("COMMIT");
 
         res.status(201).json({ message: "Organization created successfully", organization: company });
@@ -239,6 +321,10 @@ exports.getOrganization = async (req, res) => {
         }
 
         const company = result.rows[0];
+
+        if (company.is_suspended) {
+            return res.status(403).json({ is_suspended: true, error: "This organization has been suspended." });
+        }
 
         // 1.5 Directional Block Check (User <-> Org, Org <-> Org)
         if (req.user || req.actor) {
@@ -1193,7 +1279,7 @@ exports.getUserOrganizationsSettings = async (req, res) => {
         // Hides orgs where 40-day recovery window has passed (deletion_execute_at <= NOW())
         const ownedRes = await client.query(
             `SELECT o.org_id AS id, o.slug, o.name, o.industry AS type, o.logo_url AS "logoUrl",
-                    o.created_at, o.entity_type, o.is_deleted, o.deletion_execute_at, o.is_deactivated
+                    o.created_at, o.entity_type, o.is_deleted, o.deletion_execute_at, o.is_deactivated, o.is_suspended
              FROM organizations o
              WHERE o.created_by = $1
                AND (o.is_deleted = FALSE OR (o.is_deleted = TRUE AND o.deletion_execute_at > NOW()))
@@ -1203,7 +1289,9 @@ exports.getUserOrganizationsSettings = async (req, res) => {
 
         const ownedOrgs = ownedRes.rows.map(o => {
             let pageStatus = "active";
-            if (o.is_deleted && o.deletion_execute_at && new Date(o.deletion_execute_at) > new Date()) {
+            if (o.is_suspended) {
+                pageStatus = "suspended";
+            } else if (o.is_deleted && o.deletion_execute_at && new Date(o.deletion_execute_at) > new Date()) {
                 pageStatus = "scheduled_for_deletion";
             } else if (o.is_deactivated) {
                 pageStatus = "deactivated";
@@ -1219,7 +1307,8 @@ exports.getUserOrganizationsSettings = async (req, res) => {
                 createdOn: formatDateStr(o.created_at),
                 organizationType: o.entity_type === 'INSTITUTION' ? 'Institution' : 'Company',
                 pageStatus,
-                isDeactivated: Boolean(o.is_deactivated)
+                isDeactivated: Boolean(o.is_deactivated),
+                isSuspended: Boolean(o.is_suspended)
             };
         });
 
@@ -1227,7 +1316,7 @@ exports.getUserOrganizationsSettings = async (req, res) => {
         const assocRes = await client.query(
             `SELECT o.org_id AS id, o.slug, o.name, o.industry AS type, o.logo_url AS "logoUrl",
                     om.joined_at, r.name AS role,
-                    o.is_deactivated, o.is_deleted, o.deletion_execute_at
+                    o.is_deactivated, o.is_deleted, o.deletion_execute_at, o.is_suspended
              FROM organizations o
              JOIN organization_members om ON o.org_id = om.org_id
              LEFT JOIN organization_roles r ON om.role_id = r.role_id
@@ -1240,7 +1329,9 @@ exports.getUserOrganizationsSettings = async (req, res) => {
 
         const associatedOrgs = assocRes.rows.map(o => {
             let pageStatus = "associated";
-            if (o.is_deactivated) {
+            if (o.is_suspended) {
+                pageStatus = "suspended";
+            } else if (o.is_deactivated) {
                 pageStatus = "deactivated";
             }
 
@@ -1254,7 +1345,8 @@ exports.getUserOrganizationsSettings = async (req, res) => {
                 joinedOn: formatDateStr(o.joined_at),
                 role: o.role || "Member",
                 pageStatus,
-                isDeactivated: Boolean(o.is_deactivated)
+                isDeactivated: Boolean(o.is_deactivated),
+                isSuspended: Boolean(o.is_suspended)
             };
         });
 
@@ -1630,7 +1722,7 @@ exports.searchOrganizations = async (req, res) => {
              SELECT org_id, name, slug, logo_url, entity_type, location, industry, headline,
                     similarity(name, $1) AS score
              FROM organizations 
-             WHERE (name ILIKE $2 OR slug ILIKE $2) AND is_deleted = FALSE
+             WHERE (name ILIKE $2 OR slug ILIKE $2) AND is_deleted = FALSE AND (is_suspended IS NOT TRUE)
         `;
         const queryParams = [rawSearchTerm, searchTerm];
 
@@ -1922,7 +2014,8 @@ exports.saveDraftPresence = async (req, res) => {
         longitude,
         placeId,
         headline,
-        description
+        description,
+        sector
     } = req.body;
 
     if (description !== undefined && description !== null && typeof description === 'string' && description.length > 2000) {
@@ -1992,14 +2085,15 @@ exports.saveDraftPresence = async (req, res) => {
                 location_place_id = COALESCE($10, location_place_id),
                 headline = $11,
                 description = $12,
+                sector = COALESCE($13, sector),
                 onboarding_step = 'VERIFICATION',
                 updated_at = NOW()
-            WHERE org_id = $13
+            WHERE org_id = $14
             RETURNING *
         `;
 
         await client.query(updateText, [
-            email, phone || null, website || null, size, locCountry, locCity, locationStr, locLat, locLng, locPlaceId, headline, description || null, orgId
+            email, phone || null, website || null, size, locCountry, locCity, locationStr, locLat, locLng, locPlaceId, headline, description || null, sector || null, orgId
         ]);
 
         await client.query("COMMIT");
@@ -2347,8 +2441,7 @@ exports.completeOnboardingFlow = async (req, res) => {
             finalVerificationStatus = 'DOCUMENT_PENDING';
             const docUrls = docsRes.rows.map(row => row.document_url);
             await client.query(
-                `INSERT INTO organization_verifications (org_id, verification_type, document_urls, is_verified, otp, expires_at)
-                 VALUES ($1, 'DOCUMENT', $2, FALSE, 'N/A', NOW() + INTERVAL '1 day')`,
+                `INSERT INTO organization_verifications (org_id, verification_type, document_urls, is_verified, otp, expires_at) VALUES ($1, 'DOCUMENT', $2, FALSE, 'N/A', NOW() + INTERVAL '1 day')`,
                 [orgId, JSON.stringify(docUrls)]
             );
         }
@@ -2459,7 +2552,8 @@ exports.publishNewOrganization = async (req, res) => {
         description,
         type,
         entity_type,
-        country_of_operation
+        country_of_operation,
+        sector
     } = req.body;
 
     let cleanDescription = null;
@@ -2547,18 +2641,18 @@ exports.publishNewOrganization = async (req, res) => {
             req.files.documents.length > 0 &&
             req.files.documents.some(doc => Boolean(doc && doc.path))
         );
-        const initialVerificationStatus = hasDocuments ? 'VERIFIED' : 'UNVERIFIED';
+        const initialVerificationStatus = hasDocuments ? 'DOCUMENT_PENDING' : 'UNVERIFIED';
 
         const insertQuery = `
             INSERT INTO organizations (
-                name, slug, entity_type, established_year, industry, institution_type,
+                name, slug, entity_type, established_year, industry, sector, institution_type,
                 logo_url, email, phone, website, size,
                 location, location_formatted, location_lat, location_lng, location_place_id,
                 country, city,
                 headline, description, created_by, onboarding_step, onboarding_completed, email_verified, phone_verified,
                 verification_status
             ) VALUES (
-                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, 'COMPLETED', TRUE, TRUE, TRUE, $22
+                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, 'COMPLETED', TRUE, TRUE, TRUE, $23
             ) RETURNING *
         `;
 
@@ -2568,6 +2662,7 @@ exports.publishNewOrganization = async (req, res) => {
             isInstitution ? 'INSTITUTION' : (effectiveType || 'COMPANY'),
             establishedYearInt,
             finalIndustry,
+            sector || null,
             finalInstitutionType,
             logoUrl,
             email ? email.toLowerCase().trim() : null,
@@ -2647,8 +2742,7 @@ exports.publishNewOrganization = async (req, res) => {
             }
 
             await client.query(
-                `INSERT INTO organization_verifications (org_id, verification_type, document_urls, is_verified, otp, expires_at)
-                 VALUES ($1, 'DOCUMENT', $2, TRUE, 'N/A', NOW() + INTERVAL '1 day')`,
+                `INSERT INTO organization_verifications (org_id, verification_type, document_urls, is_verified, otp, expires_at) VALUES ($1, 'DOCUMENT', $2, FALSE, 'N/A', NOW() + INTERVAL '1 day')`,
                 [orgId, JSON.stringify(docUrls)]
             );
         }
@@ -2667,6 +2761,9 @@ exports.publishNewOrganization = async (req, res) => {
                 targetName: name
             }
         });
+
+        // Notify users with unassociated experiences/educations matching this organization
+        await notifyAssociatedUsersOnOrgCreated(client, orgRes.rows[0], userId);
 
         await client.query("COMMIT");
 

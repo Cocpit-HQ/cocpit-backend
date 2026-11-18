@@ -140,6 +140,18 @@ describe('Institutes Master / Autocomplete API Unit Tests', () => {
     });
   });
 
+  test('uses DISTINCT ON (LOWER(name)) to deduplicate different casing variations', async () => {
+    pool.query.mockResolvedValueOnce({
+      rows: [{ name: 'Ashokrao Mane Group Of Institutions' }],
+    });
+
+    await getInstitutes(req, res);
+
+    const [sql] = pool.query.mock.calls[0];
+    expect(sql).toContain('DISTINCT ON (LOWER(name))');
+    expect(sql).toContain('ORDER BY LOWER(name) ASC, priority ASC');
+  });
+
   test('handles database errors gracefully with 500 status', async () => {
     pool.query.mockRejectedValueOnce(new Error('DB failure'));
 

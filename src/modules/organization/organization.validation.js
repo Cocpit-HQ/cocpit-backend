@@ -25,6 +25,7 @@ const saveIdentitySchema = z.object({
         return val <= new Date().getFullYear();
       }, { message: "Founded year cannot be in the future" }),
     industry: z.string().trim().optional(),
+    sector: z.string().trim().max(100).optional().nullable(),
     institution_type: z.string().trim().optional(),
     campus_location: z.string().trim().optional(),
   }).superRefine((data, ctx) => {
@@ -51,6 +52,7 @@ const savePresenceSchema = z.object({
     phone: z.string().trim().optional().nullable(),
     website: z.string().trim().optional().nullable(),
     size: z.string({ required_error: "Size is required" }).trim(),
+    sector: z.string().trim().max(100).optional().nullable(),
     country: z.string({ required_error: "Country is required" }).trim(),
     city: z.string({ required_error: "City is required" }).trim(),
     headline: z.string({ required_error: "Headline is required" }).trim().max(255, "Headline must not exceed 255 characters"),
