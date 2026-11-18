@@ -1,6 +1,15 @@
-const pool = require("../db/pool");
-const { getUserRoom, getConversationRoom, getStoryRoom, getOrgRoom, getPostRoom } = require("../utils/socketRooms");
-const { isNotificationAllowed, isOrgNotificationAllowed } = require("../utils/notificationPermission");
+const pool = require('../db/pool');
+const {
+  getUserRoom,
+  getConversationRoom,
+  getStoryRoom,
+  getOrgRoom,
+  getPostRoom,
+} = require('../utils/socketRooms');
+const {
+  isNotificationAllowed,
+  isOrgNotificationAllowed,
+} = require('../utils/notificationPermission');
 
 class SocketService {
   constructor() {
@@ -45,10 +54,10 @@ class SocketService {
         // Graceful fallback to notify clients when auto-timeout fires
         const payload = {
           conversationId,
-          senderId: userId
+          senderId: userId,
         };
-        this.notifyConversation(conversationId, "stoppedTyping", payload);
-        this.notifyParticipants(conversationId, "stoppedTyping", payload, userId);
+        this.notifyConversation(conversationId, 'stoppedTyping', payload);
+        this.notifyParticipants(conversationId, 'stoppedTyping', payload, userId);
       }, 10000); // 10 seconds auto-timeout
 
       userTypingMap.set(conversationId, { timeoutId, timestamp: Date.now() });
@@ -81,10 +90,10 @@ class SocketService {
         // Notify conversation participants immediately
         const payload = {
           conversationId,
-          senderId: userId
+          senderId: userId,
         };
-        this.notifyConversation(conversationId, "stoppedTyping", payload);
-        this.notifyParticipants(conversationId, "stoppedTyping", payload, userId);
+        this.notifyConversation(conversationId, 'stoppedTyping', payload);
+        this.notifyParticipants(conversationId, 'stoppedTyping', payload, userId);
       }
       this.typingStore.delete(userId);
     }
@@ -126,13 +135,13 @@ class SocketService {
         }
       }
     } catch (err) {
-      console.error("Error notifying participants:", err);
+      console.error('Error notifying participants:', err);
     }
   }
 
   _warnUninitialized() {
     if (!this._hasWarned) {
-      console.warn("SocketService: io not initialized. Some events may be dropped during startup.");
+      console.warn('SocketService: io not initialized. Some events may be dropped during startup.');
       this._hasWarned = true;
     }
   }
@@ -148,12 +157,12 @@ class SocketService {
       this._warnUninitialized();
       return;
     }
-    if (event === "notification") {
+    if (event === 'notification') {
       try {
         const allowed = await isNotificationAllowed(userId, payload?.type);
         if (!allowed) return;
       } catch (err) {
-        console.error("notifyUser permission check error:", err);
+        console.error('notifyUser permission check error:', err);
       }
     }
     const room = getUserRoom(userId);
@@ -165,12 +174,12 @@ class SocketService {
       this._warnUninitialized();
       return;
     }
-    if (event === "notification") {
+    if (event === 'notification') {
       try {
         const allowed = await isNotificationAllowed(userId, payload?.type);
         if (!allowed) return;
       } catch (err) {
-        console.error("notifyUserScoped permission check error:", err);
+        console.error('notifyUserScoped permission check error:', err);
       }
     }
 
@@ -232,12 +241,12 @@ class SocketService {
     sockets.forEach((socket) => {
       // Notify the frontend client so they can clear tokens and redirect to login
       socket.emit('auth:suspended');
-      
+
       // Give the event 500ms to reach the client before severing the connection
       setTimeout(() => {
         socket.disconnect(true);
       }, 500);
-      
+
       disconnectedCount += 1;
     });
     return disconnectedCount;
@@ -336,12 +345,12 @@ class SocketService {
       this._warnUninitialized();
       return;
     }
-    if (event === "notification") {
+    if (event === 'notification') {
       try {
         const allowed = await isOrgNotificationAllowed(orgId, payload?.type);
         if (!allowed) return;
       } catch (err) {
-        console.error("notifyOrg permission check error:", err);
+        console.error('notifyOrg permission check error:', err);
       }
     }
     const room = getOrgRoom(orgId);
@@ -369,7 +378,7 @@ class SocketService {
     // This scales better than global broadcast and ensures only relevant users get the update
     relatedUserIds.forEach((friendId) => {
       const room = getUserRoom(friendId);
-      this.io.to(room).emit("userStatusChanged", {
+      this.io.to(room).emit('userStatusChanged', {
         userId,
         status,
       });
@@ -401,6 +410,32 @@ class SocketService {
       return;
     }
     this.io.emit(event, payload);
+  }
+
+  /**
+   * Get the total count of connected client sockets
+   * @returns {number}
+   */
+  getConnectedSocketCount() {
+    if (!this.io || !this.io.sockets) return 0;
+    return this.io.sockets.sockets ? this.io.sockets.sockets.size : 0;
+  }
+
+  /**
+   * Get the count of distinct online users based on user rooms
+   * @returns {number}
+   */
+  getOnlineUserCount() {
+    if (!this.io || !this.io.sockets || !this.io.sockets.adapter) return 0;
+    const rooms = this.io.sockets.adapter.rooms;
+    if (!rooms) return 0;
+    let count = 0;
+    for (const [roomName, sids] of rooms.entries()) {
+      if (roomName.startsWith('user:') && sids.size > 0) {
+        count++;
+      }
+    }
+    return count;
   }
 }
 
