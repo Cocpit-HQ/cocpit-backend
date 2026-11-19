@@ -3570,6 +3570,12 @@ WHERE gi.invitee_id = $1
         }).sort((a, b) => {
             if (a.is_pinned && !b.is_pinned) return -1;
             if (!a.is_pinned && b.is_pinned) return 1;
+            if (a.is_pinned && b.is_pinned) {
+                // First pinned at first (oldest pin first / ascending order of pinned_at)
+                const pinA = a.pinned_at ? new Date(a.pinned_at).getTime() : 0;
+                const pinB = b.pinned_at ? new Date(b.pinned_at).getTime() : 0;
+                if (pinA !== pinB) return pinA - pinB;
+            }
             const left = new Date(a.last_message_at || a.updated_at || 0).getTime();
             const right = new Date(b.last_message_at || b.updated_at || 0).getTime();
             return right - left;
@@ -4808,23 +4814,10 @@ exports.togglePinConversation = async (req, res) => {
             return res.status(404).json({ message: "Conversation not found or access denied" });
         }
 
+        let pinnedAt = null;
         if (pinned) {
-            // Enforce max 1 pinned conversation: unpin any other conversation for this actor
-            await client.query(
-                `UPDATE conversation_participants
-                 SET is_pinned = FALSE, pinned_at = NULL
-                 WHERE left_at IS NULL
-                   AND (
-                     ($2::uuid IS NOT NULL AND org_id = $2)
-                     OR
-                     ($2::uuid IS NULL AND user_id = $1)
-                   )
-                   AND is_pinned = TRUE`,
-                [userId, companyId]
-            );
-
-            // Pin this conversation
-            await client.query(
+            // Pin this conversation (support multiple pinned conversations)
+            const pinRes = await client.query(
                 `UPDATE conversation_participants
                  SET is_pinned = TRUE, pinned_at = NOW()
                  WHERE conversation_id = $1
@@ -4833,11 +4826,13 @@ exports.togglePinConversation = async (req, res) => {
                      ($3::uuid IS NOT NULL AND org_id = $3)
                      OR
                      ($3::uuid IS NULL AND user_id = $2)
-                   )`,
+                   )
+                 RETURNING pinned_at`,
                 [conversationId, userId, companyId]
             );
+            pinnedAt = pinRes.rows[0]?.pinned_at || new Date().toISOString();
         } else {
-            // Unpin this conversation
+            // Unpin this conversation independently without affecting other pinned conversations
             await client.query(
                 `UPDATE conversation_participants
                  SET is_pinned = FALSE, pinned_at = NULL
@@ -4859,6 +4854,7 @@ exports.togglePinConversation = async (req, res) => {
             conversationId,
             companyId: companyId || null,
             is_pinned: pinned,
+            pinned_at: pinnedAt,
         };
 
         if (companyId) {
@@ -4876,6 +4872,7 @@ exports.togglePinConversation = async (req, res) => {
         return res.status(200).json({
             conversationId,
             is_pinned: pinned,
+            pinned_at: pinnedAt,
             message: pinned ? "Conversation pinned successfully" : "Conversation unpinned successfully",
         });
     } catch (err) {

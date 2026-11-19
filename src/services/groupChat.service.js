@@ -864,7 +864,7 @@ class GroupChatService {
     static async getGroupSharedContent(userId, groupId) {
         // 1. Verify conversation exists and is active
         const convRes = await pool.query(
-            "SELECT conversation_id FROM conversations WHERE conversation_id = $1 AND is_active = TRUE",
+            "SELECT conversation_id, is_group FROM conversations WHERE conversation_id = $1 AND is_active = TRUE",
             [groupId]
         );
         if (convRes.rowCount === 0) {
@@ -875,6 +875,26 @@ class GroupChatService {
 
         // 2. VULN-11: Enforce active group membership
         await chatSecurity.assertGroupMember(groupId, userId, pool);
+
+        const isGroup = Boolean(convRes.rows[0].is_group);
+        let joinedAt = null;
+
+        if (isGroup && userId) {
+            const participantRes = await pool.query(
+                `SELECT joined_at
+                 FROM conversation_participants
+                 WHERE conversation_id = $1
+                   AND (user_id = $2::uuid OR org_id = $2::uuid)
+                   AND left_at IS NULL
+                 ORDER BY joined_at DESC
+                 LIMIT 1`,
+                [groupId, userId]
+            );
+
+            if (participantRes.rowCount > 0 && participantRes.rows[0].joined_at) {
+                joinedAt = participantRes.rows[0].joined_at;
+            }
+        }
 
         // 2. Fetch Media (images, videos, documents)
         const mediaQuery = `
@@ -888,11 +908,13 @@ class GroupChatService {
             FROM message_media mm
             JOIN messages m ON mm.message_id = m.message_id
             WHERE m.conversation_id = $1
+              AND ($2::timestamptz IS NULL OR m.created_at >= $2::timestamptz)
               AND (m.action_type IS NULL OR m.action_type NOT IN ('leave', 'remove', 'system'))
+              AND COALESCE(m.is_deleted_for_everyone, false) = FALSE
             ORDER BY mm.created_at DESC
             LIMIT 100
         `;
-        const mediaRes = await pool.query(mediaQuery, [groupId]);
+        const mediaRes = await pool.query(mediaQuery, [groupId, joinedAt]);
 
         // 3. Fetch Shared Posts
         const postsQuery = `
@@ -918,10 +940,12 @@ class GroupChatService {
             LEFT JOIN users u ON p.author_id = u.user_id
             LEFT JOIN organizations org ON p.author_org_id = org.org_id
             WHERE m.conversation_id = $1
+              AND ($2::timestamptz IS NULL OR m.created_at >= $2::timestamptz)
+              AND COALESCE(m.is_deleted_for_everyone, false) = FALSE
             ORDER BY m.created_at DESC
             LIMIT 60
         `;
-        const postsRes = await pool.query(postsQuery, [groupId]);
+        const postsRes = await pool.query(postsQuery, [groupId, joinedAt]);
 
         // 4. Fetch Shared Links from message text_content
         const linksQuery = `
@@ -931,11 +955,13 @@ class GroupChatService {
                 m.created_at
             FROM messages m
             WHERE m.conversation_id = $1
+              AND ($2::timestamptz IS NULL OR m.created_at >= $2::timestamptz)
+              AND COALESCE(m.is_deleted_for_everyone, false) = FALSE
               AND (m.text_content LIKE '%http://%' OR m.text_content LIKE '%https://%')
             ORDER BY m.created_at DESC
             LIMIT 100
         `;
-        const linksRes = await pool.query(linksQuery, [groupId]);
+        const linksRes = await pool.query(linksQuery, [groupId, joinedAt]);
 
         const links = [];
         const seenUrls = new Set();

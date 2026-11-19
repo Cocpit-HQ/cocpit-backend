@@ -4,6 +4,8 @@ const socialController = require("./social.controller");
 const messageController = require("../messaging/message.controller");
 const { requireAuth, optionalAuth } = require("../../core/middlewares/auth.middleware");
 const { requireOrgPermission, requireCompanyPermission } = require("../../core/middlewares/organization.auth.middleware");
+const { validate } = require("../../core/middlewares/validation.middleware");
+const { sendDirectMessageSchema, editMessageSchema } = require("../messaging/messaging.schema");
 
 // Follow (One-way)
 router.post("/users/:id/follow", requireAuth, socialController.followUser);
@@ -81,13 +83,13 @@ router.patch("/conversations/:conversationId/job-status", requireAuth, socialCon
 
 // Messages
 const { uploadChatMedia, validateUploadedMediaSignatures } = require("../../core/middlewares/upload.middleware");
-router.post("/messages", requireAuth, uploadChatMedia.array("images", 10), validateUploadedMediaSignatures, socialController.sendMessage);
+router.post("/messages", requireAuth, uploadChatMedia.array("images", 10), validateUploadedMediaSignatures, validate(sendDirectMessageSchema), socialController.sendMessage);
 router.get("/conversations/:id/messages", requireAuth, socialController.getMessages);
 router.delete("/messages/:messageId", requireAuth, messageController.deleteMessage);
 // Commented out: Duplicate route shadowed by the route above (/messages/:messageId).
 // messageController.deleteMessage is the active handler providing transaction safety, participant security checks, and R2 media cleanup.
 // router.delete("/messages/:id", requireAuth, socialController.deleteMessage);
-router.patch("/messages/:messageId/edit", requireAuth, socialController.editMessage);
+router.patch("/messages/:messageId/edit", requireAuth, validate(editMessageSchema), socialController.editMessage);
 
 // Reactions
 router.post("/messages/:messageId/reactions", requireAuth, socialController.upsertReaction);

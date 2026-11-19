@@ -6,6 +6,8 @@ const messageCtrl = require("./message.controller");
 const { requireAuth } = require("../../core/middlewares/auth.middleware");
 const { uploadAvatar } = require("../../core/middlewares/upload.middleware");
 const groupAdminMiddleware = require("../../core/middlewares/groupAdmin.middleware");
+const { validate } = require("../../core/middlewares/validation.middleware");
+const { sendGroupMessageSchema } = require("./messaging.schema");
 
 // ═══════ Organization Chat Sessions (read-only audit views; claim/release/takeover removed, see ID-296) ═══════
 router.get("/organization-chat-sessions/active", requireAuth, chatSessionCtrl.getActiveSession);
@@ -43,7 +45,7 @@ router.post("/groups/:groupId/messages", requireAuth, uploadChatMedia.fields([
     { name: "images", maxCount: 10 },
     { name: "videos", maxCount: 5 },
     { name: "documents", maxCount: 5 }
-]), validateUploadedMediaSignatures, groupChatCtrl.sendMessage);
+]), validateUploadedMediaSignatures, validate(sendGroupMessageSchema), groupChatCtrl.sendMessage);
 
 // Read Receipts
 router.post("/groups/:groupId/read", requireAuth, groupChatCtrl.markGroupMessagesAsRead);
