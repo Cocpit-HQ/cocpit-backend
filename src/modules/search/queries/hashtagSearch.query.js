@@ -36,11 +36,16 @@ function decodeHashtagCursor(cursor) {
   }
 }
 
-async function searchHashtags(client, { searchTerm, limit = 25, cursor = null, queryParams = {} }) {
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+async function searchHashtags(client, { searchTerm, limit = 25, cursor = null, queryParams = {}, viewerId = null, orgActorId = null }) {
   let query = (searchTerm || '').trim();
   if (query.startsWith('#')) {
     query = query.slice(1).trim();
   }
+
+  const safeOrgActorId = (orgActorId && UUID_REGEX.test(orgActorId)) ? orgActorId : null;
+  const safeViewerId = (viewerId && UUID_REGEX.test(viewerId)) ? viewerId : null;
 
   const cleanTerm = query.toLowerCase();
   const cappedLimit = Number(limit) || 25;
@@ -157,13 +162,39 @@ async function searchHashtags(client, { searchTerm, limit = 25, cursor = null, q
             SELECT COUNT(DISTINCT ph.post_id)::int
             FROM post_hashtags ph
             JOIN posts p ON p.post_id = ph.post_id
+            JOIN active_users u ON u.user_id = p.author_id
+            LEFT JOIN organizations comp ON comp.org_id = p.author_org_id
             WHERE ph.hashtag_id = h.hashtag_id
-              AND p.visibility = 'public'
+              AND (p.visibility = 'public' AND (p.is_broadcast IS FALSE OR p.is_broadcast IS NULL))
               AND p.is_active = TRUE
               AND (p.is_removed IS FALSE OR p.is_removed IS NULL)
               AND (p.is_deleted IS FALSE OR p.is_deleted IS NULL)
               AND (p.is_unlisted IS FALSE OR p.is_unlisted IS NULL)
               AND (p.status IS NULL OR p.status = 'published')
+              AND NOT (p.post_type = 'article' AND p.author_org_id IS NOT NULL)
+              AND p.is_community_article IS NOT TRUE
+              AND (p.author_org_id IS NOT NULL OR (u.is_deactivated = FALSE AND (u.is_deleted IS NULL OR u.is_deleted = FALSE)))
+              AND (p.author_org_id IS NULL OR (comp.is_deleted = FALSE AND comp.is_deactivated = FALSE AND comp.is_suspended IS NOT TRUE))
+              ${safeOrgActorId ? `
+              AND NOT EXISTS (
+                  SELECT 1 FROM blocks b
+                  WHERE (p.author_org_id IS NULL AND (
+                          (b.is_org_block = true AND b.blocker_id = '${safeOrgActorId}' AND b.blocked_id = p.author_id)
+                       OR (b.is_org_block = false AND b.blocker_id = p.author_id AND b.blocked_id = '${safeOrgActorId}')
+                  ))
+                  OR (p.author_org_id IS NOT NULL AND (
+                          (b.blocker_id = p.author_org_id AND b.blocked_id = '${safeOrgActorId}')
+                       OR (b.blocker_id = '${safeOrgActorId}' AND b.blocked_id = p.author_org_id)
+                  ))
+              )
+              ` : safeViewerId ? `
+              AND NOT EXISTS (
+                  SELECT 1 FROM blocks b 
+                  WHERE (b.is_org_block = false AND p.author_org_id IS NULL AND ((b.blocker_id = '${safeViewerId}' AND b.blocked_id = p.author_id) OR (b.blocker_id = p.author_id AND b.blocked_id = '${safeViewerId}')))
+                     OR (b.is_org_block = true AND p.author_org_id IS NOT NULL AND ((b.blocker_id = p.author_org_id AND b.blocked_id = '${safeViewerId}') OR (b.blocker_id = '${safeViewerId}' AND b.blocked_id = p.author_org_id)))
+                     OR (b.is_org_block = false AND p.author_org_id IS NOT NULL AND (b.blocker_id = '${safeViewerId}' AND b.blocked_id = p.author_org_id))
+              )
+              ` : ''}
           ),
           0
         ) AS posts_count,

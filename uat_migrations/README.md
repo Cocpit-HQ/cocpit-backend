@@ -87,6 +87,30 @@ Brings UAT database schema into alignment for Release 1.8.0 (`organization_notif
 
 ---
 
+### `v1.10.0_uat_migration.sql`
+Brings UAT database schema into alignment for Release 1.10.0 (User & Organization Verification Lifecycle, Organization Sector & Trigram Search Filters, Industry Subtypes Schema Purge, and 395 Master Industries Canonical Seed).
+
+#### Changes Included:
+1. **`user_verifications` table**:
+   - Adds `document_type VARCHAR(100)` column.
+   - Adds `rejection_reason TEXT` column.
+   - Adds `notes TEXT` column for administrative review tracking.
+2. **`organization_documents` table**:
+   - Ensures `status VARCHAR(50) DEFAULT 'PENDING'` column exists.
+3. **`organizations` table (`sector` & search indexes)**:
+   - Adds `sector VARCHAR(100) DEFAULT NULL` column.
+   - Creates partial index `idx_organizations_sector` ON `organizations(sector) WHERE sector IS NOT NULL`.
+   - Creates partial GIN trigram index `idx_organizations_headline_trgm` ON `organizations USING GIN (headline gin_trgm_ops) WHERE headline IS NOT NULL`.
+   - Creates partial GIN trigram index `idx_organizations_description_trgm` ON `organizations USING GIN (description gin_trgm_ops) WHERE description IS NOT NULL`.
+4. **Purge Industry Subtypes Hierarchy**:
+   - Drops `parent_id` and `display_order` from `industries_master`.
+   - Drops `industry_sub_type_id` from `organizations`.
+   - Recreates dependent views dropped by cascade (`active_organizations`, `organization_display_profiles`, `active_post_likes`, `active_post_comments`, `active_comment_likes`).
+5. **`industries_master` table (Canonical Dataset Seed)**:
+   - Seeds 395 industry entries into `industries_master` using case-insensitive deduplication (`LOWER(TRIM(industry_name))`).
+
+---
+
 ### `v1.9.0_uat_migration.sql`
 Brings UAT database schema into alignment for Release 1.9.0 (Mixed Media Carousel: Images & Videos support, Jobs Explore & Recommendation System, and Reusable Resume History).
 
@@ -135,6 +159,25 @@ Brings UAT database schema into alignment for Release 1.9.0 (Mixed Media Carouse
 ---
 
 ## How to Run
+
+### Running v1.10.0 Migration
+
+#### Option 1: Using npm script (recommended)
+```bash
+npm run migrate:uat:v1.10.0
+```
+
+#### Option 2: Using Node runner directly
+```bash
+node uat_migrations/run_v1.10.0_migration.js
+```
+
+#### Option 3: Using `psql` directly
+```bash
+psql -h 192.168.1.50 -U swaroop -d cocpit_backend_uat -f uat_migrations/v1.10.0_uat_migration.sql
+```
+
+---
 
 ### Running v1.9.0 Migration
 

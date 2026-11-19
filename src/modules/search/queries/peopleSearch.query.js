@@ -356,9 +356,11 @@ async function searchPeople(client, { searchTerm, viewerId, orgActorId = null, l
   if (openToList.length > 0) {
     const openToParts = [];
     for (const ot of openToList) {
-      params.push(`%${ot}%`);
+      // Normalize hyphens and spaces (e.g. "Full-time" / "Full Time" -> "full time")
+      const normalizedOt = ot.toLowerCase().replace(/[-_ ]+/g, ' ').trim();
+      params.push(`%${normalizedOt}%`);
       const otIdx = params.length;
-      openToParts.push(`p.open_to ILIKE $${otIdx}`);
+      openToParts.push(`REPLACE(REPLACE(LOWER(COALESCE(p.open_to, '')), '-', ' '), '_', ' ') ILIKE $${otIdx}`);
     }
     if (openToParts.length > 0) {
       openToClause = ` AND (${openToParts.join(' OR ')})`;

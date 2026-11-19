@@ -53,7 +53,7 @@ function buildSearchCacheKey({ scopeId, type, q, cursor, limit, queryParams }) {
  * Personalization-aware TTL strategy
  */
 function getSearchCacheTTL({ scopeId, type }) {
-  if (type === 'hashtags') return 300; // 5 minutes
+  if (type === 'hashtags') return 15; // 15 seconds to prevent stale post counts across views
   if (scopeId === 'guest') return 120; // 2 minutes
   if (type === 'all') return 30; // 30 seconds for authenticated personalized overview
   return 120; // 2 minutes for category deep-dives
@@ -179,7 +179,7 @@ async function executeSearch({ q, type = 'all', limit = 10, cursor = null, query
       const companiesRes = await runSubroutine(() => searchCompanies(client, { searchTerm, viewerId, orgActorId, limit: 2 }));
       const institutesRes = await runSubroutine(() => searchInstitutes(client, { searchTerm, viewerId, orgActorId, limit: 2 }));
       const postsRes = await runSubroutine(() => searchPosts(client, { searchTerm, viewerId: effectiveViewerId, orgActorId, limit: 2 }));
-      const hashtagsRes = await runSubroutine(() => searchHashtags(client, { searchTerm, limit: 2 }));
+      const hashtagsRes = await runSubroutine(() => searchHashtags(client, { searchTerm, limit: 2, viewerId: humanUserId, orgActorId }));
 
       const sections = {
         people: mapSettledResult(peopleRes),
@@ -296,7 +296,7 @@ async function executeSearch({ q, type = 'all', limit = 10, cursor = null, query
       }
 
       case 'hashtags': {
-        const res = await searchHashtags(client, { searchTerm, limit: numLimit, cursor, queryParams });
+        const res = await searchHashtags(client, { searchTerm, limit: numLimit, cursor, queryParams, viewerId: humanUserId, orgActorId });
         return {
           type: 'hashtags',
           query: searchTerm,
