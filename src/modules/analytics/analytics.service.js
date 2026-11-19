@@ -184,10 +184,15 @@ const getOverviewData = async (userId, { filter, startDate, endDate }) => {
     }
 
     // 7. Profile Strength
-    let profileStrength = { score: 0, missingFields: [], message: "" };
+    let profileStrength = { score: 0, missingFields: [], message: "", isVerified: false };
     try {
         const fullProfile = await profileRepository.getProfileScoreData(userId);
         if (fullProfile) {
+            profileStrength.isVerified = Boolean(
+                fullProfile.userProfile?.is_identity_verified ||
+                fullProfile.userProfile?.is_verified ||
+                fullProfile.userProfile?.verification_status === "VERIFIED"
+            );
             const strengthResult = calculateFullProfileScore(
                 fullProfile.userProfile,
                 fullProfile.skills,
@@ -554,18 +559,22 @@ const getOpportunitiesData = async (userId, { filter, startDate, endDate }) => {
             WHERE profile_owner_id = $1 AND viewed_at >= $2 AND viewed_at <= $3
         )
         SELECT 
+            cv.org_id as id,
+            org.slug,
             org.name, COALESCE(NULLIF(org.industry, ''), 'Other') as industry, org.logo_url as icon,
             COUNT(1) as visits_count,
             MAX(u.headline) as role
         FROM combined_views cv
         JOIN organizations org ON cv.org_id = org.org_id
         LEFT JOIN users u ON cv.viewer_id = u.user_id
-        GROUP BY cv.org_id, org.name, org.industry, org.logo_url
+        GROUP BY cv.org_id, org.slug, org.name, org.industry, org.logo_url
         ORDER BY MAX(cv.v_date) DESC, visits_count DESC
         LIMIT 50
     `, [userId, start, end]);
 
     const topOrganizations = topOrgsRes.rows.map(r => ({
+        id: r.id,
+        slug: r.slug,
         name: r.name,
         industry: formatIndustryName(r.industry),
         visits: `${r.visits_count} visits`,
@@ -693,9 +702,9 @@ const getContentData = async (userId, { filter, startDate, endDate, sort }) => {
     `, [userId, start, end]);
 
     const topPosts = topPostsRes.rows.map(p => {
-        let title = p.title;
+        let plainTextContent = p.content ? p.content.replace(/<[^>]*>?/gm, '').replace(/@\[([^\]]+)\](?:\([^)]*\)?|\([^\s)]*)?/g, (m, name) => name.trim()).trim() : '';
+        let title = p.title ? p.title.replace(/@\[([^\]]+)\](?:\([^)]*\)?|\([^\s)]*)?/g, (m, name) => name.trim()) : '';
         if (!title) {
-            let plainTextContent = p.content ? p.content.replace(/<[^>]*>?/gm, '').trim() : '';
             title = plainTextContent ? (plainTextContent.length > 50 ? plainTextContent.substring(0, 50) + '...' : plainTextContent) : 'No caption';
         }
 

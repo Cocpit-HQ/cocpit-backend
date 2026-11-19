@@ -7548,6 +7548,7 @@ exports.organizationFollowUser = async (req, res) => {
 
         if (result.rowCount > 0) {
             try {
+                const actingUserId = req.user?.sub || req.user?.user_id || req.user?.userId || null;
                 const orgRes = await pool.query(
                     `SELECT name, logo_url, slug FROM organizations WHERE org_id = $1`,
                     [orgId]
@@ -7580,7 +7581,7 @@ exports.organizationFollowUser = async (req, res) => {
                 const notifRes = await pool.query(
                     `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata)
                      VALUES ($1, $2, $3, $4, $5, $6) RETURNING notification_id, created_at`,
-                    [userId, orgId, "follow", followerText, orgId, JSON.stringify(metadataObj)]
+                    [userId, actingUserId, "follow", followerText, orgId, JSON.stringify(metadataObj)]
                 );
 
                 const payload = {

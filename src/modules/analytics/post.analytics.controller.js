@@ -11,16 +11,27 @@ exports.getPostAnalytics = async (req, res, next) => {
         const { postId } = req.params;
         const { filter, startDate, endDate } = req.query;
 
-        // Verify post belongs to authenticated user
-        const postRes = await pool.query('SELECT author_id FROM posts WHERE post_id = $1', [postId]);
+        // Verify post belongs to authenticated user or their organization
+        const postRes = await pool.query('SELECT author_id, author_org_id FROM posts WHERE post_id = $1', [postId]);
         if (postRes.rowCount === 0) {
             return res.status(404).json({ status: 'error', message: 'Post not found' });
         }
         
-        // Handle variations in author_id vs user_id in posts table schema
         const postAuthor = postRes.rows[0].author_id;
+        const postOrg = postRes.rows[0].author_org_id;
+
         if (postAuthor !== userId) {
-            return res.status(403).json({ status: 'error', message: 'Unauthorized to view analytics for this post' });
+            let isAuthorized = false;
+            if (postOrg) {
+                const orgMemberCheck = await pool.query(
+                    'SELECT 1 FROM organization_members WHERE organization_id = $1 AND user_id = $2',
+                    [postOrg, userId]
+                );
+                isAuthorized = orgMemberCheck.rowCount > 0;
+            }
+            if (!isAuthorized) {
+                return res.status(403).json({ status: 'error', message: 'Unauthorized to view analytics for this post' });
+            }
         }
         
         const data = await postAnalyticsService.getPostAnalyticsData(postId, userId, { filter, startDate, endDate });

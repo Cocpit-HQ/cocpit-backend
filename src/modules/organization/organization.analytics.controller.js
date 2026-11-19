@@ -142,9 +142,18 @@ exports.getEngagement = async (req, res) => {
             [companyId]
         );
 
+        const topPosts = topPostsRes.rows.map(p => {
+            let plainTextContent = p.content ? p.content.replace(/<[^>]*>?/gm, '').replace(/@\[([^\]]+)\](?:\([^)]*\)?|\([^\s)]*)?/g, (m, name) => name.trim()).trim() : '';
+            return {
+                ...p,
+                content: plainTextContent,
+                title: p.title ? p.title.replace(/@\[([^\]]+)\](?:\([^)]*\)?|\([^\s)]*)?/g, (m, name) => name.trim()) : (plainTextContent.length > 50 ? plainTextContent.substring(0, 50) + '...' : plainTextContent || 'No caption')
+            };
+        });
+
         res.json({
             stats: statsRes.rows[0],
-            topPosts: topPostsRes.rows
+            topPosts
         });
     } catch (err) {
         console.error("Analytics Engagement Error:", err);

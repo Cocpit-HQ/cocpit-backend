@@ -20,8 +20,8 @@ const getPostAnalyticsData = async (postId, userId, { filter, startDate, endDate
     if (postRes.rowCount === 0) throw new Error("Post not found");
     const p = postRes.rows[0];
 
-    let plainTextContent = p.content ? p.content.replace(/<[^>]*>?/gm, '').trim() : '';
-    let title = p.title;
+    let plainTextContent = p.content ? p.content.replace(/<[^>]*>?/gm, '').replace(/@\[([^\]]+)\](?:\([^)]*\)?|\([^\s)]*)?/g, (m, name) => name.trim()).trim() : '';
+    let title = p.title ? p.title.replace(/@\[([^\]]+)\](?:\([^)]*\)?|\([^\s)]*)?/g, (m, name) => name.trim()) : '';
     if (!title) {
         title = plainTextContent ? plainTextContent : 'No caption';
     }
@@ -88,7 +88,7 @@ const getPostAnalyticsData = async (postId, userId, { filter, startDate, endDate
             WHERE post_id = $1 AND date >= DATE($2) AND date <= DATE($3)
             GROUP BY DATE(date)
         `, [postId, start, end]);
-        
+
         const viewsMap = {};
         dailyViewsRes.rows.forEach(r => {
             viewsMap[dateFns.format(new Date(r.d), 'yyyy-MM-dd')] = parseInt(r.v, 10);
@@ -105,7 +105,7 @@ const getPostAnalyticsData = async (postId, userId, { filter, startDate, endDate
             WHERE post_id = $1 AND date >= DATE($2) AND date <= DATE($3)
             GROUP BY week_start ORDER BY week_start
         `, [postId, start, end]);
-        
+
         weeklyRes.rows.forEach(r => {
             const ws = new Date(r.week_start);
             const we = dateFns.addDays(ws, 6);
@@ -141,7 +141,7 @@ const getPostAnalyticsData = async (postId, userId, { filter, startDate, endDate
     // Get total posts by user
     const totalPostsRes = await pool.query(`SELECT COUNT(1) as count FROM posts WHERE author_id = $1`, [userId]);
     const totalPosts = Math.max(parseInt(totalPostsRes.rows[0].count, 10), 1); // Avoid div by zero
-    
+
     // Average profile visits from all posts
     const allVisitsRes = await getDirectImpactCount(`
         SELECT COUNT(1) as count FROM profile_views pv 
@@ -207,7 +207,7 @@ const getPostAnalyticsData = async (postId, userId, { filter, startDate, endDate
     const citiesRes = await getDemo('location_city', 4);
     // Top 4 countries
     const countriesRes = await getDemo('location_country', 4);
-    
+
     // Top 4 industries (handling null as Other)
     const industriesRes = await pool.query(`
         SELECT COALESCE(NULLIF(p.working_industry, ''), 'Other') AS name, COUNT(1) AS cnt
@@ -225,7 +225,7 @@ const getPostAnalyticsData = async (postId, userId, { filter, startDate, endDate
         WHERE post_id = $1 AND view_date >= DATE($2) AND view_date <= DATE($3)
     `, [postId, start, end]);
     const totalViewers = Math.max(parseInt(totalRealtimeImpressionsRes.rows[0].cnt, 10), 1);
-    
+
     const formatDemo = (rows) => rows.map(r => ({
         name: r.name,
         value: Number(Math.min((parseInt(r.cnt, 10) / totalViewers) * 100, 100).toFixed(1))
