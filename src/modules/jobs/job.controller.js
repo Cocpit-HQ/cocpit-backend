@@ -1,29 +1,36 @@
-const { sanitizeContent } = require("../../utils/contentSanitizer");
-const pool = require("../../core/db/pool");
+const { sanitizeContent } = require('../../utils/contentSanitizer');
+const pool = require('../../core/db/pool');
 const { getFlags } = require('../config/featureFlags.service');
-const { buildJobFilters } = require("../../core/utils/jobQueryBuilder");
-const { logAudit } = require("../../core/infrastructure/audit.service");
-const { checkOrgPermission } = require("../../core/utils/rbac");
-const { notifyOrgFollowers } = require("../../services/notification.service");
-const { sendToUser } = require("../notification/notification.service");
-const socketService = require("../../services/socket.service");
-const { hasActorPermission } = require("../../core/middlewares/actor-context.middleware");
-const { logActivity } = require("../../core/services/activityLogger");
-const { logActivity: logIntentActivity } = require("../../utils/activityLogger");
-const crypto = require("crypto");
-const redis = require("../../core/cache/redis");
-const aiService = require("../../services/ai.service");
-const { validateSchema, validateBusiness, validateContentSafety } = require("../../core/utils/aiValidation");
-const { extractRequirementsFromJDText } = require("../../services/jdExtractor.service");
-const { calculateBackendScore, calculateTotalExperienceYears, getLatestEducation } = require("./applications/application.utils");
-const jobRecommendationsService = require("./jobRecommendations.service");
-
+const { buildJobFilters } = require('../../core/utils/jobQueryBuilder');
+const { logAudit } = require('../../core/infrastructure/audit.service');
+const { checkOrgPermission } = require('../../core/utils/rbac');
+const { notifyOrgFollowers } = require('../../services/notification.service');
+const { sendToUser } = require('../notification/notification.service');
+const socketService = require('../../services/socket.service');
+const { hasActorPermission } = require('../../core/middlewares/actor-context.middleware');
+const { logActivity } = require('../../core/services/activityLogger');
+const { logActivity: logIntentActivity } = require('../../utils/activityLogger');
+const crypto = require('crypto');
+const redis = require('../../core/cache/redis');
+const aiService = require('../../services/ai.service');
+const {
+  validateSchema,
+  validateBusiness,
+  validateContentSafety,
+} = require('../../core/utils/aiValidation');
+const { extractRequirementsFromJDText } = require('../../services/jdExtractor.service');
+const {
+  calculateBackendScore,
+  calculateTotalExperienceYears,
+  getLatestEducation,
+} = require('./applications/application.utils');
+const jobRecommendationsService = require('./jobRecommendations.service');
 
 const getRequestedOrganizationActorId = (req, fallbackOrgId = null) => {
-  const actorOrgId = req.actor?.type === "ORGANIZATION" ? req.actor.orgId : null;
+  const actorOrgId = req.actor?.type === 'ORGANIZATION' ? req.actor.orgId : null;
 
   if (actorOrgId && fallbackOrgId && actorOrgId !== fallbackOrgId) {
-    const err = new Error("Active organization actor does not match requested organization");
+    const err = new Error('Active organization actor does not match requested organization');
     err.statusCode = 403;
     throw err;
   }
@@ -40,14 +47,14 @@ const hasAnyActorPermission = (actorPermissions, permissions) => {
 const assertOrgPermission = async (req, orgId, permissions, queryable = pool) => {
   if (!orgId) return;
 
-  if (req.actor?.type === "ORGANIZATION") {
+  if (req.actor?.type === 'ORGANIZATION') {
     if (req.actor.orgId !== orgId) {
-      const err = new Error("Active organization actor does not match requested organization");
+      const err = new Error('Active organization actor does not match requested organization');
       err.statusCode = 403;
       throw err;
     }
     if (!hasAnyActorPermission(req.actor.permissions, permissions)) {
-      const err = new Error("Not authorized for this organization");
+      const err = new Error('Not authorized for this organization');
       err.statusCode = 403;
       throw err;
     }
@@ -56,7 +63,7 @@ const assertOrgPermission = async (req, orgId, permissions, queryable = pool) =>
 
   const ok = await checkOrgPermission(queryable, orgId, req.user.sub, permissions);
   if (!ok) {
-    const err = new Error("Not authorized for this organization");
+    const err = new Error('Not authorized for this organization');
     err.statusCode = 403;
     throw err;
   }
@@ -82,10 +89,10 @@ const assertJobActorAccess = async (req, job, permissions, queryable = pool) => 
     return;
   }
 
-  if (req.actor?.type === "ORGANIZATION") {
+  if (req.actor?.type === 'ORGANIZATION') {
     // Must be acting as the correct org
     if (req.actor.orgId !== job.org_id) {
-      const err = new Error("Active organization actor does not match requested organization");
+      const err = new Error('Active organization actor does not match requested organization');
       err.statusCode = 403;
       throw err;
     }
@@ -94,7 +101,7 @@ const assertJobActorAccess = async (req, job, permissions, queryable = pool) => 
 
     // Check required permission
     if (!hasAnyActorPermission(actorPermissions, permissions)) {
-      const err = new Error("Not authorized for this organization");
+      const err = new Error('Not authorized for this organization');
       err.statusCode = 403;
       throw err;
     }
@@ -115,7 +122,7 @@ const assertJobActorAccess = async (req, job, permissions, queryable = pool) => 
   // No org actor context — DB-level RBAC fallback
   const ok = await checkOrgPermission(queryable, job.org_id, userId, permissions);
   if (!ok) {
-    const err = new Error("Not authorized for this organization");
+    const err = new Error('Not authorized for this organization');
     err.statusCode = 403;
     throw err;
   }
@@ -208,7 +215,10 @@ exports.getAllJobs = async (req, res) => {
     params.push(Number(limit));
 
     const baseWhere = `j.is_active = TRUE AND j.status = 'ACTIVE' AND u.user_id IS NOT NULL AND (j.org_id IS NOT NULL OR u.is_deactivated = FALSE) AND (j.org_id IS NULL OR (c.is_deleted = FALSE AND c.is_deactivated = FALSE AND (c.is_suspended IS NOT TRUE)))`;
-    const whereClause = conditions.length > 0 ? `WHERE ${baseWhere} AND ${conditions.join(" AND ")}` : `WHERE ${baseWhere}`;
+    const whereClause =
+      conditions.length > 0
+        ? `WHERE ${baseWhere} AND ${conditions.join(' AND ')}`
+        : `WHERE ${baseWhere}`;
 
     const query = `
       SELECT 
@@ -225,7 +235,7 @@ exports.getAllJobs = async (req, res) => {
         ${userId ? 'ja.current_status AS "applicationStatus",' : 'NULL AS "applicationStatus",'}
         ${userId ? '(jo.offer_id IS NOT NULL) AS "is_offer",' : 'FALSE AS "is_offer",'}
         ${userId ? 'jo.offer_id,' : 'NULL AS offer_id,'}
-        ${userId ? 'CASE WHEN jo.status = \'pending\' AND jo.expires_at <= NOW() THEN \'expired\' ELSE jo.status END AS "offerStatus",' : 'NULL AS "offerStatus",'}
+        ${userId ? "CASE WHEN jo.status = 'pending' AND jo.expires_at <= NOW() THEN 'expired' ELSE jo.status END AS \"offerStatus\"," : 'NULL AS "offerStatus",'}
         ${userId ? 'jo.expires_at AS "offer_expires_at",' : 'NULL AS "offer_expires_at",'}
         (SELECT COUNT(*)::int FROM job_applications ja_count WHERE ja_count.job_id = j.job_id AND ja_count.current_status != 'Withdrawn') as applicants,
         (SELECT COUNT(*)::int FROM job_applications ja_count WHERE ja_count.job_id = j.job_id AND ja_count.current_status != 'Withdrawn') as applicants_count,
@@ -234,9 +244,9 @@ exports.getAllJobs = async (req, res) => {
       FROM jobs j
       LEFT JOIN active_users u ON j.recruiter_id = u.user_id
       LEFT JOIN organizations c ON j.org_id = c.org_id
-      ${userId ? "LEFT JOIN job_saves js ON js.job_id = j.job_id AND js.user_id = $1" : ""}
-      ${userId ? "LEFT JOIN job_applications ja ON ja.job_id = j.job_id AND ja.applicant_id = $1" : ""}
-      ${userId ? "LEFT JOIN job_offers jo ON jo.job_id = j.job_id AND jo.user_id = $1 AND jo.status != 'withdrawn'" : ""}
+      ${userId ? 'LEFT JOIN job_saves js ON js.job_id = j.job_id AND js.user_id = $1' : ''}
+      ${userId ? 'LEFT JOIN job_applications ja ON ja.job_id = j.job_id AND ja.applicant_id = $1' : ''}
+      ${userId ? "LEFT JOIN job_offers jo ON jo.job_id = j.job_id AND jo.user_id = $1 AND jo.status != 'withdrawn'" : ''}
       ${whereClause}
       ORDER BY COALESCE(j.published_at, j.created_at) DESC
       ${limitClause}
@@ -246,23 +256,20 @@ exports.getAllJobs = async (req, res) => {
     res.json(result.rows);
 
     // 📝 Log Activity: Search Jobs
-    const searchText = req.query.q || req.query.title || req.query.search || req.query.keyword || "";
+    const searchText =
+      req.query.q || req.query.title || req.query.search || req.query.keyword || '';
 
     if (userId && searchText) {
       logActivity(userId, 'search_job', 'job', null, { query: searchText });
     }
-
-
-
   } catch (err) {
-
     if (err.code === '23514' && err.constraint === 'salary_valid') {
       return res.status(400).json({
-        field: "salary",
-        message: "Minimum salary cannot be greater than maximum salary"
+        field: 'salary',
+        message: 'Minimum salary cannot be greater than maximum salary',
       });
     }
-    console.error("Get jobs error:", err);
+    console.error('Get jobs error:', err);
   }
 };
 
@@ -290,12 +297,14 @@ exports.getRecommendations = async (req, res) => {
       FROM jobs j
       LEFT JOIN active_users u ON j.recruiter_id = u.user_id
       LEFT JOIN organizations c ON j.org_id = c.org_id
-      ${userId ? "LEFT JOIN job_saves js ON js.job_id = j.job_id AND js.user_id = $1" : ""}
-      ${userId ? "LEFT JOIN job_applications ja ON ja.job_id = j.job_id AND ja.applicant_id = $1" : ""}
-      ${userId ? "LEFT JOIN job_offers jo ON jo.job_id = j.job_id AND jo.user_id = $1 AND jo.status != 'withdrawn'" : ""}
+      ${userId ? 'LEFT JOIN job_saves js ON js.job_id = j.job_id AND js.user_id = $1' : ''}
+      ${userId ? 'LEFT JOIN job_applications ja ON ja.job_id = j.job_id AND ja.applicant_id = $1' : ''}
+      ${userId ? "LEFT JOIN job_offers jo ON jo.job_id = j.job_id AND jo.user_id = $1 AND jo.status != 'withdrawn'" : ''}
       WHERE j.is_active = TRUE AND j.status = 'ACTIVE' AND u.user_id IS NOT NULL AND (j.org_id IS NOT NULL OR u.is_deactivated = FALSE) AND (j.org_id IS NULL OR (c.is_deleted = FALSE AND c.is_deactivated = FALSE AND (c.is_suspended IS NOT TRUE)))
-      ${userId ? "AND j.recruiter_id != $1" : ""}
-      ${userId ? `AND (
+      ${userId ? 'AND j.recruiter_id != $1' : ''}
+      ${
+        userId
+          ? `AND (
         j.org_id IS NULL OR (
           NOT EXISTS (
             SELECT 1 FROM organizations o_own
@@ -317,14 +326,20 @@ exports.getRecommendations = async (req, res) => {
               )
           )
         )
-      )` : ""}
-      ${userId ? "AND (ja.application_id IS NULL OR ja.current_status = 'Withdrawn')" : ""}
-      ${userId ? "AND jo.offer_id IS NULL" : ""}
-      ${userId ? `AND NOT EXISTS (
+      )`
+          : ''
+      }
+      ${userId ? "AND (ja.application_id IS NULL OR ja.current_status = 'Withdrawn')" : ''}
+      ${userId ? 'AND jo.offer_id IS NULL' : ''}
+      ${
+        userId
+          ? `AND NOT EXISTS (
         SELECT 1 FROM blocks b
         WHERE (j.org_id IS NOT NULL AND ((b.blocker_id = $1 AND b.blocked_id = j.org_id) OR (b.blocker_id = j.org_id AND b.blocked_id = $1)))
            OR (j.recruiter_id IS NOT NULL AND ((b.blocker_id = $1 AND b.blocked_id = j.recruiter_id) OR (b.blocker_id = j.recruiter_id AND b.blocked_id = $1)))
-      )` : ""}
+      )`
+          : ''
+      }
       ORDER BY j.created_at DESC
       LIMIT 3
     `;
@@ -333,13 +348,13 @@ exports.getRecommendations = async (req, res) => {
     const result = await pool.query(query, params);
 
     const recommendations = result.rows.map((job, index) => {
-      const mockBadges = ["Top 5%", "Top 10%", "Top 15%"];
-      const mockResponseRates = ["98%", "95%", "92%"];
-      const mockAvgReplies = ["1 day", "2 days", "3 days"];
+      const mockBadges = ['Top 5%', 'Top 10%', 'Top 15%'];
+      const mockResponseRates = ['98%', '95%', '92%'];
+      const mockAvgReplies = ['1 day', '2 days', '3 days'];
       const mockReasons = [
-        "Matches your skills in React and Node.js",
-        "Strong match for your Figma portfolio",
-        "Matches your experience with AWS"
+        'Matches your skills in React and Node.js',
+        'Strong match for your Figma portfolio',
+        'Matches your experience with AWS',
       ];
       const mockScores = [95, 90, 85];
 
@@ -350,14 +365,14 @@ exports.getRecommendations = async (req, res) => {
         response_rate: mockResponseRates[index % mockResponseRates.length],
         avg_reply: mockAvgReplies[index % mockAvgReplies.length],
         match_reason: mockReasons[index % mockReasons.length],
-        match_score: job.match_score || mockScores[index % mockScores.length]
+        match_score: job.match_score || mockScores[index % mockScores.length],
       };
     });
 
     res.json(recommendations);
   } catch (err) {
-    console.error("Get recommendations error:", err);
-    res.status(500).json({ message: "Internal server error" });
+    console.error('Get recommendations error:', err);
+    res.status(500).json({ message: 'Internal server error' });
   }
 };
 
@@ -370,10 +385,10 @@ exports.getExploreSections = async (req, res) => {
       data: sections,
     });
   } catch (err) {
-    console.error("Get explore sections error:", err);
+    console.error('Get explore sections error:', err);
     return res.status(500).json({
       success: false,
-      error: "Failed to fetch explore job sections",
+      error: 'Failed to fetch explore job sections',
     });
   }
 };
@@ -413,7 +428,7 @@ exports.getExploreSectionDetail = async (req, res) => {
     }
     return res.status(500).json({
       success: false,
-      error: "Failed to fetch category job listings",
+      error: 'Failed to fetch category job listings',
     });
   }
 };
@@ -426,10 +441,10 @@ const formatReplyTime = (interval) => {
   const minutes = interval.minutes || 0;
   const seconds = interval.seconds || 0;
 
-  const totalHours = (days * 24) + hours + (minutes / 60) + (seconds / 3600);
+  const totalHours = days * 24 + hours + minutes / 60 + seconds / 3600;
 
   if (totalHours < 1) {
-    const mins = Math.max(1, Math.round(minutes || (seconds / 60)));
+    const mins = Math.max(1, Math.round(minutes || seconds / 60));
     return mins === 1 ? '1 minute' : `${mins} minutes`;
   }
 
@@ -449,7 +464,7 @@ exports.getJobById = async (req, res) => {
 
   try {
     let resolvedJobId = id;
-    const offerCheck = await pool.query("SELECT job_id FROM job_offers WHERE offer_id = $1", [id]);
+    const offerCheck = await pool.query('SELECT job_id FROM job_offers WHERE offer_id = $1', [id]);
     if (offerCheck.rowCount > 0) {
       resolvedJobId = offerCheck.rows[0].job_id;
     }
@@ -471,7 +486,7 @@ exports.getJobById = async (req, res) => {
         ${userId ? '(ja.application_id IS NOT NULL AND ja.current_status != \'Withdrawn\') AS "hasApplied",' : 'FALSE AS "hasApplied",'}
         ${userId ? 'ja.current_status AS "applicationStatus",' : 'NULL AS "applicationStatus",'}
         ${userId ? '(jo.offer_id IS NOT NULL) AS "is_offer",' : 'FALSE AS "is_offer",'}
-        ${userId ? 'CASE WHEN jo.status = \'pending\' AND jo.expires_at <= NOW() THEN \'expired\' ELSE jo.status END AS "offerStatus",' : 'NULL AS "offerStatus",'}
+        ${userId ? "CASE WHEN jo.status = 'pending' AND jo.expires_at <= NOW() THEN 'expired' ELSE jo.status END AS \"offerStatus\"," : 'NULL AS "offerStatus",'}
         ${userId ? 'jo.expires_at AS "offer_expires_at",' : 'NULL AS "offer_expires_at",'}
         ${userId ? 'jo.offer_id AS "offer_id",' : 'NULL AS "offer_id",'}
         ${userId ? 'jo.message AS "recruiter_message",' : 'NULL AS "recruiter_message",'}
@@ -495,7 +510,7 @@ exports.getJobById = async (req, res) => {
       ${userId ? 'LEFT JOIN job_applications ja ON ja.job_id = j.job_id AND ja.applicant_id = $2' : ''}
       ${userId ? 'LEFT JOIN organization_followers of ON of.org_id = j.org_id AND of.user_id = $2' : ''}
       ${userId ? 'LEFT JOIN followers uf ON uf.following_id = j.recruiter_id AND uf.follower_id = $2' : ''}
-      ${userId ? 'LEFT JOIN job_offers jo ON jo.job_id = j.job_id AND jo.user_id = $2 AND jo.status != \'withdrawn\'' : ''}
+      ${userId ? "LEFT JOIN job_offers jo ON jo.job_id = j.job_id AND jo.user_id = $2 AND jo.status != 'withdrawn'" : ''}
       ${userId ? 'LEFT JOIN active_users u_sender ON jo.sent_by = u_sender.user_id' : ''}
       WHERE j.job_id = $1
       AND u.user_id IS NOT NULL 
@@ -506,13 +521,13 @@ exports.getJobById = async (req, res) => {
     );
 
     if (result.rowCount === 0 || !result.rows[0].is_active) {
-      return res.status(404).json({ message: "Job not found" });
+      return res.status(404).json({ message: 'Job not found' });
     }
 
     const job = result.rows[0];
 
     if (userId) {
-      const BlockModel = require("../../models/block.model");
+      const BlockModel = require('../../models/block.model');
       let isBlocked = false;
       if (job.org_id) {
         isBlocked = await BlockModel.isAnyBlocked(userId, job.org_id);
@@ -520,7 +535,7 @@ exports.getJobById = async (req, res) => {
         isBlocked = await BlockModel.isAnyBlocked(userId, job.recruiter_id);
       }
       if (isBlocked) {
-        return res.status(404).json({ message: "Job not found" });
+        return res.status(404).json({ message: 'Job not found' });
       }
     }
 
@@ -588,12 +603,11 @@ exports.getJobById = async (req, res) => {
     // 📝 Log Activity: View Job
     if (userId) {
       logActivity(userId, 'view_job', 'job', id);
-      logIntentActivity({ userId, action: "view_job", metadata: { jobId: id } });
+      logIntentActivity({ userId, action: 'view_job', metadata: { jobId: id } });
     }
   } catch (err) {
-
-    console.error("Get job error:", err);
-    res.status(500).json({ message: "Internal server error" });
+    console.error('Get job error:', err);
+    res.status(500).json({ message: 'Internal server error' });
   }
 };
 
@@ -607,33 +621,52 @@ exports.createJob = async (req, res) => {
     work_mode,
     experience_label,
     experience_min,
-    experience_max
+    experience_max,
   } = req.body;
 
   title = sanitizeContent(title);
-  const resolvedLocation = (location && typeof location === 'string') ? sanitizeContent(location.trim()) : null;
-  const resolvedJobType = (job_type && typeof job_type === 'string') ? sanitizeContent(job_type.trim()) : null;
-  const resolvedWorkMode = (work_mode && typeof work_mode === 'string') ? sanitizeContent(work_mode.trim()) : null;
-  const resolvedExperienceLabel = (experience_label && typeof experience_label === 'string') ? sanitizeContent(experience_label.trim()) : null;
-  const parsedExpMin = (experience_min !== undefined && experience_min !== null && experience_min !== '') ? parseInt(experience_min, 10) : null;
-  const parsedExpMax = (experience_max !== undefined && experience_max !== null && experience_max !== '') ? parseInt(experience_max, 10) : null;
+  const resolvedLocation =
+    location && typeof location === 'string' ? sanitizeContent(location.trim()) : null;
+  const resolvedJobType =
+    job_type && typeof job_type === 'string' ? sanitizeContent(job_type.trim()) : null;
+  const resolvedWorkMode =
+    work_mode && typeof work_mode === 'string' ? sanitizeContent(work_mode.trim()) : null;
+  const resolvedExperienceLabel =
+    experience_label && typeof experience_label === 'string'
+      ? sanitizeContent(experience_label.trim())
+      : null;
+  const parsedExpMin =
+    experience_min !== undefined && experience_min !== null && experience_min !== ''
+      ? parseInt(experience_min, 10)
+      : null;
+  const parsedExpMax =
+    experience_max !== undefined && experience_max !== null && experience_max !== ''
+      ? parseInt(experience_max, 10)
+      : null;
 
-  let requestedOrgId = null;
-  let resolvedCompanyName = "";
+  let requestedOrgId;
+  let resolvedCompanyName = '';
   try {
     requestedOrgId = getRequestedOrganizationActorId(req, org_id || null);
-    await assertOrgPermission(req, requestedOrgId, ["POST_JOBS", "MANAGE_COMPANY"]);
+    await assertOrgPermission(req, requestedOrgId, ['POST_JOBS', 'MANAGE_COMPANY']);
 
     if (requestedOrgId) {
-      const orgRes = await pool.query('SELECT name FROM organizations WHERE org_id = $1', [requestedOrgId]);
+      const orgRes = await pool.query('SELECT name FROM organizations WHERE org_id = $1', [
+        requestedOrgId,
+      ]);
       if (orgRes.rows.length) {
         resolvedCompanyName = orgRes.rows[0].name;
       }
     } else {
-      const userRes = await pool.query('SELECT full_name, is_identity_verified FROM users WHERE user_id = $1', [userId]);
+      const userRes = await pool.query(
+        'SELECT full_name, is_identity_verified FROM users WHERE user_id = $1',
+        [userId]
+      );
       if (userRes.rows.length) {
         if (!userRes.rows[0].is_identity_verified) {
-          const err = new Error("Identity verification required to post jobs. Please complete verification in settings.");
+          const err = new Error(
+            'Identity verification required to post jobs. Please complete verification in settings.'
+          );
           err.statusCode = 403;
           throw err;
         }
@@ -641,12 +674,14 @@ exports.createJob = async (req, res) => {
       }
     }
   } catch (err) {
-    return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
+    return res
+      .status(err.statusCode || 500)
+      .json({ message: err.message || 'Internal server error' });
   }
 
   const postedAsCompany = !!requestedOrgId;
 
-  const maxGenerationsPerDay = parseInt(process.env.AI_MAX_DRAFT_GENERATIONS_PER_DAY || "10", 10);
+  const maxGenerationsPerDay = parseInt(process.env.AI_MAX_DRAFT_GENERATIONS_PER_DAY || '10', 10);
   const rateLimitKey = `ai_draft_gen:user:${userId}:date:${new Date().toISOString().split('T')[0]}`;
   let generationCount = 0;
   try {
@@ -655,17 +690,17 @@ exports.createJob = async (req, res) => {
       await redis.expire(rateLimitKey, 24 * 60 * 60);
     }
   } catch (err) {
-    console.warn("Redis daily draft generation rate limit failed, bypassing:", err);
+    console.warn('Redis daily draft generation rate limit failed, bypassing:', err);
   }
 
   // AI Generation Phase
-  let aiDescription = "";
+  let aiDescription = '';
   let generated = null;
 
   if (generationCount <= maxGenerationsPerDay) {
     try {
-      const aiService = require("../../services/ai.service");
-      const companyReplacement = postedAsCompany ? resolvedCompanyName : "our team";
+      const aiService = require('../../services/ai.service');
+      const companyReplacement = postedAsCompany ? resolvedCompanyName : 'our team';
       generated = await aiService.generateJobDescription({
         role: title,
         companyName: companyReplacement,
@@ -677,33 +712,47 @@ exports.createJob = async (req, res) => {
         companyId: org_id || null,
         userId: userId,
         orgId: org_id || null,
-        sourceIp: req.ip
+        sourceIp: req.ip,
       });
 
       // Use the shared helper so createJob and generateJD always produce
       // identical description formatting.
       aiDescription = buildAIDescription(generated);
     } catch (e) {
-      console.error("Auto AI Generation failed during createJob:", e.message);
+      console.error('Auto AI Generation failed during createJob:', e.message);
       // If it fails, we just leave aiDescription blank and let the draft be created normally.
     }
   } else {
-    console.warn(`[createJob] User ${userId} exceeded daily draft generation cap (${maxGenerationsPerDay}). Skipping AI generation.`);
+    console.warn(
+      `[createJob] User ${userId} exceeded daily draft generation cap (${maxGenerationsPerDay}). Skipping AI generation.`
+    );
   }
 
   const client = await pool.connect();
 
   try {
-    await client.query("BEGIN");
+    await client.query('BEGIN');
 
-    const aiRequirements = generated ? {
-      skills: generated.required_skills_keywords || [],
-      experience_min: generated.experience_min || null,
-      education: generated.education || null,
-    } : null;
+    const aiRequirements = generated
+      ? {
+          skills: generated.required_skills_keywords || [],
+          experience_min: generated.experience_min || null,
+          education: generated.education || null,
+        }
+      : null;
 
-    const finalExpMin = (parsedExpMin !== null && !isNaN(parsedExpMin)) ? parsedExpMin : (generated?.experience_min !== undefined && generated?.experience_min !== null ? generated.experience_min : 0);
-    const finalExpMax = (parsedExpMax !== null && !isNaN(parsedExpMax)) ? parsedExpMax : (generated?.experience_max !== undefined && generated?.experience_max !== null ? generated.experience_max : 1);
+    const finalExpMin =
+      parsedExpMin !== null && !isNaN(parsedExpMin)
+        ? parsedExpMin
+        : generated?.experience_min !== undefined && generated?.experience_min !== null
+          ? generated.experience_min
+          : 0;
+    const finalExpMax =
+      parsedExpMax !== null && !isNaN(parsedExpMax)
+        ? parsedExpMax
+        : generated?.experience_max !== undefined && generated?.experience_max !== null
+          ? generated.experience_max
+          : 1;
     const finalExpLabel = resolvedExperienceLabel || 'Fresher';
 
     const jobRes = await client.query(
@@ -727,7 +776,7 @@ exports.createJob = async (req, res) => {
         aiDescription,
         finalExpMin,
         finalExpMax,
-        aiRequirements ? JSON.stringify(aiRequirements) : null
+        aiRequirements ? JSON.stringify(aiRequirements) : null,
       ]
     );
 
@@ -753,16 +802,14 @@ exports.createJob = async (req, res) => {
       [job.job_id, userId]
     );
 
-    await client.query("COMMIT");
+    await client.query('COMMIT');
 
     // description already contains the full AI-generated markdown
-    res.status(201).json({ message: "Draft created successfully", job });
-
+    res.status(201).json({ message: 'Draft created successfully', job });
   } catch (err) {
-    await client.query("ROLLBACK");
+    await client.query('ROLLBACK');
     console.error(err);
-    res.status(500).json({ message: "Internal server error", error: err.message });
-
+    res.status(500).json({ message: 'Internal server error', error: err.message });
   } finally {
     client.release();
   }
@@ -778,22 +825,25 @@ exports.updateDraft = async (req, res) => {
   if (updates.industry) updates.industry = sanitizeContent(updates.industry);
 
   try {
-    const jobRes = await pool.query(`SELECT org_id, recruiter_id, status, description FROM jobs WHERE job_id = $1`, [id]);
-    if (jobRes.rowCount === 0) return res.status(404).json({ message: "Job not found" });
+    const jobRes = await pool.query(
+      `SELECT org_id, recruiter_id, status, description FROM jobs WHERE job_id = $1`,
+      [id]
+    );
+    if (jobRes.rowCount === 0) return res.status(404).json({ message: 'Job not found' });
     const job = jobRes.rows[0];
 
     if (job.org_id) {
-      await assertJobActorAccess(req, job, ["POST_JOBS", "MANAGE_COMPANY"]);
+      await assertJobActorAccess(req, job, ['POST_JOBS', 'MANAGE_COMPANY']);
     } else {
-      if (job.recruiter_id !== userId) return res.status(403).json({ message: "Unauthorized" });
+      if (job.recruiter_id !== userId) return res.status(403).json({ message: 'Unauthorized' });
     }
 
     if (job.status !== 'DRAFT' && job.status !== 'ACTIVE') {
-      return res.status(400).json({ message: "Can only update jobs in DRAFT or ACTIVE state" });
+      return res.status(400).json({ message: 'Can only update jobs in DRAFT or ACTIVE state' });
     }
 
     if (updates.description !== undefined) {
-      const isDescriptionChanged = updates.description.trim() !== (job.description || "").trim();
+      const isDescriptionChanged = updates.description.trim() !== (job.description || '').trim();
 
       if (isDescriptionChanged) {
         if (job.status === 'DRAFT') {
@@ -801,7 +851,13 @@ exports.updateDraft = async (req, res) => {
           updates.ai_extracted_requirements = null;
         } else if (job.status === 'ACTIVE') {
           // Synchronously run extraction for live edits so candidates can be matched accurately
-          const extracted = await extractRequirementsFromJDText(updates.description, id, userId, job.org_id, req.ip);
+          const extracted = await extractRequirementsFromJDText(
+            updates.description,
+            id,
+            userId,
+            job.org_id,
+            req.ip
+          );
           updates.ai_extracted_requirements = JSON.stringify(extracted);
           // Only use AI-extracted experience_min if the user did NOT explicitly send one.
           if (extracted.experience_min !== null && updates.experience_min === undefined) {
@@ -821,12 +877,13 @@ exports.updateDraft = async (req, res) => {
       paramCount++;
     }
 
-    if (setClauses.length === 0) return res.status(200).json({ message: "No updates provided", job });
+    if (setClauses.length === 0)
+      return res.status(200).json({ message: 'No updates provided', job });
 
-    setClauses.push("updated_at = NOW()");
+    setClauses.push('updated_at = NOW()');
 
     values.push(id);
-    const query = `UPDATE jobs SET ${setClauses.join(", ")} WHERE job_id = $${paramCount} RETURNING *`;
+    const query = `UPDATE jobs SET ${setClauses.join(', ')} WHERE job_id = $${paramCount} RETURNING *`;
     const updatedJobRes = await pool.query(query, values);
 
     if (updates.title && updates.title.trim()) {
@@ -851,10 +908,10 @@ exports.updateDraft = async (req, res) => {
       );
     }
 
-    res.status(200).json({ message: "Job updated", job: updatedJobRes.rows[0] });
+    res.status(200).json({ message: 'Job updated', job: updatedJobRes.rows[0] });
   } catch (err) {
     console.error(err);
-    res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
+    res.status(err.statusCode || 500).json({ message: err.message || 'Internal server error' });
   }
 };
 
@@ -864,46 +921,50 @@ exports.submitJob = async (req, res) => {
 
   const client = await pool.connect();
   try {
-    await client.query("BEGIN");
+    await client.query('BEGIN');
 
     const jobRes = await client.query(`SELECT * FROM jobs WHERE job_id = $1 FOR UPDATE`, [id]);
     if (jobRes.rowCount === 0) {
-      await client.query("ROLLBACK");
-      return res.status(404).json({ message: "Job not found" });
+      await client.query('ROLLBACK');
+      return res.status(404).json({ message: 'Job not found' });
     }
     const job = jobRes.rows[0];
 
     if (job.org_id) {
-      await assertJobActorAccess(req, job, ["POST_JOBS", "MANAGE_COMPANY"], client);
+      await assertJobActorAccess(req, job, ['POST_JOBS', 'MANAGE_COMPANY'], client);
     } else {
       if (job.recruiter_id !== userId) {
-        await client.query("ROLLBACK");
-        return res.status(403).json({ message: "Unauthorized" });
+        await client.query('ROLLBACK');
+        return res.status(403).json({ message: 'Unauthorized' });
       }
-      const userRes = await client.query('SELECT is_identity_verified FROM users WHERE user_id = $1', [userId]);
+      const userRes = await client.query(
+        'SELECT is_identity_verified FROM users WHERE user_id = $1',
+        [userId]
+      );
       if (!userRes.rows.length || !userRes.rows[0].is_identity_verified) {
-        await client.query("ROLLBACK");
+        await client.query('ROLLBACK');
         return res.status(403).json({
-          message: "Identity verification required to post jobs. Please complete verification in settings.",
-          requiresVerification: true
+          message:
+            'Identity verification required to post jobs. Please complete verification in settings.',
+          requiresVerification: true,
         });
       }
     }
 
     if (job.status === 'REJECTED' || job.moderation_status === 'REJECTED') {
-      await client.query("ROLLBACK");
-      return res.status(400).json({ message: "Rejected jobs cannot be resubmitted." });
+      await client.query('ROLLBACK');
+      return res.status(400).json({ message: 'Rejected jobs cannot be resubmitted.' });
     }
 
     // Idempotency guard: If job is already ACTIVE or UNDER_REVIEW, return cleanly without duplicate operations
     if (job.status === 'ACTIVE' || job.status === 'UNDER_REVIEW') {
-      await client.query("COMMIT");
-      return res.status(200).json({ message: "Job is already submitted", job });
+      await client.query('COMMIT');
+      return res.status(200).json({ message: 'Job is already submitted', job });
     }
 
     if (job.status !== 'DRAFT') {
-      await client.query("ROLLBACK");
-      return res.status(400).json({ message: "Only DRAFT jobs can be submitted" });
+      await client.query('ROLLBACK');
+      return res.status(400).json({ message: 'Only DRAFT jobs can be submitted' });
     }
 
     const updated = await client.query(
@@ -932,55 +993,82 @@ exports.submitJob = async (req, res) => {
       companyName: publishedJob.company_name,
       orgId: publishedJob.org_id || null,
       org_id: publishedJob.org_id || null,
-      status: 'UNDER_REVIEW'
+      status: 'UNDER_REVIEW',
     };
 
     const notifRes = await client.query(
       `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata, recipient_org_id)
        VALUES ($1, $2, 'job_submitted', $3, $4, $5, $6)
        RETURNING notification_id, created_at`,
-      [userId, userId, notificationText, publishedJob.job_id, JSON.stringify(metadataPayload), publishedJob.org_id || null]
+      [
+        userId,
+        userId,
+        notificationText,
+        publishedJob.job_id,
+        JSON.stringify(metadataPayload),
+        publishedJob.org_id || null,
+      ]
     );
 
     if (publishedJob.org_id) {
       await client.query(
         `INSERT INTO notifications (recipient_org_id, user_id, sender_id, type, text, reference_id, metadata)
          VALUES ($1, NULL, $2, 'job_submitted', $3, $4, $5)`,
-        [publishedJob.org_id, userId, notificationText, publishedJob.job_id, JSON.stringify(metadataPayload)]
+        [
+          publishedJob.org_id,
+          userId,
+          notificationText,
+          publishedJob.job_id,
+          JSON.stringify(metadataPayload),
+        ]
       );
     }
 
-    await client.query("COMMIT");
-    res.status(200).json({ message: "Job submitted for review", job: publishedJob });
+    await client.query('COMMIT');
+    res.status(200).json({ message: 'Job submitted for review', job: publishedJob });
 
     // Background AI requirements extraction (decoupled to prevent delaying response)
     if (!job.ai_extracted_requirements && job.description) {
       setImmediate(async () => {
         try {
-          const extracted = await extractRequirementsFromJDText(job.description, id, userId, job.org_id, req.ip);
+          const extracted = await extractRequirementsFromJDText(
+            job.description,
+            id,
+            userId,
+            job.org_id,
+            req.ip
+          );
           if (extracted && (extracted.skills?.length || extracted.experience_min !== null)) {
-            const setClauses = ["ai_extracted_requirements = $2"];
+            const setClauses = ['ai_extracted_requirements = $2'];
             const params = [id, JSON.stringify(extracted)];
-            if (extracted.experience_min !== null && (job.experience_min === null || job.experience_min === undefined)) {
-              setClauses.push("experience_min = $3");
+            if (
+              extracted.experience_min !== null &&
+              (job.experience_min === null || job.experience_min === undefined)
+            ) {
+              setClauses.push('experience_min = $3');
               params.push(extracted.experience_min);
             }
-            await pool.query(`UPDATE jobs SET ${setClauses.join(", ")} WHERE job_id = $1`, params);
+            await pool.query(`UPDATE jobs SET ${setClauses.join(', ')} WHERE job_id = $1`, params);
           }
         } catch (extractionErr) {
-          console.error(`[Job Extractor] Background extraction failed for job ${id}:`, extractionErr);
+          console.error(
+            `[Job Extractor] Background extraction failed for job ${id}:`,
+            extractionErr
+          );
         }
       });
     }
 
     // Real-time socket notification
     try {
-      const socketService = require("../../core/infrastructure/socket.service");
+      const socketService = require('../../core/infrastructure/socket.service');
       const notifId = notifRes.rows[0]?.notification_id;
-      const notifCreatedAt = notifRes.rows[0]?.created_at ? notifRes.rows[0].created_at.toISOString() : new Date().toISOString();
+      const notifCreatedAt = notifRes.rows[0]?.created_at
+        ? notifRes.rows[0].created_at.toISOString()
+        : new Date().toISOString();
       const socketPayload = {
         notification_id: notifId,
-        type: "job_submitted",
+        type: 'job_submitted',
         text: notificationText,
         sender_id: userId,
         reference_id: publishedJob.job_id,
@@ -988,20 +1076,20 @@ exports.submitJob = async (req, res) => {
         recipient_org_id: publishedJob.org_id || null,
         metadata: metadataPayload,
         created_at: notifCreatedAt,
-        is_read: false
+        is_read: false,
       };
 
-      socketService.notifyUser(userId, "notification", socketPayload);
+      socketService.notifyUser(userId, 'notification', socketPayload);
       if (publishedJob.org_id) {
-        socketService.notifyOrg(publishedJob.org_id, "notification", socketPayload);
+        socketService.notifyOrg(publishedJob.org_id, 'notification', socketPayload);
       }
     } catch (socketErr) {
-      console.error("Failed to emit job_submitted notification:", socketErr);
+      console.error('Failed to emit job_submitted notification:', socketErr);
     }
   } catch (err) {
-    await client.query("ROLLBACK");
+    await client.query('ROLLBACK');
     console.error(err);
-    res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
+    res.status(err.statusCode || 500).json({ message: err.message || 'Internal server error' });
   } finally {
     client.release();
   }
@@ -1013,16 +1101,16 @@ exports.cloneJob = async (req, res) => {
 
   const client = await pool.connect();
   try {
-    await client.query("BEGIN");
+    await client.query('BEGIN');
 
     const jobRes = await client.query(`SELECT * FROM jobs WHERE job_id = $1`, [id]);
-    if (jobRes.rowCount === 0) throw new Error("Job not found");
+    if (jobRes.rowCount === 0) throw new Error('Job not found');
     const job = jobRes.rows[0];
 
     if (job.org_id) {
-      await assertJobActorAccess(req, job, ["POST_JOBS", "MANAGE_COMPANY"], client);
+      await assertJobActorAccess(req, job, ['POST_JOBS', 'MANAGE_COMPANY'], client);
     } else {
-      if (job.recruiter_id !== userId) throw new Error("Unauthorized");
+      if (job.recruiter_id !== userId) throw new Error('Unauthorized');
     }
 
     const insertRes = await client.query(
@@ -1033,9 +1121,28 @@ exports.cloneJob = async (req, res) => {
        VALUES
        ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, 'DRAFT')
        RETURNING *`,
-      [userId, `Copy of ${job.title}`, job.company_name, job.org_id, job.location, job.description, job.salary_min, job.salary_max,
-        job.job_type, job.work_mode, job.company_type, job.experience_min, job.experience_max, job.experience_label, job.experience_level,
-        job.about_company, job.industry, job.easy_apply, job.actively_hiring, job.posted_as_company]
+      [
+        userId,
+        `Copy of ${job.title}`,
+        job.company_name,
+        job.org_id,
+        job.location,
+        job.description,
+        job.salary_min,
+        job.salary_max,
+        job.job_type,
+        job.work_mode,
+        job.company_type,
+        job.experience_min,
+        job.experience_max,
+        job.experience_label,
+        job.experience_level,
+        job.about_company,
+        job.industry,
+        job.easy_apply,
+        job.actively_hiring,
+        job.posted_as_company,
+      ]
     );
 
     const newJob = insertRes.rows[0];
@@ -1045,11 +1152,11 @@ exports.cloneJob = async (req, res) => {
       [newJob.job_id, userId]
     );
 
-    await client.query("COMMIT");
-    res.status(201).json({ message: "Job cloned successfully", job: newJob });
+    await client.query('COMMIT');
+    res.status(201).json({ message: 'Job cloned successfully', job: newJob });
   } catch (err) {
-    await client.query("ROLLBACK");
-    res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
+    await client.query('ROLLBACK');
+    res.status(err.statusCode || 500).json({ message: err.message || 'Internal server error' });
   } finally {
     client.release();
   }
@@ -1061,12 +1168,12 @@ const performLifecycleAction = async (req, res, actionName, targetStatus, allowe
 
   const client = await pool.connect();
   try {
-    await client.query("BEGIN");
+    await client.query('BEGIN');
 
     const jobRes = await client.query(`SELECT * FROM jobs WHERE job_id = $1`, [id]);
     if (jobRes.rowCount === 0) {
-      await client.query("ROLLBACK");
-      return res.status(404).json({ message: "Job not found" });
+      await client.query('ROLLBACK');
+      return res.status(404).json({ message: 'Job not found' });
     }
     const job = jobRes.rows[0];
 
@@ -1074,18 +1181,20 @@ const performLifecycleAction = async (req, res, actionName, targetStatus, allowe
     // All other lifecycle actions (pause, close, archive) enforce actor-based creator isolation.
     if (actionName !== 'APPROVE' && actionName !== 'REJECT') {
       if (job.org_id) {
-        await assertJobActorAccess(req, job, ["POST_JOBS", "MANAGE_COMPANY"], client);
+        await assertJobActorAccess(req, job, ['POST_JOBS', 'MANAGE_COMPANY'], client);
       } else {
         if (job.recruiter_id !== userId) {
-          await client.query("ROLLBACK");
-          return res.status(403).json({ message: "Unauthorized" });
+          await client.query('ROLLBACK');
+          return res.status(403).json({ message: 'Unauthorized' });
         }
       }
     }
 
     if (allowedFromStatuses && !allowedFromStatuses.includes(job.status)) {
-      await client.query("ROLLBACK");
-      return res.status(400).json({ message: `Cannot ${actionName} job from status: ${job.status}` });
+      await client.query('ROLLBACK');
+      return res
+        .status(400)
+        .json({ message: `Cannot ${actionName} job from status: ${job.status}` });
     }
 
     let updateQuery;
@@ -1107,27 +1216,33 @@ const performLifecycleAction = async (req, res, actionName, targetStatus, allowe
 
     const updated = await client.query(updateQuery, [targetStatus, id]);
 
-    await client.query(
-      `INSERT INTO job_activity (job_id, actor_id, action) VALUES ($1, $2, $3)`,
-      [id, userId, actionName]
-    );
+    await client.query(`INSERT INTO job_activity (job_id, actor_id, action) VALUES ($1, $2, $3)`, [
+      id,
+      userId,
+      actionName,
+    ]);
 
-    await client.query("COMMIT");
-    res.status(200).json({ message: `Job ${actionName.toLowerCase()} successfully`, job: updated.rows[0] });
+    await client.query('COMMIT');
+    res
+      .status(200)
+      .json({ message: `Job ${actionName.toLowerCase()} successfully`, job: updated.rows[0] });
   } catch (err) {
-    await client.query("ROLLBACK");
+    await client.query('ROLLBACK');
     console.error(err);
-    res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
+    res.status(err.statusCode || 500).json({ message: err.message || 'Internal server error' });
   } finally {
     client.release();
   }
 };
 
 exports.pauseJob = (req, res) => performLifecycleAction(req, res, 'PAUSE', 'PAUSED', ['ACTIVE']);
-exports.closeJob = (req, res) => performLifecycleAction(req, res, 'CLOSE', 'CLOSED', ['ACTIVE', 'PAUSED']);
+exports.closeJob = (req, res) =>
+  performLifecycleAction(req, res, 'CLOSE', 'CLOSED', ['ACTIVE', 'PAUSED']);
 exports.archiveJob = (req, res) => performLifecycleAction(req, res, 'ARCHIVE', 'ARCHIVED', null);
-exports.approveJob = (req, res) => performLifecycleAction(req, res, 'APPROVE', 'ACTIVE', ['UNDER_REVIEW']);
-exports.rejectJob = (req, res) => performLifecycleAction(req, res, 'REJECT', 'REJECTED', ['UNDER_REVIEW']);
+exports.approveJob = (req, res) =>
+  performLifecycleAction(req, res, 'APPROVE', 'ACTIVE', ['UNDER_REVIEW']);
+exports.rejectJob = (req, res) =>
+  performLifecycleAction(req, res, 'REJECT', 'REJECTED', ['UNDER_REVIEW']);
 
 exports.aiAction = async (req, res) => {
   const { id } = req.params;
@@ -1135,7 +1250,7 @@ exports.aiAction = async (req, res) => {
   const { action, updates } = req.body;
 
   if (!action || !updates) {
-    return res.status(400).json({ message: "action and updates are required" });
+    return res.status(400).json({ message: 'action and updates are required' });
   }
 
   if (updates.title) updates.title = sanitizeContent(updates.title);
@@ -1144,27 +1259,32 @@ exports.aiAction = async (req, res) => {
 
   const client = await pool.connect();
   try {
-    await client.query("BEGIN");
+    await client.query('BEGIN');
 
     const jobRes = await client.query(`SELECT * FROM jobs WHERE job_id = $1`, [id]);
     if (jobRes.rowCount === 0) {
-      await client.query("ROLLBACK");
-      return res.status(404).json({ message: "Job not found" });
+      await client.query('ROLLBACK');
+      return res.status(404).json({ message: 'Job not found' });
     }
     const job = jobRes.rows[0];
 
     if (job.org_id) {
-      await assertOrgPermission(req, getRequestedOrganizationActorId(req, job.org_id), ["POST_JOBS", "MANAGE_COMPANY"]);
+      await assertOrgPermission(req, getRequestedOrganizationActorId(req, job.org_id), [
+        'POST_JOBS',
+        'MANAGE_COMPANY',
+      ]);
     } else {
       if (job.recruiter_id !== userId) {
-        await client.query("ROLLBACK");
-        return res.status(403).json({ message: "Unauthorized" });
+        await client.query('ROLLBACK');
+        return res.status(403).json({ message: 'Unauthorized' });
       }
     }
 
     if (job.status !== 'DRAFT' && job.status !== 'ACTIVE') {
-      await client.query("ROLLBACK");
-      return res.status(400).json({ message: "AI actions can only be performed on DRAFT or ACTIVE jobs" });
+      await client.query('ROLLBACK');
+      return res
+        .status(400)
+        .json({ message: 'AI actions can only be performed on DRAFT or ACTIVE jobs' });
     }
 
     const setClauses = [];
@@ -1178,14 +1298,14 @@ exports.aiAction = async (req, res) => {
     }
 
     if (setClauses.length === 0) {
-      await client.query("ROLLBACK");
-      return res.status(200).json({ message: "No updates provided" });
+      await client.query('ROLLBACK');
+      return res.status(200).json({ message: 'No updates provided' });
     }
 
-    setClauses.push("updated_at = NOW()");
+    setClauses.push('updated_at = NOW()');
 
     values.push(id);
-    const query = `UPDATE jobs SET ${setClauses.join(", ")} WHERE job_id = $${paramCount} RETURNING *`;
+    const query = `UPDATE jobs SET ${setClauses.join(', ')} WHERE job_id = $${paramCount} RETURNING *`;
     const updatedJobRes = await client.query(query, values);
 
     await client.query(
@@ -1193,17 +1313,18 @@ exports.aiAction = async (req, res) => {
       [id, userId, action, job]
     );
 
-    await client.query(
-      `INSERT INTO job_activity (job_id, actor_id, action) VALUES ($1, $2, $3)`,
-      [id, userId, 'AI_ACTION_' + action.toUpperCase()]
-    );
+    await client.query(`INSERT INTO job_activity (job_id, actor_id, action) VALUES ($1, $2, $3)`, [
+      id,
+      userId,
+      'AI_ACTION_' + action.toUpperCase(),
+    ]);
 
-    await client.query("COMMIT");
-    res.status(200).json({ message: "AI action applied successfully", job: updatedJobRes.rows[0] });
+    await client.query('COMMIT');
+    res.status(200).json({ message: 'AI action applied successfully', job: updatedJobRes.rows[0] });
   } catch (err) {
-    await client.query("ROLLBACK");
+    await client.query('ROLLBACK');
     console.error(err);
-    res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
+    res.status(err.statusCode || 500).json({ message: err.message || 'Internal server error' });
   } finally {
     client.release();
   }
@@ -1212,8 +1333,8 @@ exports.aiAction = async (req, res) => {
 exports.applyJob = async (req, res) => {
   const { id } = req.params; // job_id
   const userId = req.user.sub;
-  if (req.actor?.type === "ORGANIZATION") {
-    return res.status(403).json({ message: "You cannot apply as an organization" });
+  if (req.actor?.type === 'ORGANIZATION') {
+    return res.status(403).json({ message: 'You cannot apply as an organization' });
   }
 
   // Take other fields from request body (guard against undefined body e.g. missing Content-Type)
@@ -1222,19 +1343,19 @@ exports.applyJob = async (req, res) => {
 
   const rawCoverNote = cover_note || coverLetter || cover_letter;
   if (rawCoverNote && typeof rawCoverNote === 'string' && rawCoverNote.length > 1000) {
-    return res.status(400).json({ message: "Note cannot exceed 1,000 characters" });
+    return res.status(400).json({ message: 'Note cannot exceed 1,000 characters' });
   }
 
   // Sanitize user-generated content
   cover_note = sanitizeContent(rawCoverNote) || null;
   if (cover_note && cover_note.length > 1000) {
-    return res.status(400).json({ message: "Note cannot exceed 1,000 characters" });
+    return res.status(400).json({ message: 'Note cannot exceed 1,000 characters' });
   }
   const contactPhone = phone || mobile_number || null;
 
   const client = await pool.connect();
   try {
-    await client.query("BEGIN");
+    await client.query('BEGIN');
 
     // If name or email missing, fetch from user profile for robustness
     if (!full_name || !email) {
@@ -1249,51 +1370,67 @@ exports.applyJob = async (req, res) => {
     }
 
     if (!full_name || !email) {
-      await client.query("ROLLBACK");
-      return res.status(400).json({ message: "Name and Email are required for application" });
+      await client.query('ROLLBACK');
+      return res.status(400).json({ message: 'Name and Email are required for application' });
     }
 
     // 3. Fetch live profile data (INSIDE the transaction — data is frozen at this instant)
     const [skillsRes, expRes, eduRes, jobRes] = await Promise.all([
-      client.query(`
+      client.query(
+        `
         SELECT s.name FROM user_skills us
         JOIN skills s ON us.skill_id = s.skill_id
         JOIN profiles p ON us.profile_id = p.profile_id
-        WHERE p.user_id = $1`, [userId]),
-      client.query(`
+        WHERE p.user_id = $1`,
+        [userId]
+      ),
+      client.query(
+        `
         SELECT title, company_name, start_date, end_date, is_current
         FROM experiences e JOIN profiles p ON e.profile_id = p.profile_id
-        WHERE p.user_id = $1 ORDER BY start_date DESC`, [userId]),
-      client.query(`
+        WHERE p.user_id = $1 ORDER BY start_date DESC`,
+        [userId]
+      ),
+      client.query(
+        `
         SELECT degree, school_name, end_date FROM educations ed
         JOIN profiles p ON ed.profile_id = p.profile_id
-        WHERE p.user_id = $1 ORDER BY end_date DESC LIMIT 2`, [userId]),
-      client.query(`
+        WHERE p.user_id = $1 ORDER BY end_date DESC LIMIT 2`,
+        [userId]
+      ),
+      client.query(
+        `
         SELECT title, description, experience_min, experience_max,
                experience_label, experience_level, location, ai_extracted_requirements, org_id, recruiter_id, status, is_active
-        FROM jobs WHERE job_id = $1`, [id]),
+        FROM jobs WHERE job_id = $1`,
+        [id]
+      ),
     ]);
 
     if (jobRes.rowCount === 0) {
-      await client.query("ROLLBACK");
-      return res.status(404).json({ message: "Job not found" });
+      await client.query('ROLLBACK');
+      return res.status(404).json({ message: 'Job not found' });
     }
 
     const job = jobRes.rows[0];
     if (job.status === 'CLOSED' || job.is_active === false) {
-      await client.query("ROLLBACK");
-      return res.status(403).json({ message: "This job is closed and no longer accepting applications" });
+      await client.query('ROLLBACK');
+      return res
+        .status(403)
+        .json({ message: 'This job is closed and no longer accepting applications' });
     }
 
-    const BlockModel = require("../../models/block.model");
+    const BlockModel = require('../../models/block.model');
     const isOrgBlocked = job.org_id ? await BlockModel.isAnyBlocked(userId, job.org_id) : false;
-    const isRecruiterBlocked = job.recruiter_id ? await BlockModel.isAnyBlocked(userId, job.recruiter_id) : false;
+    const isRecruiterBlocked = job.recruiter_id
+      ? await BlockModel.isAnyBlocked(userId, job.recruiter_id)
+      : false;
 
     if (isOrgBlocked || isRecruiterBlocked) {
-      await client.query("ROLLBACK");
-      return res.status(404).json({ message: "Job not found" });
+      await client.query('ROLLBACK');
+      return res.status(404).json({ message: 'Job not found' });
     }
-    const candidateSkills = skillsRes.rows.map(r => r.name);
+    const candidateSkills = skillsRes.rows.map((r) => r.name);
     const experienceRows = expRes.rows;
     const educationRows = eduRes.rows;
 
@@ -1301,16 +1438,21 @@ exports.applyJob = async (req, res) => {
 
     // Check if user is the recruiter
     if (recruiter_id === userId) {
-      await client.query("ROLLBACK");
-      return res.status(403).json({ message: "You cannot apply to your own job" });
+      await client.query('ROLLBACK');
+      return res.status(403).json({ message: 'You cannot apply to your own job' });
     }
 
     // Check if user has permission to post jobs for this organization
     if (org_id) {
-      const canPostJobs = await checkOrgPermission(pool, org_id, userId, ['POST_JOBS', 'MANAGE_COMPANY']);
+      const canPostJobs = await checkOrgPermission(pool, org_id, userId, [
+        'POST_JOBS',
+        'MANAGE_COMPANY',
+      ]);
       if (canPostJobs) {
-        await client.query("ROLLBACK");
-        return res.status(403).json({ message: "You cannot apply to a job posted by your organization" });
+        await client.query('ROLLBACK');
+        return res
+          .status(403)
+          .json({ message: 'You cannot apply to a job posted by your organization' });
       }
     }
 
@@ -1320,10 +1462,11 @@ exports.applyJob = async (req, res) => {
       [id, userId]
     );
     if (existing.rowCount > 0 && existing.rows[0].current_status !== 'Withdrawn') {
-      await client.query("ROLLBACK");
-      return res.status(409).json({ message: "Already applied to this job" });
+      await client.query('ROLLBACK');
+      return res.status(409).json({ message: 'Already applied to this job' });
     }
-    const existingWithdrawn = existing.rowCount > 0 && existing.rows[0].current_status === 'Withdrawn';
+    const existingWithdrawn =
+      existing.rowCount > 0 && existing.rows[0].current_status === 'Withdrawn';
 
     // Resume file URL from Cloudinary or existing profile resume
     let resume_url = null;
@@ -1366,8 +1509,8 @@ exports.applyJob = async (req, res) => {
     }
 
     if (!resume_url) {
-      await client.query("ROLLBACK");
-      return res.status(400).json({ message: "Resume is required" });
+      await client.query('ROLLBACK');
+      return res.status(400).json({ message: 'Resume is required' });
     }
 
     // 4. Calculate scalars
@@ -1396,20 +1539,54 @@ exports.applyJob = async (req, res) => {
              current_status = 'Applied'
          WHERE job_id = $1 AND applicant_id = $2
          RETURNING application_id`,
-        [id, userId, full_name, email, contactPhone, resume_url, cover_note, Math.round(totalYears), candidateLocation, candidateSkills, highestDegree, backendScore, resume_file_name]
+        [
+          id,
+          userId,
+          full_name,
+          email,
+          contactPhone,
+          resume_url,
+          cover_note,
+          Math.round(totalYears),
+          candidateLocation,
+          candidateSkills,
+          highestDegree,
+          backendScore,
+          resume_file_name,
+        ]
       );
 
       // Cleanup old snapshot/analyses for re-application
-      await client.query(`DELETE FROM application_snapshots WHERE application_id = $1`, [appResult.rows[0].application_id]);
-      await client.query(`DELETE FROM application_ai_analyses WHERE application_id = $1`, [appResult.rows[0].application_id]);
-      await client.query(`DELETE FROM ai_analysis_queue WHERE application_id = $1`, [appResult.rows[0].application_id]);
+      await client.query(`DELETE FROM application_snapshots WHERE application_id = $1`, [
+        appResult.rows[0].application_id,
+      ]);
+      await client.query(`DELETE FROM application_ai_analyses WHERE application_id = $1`, [
+        appResult.rows[0].application_id,
+      ]);
+      await client.query(`DELETE FROM ai_analysis_queue WHERE application_id = $1`, [
+        appResult.rows[0].application_id,
+      ]);
     } else {
       appResult = await client.query(
         `INSERT INTO job_applications 
          (job_id, applicant_id, full_name, email, phone, resume_url, resume_file_name, cover_note, frozen_experience_years, frozen_location, frozen_skills, frozen_highest_degree, backend_score)
          VALUES ($1,$2,$3,$4,$5,$6,$13,$7,$8,$9,$10,$11,$12)
          RETURNING application_id`,
-        [id, userId, full_name, email, contactPhone, resume_url, cover_note, Math.round(totalYears), candidateLocation, candidateSkills, highestDegree, backendScore, resume_file_name]
+        [
+          id,
+          userId,
+          full_name,
+          email,
+          contactPhone,
+          resume_url,
+          cover_note,
+          Math.round(totalYears),
+          candidateLocation,
+          candidateSkills,
+          highestDegree,
+          backendScore,
+          resume_file_name,
+        ]
       );
     }
 
@@ -1434,14 +1611,16 @@ exports.applyJob = async (req, res) => {
       skills: job.ai_extracted_requirements?.skills || [],
       education: job.ai_extracted_requirements?.education,
     };
-    await client.query(`
+    await client.query(
+      `
       INSERT INTO application_snapshots (application_id, candidate_snapshot, job_snapshot)
       VALUES ($1, $2, $3)`,
       [appId, JSON.stringify(candidateSnapshot), JSON.stringify(jobSnapshot)]
     );
 
     // 8. INSERT backend score into application_ai_analyses
-    await client.query(`
+    await client.query(
+      `
       INSERT INTO application_ai_analyses (application_id, match_score, analysis_type, provider)
       VALUES ($1, $2, 'BACKEND', 'backend')`,
       [appId, backendScore]
@@ -1466,7 +1645,7 @@ exports.applyJob = async (req, res) => {
              AND (cr.permissions @> '["*"]'::jsonb OR cr.permissions @> '["MANAGE_JOBS"]'::jsonb)`,
         [job.org_id]
       );
-      adminsRes.rows.forEach(r => notifyUserIds.add(r.user_id));
+      adminsRes.rows.forEach((r) => notifyUserIds.add(r.user_id));
       if (job.recruiter_id) notifyUserIds.add(job.recruiter_id);
 
       const adminIdsArray = Array.from(notifyUserIds);
@@ -1483,7 +1662,7 @@ exports.applyJob = async (req, res) => {
             `"${totalApplications}" people have applied for "${job.title}". Review them now`,
             id,
             job.org_id || null,
-            JSON.stringify({ job_id: id })
+            JSON.stringify({ job_id: id }),
           ]
         );
         dbNotification = notifRes.rows[0];
@@ -1492,7 +1671,7 @@ exports.applyJob = async (req, res) => {
       // Send real-time socket and push notifications to ALL admins
       for (const adminId of adminIdsArray) {
         if (dbNotification) {
-          socketService.notifyUser(adminId, "notification", {
+          socketService.notifyUser(adminId, 'notification', {
             notification_id: dbNotification.notification_id,
             type: 'new_application_threshold',
             text: `"${totalApplications}" people have applied for "${job.title}". Review them now`,
@@ -1503,24 +1682,22 @@ exports.applyJob = async (req, res) => {
             actor_avatar: null,
             actor_slug: null,
             is_company_actor: false,
-            metadata: { job_id: id }
+            metadata: { job_id: id },
           });
         }
 
         sendToUser(
           adminId,
-          "New application received",
+          'New application received',
           `"${totalApplications}" people have applied for "${job.title}". Review them now`,
           { type: 'new_application_threshold', referenceId: id }
-        ).catch(() => { });
+        ).catch(() => {});
       }
     }
 
-
-    if (totalApplications < MIN_POOL) {
-
-    } else {
-      const rankRes = await client.query(`
+    if (totalApplications >= MIN_POOL) {
+      const rankRes = await client.query(
+        `
         SELECT COUNT(*) + 1 AS rank
         FROM job_applications
         WHERE job_id = $1 AND backend_score > $2`,
@@ -1534,14 +1711,16 @@ exports.applyJob = async (req, res) => {
 
       if (backendScore >= TIER1_THRESHOLD || rank <= TIER1_TOP_N) {
         // 🟢 TIER 1
-        await client.query(`
+        await client.query(
+          `
           INSERT INTO ai_analysis_queue (application_id, priority, reason)
           VALUES ($1, 2, 'TIER1_AUTO')`,
           [appId]
         );
 
         // Demotion
-        await client.query(`
+        await client.query(
+          `
           UPDATE ai_analysis_queue aq
           SET priority = 1, reason = 'TIER2_DEMOTED'
           WHERE aq.priority = 2
@@ -1559,7 +1738,8 @@ exports.applyJob = async (req, res) => {
         );
       } else if (backendScore >= TIER2_THRESHOLD) {
         // 🟡 TIER 2
-        await client.query(`
+        await client.query(
+          `
           INSERT INTO ai_analysis_queue (application_id, priority, reason)
           VALUES ($1, 1, 'TIER2_DEFERRED')`,
           [appId]
@@ -1578,29 +1758,40 @@ exports.applyJob = async (req, res) => {
 
     // Record into user_resume_history asynchronously outside transaction for reuse
     if (resume_url) {
-      pool.query(`
+      pool
+        .query(
+          `
         INSERT INTO user_resume_history (user_id, resume_url, resume_file_name, last_used_at)
         VALUES ($1, $2, $3, NOW())
         ON CONFLICT (user_id, resume_url) DO UPDATE
         SET last_used_at = NOW(), resume_file_name = EXCLUDED.resume_file_name
-      `, [userId, resume_url, resume_file_name || 'Resume.pdf']).catch(hErr => {
-        console.warn("user_resume_history async insert skipped:", hErr.message);
-      });
+      `,
+          [userId, resume_url, resume_file_name || 'Resume.pdf']
+        )
+        .catch((hErr) => {
+          console.warn('user_resume_history async insert skipped:', hErr.message);
+        });
     }
     // Notifications (Phase 1)
-    let companyName = "the company";
+    let companyName = 'the company';
     let companyAvatar = null;
 
     if (job.org_id) {
-      const orgRes = await pool.query(`SELECT name, logo_url FROM organizations WHERE org_id = $1`, [job.org_id]);
+      const orgRes = await pool.query(
+        `SELECT name, logo_url FROM organizations WHERE org_id = $1`,
+        [job.org_id]
+      );
       if (orgRes.rowCount > 0) {
         companyName = orgRes.rows[0].name;
         companyAvatar = orgRes.rows[0].logo_url;
       }
     } else if (job.recruiter_id) {
-      const userRes = await pool.query(`SELECT full_name as name, avatar_url as avatar FROM users WHERE user_id = $1`, [job.recruiter_id]);
+      const userRes = await pool.query(
+        `SELECT full_name as name, avatar_url as avatar FROM users WHERE user_id = $1`,
+        [job.recruiter_id]
+      );
       if (userRes.rowCount > 0) {
-        companyName = userRes.rows[0].name || "the recruiter";
+        companyName = userRes.rows[0].name || 'the recruiter';
         companyAvatar = userRes.rows[0].avatar;
       }
     }
@@ -1608,52 +1799,58 @@ exports.applyJob = async (req, res) => {
     const text = `Your application for ${job.title} at ${companyName} has been submitted successfully.`;
     try {
       const type = 'application_submitted';
-      const notifRes = await pool.query(`
+      const notifRes = await pool.query(
+        `
         INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata)
         VALUES ($1, NULL, $2, $3, $4, $5)
         RETURNING notification_id
-      `, [
-        userId,
-        type,
-        text,
-        id,
-        JSON.stringify({ job_id: id, application_id: appId, org_id: job.org_id })
-      ]);
+      `,
+        [
+          userId,
+          type,
+          text,
+          id,
+          JSON.stringify({ job_id: id, application_id: appId, org_id: job.org_id }),
+        ]
+      );
       const notificationId = notifRes.rows[0]?.notification_id;
 
       const socketService = require('../../core/infrastructure/socket.service');
       socketService.notifyUser(userId, 'notification', {
         notification_id: notificationId,
         type,
-        title: "Application Submitted",
+        title: 'Application Submitted',
         text,
         message: text,
         senderName: companyName,
         senderAvatar: companyAvatar,
         referenceId: id,
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
       });
 
       const { sendToUser } = require('../../modules/notification/notification.service');
       // Using fire and forget, and sending a data-only silent push as requested in spec
-      sendToUser(userId, "Application Submitted", text, {
+      sendToUser(userId, 'Application Submitted', text, {
         type,
         referenceId: id,
-        silent: 'true'
-      }).catch(() => { });
-
+        silent: 'true',
+      }).catch(() => {});
     } catch (notifErr) {
-      console.error("[applyJob] Failed to send notifications:", notifErr);
+      console.error('[applyJob] Failed to send notifications:', notifErr);
     }
 
     res.status(201).json({ message: text, applicationId: appId });
     // 🎯 Intent Layer: Log Apply Job
-    logIntentActivity({ userId, action: "apply_job", metadata: { jobId: id, applicationId: appId } });
+    logIntentActivity({
+      userId,
+      action: 'apply_job',
+      metadata: { jobId: id, applicationId: appId },
+    });
     logActivity(userId, 'apply_job', 'job', id);
   } catch (err) {
-    await client.query("ROLLBACK");
-    console.error("Apply job error:", err);
-    res.status(500).json({ message: "Internal server error" });
+    await client.query('ROLLBACK');
+    console.error('Apply job error:', err);
+    res.status(500).json({ message: 'Internal server error' });
   } finally {
     client.release();
   }
@@ -1669,7 +1866,9 @@ exports.getJobOffers = async (req, res) => {
 
     // Offers specific condition
     conditions.push('j.is_offer = TRUE');
-    conditions.push('(j.org_id IS NULL OR (c.is_deleted = FALSE AND c.is_deactivated = FALSE AND (c.is_suspended IS NOT TRUE)))');
+    conditions.push(
+      '(j.org_id IS NULL OR (c.is_deleted = FALSE AND c.is_deactivated = FALSE AND (c.is_suspended IS NOT TRUE)))'
+    );
 
     const params = userId ? [userId] : [];
     params.push(...values);
@@ -1685,7 +1884,10 @@ exports.getJobOffers = async (req, res) => {
     const limitClause = `LIMIT $${paramCount}`;
     params.push(Number(limit));
 
-    const whereClause = conditions.length > 0 ? `WHERE j.is_active = TRUE AND j.status = 'ACTIVE' AND ${conditions.join(" AND ")}` : `WHERE j.is_active = TRUE AND j.status = 'ACTIVE'`;
+    const whereClause =
+      conditions.length > 0
+        ? `WHERE j.is_active = TRUE AND j.status = 'ACTIVE' AND ${conditions.join(' AND ')}`
+        : `WHERE j.is_active = TRUE AND j.status = 'ACTIVE'`;
 
     const query = `
       SELECT 
@@ -1701,8 +1903,8 @@ exports.getJobOffers = async (req, res) => {
       FROM jobs j
       LEFT JOIN active_users u ON j.recruiter_id = u.user_id
       LEFT JOIN organizations c ON j.org_id = c.org_id
-      ${userId ? "LEFT JOIN job_saves js ON js.job_id = j.job_id AND js.user_id = $1" : ""}
-      ${userId ? "LEFT JOIN job_applications ja ON ja.job_id = j.job_id AND ja.applicant_id = $1" : ""}
+      ${userId ? 'LEFT JOIN job_saves js ON js.job_id = j.job_id AND js.user_id = $1' : ''}
+      ${userId ? 'LEFT JOIN job_applications ja ON ja.job_id = j.job_id AND ja.applicant_id = $1' : ''}
       ${whereClause}
       ORDER BY j.created_at DESC
       ${limitClause}
@@ -1713,19 +1915,19 @@ exports.getJobOffers = async (req, res) => {
   } catch (err) {
     if (err.code === '23514' && err.constraint === 'salary_valid') {
       return res.status(400).json({
-        field: "salary",
-        message: "Minimum salary cannot be greater than maximum salary"
+        field: 'salary',
+        message: 'Minimum salary cannot be greater than maximum salary',
       });
     }
-    console.error("Get job offers error:", err);
-    res.status(500).json({ message: "Internal server error" });
+    console.error('Get job offers error:', err);
+    res.status(500).json({ message: 'Internal server error' });
   }
 };
 
 exports.saveJob = async (req, res) => {
   const flags = getFlags();
   if (!flags.saved_jobs) {
-    return res.status(403).json({ message: "Job saving is currently disabled by administrators." });
+    return res.status(403).json({ message: 'Job saving is currently disabled by administrators.' });
   }
 
   const userId = req.user.sub;
@@ -1746,16 +1948,16 @@ exports.saveJob = async (req, res) => {
     );
 
     if (result.rowCount === 0) {
-      return res.status(200).json({ message: "Job already saved or inactive" });
+      return res.status(200).json({ message: 'Job already saved or inactive' });
     }
 
-    res.status(201).json({ message: "Job saved successfully" });
+    res.status(201).json({ message: 'Job saved successfully' });
 
     // 🎯 Intent Layer: Log Save Job
-    logIntentActivity({ userId, action: "save_job", metadata: { jobId } });
+    logIntentActivity({ userId, action: 'save_job', metadata: { jobId } });
   } catch (err) {
-    console.error("Save job error:", err);
-    res.status(500).json({ message: "Internal server error" });
+    console.error('Save job error:', err);
+    res.status(500).json({ message: 'Internal server error' });
   }
 };
 
@@ -1773,13 +1975,15 @@ exports.unsaveJob = async (req, res) => {
     );
 
     if (result.rowCount === 0) {
-      return res.status(200).json({ message: "Job not found in saved list, but considered unsaved." });
+      return res
+        .status(200)
+        .json({ message: 'Job not found in saved list, but considered unsaved.' });
     }
 
-    res.json({ message: "Job removed from saved list" });
+    res.json({ message: 'Job removed from saved list' });
   } catch (err) {
-    console.error("Unsave job error:", err);
-    res.status(500).json({ message: "Internal server error" });
+    console.error('Unsave job error:', err);
+    res.status(500).json({ message: 'Internal server error' });
   }
 };
 exports.withdrawApplication = async (req, res) => {
@@ -1796,7 +2000,7 @@ exports.withdrawApplication = async (req, res) => {
     );
 
     if (updateResult.rowCount === 0) {
-      return res.status(404).json({ message: "Application not found" });
+      return res.status(404).json({ message: 'Application not found' });
     }
 
     if (updateResult.rows[0].current_status === 'Withdrawn') {
@@ -1805,16 +2009,20 @@ exports.withdrawApplication = async (req, res) => {
 
     // 🎯 Intent Layer: Log Withdraw Job
     if (logIntentActivity) {
-      logIntentActivity({ userId: applicantId, action: "withdraw_application", metadata: { jobId, applicationId: updateResult.rows[0].application_id } });
+      logIntentActivity({
+        userId: applicantId,
+        action: 'withdraw_application',
+        metadata: { jobId, applicationId: updateResult.rows[0].application_id },
+      });
     }
 
     res.json({
       success: true,
-      message: "Application withdrawn successfully."
+      message: 'Application withdrawn successfully.',
     });
   } catch (err) {
-    console.error("Withdraw application error:", err);
-    res.status(500).json({ message: "Internal server error" });
+    console.error('Withdraw application error:', err);
+    res.status(500).json({ message: 'Internal server error' });
   }
 };
 
@@ -1862,7 +2070,7 @@ exports.getMySavedJobs = async (req, res) => {
       `;
 
     if (conditions.length > 0) {
-      query += ` AND ${conditions.join(" AND ")}`;
+      query += ` AND ${conditions.join(' AND ')}`;
     }
 
     const params = [userId, ...values];
@@ -1885,12 +2093,12 @@ exports.getMySavedJobs = async (req, res) => {
   } catch (err) {
     if (err.code === '23514' && err.constraint === 'salary_valid') {
       return res.status(400).json({
-        field: "salary",
-        message: "Minimum salary cannot be greater than maximum salary"
+        field: 'salary',
+        message: 'Minimum salary cannot be greater than maximum salary',
       });
     }
-    console.error("Get saved jobs error:", err);
-    res.status(500).json({ message: "Internal server error" });
+    console.error('Get saved jobs error:', err);
+    res.status(500).json({ message: 'Internal server error' });
   }
 };
 
@@ -1898,41 +2106,80 @@ exports.getMyRecentResumes = async (req, res) => {
   try {
     const applicantId = req.user?.sub;
     if (!applicantId) {
-      return res.status(401).json({ message: "Unauthorized" });
+      return res.status(401).json({ message: 'Unauthorized' });
     }
 
     // 1. Primary lookup: user_resume_history
     try {
-      const result = await pool.query(`
+      const result = await pool.query(
+        `
         SELECT id, resume_url, resume_file_name, last_used_at
         FROM user_resume_history
         WHERE user_id = $1
         ORDER BY last_used_at DESC
         LIMIT 2
-      `, [applicantId]);
+      `,
+        [applicantId]
+      );
 
-      const resumes = result.rows.map(row => ({
-        id: row.id,
-        name: row.resume_file_name || 'Resume.pdf',
-        url: row.resume_url,
-        last_applied: row.last_used_at
-      }));
-      return res.json(resumes);
+      if (result.rows.length > 0) {
+        const resumes = result.rows.map((row) => ({
+          id: row.id,
+          name: row.resume_file_name || 'Resume.pdf',
+          url: row.resume_url,
+          last_applied: row.last_used_at,
+        }));
+        return res.json(resumes);
+      }
     } catch (tblErr) {
-      console.warn("user_resume_history query skipped, falling back to job_applications:", tblErr.message);
+      console.warn(
+        'user_resume_history query skipped, falling back to profile/job_applications:',
+        tblErr.message
+      );
+    }
+
+    // 2. Profile resume lookup (user_resumes)
+    try {
+      const profileResult = await pool.query(
+        `
+        SELECT resume_id, file_name, file_url, uploaded_at
+        FROM user_resumes
+        WHERE user_id = $1
+        ORDER BY uploaded_at DESC
+        LIMIT 1
+      `,
+        [applicantId]
+      );
+
+      if (profileResult.rows.length > 0) {
+        const row = profileResult.rows[0];
+        return res.json([
+          {
+            id: row.resume_id,
+            name: row.file_name || 'Resume.pdf',
+            url: row.file_url,
+            last_applied: row.uploaded_at,
+          },
+        ]);
+      }
+    } catch (profErr) {
+      console.warn('user_resumes query skipped:', profErr.message);
     }
 
     // 2. Fallback: query past job_applications
-    const fallback = await pool.query(`
+    const fallback = await pool.query(
+      `
       SELECT resume_url, MAX(applied_at) as last_applied, (array_agg(resume_file_name ORDER BY applied_at DESC))[1] as resume_file_name
       FROM job_applications
       WHERE applicant_id = $1 AND resume_url IS NOT NULL
       GROUP BY resume_url
       ORDER BY last_applied DESC
       LIMIT 2
-    `, [applicantId]);
+    `,
+      [applicantId]
+    );
 
-    const resumes = fallback.rows.map(row => {
+    const resumes = fallback.rows.map((row) => {
       const url = row.resume_url;
       let name = row.resume_file_name;
 
@@ -1953,8 +2200,8 @@ exports.getMyRecentResumes = async (req, res) => {
 
     res.json(resumes);
   } catch (err) {
-    console.error("Get my recent resumes error:", err);
-    res.status(500).json({ message: "Internal server error" });
+    console.error('Get my recent resumes error:', err);
+    res.status(500).json({ message: 'Internal server error' });
   }
 };
 
@@ -1964,45 +2211,51 @@ exports.deleteRecentResume = async (req, res) => {
     const { resume_url, id, name } = req.body;
 
     if (!resume_url && !id && !name) {
-      return res.status(400).json({ message: "resume identifier is required" });
+      return res.status(400).json({ message: 'resume identifier is required' });
     }
 
     // Delete from user_resume_history
     try {
-      await pool.query(`
+      await pool.query(
+        `
         DELETE FROM user_resume_history
         WHERE user_id = $1 AND (resume_url = $2 OR id::text = $3 OR resume_file_name = $4)
-      `, [applicantId, resume_url || null, id || null, name || null]);
+      `,
+        [applicantId, resume_url || null, id || null, name || null]
+      );
     } catch (tblErr) {
-      console.warn("user_resume_history delete skipped:", tblErr.message);
+      console.warn('user_resume_history delete skipped:', tblErr.message);
     }
 
-    res.json({ message: "Resume deleted successfully" });
+    res.json({ message: 'Resume deleted successfully' });
   } catch (err) {
-    console.error("Delete recent resume error:", err);
-    res.status(500).json({ message: "Internal server error" });
+    console.error('Delete recent resume error:', err);
+    res.status(500).json({ message: 'Internal server error' });
   }
 };
 
 exports.getMyApplicationStats = async (req, res) => {
   try {
     const applicantId = req.user.sub;
-    const result = await pool.query(`
+    const result = await pool.query(
+      `
       SELECT 
         COUNT(*) as total_applied,
         COUNT(*) FILTER (WHERE ja.current_status ILIKE 'Shortlisted%') as shortlisted
       FROM job_applications ja
       JOIN jobs j ON ja.job_id = j.job_id
       WHERE ja.applicant_id = $1 AND ja.current_status != 'Withdrawn' AND j.is_active = TRUE
-    `, [applicantId]);
+    `,
+      [applicantId]
+    );
 
     res.json({
       totalApplied: parseInt(result.rows[0].total_applied || 0),
-      shortlisted: parseInt(result.rows[0].shortlisted || 0)
+      shortlisted: parseInt(result.rows[0].shortlisted || 0),
     });
   } catch (err) {
-    console.error("Get my application stats error:", err);
-    res.status(500).json({ message: "Internal server error" });
+    console.error('Get my application stats error:', err);
+    res.status(500).json({ message: 'Internal server error' });
   }
 };
 
@@ -2010,10 +2263,23 @@ exports.getMyApplications = async (req, res) => {
   const userId = req.user.sub;
   const { limit = 10, cursor, status } = req.query;
 
-  const allowedStatus = ['all', 'applied', 'in progress', 'in past', 'saved', 'in-progress', 'in-past', 'shortlisted', 'in review', 'in-review', 'declined', 'rejected'];
+  const allowedStatus = [
+    'all',
+    'applied',
+    'in progress',
+    'in past',
+    'saved',
+    'in-progress',
+    'in-past',
+    'shortlisted',
+    'in review',
+    'in-review',
+    'declined',
+    'rejected',
+  ];
 
   if (status && !allowedStatus.includes(status.toLowerCase())) {
-    return res.status(400).json({ message: "Invalid status" });
+    return res.status(400).json({ message: 'Invalid status' });
   }
 
   if (status?.toLowerCase() === 'saved') {
@@ -2039,7 +2305,7 @@ exports.getMyApplications = async (req, res) => {
 
     // Add built filters
     if (conditions.length > 0) {
-      baseQuery += ` AND ${conditions.join(" AND ")}`;
+      baseQuery += ` AND ${conditions.join(' AND ')}`;
     }
 
     // Status Filters
@@ -2060,7 +2326,7 @@ exports.getMyApplications = async (req, res) => {
     }
 
     // Pagination (Cursor-based on applied_at)
-    let paginationClause = "";
+    let paginationClause = '';
     if (cursor) {
       paginationClause = `AND ja.applied_at < $${paramCount}`;
       params.push(new Date(cursor));
@@ -2103,18 +2369,18 @@ exports.getMyApplications = async (req, res) => {
   } catch (err) {
     if (err.code === '23514' && err.constraint === 'salary_valid') {
       return res.status(400).json({
-        field: "salary",
-        message: "Minimum salary cannot be greater than maximum salary"
+        field: 'salary',
+        message: 'Minimum salary cannot be greater than maximum salary',
       });
     }
-    console.error("Get my applications error:", err);
-    res.status(500).json({ message: "Internal server error" });
+    console.error('Get my applications error:', err);
+    res.status(500).json({ message: 'Internal server error' });
   }
 };
 
 exports.getMyJobs = async (req, res) => {
   const recruiterId = req.user.sub; // logged-in recruiter
-  const actorOrgId = req.actor?.type === "ORGANIZATION" ? req.actor.orgId : null;
+  const actorOrgId = req.actor?.type === 'ORGANIZATION' ? req.actor.orgId : null;
   const {
     limit = 10,
     cursor,
@@ -2162,7 +2428,11 @@ exports.getMyJobs = async (req, res) => {
       const cleanStatus = status.trim().toUpperCase();
       if (cleanStatus === 'REJECTED') {
         query += ` AND (j.status = 'REJECTED' OR j.moderation_status = 'REJECTED')`;
-      } else if (cleanStatus === 'IN_REVIEW' || cleanStatus === 'IN REVIEW' || cleanStatus === 'UNDER_REVIEW') {
+      } else if (
+        cleanStatus === 'IN_REVIEW' ||
+        cleanStatus === 'IN REVIEW' ||
+        cleanStatus === 'UNDER_REVIEW'
+      ) {
         query += ` AND (j.status IN ('IN REVIEW', 'UNDER_REVIEW') OR j.moderation_status = 'UNDER_REVIEW') AND j.status != 'REJECTED' AND (j.moderation_status IS NULL OR j.moderation_status != 'REJECTED')`;
       } else {
         const dbStatus = status.replace(/_/g, ' ').toUpperCase();
@@ -2193,10 +2463,10 @@ exports.getMyJobs = async (req, res) => {
       params.push(company_type);
       paramCount++;
     }
-    if (easyApply === "true") {
+    if (easyApply === 'true') {
       query += ` AND j.easy_apply = TRUE`;
     }
-    if (activelyHiring === "true") {
+    if (activelyHiring === 'true') {
       query += ` AND j.actively_hiring = TRUE`;
     }
     if (experienceLevel) {
@@ -2210,8 +2480,8 @@ exports.getMyJobs = async (req, res) => {
     if (!isNaN(min) && !isNaN(max)) {
       if (min > max) {
         return res.status(400).json({
-          field: "salary",
-          message: "Minimum salary cannot be greater than maximum salary"
+          field: 'salary',
+          message: 'Minimum salary cannot be greater than maximum salary',
         });
       }
 
@@ -2221,26 +2491,23 @@ exports.getMyJobs = async (req, res) => {
   `;
       params.push(min, max);
       paramCount += 2;
-
     } else if (!isNaN(min)) {
       query += ` AND j.salary_max >= $${paramCount}`;
       params.push(min);
       paramCount++;
-
     } else if (!isNaN(max)) {
       query += ` AND j.salary_min <= $${paramCount}`;
       params.push(max);
       paramCount++;
     }
 
-
     if (datePosted) {
       let fromDate;
-      if (datePosted === "Past 24 hours") {
+      if (datePosted === 'Past 24 hours') {
         fromDate = new Date(new Date().setDate(new Date().getDate() - 1));
-      } else if (datePosted === "Past week") {
+      } else if (datePosted === 'Past week') {
         fromDate = new Date(new Date().setDate(new Date().getDate() - 7));
-      } else if (datePosted === "Past month") {
+      } else if (datePosted === 'Past month') {
         fromDate = new Date(new Date().setMonth(new Date().getMonth() - 1));
       }
       if (fromDate) {
@@ -2291,39 +2558,43 @@ exports.getMyJobs = async (req, res) => {
 
     const [result, countsResult] = await Promise.all([
       pool.query(query, params),
-      pool.query(countsQuery, [recruiterId])
+      pool.query(countsQuery, [recruiterId]),
     ]);
 
     const rows = result.rows;
     const hasMore = rows.length > Number(limit);
     const jobs = hasMore ? rows.slice(0, Number(limit)) : rows;
-    const nextCursor = jobs.length > 0 ? (jobs[jobs.length - 1].published_at || jobs[jobs.length - 1].created_at) : null;
+    const nextCursor =
+      jobs.length > 0
+        ? jobs[jobs.length - 1].published_at || jobs[jobs.length - 1].created_at
+        : null;
     const counts = countsResult.rows[0] || { all: 0, active: 0, closed: 0, draft: 0, inReview: 0 };
 
     res.json({
       jobs,
       nextCursor,
       hasMore,
-      counts
+      counts,
     });
   } catch (err) {
     if (err.code === '23514' && err.constraint === 'salary_valid') {
       return res.status(400).json({
-        field: "salary",
-        message: "Minimum salary cannot be greater than maximum salary"
+        field: 'salary',
+        message: 'Minimum salary cannot be greater than maximum salary',
       });
     }
-    console.error("Get my jobs error:", err);
-    res.status(500).json({ message: "Internal server error" });
+    console.error('Get my jobs error:', err);
+    res.status(500).json({ message: 'Internal server error' });
   }
 };
 
 exports.getDashboardStats = async (req, res) => {
   const userId = req.user.sub;
-  const actorOrgId = req.actor?.type === "ORGANIZATION" ? req.actor.orgId : null;
+  const actorOrgId = req.actor?.type === 'ORGANIZATION' ? req.actor.orgId : null;
 
   try {
-    const stats = await pool.query(`
+    const stats = await pool.query(
+      `
       SELECT
         COUNT(j.job_id) FILTER (WHERE j.is_active = TRUE) as "activeJobs",
         COUNT(j.job_id) as "totalJobs",
@@ -2331,23 +2602,24 @@ exports.getDashboardStats = async (req, res) => {
            SELECT COUNT(*) 
            FROM job_applications ja 
            JOIN jobs j2 ON ja.job_id = j2.job_id 
-           WHERE (${actorOrgId ? "j2.org_id = $1" : "j2.recruiter_id = $1 AND j2.org_id IS NULL"}) AND j2.is_active = TRUE
+           WHERE (${actorOrgId ? 'j2.org_id = $1' : 'j2.recruiter_id = $1 AND j2.org_id IS NULL'}) AND j2.is_active = TRUE
         ) as "totalApplicants"
       FROM jobs j
-      WHERE (${actorOrgId ? "j.org_id = $1" : "j.recruiter_id = $1 AND j.org_id IS NULL"}) AND j.is_active = TRUE
-    `, [actorOrgId || userId]);
+      WHERE (${actorOrgId ? 'j.org_id = $1' : 'j.recruiter_id = $1 AND j.org_id IS NULL'}) AND j.is_active = TRUE
+    `,
+      [actorOrgId || userId]
+    );
 
     const data = stats.rows[0];
 
     res.json({
       totalJobs: parseInt(data.totalJobs || 0),
       activeJobs: parseInt(data.activeJobs || 0),
-      totalApplicants: parseInt(data.totalApplicants || 0)
+      totalApplicants: parseInt(data.totalApplicants || 0),
     });
-
   } catch (err) {
-    console.error("Dashboard stats error:", err);
-    res.status(500).json({ message: "Internal server error" });
+    console.error('Dashboard stats error:', err);
+    res.status(500).json({ message: 'Internal server error' });
   }
 };
 
@@ -2365,7 +2637,7 @@ exports.deleteJob = async (req, res) => {
     );
 
     if (jobCheck.rowCount === 0 || !jobCheck.rows[0].is_active) {
-      return res.status(404).json({ message: "Job not found" });
+      return res.status(404).json({ message: 'Job not found' });
     }
 
     const { org_id, recruiter_id } = jobCheck.rows[0];
@@ -2373,7 +2645,7 @@ exports.deleteJob = async (req, res) => {
 
     // Personal job: only the creator can delete
     if (!org_id && recruiter_id !== userId) {
-      return res.status(403).json({ message: "Not authorized to delete this job" });
+      return res.status(403).json({ message: 'Not authorized to delete this job' });
     }
 
     // Org job: creator or admin-level member (actor context determines)
@@ -2381,7 +2653,9 @@ exports.deleteJob = async (req, res) => {
       try {
         await assertJobActorAccess(req, _jobData, ['POST_JOBS', 'MANAGE_COMPANY']);
       } catch (err) {
-        return res.status(err.statusCode || 403).json({ message: err.message || "Not authorized to delete this job" });
+        return res
+          .status(err.statusCode || 403)
+          .json({ message: err.message || 'Not authorized to delete this job' });
       }
     }
 
@@ -2392,16 +2666,15 @@ exports.deleteJob = async (req, res) => {
     );
 
     if (result.rowCount === 0) {
-      return res.status(404).json({ message: "Job not found or already deleted" });
+      return res.status(404).json({ message: 'Job not found or already deleted' });
     }
 
-    res.json({ message: "Job deleted successfully" });
+    res.json({ message: 'Job deleted successfully' });
   } catch (err) {
-    console.error("Delete job error:", err);
-    res.status(500).json({ message: "Internal server error" });
+    console.error('Delete job error:', err);
+    res.status(500).json({ message: 'Internal server error' });
   }
 };
-
 
 exports.updateJob = async (req, res) => {
   const { id } = req.params;
@@ -2424,7 +2697,7 @@ exports.updateJob = async (req, res) => {
     org_id,
     experience_min,
     experience_max,
-    skills = []
+    skills = [],
   } = req.body;
 
   // Sanitize user-generated content
@@ -2433,17 +2706,31 @@ exports.updateJob = async (req, res) => {
   industry = sanitizeContent(industry);
 
   // Sanitize integer fields - default to 0 if empty because DB has NOT NULL constraint
-  const safeMinSalary = (minSalary === "" || minSalary === null || minSalary === undefined) ? 0 : parseInt(minSalary);
-  const safeMaxSalary = (maxSalary === "" || maxSalary === null || maxSalary === undefined) ? 0 : parseInt(maxSalary);
-  const safeExperienceMin = (experience_min === "" || experience_min === null || experience_min === undefined) ? null : parseInt(experience_min);
-  const safeExperienceMax = (experience_max === "" || experience_max === null || experience_max === undefined) ? null : parseInt(experience_max);
-  const resolvedExpLevel = (experience_level && typeof experience_level === 'string') ? sanitizeContent(experience_level.trim()) : null;
-  const resolvedExpLabel = (experience_label && typeof experience_label === 'string') ? sanitizeContent(experience_label.trim()) : (resolvedExpLevel || null);
+  const safeMinSalary =
+    minSalary === '' || minSalary === null || minSalary === undefined ? 0 : parseInt(minSalary);
+  const safeMaxSalary =
+    maxSalary === '' || maxSalary === null || maxSalary === undefined ? 0 : parseInt(maxSalary);
+  const safeExperienceMin =
+    experience_min === '' || experience_min === null || experience_min === undefined
+      ? null
+      : parseInt(experience_min);
+  const safeExperienceMax =
+    experience_max === '' || experience_max === null || experience_max === undefined
+      ? null
+      : parseInt(experience_max);
+  const resolvedExpLevel =
+    experience_level && typeof experience_level === 'string'
+      ? sanitizeContent(experience_level.trim())
+      : null;
+  const resolvedExpLabel =
+    experience_label && typeof experience_label === 'string'
+      ? sanitizeContent(experience_label.trim())
+      : resolvedExpLevel || null;
 
   const client = await pool.connect();
 
   try {
-    await client.query("BEGIN");
+    await client.query('BEGIN');
 
     // 1. Check ownership
     const checkRes = await client.query(
@@ -2452,24 +2739,29 @@ exports.updateJob = async (req, res) => {
     );
 
     if (checkRes.rowCount === 0 || !checkRes.rows[0].is_active) {
-      await client.query("ROLLBACK");
-      return res.status(404).json({ message: "Job not found" });
+      await client.query('ROLLBACK');
+      return res.status(404).json({ message: 'Job not found' });
     }
 
-    const { org_id: dbOrgId, recruiter_id, status: jobStatus, moderation_status: jobModStatus } = checkRes.rows[0];
+    const {
+      org_id: dbOrgId,
+      recruiter_id,
+      status: jobStatus,
+      moderation_status: jobModStatus,
+    } = checkRes.rows[0];
 
     // Block updating rejected jobs
     if (jobStatus === 'REJECTED' || jobModStatus === 'REJECTED') {
-      await client.query("ROLLBACK");
-      return res.status(403).json({ message: "Rejected jobs cannot be edited." });
+      await client.query('ROLLBACK');
+      return res.status(403).json({ message: 'Rejected jobs cannot be edited.' });
     }
 
     const _jobData = { org_id: dbOrgId, recruiter_id };
 
     // Personal job: only the creator can update
     if (!dbOrgId && recruiter_id !== userId) {
-      await client.query("ROLLBACK");
-      return res.status(403).json({ message: "Not authorized to update this job" });
+      await client.query('ROLLBACK');
+      return res.status(403).json({ message: 'Not authorized to update this job' });
     }
 
     // Org job: creator or admin-level member (actor context determines)
@@ -2477,17 +2769,23 @@ exports.updateJob = async (req, res) => {
       try {
         await assertJobActorAccess(req, _jobData, ['POST_JOBS', 'MANAGE_COMPANY'], client);
       } catch (err) {
-        await client.query("ROLLBACK");
-        return res.status(err.statusCode || 403).json({ message: err.message || "Not authorized to update this job" });
+        await client.query('ROLLBACK');
+        return res
+          .status(err.statusCode || 403)
+          .json({ message: err.message || 'Not authorized to update this job' });
       }
     }
 
     let resolvedCompanyName = checkRes.rows[0].company_name;
     if (org_id) {
-      const orgRes = await client.query('SELECT name FROM organizations WHERE org_id = $1', [org_id]);
+      const orgRes = await client.query('SELECT name FROM organizations WHERE org_id = $1', [
+        org_id,
+      ]);
       if (orgRes.rows.length) resolvedCompanyName = orgRes.rows[0].name;
     } else if (recruiter_id) {
-      const userRes = await client.query('SELECT full_name FROM users WHERE user_id = $1', [recruiter_id]);
+      const userRes = await client.query('SELECT full_name FROM users WHERE user_id = $1', [
+        recruiter_id,
+      ]);
       if (userRes.rows.length) resolvedCompanyName = userRes.rows[0].full_name;
     }
 
@@ -2507,13 +2805,25 @@ exports.updateJob = async (req, res) => {
       RETURNING *
       `,
       [
-        title, resolvedCompanyName, location,
-        description, safeMinSalary, safeMaxSalary,
-        job_type, work_mode, null,
-        resolvedExpLevel || resolvedExpLabel, industry,
-        easy_apply, actively_hiring, org_id || null,
-        !!org_id, safeExperienceMin, safeExperienceMax, id,
-        resolvedExpLabel || resolvedExpLevel
+        title,
+        resolvedCompanyName,
+        location,
+        description,
+        safeMinSalary,
+        safeMaxSalary,
+        job_type,
+        work_mode,
+        null,
+        resolvedExpLevel || resolvedExpLabel,
+        industry,
+        easy_apply,
+        actively_hiring,
+        org_id || null,
+        !!org_id,
+        safeExperienceMin,
+        safeExperienceMax,
+        id,
+        resolvedExpLabel || resolvedExpLevel,
       ]
     );
 
@@ -2552,7 +2862,7 @@ exports.updateJob = async (req, res) => {
       );
     }
 
-    await client.query("COMMIT");
+    await client.query('COMMIT');
 
     if (title && title.trim()) {
       // Automatically add this new role to the master table if they update the title
@@ -2579,20 +2889,19 @@ exports.updateJob = async (req, res) => {
     }
 
     res.json({
-      message: "Job updated successfully",
-      job
+      message: 'Job updated successfully',
+      job,
     });
-
   } catch (err) {
-    await client.query("ROLLBACK");
+    await client.query('ROLLBACK');
     if (err.code === '23514' && err.constraint === 'salary_valid') {
       return res.status(400).json({
-        field: "salary",
-        message: "Minimum salary cannot be greater than maximum salary"
+        field: 'salary',
+        message: 'Minimum salary cannot be greater than maximum salary',
       });
     }
-    console.error("Update job error:", err);
-    res.status(500).json({ message: "Internal server error" });
+    console.error('Update job error:', err);
+    res.status(500).json({ message: 'Internal server error' });
   } finally {
     client.release();
   }
@@ -2628,22 +2937,26 @@ exports.getRecruiterStats = async (req, res) => {
       [id]
     );
 
-    const data = stats.rows[0] || { total_applications: 0, responded_count: 0, avg_reply_interval: null };
+    const data = stats.rows[0] || {
+      total_applications: 0,
+      responded_count: 0,
+      avg_reply_interval: null,
+    };
     const total = parseInt(data.total_applications || 0);
     const responded = parseInt(data.responded_count || 0);
     const rate = total > 0 ? Math.round((responded / total) * 100) : 0;
-    const typicallyRespondsIn = total > 0 ? (formatReplyTime(data.avg_reply_interval) || "No data") : "No data";
+    const typicallyRespondsIn =
+      total > 0 ? formatReplyTime(data.avg_reply_interval) || 'No data' : 'No data';
 
     res.json({
       responseRate: rate,
       totalApplicants: total,
       typicallyRespondsIn: typicallyRespondsIn,
-      isActive: true
+      isActive: true,
     });
-
   } catch (err) {
-    console.error("getRecruiterStats error:", err);
-    res.status(500).json({ message: "Internal server error" });
+    console.error('getRecruiterStats error:', err);
+    res.status(500).json({ message: 'Internal server error' });
   }
 };
 
@@ -2655,9 +2968,13 @@ exports.submitTask = async (req, res) => {
 
   try {
     // Verify applicant
-    const check = await pool.query(`SELECT applicant_id FROM job_applications WHERE application_id = $1`, [id]);
-    if (check.rowCount === 0) return res.status(404).json({ message: "Application not found" });
-    if (check.rows[0].applicant_id !== userId) return res.status(403).json({ message: "Not authorized" });
+    const check = await pool.query(
+      `SELECT applicant_id FROM job_applications WHERE application_id = $1`,
+      [id]
+    );
+    if (check.rowCount === 0) return res.status(404).json({ message: 'Application not found' });
+    if (check.rows[0].applicant_id !== userId)
+      return res.status(403).json({ message: 'Not authorized' });
 
     let responseUrl = null;
     if (req.file) {
@@ -2666,19 +2983,21 @@ exports.submitTask = async (req, res) => {
       responseUrl = req.body.responseUrl;
     }
 
-    if (!responseUrl) return res.status(400).json({ message: "No file or URL provided" });
+    if (!responseUrl) return res.status(400).json({ message: 'No file or URL provided' });
 
-    await pool.query(`
+    await pool.query(
+      `
       UPDATE job_applications 
       SET screening_submitted_at = NOW(), screening_response_url = $1
       WHERE application_id = $2
-    `, [responseUrl, id]);
+    `,
+      [responseUrl, id]
+    );
 
-    res.json({ message: "Task submitted successfully" });
-
+    res.json({ message: 'Task submitted successfully' });
   } catch (err) {
-    console.error("Submit task error:", err);
-    res.status(500).json({ message: "Internal server error" });
+    console.error('Submit task error:', err);
+    res.status(500).json({ message: 'Internal server error' });
   }
 };
 
@@ -2688,25 +3007,32 @@ exports.getJobRoles = async (req, res) => {
   try {
     const { q, cursor, limit = 50 } = req.query;
     const pageSize = Math.min(Math.max(parseInt(limit) || 50, 1), 100);
-    let query = `SELECT MIN(role_name) AS role_name, MIN(category) AS category FROM job_roles_master`;
+
+    let query = `
+      WITH all_roles AS (
+        SELECT DISTINCT TRIM(role_name) AS role_name
+        FROM job_roles_master
+        WHERE role_name IS NOT NULL AND TRIM(role_name) != ''
+        UNION
+        SELECT DISTINCT TRIM(title) AS role_name
+        FROM experiences
+        WHERE title IS NOT NULL AND TRIM(title) != ''
+      )
+      SELECT role_name
+      FROM all_roles
+      WHERE role_name IS NOT NULL AND role_name != ''
+    `;
     let values = [];
-    let conditions = [];
 
     if (q) {
       values.push(`%${q.trim()}%`);
-      conditions.push(`role_name ILIKE $${values.length}`);
+      query += ` AND role_name ILIKE $${values.length}`;
     }
 
     if (cursor) {
       values.push(cursor.trim());
-      conditions.push(`role_name > $${values.length}`);
+      query += ` AND role_name > $${values.length}`;
     }
-
-    if (conditions.length > 0) {
-      query += ` WHERE ` + conditions.join(` AND `);
-    }
-
-    query += ` GROUP BY LOWER(TRIM(role_name))`;
 
     values.push(pageSize + 1);
     query += ` ORDER BY role_name ASC LIMIT $${values.length}`;
@@ -2717,13 +3043,13 @@ exports.getJobRoles = async (req, res) => {
     const nextCursor = hasMore && items.length > 0 ? items[items.length - 1].role_name : null;
 
     res.json({
-      items: items.map(r => r.role_name),
+      items: items.map((r) => r.role_name),
       nextCursor,
-      hasMore
+      hasMore,
     });
   } catch (err) {
-    console.error("Error fetching job roles:", err);
-    res.status(500).json({ error: "Internal server error" });
+    console.error('Error fetching job roles:', err);
+    res.status(500).json({ error: 'Internal server error' });
   }
 };
 
@@ -2760,13 +3086,13 @@ exports.getIndustries = async (req, res) => {
     const nextCursor = hasMore && items.length > 0 ? items[items.length - 1].industry_name : null;
 
     res.json({
-      items: items.map(r => r.industry_name),
+      items: items.map((r) => r.industry_name),
       nextCursor,
-      hasMore
+      hasMore,
     });
   } catch (err) {
-    console.error("Error fetching industries:", err);
-    res.status(500).json({ error: "Internal server error" });
+    console.error('Error fetching industries:', err);
+    res.status(500).json({ error: 'Internal server error' });
   }
 };
 
@@ -2804,13 +3130,13 @@ exports.getCompanies = async (req, res) => {
     const nextCursor = hasMore && items.length > 0 ? items[items.length - 1].name : null;
 
     res.json({
-      items: items.map(r => r.name),
+      items: items.map((r) => r.name),
       nextCursor,
-      hasMore
+      hasMore,
     });
   } catch (err) {
-    console.error("Error fetching companies:", err);
-    res.status(500).json({ error: "Internal server error" });
+    console.error('Error fetching companies:', err);
+    res.status(500).json({ error: 'Internal server error' });
   }
 };
 
@@ -2864,13 +3190,13 @@ exports.getInstitutes = async (req, res) => {
     const nextCursor = hasMore && items.length > 0 ? items[items.length - 1].name : null;
 
     res.json({
-      items: items.map(r => r.name),
+      items: items.map((r) => r.name),
       nextCursor,
-      hasMore
+      hasMore,
     });
   } catch (err) {
-    console.error("Error fetching institutes:", err);
-    res.status(500).json({ error: "Internal server error" });
+    console.error('Error fetching institutes:', err);
+    res.status(500).json({ error: 'Internal server error' });
   }
 };
 
@@ -2924,13 +3250,13 @@ exports.getLocations = async (req, res) => {
     const nextCursor = hasMore && items.length > 0 ? items[items.length - 1].location : null;
 
     res.json({
-      items: items.map(r => r.location),
+      items: items.map((r) => r.location),
       nextCursor,
-      hasMore
+      hasMore,
     });
   } catch (err) {
-    console.error("Error fetching locations:", err);
-    res.status(500).json({ error: "Internal server error" });
+    console.error('Error fetching locations:', err);
+    res.status(500).json({ error: 'Internal server error' });
   }
 };
 
@@ -2942,22 +3268,20 @@ exports.getLocations = async (req, res) => {
 const buildAIDescription = (jdJson) => {
   const addSection = (heading, content) => {
     if (!content) return null;
-    const body = Array.isArray(content)
-      ? content.map(item => `- ${item}`).join("\n")
-      : content;
+    const body = Array.isArray(content) ? content.map((item) => `- ${item}`).join('\n') : content;
     return `${heading}\n${body}`;
   };
 
   const sections = [
     jdJson.summary ? jdJson.summary : null,
-    addSection("Description", jdJson.description),
-    addSection("Responsibilities", jdJson.responsibilities),
-    addSection("Requirements", jdJson.requirements),
-    addSection("Preferred Skills", jdJson.preferred_skills),
-    addSection("Benefits", jdJson.benefits),
+    addSection('Description', jdJson.description),
+    addSection('Responsibilities', jdJson.responsibilities),
+    addSection('Requirements', jdJson.requirements),
+    addSection('Preferred Skills', jdJson.preferred_skills),
+    addSection('Benefits', jdJson.benefits),
   ].filter(Boolean);
 
-  return sections.join("\n\n").trim();
+  return sections.join('\n\n').trim();
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2972,26 +3296,35 @@ exports.generateJD = async (req, res) => {
   const startTime = Date.now();
 
   // ── Step 1: Input validation ────────────────────────────────────────────────
-  let { role, company, location, experience, work_type, work_mode, experience_min, experience_max } = req.body;
+  let {
+    role,
+    company,
+    location,
+    experience,
+    work_type,
+    work_mode,
+    experience_min,
+    experience_max,
+  } = req.body;
 
-  if (!role || typeof role !== "string") {
-    return res.status(400).json({ message: "\"role\" is required and must be a string." });
+  if (!role || typeof role !== 'string') {
+    return res.status(400).json({ message: '"role" is required and must be a string.' });
   }
 
   role = role.trim();
 
   if (role.length < 2 || role.length > 100) {
     return res.status(400).json({
-      message: "Role must be between 2 and 100 characters.",
-      field: "role",
+      message: 'Role must be between 2 and 100 characters.',
+      field: 'role',
     });
   }
 
   // Basic sanity check — reject obvious HTML/injection in role name
   if (/<[^>]+>/.test(role)) {
     return res.status(400).json({
-      message: "Role name must not contain HTML.",
-      field: "role",
+      message: 'Role name must not contain HTML.',
+      field: 'role',
     });
   }
 
@@ -3001,30 +3334,36 @@ exports.generateJD = async (req, res) => {
   const hasExperienceMin = experience_min !== undefined && experience_min !== null;
   const hasExperienceMax = experience_max !== undefined && experience_max !== null;
 
-  if (hasExperienceMin && (typeof experience_min !== "number" || !Number.isInteger(experience_min) || experience_min < 0)) {
+  if (
+    hasExperienceMin &&
+    (typeof experience_min !== 'number' || !Number.isInteger(experience_min) || experience_min < 0)
+  ) {
     return res.status(400).json({
-      message: "\"experience_min\" must be a non-negative integer.",
-      field: "experience_min",
+      message: '"experience_min" must be a non-negative integer.',
+      field: 'experience_min',
     });
   }
 
-  if (hasExperienceMax && (typeof experience_max !== "number" || !Number.isInteger(experience_max) || experience_max < 0)) {
+  if (
+    hasExperienceMax &&
+    (typeof experience_max !== 'number' || !Number.isInteger(experience_max) || experience_max < 0)
+  ) {
     return res.status(400).json({
-      message: "\"experience_max\" must be a non-negative integer.",
-      field: "experience_max",
+      message: '"experience_max" must be a non-negative integer.',
+      field: 'experience_max',
     });
   }
 
   if (hasExperienceMin && hasExperienceMax && experience_max < experience_min) {
     return res.status(400).json({
-      message: "\"experience_max\" must be greater than or equal to \"experience_min\".",
-      field: "experience_max",
+      message: '"experience_max" must be greater than or equal to "experience_min".',
+      field: 'experience_max',
     });
   }
 
   const client = await pool.connect();
   try {
-    await client.query("BEGIN");
+    await client.query('BEGIN');
 
     // ── Step 2: Load job from DB ──────────────────────────────────────────────
     const jobRes = await client.query(
@@ -3032,14 +3371,14 @@ exports.generateJD = async (req, res) => {
       [id]
     );
     if (jobRes.rowCount === 0) {
-      await client.query("ROLLBACK");
-      return res.status(404).json({ message: "Job not found." });
+      await client.query('ROLLBACK');
+      return res.status(404).json({ message: 'Job not found.' });
     }
     const job = jobRes.rows[0];
 
     // Only allow generation on DRAFT or ACTIVE jobs
-    if (job.status !== "DRAFT" && job.status !== "ACTIVE") {
-      await client.query("ROLLBACK");
+    if (job.status !== 'DRAFT' && job.status !== 'ACTIVE') {
+      await client.query('ROLLBACK');
       return res.status(400).json({
         message: `AI generation is only available for DRAFT or ACTIVE jobs. Current status: ${job.status}`,
       });
@@ -3047,18 +3386,18 @@ exports.generateJD = async (req, res) => {
 
     // ── Step 3: Ownership check ───────────────────────────────────────────────
     if (job.org_id) {
-      await assertJobActorAccess(req, job, ["POST_JOBS", "MANAGE_COMPANY"], client);
+      await assertJobActorAccess(req, job, ['POST_JOBS', 'MANAGE_COMPANY'], client);
     } else {
       if (job.recruiter_id !== userId) {
-        await client.query("ROLLBACK");
-        return res.status(403).json({ message: "Unauthorized." });
+        await client.query('ROLLBACK');
+        return res.status(403).json({ message: 'Unauthorized.' });
       }
     }
 
     // ── Step 4: Redis cache check ─────────────────────────────────────────────
     // Cache key: SHA256(role (normalised) + company_id + context)
     const cacheInput = `${role.toLowerCase()}:${job.org_id || userId}:${company || ''}:${location || ''}:${experience || ''}:${work_type || ''}:${work_mode || ''}`;
-    const cacheKey = `jd_gen:${crypto.createHash("sha256").update(cacheInput).digest("hex")}`;
+    const cacheKey = `jd_gen:${crypto.createHash('sha256').update(cacheInput).digest('hex')}`;
 
     let cachedResult;
     try {
@@ -3078,12 +3417,12 @@ exports.generateJD = async (req, res) => {
         `UPDATE jobs SET title = $1, description = $2 WHERE job_id = $3 RETURNING *`,
         [role, fullDescription, id]
       );
-      await client.query("COMMIT");
+      await client.query('COMMIT');
 
       return res.status(200).json({
-        message: "Job description generated successfully.",
+        message: 'Job description generated successfully.',
         job: updatedCacheJobRes.rows[0],
-        ai_metadata: { cached: true, model: process.env.AI_MODEL || "gemini-2.5-flash" },
+        ai_metadata: { cached: true, model: process.env.AI_MODEL || 'gemini-2.5-flash' },
       });
     }
 
@@ -3096,13 +3435,14 @@ exports.generateJD = async (req, res) => {
         await redis.expire(rateLimitKey, 24 * 60 * 60);
       }
     } catch (err) {
-      console.warn("Redis rate limit failed, bypassing:", err);
+      console.warn('Redis rate limit failed, bypassing:', err);
     }
 
     if (generationCount > 3) {
-      await client.query("ROLLBACK");
+      await client.query('ROLLBACK');
       return res.status(429).json({
-        message: "AI generation limit reached. You can only regenerate a Job Description up to 3 times per 24 hours for a single job. Please try again tomorrow.",
+        message:
+          'AI generation limit reached. You can only regenerate a Job Description up to 3 times per 24 hours for a single job. Please try again tomorrow.',
       });
     }
 
@@ -3124,11 +3464,15 @@ exports.generateJD = async (req, res) => {
       });
     } catch (aiErr) {
       // Revert the rate limit counter on failure
-      try { await redis.decr(rateLimitKey); } catch (e) { /* ignore */ }
+      try {
+        await redis.decr(rateLimitKey);
+      } catch (e) {
+        /* ignore */
+      }
 
-      await client.query("ROLLBACK");
+      await client.query('ROLLBACK');
       return res.status(aiErr.statusCode || 503).json({
-        message: aiErr.message || "AI service is temporarily unavailable.",
+        message: aiErr.message || 'AI service is temporarily unavailable.',
       });
     }
 
@@ -3139,9 +3483,13 @@ exports.generateJD = async (req, res) => {
       validateContentSafety(generated);
     } catch (validationErr) {
       // Revert the rate limit counter on failure
-      try { await redis.decr(rateLimitKey); } catch (e) { /* ignore */ }
+      try {
+        await redis.decr(rateLimitKey);
+      } catch (e) {
+        /* ignore */
+      }
 
-      await client.query("ROLLBACK");
+      await client.query('ROLLBACK');
       return res.status(validationErr.statusCode || 422).json({
         message: validationErr.message,
         field: validationErr.field || null,
@@ -3149,7 +3497,7 @@ exports.generateJD = async (req, res) => {
     }
 
     // ── Step 7: Cache the validated result ────────────────────────────────────
-    const cacheTTL = parseInt(process.env.AI_CACHE_TTL_SECONDS || "3600", 10);
+    const cacheTTL = parseInt(process.env.AI_CACHE_TTL_SECONDS || '3600', 10);
     try {
       await redis.setEx(cacheKey, cacheTTL, JSON.stringify(generated));
     } catch {
@@ -3189,10 +3537,10 @@ exports.generateJD = async (req, res) => {
       paramCount++;
     }
 
-    setClauses.push("updated_at = NOW()");
+    setClauses.push('updated_at = NOW()');
 
     values.push(id);
-    const updateQuery = `UPDATE jobs SET ${setClauses.join(", ")} WHERE job_id = $${paramCount} RETURNING *`;
+    const updateQuery = `UPDATE jobs SET ${setClauses.join(', ')} WHERE job_id = $${paramCount} RETURNING *`;
     const updatedJobRes = await client.query(updateQuery, values);
     const updatedJob = updatedJobRes.rows[0];
 
@@ -3208,26 +3556,25 @@ exports.generateJD = async (req, res) => {
       [id, userId]
     );
 
-    await client.query("COMMIT");
+    await client.query('COMMIT');
 
     // ── Step 10: Return response ──────────────────────────────────────────────
     // Same shape as createJob: { message, job } — no separate ai_content.
     // The full markdown is already in job.description.
     return res.status(200).json({
-      message: "Job description generated successfully.",
+      message: 'Job description generated successfully.',
       job: updatedJob,
       ai_metadata: {
-        model: process.env.AI_MODEL || "gemini-2.5-flash",
+        model: process.env.AI_MODEL || 'gemini-2.5-flash',
         latency_ms: Date.now() - startTime,
         cached: false,
       },
     });
-
   } catch (err) {
-    await client.query("ROLLBACK");
-    console.error("Generate JD error:", err);
+    await client.query('ROLLBACK');
+    console.error('Generate JD error:', err);
     return res.status(err.statusCode || 500).json({
-      message: err.message || "Internal server error.",
+      message: err.message || 'Internal server error.',
     });
   } finally {
     client.release();

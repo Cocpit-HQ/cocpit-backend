@@ -172,11 +172,48 @@ describe('People Search Regression Tests: Industry & Institute Filters', () => {
       expect(mockClient.query).toHaveBeenCalledTimes(1);
       const [sql, params] = mockClient.query.mock.calls[0];
 
-      expect(sql).toContain('p.open_to ILIKE $');
-      expect(params).toContain('%Full-time%');
-      expect(params).toContain('%Freelance%');
+      expect(sql).toContain('p.open_to');
+      expect(sql).toContain('REPLACE(REPLACE(LOWER(COALESCE(p.open_to');
+      expect(params).toContain('%full time%');
+      expect(params).toContain('%freelance%');
+    });
+
+    test('filters people when open_to preference has space without hyphen (Full Time)', async () => {
+      mockClient.query.mockResolvedValueOnce({ rows: [] });
+
+      await searchPeople(mockClient, {
+        searchTerm: 'john',
+        viewerId: '00000000-0000-0000-0000-000000000001',
+        queryParams: {
+          open_to: 'Full Time',
+        },
+      });
+
+      expect(mockClient.query).toHaveBeenCalledTimes(1);
+      const [sql, params] = mockClient.query.mock.calls[0];
+
+      expect(sql).toContain('p.open_to');
+      expect(sql).toContain('REPLACE(REPLACE(LOWER(COALESCE(p.open_to');
+      expect(params).toContain('%full time%');
+    });
+
+    test('filters people by pipe-delimited open_to preferences with mixed formats', async () => {
+      mockClient.query.mockResolvedValueOnce({ rows: [] });
+
+      await searchPeople(mockClient, {
+        searchTerm: 'john',
+        viewerId: '00000000-0000-0000-0000-000000000001',
+        queryParams: {
+          open_to: 'Full Time|Part-time',
+        },
+      });
+
+      expect(mockClient.query).toHaveBeenCalledTimes(1);
+      const [sql, params] = mockClient.query.mock.calls[0];
+
+      expect(sql).toContain('p.open_to');
+      expect(params).toContain('%full time%');
+      expect(params).toContain('%part time%');
     });
   });
 });
-
-

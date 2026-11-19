@@ -1,6 +1,10 @@
 'use strict';
 
-const { searchHashtags, encodeHashtagCursor, decodeHashtagCursor } = require('../queries/hashtagSearch.query');
+const {
+  searchHashtags,
+  encodeHashtagCursor,
+  decodeHashtagCursor,
+} = require('../queries/hashtagSearch.query');
 
 describe('Hashtag Search Regression Tests: Multi-mode sorting and Recently Added behavior', () => {
   let mockClient;
@@ -27,7 +31,9 @@ describe('Hashtag Search Regression Tests: Multi-mode sorting and Recently Added
       // CTE defines effective_recent_at
       expect(sql).toContain('COALESCE(h.last_used_at, h.created_at) AS effective_recent_at');
       // ORDER BY uses effective_recent_at DESC NULLS LAST
-      expect(sql).toContain('ORDER BY sort_rank ASC, effective_recent_at DESC NULLS LAST, h.hashtag_id DESC');
+      expect(sql).toContain(
+        'ORDER BY sort_rank ASC, effective_recent_at DESC NULLS LAST, h.hashtag_id DESC'
+      );
       // Check query parameters
       expect(params[0]).toBe('%new%');
       expect(params[1]).toBe('new%');
@@ -37,13 +43,16 @@ describe('Hashtag Search Regression Tests: Multi-mode sorting and Recently Added
     test('generates keyset cursor condition with effective_recent_at when cursor is supplied', async () => {
       mockClient.query.mockResolvedValueOnce({ rows: [] });
 
-      const fakeCursor = encodeHashtagCursor({
-        sort_rank: 0,
-        effective_recent_at: '2026-11-06T10:00:00.000Z',
-        last_used_at: '2026-11-06T10:00:00.000Z',
-        tag: 'new',
-        id: '11111111-2222-3333-4444-555555555555',
-      }, 'recently_added');
+      const fakeCursor = encodeHashtagCursor(
+        {
+          sort_rank: 0,
+          effective_recent_at: '2026-11-06T10:00:00.000Z',
+          last_used_at: '2026-11-06T10:00:00.000Z',
+          tag: 'new',
+          id: '11111111-2222-3333-4444-555555555555',
+        },
+        'recently_added'
+      );
 
       await searchHashtags(mockClient, {
         searchTerm: 'new',
@@ -69,7 +78,9 @@ describe('Hashtag Search Regression Tests: Multi-mode sorting and Recently Added
       });
 
       const [sql] = mockClient.query.mock.calls[0];
-      expect(sql).toContain('ORDER BY sort_rank ASC, COALESCE(h.posts_count, 0) DESC, COALESCE(h.usage_count, 0) DESC');
+      expect(sql).toContain(
+        'ORDER BY sort_rank ASC, COALESCE(h.posts_count, 0) DESC, COALESCE(h.usage_count, 0) DESC'
+      );
     });
 
     test('trending sort orders by sort_rank ASC, trending_score DESC', async () => {
@@ -135,6 +146,23 @@ describe('Hashtag Search Regression Tests: Multi-mode sorting and Recently Added
       expect(sql).toContain('(p.is_deleted IS FALSE OR p.is_deleted IS NULL)');
       expect(sql).toContain('(p.is_unlisted IS FALSE OR p.is_unlisted IS NULL)');
       expect(sql).toContain("(p.status IS NULL OR p.status = 'published')");
+      expect(sql).toContain("NOT (p.post_type = 'article' AND p.author_org_id IS NOT NULL)");
+      expect(sql).toContain('p.is_community_article IS NOT TRUE');
+      expect(sql).toContain('JOIN active_users u ON u.user_id = p.author_id');
+    });
+
+    test('applies organization block filtering in posts_count when orgActorId is provided', async () => {
+      mockClient.query.mockResolvedValueOnce({ rows: [] });
+
+      await searchHashtags(mockClient, {
+        searchTerm: 'tech',
+        orgActorId: '11111111-2222-3333-4444-555555555555',
+      });
+
+      const [sql] = mockClient.query.mock.calls[0];
+      expect(sql).toContain(
+        "b.is_org_block = true AND b.blocker_id = '11111111-2222-3333-4444-555555555555'"
+      );
     });
 
     test('accurately formats posts_display as "0 posts" when posts_count is 0 even if usage_count is 1', async () => {
@@ -189,4 +217,3 @@ describe('Hashtag Search Regression Tests: Multi-mode sorting and Recently Added
     });
   });
 });
-
