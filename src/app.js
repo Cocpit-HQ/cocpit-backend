@@ -32,6 +32,7 @@ const userSettingsRoutes = require("./modules/user/userSettings.routes");
 const searchRoutes = require("./modules/search/search.routes");
 const { optionalAuth } = require("./core/middlewares/auth.middleware");
 const { enforceOnboarding } = require("./core/middlewares/onboarding.middleware");
+const { isOriginAllowed } = require("./core/security/cors.security");
 
 
 
@@ -40,17 +41,7 @@ app.set("trust proxy", 1);
 
 const corsOptions = {
   origin: function (origin, callback) {
-    if (!origin ||
-      origin.match(/^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/) ||
-      origin.match(/^http:\/\/192\.168\.\d+\.\d+(:\d+)?$/) ||
-      origin.match(/^https:\/\/.*\.ngrok-free\.(app|dev)$/) ||
-      origin.match(/^https:\/\/.*\.loca\.lt$/) ||
-      origin === "https://frontend.cocpit.in" ||
-      origin === "https://staging.cocpit.in" ||
-      origin === "https://uat.cocpit.in"
-    ) {
-      callback(null, true);
-    } else if (process.env.ALLOWED_ORIGINS && process.env.ALLOWED_ORIGINS.includes(origin)) {
+    if (isOriginAllowed(origin)) {
       callback(null, true);
     } else {
       callback(new Error('Not allowed by CORS'));
@@ -76,7 +67,11 @@ app.use(cors(corsOptions));
 app.use(express.json({ limit: "100mb" }));
 app.use(express.urlencoded({ limit: "100mb", extended: true }));
 app.use(cookieParser());
-app.use("/uploads", express.static("uploads"));
+
+// CHAT-003: Restrict public uploads static serving in production
+if (process.env.NODE_ENV !== "production") {
+  app.use("/uploads", express.static("uploads"));
+}
 app.use(express.static("public"));
 
 app.use((req, res, next) => {

@@ -513,6 +513,29 @@ const uploadTaskSubmission = multer({
 // ─────────────────────────────────────────────────────────────────────────────
 // 9. Chat Media (Images, Videos, Documents)
 // ─────────────────────────────────────────────────────────────────────────────
+/**
+ * Security: CWE-434 / VULN-07 - File Extension Spoofing & RCE Defense
+ * Never trust user-supplied file extensions (e.g. shell.php, double-extensions like image.png.exe).
+ * Enforces a strict whitelist mapping that derives file extensions exclusively from validated MIME types.
+ */
+const MIME_EXT_MAP = {
+  "image/jpeg": ".jpg",
+  "image/jpg": ".jpg",
+  "image/png": ".png",
+  "image/webp": ".webp",
+  "image/gif": ".gif",
+  "video/mp4": ".mp4",
+  "video/webm": ".webm",
+  "video/quicktime": ".mov",
+  "application/pdf": ".pdf",
+  "application/msword": ".doc",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
+};
+
+const getSafeChatExt = (file) => {
+  return MIME_EXT_MAP[file.mimetype] || ".bin";
+};
+
 let chatMediaStorage;
 if (hasR2) {
   chatMediaStorage = createR2StorageEngine("chat", (req, file, cb) => {
@@ -527,8 +550,9 @@ if (hasR2) {
       folder = "chat_documents";
     }
     const sub = req.user?.sub || "usr";
-    const cleanName = file.originalname.replace(/[^a-zA-Z0-9.]/g, "_");
-    cb(null, `${folder}/chat-${sub}-${Date.now()}-${cleanName}`);
+    const safeExt = getSafeChatExt(file);
+    const baseName = path.basename(file.originalname, path.extname(file.originalname)).replace(/[^a-zA-Z0-9_-]/g, "_");
+    cb(null, `${folder}/chat-${sub}-${Date.now()}-${baseName}${safeExt}`);
   });
 } else if (hasCloudinary) {
   chatMediaStorage = new CloudinaryStorage({
@@ -561,7 +585,8 @@ if (hasR2) {
     destination: (req, file, cb) => cb(null, "uploads/posts/"),
     filename: (req, file, cb) => {
       const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
-      cb(null, "chat-" + uniqueSuffix + path.extname(file.originalname));
+      const safeExt = getSafeChatExt(file);
+      cb(null, "chat-" + uniqueSuffix + safeExt);
     },
   });
 }
@@ -736,6 +761,47 @@ const uploadVerificationDocument = multer({
   },
 });
 
+/**
+ * Security: CWE-434 / VULN-07 - Deep Content Inspection (Magic Byte Verification)
+ * Prevents disguised executable / malicious file uploads (e.g. PHP shells, HTML/JS scripts
+ * or malware sent with spoofed 'image/png' Content-Type headers).
+ * Inspects binary file signatures (magic bytes) from buffer/disk and purges rejected files immediately.
+ */
+const validateUploadedMediaSignatures = (req, res, next) => {
+  const chatSecurity = require("../../security/chat");
+  const files = req.files
+    ? (Array.isArray(req.files) ? req.files : Object.values(req.files).flat())
+    : (req.file ? [req.file] : []);
+
+  for (const f of files) {
+    let buffer = null;
+    if (f.buffer && Buffer.isBuffer(f.buffer)) {
+      buffer = f.buffer;
+    } else if (f.path && fs.existsSync(f.path)) {
+      try {
+        const fd = fs.openSync(f.path, 'r');
+        buffer = Buffer.alloc(256);
+        fs.readSync(fd, buffer, 0, 256, 0);
+        fs.closeSync(fd);
+      } catch (e) {
+        buffer = null;
+      }
+    }
+
+    if (buffer) {
+      try {
+        chatSecurity.validateFileMagicBytes(buffer, f.mimetype);
+      } catch (err) {
+        if (f.path && fs.existsSync(f.path)) {
+          try { fs.unlinkSync(f.path); } catch (e) {}
+        }
+        return res.status(err.statusCode || 400).json({ message: err.message });
+      }
+    }
+  }
+  next();
+};
+
 module.exports = {
   upload,
   uploadResume,
@@ -753,4 +819,5 @@ module.exports = {
   uploadSupportAttachment,
   uploadVerificationDocument,
   uploadOrgVerificationDocument: uploadVerificationDocument,
+  validateUploadedMediaSignatures,
 };

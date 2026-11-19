@@ -37,11 +37,13 @@ router.get("/groups/:groupId", requireAuth, groupChatCtrl.getGroupDetails);
 router.get("/groups/:groupId/shared-content", requireAuth, groupChatCtrl.getGroupSharedContent);
 router.delete("/groups/:groupId", requireAuth, groupChatCtrl.deleteGroup);
 router.post("/groups/:groupId/leave", requireAuth, groupChatCtrl.leaveGroup);
-router.post("/groups/:groupId/messages", requireAuth, require("../../core/middlewares/upload.middleware").uploadChatMedia.fields([
+const { uploadChatMedia, validateUploadedMediaSignatures } = require("../../core/middlewares/upload.middleware");
+
+router.post("/groups/:groupId/messages", requireAuth, uploadChatMedia.fields([
     { name: "images", maxCount: 10 },
     { name: "videos", maxCount: 5 },
     { name: "documents", maxCount: 5 }
-]), groupChatCtrl.sendMessage);
+]), validateUploadedMediaSignatures, groupChatCtrl.sendMessage);
 
 // Read Receipts
 router.post("/groups/:groupId/read", requireAuth, groupChatCtrl.markGroupMessagesAsRead);

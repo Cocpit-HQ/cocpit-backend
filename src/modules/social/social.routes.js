@@ -80,11 +80,13 @@ router.patch("/conversations/:conversationId/category", requireAuth, socialContr
 router.patch("/conversations/:conversationId/job-status", requireAuth, socialController.toggleJobChatCategory);
 
 // Messages
-router.post("/messages", requireAuth, require("../../core/middlewares/upload.middleware").uploadChatMedia.array("images", 10), socialController.sendMessage);
+const { uploadChatMedia, validateUploadedMediaSignatures } = require("../../core/middlewares/upload.middleware");
+router.post("/messages", requireAuth, uploadChatMedia.array("images", 10), validateUploadedMediaSignatures, socialController.sendMessage);
 router.get("/conversations/:id/messages", requireAuth, socialController.getMessages);
 router.delete("/messages/:messageId", requireAuth, messageController.deleteMessage);
-
-router.delete("/messages/:id", requireAuth, socialController.deleteMessage);
+// Commented out: Duplicate route shadowed by the route above (/messages/:messageId).
+// messageController.deleteMessage is the active handler providing transaction safety, participant security checks, and R2 media cleanup.
+// router.delete("/messages/:id", requireAuth, socialController.deleteMessage);
 router.patch("/messages/:messageId/edit", requireAuth, socialController.editMessage);
 
 // Reactions

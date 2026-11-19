@@ -1,6 +1,7 @@
 const { stat } = require("node:fs");
 const pool = require("../../core/db/pool");
 const redisClient = require("../../core/db/redis"); // Added for cache invalidation
+const chatSecurity = require("../../security/chat");
 const { connected } = require("node:process");
 const { formatDistanceToNow } = require('date-fns');
 const socketService = require("../../core/infrastructure/socket.service");
@@ -3053,6 +3054,16 @@ exports.getConversations = async (req, res) => {
     }
 
     const { userId, orgId: companyId } = actorScope;
+
+    // CHAT-002: Enforce organization authorization check
+    if (companyId) {
+        try {
+            await chatSecurity.assertOrgMembership(companyId, userId, pool);
+        } catch (authErr) {
+            return res.status(authErr.statusCode || 403).json({ message: authErr.message });
+        }
+    }
+
     const tabParam = req.query.tab
         ? (req.query.tab.toUpperCase() === "JOBS" ? true : req.query.tab.toUpperCase() === "GENERAL" ? false : null)
         : null;
@@ -3586,6 +3597,15 @@ exports.deleteConversation = async (req, res) => {
 
     const { userId, orgId: companyId } = actorScope;
 
+    // VULN-12: Enforce organization authorization check
+    if (companyId) {
+        try {
+            await chatSecurity.assertOrgMembership(companyId, userId, pool);
+        } catch (authErr) {
+            return res.status(authErr.statusCode || 403).json({ message: authErr.message });
+        }
+    }
+
     try {
         const client = await pool.connect();
 
@@ -3666,6 +3686,16 @@ exports.sendMessage = async (req, res) => {
 
     const senderId = actorScope.userId;
     const authorCompanyId = actorScope.orgId;
+
+    // CHAT-001: Prevent organization impersonation via unverified authorCompanyId
+    if (authorCompanyId) {
+        try {
+            await chatSecurity.assertOrgMembership(authorCompanyId, senderId, pool);
+        } catch (authErr) {
+            return res.status(authErr.statusCode || 403).json({ message: authErr.message });
+        }
+    }
+
     const { targetUserId, text_content, shared_post_id, replyMessageId, replied_msg_id, shared_profile_id, shared_profile_type, entity_type, entity_id } = req.body;
     const effectiveReplyMsgId = replied_msg_id || replyMessageId || null;
     const images = req.files; // Array of files from multer
@@ -4515,6 +4545,15 @@ exports.markConversationRead = async (req, res) => {
 
     const { userId, orgId: companyId } = actorScope;
 
+    // VULN-12: Enforce organization authorization check
+    if (companyId) {
+        try {
+            await chatSecurity.assertOrgMembership(companyId, userId, pool);
+        } catch (authErr) {
+            return res.status(authErr.statusCode || 403).json({ message: authErr.message });
+        }
+    }
+
     try {
         const readResult = await markConversationAsRead({ conversationId, userId, companyId });
 
@@ -4543,6 +4582,15 @@ exports.getConversationMuteState = async (req, res) => {
     }
 
     const { userId, orgId: companyId } = actorScope;
+
+    // VULN-12: Enforce organization authorization check
+    if (companyId) {
+        try {
+            await chatSecurity.assertOrgMembership(companyId, userId, pool);
+        } catch (authErr) {
+            return res.status(authErr.statusCode || 403).json({ message: authErr.message });
+        }
+    }
 
     try {
         const muteState = await getConversationMuteState(pool, {
@@ -4609,6 +4657,15 @@ exports.updateConversationMuteState = async (req, res) => {
 
     const { userId, orgId: companyId } = actorScope;
 
+    // VULN-12: Enforce organization authorization check
+    if (companyId) {
+        try {
+            await chatSecurity.assertOrgMembership(companyId, userId, pool);
+        } catch (authErr) {
+            return res.status(authErr.statusCode || 403).json({ message: authErr.message });
+        }
+    }
+
     try {
         const muteState = await persistConversationMuteState(pool, {
             conversationId,
@@ -4656,6 +4713,15 @@ exports.unmuteConversation = async (req, res) => {
     }
 
     const { userId, orgId: companyId } = actorScope;
+
+    // VULN-12: Enforce organization authorization check
+    if (companyId) {
+        try {
+            await chatSecurity.assertOrgMembership(companyId, userId, pool);
+        } catch (authErr) {
+            return res.status(authErr.statusCode || 403).json({ message: authErr.message });
+        }
+    }
 
     try {
         const muteState = await persistConversationMuteState(pool, {
@@ -4708,6 +4774,16 @@ exports.togglePinConversation = async (req, res) => {
     }
 
     const { userId, orgId: companyId } = actorScope;
+
+    // VULN-15: Enforce organization authorization check
+    if (companyId) {
+        try {
+            await chatSecurity.assertOrgMembership(companyId, userId, pool);
+        } catch (authErr) {
+            return res.status(authErr.statusCode || 403).json({ message: authErr.message });
+        }
+    }
+
     const client = await pool.connect();
 
     try {
@@ -4827,6 +4903,16 @@ exports.togglePinMessage = async (req, res) => {
     }
 
     const { userId, orgId: companyId } = actorScope;
+
+    // VULN-15: Enforce organization authorization check
+    if (companyId) {
+        try {
+            await chatSecurity.assertOrgMembership(companyId, userId, pool);
+        } catch (authErr) {
+            return res.status(authErr.statusCode || 403).json({ message: authErr.message });
+        }
+    }
+
     const client = await pool.connect();
 
     try {
@@ -4945,6 +5031,15 @@ exports.getMessageSeenBy = async (req, res) => {
 
     const { userId, orgId: companyId } = actorScope;
 
+    // VULN-12: Enforce organization authorization check
+    if (companyId) {
+        try {
+            await chatSecurity.assertOrgMembership(companyId, userId, pool);
+        } catch (authErr) {
+            return res.status(authErr.statusCode || 403).json({ message: authErr.message });
+        }
+    }
+
     try {
         // Validation: Verify user is part of the conversation this message belongs to
         // (Optional but recommended for security)
@@ -5011,6 +5106,11 @@ exports.getMessages = async (req, res) => {
     try {
         actorScope = getSocialActorScope(req, req.query.companyId || null);
         const { userId, orgId: companyId } = actorScope;
+
+        // CHAT-002: Enforce organization authorization check
+        if (companyId) {
+            await chatSecurity.assertOrgMembership(companyId, userId, pool);
+        }
 
         // Robust UUID check (standard 8-4-4-4-12 hex with hyphens)
         const isUUID = (str) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(str);
@@ -5486,9 +5586,9 @@ exports.getMessages = async (req, res) => {
 
         );
 
-        // Process messages: Filter "delete for me" and mask "delete for everyone"
-        const comments = result.rows
-            .map(msg => {
+        // Process messages: Filter "delete for me", mask "delete for everyone", and presign private media URLs
+        const comments = (await Promise.all(
+            result.rows.map(async msg => {
                 // If deleted for everyone, show generic deleted message
                 if (msg.is_deleted_for_everyone) {
                     return {
@@ -5512,9 +5612,37 @@ exports.getMessages = async (req, res) => {
                     };
                 }
 
-                return msg;
+                let processedMedia = msg.media;
+                if (Array.isArray(msg.media) && msg.media.length > 0) {
+                    processedMedia = await Promise.all(
+                        msg.media.map(async (m) => ({
+                            ...m,
+                            url: await chatSecurity.generatePresignedDownloadUrl(m.url)
+                        }))
+                    );
+                }
+
+                let processedReply = msg.reply_message;
+                if (msg.reply_message && Array.isArray(msg.reply_message.media) && msg.reply_message.media.length > 0) {
+                    const presignedReplyMedia = await Promise.all(
+                        msg.reply_message.media.map(async (rm) => ({
+                            ...rm,
+                            url: await chatSecurity.generatePresignedDownloadUrl(rm.url)
+                        }))
+                    );
+                    processedReply = {
+                        ...msg.reply_message,
+                        media: presignedReplyMedia
+                    };
+                }
+
+                return {
+                    ...msg,
+                    media: processedMedia,
+                    reply_message: processedReply
+                };
             })
-            .reverse();
+        )).reverse();
 
         res.json(comments);
     } catch (err) { // added catch block close logic check 
@@ -7334,8 +7462,11 @@ exports.upsertReaction = async (req, res) => {
 
         const { conversation_id, sender_id, text_content } = msgRes.rows[0];
 
-        // Determine if this is a clear (empty emoji) or a real reaction
-        const emojiValue = (typeof emoji === "string" && emoji.trim() !== "") ? emoji.trim() : "";
+        // VULN-05: Enforce conversation participation check
+        await chatSecurity.assertConversationParticipant(conversation_id, userId, pool);
+
+        // VULN-05: Validate and sanitize emoji input
+        const emojiValue = chatSecurity.sanitizeReactionEmoji(emoji);
 
         if (emojiValue !== "") {
             // Upsert: insert new reaction or update emoji if user already reacted
@@ -7441,6 +7572,9 @@ exports.upsertReaction = async (req, res) => {
             return res.json({ success: true, reaction: clearedReaction });
         }
     } catch (err) {
+        if (err.statusCode) {
+            return res.status(err.statusCode).json({ message: err.message });
+        }
         console.error("Upsert reaction error:", err);
         res.status(500).json({ message: "Internal server error" });
     }

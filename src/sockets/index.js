@@ -9,6 +9,7 @@ const chatHandler = require("./chat.handler");
 const storyHandler = require("./story.handler");
 const postHandler = require("./post.handler");
 const notificationHandler = require("./notification.handler");
+const { isOriginAllowed } = require("../core/security/cors.security");
 
 module.exports.initSocket = async (httpServer) => {
   const allowedOrigins = (process.env.ALLOWED_ORIGINS || "")
@@ -18,16 +19,7 @@ module.exports.initSocket = async (httpServer) => {
   // CORS Configuration
   const corsOptions = {
     origin: function (origin, callback) {
-      if (!origin || 
-          allowedOrigins.includes(origin) ||
-          origin.match(/^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/) ||
-          origin.match(/^http:\/\/192\.168\.\d+\.\d+(:\d+)?$/) ||
-          origin.match(/^https:\/\/.*\.ngrok-free\.(app|dev)$/) ||
-          origin.match(/^https:\/\/.*\.loca\.lt$/) ||
-          origin === "https://frontend.cocpit.in" ||
-          origin === "https://uat.cocpit.in" ||
-          origin === "https://staging.cocpit.in"  
-      ) {
+      if (isOriginAllowed(origin, { allowedOrigins })) {
         callback(null, true);
       } else {
         callback(new Error('Not allowed by CORS'));

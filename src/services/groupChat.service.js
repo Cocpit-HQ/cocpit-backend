@@ -2,6 +2,7 @@ const GroupChatModel = require("../models/groupChat.model");
 const { MAX_GROUP_MEMBERS } = require("../constants/groupChat.constants");
 const socketService = require("../core/infrastructure/socket.service"); // Assuming existing socket service
 const pool = require("../core/db/pool"); // For specific queries if model isn't enough or for transactions
+const chatSecurity = require("../security/chat");
 const { listConversationMuteStates } = require("./conversationMute.service");
 const { sendToUser: sendPush } = require("../modules/notification/notification.service");
 const fs = require("fs");
@@ -819,6 +820,13 @@ class GroupChatService {
         // Try to identify the requesting user's status for UI hints (optional)
         const participant = await GroupChatModel.getParticipant(groupId, userId);
         
+        // VULN-06: Reject unauthorized non-members
+        if (!participant) {
+            const err = new Error("Forbidden: You are not an active member of this group.");
+            err.statusCode = 403;
+            throw err;
+        }
+
         // Always fetch active members with viewer-specific block/deactivation masking
         const members = await GroupChatModel.getGroupMembers(groupId, null, userId) || [];
         
@@ -860,8 +868,13 @@ class GroupChatService {
             [groupId]
         );
         if (convRes.rowCount === 0) {
-            throw new Error("Group not found");
+            const err = new Error("Group not found");
+            err.statusCode = 404;
+            throw err;
         }
+
+        // 2. VULN-11: Enforce active group membership
+        await chatSecurity.assertGroupMember(groupId, userId, pool);
 
         // 2. Fetch Media (images, videos, documents)
         const mediaQuery = `

@@ -1,5 +1,6 @@
 const GroupChatService = require("../../services/groupChat.service");
 const pool = require("../../core/db/pool");
+const chatSecurity = require("../../security/chat");
 
 exports.createGroup = async (req, res) => {
     try {
@@ -222,6 +223,9 @@ exports.getGroupDetails = async (req, res) => {
         if (!details) return res.status(404).json({ message: "Group not found" });
         res.json(details);
     } catch (err) {
+        if (err.statusCode) {
+            return res.status(err.statusCode).json({ message: err.message });
+        }
         res.status(500).json({ message: err.message });
     }
 }
@@ -233,7 +237,10 @@ exports.getGroupSharedContent = async (req, res) => {
         const sharedContent = await GroupChatService.getGroupSharedContent(userId, groupId);
         res.json(sharedContent);
     } catch (err) {
-        if (err.message === "You are not a participant of this group") {
+        if (err.statusCode) {
+            return res.status(err.statusCode).json({ message: err.message });
+        }
+        if (err.message === "You are not a participant of this group" || err.message.includes("not an active member")) {
             return res.status(403).json({ message: err.message });
         }
         res.status(500).json({ message: err.message });
@@ -428,6 +435,9 @@ exports.acceptChatRequest = async (req, res) => {
             return res.status(400).json({ message: "conversationId is required" });
         }
 
+        // Enforce authorization: only recipient participant can accept (VULN-10)
+        await chatSecurity.assertChatRequestRecipient(conversationId, userId, pool);
+
         const result = await pool.query(
             `UPDATE conversations
              SET is_requesting = FALSE, updated_at = now()
@@ -442,6 +452,9 @@ exports.acceptChatRequest = async (req, res) => {
 
         return res.status(200).json({ success: true, message: "Chat request accepted", data: result.rows[0] });
     } catch (err) {
+        if (err.statusCode) {
+            return res.status(err.statusCode).json({ message: err.message });
+        }
         console.error("Accept Chat Request Error:", err);
         res.status(500).json({ message: "Internal server error" });
     }
@@ -455,6 +468,9 @@ exports.declineChatRequest = async (req, res) => {
         if (!conversationId) {
             return res.status(400).json({ message: "conversationId is required" });
         }
+
+        // Enforce authorization: only recipient participant can decline (VULN-10)
+        await chatSecurity.assertChatRequestRecipient(conversationId, userId, pool);
 
         // Soft-delete for the declining participant so conversation is deleted from receiver's side
         await pool.query(
@@ -478,6 +494,9 @@ exports.declineChatRequest = async (req, res) => {
 
         return res.status(200).json({ success: true, message: "Chat request declined", data: result.rows[0] });
     } catch (err) {
+        if (err.statusCode) {
+            return res.status(err.statusCode).json({ message: err.message });
+        }
         console.error("Decline Chat Request Error:", err);
         res.status(500).json({ message: "Internal server error" });
     }

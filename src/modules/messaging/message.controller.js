@@ -2,6 +2,7 @@ const pool = require("../../core/db/pool");
 const socketService = require("../../core/infrastructure/socket.service");
 const GroupChatService = require("../../services/groupChat.service"); // If logic is shared or similar
 const { deleteR2Assets } = require("../../core/infrastructure/r2.client");
+const chatSecurity = require("../../security/chat");
 
 exports.deleteMessage = async (req, res) => {
     const { messageId } = req.params;
@@ -33,8 +34,13 @@ exports.deleteMessage = async (req, res) => {
                 return res.status(403).json({ message: "You can only delete your own messages for everyone" });
             }
 
-            // Ideally check if user is participant of conversation (though accessing message implies it usually)
-            // But let's skip for brevity or enhance security later if needed.
+            // VULN-04: Enforce active conversation participant check for all deletions
+            try {
+                await chatSecurity.assertConversationParticipant(message.conversation_id, userId, client);
+            } catch (authErr) {
+                await client.query("ROLLBACK");
+                return res.status(authErr.statusCode || 403).json({ message: authErr.message });
+            }
 
             let deletedMediaUrls = [];
             if (deleteForEveryone) {
