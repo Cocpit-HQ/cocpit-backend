@@ -456,9 +456,17 @@ exports.declineChatRequest = async (req, res) => {
             return res.status(400).json({ message: "conversationId is required" });
         }
 
+        // Soft-delete for the declining participant so conversation is deleted from receiver's side
+        await pool.query(
+            `UPDATE conversation_participants
+             SET deleted_at = now()
+             WHERE conversation_id = $1 AND user_id = $2`,
+            [conversationId, userId]
+        );
+
         const result = await pool.query(
             `UPDATE conversations
-             SET is_active = FALSE, updated_at = now()
+             SET updated_at = now()
              WHERE conversation_id = $1
              RETURNING *`,
             [conversationId]
@@ -497,7 +505,25 @@ exports.searchUsersForMessaging = async (req, res) => {
         const userId = req.user.sub || req.user.user_id;
         const isOrgActor = req.actor?.type === "ORGANIZATION";
         const actorId = isOrgActor && req.actor?.orgId ? req.actor.orgId : userId;
-        const { q, cursor, limit: limitParam } = req.query;
+        const { q, cursor, limit: limitParam, type } = req.query;
+
+        // When searching specifically for personal 1-on-1 chat, exclude users where a request is pending or declined within 24h
+        const personalFilter = type === 'personal'
+            ? `AND NOT EXISTS (
+                SELECT 1 FROM conversations c
+                JOIN conversation_participants cp1 ON c.conversation_id = cp1.conversation_id AND cp1.user_id = $1
+                JOIN conversation_participants cp2 ON c.conversation_id = cp2.conversation_id AND cp2.user_id = u.user_id
+                WHERE c.is_group = FALSE AND c.is_active = TRUE AND c.is_requesting = TRUE
+                  AND (
+                      cp2.deleted_at IS NOT NULL
+                      OR EXISTS (
+                          SELECT 1 FROM messages m
+                          WHERE m.conversation_id = c.conversation_id AND m.sender_id = $1
+                            AND m.created_at > NOW() - INTERVAL '24 hours'
+                      )
+                  )
+            )`
+            : "";
 
         // --- Input sanitization ---
         const searchTerm = (typeof q === "string" && q.trim().length > 0)
@@ -591,6 +617,7 @@ exports.searchUsersForMessaging = async (req, res) => {
                            OR (b.blocker_id = $2 AND b.blocked_id = u.user_id)
                            OR (b.blocker_id = u.user_id AND b.blocked_id = $2)
                     )
+                    ${personalFilter}
                 ) AS unsorted_results
                 ORDER BY user_id, priority ASC
             ) AS deduped_results

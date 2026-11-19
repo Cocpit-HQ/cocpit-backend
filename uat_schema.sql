@@ -518,3 +518,7 @@ CREATE INDEX IF NOT EXISTS idx_conversations_pinned_message
     ON conversations (pinned_message_id)
     WHERE pinned_message_id IS NOT NULL;
 
+-- 33. Support independent clear-chat timestamp (SCRUM-1851)
+ALTER TABLE conversation_participants
+    ADD COLUMN IF NOT EXISTS cleared_at TIMESTAMPTZ DEFAULT NULL;
+

@@ -3068,6 +3068,7 @@ SELECT
         ORDER BY m_first.created_at ASC LIMIT 1
     )) as created_by,
     CASE WHEN $2::uuid IS NOT NULL OR cp_other.org_id IS NOT NULL THEN false ELSE c.is_requesting END as is_requesting,
+    CASE WHEN c.is_requesting = TRUE AND cp_other.deleted_at IS NOT NULL THEN true ELSE false END as is_declined,
     c.is_job_chat AS "isJobChat",
     (
         SELECT m_req.created_at FROM messages m_req 
@@ -3215,7 +3216,8 @@ SELECT
     COALESCE(
         m.text_content, 
         CASE 
-            WHEN cp.left_at IS NOT NULL THEN 'You left the group' 
+            WHEN cp.left_at IS NOT NULL THEN 'You left the group'
+            WHEN cp.cleared_at IS NOT NULL AND (c.last_message_at IS NULL OR c.last_message_at <= cp.cleared_at) THEN ''
             ELSE c.last_message 
         END
     ) AS last_message_text,
@@ -3223,6 +3225,7 @@ SELECT
         m.created_at, 
         CASE 
             WHEN cp.left_at IS NOT NULL THEN cp.left_at 
+            WHEN cp.cleared_at IS NOT NULL AND (c.last_message_at IS NULL OR c.last_message_at <= cp.cleared_at) THEN cp.cleared_at
             ELSE c.last_message_at 
         END, 
         c.updated_at
@@ -3237,6 +3240,7 @@ FROM conversations c
 JOIN (
     SELECT conversation_id, user_id, org_id,
            MAX(cp_main.deleted_at) as deleted_at,
+           MAX(cp_main.cleared_at) as cleared_at,
            EXISTS(SELECT 1 FROM conversation_participants cp_a 
                   WHERE cp_a.conversation_id = cp_main.conversation_id 
                   AND (
@@ -3338,7 +3342,7 @@ JOIN (
 ) cp ON c.conversation_id = cp.conversation_id
 -- For 1-on-1, join the other participant (LATERAL + LIMIT 1 prevents fan-out duplicates).
 LEFT JOIN LATERAL (
-    SELECT cp_o.user_id, cp_o.org_id
+    SELECT cp_o.user_id, cp_o.org_id, cp_o.deleted_at
     FROM conversation_participants cp_o
     WHERE cp_o.conversation_id = c.conversation_id
       AND c.is_group = FALSE
@@ -3409,6 +3413,7 @@ LEFT JOIN LATERAL (
     AND msg.created_at >= cp_msg.joined_at
     AND (cp_msg.left_at IS NULL OR msg.created_at <= cp_msg.left_at)
     AND (cp_msg.deleted_at IS NULL OR msg.created_at > cp_msg.deleted_at)
+    AND (cp_msg.cleared_at IS NULL OR msg.created_at > cp_msg.cleared_at)
     -- Exclude messages deleted for me (User only currently)
     AND NOT EXISTS (
         SELECT 1 FROM message_delete md 
@@ -3570,6 +3575,7 @@ WHERE gi.invitee_id = $1
 
 exports.deleteConversation = async (req, res) => {
     const conversationId = req.params.id;
+    const action = req.query.action || req.body?.action || 'delete';
     let actorScope;
 
     try {
@@ -3612,9 +3618,11 @@ exports.deleteConversation = async (req, res) => {
                 return res.status(400).json({ message: "Cannot delete a group conversation. Use leave group instead." });
             }
 
+            const isClearOnly = action === 'clear';
             const deleteResult = await client.query(
                 `UPDATE conversation_participants
-                 SET deleted_at = NOW()
+                 SET cleared_at = NOW(),
+                     deleted_at = CASE WHEN $4::boolean = TRUE THEN deleted_at ELSE NOW() END
                  WHERE conversation_id = $1
                    AND (
                        ($3::uuid IS NOT NULL AND org_id = $3)
@@ -3622,7 +3630,7 @@ exports.deleteConversation = async (req, res) => {
                        ($3::uuid IS NULL AND user_id = $2)
                    )
                  RETURNING participant_id`,
-                [conversationId, userId, companyId]
+                [conversationId, userId, companyId, isClearOnly]
             );
 
             if (deleteResult.rowCount === 0) {
@@ -3631,7 +3639,10 @@ exports.deleteConversation = async (req, res) => {
             }
 
             await client.query("COMMIT");
-            res.status(200).json({ message: "Conversation deleted successfully", conversationId });
+            res.status(200).json({ 
+                message: isClearOnly ? "Chat cleared successfully" : "Conversation deleted successfully", 
+                conversationId 
+            });
         } catch (err) {
             await client.query("ROLLBACK");
             throw err;
@@ -4183,6 +4194,8 @@ exports.sendMessage = async (req, res) => {
 
             const messageData = {
                 ...newMessage,
+                conversation_id: conversationId,
+                is_requesting: convIsRequesting,
                 replied_msg_id: effectiveReplyMsgId,
                 reply_message: replyMessageData,
                 media: mediaRecords,
@@ -4446,11 +4459,12 @@ exports.sendMessage = async (req, res) => {
                     socketService.notifyUserScoped(targetUserId, "notification", {
                         type: customNotifType,
                         isJobChat: finalIsJobChat,
+                        is_requesting: convIsRequesting,
                         from: senderId,
                         senderName,
                         senderAvatar,
                         conversationId,
-                        title: customPushTitle,
+                        title: convIsRequesting ? `New chat request from ${senderName}` : customPushTitle,
                         text: customPushBody,
                         targetProfileType: 'USER'
                     }, targetActorScope);
@@ -5458,8 +5472,11 @@ exports.getMessages = async (req, res) => {
                     OR
                     ($6::uuid IS NULL AND cp_del.user_id = $4)
                 )
-                AND cp_del.deleted_at IS NOT NULL
-                AND m.created_at <= cp_del.deleted_at
+                AND (
+                    (cp_del.deleted_at IS NOT NULL AND m.created_at <= cp_del.deleted_at)
+                    OR
+                    (cp_del.cleared_at IS NOT NULL AND m.created_at <= cp_del.cleared_at)
+                )
              )
              -- Pagination: Fetch messages older than 'before' cursor
              AND ($3::timestamp IS NULL OR m.created_at < $3::timestamp)
