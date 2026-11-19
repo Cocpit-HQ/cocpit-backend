@@ -135,6 +135,21 @@ describe('Hashtag Search Regression Tests: Multi-mode sorting and Recently Added
       expect(sql).toContain('(p.is_deleted IS FALSE OR p.is_deleted IS NULL)');
       expect(sql).toContain('(p.is_unlisted IS FALSE OR p.is_unlisted IS NULL)');
       expect(sql).toContain("(p.status IS NULL OR p.status = 'published')");
+      expect(sql).toContain("NOT (p.post_type = 'article' AND p.author_org_id IS NOT NULL)");
+      expect(sql).toContain('p.is_community_article IS NOT TRUE');
+      expect(sql).toContain('JOIN active_users u ON u.user_id = p.author_id');
+    });
+
+    test('applies organization block filtering in posts_count when orgActorId is provided', async () => {
+      mockClient.query.mockResolvedValueOnce({ rows: [] });
+
+      await searchHashtags(mockClient, {
+        searchTerm: 'tech',
+        orgActorId: '11111111-2222-3333-4444-555555555555',
+      });
+
+      const [sql] = mockClient.query.mock.calls[0];
+      expect(sql).toContain("b.is_org_block = true AND b.blocker_id = '11111111-2222-3333-4444-555555555555'");
     });
 
     test('accurately formats posts_display as "0 posts" when posts_count is 0 even if usage_count is 1', async () => {

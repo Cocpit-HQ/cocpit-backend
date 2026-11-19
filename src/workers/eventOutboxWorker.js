@@ -38,7 +38,7 @@ const processEventOutbox = async () => {
                         payload = JSON.parse(payload);
                     }
 
-                    if (event.topic === 'POST_CREATED' || event.topic === 'POST_UPDATED') {
+                    if (event.topic === 'POST_CREATED' || event.topic === 'POST_UPDATED' || event.topic === 'POST_DELETED') {
                         await processHashtags(client, event.topic, payload.post_id);
                     }
 
@@ -94,11 +94,19 @@ const recalculateHashtagCounts = async (client, hashtagIds) => {
         FROM (
             SELECT 
                 h2.hashtag_id, 
-                COUNT(ph.post_id) as cnt, 
+                COUNT(DISTINCT p.post_id) as cnt, 
                 MAX(p.created_at) as last_at
             FROM hashtags h2
             LEFT JOIN post_hashtags ph ON ph.hashtag_id = h2.hashtag_id
-            LEFT JOIN posts p ON p.post_id = ph.post_id AND p.is_removed IS NOT TRUE
+            LEFT JOIN posts p ON p.post_id = ph.post_id 
+                AND p.is_active = TRUE
+                AND (p.is_removed IS FALSE OR p.is_removed IS NULL)
+                AND (p.is_deleted IS FALSE OR p.is_deleted IS NULL)
+                AND (p.is_unlisted IS FALSE OR p.is_unlisted IS NULL)
+                AND p.visibility = 'public'
+                AND (p.is_broadcast IS FALSE OR p.is_broadcast IS NULL)
+                AND NOT (p.post_type = 'article' AND p.author_org_id IS NOT NULL)
+                AND p.is_community_article IS NOT TRUE
             WHERE h2.hashtag_id = ANY($1)
             GROUP BY h2.hashtag_id
         ) sub
@@ -140,6 +148,21 @@ const syncTrendingScores = async (client, hashtagIds) => {
 const processHashtags = async (client, topic, postId) => {
     if (!postId) {
         console.warn("[EventOutboxWorker] Skipping: No postId provided.");
+        return;
+    }
+
+    if (topic === 'POST_DELETED') {
+        const affectedHashtagIds = new Set();
+        const oldLinks = await client.query(
+            `SELECT hashtag_id FROM post_hashtags WHERE post_id = $1`, [postId]
+        );
+        oldLinks.rows.forEach(r => affectedHashtagIds.add(r.hashtag_id));
+        await client.query(`DELETE FROM post_hashtags WHERE post_id = $1`, [postId]);
+        if (affectedHashtagIds.size > 0) {
+            const ids = Array.from(affectedHashtagIds);
+            await recalculateHashtagCounts(client, ids);
+            await syncTrendingScores(client, ids);
+        }
         return;
     }
 

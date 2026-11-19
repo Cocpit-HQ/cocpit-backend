@@ -1911,15 +1911,40 @@ exports.getMyRecentResumes = async (req, res) => {
         LIMIT 2
       `, [applicantId]);
 
-      const resumes = result.rows.map(row => ({
-        id: row.id,
-        name: row.resume_file_name || 'Resume.pdf',
-        url: row.resume_url,
-        last_applied: row.last_used_at
-      }));
-      return res.json(resumes);
+      if (result.rows.length > 0) {
+        const resumes = result.rows.map(row => ({
+          id: row.id,
+          name: row.resume_file_name || 'Resume.pdf',
+          url: row.resume_url,
+          last_applied: row.last_used_at
+        }));
+        return res.json(resumes);
+      }
     } catch (tblErr) {
-      console.warn("user_resume_history query skipped, falling back to job_applications:", tblErr.message);
+      console.warn("user_resume_history query skipped, falling back to profile/job_applications:", tblErr.message);
+    }
+
+    // 2. Profile resume lookup (user_resumes)
+    try {
+      const profileResult = await pool.query(`
+        SELECT resume_id, file_name, file_url, uploaded_at
+        FROM user_resumes
+        WHERE user_id = $1
+        ORDER BY uploaded_at DESC
+        LIMIT 1
+      `, [applicantId]);
+
+      if (profileResult.rows.length > 0) {
+        const row = profileResult.rows[0];
+        return res.json([{
+          id: row.resume_id,
+          name: row.file_name || 'Resume.pdf',
+          url: row.file_url,
+          last_applied: row.uploaded_at
+        }]);
+      }
+    } catch (profErr) {
+      console.warn("user_resumes query skipped:", profErr.message);
     }
 
     // 2. Fallback: query past job_applications
@@ -2688,25 +2713,32 @@ exports.getJobRoles = async (req, res) => {
   try {
     const { q, cursor, limit = 50 } = req.query;
     const pageSize = Math.min(Math.max(parseInt(limit) || 50, 1), 100);
-    let query = `SELECT MIN(role_name) AS role_name, MIN(category) AS category FROM job_roles_master`;
+
+    let query = `
+      WITH all_roles AS (
+        SELECT DISTINCT TRIM(role_name) AS role_name
+        FROM job_roles_master
+        WHERE role_name IS NOT NULL AND TRIM(role_name) != ''
+        UNION
+        SELECT DISTINCT TRIM(title) AS role_name
+        FROM experiences
+        WHERE title IS NOT NULL AND TRIM(title) != ''
+      )
+      SELECT role_name
+      FROM all_roles
+      WHERE role_name IS NOT NULL AND role_name != ''
+    `;
     let values = [];
-    let conditions = [];
 
     if (q) {
       values.push(`%${q.trim()}%`);
-      conditions.push(`role_name ILIKE $${values.length}`);
+      query += ` AND role_name ILIKE $${values.length}`;
     }
 
     if (cursor) {
       values.push(cursor.trim());
-      conditions.push(`role_name > $${values.length}`);
+      query += ` AND role_name > $${values.length}`;
     }
-
-    if (conditions.length > 0) {
-      query += ` WHERE ` + conditions.join(` AND `);
-    }
-
-    query += ` GROUP BY LOWER(TRIM(role_name))`;
 
     values.push(pageSize + 1);
     query += ` ORDER BY role_name ASC LIMIT $${values.length}`;

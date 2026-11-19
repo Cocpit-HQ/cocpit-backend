@@ -44,37 +44,47 @@ exports.getHashtagPosts = async (req, res) => {
 
     try {
         const actorScope = getContentActorScope(req, requestedCompanyId || null);
+        const isOrgActor = Boolean(actorScope.orgId);
+
+        // 1. Get Tag Metadata (exact visible post count matching the feed)
+        const countParams = isOrgActor 
+            ? [actorScope.userId || null, actorScope.orgId, lowerTag]
+            : [actorScope.userId || null, lowerTag];
+        const countTagParamIdx = isOrgActor ? 3 : 2;
+        const countCompanyParamIdx = isOrgActor ? 2 : null;
+
+        const tagCountQuery = `
+            SELECT 
+                COALESCE(MAX(h.tag), $${countTagParamIdx}) as tag,
+                COUNT(DISTINCT p.post_id)::int as usage_count
+            ${getPostHydrationJoins()}
+            JOIN post_hashtags ph ON ph.post_id = p.post_id
+            JOIN hashtags h ON h.hashtag_id = ph.hashtag_id
+            ${getPublicFeedWhere(1, countCompanyParamIdx)}
+            AND lower(h.tag) = $${countTagParamIdx}
+        `;
+        const tagRes = await pool.query(tagCountQuery, countParams);
+        const tagMetadata = tagRes.rows[0] || { tag: lowerTag, usage_count: 0 };
+
+        // 2. Hydrate Feed
         const userParamIdx = 1;
         const companyParamIdx = 2;
         const tagParamIdx = 3;
 
-        // 1. Get Tag Metadata (real post count from post_hashtags)
-        const tagRes = await pool.query(
-            `SELECT h.tag, COUNT(ph.post_id)::int as usage_count
-             FROM hashtags h
-             LEFT JOIN post_hashtags ph ON ph.hashtag_id = h.hashtag_id
-             LEFT JOIN posts p ON p.post_id = ph.post_id
-             WHERE lower(h.tag) = $1
-             GROUP BY h.hashtag_id, h.tag`,
-            [lowerTag]
-        );
-        const tagMetadata = tagRes.rows[0] || { tag: lowerTag, usage_count: 0 };
-
-        // 2. Hydrate Feed
         const query = `
             SELECT
                 ${getPostHydrationSelect(companyParamIdx, userParamIdx)}
             ${getPostHydrationJoins()}
             JOIN post_hashtags ph ON ph.post_id = p.post_id
             JOIN hashtags h ON h.hashtag_id = ph.hashtag_id
-            ${getPublicFeedWhere(userParamIdx)}
-            AND h.tag = $${tagParamIdx}
+            ${getPublicFeedWhere(userParamIdx, isOrgActor ? companyParamIdx : null)}
+            AND lower(h.tag) = $${tagParamIdx}
             ${cursorPostId ? `AND p.created_at < (SELECT created_at FROM posts WHERE post_id = $4)` : ''}
             ORDER BY p.created_at DESC, p.post_id DESC
             LIMIT $${cursorPostId ? 5 : 4}
         `;
 
-        const params = [actorScope.userId, actorScope.orgId || null, lowerTag];
+        const params = [actorScope.userId || null, actorScope.orgId || null, lowerTag];
         if (cursorPostId) {
             params.push(cursorPostId);
             params.push(parseInt(limit, 10));

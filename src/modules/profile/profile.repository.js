@@ -250,6 +250,12 @@ const addExperience = async (profileId, data) => {
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *`,
         [profileId, title, company_name, location ?? null, work_type ?? null, work_mode ?? null, start_date, end_date ?? null, is_current ?? false, description ?? null, org_id ?? null]
     );
+    if (title && title.trim()) {
+        pool.query(
+            `INSERT INTO job_roles_master (role_name, category) VALUES ($1, 'Experience') ON CONFLICT (role_name) DO NOTHING`,
+            [title.trim()]
+        ).catch(() => {});
+    }
     return result.rows[0];
 };
 
@@ -332,6 +338,12 @@ const addExperienceInTx = async (client, profileId, data) => {
         [profileId, title, company_name, location ?? null, work_type ?? null, work_mode ?? null,
          start_date, end_date ?? null, is_current ?? false, description ?? null, org_id ?? null]
     );
+    if (title && title.trim()) {
+        client.query(
+            `INSERT INTO job_roles_master (role_name, category) VALUES ($1, 'Experience') ON CONFLICT (role_name) DO NOTHING`,
+            [title.trim()]
+        ).catch(() => {});
+    }
     return result.rows[0];
 };
 

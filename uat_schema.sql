@@ -410,6 +410,88 @@ ALTER TABLE user_verifications
 ALTER TABLE organization_documents
     ADD COLUMN IF NOT EXISTS status VARCHAR(50) DEFAULT 'PENDING';
 
+-- 32. Organization Sector Field & Index (v1.10.0 / PR #571)
+ALTER TABLE organizations
+    ADD COLUMN IF NOT EXISTS sector VARCHAR(100) DEFAULT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_organizations_sector
+    ON organizations (sector) WHERE sector IS NOT NULL;
+
+-- 33. Trigram indexes on organizations headline and description (v1.10.0 / PR #571)
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+
+CREATE INDEX IF NOT EXISTS idx_organizations_headline_trgm 
+    ON organizations USING GIN (headline gin_trgm_ops) 
+    WHERE headline IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_organizations_description_trgm 
+    ON organizations USING GIN (description gin_trgm_ops) 
+    WHERE description IS NOT NULL;
+
+-- 34. Purge Industry Subtypes Hierarchy & Dependent View Recreation (v1.10.0 / PR #571)
+DROP INDEX IF EXISTS idx_industries_master_parent_id;
+
+ALTER TABLE industries_master
+    DROP COLUMN IF EXISTS parent_id CASCADE,
+    DROP COLUMN IF EXISTS display_order CASCADE;
+
+DROP INDEX IF EXISTS idx_organizations_industry_sub_type_id;
+
+ALTER TABLE organizations
+    DROP COLUMN IF EXISTS industry_sub_type_id CASCADE;
+
+CREATE OR REPLACE VIEW active_organizations AS 
+SELECT * FROM organizations 
+WHERE (is_deleted IS FALSE OR is_deleted IS NULL) 
+  AND (is_suspended IS FALSE OR is_suspended IS NULL) 
+  AND (is_deactivated IS FALSE OR is_deactivated IS NULL);
+
+CREATE OR REPLACE VIEW organization_display_profiles AS
+SELECT 
+    org_id,
+    CASE 
+        WHEN deletion_execute_at IS NULL AND is_deleted = FALSE AND is_deactivated = FALSE THEN name 
+        ELSE 'Deleted Page' 
+    END AS name,
+    CASE 
+        WHEN deletion_execute_at IS NULL AND is_deleted = FALSE AND is_deactivated = FALSE THEN slug 
+        ELSE 'deleted_page' 
+    END AS slug,
+    CASE 
+        WHEN deletion_execute_at IS NULL AND is_deleted = FALSE AND is_deactivated = FALSE THEN logo_url 
+        ELSE NULL 
+    END AS logo_url,
+    CASE 
+        WHEN deletion_execute_at IS NULL AND is_deleted = FALSE AND is_deactivated = FALSE THEN headline 
+        ELSE 'This page has been deactivated' 
+    END AS headline,
+    entity_type
+FROM organizations;
+
+CREATE OR REPLACE VIEW active_post_likes AS
+SELECT pl.* 
+FROM post_likes pl
+LEFT JOIN active_users au ON au.user_id = pl.user_id
+LEFT JOIN active_organizations ao ON ao.org_id = pl.org_id
+WHERE (pl.org_id IS NULL AND au.user_id IS NOT NULL)
+   OR (pl.org_id IS NOT NULL AND ao.org_id IS NOT NULL);
+
+CREATE OR REPLACE VIEW active_post_comments AS
+SELECT pc.*
+FROM post_comments pc
+LEFT JOIN active_users au ON au.user_id = pc.author_id
+LEFT JOIN active_organizations ao ON ao.org_id = pc.author_org_id
+WHERE (pc.author_org_id IS NULL AND au.user_id IS NOT NULL)
+   OR (pc.author_org_id IS NOT NULL AND ao.org_id IS NOT NULL);
+
+CREATE OR REPLACE VIEW active_comment_likes AS
+SELECT cl.*
+FROM comment_likes cl
+LEFT JOIN active_users au ON au.user_id = cl.user_id
+LEFT JOIN active_organizations ao ON ao.org_id = cl.org_id
+WHERE (cl.org_id IS NULL AND au.user_id IS NOT NULL)
+   OR (cl.org_id IS NOT NULL AND ao.org_id IS NOT NULL);
+
 
 -- 31. Server-Backed Cross-Platform Conversation Pinning
 ALTER TABLE conversation_participants

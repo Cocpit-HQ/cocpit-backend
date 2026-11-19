@@ -113,7 +113,7 @@ async function getApplicantList(jobId, filters = {}) {
 
 // ─── getApplicationDetail ─────────────────────────────────────────────────────
 // Full profile for the right-hand detail panel.
-// selfNote is scoped to the requesting recruiter (author_id = recruiterId).
+// selfNote returns the latest team note for this application across all authorized recruiters.
 async function getApplicationDetail(applicationId, recruiterId) {
   const result = await pool.query(`
     SELECT
@@ -179,10 +179,16 @@ async function getApplicationDetail(applicationId, recruiterId) {
       an.body AS "selfNote"
     FROM job_applications ja
     LEFT JOIN active_users u       ON ja.applicant_id   = u.user_id
-    LEFT JOIN application_notes an ON an.application_id = ja.application_id
-                                  AND an.author_id      = $2
+    LEFT JOIN LATERAL (
+      SELECT body
+      FROM application_notes
+      WHERE application_id = ja.application_id
+        AND TRIM(body) != ''
+      ORDER BY updated_at DESC
+      LIMIT 1
+    ) an ON TRUE
     WHERE ja.application_id = $1
-  `, [applicationId, recruiterId]);
+  `, [applicationId]);
 
   return result.rows[0] || null;
 }
@@ -213,13 +219,36 @@ async function getLatestAnalysis(applicationId) {
 }
 
 // ─── upsertNote ───────────────────────────────────────────────────────────────
-// Creates or updates the recruiter's self-note (one per recruiter per application).
+// Creates or updates the shared team note on an application.
 async function upsertNote(applicationId, authorId, body) {
+  const existing = await pool.query(
+    `SELECT note_id FROM application_notes WHERE application_id = $1 ORDER BY updated_at DESC LIMIT 1`,
+    [applicationId]
+  );
+
+  if (existing.rowCount > 0) {
+    const noteId = existing.rows[0].note_id;
+    // Clean up any legacy duplicate notes for this application to keep 1 unified note
+    await pool.query(
+      `DELETE FROM application_notes WHERE application_id = $1 AND note_id != $2`,
+      [applicationId, noteId]
+    );
+    const result = await pool.query(`
+      UPDATE application_notes
+      SET body = $1, author_id = $2, updated_at = now()
+      WHERE note_id = $3
+      RETURNING
+        note_id    AS "noteId",
+        body,
+        updated_at AS "updatedAt"
+    `, [body, authorId, noteId]);
+
+    return result.rows[0];
+  }
+
   const result = await pool.query(`
     INSERT INTO application_notes (application_id, author_id, body)
     VALUES ($1, $2, $3)
-    ON CONFLICT (application_id, author_id)
-    DO UPDATE SET body = EXCLUDED.body, updated_at = now()
     RETURNING
       note_id    AS "noteId",
       body,

@@ -448,13 +448,21 @@ const normalizeAccountType = (type) => {
 
 // Helper: Resolves a dropdown value — accepts both numeric ID and string label
 // If numeric ID is received, looks up the label from PROFILE_DROPDOWN_OPTIONS
-// If string label is received, returns it as-is (backward compatible)
+// If string label is received, matches canonical label (case/punctuation-insensitive) or returns as-is
 const resolveDropdownValue = (field, value) => {
     if (value === null || value === undefined || value === "") return null;
     const numId = Number(value);
     if (!isNaN(numId) && PROFILE_DROPDOWN_OPTIONS[field]) {
         const option = PROFILE_DROPDOWN_OPTIONS[field].find(o => o.id === numId);
         return option ? option.label : null;
+    }
+    // Also resolve case-insensitively and hyphen/space-insensitively against allowed options
+    if (PROFILE_DROPDOWN_OPTIONS[field]) {
+        const strVal = String(value).trim().toLowerCase().replace(/[-_ ]+/g, '');
+        const matched = PROFILE_DROPDOWN_OPTIONS[field].find(
+            o => o.label.toLowerCase().replace(/[-_ ]+/g, '') === strVal
+        );
+        if (matched) return matched.label;
     }
     return String(value);
 };
