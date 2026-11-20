@@ -66,6 +66,9 @@ async function checkDbConnection() {
         ALTER TABLE users ADD COLUMN IF NOT EXISTS dob DATE;
         ALTER TABLE users DROP CONSTRAINT IF EXISTS mobile_format;
         ALTER TABLE users ADD CONSTRAINT mobile_format CHECK (mobile_number IS NULL OR mobile_number ~ '^[0-9]{7,15}$');
+        ALTER TABLE jobs ADD COLUMN IF NOT EXISTS closed_at TIMESTAMPTZ;
+        CREATE INDEX IF NOT EXISTS idx_jobs_org_closed ON jobs(org_id, closed_at DESC) WHERE status = 'CLOSED';
+        CREATE INDEX IF NOT EXISTS idx_jobs_recruiter_closed ON jobs(recruiter_id, closed_at DESC) WHERE status = 'CLOSED';
         CREATE OR REPLACE VIEW active_users AS 
         SELECT * FROM users 
         WHERE (is_deleted IS FALSE OR is_deleted IS NULL) 
@@ -109,6 +112,7 @@ async function checkDbConnection() {
 
         INSERT INTO feature_flags (flag_key, is_enabled)
         VALUES 
+          ('saved_jobs', TRUE),
           ('enableTeamsModule', TRUE),
           ('enableTeams', TRUE),
           ('teams', TRUE),

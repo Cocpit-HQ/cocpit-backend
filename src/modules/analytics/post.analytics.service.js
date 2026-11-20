@@ -139,23 +139,26 @@ const getPostAnalyticsData = async (postId, userId, { filter, startDate, endDate
 
     // Calculate Averages for vsAvg
     // Get total posts by user
-    const totalPostsRes = await pool.query(`SELECT COUNT(1) as count FROM posts WHERE author_id = $1`, [userId]);
+    const totalPostsRes = await pool.query(`
+        SELECT COUNT(1) as count FROM posts 
+        WHERE author_id = $1 AND is_active = TRUE AND (is_deleted IS FALSE OR is_deleted IS NULL) AND (is_removed IS FALSE OR is_removed IS NULL)
+    `, [userId]);
     const totalPosts = Math.max(parseInt(totalPostsRes.rows[0].count, 10), 1); // Avoid div by zero
 
     // Average profile visits from all posts
     const allVisitsRes = await getDirectImpactCount(`
         SELECT COUNT(1) as count FROM profile_views pv 
         JOIN posts p ON p.post_id = pv.source_post_id 
-        WHERE p.author_id = $1 AND pv.view_date >= DATE($2) AND pv.view_date <= DATE($3)
+        WHERE p.author_id = $1 AND p.is_active = TRUE AND (p.is_deleted IS FALSE OR p.is_deleted IS NULL) AND (p.is_removed IS FALSE OR p.is_removed IS NULL) AND pv.view_date >= DATE($2) AND pv.view_date <= DATE($3)
     `, [userId, start, end]);
     const avgVisits = allVisitsRes / totalPosts;
 
     const allFollowersRes = await getDirectImpactCount(`
         SELECT (
-            (SELECT COUNT(1) FROM followers f JOIN posts p ON p.post_id = f.source_post_id WHERE p.author_id = $1 AND f.created_at >= $2 AND f.created_at <= $3) +
-            (SELECT COUNT(1) FROM organization_followers ofol JOIN posts p ON p.post_id = ofol.source_post_id WHERE p.author_id = $1 AND ofol.created_at >= $2 AND ofol.created_at <= $3) +
-            (SELECT COUNT(1) FROM organization_user_follows ouf JOIN posts p ON p.post_id = ouf.source_post_id WHERE p.author_id = $1 AND ouf.created_at >= $2 AND ouf.created_at <= $3) +
-            (SELECT COUNT(1) FROM organization_org_follows oof JOIN posts p ON p.post_id = oof.source_post_id WHERE p.author_id = $1 AND oof.created_at >= $2 AND oof.created_at <= $3)
+            (SELECT COUNT(1) FROM followers f JOIN posts p ON p.post_id = f.source_post_id WHERE p.author_id = $1 AND p.is_active = TRUE AND (p.is_deleted IS FALSE OR p.is_deleted IS NULL) AND (p.is_removed IS FALSE OR p.is_removed IS NULL) AND f.created_at >= $2 AND f.created_at <= $3) +
+            (SELECT COUNT(1) FROM organization_followers ofol JOIN posts p ON p.post_id = ofol.source_post_id WHERE p.author_id = $1 AND p.is_active = TRUE AND (p.is_deleted IS FALSE OR p.is_deleted IS NULL) AND (p.is_removed IS FALSE OR p.is_removed IS NULL) AND ofol.created_at >= $2 AND ofol.created_at <= $3) +
+            (SELECT COUNT(1) FROM organization_user_follows ouf JOIN posts p ON p.post_id = ouf.source_post_id WHERE p.author_id = $1 AND p.is_active = TRUE AND (p.is_deleted IS FALSE OR p.is_deleted IS NULL) AND (p.is_removed IS FALSE OR p.is_removed IS NULL) AND ouf.created_at >= $2 AND ouf.created_at <= $3) +
+            (SELECT COUNT(1) FROM organization_org_follows oof JOIN posts p ON p.post_id = oof.source_post_id WHERE p.author_id = $1 AND p.is_active = TRUE AND (p.is_deleted IS FALSE OR p.is_deleted IS NULL) AND (p.is_removed IS FALSE OR p.is_removed IS NULL) AND oof.created_at >= $2 AND oof.created_at <= $3)
         ) as count
     `, [userId, start, end]);
     const avgFollowers = allFollowersRes / totalPosts;
@@ -165,7 +168,7 @@ const getPostAnalyticsData = async (postId, userId, { filter, startDate, endDate
             SELECT DISTINCT DATE(pi.view_date), COALESCE(pi.viewer_org_id::text, pi.viewer_id::text, pi.impression_id::text)
             FROM post_impressions pi
             JOIN posts p ON p.post_id = pi.post_id 
-            WHERE p.author_id = $1 AND pi.viewer_org_id IS NOT NULL AND pi.view_date >= DATE($2) AND pi.view_date <= DATE($3)
+            WHERE p.author_id = $1 AND p.is_active = TRUE AND (p.is_deleted IS FALSE OR p.is_deleted IS NULL) AND (p.is_removed IS FALSE OR p.is_removed IS NULL) AND pi.viewer_org_id IS NOT NULL AND pi.view_date >= DATE($2) AND pi.view_date <= DATE($3)
         ) sub
     `, [userId, start, end]);
     const avgOrgViews = allOrgViewsRes / totalPosts;

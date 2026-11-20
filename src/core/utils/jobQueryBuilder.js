@@ -218,13 +218,35 @@ const buildJobFilters = (params, paramCountStart = 1) => {
     //   3L-5L     → salary_min <= 500,000  AND salary_max >= 300,000
     //   6L-10L    → salary_min <= 1,000,000 AND salary_max >= 600,000
     //   10L+      → salary_max >= 1,000,000
+    //   Custom:min-max → custom range entered by user
+    //
+    // Industry-standard guard for disclosed salaries:
+    // Excludes records where salary is undisclosed (NULLs, 0s, or marked PRIVATE).
+    const DISCLOSED_SALARY_SQL = `(j.salary_visibility IS NULL OR j.salary_visibility != 'PRIVATE') AND (COALESCE(j.salary_min, 0) > 0 OR COALESCE(j.salary_max, 0) > 0)`;
+
     const rawSalaryRanges = salary_range || salaryRanges || salaryRange;
+    let selectedRangesCount = 0;
+
     if (rawSalaryRanges) {
         const rawList = Array.isArray(rawSalaryRanges) ? rawSalaryRanges : String(rawSalaryRanges).split(/[|,]/);
         const selectedRanges = [];
 
         rawList.map(v => String(v).trim().toLowerCase()).filter(Boolean).forEach(val => {
-            if (val.includes('under 3l') || val.includes('under 3') || val.includes('< 3') || val.includes('under 300k')) {
+            const customMatch = val.match(/^custom:?\s*(\d+)?\s*[-–]\s*(\d+)?$/i) || val.match(/^(\d+)\s*[-–]\s*(\d+)$/);
+            if (customMatch) {
+                let cMin = customMatch[1] ? Number(customMatch[1]) : 0;
+                let cMax = customMatch[2] ? Number(customMatch[2]) : 0;
+                if (cMin > 0 && cMax > 0 && cMin > cMax) {
+                    [cMin, cMax] = [cMax, cMin];
+                }
+                if (cMin > 0 && cMax > 0) {
+                    selectedRanges.push({ min: cMin, max: cMax });
+                } else if (cMin > 0) {
+                    selectedRanges.push({ min: cMin });
+                } else if (cMax > 0) {
+                    selectedRanges.push({ max: cMax });
+                }
+            } else if (val.includes('under 3l') || val.includes('under 3') || val.includes('< 3') || val.includes('under 300k')) {
                 selectedRanges.push({ max: 300000 });
             } else if (val.includes('3l-5l') || val.includes('3-5') || val.includes('3l - 5l') || val.includes('300k-500k')) {
                 selectedRanges.push({ min: 300000, max: 500000 });
@@ -234,6 +256,8 @@ const buildJobFilters = (params, paramCountStart = 1) => {
                 selectedRanges.push({ min: 1000000 });
             }
         });
+
+        selectedRangesCount = selectedRanges.length;
 
         if (selectedRanges.length > 0) {
             const rangeClauses = selectedRanges.map(range => {
@@ -248,7 +272,7 @@ const buildJobFilters = (params, paramCountStart = 1) => {
                     currentIndex++;
                     return clause;
                 } else if (range.max !== undefined) {
-                    const clause = `(COALESCE(j.salary_min, j.salary_max) <= $${currentIndex})`;
+                    const clause = `(COALESCE(j.salary_min, j.salary_max) <= $${currentIndex} AND COALESCE(j.salary_min, j.salary_max) > 0)`;
                     values.push(range.max);
                     currentIndex++;
                     return clause;
@@ -257,29 +281,46 @@ const buildJobFilters = (params, paramCountStart = 1) => {
             }).filter(Boolean);
 
             if (rangeClauses.length > 0) {
-                conditions.push(`(${rangeClauses.join(" OR ")})`);
+                conditions.push(`(${DISCLOSED_SALARY_SQL} AND (${rangeClauses.join(" OR ")}))`);
             }
         }
     }
 
     // ─── Salary range (overlapping numeric range logic) ───────────────────────
-    const effMinSalary = salary_min !== undefined ? salary_min : (params.min_salary !== undefined ? params.min_salary : minSalary);
-    const effMaxSalary = salary_max !== undefined ? salary_max : (params.max_salary !== undefined ? params.max_salary : maxSalary);
-    const min = effMinSalary ? Number(effMinSalary) : NaN;
-    const max = effMaxSalary ? Number(effMaxSalary) : NaN;
+    // Only evaluate numeric min/max if salaryRanges was not already processed
+    if (selectedRangesCount === 0) {
+        const effMinSalary = salary_min !== undefined ? salary_min : (params.min_salary !== undefined ? params.min_salary : minSalary);
+        const effMaxSalary = salary_max !== undefined ? salary_max : (params.max_salary !== undefined ? params.max_salary : maxSalary);
+        let min = effMinSalary !== undefined && effMinSalary !== null && String(effMinSalary).trim() !== '' ? Number(effMinSalary) : NaN;
+        let max = effMaxSalary !== undefined && effMaxSalary !== null && String(effMaxSalary).trim() !== '' ? Number(effMaxSalary) : NaN;
 
-    if (!isNaN(min) && !isNaN(max)) {
-        conditions.push(`(COALESCE(j.salary_max, j.salary_min) >= $${currentIndex} AND COALESCE(j.salary_min, j.salary_max) <= $${currentIndex + 1})`);
-        values.push(min, max);
-        currentIndex += 2;
-    } else if (!isNaN(min)) {
-        conditions.push(`(COALESCE(j.salary_max, j.salary_min) >= $${currentIndex})`);
-        values.push(min);
-        currentIndex++;
-    } else if (!isNaN(max)) {
-        conditions.push(`(COALESCE(j.salary_min, j.salary_max) <= $${currentIndex})`);
-        values.push(max);
-        currentIndex++;
+        if (!isNaN(min) && !isNaN(max) && min > 0 && max > 0 && min > max) {
+            [min, max] = [max, min];
+        }
+
+        if (!isNaN(min) && !isNaN(max) && (min > 0 || max > 0)) {
+            if (min > 0 && max > 0) {
+                conditions.push(`(${DISCLOSED_SALARY_SQL} AND COALESCE(j.salary_max, j.salary_min) >= $${currentIndex} AND COALESCE(j.salary_min, j.salary_max) <= $${currentIndex + 1})`);
+                values.push(min, max);
+                currentIndex += 2;
+            } else if (min > 0) {
+                conditions.push(`(${DISCLOSED_SALARY_SQL} AND COALESCE(j.salary_max, j.salary_min) >= $${currentIndex})`);
+                values.push(min);
+                currentIndex++;
+            } else if (max > 0) {
+                conditions.push(`(${DISCLOSED_SALARY_SQL} AND COALESCE(j.salary_min, j.salary_max) <= $${currentIndex} AND COALESCE(j.salary_min, j.salary_max) > 0)`);
+                values.push(max);
+                currentIndex++;
+            }
+        } else if (!isNaN(min) && min > 0) {
+            conditions.push(`(${DISCLOSED_SALARY_SQL} AND COALESCE(j.salary_max, j.salary_min) >= $${currentIndex})`);
+            values.push(min);
+            currentIndex++;
+        } else if (!isNaN(max) && max > 0) {
+            conditions.push(`(${DISCLOSED_SALARY_SQL} AND COALESCE(j.salary_min, j.salary_max) <= $${currentIndex} AND COALESCE(j.salary_min, j.salary_max) > 0)`);
+            values.push(max);
+            currentIndex++;
+        }
     }
 
     // ─── Date posted ──────────────────────────────────────────────────────────

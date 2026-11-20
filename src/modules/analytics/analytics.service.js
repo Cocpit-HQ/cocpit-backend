@@ -159,7 +159,7 @@ const getOverviewData = async (userId, { filter, startDate, endDate }) => {
             SELECT p.post_id, p.created_at, COUNT(1) as visit_count
             FROM posts p
             JOIN profile_views pv ON p.post_id = pv.source_post_id
-            WHERE p.author_id = $1 AND p.created_at < $2
+            WHERE p.author_id = $1 AND p.is_active = TRUE AND (p.is_deleted IS FALSE OR p.is_deleted IS NULL) AND (p.is_removed IS FALSE OR p.is_removed IS NULL) AND p.created_at < $2
               AND pv.view_date >= DATE($3) AND pv.view_date <= DATE($4)
             GROUP BY p.post_id, p.created_at
             ORDER BY visit_count DESC, p.created_at DESC
@@ -170,7 +170,7 @@ const getOverviewData = async (userId, { filter, startDate, endDate }) => {
             const fallbackStart = dateFns.subDays(peakDate, 3);
             recentPost = await pool.query(`
                 SELECT post_id, created_at FROM posts 
-                WHERE author_id = $1 AND created_at >= $2 AND created_at < $3
+                WHERE author_id = $1 AND is_active = TRUE AND (is_deleted IS FALSE OR is_deleted IS NULL) AND (is_removed IS FALSE OR is_removed IS NULL) AND created_at >= $2 AND created_at < $3
                 ORDER BY created_at DESC
                 LIMIT 1
             `, [userId, fallbackStart, tipEnd]);
@@ -237,7 +237,7 @@ const getOverviewData = async (userId, { filter, startDate, endDate }) => {
         SELECT p.post_type, SUM(pad.impressions) as total
         FROM posts p
         JOIN post_analytics_daily pad ON p.post_id = pad.post_id
-        WHERE p.author_id = $1 AND pad.date >= DATE($2) AND pad.date <= DATE($3)
+        WHERE p.author_id = $1 AND p.is_active = TRUE AND (p.is_deleted IS FALSE OR p.is_deleted IS NULL) AND (p.is_removed IS FALSE OR p.is_removed IS NULL) AND pad.date >= DATE($2) AND pad.date <= DATE($3)
         GROUP BY p.post_type ORDER BY total DESC LIMIT 1
     `, [userId, start, end]);
 
@@ -278,7 +278,7 @@ const getAudienceData = async (userId, { filter, startDate, endDate }) => {
         UNION
         SELECT pi.viewer_id FROM post_impressions pi 
         JOIN posts p ON p.post_id = pi.post_id
-        WHERE p.author_id = $1 AND DATE(pi.view_date) >= DATE($2) AND DATE(pi.view_date) <= DATE($3)
+        WHERE p.author_id = $1 AND p.is_active = TRUE AND (p.is_deleted IS FALSE OR p.is_deleted IS NULL) AND (p.is_removed IS FALSE OR p.is_removed IS NULL) AND DATE(pi.view_date) >= DATE($2) AND DATE(pi.view_date) <= DATE($3)
     `;
 
     // 4. Metrics queries
@@ -301,7 +301,7 @@ const getAudienceData = async (userId, { filter, startDate, endDate }) => {
             COALESCE(SUM(likes + comments + shares + saves), 0) as engagements
         FROM post_analytics_daily pad
         JOIN posts p ON p.post_id = pad.post_id
-        WHERE p.author_id = $1 AND pad.date >= DATE($2) AND pad.date <= DATE($3)
+        WHERE p.author_id = $1 AND p.is_active = TRUE AND (p.is_deleted IS FALSE OR p.is_deleted IS NULL) AND (p.is_removed IS FALSE OR p.is_removed IS NULL) AND pad.date >= DATE($2) AND pad.date <= DATE($3)
     `, [userId, start, end]);
     
     let currEngagementRate = 0;
@@ -330,7 +330,7 @@ const getAudienceData = async (userId, { filter, startDate, endDate }) => {
                 COALESCE(SUM(likes + comments + shares + saves), 0) as engagements
             FROM post_analytics_daily pad
             JOIN posts p ON p.post_id = pad.post_id
-            WHERE p.author_id = $1 AND pad.date >= DATE($2) AND pad.date <= DATE($3)
+            WHERE p.author_id = $1 AND p.is_active = TRUE AND (p.is_deleted IS FALSE OR p.is_deleted IS NULL) AND (p.is_removed IS FALSE OR p.is_removed IS NULL) AND pad.date >= DATE($2) AND pad.date <= DATE($3)
         `, [userId, previousStart, previousEnd]);
         
         const prevImpressions = parseInt(prevEngagementRes.rows[0].impressions, 10);
@@ -653,7 +653,7 @@ const getContentData = async (userId, { filter, startDate, endDate, sort }) => {
         FROM posts p 
         LEFT JOIN post_analytics_daily pad ON p.post_id = pad.post_id 
           AND pad.date >= DATE($2) AND pad.date <= DATE($3)
-        WHERE p.author_id = $1 AND p.is_active = TRUE AND (p.is_removed IS FALSE OR p.is_removed IS NULL)
+        WHERE p.author_id = $1 AND p.is_active = TRUE AND (p.is_deleted IS FALSE OR p.is_deleted IS NULL) AND (p.is_removed IS FALSE OR p.is_removed IS NULL)
         GROUP BY p.post_type
     `, [userId, start, end]);
 
@@ -696,7 +696,7 @@ const getContentData = async (userId, { filter, startDate, endDate, sort }) => {
         FROM posts p
         LEFT JOIN post_analytics_daily pad ON p.post_id = pad.post_id
           AND pad.date >= DATE($2) AND pad.date <= DATE($3)
-        WHERE p.author_id = $1 AND p.is_active = TRUE AND (p.is_removed IS FALSE OR p.is_removed IS NULL)
+        WHERE p.author_id = $1 AND p.is_active = TRUE AND (p.is_deleted IS FALSE OR p.is_deleted IS NULL) AND (p.is_removed IS FALSE OR p.is_removed IS NULL)
         GROUP BY p.post_id, p.title, p.content, p.post_type, p.created_at
         ORDER BY ${sortColumn}, p.created_at DESC
     `, [userId, start, end]);

@@ -17,6 +17,7 @@ const { compareExperience, getLatestEducation, calculateTotalExperienceYears } =
 const { generateLocalSystemFallback, analyzeCandidate } = require('../../../services/candidateAnalysis.service');
 const { redisClient } = require('../../../core/db/redis');
 const socketService = require('../../../core/infrastructure/socket.service');
+const { logOrgActivity } = require('../../../core/infrastructure/audit.service');
 
 // ─── Shared auth helper ───────────────────────────────────────────────────────
 // Asserts that the requesting user is either the direct recruiter or an org
@@ -433,19 +434,69 @@ exports.updateApplicationStatus = async (req, res) => {
       [applicationId, status]
     );
 
-    // Send notification to candidate if they are shortlisted or get an offer
-    if (status === 'Shortlisted' || status === 'Offer') {
-      const appDetailsRes = await pool.query(`
-        SELECT ja.applicant_id, j.title, j.job_id, o.name as company_name, o.org_id, o.logo_url as company_avatar, u.email as applicant_email
-        FROM job_applications ja
-        JOIN jobs j ON ja.job_id = j.job_id
-        LEFT JOIN organizations o ON j.org_id = o.org_id
-        JOIN users u ON ja.applicant_id = u.user_id
-        WHERE ja.application_id = $1
-      `, [applicationId]);
+    // Audit Log for Organization Team Activity Logs
+    if (ownership.org_id && (status === 'Shortlisted' || status === 'Rejected')) {
+      try {
+        const candQuery = await pool.query(
+          `SELECT ja.applicant_id, u.full_name as candidate_name, j.title as job_title, j.job_id 
+           FROM job_applications ja
+           JOIN users u ON ja.applicant_id = u.user_id
+           JOIN jobs j ON ja.job_id = j.job_id
+           WHERE ja.application_id = $1`,
+          [applicationId]
+        );
 
-      if (appDetailsRes.rowCount > 0) {
-        const { applicant_id, title, job_id, company_name, org_id, company_avatar, applicant_email } = appDetailsRes.rows[0];
+        if (candQuery.rows.length > 0) {
+          const { applicant_id, candidate_name, job_title, job_id } = candQuery.rows[0];
+          const isShortlist = status === 'Shortlisted';
+          const action = isShortlist ? 'SHORTLIST_APPLICATION' : 'DECLINE_APPLICATION';
+
+          await logOrgActivity(pool, {
+            orgId: ownership.org_id,
+            userId: req.user.sub,
+            action,
+            metadata: {
+              targetType: 'application',
+              targetId: applicationId,
+              targetName: job_title,
+              jobId: job_id,
+              jobTitle: job_title,
+              applicationId,
+              candidateId: applicant_id,
+              candidateName: candidate_name,
+              linkUrl: `/jobs/${job_id}`,
+              candidateLinkUrl: `/profile/${applicant_id}`,
+              screeningRequired: Boolean(screening?.required)
+            },
+            req
+          });
+        }
+      } catch (auditErr) {
+        console.error('[updateApplicationStatus] Failed to log audit activity:', auditErr);
+      }
+    }
+
+    const appDetailsRes = await pool.query(`
+      SELECT ja.applicant_id, j.title, j.job_id, o.name as company_name, o.org_id, o.logo_url as company_avatar, u.email as applicant_email
+      FROM job_applications ja
+      JOIN jobs j ON ja.job_id = j.job_id
+      LEFT JOIN organizations o ON j.org_id = o.org_id
+      JOIN users u ON ja.applicant_id = u.user_id
+      WHERE ja.application_id = $1
+    `, [applicationId]);
+
+    if (appDetailsRes.rowCount > 0) {
+      const { applicant_id, title, job_id, company_name, org_id, company_avatar, applicant_email } = appDetailsRes.rows[0];
+
+      // Real-time socket event for immediate status & button refresh across candidate sessions
+      socketService.notifyUser(applicant_id, "job_application_updated", {
+        applicationId,
+        jobId: job_id,
+        status,
+      });
+
+      // Send notification to candidate if they are shortlisted or get an offer
+      if (status === 'Shortlisted' || status === 'Offer') {
         const senderId = req.user.sub;
         
         const recruiterRes = await pool.query(`SELECT full_name, avatar_url FROM users WHERE user_id = $1`, [senderId]);

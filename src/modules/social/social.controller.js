@@ -5836,6 +5836,8 @@ exports.getNotifications = async (req, res) => {
                 n.recipient_org_id as recipient_company_id,
                 n.recipient_org_id,
                 CASE 
+                    WHEN n.type = 'ORG_ONBOARDED' THEN
+                         COALESCE(NULLIF(n.metadata->>'org_name', ''), NULLIF(n.metadata->>'orgName', ''), NULLIF(n.metadata->>'actor_name', ''), c.name, u.display_name)
                     WHEN (n.metadata->>'isCompanyActor')::boolean = TRUE OR (n.metadata->>'is_company_actor')::boolean = TRUE THEN
                          COALESCE(NULLIF(n.metadata->>'followerName', ''), NULLIF(n.metadata->>'follower_name', ''), f_org.name, u.display_name)
                     WHEN COALESCE(NULLIF(n.metadata->>'org_id', ''), NULLIF(n.metadata->>'orgId', '')) IS NOT NULL 
@@ -5844,6 +5846,8 @@ exports.getNotifications = async (req, res) => {
                     ELSE u.display_name 
                 END as actor_name, 
                 CASE 
+                    WHEN n.type = 'ORG_ONBOARDED' THEN
+                         COALESCE(NULLIF(n.metadata->>'org_logo', ''), NULLIF(n.metadata->>'orgLogo', ''), NULLIF(n.metadata->>'actor_avatar', ''), c.logo_url, NULL)
                     WHEN (n.metadata->>'isCompanyActor')::boolean = TRUE OR (n.metadata->>'is_company_actor')::boolean = TRUE THEN
                          COALESCE(NULLIF(n.metadata->>'followerAvatar', ''), NULLIF(n.metadata->>'follower_avatar', ''), NULLIF(n.metadata->>'followerLogo', ''), NULLIF(n.metadata->>'follower_logo', ''), f_org.logo_url, u.display_avatar)
                     WHEN COALESCE(NULLIF(n.metadata->>'org_id', ''), NULLIF(n.metadata->>'orgId', '')) IS NOT NULL 
@@ -5852,6 +5856,8 @@ exports.getNotifications = async (req, res) => {
                     ELSE u.display_avatar 
                 END as actor_avatar,
                 CASE 
+                    WHEN n.type = 'ORG_ONBOARDED' THEN
+                         COALESCE(NULLIF(n.metadata->>'org_slug', ''), NULLIF(n.metadata->>'orgSlug', ''), NULLIF(n.metadata->>'slug', ''), NULLIF(n.metadata->>'actor_slug', ''), c.slug, u.display_username)
                     WHEN (n.metadata->>'isCompanyActor')::boolean = TRUE OR (n.metadata->>'is_company_actor')::boolean = TRUE THEN
                          COALESCE(NULLIF(n.metadata->>'followerSlug', ''), NULLIF(n.metadata->>'follower_slug', ''), f_org.slug, u.display_username)
                     WHEN COALESCE(NULLIF(n.metadata->>'org_id', ''), NULLIF(n.metadata->>'orgId', '')) IS NOT NULL 
@@ -5860,6 +5866,7 @@ exports.getNotifications = async (req, res) => {
                     ELSE COALESCE(u.display_username, c.slug)
                 END as actor_slug,
                 CASE
+                    WHEN n.type = 'ORG_ONBOARDED' THEN TRUE
                     WHEN (n.metadata->>'isCompanyActor')::boolean = TRUE OR (n.metadata->>'is_company_actor')::boolean = TRUE THEN TRUE
                     WHEN COALESCE(NULLIF(n.metadata->>'org_id', ''), NULLIF(n.metadata->>'orgId', '')) IS NOT NULL 
                          AND n.type NOT IN ('community_invite_accepted', 'team_invite_accepted', 'team_invite_declined', 'team_member_removed', 'offer_accepted', 'job_offer_declined', 'company_channel_subscriber', 'company_follower', 'follow') THEN TRUE
@@ -5888,8 +5895,17 @@ exports.getNotifications = async (req, res) => {
                     OR (
                         n.recipient_org_id IS NULL 
                         AND COALESCE(NULLIF(n.metadata->>'org_id', ''), NULLIF(n.metadata->>'orgId', ''))::uuid = $1
-                        AND n.type NOT IN ('like', 'comment', 'reply', 'repost', 'mention', 'post_tag', 'advocacy', 'channel_article', 'profile_share', 'company_connection_request', 'job_applied', 'job_shortlisted', 'job_rejected', 'job_reviewed', 'job_offer_withdrawn', 'job_offer_received', 'job_offer_expired')
+                        AND n.type NOT IN (
+                            'like', 'comment', 'reply', 'repost', 'mention', 'post_tag', 'advocacy', 'channel_article', 'profile_share', 'company_connection_request',
+                            'job_applied', 'job_shortlisted', 'job_rejected', 'job_reviewed', 'job_offer_withdrawn', 'job_offer_received', 'job_offer_expired', 'job_offer_accepted', 'job_offer_declined',
+                            'application_submitted', 'application_under_review', 'application_shortlisted', 'application_rejected', 'application_declined',
+                            'job_offer', 'offer_expiring', 'job_alert'
+                        )
                     )
+                )
+                AND n.type NOT IN (
+                    'application_submitted', 'application_under_review', 'application_shortlisted', 'application_rejected', 'application_declined',
+                    'job_offer', 'offer_expiring', 'job_alert', 'job_offer_received', 'job_offer_withdrawn'
                 )
                 AND (
                     n.type NOT IN ('member_role_updated')

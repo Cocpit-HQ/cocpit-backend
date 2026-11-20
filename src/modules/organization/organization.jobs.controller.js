@@ -4,6 +4,7 @@ const { v4: uuidv4 } = require("uuid"); // Ensure unique ID generation for idemp
 const { notifyCompanyFollowers } = require("../../services/notification.service");
 const { resolveOrg } = require("./organization.profile.controller");
 const { checkOrgPermission } = require("../../core/utils/rbac");
+const { logOrgActivity } = require("../../core/infrastructure/audit.service");
 
 exports.createOrganizationJob = async (req, res) => {
     const { orgId: companyId } = req.params;
@@ -118,11 +119,20 @@ exports.createOrganizationJob = async (req, res) => {
         }
 
         // 4. Audit Log
-        await client.query(
-            `INSERT INTO audit_logs (entity_type, entity_id, actor_id, action, metadata)
-         VALUES ('ORGANIZATION', $1, $2, 'POST_JOB', $3)`,
-            [companyId, userId, JSON.stringify({ type: 'job', id: job.job_id, title: job.title })]
-        );
+        await logOrgActivity(client, {
+            orgId: companyId,
+            userId,
+            action: 'CREATE_JOB',
+            metadata: {
+                targetType: 'job',
+                targetId: job.job_id,
+                targetName: job.title,
+                jobId: job.job_id,
+                jobTitle: job.title,
+                linkUrl: `/jobs/${job.job_id}`
+            },
+            req
+        });
 
         // 5. Event Outbox
         await client.query(
@@ -287,8 +297,13 @@ exports.getOrganizationJobs = async (req, res) => {
             return res.status(400).json({ message: "Invalid scope parameter. Use 'public' or 'internal'." });
         }
 
+        const isClosedFilter = scope === 'internal' && status && status.trim().toUpperCase() === 'CLOSED';
+        const orderTimestampExpr = isClosedFilter
+            ? 'COALESCE(j.closed_at, j.updated_at, j.published_at, j.created_at)'
+            : 'COALESCE(j.published_at, j.created_at)';
+
         if (cursor) {
-            conditions.push(`COALESCE(j.published_at, j.created_at) < $${paramCount}`);
+            conditions.push(`${orderTimestampExpr} < $${paramCount}`);
             params.push(new Date(cursor));
             paramCount++;
         }
@@ -327,7 +342,7 @@ exports.getOrganizationJobs = async (req, res) => {
                 LIMIT 1
             ) ja ON TRUE` : ""}
             ${whereClause}
-            ORDER BY COALESCE(j.published_at, j.created_at) DESC
+            ${isClosedFilter ? `ORDER BY ${orderTimestampExpr} DESC` : 'ORDER BY COALESCE(j.published_at, j.created_at) DESC'}
             ${limitClause}
         `;
 
@@ -336,7 +351,7 @@ exports.getOrganizationJobs = async (req, res) => {
             const countsQuery = `
                 SELECT 
                     COUNT(*)::int AS "all",
-                    COUNT(*) FILTER (WHERE j.status = 'ACTIVE')::int AS "active",
+                    COUNT(*) FILTER (WHERE j.status = 'ACTIVE' AND (j.moderation_status IS NULL OR j.moderation_status = 'APPROVED'))::int AS "active",
                     COUNT(*) FILTER (WHERE j.status = 'CLOSED')::int AS "closed",
                     COUNT(*) FILTER (WHERE j.status = 'DRAFT')::int AS "draft",
                     COUNT(*) FILTER (WHERE (j.status IN ('IN REVIEW', 'UNDER_REVIEW') OR j.moderation_status = 'UNDER_REVIEW') AND j.status != 'REJECTED' AND (j.moderation_status IS NULL OR j.moderation_status != 'REJECTED'))::int AS "inReview",
@@ -353,8 +368,12 @@ exports.getOrganizationJobs = async (req, res) => {
             const rows = result.rows;
             const hasMore = rows.length > Number(limit);
             const jobs = hasMore ? rows.slice(0, Number(limit)) : rows;
-            const nextCursor = jobs.length > 0 ? (jobs[jobs.length - 1].published_at || jobs[jobs.length - 1].created_at) : null;
-            const counts = countsResult.rows[0] || { all: 0, active: 0, closed: 0, draft: 0, inReview: 0 };
+            const nextCursor = jobs.length > 0 
+                ? (isClosedFilter 
+                    ? (jobs[jobs.length - 1].closed_at || jobs[jobs.length - 1].updated_at || jobs[jobs.length - 1].published_at || jobs[jobs.length - 1].created_at)
+                    : (jobs[jobs.length - 1].published_at || jobs[jobs.length - 1].created_at))
+                : null;
+            const counts = countsResult.rows[0] || { all: 0, active: 0, closed: 0, draft: 0, inReview: 0, rejected: 0 };
 
             return res.status(200).json({
                 jobs,
@@ -483,6 +502,11 @@ exports.updateOrganizationJob = async (req, res) => {
                     WHEN $22::boolean AND (status = 'DRAFT' OR status = 'UNDER_REVIEW') THEN NOW()
                     ELSE created_at
                 END,
+                closed_at = CASE
+                    WHEN COALESCE($15, status) = 'CLOSED' THEN COALESCE(closed_at, NOW())
+                    WHEN COALESCE($15, status) = 'ACTIVE' THEN NULL
+                    ELSE closed_at
+                END,
                 updated_at = NOW()
             WHERE job_id = $21
             RETURNING *
@@ -501,11 +525,25 @@ exports.updateOrganizationJob = async (req, res) => {
         `, [jobId, userId, JSON.stringify(oldJobData)]);
 
         // 5. Audit Log
-        await client.query(
-            `INSERT INTO audit_logs (entity_type, entity_id, actor_id, action, metadata)
-             VALUES ('ORGANIZATION', $1, $2, 'UPDATE_JOB', $3)`,
-            [companyId, userId, JSON.stringify({ jobId, newStatus: updatedJob.status })]
-        );
+        const isDeleteAction = Boolean(req.isDelete);
+        const isCloseAction = updatedJob.status === 'CLOSED' && !isDeleteAction;
+        const auditAction = isDeleteAction ? 'DELETE_JOB' : isCloseAction ? 'CLOSE_JOB' : isSubmittingForReview ? 'CREATE_JOB' : 'UPDATE_JOB';
+
+        await logOrgActivity(client, {
+            orgId: companyId,
+            userId,
+            action: auditAction,
+            metadata: {
+                targetType: 'job',
+                targetId: jobId,
+                targetName: updatedJob.title,
+                jobId,
+                jobTitle: updatedJob.title,
+                newStatus: updatedJob.status,
+                ...(isDeleteAction ? {} : { linkUrl: `/jobs/${jobId}` })
+            },
+            req
+        });
 
         // 6. Event Outbox
         await client.query(
@@ -643,5 +681,6 @@ exports.deleteOrganizationJob = async (req, res) => {
     req.body = req.body || {};
     req.body.status = 'CLOSED';
     req.body.is_active = false;
+    req.isDelete = true;
     return exports.updateOrganizationJob(req, res);
 };

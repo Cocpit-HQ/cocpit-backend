@@ -1,6 +1,7 @@
 const pool = require("../../core/db/pool");
 const socketService = require("../../core/infrastructure/socket.service");
 const { sendToUser } = require("../notification/notification.service");
+const { logOrgActivity } = require("../../core/infrastructure/audit.service");
 
 /**
  * sendJobOffer
@@ -120,6 +121,31 @@ exports.sendJobOffer = async (req, res) => {
             metadata: { org_id: companyId || null, offer_id: offer.offer_id, job_id: jobId }
         });
 
+        // 6. Audit Log for Organization Team Activity Logs
+        if (targetOrgId) {
+            const candRes = await client.query('SELECT full_name FROM users WHERE user_id = $1', [userId]);
+            const candidateName = candRes.rows[0]?.full_name || 'Candidate';
+
+            await logOrgActivity(client, {
+                orgId: targetOrgId,
+                userId: sentBy,
+                action: 'SEND_OFFER',
+                metadata: {
+                    targetType: 'offer',
+                    targetId: offer.offer_id,
+                    targetName: jobTitle,
+                    offerId: offer.offer_id,
+                    jobId,
+                    jobTitle,
+                    candidateId: userId,
+                    candidateName,
+                    linkUrl: `/jobs/${jobId}`,
+                    candidateLinkUrl: `/profile/${userId}`
+                },
+                req
+            });
+        }
+
         await client.query('COMMIT');
         res.status(201).json({ offer, message: "Offer sent successfully" });
 
@@ -156,7 +182,10 @@ exports.getMyOffers = async (req, res) => {
                 COALESCE(c.name, j.company_name) as company_display_name, c.logo_url as company_logo, c.headline as company_headline, c.slug as company_slug,
                 CASE WHEN jo.org_id IS NOT NULL OR j.org_id IS NOT NULL THEN COALESCE(c.name, j.company_name) ELSE u.full_name END as sent_by_name,
                 CASE WHEN jo.org_id IS NOT NULL OR j.org_id IS NOT NULL THEN c.logo_url ELSE u.avatar_url END as sent_by_avatar,
-                CASE WHEN jo.org_id IS NOT NULL OR j.org_id IS NOT NULL THEN c.headline ELSE u.headline END as sent_by_headline
+                CASE WHEN jo.org_id IS NOT NULL OR j.org_id IS NOT NULL THEN c.headline ELSE u.headline END as sent_by_headline,
+                u.full_name as offer_sender_name,
+                u.avatar_url as offer_sender_avatar,
+                u.headline as offer_sender_headline
             FROM job_offers jo
             JOIN jobs j ON jo.job_id = j.job_id
             LEFT JOIN organizations c ON COALESCE(jo.org_id, j.org_id) = c.org_id
@@ -355,6 +384,7 @@ exports.getCompanyOfferRecipients = async (req, res) => {
             SELECT 
                 jo.offer_id,
                 jo.org_id,
+                jo.sent_by,
                 jo.status,
                 jo.message,
                 jo.created_at,
@@ -364,8 +394,9 @@ exports.getCompanyOfferRecipients = async (req, res) => {
                 u.avatar_url,
                 u.headline,
                 u.company_name AS candidate_company_name,
-                sender.full_name AS sent_by_name,
-                sender.headline AS sent_by_headline
+                COALESCE(sender.full_name, 'Recruiter') AS sent_by_name,
+                sender.headline AS sent_by_headline,
+                sender.avatar_url AS sent_by_avatar
             FROM job_offers jo
             JOIN active_users u ON jo.user_id = u.user_id
             LEFT JOIN active_users sender ON jo.sent_by = sender.user_id
@@ -674,7 +705,10 @@ exports.getOfferDetail = async (req, res) => {
                 COALESCE(c.name, j.company_name) as company_display_name, c.logo_url as company_logo, c.headline as company_headline, c.slug as company_slug,
                 CASE WHEN jo.org_id IS NOT NULL OR j.org_id IS NOT NULL THEN COALESCE(c.name, j.company_name) ELSE u.full_name END as sent_by_name,
                 CASE WHEN jo.org_id IS NOT NULL OR j.org_id IS NOT NULL THEN c.logo_url ELSE u.avatar_url END as sent_by_avatar,
-                CASE WHEN jo.org_id IS NOT NULL OR j.org_id IS NOT NULL THEN c.headline ELSE u.headline END as sent_by_headline
+                CASE WHEN jo.org_id IS NOT NULL OR j.org_id IS NOT NULL THEN c.headline ELSE u.headline END as sent_by_headline,
+                u.full_name as offer_sender_name,
+                u.avatar_url as offer_sender_avatar,
+                u.headline as offer_sender_headline
             FROM job_offers jo
             JOIN jobs j ON jo.job_id = j.job_id
             LEFT JOIN organizations c ON COALESCE(jo.org_id, j.org_id) = c.org_id

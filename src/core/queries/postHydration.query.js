@@ -97,10 +97,16 @@ const getPostHydrationSelect = (companyParamIdx, userParamIdx) => `
             'slug', o_mention.slug
         )), '[]'::json)
         FROM (
-            SELECT DISTINCT (regexp_matches(COALESCE(p.content, ''), '@\[[^\]]+\]\((?:(?:user|org|company):)?([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\)', 'g'))[1]::uuid AS mentioned_id
+            SELECT DISTINCT (regexp_matches(COALESCE(p.content, ''), '@\\[[^\\]]+\\]\\((?:(?:user|org|company):)?([^)]+)\\)', 'g'))[1] AS raw_id
         ) mentions
-        LEFT JOIN active_users u_mention ON u_mention.user_id = mentions.mentioned_id
-        LEFT JOIN organizations o_mention ON o_mention.org_id = mentions.mentioned_id
+        LEFT JOIN active_users u_mention ON (
+            (mentions.raw_id ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' AND u_mention.user_id = mentions.raw_id::uuid)
+            OR LOWER(u_mention.account_name) = LOWER(mentions.raw_id)
+        )
+        LEFT JOIN organizations o_mention ON (
+            (mentions.raw_id ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' AND o_mention.org_id = mentions.raw_id::uuid)
+            OR LOWER(o_mention.slug) = LOWER(mentions.raw_id)
+        )
         WHERE u_mention.user_id IS NOT NULL OR o_mention.org_id IS NOT NULL
     ) AS mentioned_users,
 
@@ -431,10 +437,16 @@ const getPostHydrationSelect = (companyParamIdx, userParamIdx) => `
                          'slug', o_mention.slug
                      )), '[]'::json)
                      FROM (
-                         SELECT DISTINCT (regexp_matches(COALESCE(sp.content, ''), '@\\[[^\\]]+\\]\\((?:(?:user|org|company):)?([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\\)', 'g'))[1]::uuid AS mentioned_id
+                         SELECT DISTINCT (regexp_matches(COALESCE(sp.content, ''), '@\\[[^\\]]+\\]\\((?:(?:user|org|company):)?([^)]+)\\)', 'g'))[1] AS raw_id
                      ) mentions
-                     LEFT JOIN active_users u_mention ON u_mention.user_id = mentions.mentioned_id
-                     LEFT JOIN organizations o_mention ON o_mention.org_id = mentions.mentioned_id
+                     LEFT JOIN active_users u_mention ON (
+                         (mentions.raw_id ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' AND u_mention.user_id = mentions.raw_id::uuid)
+                         OR LOWER(u_mention.account_name) = LOWER(mentions.raw_id)
+                     )
+                     LEFT JOIN organizations o_mention ON (
+                         (mentions.raw_id ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' AND o_mention.org_id = mentions.raw_id::uuid)
+                         OR LOWER(o_mention.slug) = LOWER(mentions.raw_id)
+                     )
                      WHERE u_mention.user_id IS NOT NULL OR o_mention.org_id IS NOT NULL
                  ),
                  'media', COALESCE((SELECT json_agg(json_build_object('url', pm.url, 'media_type', pm.media_type, 'width', pm.width, 'height', pm.height, 'order_index', pm.order_index, 'thumbnail_url', pm.thumbnail_url, 'duration_seconds', pm.duration_seconds) ORDER BY pm.order_index ASC) FROM post_media pm WHERE pm.post_id = sp.post_id), '[]'::json),

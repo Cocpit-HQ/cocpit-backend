@@ -1,8 +1,8 @@
 const { sanitizeContent } = require("../../utils/contentSanitizer");
 const pool = require("../../core/db/pool");
-const { getFlags } = require('../config/featureFlags.service');
+const featureFlagsService = require('../config/featureFlags.service');
 const { buildJobFilters } = require("../../core/utils/jobQueryBuilder");
-const { logAudit } = require("../../core/infrastructure/audit.service");
+const { logAudit, logOrgActivity } = require("../../core/infrastructure/audit.service");
 const { checkOrgPermission } = require("../../core/utils/rbac");
 const { notifyOrgFollowers } = require("../../services/notification.service");
 const { sendToUser } = require("../notification/notification.service");
@@ -475,9 +475,9 @@ exports.getJobById = async (req, res) => {
         ${userId ? 'jo.expires_at AS "offer_expires_at",' : 'NULL AS "offer_expires_at",'}
         ${userId ? 'jo.offer_id AS "offer_id",' : 'NULL AS "offer_id",'}
         ${userId ? 'jo.message AS "recruiter_message",' : 'NULL AS "recruiter_message",'}
-        ${userId ? 'CASE WHEN j.org_id IS NOT NULL OR jo.org_id IS NOT NULL THEN COALESCE(c.name, j.company_name) ELSE COALESCE(u_sender.full_name, u.full_name) END AS "offer_sender_name",' : ''}
-        ${userId ? 'CASE WHEN j.org_id IS NOT NULL OR jo.org_id IS NOT NULL THEN c.logo_url ELSE COALESCE(u_sender.avatar_url, u.avatar_url) END AS "offer_sender_avatar",' : ''}
-        ${userId ? 'CASE WHEN j.org_id IS NOT NULL OR jo.org_id IS NOT NULL THEN c.headline ELSE COALESCE(u_sender.headline, u.headline) END AS "offer_sender_headline",' : ''}
+        ${userId ? 'COALESCE(u_sender.full_name, CASE WHEN j.org_id IS NOT NULL OR jo.org_id IS NOT NULL THEN COALESCE(c.name, j.company_name) ELSE u.full_name END) AS "offer_sender_name",' : ''}
+        ${userId ? 'COALESCE(u_sender.avatar_url, CASE WHEN j.org_id IS NOT NULL OR jo.org_id IS NOT NULL THEN c.logo_url ELSE u.avatar_url END) AS "offer_sender_avatar",' : ''}
+        ${userId ? 'COALESCE(u_sender.headline, CASE WHEN j.org_id IS NOT NULL OR jo.org_id IS NOT NULL THEN c.headline ELSE u.headline END) AS "offer_sender_headline",' : ''}
         ${userId ? 'ja.application_id AS "applicationId",' : 'NULL AS "applicationId",'}
         ${userId ? 'ja.screening_required AS "screeningRequired",' : 'NULL AS "screeningRequired",'}
         ${userId ? 'ja.screening_type AS "screeningType",' : 'NULL AS "screeningType",'}
@@ -924,6 +924,24 @@ exports.submitJob = async (req, res) => {
     // Notification: "Your job “[Job Title]” has been submitted for review."
     const publishedJob = updated.rows[0];
     const jobTitle = publishedJob.title || job.title;
+
+    if (publishedJob.org_id) {
+      await logOrgActivity(client, {
+        orgId: publishedJob.org_id,
+        userId,
+        action: 'CREATE_JOB',
+        metadata: {
+          targetType: 'job',
+          targetId: publishedJob.job_id,
+          targetName: jobTitle,
+          jobId: publishedJob.job_id,
+          jobTitle,
+          linkUrl: `/jobs/${publishedJob.job_id}`
+        },
+        req
+      });
+    }
+
     const notificationText = `Your job ${jobTitle} has been submitted for review.`;
     const metadataPayload = {
       jobId: publishedJob.job_id,
@@ -1094,13 +1112,24 @@ const performLifecycleAction = async (req, res, actionName, targetStatus, allowe
         UPDATE jobs 
         SET status = $1::varchar,
             published_at = CASE WHEN published_at IS NULL THEN NOW() ELSE published_at END,
-            created_at = CASE WHEN (status = 'DRAFT' OR status = 'UNDER_REVIEW') THEN NOW() ELSE created_at END
+            created_at = CASE WHEN (status = 'DRAFT' OR status = 'UNDER_REVIEW') THEN NOW() ELSE created_at END,
+            closed_at = NULL,
+            updated_at = NOW()
+        WHERE job_id = $2 RETURNING *
+      `;
+    } else if (targetStatus === 'CLOSED') {
+      updateQuery = `
+        UPDATE jobs 
+        SET status = $1::varchar,
+            closed_at = NOW(),
+            updated_at = NOW()
         WHERE job_id = $2 RETURNING *
       `;
     } else {
       updateQuery = `
         UPDATE jobs 
-        SET status = $1::varchar
+        SET status = $1::varchar,
+            updated_at = NOW()
         WHERE job_id = $2 RETURNING *
       `;
     }
@@ -1111,6 +1140,23 @@ const performLifecycleAction = async (req, res, actionName, targetStatus, allowe
       `INSERT INTO job_activity (job_id, actor_id, action) VALUES ($1, $2, $3)`,
       [id, userId, actionName]
     );
+
+    if (job.org_id && actionName === 'CLOSE') {
+      await logOrgActivity(client, {
+        orgId: job.org_id,
+        userId,
+        action: 'CLOSE_JOB',
+        metadata: {
+          targetType: 'job',
+          targetId: job.job_id,
+          targetName: job.title,
+          jobId: job.job_id,
+          jobTitle: job.title,
+          linkUrl: `/jobs/${job.job_id}`
+        },
+        req
+      });
+    }
 
     await client.query("COMMIT");
     res.status(200).json({ message: `Job ${actionName.toLowerCase()} successfully`, job: updated.rows[0] });
@@ -1583,7 +1629,21 @@ exports.applyJob = async (req, res) => {
         VALUES ($1, $2, $3, NOW())
         ON CONFLICT (user_id, resume_url) DO UPDATE
         SET last_used_at = NOW(), resume_file_name = EXCLUDED.resume_file_name
-      `, [userId, resume_url, resume_file_name || 'Resume.pdf']).catch(hErr => {
+      `, [userId, resume_url, resume_file_name || 'Resume.pdf'])
+      .then(async () => {
+        // Enforce maximum 10 recent resumes: delete oldest beyond 10
+        await pool.query(`
+          DELETE FROM user_resume_history
+          WHERE user_id = $1
+            AND id NOT IN (
+              SELECT id FROM user_resume_history
+              WHERE user_id = $1
+              ORDER BY last_used_at DESC, created_at DESC
+              LIMIT 10
+            )
+        `, [userId]);
+      })
+      .catch(hErr => {
         console.warn("user_resume_history async insert skipped:", hErr.message);
       });
     }
@@ -1723,8 +1783,8 @@ exports.getJobOffers = async (req, res) => {
 };
 
 exports.saveJob = async (req, res) => {
-  const flags = getFlags();
-  if (!flags.saved_jobs) {
+  const flags = featureFlagsService.getFlags();
+  if (flags.saved_jobs === false) {
     return res.status(403).json({ message: "Job saving is currently disabled by administrators." });
   }
 
@@ -1908,7 +1968,7 @@ exports.getMyRecentResumes = async (req, res) => {
         FROM user_resume_history
         WHERE user_id = $1
         ORDER BY last_used_at DESC
-        LIMIT 2
+        LIMIT 10
       `, [applicantId]);
 
       if (result.rows.length > 0) {
@@ -1920,8 +1980,17 @@ exports.getMyRecentResumes = async (req, res) => {
         }));
         return res.json(resumes);
       }
+      if (result.rows.length > 0) {
+        const resumes = result.rows.map(row => ({
+          id: row.id,
+          name: row.resume_file_name || 'Resume.pdf',
+          url: row.resume_url,
+          last_applied: row.last_used_at
+        }));
+        return res.json(resumes);
+      }
     } catch (tblErr) {
-      console.warn("user_resume_history query skipped, falling back to profile/job_applications:", tblErr.message);
+      console.warn("user_resume_history query skipped, falling back to profile/profile/job_applications:", tblErr.message);
     }
 
     // 2. Profile resume lookup (user_resumes)
@@ -1947,14 +2016,37 @@ exports.getMyRecentResumes = async (req, res) => {
       console.warn("user_resumes query skipped:", profErr.message);
     }
 
-    // 2. Fallback: query past job_applications
+    // 2. Profile resume lookup (user_resumes)
+    try {
+      const profileResult = await pool.query(`
+        SELECT resume_id, file_name, file_url, uploaded_at
+        FROM user_resumes
+        WHERE user_id = $1
+        ORDER BY uploaded_at DESC
+        LIMIT 1
+      `, [applicantId]);
+
+      if (profileResult.rows.length > 0) {
+        const row = profileResult.rows[0];
+        return res.json([{
+          id: row.resume_id,
+          name: row.file_name || 'Resume.pdf',
+          url: row.file_url,
+          last_applied: row.uploaded_at
+        }]);
+      }
+    } catch (profErr) {
+      console.warn("user_resumes query skipped:", profErr.message);
+    }
+
+    // 3. Fallback: query past job_applications
     const fallback = await pool.query(`
       SELECT resume_url, MAX(applied_at) as last_applied, (array_agg(resume_file_name ORDER BY applied_at DESC))[1] as resume_file_name
       FROM job_applications
       WHERE applicant_id = $1 AND resume_url IS NOT NULL
       GROUP BY resume_url
       ORDER BY last_applied DESC
-      LIMIT 2
+      LIMIT 10
     `, [applicantId]);
 
     const resumes = fallback.rows.map(row => {
@@ -2070,9 +2162,9 @@ exports.getMyApplications = async (req, res) => {
     // Status Filters
     if (status) {
       const s = status.toLowerCase();
-      if (s === 'applied' || s === 'in past' || s === 'in-past') {
-        // Now 'Applied' shows everything that was previously split between Applied and In Past.
-        // We only exclude 'Offer' related statuses if they are handled in the 'Offers' tab.
+      if (s === 'applied') {
+        baseQuery += ` AND (ja.current_status ILIKE 'applied' OR ja.current_status IS NULL)`;
+      } else if (s === 'in past' || s === 'in-past') {
         baseQuery += ` AND (ja.current_status NOT ILIKE 'Offer%' OR ja.current_status IS NULL)`;
       } else if (s === 'in review' || s === 'in-review') {
         baseQuery += ` AND ja.current_status ILIKE 'in-review'`;
@@ -2285,14 +2377,19 @@ exports.getMyJobs = async (req, res) => {
       paramCount++;
     }
 
+    const isClosedFilter = status && status.trim().toUpperCase() === 'CLOSED';
+    const orderTimestampExpr = isClosedFilter
+      ? 'COALESCE(j.closed_at, j.updated_at, j.published_at, j.created_at)'
+      : 'COALESCE(j.published_at, j.created_at)';
+
     // Cursor-based pagination
     if (cursor) {
-      query += ` AND COALESCE(j.published_at, j.created_at) < $${paramCount}`;
+      query += ` AND ${orderTimestampExpr} < $${paramCount}`;
       params.push(new Date(cursor));
       paramCount++;
     }
 
-    query += ` ORDER BY COALESCE(j.published_at, j.created_at) DESC`;
+    query += ` ORDER BY ${orderTimestampExpr} DESC`;
 
     // Fetch limit + 1 to determine hasMore
     const fetchLimit = Number(limit) + 1;
@@ -2303,7 +2400,7 @@ exports.getMyJobs = async (req, res) => {
     const countsQuery = `
       SELECT 
         COUNT(*)::int AS "all",
-        COUNT(*) FILTER (WHERE j.status = 'ACTIVE')::int AS "active",
+        COUNT(*) FILTER (WHERE j.status = 'ACTIVE' AND (j.moderation_status IS NULL OR j.moderation_status = 'APPROVED'))::int AS "active",
         COUNT(*) FILTER (WHERE j.status = 'CLOSED')::int AS "closed",
         COUNT(*) FILTER (WHERE j.status = 'DRAFT')::int AS "draft",
         COUNT(*) FILTER (WHERE (j.status IN ('IN REVIEW', 'UNDER_REVIEW') OR j.moderation_status = 'UNDER_REVIEW') AND j.status != 'REJECTED' AND (j.moderation_status IS NULL OR j.moderation_status != 'REJECTED'))::int AS "inReview",
@@ -2322,8 +2419,12 @@ exports.getMyJobs = async (req, res) => {
     const rows = result.rows;
     const hasMore = rows.length > Number(limit);
     const jobs = hasMore ? rows.slice(0, Number(limit)) : rows;
-    const nextCursor = jobs.length > 0 ? (jobs[jobs.length - 1].published_at || jobs[jobs.length - 1].created_at) : null;
-    const counts = countsResult.rows[0] || { all: 0, active: 0, closed: 0, draft: 0, inReview: 0 };
+    const nextCursor = jobs.length > 0
+      ? (isClosedFilter
+          ? (jobs[jobs.length - 1].closed_at || jobs[jobs.length - 1].updated_at || jobs[jobs.length - 1].published_at || jobs[jobs.length - 1].created_at)
+          : (jobs[jobs.length - 1].published_at || jobs[jobs.length - 1].created_at))
+      : null;
+    const counts = countsResult.rows[0] || { all: 0, active: 0, closed: 0, draft: 0, inReview: 0, rejected: 0 };
 
     res.json({
       jobs,
@@ -2418,6 +2519,23 @@ exports.deleteJob = async (req, res) => {
 
     if (result.rowCount === 0) {
       return res.status(404).json({ message: "Job not found or already deleted" });
+    }
+
+    if (org_id) {
+      const jobTitle = jobCheck.rows[0]?.title || 'Job';
+      await logOrgActivity(pool, {
+        orgId: org_id,
+        userId,
+        action: 'DELETE_JOB',
+        metadata: {
+          targetType: 'job',
+          targetId: id,
+          targetName: jobTitle,
+          jobId: id,
+          jobTitle
+        },
+        req
+      });
     }
 
     res.json({ message: "Job deleted successfully" });

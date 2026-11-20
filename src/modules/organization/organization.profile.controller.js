@@ -880,29 +880,6 @@ exports.getOrgTeam = async (req, res) => {
     }
 };
 
-async function getViewerMembership(orgId, userId) {
-    if (!userId) return null;
-    const result = await pool.query(
-        `SELECT cr.name AS role_name, cr.permissions, cr.priority
-         FROM organization_members cm
-         JOIN organization_roles cr ON cm.role_id = cr.role_id
-         WHERE cm.org_id = $1
-           AND cm.user_id = $2
-           AND cm.status = 'ACTIVE'
-           AND (cm.expires_at IS NULL OR cm.expires_at > NOW())`,
-        [orgId, userId]
-    );
-    const row = result.rows[0];
-    if (row && row.permissions && typeof row.permissions === 'string') {
-        try {
-            row.permissions = JSON.parse(row.permissions);
-        } catch (e) {
-            console.error("Failed to parse permissions string:", e);
-            row.permissions = [];
-        }
-    }
-    return row || null;
-}
 
 /**
  * Calculate demographics insights (Locations, Skills, Roles, Education) for matching members/alumni.

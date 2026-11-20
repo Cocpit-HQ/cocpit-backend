@@ -45,7 +45,7 @@ describe('Job Publishing Timing Regression Tests', () => {
       // Verify getAllJobs query uses COALESCE
       expect(jobControllerSource).toContain('ORDER BY COALESCE(j.published_at, j.created_at) DESC');
       // Verify submitJob sets published_at = NOW()
-      expect(jobControllerSource).toContain('"published_at = NOW()"');
+      expect(jobControllerSource).toContain('published_at = NOW()');
       // Verify cursor pagination uses COALESCE
       expect(jobControllerSource).toContain('COALESCE(j.published_at, j.created_at) < $${paramCount}');
     });

@@ -11,14 +11,19 @@ exports.getPostAnalytics = async (req, res, next) => {
         const { postId } = req.params;
         const { filter, startDate, endDate } = req.query;
 
-        // Verify post belongs to authenticated user or their organization
-        const postRes = await pool.query('SELECT author_id, author_org_id FROM posts WHERE post_id = $1', [postId]);
+        // Verify post belongs to authenticated user or their organization and is active
+        const postRes = await pool.query(
+            'SELECT author_id, author_org_id, is_active, is_deleted, is_removed FROM posts WHERE post_id = $1',
+            [postId]
+        );
         if (postRes.rowCount === 0) {
             return res.status(404).json({ status: 'error', message: 'Post not found' });
         }
         
-        const postAuthor = postRes.rows[0].author_id;
-        const postOrg = postRes.rows[0].author_org_id;
+        const { author_id: postAuthor, author_org_id: postOrg, is_active, is_deleted, is_removed } = postRes.rows[0];
+        if (is_active === false || is_deleted === true || is_removed === true) {
+            return res.status(404).json({ status: 'error', message: 'Post not found' });
+        }
 
         if (postAuthor !== userId) {
             let isAuthorized = false;

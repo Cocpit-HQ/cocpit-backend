@@ -1579,6 +1579,7 @@ exports.getActivityLogs = async (req, res, next) => {
                    ) AS role_id,
                    COALESCE(
                        al.metadata->>'targetName',
+                       al.metadata->>'jobTitle',
                        al.metadata->>'targetUserName',
                        al.metadata->>'authorName',
                        CASE 
@@ -1719,6 +1720,7 @@ exports.getActivityLogs = async (req, res, next) => {
                         ELSE NULL
                     END
                 ) ILIKE $${paramIdx} OR
+                (LOWER($${paramIdx}) LIKE '%job%' AND al.action IN ('CREATE_JOB', 'CLOSE_JOB', 'DELETE_JOB', 'SEND_OFFER', 'SHORTLIST_APPLICATION', 'DECLINE_APPLICATION', 'POST_JOB', 'UPDATE_JOB')) OR
                 (LOWER($${paramIdx}) LIKE '%feed%' AND al.action IN ('CREATE_POST', 'EDIT_POST', 'UPDATE_POST', 'LIKE', 'COMMENT', 'REPOST', 'SHARE_POST', 'SAVE_POST')) OR
                 (LOWER($${paramIdx}) LIKE '%verif%' AND al.action IN ('DOCUMENTS_SUBMITTED', 'DOMAIN_VERIFIED')) OR
                 (LOWER($${paramIdx}) LIKE '%notif%' AND al.action = 'ORGANIZATION_NOTIFICATIONS_UPDATED')
@@ -1815,6 +1817,7 @@ exports.getActivityLogs = async (req, res, next) => {
                         ELSE NULL
                     END
                 ) ILIKE $${countParamIdx} OR
+                (LOWER($${countParamIdx}) LIKE '%job%' AND al.action IN ('CREATE_JOB', 'CLOSE_JOB', 'DELETE_JOB', 'SEND_OFFER', 'SHORTLIST_APPLICATION', 'DECLINE_APPLICATION', 'POST_JOB', 'UPDATE_JOB')) OR
                 (LOWER($${countParamIdx}) LIKE '%feed%' AND al.action IN ('CREATE_POST', 'EDIT_POST', 'UPDATE_POST', 'LIKE', 'COMMENT', 'REPOST', 'SHARE_POST', 'SAVE_POST')) OR
                 (LOWER($${countParamIdx}) LIKE '%verif%' AND al.action IN ('DOCUMENTS_SUBMITTED', 'DOMAIN_VERIFIED'))
             )`;

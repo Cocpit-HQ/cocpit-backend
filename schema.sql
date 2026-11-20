@@ -745,6 +745,8 @@ CREATE TABLE jobs (
   ai_extracted_requirements JSONB,
   created_at TIMESTAMPTZ DEFAULT now(),
   updated_at TIMESTAMPTZ DEFAULT now(),
+  published_at TIMESTAMPTZ,
+  closed_at TIMESTAMPTZ,
   CHECK (salary_min IS NULL OR salary_max IS NULL OR salary_min <= salary_max)
 );
 
@@ -752,6 +754,15 @@ CREATE TABLE jobs (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_recent_job_company
 ON jobs(org_id, title, location)
 WHERE status = 'ACTIVE';
+
+-- Closed jobs ordering & keyset pagination
+CREATE INDEX IF NOT EXISTS idx_jobs_org_closed 
+ON jobs(org_id, closed_at DESC) 
+WHERE status = 'CLOSED';
+
+CREATE INDEX IF NOT EXISTS idx_jobs_recruiter_closed 
+ON jobs(recruiter_id, closed_at DESC) 
+WHERE status = 'CLOSED';
 
 -- Analytics/Dashboard optimization
 CREATE INDEX IF NOT EXISTS idx_jobs_company_status 

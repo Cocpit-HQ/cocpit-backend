@@ -119,6 +119,9 @@ describe('Job Offer Withdrawal & Active Count Regression Tests', () => {
 
       const [sql, params] = pool.query.mock.calls[0];
       expect(sql).toContain("jo.status != 'withdrawn'");
+      expect(sql).toContain("sent_by_name");
+      expect(sql).toContain("sent_by_avatar");
+      expect(sql).toContain("sent_by_headline");
       expect(params).toEqual(['org-uuid-1', 'job-uuid-1']);
     });
 

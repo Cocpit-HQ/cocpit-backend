@@ -56,6 +56,7 @@ async function notifyAssociatedUsersOnOrgCreated(client, org, creatorUserId) {
             body: bodyText,
             org_id: org.org_id,
             org_name: orgName,
+            org_logo: org.logo_url || null,
             actor_name: orgName,
             actor_avatar: org.logo_url || null,
             actor_slug: org.slug || null,

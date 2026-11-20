@@ -1841,10 +1841,16 @@ exports.getPostById = async (req, res) => {
             'slug', o_mention.slug
         )), '[]'::json)
         FROM (
-            SELECT DISTINCT (regexp_matches(COALESCE(p.content, ''), '@\[[^\]]+\]\((?:(?:user|org|company):)?([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\)', 'g'))[1]::uuid AS mentioned_id
+            SELECT DISTINCT (regexp_matches(COALESCE(p.content, ''), '@\\[[^\\]]+\\]\\((?:(?:user|org|company):)?([^)]+)\\)', 'g'))[1] AS raw_id
         ) mentions
-        LEFT JOIN active_users u_mention ON u_mention.user_id = mentions.mentioned_id
-        LEFT JOIN organizations o_mention ON o_mention.org_id = mentions.mentioned_id
+        LEFT JOIN active_users u_mention ON (
+            (mentions.raw_id ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' AND u_mention.user_id = mentions.raw_id::uuid)
+            OR LOWER(u_mention.account_name) = LOWER(mentions.raw_id)
+        )
+        LEFT JOIN organizations o_mention ON (
+            (mentions.raw_id ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' AND o_mention.org_id = mentions.raw_id::uuid)
+            OR LOWER(o_mention.slug) = LOWER(mentions.raw_id)
+        )
         WHERE u_mention.user_id IS NOT NULL OR o_mention.org_id IS NOT NULL
     ) AS mentioned_users,
 
@@ -2188,24 +2194,30 @@ exports.getPostById = async (req, res) => {
                                  'author_slug', COALESCE(sp_sp_comp.slug, sp_sp_u.account_name),
                                  'is_organization_post', (sp_sp.author_org_id IS NOT NULL)
                              ),
-                             'mentioned_users', (
-                                 SELECT COALESCE(json_agg(json_build_object(
-                                     'id', COALESCE(u_mention.user_id, o_mention.org_id),
-                                     'user_id', COALESCE(u_mention.user_id, o_mention.org_id),
-                                     'org_id', o_mention.org_id,
-                                     'full_name', COALESCE(u_mention.full_name, o_mention.name),
-                                     'account_name', COALESCE(u_mention.account_name, o_mention.slug),
-                                     'is_company', (o_mention.org_id IS NOT NULL),
-                                     'type', CASE WHEN o_mention.org_id IS NOT NULL THEN 'COMPANY' ELSE 'USER' END,
-                                     'slug', o_mention.slug
-                                 )), '[]'::json)
-                                 FROM (
-                                     SELECT DISTINCT (regexp_matches(COALESCE(sp_sp.content, ''), '@\\[[^\\]]+\\]\\((?:(?:user|org|company):)?([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\\)', 'g'))[1]::uuid AS mentioned_id
-                                 ) mentions
-                                 LEFT JOIN active_users u_mention ON u_mention.user_id = mentions.mentioned_id
-                                 LEFT JOIN organizations o_mention ON o_mention.org_id = mentions.mentioned_id
-                                 WHERE u_mention.user_id IS NOT NULL OR o_mention.org_id IS NOT NULL
-                             ),
+                'mentioned_users', (
+                    SELECT COALESCE(json_agg(json_build_object(
+                        'id', COALESCE(u_mention.user_id, o_mention.org_id),
+                        'user_id', COALESCE(u_mention.user_id, o_mention.org_id),
+                        'org_id', o_mention.org_id,
+                        'full_name', COALESCE(u_mention.full_name, o_mention.name),
+                        'account_name', COALESCE(u_mention.account_name, o_mention.slug),
+                        'is_company', (o_mention.org_id IS NOT NULL),
+                        'type', CASE WHEN o_mention.org_id IS NOT NULL THEN 'COMPANY' ELSE 'USER' END,
+                        'slug', o_mention.slug
+                    )), '[]'::json)
+                    FROM (
+                        SELECT DISTINCT (regexp_matches(COALESCE(sp_sp.content, ''), '@\\[[^\\]]+\\]\\((?:(?:user|org|company):)?([^)]+)\\)', 'g'))[1] AS raw_id
+                    ) mentions
+                    LEFT JOIN active_users u_mention ON (
+                        (mentions.raw_id ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' AND u_mention.user_id = mentions.raw_id::uuid)
+                        OR LOWER(u_mention.account_name) = LOWER(mentions.raw_id)
+                    )
+                    LEFT JOIN organizations o_mention ON (
+                        (mentions.raw_id ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' AND o_mention.org_id = mentions.raw_id::uuid)
+                        OR LOWER(o_mention.slug) = LOWER(mentions.raw_id)
+                    )
+                    WHERE u_mention.user_id IS NOT NULL OR o_mention.org_id IS NOT NULL
+                ),
                              'media', COALESCE((SELECT json_agg(json_build_object('url', pm.url, 'media_type', pm.media_type, 'width', pm.width, 'height', pm.height)) FROM post_media pm WHERE pm.post_id = sp_sp.post_id), '[]'::json)
                          )
                          FROM posts sp_sp
@@ -4785,15 +4797,28 @@ exports.getComments = async (req, res) => {
         
         (
             SELECT COALESCE(json_agg(json_build_object(
-                'user_id', u_mention.user_id,
-                'full_name', u_mention.full_name,
-                'account_name', u_mention.account_name
-            )), '[]'::json)
-            FROM (
-                SELECT DISTINCT (regexp_matches(COALESCE(c.content, ''), '@\[[^\]]+\]\((?:(?:user|org|company):)?([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\)', 'g'))[1]::uuid AS mentioned_id
-            ) mentions
-            JOIN active_users u_mention ON u_mention.user_id = mentions.mentioned_id
-        ) AS mentioned_users,
+                'id', COALESCE(u_mention.user_id, o_mention.org_id),
+                    'user_id', COALESCE(u_mention.user_id, o_mention.org_id),
+                    'org_id', o_mention.org_id,
+                    'full_name', COALESCE(u_mention.full_name, o_mention.name),
+                    'account_name', COALESCE(u_mention.account_name, o_mention.slug),
+                    'is_company', (o_mention.org_id IS NOT NULL),
+                    'type', CASE WHEN o_mention.org_id IS NOT NULL THEN 'COMPANY' ELSE 'USER' END,
+                    'slug', o_mention.slug
+                )), '[]'::json)
+                FROM (
+                    SELECT DISTINCT (regexp_matches(COALESCE(c.content, ''), '@\\[[^\\]]+\\]\\((?:(?:user|org|company):)?([^)]+)\\)', 'g'))[1] AS raw_id
+                ) mentions
+                LEFT JOIN active_users u_mention ON (
+                    (mentions.raw_id ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' AND u_mention.user_id = mentions.raw_id::uuid)
+                    OR LOWER(u_mention.account_name) = LOWER(mentions.raw_id)
+                )
+                LEFT JOIN organizations o_mention ON (
+                    (mentions.raw_id ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' AND o_mention.org_id = mentions.raw_id::uuid)
+                    OR LOWER(o_mention.slug) = LOWER(mentions.raw_id)
+                )
+                WHERE u_mention.user_id IS NOT NULL OR o_mention.org_id IS NOT NULL
+            ) AS mentioned_users,
 
         COALESCE(
           (SELECT COUNT(*)::int FROM active_comment_likes cl WHERE cl.comment_id = c.comment_id),
@@ -6616,7 +6641,8 @@ exports.removeMention = async (req, res) => {
     let actorScope;
 
     try {
-        actorScope = getContentActorScope(req, req.body?.companyId || req.query?.companyId || req.headers["x-actor-id"] || null);
+        const fallbackOrg = req.body?.companyId || req.query?.companyId || (req.headers["x-actor-type"] === "ORGANIZATION" ? req.headers["x-actor-id"] : null);
+        actorScope = getContentActorScope(req, fallbackOrg);
     } catch (err) {
         return res.status(err.statusCode || 500).json({ message: err.message || "Internal server error" });
     }
@@ -6653,16 +6679,26 @@ exports.removeMention = async (req, res) => {
         }
 
         let newContent = postResult.rows[0].content || '';
+        const targetId = orgId || userId;
 
+        // 1. Strip structured mentions by target UUID (user:<uuid>, org:<uuid>, company:<uuid>, or bare <uuid>)
+        if (targetId) {
+            const escapeTargetId = targetId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const uuidMatch = new RegExp(`@\\[([^\\]]+)\\]\\((?:(?:user|org|company):)?${escapeTargetId}\\)`, 'gi');
+            newContent = newContent.replace(uuidMatch, '$1');
+        }
+
+        // 2. Strip structured or legacy mentions by handle (username or org slug)
         if (actorHandle) {
             const escapeHandle = actorHandle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-            const structuredMatch = new RegExp(`@\\[([^\\]]+)\\]\\(${escapeHandle}\\)`, 'gi');
+            const structuredMatch = new RegExp(`@\\[([^\\]]+)\\]\\((?:(?:user|org|company):)?${escapeHandle}\\)`, 'gi');
             newContent = newContent.replace(structuredMatch, '$1');
 
             const legacyMatch = new RegExp(`@(${escapeHandle})\\b`, 'gi');
             newContent = newContent.replace(legacyMatch, '$1');
         }
 
+        // 3. Fallback: Strip structured mentions matching full display name
         if (actorName) {
             const escapeName = actorName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
             const structuredNameMatch = new RegExp(`@\\[(${escapeName})\\]\\([^)]+\\)`, 'gi');
@@ -6671,6 +6707,17 @@ exports.removeMention = async (req, res) => {
 
         if (newContent !== postResult.rows[0].content) {
             await pool.query("UPDATE posts SET content = $1, updated_at = now() WHERE post_id = $2", [newContent, postId]);
+        }
+
+        // Deactivate tag in post_tags to ensure it is cleared from activity logs and tag lists
+        const isTargetUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(targetId);
+        if (isTargetUuid) {
+            await pool.query(
+                `INSERT INTO post_tags (post_id, tagged_user_id, is_active_tag, updated_at)
+                 VALUES ($1::uuid, $2::uuid, false, NOW())
+                 ON CONFLICT (post_id, tagged_user_id) DO UPDATE SET is_active_tag = false, updated_at = NOW()`,
+                [postId, targetId]
+            );
         }
 
         res.status(200).json({ message: "Mention removed successfully", content: newContent });
