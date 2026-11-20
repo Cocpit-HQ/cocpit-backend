@@ -1,0 +1,32 @@
+name: Rollback Backend (Instant 2-Second Rollback)
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_commit:
+        description: 'Target Commit SHA or Release name (Leave blank to rollback to immediately preceding release)'
+        required: false
+        default: ''
+
+jobs:
+  rollback:
+    name: Instant Backend Rollback
+    runs-on: ubuntu-latest
+    steps:
+      - name: Execute Atomic Rollback on EC2
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          port: 22
+          script_stop: true
+          script: |
+            echo "⚡ Triggering atomic rollback on EC2..."
+            /var/www/cocpit/bin/rollback-backend.sh "${{ github.event.inputs.target_commit }}"
+            
+            # Verify health
+            sleep 3
+            curl -f http://localhost:5000/health || exit 1
+            echo "✅ Backend rollback verified healthy!"
+            /var/www/cocpit/bin/list-releases.sh

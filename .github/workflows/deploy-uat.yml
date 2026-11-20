@@ -7,10 +7,10 @@ on:
 
 jobs:
   deploy:
-    name: Auto-Deploy to EC2
+    name: Atomic Deploy to EC2
     runs-on: ubuntu-latest
     steps:
-      - name: Deploy to EC2 via SSH
+      - name: Execute Atomic Release on EC2
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.EC2_HOST }}
@@ -19,19 +19,8 @@ jobs:
           port: 22
           script_stop: true
           script: |
-            echo "🚀 Starting automated deployment on EC2..."
-            cd /var/www/cocpit/backend
-            
-            # Fetch latest changes
-            git fetch origin uat
-            git reset --hard origin/uat
-            
-            # Install production dependencies
-            npm ci --omit=dev
-            
-            # Zero-downtime PM2 reload
-            pm2 reload cocpit-backend --update-env
-            pm2 save
+            echo "🚀 Starting atomic backend release for commit ${{ github.sha }}..."
+            /var/www/cocpit/bin/deploy-backend.sh "${{ github.sha }}"
             
             # Verify health
             sleep 3
