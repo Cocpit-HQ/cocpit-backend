@@ -1,0 +1,39 @@
+name: Deploy Backend to AWS EC2 (UAT)
+
+on:
+  push:
+    branches:
+      - uat
+
+jobs:
+  deploy:
+    name: Auto-Deploy to EC2
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to EC2 via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          port: 22
+          script_stop: true
+          script: |
+            echo "🚀 Starting automated deployment on EC2..."
+            cd /var/www/cocpit/backend
+            
+            # Fetch latest changes
+            git fetch origin uat
+            git reset --hard origin/uat
+            
+            # Install production dependencies
+            npm ci --omit=dev
+            
+            # Zero-downtime PM2 reload
+            pm2 reload cocpit-backend --update-env
+            pm2 save
+            
+            # Verify health
+            sleep 3
+            curl -f http://localhost:5000/health || exit 1
+            echo "✅ Backend successfully deployed and healthy!"
