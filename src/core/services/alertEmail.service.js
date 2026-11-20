@@ -88,7 +88,7 @@ async function sendAlertEmail(alertPayload, customRecipients = null) {
           </div>
 
           <div style="margin-top: 24px; text-align: center;">
-            <a href="https://grafana-railway-uat.up.railway.app/d/amnnmv/cocpit-uat-api-and-performance-observability" style="background: #111827; color: #ffffff; text-decoration: none; padding: 10px 20px; border-radius: 6px; font-size: 14px; font-weight: 500; display: inline-block;">View Grafana Observability Dashboard</a>
+            <a href="${process.env.GRAFANA_DASHBOARD_URL || 'http://13.204.208.191/grafana/d/amnnmv/cocpit-uat-api-and-performance-observability'}" style="background: #111827; color: #ffffff; text-decoration: none; padding: 10px 20px; border-radius: 6px; font-size: 14px; font-weight: 500; display: inline-block;">View Grafana Observability Dashboard</a>
           </div>
         </div>
         <div style="background: #f9fafb; padding: 12px 24px; text-align: center; font-size: 12px; color: #9ca3af; border-top: 1px solid #e5e7eb;">
