@@ -97,10 +97,16 @@ const getPostHydrationSelect = (companyParamIdx, userParamIdx) => `
             'slug', o_mention.slug
         )), '[]'::json)
         FROM (
-            SELECT DISTINCT (regexp_matches(COALESCE(p.content, ''), '@\[[^\]]+\]\((?:(?:user|org|company):)?([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\)', 'g'))[1]::uuid AS mentioned_id
+            SELECT DISTINCT (regexp_matches(COALESCE(p.content, ''), '@\\[[^\\]]+\\]\\((?:(?:user|org|company):)?([^)]+)\\)', 'g'))[1] AS raw_id
         ) mentions
-        LEFT JOIN active_users u_mention ON u_mention.user_id = mentions.mentioned_id
-        LEFT JOIN organizations o_mention ON o_mention.org_id = mentions.mentioned_id
+        LEFT JOIN active_users u_mention ON (
+            (mentions.raw_id ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' AND u_mention.user_id = mentions.raw_id::uuid)
+            OR LOWER(u_mention.account_name) = LOWER(mentions.raw_id)
+        )
+        LEFT JOIN organizations o_mention ON (
+            (mentions.raw_id ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' AND o_mention.org_id = mentions.raw_id::uuid)
+            OR LOWER(o_mention.slug) = LOWER(mentions.raw_id)
+        )
         WHERE u_mention.user_id IS NOT NULL OR o_mention.org_id IS NOT NULL
     ) AS mentioned_users,
 
@@ -431,10 +437,16 @@ const getPostHydrationSelect = (companyParamIdx, userParamIdx) => `
                          'slug', o_mention.slug
                      )), '[]'::json)
                      FROM (
-                         SELECT DISTINCT (regexp_matches(COALESCE(sp.content, ''), '@\\[[^\\]]+\\]\\((?:(?:user|org|company):)?([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\\)', 'g'))[1]::uuid AS mentioned_id
+                         SELECT DISTINCT (regexp_matches(COALESCE(sp.content, ''), '@\\[[^\\]]+\\]\\((?:(?:user|org|company):)?([^)]+)\\)', 'g'))[1] AS raw_id
                      ) mentions
-                     LEFT JOIN active_users u_mention ON u_mention.user_id = mentions.mentioned_id
-                     LEFT JOIN organizations o_mention ON o_mention.org_id = mentions.mentioned_id
+                     LEFT JOIN active_users u_mention ON (
+                         (mentions.raw_id ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' AND u_mention.user_id = mentions.raw_id::uuid)
+                         OR LOWER(u_mention.account_name) = LOWER(mentions.raw_id)
+                     )
+                     LEFT JOIN organizations o_mention ON (
+                         (mentions.raw_id ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' AND o_mention.org_id = mentions.raw_id::uuid)
+                         OR LOWER(o_mention.slug) = LOWER(mentions.raw_id)
+                     )
                      WHERE u_mention.user_id IS NOT NULL OR o_mention.org_id IS NOT NULL
                  ),
                  'media', COALESCE((SELECT json_agg(json_build_object('url', pm.url, 'media_type', pm.media_type, 'width', pm.width, 'height', pm.height, 'order_index', pm.order_index, 'thumbnail_url', pm.thumbnail_url, 'duration_seconds', pm.duration_seconds) ORDER BY pm.order_index ASC) FROM post_media pm WHERE pm.post_id = sp.post_id), '[]'::json),
@@ -690,7 +702,9 @@ const getPublicFeedWhere = (userParamIdx, companyParamIdx = null) => `
     AND (p.author_org_id IS NOT NULL OR (u.is_deactivated = FALSE AND (u.is_deleted IS NULL OR u.is_deleted = FALSE)))
     AND (p.author_org_id IS NULL OR (comp.is_deleted = FALSE AND comp.is_deactivated = FALSE AND comp.is_suspended IS NOT TRUE))
     AND p.is_community_article IS NOT TRUE
-    ${companyParamIdx ? `
+    ${
+      companyParamIdx
+        ? `
     AND NOT EXISTS (
         SELECT 1 FROM blocks b
         WHERE (p.author_org_id IS NULL AND (
@@ -717,7 +731,8 @@ const getPublicFeedWhere = (userParamIdx, companyParamIdx = null) => `
             ))
         )
     )
-    ` : `
+    `
+        : `
     AND NOT EXISTS (
         SELECT 1 FROM blocks b 
         WHERE (b.is_org_block = false AND p.author_org_id IS NULL AND ((b.blocker_id = $${userParamIdx} AND b.blocked_id = p.author_id) OR (b.blocker_id = p.author_id AND b.blocked_id = $${userParamIdx})))
@@ -734,15 +749,19 @@ const getPublicFeedWhere = (userParamIdx, companyParamIdx = null) => `
                OR (b.is_org_block = false AND sp.author_org_id IS NOT NULL AND (b.blocker_id = $${userParamIdx} AND b.blocked_id = sp.author_org_id))
         )
     )
-    `}
-    ${companyParamIdx ? `
+    `
+    }
+    ${
+      companyParamIdx
+        ? `
     AND NOT EXISTS (
         SELECT 1 FROM user_post_feedback upf
         WHERE (upf.post_id = p.post_id OR upf.post_id = p.shared_post_id)
           AND upf.feedback_type = 'NOT_INTERESTED'
           AND upf.org_id = $${companyParamIdx}::uuid
     )
-    ` : `
+    `
+        : `
     AND ($${userParamIdx}::uuid IS NULL OR NOT EXISTS (
         SELECT 1 FROM user_post_feedback upf
         WHERE (upf.post_id = p.post_id OR upf.post_id = p.shared_post_id)
@@ -750,7 +769,8 @@ const getPublicFeedWhere = (userParamIdx, companyParamIdx = null) => `
           AND upf.user_id = $${userParamIdx}::uuid
           AND upf.org_id IS NULL
     ))
-    `}
+    `
+    }
     AND (
         p.shared_post_id IS NULL 
         OR (
@@ -783,8 +803,8 @@ const getPublicFeedWhere = (userParamIdx, companyParamIdx = null) => `
 `;
 
 module.exports = {
-    getPostHydrationSelect,
-    getPostHydrationJoins,
-    getPublicFeedWhere,
-    getLikerBlockFilter,
+  getPostHydrationSelect,
+  getPostHydrationJoins,
+  getPublicFeedWhere,
+  getLikerBlockFilter,
 };

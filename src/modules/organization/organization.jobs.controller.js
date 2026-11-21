@@ -1,62 +1,69 @@
-const pool = require("../../core/db/pool");
-const { buildJobFilters } = require("../../core/utils/jobQueryBuilder");
-const { v4: uuidv4 } = require("uuid"); // Ensure unique ID generation for idempotency checks
-const { notifyCompanyFollowers } = require("../../services/notification.service");
-const { resolveOrg } = require("./organization.profile.controller");
+const pool = require('../../core/db/pool');
+const { buildJobFilters } = require('../../core/utils/jobQueryBuilder');
+const { v4: uuidv4 } = require('uuid'); // Ensure unique ID generation for idempotency checks
+const { notifyCompanyFollowers } = require('../../services/notification.service');
+const { resolveOrg } = require('./organization.profile.controller');
+const { checkOrgPermission } = require('../../core/utils/rbac');
+const { logOrgActivity } = require('../../core/infrastructure/audit.service');
 
 exports.createOrganizationJob = async (req, res) => {
-    const { orgId: companyId } = req.params;
-    const userId = req.user.sub;
-    const idempotencyKey = req.headers["idempotency-key"] || uuidv4();
+  const { orgId: companyId } = req.params;
+  const userId = req.user.sub;
+  const idempotencyKey = req.headers['idempotency-key'] || uuidv4();
 
-    const {
-        title,
-        location,
-        description,
-        salary_min,
-        salary_max,
-        salary_currency = "USD",
-        salary_period = "YEARLY",
-        salary_visibility = "PUBLIC",
-        job_type,
-        work_mode,
-        experience_min,
-        experience_max,
-        experience_level,
-        industry,
-        easy_apply = false,
-        actively_hiring = false,
-        status = "DRAFT",
-        expires_at, // Expected ISO 8601 string or null
-        skills = []
-    } = req.body;
+  const {
+    title,
+    location,
+    description,
+    salary_min,
+    salary_max,
+    salary_currency = 'USD',
+    salary_period = 'YEARLY',
+    salary_visibility = 'PUBLIC',
+    job_type,
+    work_mode,
+    experience_min,
+    experience_max,
+    experience_level,
+    industry,
+    easy_apply = false,
+    actively_hiring = false,
+    status = 'DRAFT',
+    expires_at, // Expected ISO 8601 string or null
+    skills = [],
+  } = req.body;
 
-    if (salary_min && salary_max && Number(salary_min) > Number(salary_max)) {
-        return res.status(400).json({ message: "Minimum salary cannot be greater than maximum salary" });
+  if (salary_min && salary_max && Number(salary_min) > Number(salary_max)) {
+    return res
+      .status(400)
+      .json({ message: 'Minimum salary cannot be greater than maximum salary' });
+  }
+
+  const client = await pool.connect();
+
+  try {
+    await client.query('BEGIN');
+
+    // Check idempotency (simplified - relies on unique index in db for exact matches or external Redis normally)
+    // Relying on `idx_unique_recent_job_company` for exact dupes active jobs.
+
+    // 1. Fetch Organization Name (needed for legacy columns in jobs table)
+    const companyRes = await client.query(
+      'SELECT name FROM organizations WHERE org_id = $1 AND is_deleted = FALSE',
+      [companyId]
+    );
+    if (companyRes.rowCount === 0) {
+      throw new Error('Organization not found or deleted');
     }
+    const companyName = companyRes.rows[0].name;
 
-    const client = await pool.connect();
+    // 2. Insert job
+    const isPublishing = status === 'ACTIVE' || status === 'UNDER_REVIEW';
+    const targetStatus = isPublishing ? 'UNDER_REVIEW' : status;
+    const targetModerationStatus = isPublishing ? 'UNDER_REVIEW' : null;
 
-    try {
-        await client.query("BEGIN");
-
-        // Check idempotency (simplified - relies on unique index in db for exact matches or external Redis normally)
-        // Relying on `idx_unique_recent_job_company` for exact dupes active jobs.
-
-        // 1. Fetch Organization Name (needed for legacy columns in jobs table)
-        const companyRes = await client.query("SELECT name FROM organizations WHERE org_id = $1 AND is_deleted = FALSE", [companyId]);
-        if (companyRes.rowCount === 0) {
-            throw new Error("Organization not found or deleted");
-        }
-        const companyName = companyRes.rows[0].name;
-
-        // 2. Insert job
-        const isPublishing = status === "ACTIVE" || status === "UNDER_REVIEW";
-        const targetStatus = isPublishing ? "UNDER_REVIEW" : status;
-        const targetModerationStatus = isPublishing ? "UNDER_REVIEW" : null;
-
-        const jobRes = await client.query(
-            `
+    const jobRes = await client.query(
+      `
       INSERT INTO jobs
       (
         recruiter_id, title, company_name, org_id, location,
@@ -70,23 +77,41 @@ exports.createOrganizationJob = async (req, res) => {
       ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)
       RETURNING *
       `,
-            [
-                userId, title, companyName, companyId, location,
-                description, salary_min, salary_max, job_type,
-                work_mode, experience_min || null, experience_level,
-                experience_max || null, industry, easy_apply, actively_hiring,
-                true, targetStatus, targetModerationStatus, expires_at || null, salary_currency, salary_period, salary_visibility,
-                isPublishing ? new Date() : null
-            ]
-        );
+      [
+        userId,
+        title,
+        companyName,
+        companyId,
+        location,
+        description,
+        salary_min,
+        salary_max,
+        job_type,
+        work_mode,
+        experience_min || null,
+        experience_level,
+        experience_max || null,
+        industry,
+        easy_apply,
+        actively_hiring,
+        true,
+        targetStatus,
+        targetModerationStatus,
+        expires_at || null,
+        salary_currency,
+        salary_period,
+        salary_visibility,
+        isPublishing ? new Date() : null,
+      ]
+    );
 
-        const job = jobRes.rows[0];
+    const job = jobRes.rows[0];
 
-        // 3. Handle skills
-        if (skills.length > 0) {
-            for (let skill of skills) {
-                const skillRes = await client.query(
-                    `
+    // 3. Handle skills
+    if (skills.length > 0) {
+      for (let skill of skills) {
+        const skillRes = await client.query(
+          `
                 WITH s AS (
                     SELECT skill_id FROM skills WHERE lower(name) = lower($1)
                 ),
@@ -100,202 +125,252 @@ exports.createOrganizationJob = async (req, res) => {
                 UNION ALL
                 SELECT skill_id FROM i
                 `,
-                    [skill]
-                );
+          [skill]
+        );
 
-                const skillId = skillRes.rows[0].skill_id;
+        const skillId = skillRes.rows[0].skill_id;
 
-                await client.query(
-                    `
+        await client.query(
+          `
                 INSERT INTO job_skills(job_id, skill_id)
                 VALUES ($1,$2)
                 ON CONFLICT DO NOTHING
                 `,
-                    [job.job_id, skillId]
-                );
-            }
-        }
-
-        // 4. Audit Log
-        await client.query(
-            `INSERT INTO audit_logs (entity_type, entity_id, actor_id, action, metadata)
-         VALUES ('ORGANIZATION', $1, $2, 'POST_JOB', $3)`,
-            [companyId, userId, JSON.stringify({ type: 'job', id: job.job_id, title: job.title })]
+          [job.job_id, skillId]
         );
+      }
+    }
 
-        // 5. Event Outbox
-        await client.query(
-            `INSERT INTO event_outbox (topic, payload) VALUES ($1, $2)`,
-            ['JOB_POSTED', JSON.stringify({ jobId: job.job_id, companyId, status })]
-        );
+    // 4. Audit Log
+    await logOrgActivity(client, {
+      orgId: companyId,
+      userId,
+      action: 'CREATE_JOB',
+      metadata: {
+        targetType: 'job',
+        targetId: job.job_id,
+        targetName: job.title,
+        jobId: job.job_id,
+        jobTitle: job.title,
+        linkUrl: `/jobs/${job.job_id}`,
+      },
+      req,
+    });
 
-        await client.query("COMMIT");
+    // 5. Event Outbox
+    await client.query(`INSERT INTO event_outbox (topic, payload) VALUES ($1, $2)`, [
+      'JOB_POSTED',
+      JSON.stringify({ jobId: job.job_id, companyId, status }),
+    ]);
 
-        // 6. Notify followers with 'jobs' preference enabled ONLY when job is actually ACTIVE
-        if (job.status === "ACTIVE") {
-            notifyCompanyFollowers(companyId, "jobs", {
-                type: "company_job",
-                text: `${companyName} posted a new job: ${title}`,
-                referenceId: job.job_id,
-                metadata: { job_title: title, location: location || null },
-            }).catch(err => console.error("Job notification error:", err));
-        }
+    await client.query('COMMIT');
 
-        // 7. Notify user/org that job is submitted for review
-        if (isPublishing) {
-            (async () => {
-                try {
-                    const notificationText = `Your job ${title} has been submitted for review.`;
-                    const metadataPayload = {
-                        jobId: job.job_id,
-                        job_id: job.job_id,
-                        jobTitle: title,
-                        companyName,
-                        orgId: companyId,
-                        org_id: companyId,
-                        status: 'UNDER_REVIEW'
-                    };
+    // 6. Notify followers with 'jobs' preference enabled ONLY when job is actually ACTIVE
+    if (job.status === 'ACTIVE') {
+      notifyCompanyFollowers(companyId, 'jobs', {
+        type: 'company_job',
+        text: `${companyName} posted a new job: ${title}`,
+        referenceId: job.job_id,
+        metadata: { job_title: title, location: location || null },
+      }).catch((err) => console.error('Job notification error:', err));
+    }
 
-                    const notifRes = await pool.query(
-                        `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata, recipient_org_id)
+    // 7. Notify user/org that job is submitted for review
+    if (isPublishing) {
+      (async () => {
+        try {
+          const notificationText = `Your job ${title} has been submitted for review.`;
+          const metadataPayload = {
+            jobId: job.job_id,
+            job_id: job.job_id,
+            jobTitle: title,
+            companyName,
+            orgId: companyId,
+            org_id: companyId,
+            status: 'UNDER_REVIEW',
+          };
+
+          const notifRes = await pool.query(
+            `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata, recipient_org_id)
                          VALUES ($1, $2, 'job_submitted', $3, $4, $5, $6)
                          RETURNING notification_id, created_at`,
-                        [userId, userId, notificationText, job.job_id, JSON.stringify(metadataPayload), companyId]
-                    );
+            [
+              userId,
+              userId,
+              notificationText,
+              job.job_id,
+              JSON.stringify(metadataPayload),
+              companyId,
+            ]
+          );
 
-                    await pool.query(
-                        `INSERT INTO notifications (recipient_org_id, user_id, sender_id, type, text, reference_id, metadata)
+          await pool.query(
+            `INSERT INTO notifications (recipient_org_id, user_id, sender_id, type, text, reference_id, metadata)
                          VALUES ($1, NULL, $2, 'job_submitted', $3, $4, $5)`,
-                        [companyId, userId, notificationText, job.job_id, JSON.stringify(metadataPayload)]
-                    );
+            [companyId, userId, notificationText, job.job_id, JSON.stringify(metadataPayload)]
+          );
 
-                    const socketService = require("../../core/infrastructure/socket.service");
-                    const notifId = notifRes.rows[0]?.notification_id;
-                    const notifCreatedAt = notifRes.rows[0]?.created_at ? notifRes.rows[0].created_at.toISOString() : new Date().toISOString();
-                    const socketPayload = {
-                        notification_id: notifId,
-                        type: "job_submitted",
-                        text: notificationText,
-                        sender_id: userId,
-                        reference_id: job.job_id,
-                        recipient_company_id: companyId,
-                        recipient_org_id: companyId,
-                        metadata: metadataPayload,
-                        created_at: notifCreatedAt,
-                        is_read: false
-                    };
+          const socketService = require('../../core/infrastructure/socket.service');
+          const notifId = notifRes.rows[0]?.notification_id;
+          const notifCreatedAt = notifRes.rows[0]?.created_at
+            ? notifRes.rows[0].created_at.toISOString()
+            : new Date().toISOString();
+          const socketPayload = {
+            notification_id: notifId,
+            type: 'job_submitted',
+            text: notificationText,
+            sender_id: userId,
+            reference_id: job.job_id,
+            recipient_company_id: companyId,
+            recipient_org_id: companyId,
+            metadata: metadataPayload,
+            created_at: notifCreatedAt,
+            is_read: false,
+          };
 
-                    socketService.notifyUser(userId, "notification", socketPayload);
-                    socketService.notifyOrg(companyId, "notification", socketPayload);
-                } catch (notifErr) {
-                    console.error("Failed to dispatch job_submitted notification in createOrganizationJob:", notifErr);
-                }
-            })();
+          socketService.notifyUser(userId, 'notification', socketPayload);
+          socketService.notifyOrg(companyId, 'notification', socketPayload);
+        } catch (notifErr) {
+          console.error(
+            'Failed to dispatch job_submitted notification in createOrganizationJob:',
+            notifErr
+          );
         }
-
-        res.status(201).json({
-            message: "Job created successfully",
-            job
-        });
-
-    } catch (err) {
-        await client.query("ROLLBACK");
-        if (err.code === '23505' && err.constraint === 'idx_unique_recent_job_company') {
-            return res.status(409).json({ message: "Duplicate active job found for this organization." });
-        }
-        console.error("Create organization job error:", err);
-        res.status(500).json({ message: "Internal server error" });
-    } finally {
-        client.release();
+      })();
     }
+
+    res.status(201).json({
+      message: 'Job created successfully',
+      job,
+    });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    if (err.code === '23505' && err.constraint === 'idx_unique_recent_job_company') {
+      return res.status(409).json({ message: 'Duplicate active job found for this organization.' });
+    }
+    console.error('Create organization job error:', err);
+    res.status(500).json({ message: 'Internal server error' });
+  } finally {
+    client.release();
+  }
 };
 
 exports.getOrganizationJobs = async (req, res) => {
-    const { orgId: companyId } = req.params;
-    const { scope = 'public', limit = 10, cursor, status } = req.query;
+  const { orgId: companyId } = req.params;
+  const { scope = 'public', limit = 10, cursor, status } = req.query;
 
-    // For 'internal' scope, the route middleware should already guarantee they are a member.
-    // We enforce the query filter.
+  // For 'internal' scope, the route middleware should already guarantee they are a member.
+  // We enforce the query filter.
 
-    try {
-        const org = await resolveOrg(companyId);
-        if (!org) {
-            return res.status(404).json({ message: "Organization not found" });
-        }
-        const resolvedOrgId = org.org_id;
+  try {
+    const org = await resolveOrg(companyId);
+    if (!org) {
+      return res.status(404).json({ message: 'Organization not found' });
+    }
+    const resolvedOrgId = org.org_id;
 
-        let conditions = ["j.org_id = $1", "j.is_active = TRUE"];
-        let params = [resolvedOrgId];
-        let paramCount = 2;
-        let authUserIndex = null;
+    let conditions = ['j.org_id = $1', 'j.is_active = TRUE'];
+    let params = [resolvedOrgId];
+    let paramCount = 2;
+    let authUserIndex = null;
 
-        if (scope === 'public') {
-            // Public fetching requires company to be verified and not suspended
-            if (org.verification_status === 'SUSPENDED') {
-                return res.status(403).json({ message: "Organization is suspended" });
-            }
+    if (scope === 'public') {
+      // Public fetching requires company to be verified and not suspended
+      if (org.verification_status === 'SUSPENDED') {
+        return res.status(403).json({ message: 'Organization is suspended' });
+      }
 
-            if (req.user?.sub) {
-                const userId = req.user.sub;
-                conditions.push(`NOT EXISTS (
+      if (req.user?.sub) {
+        const userId = req.user.sub;
+        conditions.push(`NOT EXISTS (
                     SELECT 1 FROM blocks b
                     WHERE (j.org_id IS NOT NULL AND ((b.blocker_id = $${paramCount} AND b.blocked_id = j.org_id) OR (b.blocker_id = j.org_id AND b.blocked_id = $${paramCount})))
                        OR (j.recruiter_id IS NOT NULL AND ((b.blocker_id = $${paramCount} AND b.blocked_id = j.recruiter_id) OR (b.blocker_id = j.recruiter_id AND b.blocked_id = $${paramCount})))
                 )`);
-                authUserIndex = paramCount;
-                params.push(userId);
-                paramCount++;
-            }
+        authUserIndex = paramCount;
+        params.push(userId);
+        paramCount++;
+      }
 
-            conditions.push("j.status = 'ACTIVE'");
-            conditions.push("(j.moderation_status = 'APPROVED' OR j.moderation_status IS NULL)");
-            conditions.push("(j.expires_at IS NULL OR j.expires_at > NOW())");
-        } else if (scope === 'internal') {
-            // Allow all statuses, internal members only
-            if (!req.user || !req.user.sub) {
-                return res.status(401).json({ message: "Unauthorized" });
-            }
-            const memberCheck = await pool.query(
-                "SELECT 1 FROM organization_members WHERE org_id = $1 AND user_id = $2 AND status = 'ACTIVE'",
-                [resolvedOrgId, req.user.sub]
-            );
-            if (memberCheck.rowCount === 0) {
-                return res.status(403).json({ message: "Forbidden: You are not a member of this organization" });
-            }
+      conditions.push("j.status = 'ACTIVE'");
+      conditions.push("(j.moderation_status = 'APPROVED' OR j.moderation_status IS NULL)");
+      conditions.push('(j.expires_at IS NULL OR j.expires_at > NOW())');
+    } else if (scope === 'internal') {
+      // Allow all statuses, internal members only
+      if (!req.user || !req.user.sub) {
+        return res.status(401).json({ message: 'Unauthorized' });
+      }
+      const memberCheck = await pool.query(
+        "SELECT 1 FROM organization_members WHERE org_id = $1 AND user_id = $2 AND status = 'ACTIVE'",
+        [resolvedOrgId, req.user.sub]
+      );
+      if (memberCheck.rowCount === 0) {
+        return res
+          .status(403)
+          .json({ message: 'Forbidden: You are not a member of this organization' });
+      }
 
-            // Status filter for internal scope
-            if (status && status.toUpperCase() !== 'ALL') {
-                const cleanStatus = status.trim().toUpperCase();
-                if (cleanStatus === 'REJECTED') {
-                    conditions.push(`(j.status = 'REJECTED' OR j.moderation_status = 'REJECTED')`);
-                } else if (cleanStatus === 'IN_REVIEW' || cleanStatus === 'IN REVIEW' || cleanStatus === 'UNDER_REVIEW') {
-                    conditions.push(`((j.status IN ('IN REVIEW', 'UNDER_REVIEW') OR j.moderation_status = 'UNDER_REVIEW') AND j.status != 'REJECTED' AND (j.moderation_status IS NULL OR j.moderation_status != 'REJECTED'))`);
-                } else {
-                    const dbStatus = status.replace(/_/g, ' ').toUpperCase();
-                    conditions.push(`j.status = $${paramCount}`);
-                    params.push(dbStatus);
-                    paramCount++;
-                }
-            }
+      const hasJobsPerm = await checkOrgPermission(pool, resolvedOrgId, req.user.sub, [
+        'JOBS',
+        'VIEW_JOBS',
+        'POST_JOBS',
+        'MANAGE_JOBS',
+      ]);
+      if (!hasJobsPerm) {
+        return res
+          .status(403)
+          .json({
+            message: "Forbidden: You don't have permission to access jobs in this organization",
+          });
+      }
+
+      // Status filter for internal scope
+      if (status && status.toUpperCase() !== 'ALL') {
+        const cleanStatus = status.trim().toUpperCase();
+        if (cleanStatus === 'REJECTED') {
+          conditions.push(`(j.status = 'REJECTED' OR j.moderation_status = 'REJECTED')`);
+        } else if (
+          cleanStatus === 'IN_REVIEW' ||
+          cleanStatus === 'IN REVIEW' ||
+          cleanStatus === 'UNDER_REVIEW'
+        ) {
+          conditions.push(
+            `((j.status IN ('IN REVIEW', 'UNDER_REVIEW') OR j.moderation_status = 'UNDER_REVIEW') AND j.status != 'REJECTED' AND (j.moderation_status IS NULL OR j.moderation_status != 'REJECTED'))`
+          );
         } else {
-            return res.status(400).json({ message: "Invalid scope parameter. Use 'public' or 'internal'." });
+          const dbStatus = status.replace(/_/g, ' ').toUpperCase();
+          conditions.push(`j.status = $${paramCount}`);
+          params.push(dbStatus);
+          paramCount++;
         }
+      }
+    } else {
+      return res
+        .status(400)
+        .json({ message: "Invalid scope parameter. Use 'public' or 'internal'." });
+    }
 
-        if (cursor) {
-            conditions.push(`COALESCE(j.published_at, j.created_at) < $${paramCount}`);
-            params.push(new Date(cursor));
-            paramCount++;
-        }
+    const isClosedFilter =
+      scope === 'internal' && status && status.trim().toUpperCase() === 'CLOSED';
+    const orderTimestampExpr = isClosedFilter
+      ? 'COALESCE(j.closed_at, j.updated_at, j.published_at, j.created_at)'
+      : 'COALESCE(j.published_at, j.created_at)';
 
-        // Fetch limit + 1 to determine hasMore
-        const fetchLimit = Number(limit) + 1;
-        const limitClause = `LIMIT $${paramCount}`;
-        params.push(fetchLimit);
+    if (cursor) {
+      conditions.push(`${orderTimestampExpr} < $${paramCount}`);
+      params.push(new Date(cursor));
+      paramCount++;
+    }
 
-        const whereClause = `WHERE ${conditions.join(" AND ")}`;
+    // Fetch limit + 1 to determine hasMore
+    const fetchLimit = Number(limit) + 1;
+    const limitClause = `LIMIT $${paramCount}`;
+    params.push(fetchLimit);
 
-        const currentUserId = req.user?.sub;
-        const query = `
+    const whereClause = `WHERE ${conditions.join(' AND ')}`;
+
+    const currentUserId = req.user?.sub;
+    const query = `
             SELECT 
                 j.*,
                 u.full_name AS recruiter_name,
@@ -312,25 +387,29 @@ exports.getOrganizationJobs = async (req, res) => {
             FROM jobs j
             LEFT JOIN active_users u ON j.recruiter_id = u.user_id
             LEFT JOIN organizations o ON j.org_id = o.org_id
-            ${authUserIndex ? `LEFT JOIN job_saves js ON js.job_id = j.job_id AND js.user_id = $${authUserIndex}` : ""}
-            ${authUserIndex ? `LEFT JOIN LATERAL (
+            ${authUserIndex ? `LEFT JOIN job_saves js ON js.job_id = j.job_id AND js.user_id = $${authUserIndex}` : ''}
+            ${
+              authUserIndex
+                ? `LEFT JOIN LATERAL (
                 SELECT application_id, current_status 
                 FROM job_applications 
                 WHERE job_id = j.job_id AND applicant_id = $${authUserIndex}
                 ORDER BY applied_at DESC 
                 LIMIT 1
-            ) ja ON TRUE` : ""}
+            ) ja ON TRUE`
+                : ''
+            }
             ${whereClause}
-            ORDER BY COALESCE(j.published_at, j.created_at) DESC
+            ${isClosedFilter ? `ORDER BY ${orderTimestampExpr} DESC` : 'ORDER BY COALESCE(j.published_at, j.created_at) DESC'}
             ${limitClause}
         `;
 
-        if (scope === 'internal') {
-            // Counts query for internal scope — runs in parallel
-            const countsQuery = `
+    if (scope === 'internal') {
+      // Counts query for internal scope — runs in parallel
+      const countsQuery = `
                 SELECT 
                     COUNT(*)::int AS "all",
-                    COUNT(*) FILTER (WHERE j.status = 'ACTIVE')::int AS "active",
+                    COUNT(*) FILTER (WHERE j.status = 'ACTIVE' AND (j.moderation_status IS NULL OR j.moderation_status = 'APPROVED'))::int AS "active",
                     COUNT(*) FILTER (WHERE j.status = 'CLOSED')::int AS "closed",
                     COUNT(*) FILTER (WHERE j.status = 'DRAFT')::int AS "draft",
                     COUNT(*) FILTER (WHERE (j.status IN ('IN REVIEW', 'UNDER_REVIEW') OR j.moderation_status = 'UNDER_REVIEW') AND j.status != 'REJECTED' AND (j.moderation_status IS NULL OR j.moderation_status != 'REJECTED'))::int AS "inReview",
@@ -339,114 +418,156 @@ exports.getOrganizationJobs = async (req, res) => {
                 WHERE j.org_id = $1 AND j.is_active = TRUE
             `;
 
-            const [result, countsResult] = await Promise.all([
-                pool.query(query, params),
-                pool.query(countsQuery, [resolvedOrgId])
-            ]);
+      const [result, countsResult] = await Promise.all([
+        pool.query(query, params),
+        pool.query(countsQuery, [resolvedOrgId]),
+      ]);
 
-            const rows = result.rows;
-            const hasMore = rows.length > Number(limit);
-            const jobs = hasMore ? rows.slice(0, Number(limit)) : rows;
-            const nextCursor = jobs.length > 0 ? (jobs[jobs.length - 1].published_at || jobs[jobs.length - 1].created_at) : null;
-            const counts = countsResult.rows[0] || { all: 0, active: 0, closed: 0, draft: 0, inReview: 0 };
+      const rows = result.rows;
+      const hasMore = rows.length > Number(limit);
+      const jobs = hasMore ? rows.slice(0, Number(limit)) : rows;
+      const nextCursor =
+        jobs.length > 0
+          ? isClosedFilter
+            ? jobs[jobs.length - 1].closed_at ||
+              jobs[jobs.length - 1].updated_at ||
+              jobs[jobs.length - 1].published_at ||
+              jobs[jobs.length - 1].created_at
+            : jobs[jobs.length - 1].published_at || jobs[jobs.length - 1].created_at
+          : null;
+      const counts = countsResult.rows[0] || {
+        all: 0,
+        active: 0,
+        closed: 0,
+        draft: 0,
+        inReview: 0,
+        rejected: 0,
+      };
 
-            return res.status(200).json({
-                jobs,
-                nextCursor,
-                hasMore,
-                counts
-            });
-        }
-
-        // Public scope — keep flat array response to avoid breaking changes
-        const result = await pool.query(query, params);
-        const rows = result.rows;
-        const publicJobs = rows.length > Number(limit) ? rows.slice(0, Number(limit)) : rows;
-        res.status(200).json(publicJobs);
-
-    } catch (err) {
-        console.error("Get organization jobs error:", err);
-        res.status(500).json({ message: "Internal server error" });
+      return res.status(200).json({
+        jobs,
+        nextCursor,
+        hasMore,
+        counts,
+      });
     }
+
+    // Public scope — keep flat array response to avoid breaking changes
+    const result = await pool.query(query, params);
+    const rows = result.rows;
+    const publicJobs = rows.length > Number(limit) ? rows.slice(0, Number(limit)) : rows;
+    res.status(200).json(publicJobs);
+  } catch (err) {
+    console.error('Get organization jobs error:', err);
+    res.status(500).json({ message: 'Internal server error' });
+  }
 };
 
 exports.updateOrganizationJob = async (req, res) => {
-    const { orgId: companyId, jobId } = req.params;
-    const userId = req.user.sub;
+  const { orgId: companyId, jobId } = req.params;
+  const userId = req.user.sub;
 
-    const {
-        title, location, description,
-        salary_min, salary_max, salary_currency, salary_period, salary_visibility,
-        job_type, work_mode, experience_level, industry, easy_apply, actively_hiring,
-        status, expires_at, is_active, experience_min, experience_max
-    } = req.body;
+  const {
+    title,
+    location,
+    description,
+    salary_min,
+    salary_max,
+    salary_currency,
+    salary_period,
+    salary_visibility,
+    job_type,
+    work_mode,
+    experience_level,
+    industry,
+    easy_apply,
+    actively_hiring,
+    status,
+    expires_at,
+    is_active,
+    experience_min,
+    experience_max,
+  } = req.body;
 
-    const client = await pool.connect();
+  const client = await pool.connect();
 
-    try {
-        await client.query("BEGIN");
+  try {
+    await client.query('BEGIN');
 
-        // 1. Verify Job Ownership
-        const jobCheck = await client.query("SELECT * FROM jobs WHERE job_id = $1 AND org_id = $2 AND is_active = TRUE FOR UPDATE", [jobId, companyId]);
-        if (jobCheck.rowCount === 0) return res.status(404).json({ message: "Job not found in this organization." });
+    // 1. Verify Job Ownership
+    const jobCheck = await client.query(
+      'SELECT * FROM jobs WHERE job_id = $1 AND org_id = $2 AND is_active = TRUE FOR UPDATE',
+      [jobId, companyId]
+    );
+    if (jobCheck.rowCount === 0)
+      return res.status(404).json({ message: 'Job not found in this organization.' });
 
-        const oldJobData = jobCheck.rows[0];
+    const oldJobData = jobCheck.rows[0];
 
-        // 2a. Creator isolation: only job creator or admin-level can modify.
-        // Admin-level is determined by actor context (no role names assumed).
-        // req.actor is set by actor-context.middleware; req.member by requireOrgPermission middleware.
+    // 2a. Creator isolation: commented out per project flow so team members with job permissions can manage/delete any org job.
+    /*
         const _actorPerms = req.actor?.permissions || req.member?.permissions || [];
         const _isAdminLevel = _actorPerms.includes('*') || _actorPerms.includes('MANAGE_COMPANY');
         if (!_isAdminLevel && oldJobData.recruiter_id !== userId) {
             await client.query('ROLLBACK');
             return res.status(403).json({ message: 'You can only manage jobs that you created' });
         }
+        */
 
-        // 2b. State Transition Rules Check
-        if (status && oldJobData.status !== status) {
-            const validTransitions = {
-                'DRAFT': ['UNDER_REVIEW', 'ACTIVE', 'CLOSED'],
-                'UNDER_REVIEW': ['CLOSED', 'DRAFT'],
-                'ACTIVE': ['CLOSED', 'EXPIRED'],
-                'CLOSED': ['UNDER_REVIEW', 'ACTIVE'], // Reopen
-                'EXPIRED': [], // Disallowed to reactivate directly
-                'REJECTED': [] // Disallowed
-            };
-            if (!validTransitions[oldJobData.status]?.includes(status)) {
-                return res.status(400).json({ message: `Invalid status transition from ${oldJobData.status} to ${status}` });
-            }
-        }
-        
-        // When an organization posts / publishes (status ACTIVE or UNDER_REVIEW), it must go to UNDER_REVIEW
-        const isSubmittingForReview = (status === 'ACTIVE' || status === 'UNDER_REVIEW') && (oldJobData.status === 'DRAFT' || oldJobData.status === 'CLOSED');
-        const targetStatus = (status === 'ACTIVE' || status === 'UNDER_REVIEW') ? 'UNDER_REVIEW' : status;
-        const targetModerationStatus = (status === 'ACTIVE' || status === 'UNDER_REVIEW')
-            ? 'UNDER_REVIEW'
-            : (status === 'DRAFT' ? null : oldJobData.moderation_status);
+    // 2b. State Transition Rules Check
+    if (status && oldJobData.status !== status) {
+      const validTransitions = {
+        DRAFT: ['UNDER_REVIEW', 'ACTIVE', 'CLOSED'],
+        UNDER_REVIEW: ['CLOSED', 'DRAFT'],
+        ACTIVE: ['CLOSED', 'EXPIRED'],
+        CLOSED: ['UNDER_REVIEW', 'ACTIVE'], // Reopen
+        EXPIRED: [], // Disallowed to reactivate directly
+        REJECTED: [], // Disallowed
+      };
+      if (!validTransitions[oldJobData.status]?.includes(status)) {
+        return res
+          .status(400)
+          .json({ message: `Invalid status transition from ${oldJobData.status} to ${status}` });
+      }
+    }
 
-        // 2c. Validation for Publishing (ACTIVE / UNDER_REVIEW status)
-        const nextStatus = targetStatus || oldJobData.status;
-        if (nextStatus === 'UNDER_REVIEW' || nextStatus === 'ACTIVE') {
-            const nextJobType = job_type !== undefined ? job_type : oldJobData.job_type;
-            const nextExpLabel = experience_level !== undefined ? experience_level : oldJobData.experience_label;
-            const nextWorkMode = work_mode !== undefined ? work_mode : oldJobData.work_mode;
-            
-            if (!nextJobType) {
-                await client.query('ROLLBACK');
-                return res.status(400).json({ message: "Job type is required to publish a job." });
-            }
-            if (!nextExpLabel) {
-                await client.query('ROLLBACK');
-                return res.status(400).json({ message: "Experience level is required to publish a job." });
-            }
-            if (!nextWorkMode) {
-                await client.query('ROLLBACK');
-                return res.status(400).json({ message: "Work mode is required to publish a job." });
-            }
-        }
+    // When an organization posts / publishes (status ACTIVE or UNDER_REVIEW), it must go to UNDER_REVIEW
+    const isSubmittingForReview =
+      (status === 'ACTIVE' || status === 'UNDER_REVIEW') &&
+      (oldJobData.status === 'DRAFT' || oldJobData.status === 'CLOSED');
+    const targetStatus = status === 'ACTIVE' || status === 'UNDER_REVIEW' ? 'UNDER_REVIEW' : status;
+    const targetModerationStatus =
+      status === 'ACTIVE' || status === 'UNDER_REVIEW'
+        ? 'UNDER_REVIEW'
+        : status === 'DRAFT'
+          ? null
+          : oldJobData.moderation_status;
 
-        // 3. Update Job
-        const updateRes = await client.query(`
+    // 2c. Validation for Publishing (ACTIVE / UNDER_REVIEW status)
+    const nextStatus = targetStatus || oldJobData.status;
+    if (nextStatus === 'UNDER_REVIEW' || nextStatus === 'ACTIVE') {
+      const nextJobType = job_type !== undefined ? job_type : oldJobData.job_type;
+      const nextExpLabel =
+        experience_level !== undefined ? experience_level : oldJobData.experience_label;
+      const nextWorkMode = work_mode !== undefined ? work_mode : oldJobData.work_mode;
+
+      if (!nextJobType) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ message: 'Job type is required to publish a job.' });
+      }
+      if (!nextExpLabel) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ message: 'Experience level is required to publish a job.' });
+      }
+      if (!nextWorkMode) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ message: 'Work mode is required to publish a job.' });
+      }
+    }
+
+    // 3. Update Job
+    const updateRes = await client.query(
+      `
             UPDATE jobs
             SET title = COALESCE($1, title),
                 location = COALESCE($2, location),
@@ -477,165 +598,251 @@ exports.updateOrganizationJob = async (req, res) => {
                     WHEN $22::boolean AND (status = 'DRAFT' OR status = 'UNDER_REVIEW') THEN NOW()
                     ELSE created_at
                 END,
+                closed_at = CASE
+                    WHEN COALESCE($15, status) = 'CLOSED' THEN COALESCE(closed_at, NOW())
+                    WHEN COALESCE($15, status) = 'ACTIVE' THEN NULL
+                    ELSE closed_at
+                END,
                 updated_at = NOW()
             WHERE job_id = $21
             RETURNING *
-        `, [
-            title, location, description, salary_min, salary_max, salary_currency, salary_period, salary_visibility,
-            job_type, work_mode, experience_level, industry, easy_apply, actively_hiring, targetStatus, targetModerationStatus,
-            expires_at, is_active, experience_min, experience_max, jobId, isSubmittingForReview
-        ]);
+        `,
+      [
+        title,
+        location,
+        description,
+        salary_min,
+        salary_max,
+        salary_currency,
+        salary_period,
+        salary_visibility,
+        job_type,
+        work_mode,
+        experience_level,
+        industry,
+        easy_apply,
+        actively_hiring,
+        targetStatus,
+        targetModerationStatus,
+        expires_at,
+        is_active,
+        experience_min,
+        experience_max,
+        jobId,
+        isSubmittingForReview,
+      ]
+    );
 
-        const updatedJob = updateRes.rows[0];
+    const updatedJob = updateRes.rows[0];
 
-        // 4. Job Versioning
-        await client.query(`
+    // 4. Job Versioning
+    await client.query(
+      `
             INSERT INTO job_versions (job_id, changed_by, previous_data)
             VALUES ($1, $2, $3)
-        `, [jobId, userId, JSON.stringify(oldJobData)]);
+        `,
+      [jobId, userId, JSON.stringify(oldJobData)]
+    );
 
-        // 5. Audit Log
-        await client.query(
-            `INSERT INTO audit_logs (entity_type, entity_id, actor_id, action, metadata)
-             VALUES ('ORGANIZATION', $1, $2, 'UPDATE_JOB', $3)`,
-            [companyId, userId, JSON.stringify({ jobId, newStatus: updatedJob.status })]
-        );
+    // 5. Audit Log
+    const isDeleteAction = Boolean(req.isDelete);
+    const isCloseAction = updatedJob.status === 'CLOSED' && !isDeleteAction;
+    const auditAction = isDeleteAction
+      ? 'DELETE_JOB'
+      : isCloseAction
+        ? 'CLOSE_JOB'
+        : isSubmittingForReview
+          ? 'CREATE_JOB'
+          : 'UPDATE_JOB';
 
-        // 6. Event Outbox
-        await client.query(
-            `INSERT INTO event_outbox (topic, payload) VALUES ($1, $2)`,
-            ['JOB_UPDATED', JSON.stringify({ jobId, companyId, status: updatedJob.status })]
-        );
+    await logOrgActivity(client, {
+      orgId: companyId,
+      userId,
+      action: auditAction,
+      metadata: {
+        targetType: 'job',
+        targetId: jobId,
+        targetName: updatedJob.title,
+        jobId,
+        jobTitle: updatedJob.title,
+        newStatus: updatedJob.status,
+        ...(isDeleteAction ? {} : { linkUrl: `/jobs/${jobId}` }),
+      },
+      req,
+    });
 
-        await client.query("COMMIT");
+    // 6. Event Outbox
+    await client.query(`INSERT INTO event_outbox (topic, payload) VALUES ($1, $2)`, [
+      'JOB_UPDATED',
+      JSON.stringify({ jobId, companyId, status: updatedJob.status }),
+    ]);
 
-        // Notification if job is submitted for review
-        if (isSubmittingForReview) {
-            (async () => {
-                try {
-                    const jobTitle = updatedJob.title;
-                    const notificationText = `Your job ${jobTitle} has been submitted for review.`;
-                    const metadataPayload = {
-                        jobId: updatedJob.job_id,
-                        job_id: updatedJob.job_id,
-                        jobTitle,
-                        companyName: updatedJob.company_name,
-                        orgId: companyId,
-                        org_id: companyId,
-                        status: 'UNDER_REVIEW'
-                    };
+    await client.query('COMMIT');
 
-                    const notifRes = await pool.query(
-                        `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata, recipient_org_id)
+    // Notification if job is submitted for review
+    if (isSubmittingForReview) {
+      (async () => {
+        try {
+          const jobTitle = updatedJob.title;
+          const notificationText = `Your job ${jobTitle} has been submitted for review.`;
+          const metadataPayload = {
+            jobId: updatedJob.job_id,
+            job_id: updatedJob.job_id,
+            jobTitle,
+            companyName: updatedJob.company_name,
+            orgId: companyId,
+            org_id: companyId,
+            status: 'UNDER_REVIEW',
+          };
+
+          const notifRes = await pool.query(
+            `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata, recipient_org_id)
                          VALUES ($1, $2, 'job_submitted', $3, $4, $5, $6)
                          RETURNING notification_id, created_at`,
-                        [userId, userId, notificationText, updatedJob.job_id, JSON.stringify(metadataPayload), companyId]
-                    );
+            [
+              userId,
+              userId,
+              notificationText,
+              updatedJob.job_id,
+              JSON.stringify(metadataPayload),
+              companyId,
+            ]
+          );
 
-                    await pool.query(
-                        `INSERT INTO notifications (recipient_org_id, user_id, sender_id, type, text, reference_id, metadata)
+          await pool.query(
+            `INSERT INTO notifications (recipient_org_id, user_id, sender_id, type, text, reference_id, metadata)
                          VALUES ($1, NULL, $2, 'job_submitted', $3, $4, $5)`,
-                        [companyId, userId, notificationText, updatedJob.job_id, JSON.stringify(metadataPayload)]
-                    );
+            [
+              companyId,
+              userId,
+              notificationText,
+              updatedJob.job_id,
+              JSON.stringify(metadataPayload),
+            ]
+          );
 
-                    const socketService = require("../../core/infrastructure/socket.service");
-                    const notifId = notifRes.rows[0]?.notification_id;
-                    const notifCreatedAt = notifRes.rows[0]?.created_at ? notifRes.rows[0].created_at.toISOString() : new Date().toISOString();
-                    const socketPayload = {
-                        notification_id: notifId,
-                        type: "job_submitted",
-                        text: notificationText,
-                        sender_id: userId,
-                        reference_id: updatedJob.job_id,
-                        recipient_company_id: companyId,
-                        recipient_org_id: companyId,
-                        metadata: metadataPayload,
-                        created_at: notifCreatedAt,
-                        is_read: false
-                    };
+          const socketService = require('../../core/infrastructure/socket.service');
+          const notifId = notifRes.rows[0]?.notification_id;
+          const notifCreatedAt = notifRes.rows[0]?.created_at
+            ? notifRes.rows[0].created_at.toISOString()
+            : new Date().toISOString();
+          const socketPayload = {
+            notification_id: notifId,
+            type: 'job_submitted',
+            text: notificationText,
+            sender_id: userId,
+            reference_id: updatedJob.job_id,
+            recipient_company_id: companyId,
+            recipient_org_id: companyId,
+            metadata: metadataPayload,
+            created_at: notifCreatedAt,
+            is_read: false,
+          };
 
-                    socketService.notifyUser(userId, "notification", socketPayload);
-                    socketService.notifyOrg(companyId, "notification", socketPayload);
-                } catch (notifErr) {
-                    console.error("Failed to dispatch job_submitted notification in updateOrganizationJob:", notifErr);
-                }
-            })();
+          socketService.notifyUser(userId, 'notification', socketPayload);
+          socketService.notifyOrg(companyId, 'notification', socketPayload);
+        } catch (notifErr) {
+          console.error(
+            'Failed to dispatch job_submitted notification in updateOrganizationJob:',
+            notifErr
+          );
         }
+      })();
+    }
 
-        // Notification if job is approved/active (e.g. by admin): "Your job “[Job Title]” is now live."
-        if (updatedJob.status === 'ACTIVE' && oldJobData.status !== 'ACTIVE') {
-            notifyCompanyFollowers(companyId, "jobs", {
-                type: "company_job",
-                text: `${updatedJob.company_name} posted a new job: ${updatedJob.title}`,
-                referenceId: updatedJob.job_id,
-                metadata: { job_title: updatedJob.title, location: updatedJob.location || null },
-            }).catch(err => console.error("Job notification error:", err));
+    // Notification if job is approved/active (e.g. by admin): "Your job “[Job Title]” is now live."
+    if (updatedJob.status === 'ACTIVE' && oldJobData.status !== 'ACTIVE') {
+      notifyCompanyFollowers(companyId, 'jobs', {
+        type: 'company_job',
+        text: `${updatedJob.company_name} posted a new job: ${updatedJob.title}`,
+        referenceId: updatedJob.job_id,
+        metadata: { job_title: updatedJob.title, location: updatedJob.location || null },
+      }).catch((err) => console.error('Job notification error:', err));
 
-            (async () => {
-                try {
-                    const jobTitle = updatedJob.title;
-                    const notificationText = `Your job ${jobTitle} is now live.`;
-                    const metadataPayload = {
-                        jobId: updatedJob.job_id,
-                        job_id: updatedJob.job_id,
-                        jobTitle,
-                        companyName: updatedJob.company_name,
-                        orgId: companyId,
-                        org_id: companyId,
-                        status: 'ACTIVE'
-                    };
+      (async () => {
+        try {
+          const jobTitle = updatedJob.title;
+          const notificationText = `Your job ${jobTitle} is now live.`;
+          const metadataPayload = {
+            jobId: updatedJob.job_id,
+            job_id: updatedJob.job_id,
+            jobTitle,
+            companyName: updatedJob.company_name,
+            orgId: companyId,
+            org_id: companyId,
+            status: 'ACTIVE',
+          };
 
-                    const notifRes = await pool.query(
-                        `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata, recipient_org_id)
+          const notifRes = await pool.query(
+            `INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata, recipient_org_id)
                          VALUES ($1, $2, 'job_approved', $3, $4, $5, $6)
                          RETURNING notification_id, created_at`,
-                        [userId, userId, notificationText, updatedJob.job_id, JSON.stringify(metadataPayload), companyId]
-                    );
+            [
+              userId,
+              userId,
+              notificationText,
+              updatedJob.job_id,
+              JSON.stringify(metadataPayload),
+              companyId,
+            ]
+          );
 
-                    await pool.query(
-                        `INSERT INTO notifications (recipient_org_id, user_id, sender_id, type, text, reference_id, metadata)
+          await pool.query(
+            `INSERT INTO notifications (recipient_org_id, user_id, sender_id, type, text, reference_id, metadata)
                          VALUES ($1, NULL, $2, 'job_approved', $3, $4, $5)`,
-                        [companyId, userId, notificationText, updatedJob.job_id, JSON.stringify(metadataPayload)]
-                    );
+            [
+              companyId,
+              userId,
+              notificationText,
+              updatedJob.job_id,
+              JSON.stringify(metadataPayload),
+            ]
+          );
 
-                    const socketService = require("../../core/infrastructure/socket.service");
-                    const notifId = notifRes.rows[0]?.notification_id;
-                    const notifCreatedAt = notifRes.rows[0]?.created_at ? notifRes.rows[0].created_at.toISOString() : new Date().toISOString();
-                    const socketPayload = {
-                        notification_id: notifId,
-                        type: "job_approved",
-                        text: notificationText,
-                        sender_id: userId,
-                        reference_id: updatedJob.job_id,
-                        recipient_company_id: companyId,
-                        recipient_org_id: companyId,
-                        metadata: metadataPayload,
-                        created_at: notifCreatedAt,
-                        is_read: false
-                    };
+          const socketService = require('../../core/infrastructure/socket.service');
+          const notifId = notifRes.rows[0]?.notification_id;
+          const notifCreatedAt = notifRes.rows[0]?.created_at
+            ? notifRes.rows[0].created_at.toISOString()
+            : new Date().toISOString();
+          const socketPayload = {
+            notification_id: notifId,
+            type: 'job_approved',
+            text: notificationText,
+            sender_id: userId,
+            reference_id: updatedJob.job_id,
+            recipient_company_id: companyId,
+            recipient_org_id: companyId,
+            metadata: metadataPayload,
+            created_at: notifCreatedAt,
+            is_read: false,
+          };
 
-                    socketService.notifyUser(userId, "notification", socketPayload);
-                    socketService.notifyOrg(companyId, "notification", socketPayload);
-                } catch (notifErr) {
-                    console.error("Failed to dispatch job_approved notification in updateOrganizationJob:", notifErr);
-                }
-            })();
+          socketService.notifyUser(userId, 'notification', socketPayload);
+          socketService.notifyOrg(companyId, 'notification', socketPayload);
+        } catch (notifErr) {
+          console.error(
+            'Failed to dispatch job_approved notification in updateOrganizationJob:',
+            notifErr
+          );
         }
-
-        res.status(200).json({ message: "Job updated successfully", job: updatedJob });
-    } catch (err) {
-        await client.query("ROLLBACK");
-        console.error("Update organization job error:", err);
-        res.status(500).json({ message: "Internal server error" });
-    } finally {
-        client.release();
+      })();
     }
+
+    res.status(200).json({ message: 'Job updated successfully', job: updatedJob });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('Update organization job error:', err);
+    res.status(500).json({ message: 'Internal server error' });
+  } finally {
+    client.release();
+  }
 };
 
 exports.deleteOrganizationJob = async (req, res) => {
-    // Soft delete equivalent
-    req.body = req.body || {};
-    req.body.status = 'CLOSED';
-    req.body.is_active = false;
-    return exports.updateOrganizationJob(req, res);
+  // Soft delete equivalent
+  req.body = req.body || {};
+  req.body.status = 'CLOSED';
+  req.body.is_active = false;
+  req.isDelete = true;
+  return exports.updateOrganizationJob(req, res);
 };

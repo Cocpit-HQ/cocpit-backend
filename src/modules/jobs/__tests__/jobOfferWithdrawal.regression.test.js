@@ -5,11 +5,11 @@ const offerController = require('../offer.controller');
 
 jest.mock('../../../core/db/pool', () => ({
   connect: jest.fn(),
-  query: jest.fn()
+  query: jest.fn(),
 }));
 
 jest.mock('../../../core/infrastructure/socket.service', () => ({
-  notifyUser: jest.fn()
+  notifyUser: jest.fn(),
 }));
 
 const socketService = require('../../../core/infrastructure/socket.service');
@@ -23,11 +23,11 @@ describe('Job Offer Withdrawal & Active Count Regression Tests', () => {
       user: { sub: 'recruiter-uuid-1' },
       params: {},
       query: {},
-      body: {}
+      body: {},
     };
     res = {
       status: jest.fn().mockReturnThis(),
-      json: jest.fn().mockReturnThis()
+      json: jest.fn().mockReturnThis(),
     };
   });
 
@@ -55,7 +55,7 @@ describe('Job Offer Withdrawal & Active Count Regression Tests', () => {
       const [sql, params] = pool.query.mock.calls[0];
       // status=withdrawn is omitted from whitelist, so it should not append jo.status = $2 with withdrawn
       expect(params).toEqual(['candidate-uuid-1']);
-      expect(sql).not.toContain("jo.status = $2");
+      expect(sql).not.toContain('jo.status = $2');
     });
   });
 
@@ -71,9 +71,9 @@ describe('Job Offer Withdrawal & Active Count Regression Tests', () => {
             pending_count: '1',
             accepted_count: '1',
             declined_count: '0',
-            withdrawn_count: '0'
-          }
-        ]
+            withdrawn_count: '0',
+          },
+        ],
       });
 
       await offerController.getCompanySentOffers(req, res);
@@ -81,9 +81,13 @@ describe('Job Offer Withdrawal & Active Count Regression Tests', () => {
       expect(pool.query).toHaveBeenCalledTimes(1);
       const [sql, params] = pool.query.mock.calls[0];
 
-      expect(sql).toContain("COUNT(jo.offer_id) FILTER (WHERE jo.status != 'withdrawn') AS total_offers");
+      expect(sql).toContain(
+        "COUNT(jo.offer_id) FILTER (WHERE jo.status != 'withdrawn') AS total_offers"
+      );
       expect(sql).toContain("jo.status != 'withdrawn'");
-      expect(sql).toContain("HAVING COUNT(jo.offer_id) FILTER (WHERE jo.status != 'withdrawn') > 0");
+      expect(sql).toContain(
+        "HAVING COUNT(jo.offer_id) FILTER (WHERE jo.status != 'withdrawn') > 0"
+      );
       expect(params).toEqual(['org-uuid-1']);
 
       expect(res.json).toHaveBeenCalledWith([
@@ -91,8 +95,8 @@ describe('Job Offer Withdrawal & Active Count Regression Tests', () => {
           job_id: 'job-1',
           total_offers: 2,
           pending_count: 1,
-          accepted_count: 1
-        })
+          accepted_count: 1,
+        }),
       ]);
     });
 
@@ -103,9 +107,13 @@ describe('Job Offer Withdrawal & Active Count Regression Tests', () => {
       await offerController.getRecruiterSentOffers(req, res);
 
       const [sql, params] = pool.query.mock.calls[0];
-      expect(sql).toContain("COUNT(jo.offer_id) FILTER (WHERE jo.status != 'withdrawn') AS total_offers");
+      expect(sql).toContain(
+        "COUNT(jo.offer_id) FILTER (WHERE jo.status != 'withdrawn') AS total_offers"
+      );
       expect(sql).toContain("jo.status != 'withdrawn'");
-      expect(sql).toContain("HAVING COUNT(jo.offer_id) FILTER (WHERE jo.status != 'withdrawn') > 0");
+      expect(sql).toContain(
+        "HAVING COUNT(jo.offer_id) FILTER (WHERE jo.status != 'withdrawn') > 0"
+      );
       expect(params).toEqual(['recruiter-uuid-1']);
     });
   });
@@ -119,6 +127,9 @@ describe('Job Offer Withdrawal & Active Count Regression Tests', () => {
 
       const [sql, params] = pool.query.mock.calls[0];
       expect(sql).toContain("jo.status != 'withdrawn'");
+      expect(sql).toContain('sent_by_name');
+      expect(sql).toContain('sent_by_avatar');
+      expect(sql).toContain('sent_by_headline');
       expect(params).toEqual(['org-uuid-1', 'job-uuid-1']);
     });
 
@@ -139,7 +150,7 @@ describe('Job Offer Withdrawal & Active Count Regression Tests', () => {
     test('successfully withdraws pending offer and notifies candidate and recruiter', async () => {
       const mockClient = {
         query: jest.fn(),
-        release: jest.fn()
+        release: jest.fn(),
       };
       pool.connect.mockResolvedValueOnce(mockClient);
 
@@ -150,21 +161,26 @@ describe('Job Offer Withdrawal & Active Count Regression Tests', () => {
         if (typeof queryText === 'string' && queryText.includes('SELECT * FROM job_offers')) {
           return {
             rowCount: 1,
-            rows: [{
-              offer_id: 'offer-1',
-              job_id: 'job-1',
-              user_id: 'candidate-1',
-              sent_by: 'recruiter-uuid-1',
-              org_id: 'org-uuid-1',
-              status: 'pending'
-            }]
+            rows: [
+              {
+                offer_id: 'offer-1',
+                job_id: 'job-1',
+                user_id: 'candidate-1',
+                sent_by: 'recruiter-uuid-1',
+                org_id: 'org-uuid-1',
+                status: 'pending',
+              },
+            ],
           };
         }
         if (typeof queryText === 'string' && queryText.includes('UPDATE job_offers')) {
           return { rowCount: 1, rows: [] };
         }
         if (typeof queryText === 'string' && queryText.includes('FROM organizations')) {
-          return { rowCount: 1, rows: [{ name: 'BluePeak Innovations', logo_url: 'https://logo.png' }] };
+          return {
+            rowCount: 1,
+            rows: [{ name: 'BluePeak Innovations', logo_url: 'https://logo.png' }],
+          };
         }
         if (typeof queryText === 'string' && queryText.includes('FROM jobs')) {
           return { rowCount: 1, rows: [{ title: 'Fullstack Dev' }] };
@@ -193,7 +209,7 @@ describe('Job Offer Withdrawal & Active Count Regression Tests', () => {
         'notification',
         expect.objectContaining({
           type: 'job_offer_withdrawn',
-          referenceId: 'offer-1'
+          referenceId: 'offer-1',
         })
       );
       expect(socketService.notifyUser).not.toHaveBeenCalledWith(
@@ -204,7 +220,7 @@ describe('Job Offer Withdrawal & Active Count Regression Tests', () => {
 
       expect(res.json).toHaveBeenCalledWith({
         status: 'withdrawn',
-        message: 'Offer withdrawn successfully'
+        message: 'Offer withdrawn successfully',
       });
     });
   });

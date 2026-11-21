@@ -3,11 +3,10 @@
 const { buildJobFilters } = require('../../../core/utils/jobQueryBuilder');
 
 describe('Job Publishing Timing Regression Tests', () => {
-
   describe('1. Date Posted Filter with published_at fallback', () => {
     test('TC-01: datePosted="today" uses COALESCE(j.published_at, j.created_at)', () => {
       const { conditions, values } = buildJobFilters({ datePosted: 'today' }, 1);
-      
+
       expect(conditions).toHaveLength(1);
       expect(conditions[0]).toBe('COALESCE(j.published_at, j.created_at) >= $1');
       expect(values).toHaveLength(1);
@@ -16,7 +15,7 @@ describe('Job Publishing Timing Regression Tests', () => {
 
     test('TC-02: datePosted="past week" uses COALESCE(j.published_at, j.created_at)', () => {
       const { conditions, values } = buildJobFilters({ datePosted: 'past week' }, 1);
-      
+
       expect(conditions).toHaveLength(1);
       expect(conditions[0]).toBe('COALESCE(j.published_at, j.created_at) >= $1');
       expect(values).toHaveLength(1);
@@ -25,7 +24,7 @@ describe('Job Publishing Timing Regression Tests', () => {
 
     test('TC-03: datePosted="last 30 days" uses COALESCE(j.published_at, j.created_at)', () => {
       const { conditions, values } = buildJobFilters({ datePosted: 'last 30 days' }, 1);
-      
+
       expect(conditions).toHaveLength(1);
       expect(conditions[0]).toBe('COALESCE(j.published_at, j.created_at) >= $1');
       expect(values).toHaveLength(1);
@@ -45,9 +44,11 @@ describe('Job Publishing Timing Regression Tests', () => {
       // Verify getAllJobs query uses COALESCE
       expect(jobControllerSource).toContain('ORDER BY COALESCE(j.published_at, j.created_at) DESC');
       // Verify submitJob sets published_at = NOW()
-      expect(jobControllerSource).toContain('"published_at = NOW()"');
+      expect(jobControllerSource).toContain('published_at = NOW()');
       // Verify cursor pagination uses COALESCE
-      expect(jobControllerSource).toContain('COALESCE(j.published_at, j.created_at) < $${paramCount}');
+      expect(jobControllerSource).toContain(
+        'COALESCE(j.published_at, j.created_at) < $${paramCount}'
+      );
     });
 
     test('TC-05: organization.jobs.controller uses published_at on publishing and ordering', () => {
@@ -74,9 +75,10 @@ describe('Job Publishing Timing Regression Tests', () => {
         'utf8'
       );
 
-      expect(recSource).toContain('COALESCE(j.published_at, j.created_at) >= NOW() - INTERVAL \'24 HOURS\'');
+      expect(recSource).toContain(
+        "COALESCE(j.published_at, j.created_at) >= NOW() - INTERVAL '24 HOURS'"
+      );
       expect(recSource).toContain('posted_at: getRelativeTime(row.published_at || row.created_at)');
     });
   });
 });
-

@@ -21,7 +21,7 @@ function buildSearchCacheScopeId({ actor, userId }) {
   if (actor?.type === 'ORGANIZATION') {
     return `org:${actor.orgId || actor.id}`;
   }
-  const uid = userId || actor?.userId || (actor?.type === 'USER' ? (actor.userId || actor.id) : null);
+  const uid = userId || actor?.userId || (actor?.type === 'USER' ? actor.userId || actor.id : null);
   if (uid) {
     return `user:${uid}`;
   }
@@ -45,7 +45,11 @@ function buildSearchCacheKey({ scopeId, type, q, cursor, limit, queryParams }) {
       canonical[k] = normParams[k];
     }
   }
-  const hash = crypto.createHash('sha256').update(JSON.stringify(canonical)).digest('hex').slice(0, 16);
+  const hash = crypto
+    .createHash('sha256')
+    .update(JSON.stringify(canonical))
+    .digest('hex')
+    .slice(0, 16);
   return `search:cache:${scopeId}:${type}:${hash}`;
 }
 
@@ -53,7 +57,7 @@ function buildSearchCacheKey({ scopeId, type, q, cursor, limit, queryParams }) {
  * Personalization-aware TTL strategy
  */
 function getSearchCacheTTL({ scopeId, type }) {
-  if (type === 'hashtags') return 300; // 5 minutes
+  if (type === 'hashtags') return 15; // 15 seconds to prevent stale post counts across views
   if (scopeId === 'guest') return 120; // 2 minutes
   if (type === 'all') return 30; // 30 seconds for authenticated personalized overview
   return 120; // 2 minutes for category deep-dives
@@ -143,16 +147,32 @@ function mapSettledResult(settled) {
 /**
  * Main search orchestrator
  */
-async function executeSearch({ q, type = 'all', limit = 10, cursor = null, queryParams = {}, actor = null, userId = null }) {
+async function executeSearch({
+  q,
+  type = 'all',
+  limit = 10,
+  cursor = null,
+  queryParams = {},
+  actor = null,
+  userId = null,
+}) {
   const searchTerm = (q || '').trim();
-  const humanUserId = userId || actor?.userId || (actor?.type === 'USER' ? (actor.userId || actor.id) : null);
-  const viewerId = actor?.type === 'USER' ? (actor.userId || actor.id) : null;
-  const orgActorId = actor?.type === 'ORGANIZATION' ? (actor.orgId || actor.id) : null;
+  const humanUserId =
+    userId || actor?.userId || (actor?.type === 'USER' ? actor.userId || actor.id : null);
+  const viewerId = actor?.type === 'USER' ? actor.userId || actor.id : null;
+  const orgActorId = actor?.type === 'ORGANIZATION' ? actor.orgId || actor.id : null;
   const effectiveViewerId = viewerId || orgActorId;
 
   // 1. Check Redis Cache
   const scopeId = buildSearchCacheScopeId({ actor, userId });
-  const cacheKey = buildSearchCacheKey({ scopeId, type, q: searchTerm, cursor, limit, queryParams });
+  const cacheKey = buildSearchCacheKey({
+    scopeId,
+    type,
+    q: searchTerm,
+    cursor,
+    limit,
+    queryParams,
+  });
   const cached = await getCachedSearch(cacheKey);
   if (cached) {
     return cached;
@@ -172,14 +192,31 @@ async function executeSearch({ q, type = 'all', limit = 10, cursor = null, query
         }
       };
 
-      const peopleRes = await runSubroutine(() => searchPeople(client, { searchTerm, viewerId, orgActorId, limit: 3 }));
+      const peopleRes = await runSubroutine(() =>
+        searchPeople(client, { searchTerm, viewerId, orgActorId, limit: 3 })
+      );
       const jobsRes = isOrg
         ? { status: 'fulfilled', value: { items: [], has_more: false } }
-        : await runSubroutine(() => searchJobs(client, { queryParams: { q: searchTerm }, viewerId: humanUserId, orgActorId, limit: 3 }));
-      const companiesRes = await runSubroutine(() => searchCompanies(client, { searchTerm, viewerId, orgActorId, limit: 2 }));
-      const institutesRes = await runSubroutine(() => searchInstitutes(client, { searchTerm, viewerId, orgActorId, limit: 2 }));
-      const postsRes = await runSubroutine(() => searchPosts(client, { searchTerm, viewerId: effectiveViewerId, orgActorId, limit: 2 }));
-      const hashtagsRes = await runSubroutine(() => searchHashtags(client, { searchTerm, limit: 2 }));
+        : await runSubroutine(() =>
+            searchJobs(client, {
+              queryParams: { q: searchTerm },
+              viewerId: humanUserId,
+              orgActorId,
+              limit: 3,
+            })
+          );
+      const companiesRes = await runSubroutine(() =>
+        searchCompanies(client, { searchTerm, viewerId, orgActorId, limit: 2 })
+      );
+      const institutesRes = await runSubroutine(() =>
+        searchInstitutes(client, { searchTerm, viewerId, orgActorId, limit: 2 })
+      );
+      const postsRes = await runSubroutine(() =>
+        searchPosts(client, { searchTerm, viewerId: effectiveViewerId, orgActorId, limit: 2 })
+      );
+      const hashtagsRes = await runSubroutine(() =>
+        searchHashtags(client, { searchTerm, limit: 2, viewerId: humanUserId, orgActorId })
+      );
 
       const sections = {
         people: mapSettledResult(peopleRes),
@@ -200,7 +237,7 @@ async function executeSearch({ q, type = 'all', limit = 10, cursor = null, query
     });
 
     // Cache if all sections executed without critical query errors
-    const hasErrors = Object.values(result.sections || {}).some(s => s.status === 'error');
+    const hasErrors = Object.values(result.sections || {}).some((s) => s.status === 'error');
     if (!hasErrors) {
       const ttl = getSearchCacheTTL({ scopeId, type });
       await setCachedSearch(cacheKey, result, ttl);
@@ -215,7 +252,14 @@ async function executeSearch({ q, type = 'all', limit = 10, cursor = null, query
   const result = await withSearchClient(async (client) => {
     switch (type) {
       case 'people': {
-        const res = await searchPeople(client, { searchTerm, viewerId, orgActorId, limit: numLimit, cursor, queryParams: { ...queryParams, q: searchTerm } });
+        const res = await searchPeople(client, {
+          searchTerm,
+          viewerId,
+          orgActorId,
+          limit: numLimit,
+          cursor,
+          queryParams: { ...queryParams, q: searchTerm },
+        });
         return {
           type: 'people',
           query: searchTerm,
@@ -232,7 +276,13 @@ async function executeSearch({ q, type = 'all', limit = 10, cursor = null, query
 
       case 'jobs': {
         const combinedParams = { ...queryParams, q: searchTerm };
-        const res = await searchJobs(client, { queryParams: combinedParams, viewerId: humanUserId, orgActorId, limit: numLimit, cursor });
+        const res = await searchJobs(client, {
+          queryParams: combinedParams,
+          viewerId: humanUserId,
+          orgActorId,
+          limit: numLimit,
+          cursor,
+        });
         return {
           type: 'jobs',
           query: searchTerm,
@@ -248,7 +298,14 @@ async function executeSearch({ q, type = 'all', limit = 10, cursor = null, query
       }
 
       case 'companies': {
-        const res = await searchCompanies(client, { searchTerm, viewerId, orgActorId, limit: numLimit, cursor, queryParams });
+        const res = await searchCompanies(client, {
+          searchTerm,
+          viewerId,
+          orgActorId,
+          limit: numLimit,
+          cursor,
+          queryParams,
+        });
         return {
           type: 'companies',
           query: searchTerm,
@@ -264,7 +321,14 @@ async function executeSearch({ q, type = 'all', limit = 10, cursor = null, query
       }
 
       case 'institutes': {
-        const res = await searchInstitutes(client, { searchTerm, viewerId, orgActorId, limit: numLimit, cursor, queryParams });
+        const res = await searchInstitutes(client, {
+          searchTerm,
+          viewerId,
+          orgActorId,
+          limit: numLimit,
+          cursor,
+          queryParams,
+        });
         return {
           type: 'institutes',
           query: searchTerm,
@@ -280,7 +344,14 @@ async function executeSearch({ q, type = 'all', limit = 10, cursor = null, query
       }
 
       case 'posts': {
-        const res = await searchPosts(client, { searchTerm, viewerId: effectiveViewerId, orgActorId, limit: numLimit, cursor, queryParams });
+        const res = await searchPosts(client, {
+          searchTerm,
+          viewerId: effectiveViewerId,
+          orgActorId,
+          limit: numLimit,
+          cursor,
+          queryParams,
+        });
         return {
           type: 'posts',
           query: searchTerm,
@@ -296,7 +367,14 @@ async function executeSearch({ q, type = 'all', limit = 10, cursor = null, query
       }
 
       case 'hashtags': {
-        const res = await searchHashtags(client, { searchTerm, limit: numLimit, cursor, queryParams });
+        const res = await searchHashtags(client, {
+          searchTerm,
+          limit: numLimit,
+          cursor,
+          queryParams,
+          viewerId: humanUserId,
+          orgActorId,
+        });
         return {
           type: 'hashtags',
           query: searchTerm,
@@ -312,7 +390,9 @@ async function executeSearch({ q, type = 'all', limit = 10, cursor = null, query
       }
 
       default: {
-        const err = new Error(`Unsupported search type: '${type}'. Supported types: all, people, jobs, companies, institutes, posts, hashtags`);
+        const err = new Error(
+          `Unsupported search type: '${type}'. Supported types: all, people, jobs, companies, institutes, posts, hashtags`
+        );
         err.statusCode = 400;
         throw err;
       }

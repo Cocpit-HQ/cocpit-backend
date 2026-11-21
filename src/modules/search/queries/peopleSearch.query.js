@@ -59,7 +59,10 @@ function decodePeopleCursor(cursor) {
 /**
  * Executes people search query with multi-signal LinkedIn ranking
  */
-async function searchPeople(client, { searchTerm, viewerId, orgActorId = null, limit = 10, cursor = null, queryParams = {} }) {
+async function searchPeople(
+  client,
+  { searchTerm, viewerId, orgActorId = null, limit = 10, cursor = null, queryParams = {} }
+) {
   const trimmed = searchTerm.trim().replace(/^['"]|['"]$/g, '');
   const likeTerm = `%${trimmed}%`;
   const prefixTerm = `${trimmed}%`;
@@ -103,16 +106,19 @@ async function searchPeople(client, { searchTerm, viewerId, orgActorId = null, l
   let locationClause = '';
   const rawLoc = queryParams.location;
   const locList = Array.isArray(rawLoc)
-    ? rawLoc.map(s => String(s).trim()).filter(Boolean)
+    ? rawLoc.map((s) => String(s).trim()).filter(Boolean)
     : typeof rawLoc === 'string' && rawLoc.trim()
-    ? (rawLoc.includes('|') ? rawLoc.split('|') : [rawLoc]).map(s => s.trim()).filter(Boolean)
-    : [];
+      ? (rawLoc.includes('|') ? rawLoc.split('|') : [rawLoc]).map((s) => s.trim()).filter(Boolean)
+      : [];
 
   if (locList.length > 0) {
     const locParts = [];
     for (const loc of locList) {
       const trimmedLoc = loc.trim();
-      const tokens = trimmedLoc.split(',').map(s => s.trim()).filter(Boolean);
+      const tokens = trimmedLoc
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean);
       const primary = tokens[0] || trimmedLoc;
 
       params.push(`%${trimmedLoc}%`);
@@ -131,7 +137,7 @@ async function searchPeople(client, { searchTerm, viewerId, orgActorId = null, l
         `u.location_formatted ILIKE $${primaryIdx}`,
         `u.location_city ILIKE $${primaryIdx}`,
         `(COALESCE(u.location_city, '') || ', ' || COALESCE(u.location_state, '') || ', ' || COALESCE(u.location_country, '')) ILIKE $${locIdx}`,
-        `(COALESCE(u.location_city, '') || ', ' || COALESCE(u.location_country, '')) ILIKE $${locIdx}`
+        `(COALESCE(u.location_city, '') || ', ' || COALESCE(u.location_country, '')) ILIKE $${locIdx}`,
       ];
 
       // City aliases (e.g. Bangalore / Bengaluru)
@@ -139,11 +145,19 @@ async function searchPeople(client, { searchTerm, viewerId, orgActorId = null, l
       if (lowerPrimary === 'bengaluru') {
         params.push('%Bangalore%');
         const bIdx = params.length;
-        subClauses.push(`u.location ILIKE $${bIdx}`, `u.location_city ILIKE $${bIdx}`, `u.location_formatted ILIKE $${bIdx}`);
+        subClauses.push(
+          `u.location ILIKE $${bIdx}`,
+          `u.location_city ILIKE $${bIdx}`,
+          `u.location_formatted ILIKE $${bIdx}`
+        );
       } else if (lowerPrimary === 'bangalore') {
         params.push('%Bengaluru%');
         const bIdx = params.length;
-        subClauses.push(`u.location ILIKE $${bIdx}`, `u.location_city ILIKE $${bIdx}`, `u.location_formatted ILIKE $${bIdx}`);
+        subClauses.push(
+          `u.location ILIKE $${bIdx}`,
+          `u.location_city ILIKE $${bIdx}`,
+          `u.location_formatted ILIKE $${bIdx}`
+        );
       }
 
       locParts.push(`(${subClauses.join(' OR ')})`);
@@ -154,10 +168,12 @@ async function searchPeople(client, { searchTerm, viewerId, orgActorId = null, l
   let roleClause = '';
   const rawRole = queryParams.role;
   const roleList = Array.isArray(rawRole)
-    ? rawRole.map(s => String(s).trim()).filter(Boolean)
+    ? rawRole.map((s) => String(s).trim()).filter(Boolean)
     : typeof rawRole === 'string' && rawRole.trim()
-    ? (rawRole.includes('|') ? rawRole.split('|') : rawRole.split(',')).map(s => s.trim()).filter(Boolean)
-    : [];
+      ? (rawRole.includes('|') ? rawRole.split('|') : rawRole.split(','))
+          .map((s) => s.trim())
+          .filter(Boolean)
+      : [];
 
   if (roleList.length > 0) {
     const roleParts = [];
@@ -180,10 +196,12 @@ async function searchPeople(client, { searchTerm, viewerId, orgActorId = null, l
   let companyClause = '';
   const rawComp = queryParams.company;
   const compList = Array.isArray(rawComp)
-    ? rawComp.map(s => String(s).trim()).filter(Boolean)
+    ? rawComp.map((s) => String(s).trim()).filter(Boolean)
     : typeof rawComp === 'string' && rawComp.trim()
-    ? (rawComp.includes('|') ? rawComp.split('|') : rawComp.split(',')).map(s => s.trim()).filter(Boolean)
-    : [];
+      ? (rawComp.includes('|') ? rawComp.split('|') : rawComp.split(','))
+          .map((s) => s.trim())
+          .filter(Boolean)
+      : [];
 
   if (compList.length > 0) {
     const compParts = [];
@@ -211,10 +229,12 @@ async function searchPeople(client, { searchTerm, viewerId, orgActorId = null, l
   let industryClause = '';
   const rawInd = queryParams.industry || queryParams.industry_type;
   const indList = Array.isArray(rawInd)
-    ? rawInd.map(s => String(s).trim()).filter(Boolean)
+    ? rawInd.map((s) => String(s).trim()).filter(Boolean)
     : typeof rawInd === 'string' && rawInd.trim()
-    ? (rawInd.includes('|') ? rawInd.split('|') : rawInd.split(',')).map(s => s.trim()).filter(Boolean)
-    : [];
+      ? (rawInd.includes('|') ? rawInd.split('|') : rawInd.split(','))
+          .map((s) => s.trim())
+          .filter(Boolean)
+      : [];
 
   if (indList.length > 0) {
     const indParts = [];
@@ -239,10 +259,12 @@ async function searchPeople(client, { searchTerm, viewerId, orgActorId = null, l
   let instituteClause = '';
   const rawInst = queryParams.institute || queryParams.school || queryParams.institution;
   const instList = Array.isArray(rawInst)
-    ? rawInst.map(s => String(s).trim()).filter(Boolean)
+    ? rawInst.map((s) => String(s).trim()).filter(Boolean)
     : typeof rawInst === 'string' && rawInst.trim()
-    ? (rawInst.includes('|') ? rawInst.split('|') : rawInst.split(',')).map(s => s.trim()).filter(Boolean)
-    : [];
+      ? (rawInst.includes('|') ? rawInst.split('|') : rawInst.split(','))
+          .map((s) => s.trim())
+          .filter(Boolean)
+      : [];
 
   if (instList.length > 0) {
     const instParts = [];
@@ -269,10 +291,12 @@ async function searchPeople(client, { searchTerm, viewerId, orgActorId = null, l
   let skillsClause = '';
   const rawSkills = queryParams.skills || queryParams.skill;
   const skillList = Array.isArray(rawSkills)
-    ? rawSkills.map(s => String(s).trim()).filter(Boolean)
+    ? rawSkills.map((s) => String(s).trim()).filter(Boolean)
     : typeof rawSkills === 'string' && rawSkills.trim()
-    ? (rawSkills.includes('|') ? rawSkills.split('|') : rawSkills.split(',')).map(s => s.trim()).filter(Boolean)
-    : [];
+      ? (rawSkills.includes('|') ? rawSkills.split('|') : rawSkills.split(','))
+          .map((s) => s.trim())
+          .filter(Boolean)
+      : [];
 
   if (skillList.length > 0) {
     const skillParts = [];
@@ -297,24 +321,56 @@ async function searchPeople(client, { searchTerm, viewerId, orgActorId = null, l
   let experienceClause = '';
   const rawExp = queryParams.experience || queryParams.experience_level;
   const expList = Array.isArray(rawExp)
-    ? rawExp.map(s => String(s).trim()).filter(Boolean)
+    ? rawExp.map((s) => String(s).trim()).filter(Boolean)
     : typeof rawExp === 'string' && rawExp.trim()
-    ? (rawExp.includes('|') ? rawExp.split('|') : rawExp.split(',')).map(s => s.trim()).filter(Boolean)
-    : [];
+      ? (rawExp.includes('|') ? rawExp.split('|') : rawExp.split(','))
+          .map((s) => s.trim())
+          .filter(Boolean)
+      : [];
 
   if (expList.length > 0) {
     const expParts = [];
     const EXP_MAP = {
-      '0-1': [0, 1], '0_1': [0, 1], '0–1': [0, 1], '0–1 yr': [0, 1], '0-1 yr': [0, 1], '0-1 years': [0, 1],
-      '1-3': [1, 3], '1_3': [1, 3], '1–3': [1, 3], '1–3 yrs': [1, 3], '1-3 yrs': [1, 3], '1-3 years': [1, 3],
-      '3-5': [3, 5], '3_5': [3, 5], '3–5': [3, 5], '3–5 yrs': [3, 5], '3-5 yrs': [3, 5], '3-5 years': [3, 5],
-      '5-8': [5, 8], '5_8': [5, 8], '5–8': [5, 8], '5–8 yrs': [5, 8], '5-8 yrs': [5, 8], '5-8 years': [5, 8],
-      '8+': [8, 999], '8_plus': [8, 999], '8+ yrs': [8, 999], '8+ years': [8, 999],
+      '0-1': [0, 1],
+      '0_1': [0, 1],
+      '0–1': [0, 1],
+      '0–1 yr': [0, 1],
+      '0-1 yr': [0, 1],
+      '0-1 years': [0, 1],
+      '1-3': [1, 3],
+      '1_3': [1, 3],
+      '1–3': [1, 3],
+      '1–3 yrs': [1, 3],
+      '1-3 yrs': [1, 3],
+      '1-3 years': [1, 3],
+      '3-5': [3, 5],
+      '3_5': [3, 5],
+      '3–5': [3, 5],
+      '3–5 yrs': [3, 5],
+      '3-5 yrs': [3, 5],
+      '3-5 years': [3, 5],
+      '5-8': [5, 8],
+      '5_8': [5, 8],
+      '5–8': [5, 8],
+      '5–8 yrs': [5, 8],
+      '5-8 yrs': [5, 8],
+      '5-8 years': [5, 8],
+      '8+': [8, 999],
+      '8_plus': [8, 999],
+      '8+ yrs': [8, 999],
+      '8+ years': [8, 999],
     };
 
     for (const exp of expList) {
       const norm = exp.toLowerCase().replace(/–/g, '-');
-      const range = EXP_MAP[norm] || EXP_MAP[norm.replace(/\s+yrs?/i, '').replace(/\s+years?/i, '').trim()];
+      const range =
+        EXP_MAP[norm] ||
+        EXP_MAP[
+          norm
+            .replace(/\s+yrs?/i, '')
+            .replace(/\s+years?/i, '')
+            .trim()
+        ];
       if (range) {
         params.push(range[0], range[1]);
         const minIdx = params.length - 1;
@@ -348,17 +404,26 @@ async function searchPeople(client, { searchTerm, viewerId, orgActorId = null, l
   let openToClause = '';
   const rawOpenTo = queryParams.open_to || queryParams.openTo || queryParams.looking_for;
   const openToList = Array.isArray(rawOpenTo)
-    ? rawOpenTo.map(s => String(s).trim()).filter(Boolean)
+    ? rawOpenTo.map((s) => String(s).trim()).filter(Boolean)
     : typeof rawOpenTo === 'string' && rawOpenTo.trim()
-    ? (rawOpenTo.includes('|') ? rawOpenTo.split('|') : rawOpenTo.split(',')).map(s => s.trim()).filter(Boolean)
-    : [];
+      ? (rawOpenTo.includes('|') ? rawOpenTo.split('|') : rawOpenTo.split(','))
+          .map((s) => s.trim())
+          .filter(Boolean)
+      : [];
 
   if (openToList.length > 0) {
     const openToParts = [];
     for (const ot of openToList) {
-      params.push(`%${ot}%`);
+      // Normalize hyphens and spaces (e.g. "Full-time" / "Full Time" -> "full time")
+      const normalizedOt = ot
+        .toLowerCase()
+        .replace(/[-_ ]+/g, ' ')
+        .trim();
+      params.push(`%${normalizedOt}%`);
       const otIdx = params.length;
-      openToParts.push(`p.open_to ILIKE $${otIdx}`);
+      openToParts.push(
+        `REPLACE(REPLACE(LOWER(COALESCE(p.open_to, '')), '-', ' '), '_', ' ') ILIKE $${otIdx}`
+      );
     }
     if (openToParts.length > 0) {
       openToClause = ` AND (${openToParts.join(' OR ')})`;
@@ -638,7 +703,7 @@ async function searchPeople(client, { searchTerm, viewerId, orgActorId = null, l
     nextCursor = encodePeopleCursor(lastItem);
   }
 
-  const formattedItems = items.map(item => {
+  const formattedItems = items.map((item) => {
     let contextSignal = null;
     let contextType = null;
 
@@ -655,7 +720,10 @@ async function searchPeople(client, { searchTerm, viewerId, orgActorId = null, l
       contextType = 'skill';
       contextSignal = `Shared interest in ${item.shared_skill}`;
     } else {
-      const resolvedCity = item.location_city || (item.location ? item.location.split(',')[0].trim() : null) || (item.location_formatted ? item.location_formatted.split(',')[0].trim() : null);
+      const resolvedCity =
+        item.location_city ||
+        (item.location ? item.location.split(',')[0].trim() : null) ||
+        (item.location_formatted ? item.location_formatted.split(',')[0].trim() : null);
       if (resolvedCity) {
         contextType = 'location';
         contextSignal = `Based in ${resolvedCity}`;
@@ -665,11 +733,12 @@ async function searchPeople(client, { searchTerm, viewerId, orgActorId = null, l
     let mutualAvatars = [];
     if (Array.isArray(item.mutual_avatars)) {
       mutualAvatars = item.mutual_avatars
-        .map(a => (typeof a === 'object' && a !== null ? a.avatar_url : a))
-        .filter(url => typeof url === 'string' && url.trim().length > 0);
+        .map((a) => (typeof a === 'object' && a !== null ? a.avatar_url : a))
+        .filter((url) => typeof url === 'string' && url.trim().length > 0);
     }
 
-    const resolvedCity = item.location_city || (item.location ? item.location.split(',')[0].trim() : null);
+    const resolvedCity =
+      item.location_city || (item.location ? item.location.split(',')[0].trim() : null);
 
     return {
       id: item.id,
@@ -677,7 +746,12 @@ async function searchPeople(client, { searchTerm, viewerId, orgActorId = null, l
       account_name: item.account_name,
       headline: item.headline,
       avatar_url: item.avatar_url,
-      location: item.location || item.location_formatted || (item.location_city ? `${item.location_city}${item.location_country ? `, ${item.location_country}` : ''}` : null),
+      location:
+        item.location ||
+        item.location_formatted ||
+        (item.location_city
+          ? `${item.location_city}${item.location_country ? `, ${item.location_country}` : ''}`
+          : null),
       location_city: resolvedCity,
       is_following: Boolean(item.is_following),
       connections_count: Number(item.connections_count) || 0,
@@ -685,7 +759,8 @@ async function searchPeople(client, { searchTerm, viewerId, orgActorId = null, l
       pending_request_id: item.pending_request_id || null,
       is_self: Boolean(item.is_self),
       is_connected: item.connection_status === 'connected',
-      has_pending_request: item.connection_status === 'pending_sent' || item.connection_status === 'pending_received',
+      has_pending_request:
+        item.connection_status === 'pending_sent' || item.connection_status === 'pending_received',
       mutual_connections: Number(item.mutual_connections) || 0,
       mutual_avatars: mutualAvatars,
       context_signal: contextSignal,

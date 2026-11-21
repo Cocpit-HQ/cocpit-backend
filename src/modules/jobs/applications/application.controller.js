@@ -13,10 +13,18 @@ const {
 const { checkOrgPermission } = require('../../../core/utils/rbac');
 const { hasActorPermission } = require('../../../core/middlewares/actor-context.middleware');
 const pool = require('../../../core/db/pool');
-const { compareExperience, getLatestEducation, calculateTotalExperienceYears } = require('./application.utils');
-const { generateLocalSystemFallback, analyzeCandidate } = require('../../../services/candidateAnalysis.service');
+const {
+  compareExperience,
+  getLatestEducation,
+  calculateTotalExperienceYears,
+} = require('./application.utils');
+const {
+  generateLocalSystemFallback,
+  analyzeCandidate,
+} = require('../../../services/candidateAnalysis.service');
 const { redisClient } = require('../../../core/db/redis');
 const socketService = require('../../../core/infrastructure/socket.service');
+const { logOrgActivity } = require('../../../core/infrastructure/audit.service');
 
 // ─── Shared auth helper ───────────────────────────────────────────────────────
 // Asserts that the requesting user is either the direct recruiter or an org
@@ -27,7 +35,12 @@ const socketService = require('../../../core/infrastructure/socket.service');
 //   created (recruiter_id = userId). Admin-level actors ("*" or "MANAGE_COMPANY")
 //   bypass this restriction. Use for write operations (e.g. status updates).
 //   Leave false for read operations where all org members should have visibility.
-async function assertRecruiterAccess(req, { org_id, recruiter_id }, permissions, creatorOnly = false) {
+async function assertRecruiterAccess(
+  req,
+  { org_id, recruiter_id },
+  permissions,
+  creatorOnly = false
+) {
   const userId = req.user.sub;
 
   // 1. Direct recruiter (job creator) — always allowed
@@ -37,9 +50,7 @@ async function assertRecruiterAccess(req, { org_id, recruiter_id }, permissions,
     // 2. Actor-context check
     if (req.actor?.type === 'ORGANIZATION' && req.actor.orgId === org_id) {
       const actorPermissions = req.actor.permissions || [];
-      const hasPermission = permissions.some(p =>
-        hasActorPermission(actorPermissions, p)
-      );
+      const hasPermission = permissions.some((p) => hasActorPermission(actorPermissions, p));
 
       if (hasPermission) {
         // Any permitted org member can view & manage org applicants
@@ -104,7 +115,7 @@ exports.getApplicantList = async (req, res) => {
     status,
     minExperience,
     location,
-    skills: skillsArray
+    skills: skillsArray,
   };
 
   try {
@@ -114,41 +125,49 @@ exports.getApplicantList = async (req, res) => {
     }
 
     await assertRecruiterAccess(req, ownership, [
-      'VIEW_APPLICANTS', 'MANAGE_APPLICANTS', 'MANAGE_COMPANY',
+      'VIEW_APPLICANTS',
+      'MANAGE_APPLICANTS',
+      'MANAGE_COMPANY',
     ]);
 
     const rows = await getApplicantList(jobId, filters);
 
-    const response = rows.map(row => ({
+    const response = rows.map((row) => ({
       applicationId: row.applicationId,
-      applicantId:   row.applicantId,
-      name:          row.name,
-      headline:      row.headline || '',
-      avatarUrl:     row.avatarUrl || null,
-      accountName:   row.accountName || null,
-      location:      row.location || '',
-      email:         row.email,
-      resumeUrl:     row.resumeUrl || null,
-      resumeName:    row.resumeName || null,
-      status:        row.status,
-      appliedAt:     row.appliedAt,
-      matchScore:    row.matchScore ?? null,   // null = AI analysis pending
-      analysisType:  row.analysisType || 'BACKEND', // BACKEND or GEMINI
-      hasNote:       Boolean(row.hasNote || (row.selfNote && row.selfNote.trim())),
-      selfNote:      row.selfNote || null,
-      note:          row.selfNote || null,
-      screening: row.screeningRequired ? {
-        required:    true,
-        type:        row.screeningType,
-        submittedAt: row.screeningSubmittedAt || null,
-      } : null,
+      applicantId: row.applicantId,
+      name: row.name,
+      headline: row.headline || '',
+      avatarUrl: row.avatarUrl || null,
+      accountName: row.accountName || null,
+      location: row.location || '',
+      email: row.email,
+      resumeUrl: row.resumeUrl || null,
+      resumeName: row.resumeName || null,
+      status: row.status,
+      appliedAt: row.appliedAt,
+      matchScore: row.matchScore ?? null, // null = AI analysis pending
+      analysisType: row.analysisType || 'BACKEND', // BACKEND or GEMINI
+      hasNote: Boolean(row.hasNote || (row.selfNote && row.selfNote.trim())),
+      selfNote: row.selfNote || null,
+      note: row.selfNote || null,
+      screening: row.screeningRequired
+        ? {
+            required: true,
+            type: row.screeningType,
+            submittedAt: row.screeningSubmittedAt || null,
+          }
+        : null,
       initials: row.name
-        ? row.name.split(' ').map(n => n[0]).join('').substring(0, 2).toUpperCase()
+        ? row.name
+            .split(' ')
+            .map((n) => n[0])
+            .join('')
+            .substring(0, 2)
+            .toUpperCase()
         : '??',
     }));
 
     res.json(response);
-
   } catch (err) {
     if (err.statusCode === 403) {
       return res.status(403).json({ message: err.message });
@@ -172,7 +191,9 @@ exports.getApplicationDetail = async (req, res) => {
     }
 
     await assertRecruiterAccess(req, ownership, [
-      'VIEW_APPLICANTS', 'MANAGE_APPLICANTS', 'MANAGE_COMPANY',
+      'VIEW_APPLICANTS',
+      'MANAGE_APPLICANTS',
+      'MANAGE_COMPANY',
     ]);
 
     const detail = await getApplicationDetail(applicationId, userId);
@@ -194,22 +215,36 @@ exports.getApplicationDetail = async (req, res) => {
 
         // 🎯 Trigger Notification: Application is Under Review
         try {
-          const appDetailsRes = await pool.query(`
+          const appDetailsRes = await pool.query(
+            `
             SELECT ja.applicant_id, j.title, j.job_id, o.name as company_name, o.org_id, o.logo_url as company_avatar, u.email as applicant_email
             FROM job_applications ja
             JOIN jobs j ON ja.job_id = j.job_id
             LEFT JOIN organizations o ON j.org_id = o.org_id
             JOIN users u ON ja.applicant_id = u.user_id
             WHERE ja.application_id = $1
-          `, [applicationId]);
+          `,
+            [applicationId]
+          );
 
           if (appDetailsRes.rowCount > 0) {
-            const { applicant_id, title, job_id, company_name, org_id, company_avatar, applicant_email } = appDetailsRes.rows[0];
+            const {
+              applicant_id,
+              title,
+              job_id,
+              company_name,
+              org_id,
+              company_avatar,
+              applicant_email,
+            } = appDetailsRes.rows[0];
             const senderId = req.user.sub;
-            
-            const recruiterRes = await pool.query(`SELECT full_name, avatar_url FROM users WHERE user_id = $1`, [senderId]);
+
+            const recruiterRes = await pool.query(
+              `SELECT full_name, avatar_url FROM users WHERE user_id = $1`,
+              [senderId]
+            );
             const recruiter = recruiterRes.rows[0];
-            
+
             const senderName = company_name || recruiter?.full_name || 'Someone';
             const senderAvatar = company_avatar || recruiter?.avatar_url || null;
 
@@ -219,21 +254,24 @@ exports.getApplicationDetail = async (req, res) => {
 
             const { sendToUser } = require('../../../modules/notification/notification.service');
 
-            const notifRes = await pool.query(`
+            const notifRes = await pool.query(
+              `
               INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata)
               VALUES ($1, $2, $3, $4, $5, $6)
               RETURNING notification_id
-            `, [
-              applicant_id,
-              senderId,
-              notificationType,
-              notificationText,
-              job_id,
-              JSON.stringify({ job_id, application_id: applicationId, org_id })
-            ]);
+            `,
+              [
+                applicant_id,
+                senderId,
+                notificationType,
+                notificationText,
+                job_id,
+                JSON.stringify({ job_id, application_id: applicationId, org_id }),
+              ]
+            );
             const notificationId = notifRes.rows[0]?.notification_id;
 
-            socketService.notifyUser(applicant_id, "notification", {
+            socketService.notifyUser(applicant_id, 'notification', {
               notification_id: notificationId,
               type: notificationType,
               title: notificationTitle,
@@ -241,30 +279,31 @@ exports.getApplicationDetail = async (req, res) => {
               senderName: senderName,
               senderAvatar: senderAvatar,
               referenceId: job_id,
-              metadata: { job_id, application_id: applicationId, org_id }
+              metadata: { job_id, application_id: applicationId, org_id },
             });
 
             sendToUser(applicant_id, notificationTitle, notificationText, {
-                type: notificationType,
-                referenceId: job_id
+              type: notificationType,
+              referenceId: job_id,
             }).catch(() => {});
           }
         } catch (notifErr) {
           console.error('[getApplicationDetail] failed to send in-review notification:', notifErr);
         }
-
       } catch (err) {
         console.error('[getApplicationDetail] failed to update status to in-review:', err);
       }
     }
 
-    const screening = detail.screeningRequired ? {
-      required:    true,
-      type:        detail.screeningType,
-      question:    detail.screeningQuestion,
-      submittedAt: detail.screeningSubmittedAt || null,
-      responseUrl: detail.screeningResponseUrl || null,
-    } : null;
+    const screening = detail.screeningRequired
+      ? {
+          required: true,
+          type: detail.screeningType,
+          question: detail.screeningQuestion,
+          submittedAt: detail.screeningSubmittedAt || null,
+          responseUrl: detail.screeningResponseUrl || null,
+        }
+      : null;
 
     let analysis = await getLatestAnalysis(applicationId);
     if (!analysis || analysis.analysisType === 'BACKEND') {
@@ -276,9 +315,14 @@ exports.getApplicationDetail = async (req, res) => {
         const { candidate_snapshot, job_snapshot } = snapRes.rows[0];
 
         // Resolve experience fields (with live job fallback if needed)
-        let expMin   = job_snapshot.experienceMin   ?? null;
-        let expMax   = job_snapshot.experienceMax   ?? null;
-        let expLabel = job_snapshot.experienceLabel ?? job_snapshot.experienceLevel ?? job_snapshot.experience_label ?? job_snapshot.experience_level ?? null;
+        let expMin = job_snapshot.experienceMin ?? null;
+        let expMax = job_snapshot.experienceMax ?? null;
+        let expLabel =
+          job_snapshot.experienceLabel ??
+          job_snapshot.experienceLevel ??
+          job_snapshot.experience_label ??
+          job_snapshot.experience_level ??
+          null;
 
         if (expMin === null && expMax === null && !expLabel) {
           const jobIdRes = await pool.query(
@@ -291,21 +335,24 @@ exports.getApplicationDetail = async (req, res) => {
             [applicationId]
           );
           if (jobIdRes.rowCount > 0) {
-            expMin   = jobIdRes.rows[0].experience_min   ?? null;
-            expMax   = jobIdRes.rows[0].experience_max   ?? null;
-            expLabel = jobIdRes.rows[0].experience_label || jobIdRes.rows[0].experience_level || null;
+            expMin = jobIdRes.rows[0].experience_min ?? null;
+            expMax = jobIdRes.rows[0].experience_max ?? null;
+            expLabel =
+              jobIdRes.rows[0].experience_label || jobIdRes.rows[0].experience_level || null;
           }
         }
 
-        const totalYears = (candidate_snapshot.experience && candidate_snapshot.experience.length > 0)
-          ? calculateTotalExperienceYears(candidate_snapshot.experience)
-          : (candidate_snapshot.totalExperienceYears ?? 0);
+        const totalYears =
+          candidate_snapshot.experience && candidate_snapshot.experience.length > 0
+            ? calculateTotalExperienceYears(candidate_snapshot.experience)
+            : (candidate_snapshot.totalExperienceYears ?? 0);
         const experienceJson = compareExperience(totalYears, expMin, expMax, expLabel);
         if (experienceJson.status === 'MATCHES') experienceJson.status = 'ALIGNED';
 
         const latestEdu = getLatestEducation(candidate_snapshot.education || []);
         const jobEduReq = job_snapshot.education || null;
-        const qualStatus = latestEdu.degree && latestEdu.degree !== 'Not specified' ? 'ALIGNED' : 'BELOW';
+        const qualStatus =
+          latestEdu.degree && latestEdu.degree !== 'Not specified' ? 'ALIGNED' : 'BELOW';
         const qualificationJson = {
           status: jobEduReq ? qualStatus : 'ALIGNED',
           degree: latestEdu.degree || 'Not specified',
@@ -313,7 +360,12 @@ exports.getApplicationDetail = async (req, res) => {
           summary: latestEdu.summary || 'Candidate education details provided.',
         };
 
-        const fallback = generateLocalSystemFallback(candidate_snapshot, job_snapshot, experienceJson, qualificationJson);
+        const fallback = generateLocalSystemFallback(
+          candidate_snapshot,
+          job_snapshot,
+          experienceJson,
+          qualificationJson
+        );
 
         analysis = {
           analysisId: analysis?.analysisId || null,
@@ -340,31 +392,29 @@ exports.getApplicationDetail = async (req, res) => {
 
     res.json({
       applicationId: detail.applicationId,
-      applicantId:   detail.applicantId,
-      name:          detail.name,
-      email:         detail.email,
-      phone:         detail.phone || null,
-      avatarUrl:     detail.avatarUrl || null,
-      accountName:   detail.accountName || null,
+      applicantId: detail.applicantId,
+      name: detail.name,
+      email: detail.email,
+      phone: detail.phone || null,
+      avatarUrl: detail.avatarUrl || null,
+      accountName: detail.accountName || null,
       isDeactivated: detail.isDeactivated || false,
-      headline:      detail.headline || '',
-      location:      detail.location || '',
-      about:         detail.about || null,
-      coverNote:     detail.coverNote || null,
-      resumeUrl:     detail.resumeUrl,
-      resumeName:    detail.resumeName || (detail.resumeUrl
-        ? detail.resumeUrl.split('/').pop()
-        : 'Resume.pdf'),
-      status:        detail.status,
-      appliedAt:     detail.appliedAt,
-      skills:        detail.skills   || [],
-      experience:    detail.experience || [],
-      education:     detail.education  || [],
+      headline: detail.headline || '',
+      location: detail.location || '',
+      about: detail.about || null,
+      coverNote: detail.coverNote || null,
+      resumeUrl: detail.resumeUrl,
+      resumeName:
+        detail.resumeName || (detail.resumeUrl ? detail.resumeUrl.split('/').pop() : 'Resume.pdf'),
+      status: detail.status,
+      appliedAt: detail.appliedAt,
+      skills: detail.skills || [],
+      experience: detail.experience || [],
+      education: detail.education || [],
       screening,
-      selfNote:      detail.selfNote || null,
-      aiAnalysis:    analysis,
+      selfNote: detail.selfNote || null,
+      aiAnalysis: analysis,
     });
-
   } catch (err) {
     if (err.statusCode === 403) {
       return res.status(403).json({ message: err.message });
@@ -382,7 +432,13 @@ exports.updateApplicationStatus = async (req, res) => {
   const { status, screening } = req.body;
 
   const VALID_STATUSES = [
-    'Applied', 'in-review', 'Shortlisted', 'Approved', 'Rejected', 'Interview', 'Offer',
+    'Applied',
+    'in-review',
+    'Shortlisted',
+    'Approved',
+    'Rejected',
+    'Interview',
+    'Offer',
   ];
 
   if (!status || !VALID_STATUSES.includes(status)) {
@@ -397,9 +453,7 @@ exports.updateApplicationStatus = async (req, res) => {
       return res.status(404).json({ message: 'Application not found' });
     }
 
-    await assertRecruiterAccess(req, ownership, [
-      'MANAGE_APPLICANTS', 'MANAGE_COMPANY',
-    ], true);
+    await assertRecruiterAccess(req, ownership, ['MANAGE_APPLICANTS', 'MANAGE_COMPANY'], true);
 
     // Build SET clause — screening fields only written when Shortlisting with a task
     const setClauses = ['current_status = $1'];
@@ -433,59 +487,119 @@ exports.updateApplicationStatus = async (req, res) => {
       [applicationId, status]
     );
 
-    // Send notification to candidate if they are shortlisted or get an offer
-    if (status === 'Shortlisted' || status === 'Offer') {
-      const appDetailsRes = await pool.query(`
-        SELECT ja.applicant_id, j.title, j.job_id, o.name as company_name, o.org_id, o.logo_url as company_avatar, u.email as applicant_email
-        FROM job_applications ja
-        JOIN jobs j ON ja.job_id = j.job_id
-        LEFT JOIN organizations o ON j.org_id = o.org_id
-        JOIN users u ON ja.applicant_id = u.user_id
-        WHERE ja.application_id = $1
-      `, [applicationId]);
+    // Audit Log for Organization Team Activity Logs
+    if (ownership.org_id && (status === 'Shortlisted' || status === 'Rejected')) {
+      try {
+        const candQuery = await pool.query(
+          `SELECT ja.applicant_id, u.full_name as candidate_name, j.title as job_title, j.job_id 
+           FROM job_applications ja
+           JOIN users u ON ja.applicant_id = u.user_id
+           JOIN jobs j ON ja.job_id = j.job_id
+           WHERE ja.application_id = $1`,
+          [applicationId]
+        );
 
-      if (appDetailsRes.rowCount > 0) {
-        const { applicant_id, title, job_id, company_name, org_id, company_avatar, applicant_email } = appDetailsRes.rows[0];
+        if (candQuery.rows.length > 0) {
+          const { applicant_id, candidate_name, job_title, job_id } = candQuery.rows[0];
+          const isShortlist = status === 'Shortlisted';
+          const action = isShortlist ? 'SHORTLIST_APPLICATION' : 'DECLINE_APPLICATION';
+
+          await logOrgActivity(pool, {
+            orgId: ownership.org_id,
+            userId: req.user.sub,
+            action,
+            metadata: {
+              targetType: 'application',
+              targetId: applicationId,
+              targetName: job_title,
+              jobId: job_id,
+              jobTitle: job_title,
+              applicationId,
+              candidateId: applicant_id,
+              candidateName: candidate_name,
+              linkUrl: `/jobs/${job_id}`,
+              candidateLinkUrl: `/profile/${applicant_id}`,
+              screeningRequired: Boolean(screening?.required),
+            },
+            req,
+          });
+        }
+      } catch (auditErr) {
+        console.error('[updateApplicationStatus] Failed to log audit activity:', auditErr);
+      }
+    }
+
+    const appDetailsRes = await pool.query(
+      `
+      SELECT ja.applicant_id, j.title, j.job_id, o.name as company_name, o.org_id, o.logo_url as company_avatar, u.email as applicant_email
+      FROM job_applications ja
+      JOIN jobs j ON ja.job_id = j.job_id
+      LEFT JOIN organizations o ON j.org_id = o.org_id
+      JOIN users u ON ja.applicant_id = u.user_id
+      WHERE ja.application_id = $1
+    `,
+      [applicationId]
+    );
+
+    if (appDetailsRes.rowCount > 0) {
+      const { applicant_id, title, job_id, company_name, org_id, company_avatar, applicant_email } =
+        appDetailsRes.rows[0];
+
+      // Real-time socket event for immediate status & button refresh across candidate sessions
+      socketService.notifyUser(applicant_id, 'job_application_updated', {
+        applicationId,
+        jobId: job_id,
+        status,
+      });
+
+      // Send notification to candidate if they are shortlisted or get an offer
+      if (status === 'Shortlisted' || status === 'Offer') {
         const senderId = req.user.sub;
-        
-        const recruiterRes = await pool.query(`SELECT full_name, avatar_url FROM users WHERE user_id = $1`, [senderId]);
+
+        const recruiterRes = await pool.query(
+          `SELECT full_name, avatar_url FROM users WHERE user_id = $1`,
+          [senderId]
+        );
         const recruiter = recruiterRes.rows[0];
-        
+
         const senderName = company_name || recruiter?.full_name || 'Someone';
         const senderAvatar = company_avatar || recruiter?.avatar_url || null;
-        
+
         let notificationType;
         let notificationText;
         let notificationTitle;
         const { sendToUser } = require('../../../modules/notification/notification.service');
         const { sendShortlistedEmail } = require('../../../core/services/email.service');
-        
+
         if (status === 'Shortlisted') {
-            notificationType = 'application_shortlisted';
-            notificationTitle = 'Your application has been shortlisted';
-            notificationText = `"${senderName}" has shortlisted your application for the role "${title}"`;
-            sendShortlistedEmail(applicant_email, senderName, title).catch(() => {});
+          notificationType = 'application_shortlisted';
+          notificationTitle = 'Your application has been shortlisted';
+          notificationText = `"${senderName}" has shortlisted your application for the role "${title}"`;
+          sendShortlistedEmail(applicant_email, senderName, title).catch(() => {});
         } else if (status === 'Offer') {
-            notificationType = 'job_offer';
-            notificationTitle = "You've received an offer";
-            notificationText = `"${senderName}" has sent you an offer for the role "${title}". Review the details now`;
+          notificationType = 'job_offer';
+          notificationTitle = "You've received an offer";
+          notificationText = `"${senderName}" has sent you an offer for the role "${title}". Review the details now`;
         }
-        
-        const notifRes = await pool.query(`
+
+        const notifRes = await pool.query(
+          `
           INSERT INTO notifications (user_id, sender_id, type, text, reference_id, metadata)
           VALUES ($1, $2, $3, $4, $5, $6)
           RETURNING notification_id
-        `, [
-          applicant_id,
-          senderId,
-          notificationType,
-          notificationText,
-          job_id,
-          JSON.stringify({ job_id, application_id: applicationId, org_id })
-        ]);
+        `,
+          [
+            applicant_id,
+            senderId,
+            notificationType,
+            notificationText,
+            job_id,
+            JSON.stringify({ job_id, application_id: applicationId, org_id }),
+          ]
+        );
         const notificationId = notifRes.rows[0]?.notification_id;
-        
-        socketService.notifyUser(applicant_id, "notification", {
+
+        socketService.notifyUser(applicant_id, 'notification', {
           notification_id: notificationId,
           type: notificationType,
           title: notificationTitle,
@@ -493,18 +607,17 @@ exports.updateApplicationStatus = async (req, res) => {
           senderName: senderName,
           senderAvatar: senderAvatar,
           referenceId: job_id,
-          metadata: { job_id, application_id: applicationId, org_id }
+          metadata: { job_id, application_id: applicationId, org_id },
         });
 
         sendToUser(applicant_id, notificationTitle, notificationText, {
-            type: notificationType,
-            referenceId: job_id
+          type: notificationType,
+          referenceId: job_id,
         }).catch(() => {});
       }
     }
 
     res.json({ message: 'Status updated', status });
-
   } catch (err) {
     if (err.statusCode === 403) {
       return res.status(403).json({ message: err.message });
@@ -537,13 +650,14 @@ exports.upsertNote = async (req, res) => {
     }
 
     await assertRecruiterAccess(req, ownership, [
-      'VIEW_APPLICANTS', 'MANAGE_APPLICANTS', 'MANAGE_COMPANY',
+      'VIEW_APPLICANTS',
+      'MANAGE_APPLICANTS',
+      'MANAGE_COMPANY',
     ]);
 
     const note = await upsertNote(applicationId, userId, body.trim());
 
     res.json(note);
-
   } catch (err) {
     if (err.statusCode === 403) {
       return res.status(403).json({ message: err.message });
@@ -567,7 +681,9 @@ exports.getAnalysis = async (req, res) => {
     }
 
     await assertRecruiterAccess(req, ownership, [
-      'VIEW_APPLICANTS', 'MANAGE_APPLICANTS', 'MANAGE_COMPANY',
+      'VIEW_APPLICANTS',
+      'MANAGE_APPLICANTS',
+      'MANAGE_COMPANY',
     ]);
 
     let analysis = await getLatestAnalysis(applicationId);
@@ -580,9 +696,14 @@ exports.getAnalysis = async (req, res) => {
         const { candidate_snapshot, job_snapshot } = snapRes.rows[0];
 
         // Resolve experience fields (with live job fallback if needed)
-        let expMin   = job_snapshot.experienceMin   ?? null;
-        let expMax   = job_snapshot.experienceMax   ?? null;
-        let expLabel = job_snapshot.experienceLabel ?? job_snapshot.experienceLevel ?? job_snapshot.experience_label ?? job_snapshot.experience_level ?? null;
+        let expMin = job_snapshot.experienceMin ?? null;
+        let expMax = job_snapshot.experienceMax ?? null;
+        let expLabel =
+          job_snapshot.experienceLabel ??
+          job_snapshot.experienceLevel ??
+          job_snapshot.experience_label ??
+          job_snapshot.experience_level ??
+          null;
 
         if (expMin === null && expMax === null && !expLabel) {
           const jobIdRes = await pool.query(
@@ -595,21 +716,24 @@ exports.getAnalysis = async (req, res) => {
             [applicationId]
           );
           if (jobIdRes.rowCount > 0) {
-            expMin   = jobIdRes.rows[0].experience_min   ?? null;
-            expMax   = jobIdRes.rows[0].experience_max   ?? null;
-            expLabel = jobIdRes.rows[0].experience_label || jobIdRes.rows[0].experience_level || null;
+            expMin = jobIdRes.rows[0].experience_min ?? null;
+            expMax = jobIdRes.rows[0].experience_max ?? null;
+            expLabel =
+              jobIdRes.rows[0].experience_label || jobIdRes.rows[0].experience_level || null;
           }
         }
 
-        const totalYears = (candidate_snapshot.experience && candidate_snapshot.experience.length > 0)
-          ? calculateTotalExperienceYears(candidate_snapshot.experience)
-          : (candidate_snapshot.totalExperienceYears ?? 0);
+        const totalYears =
+          candidate_snapshot.experience && candidate_snapshot.experience.length > 0
+            ? calculateTotalExperienceYears(candidate_snapshot.experience)
+            : (candidate_snapshot.totalExperienceYears ?? 0);
         const experienceJson = compareExperience(totalYears, expMin, expMax, expLabel);
         if (experienceJson.status === 'MATCHES') experienceJson.status = 'ALIGNED';
 
         const latestEdu = getLatestEducation(candidate_snapshot.education || []);
         const jobEduReq = job_snapshot.education || null;
-        const qualStatus = latestEdu.degree && latestEdu.degree !== 'Not specified' ? 'ALIGNED' : 'BELOW';
+        const qualStatus =
+          latestEdu.degree && latestEdu.degree !== 'Not specified' ? 'ALIGNED' : 'BELOW';
         const qualificationJson = {
           status: jobEduReq ? qualStatus : 'ALIGNED',
           degree: latestEdu.degree || 'Not specified',
@@ -617,7 +741,12 @@ exports.getAnalysis = async (req, res) => {
           summary: latestEdu.summary || 'Candidate education details provided.',
         };
 
-        const fallback = generateLocalSystemFallback(candidate_snapshot, job_snapshot, experienceJson, qualificationJson);
+        const fallback = generateLocalSystemFallback(
+          candidate_snapshot,
+          job_snapshot,
+          experienceJson,
+          qualificationJson
+        );
 
         analysis = {
           analysisId: analysis?.analysisId || null,
@@ -644,7 +773,6 @@ exports.getAnalysis = async (req, res) => {
     }
 
     res.json(analysis);
-
   } catch (err) {
     if (err.statusCode === 403) {
       return res.status(403).json({ message: err.message });
@@ -660,40 +788,50 @@ exports.triggerAnalysis = async (req, res) => {
   try {
     const ownership = await getApplicationOwnership(applicationId);
     if (!ownership) {
-      console.warn(`[triggerAnalysis] 404 — no ownership found for applicationId: ${applicationId}`);
+      console.warn(
+        `[triggerAnalysis] 404 — no ownership found for applicationId: ${applicationId}`
+      );
       return res.status(404).json({ message: 'Application not found' });
     }
 
-
     await assertRecruiterAccess(req, ownership, [
-      'VIEW_APPLICANTS', 'MANAGE_APPLICANTS', 'MANAGE_COMPANY',
+      'VIEW_APPLICANTS',
+      'MANAGE_APPLICANTS',
+      'MANAGE_COMPANY',
     ]);
 
     // 1. Redis Cooldown Lock (NX) to prevent sequential abuse
     const lockKey = `ai_analysis_cooldown:${applicationId}`;
     if (redisClient.isOpen) {
-      const lockAcquired = await redisClient.set(lockKey, "1", "PX", 10000, "NX");
+      const lockAcquired = await redisClient.set(lockKey, '1', 'PX', 10000, 'NX');
       if (!lockAcquired) {
-        return res.status(429).json({ message: 'Analysis already triggered recently. Please wait.' });
+        return res
+          .status(429)
+          .json({ message: 'Analysis already triggered recently. Please wait.' });
       }
     }
 
     // 2. Database Deduplication (State Machine Correctness)
-    const queueRes = await pool.query(`
+    const queueRes = await pool.query(
+      `
       INSERT INTO ai_analysis_queue (application_id, status, reason)
       VALUES ($1, 'PROCESSING', 'MANUAL_TRIGGER')
       ON CONFLICT DO NOTHING
-    `, [applicationId]);
+    `,
+      [applicationId]
+    );
 
     if (queueRes.rowCount === 0) {
       // Row exists (either PENDING or PROCESSING)
-      return res.status(409).json({ message: 'Analysis is already in progress for this application.' });
+      return res
+        .status(409)
+        .json({ message: 'Analysis is already in progress for this application.' });
     }
 
     // 3. Run the analysis synchronously with try/catch for state transitions
     try {
       await analyzeCandidate(applicationId, req.user?.sub, ownership.org_id, req.ip);
-      
+
       await pool.query(
         `UPDATE ai_analysis_queue 
          SET status = 'COMPLETED', error_message = NULL 
@@ -715,7 +853,6 @@ exports.triggerAnalysis = async (req, res) => {
     const analysis = await getLatestAnalysis(applicationId);
 
     res.json(analysis);
-
   } catch (err) {
     if (err.statusCode === 403) {
       return res.status(403).json({ message: err.message });

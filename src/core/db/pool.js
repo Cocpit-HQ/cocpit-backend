@@ -1,50 +1,55 @@
-const { Pool, types } = require("pg");
+const { Pool, types } = require('pg');
 
-// OID 1082 is for PostgreSQL DATE type. 
-// By default, pg parses it as a JS Date in local time, which causes month-shifting bugs 
-// when the browser is in a different timezone than the server. 
+// OID 1082 is for PostgreSQL DATE type.
+// By default, pg parses it as a JS Date in local time, which causes month-shifting bugs
+// when the browser is in a different timezone than the server.
 // Returning the raw string prevents time zone shifting entirely.
 types.setTypeParser(1082, (val) => val);
 
-const isProduction = process.env.NODE_ENV === "production";
+const isProduction = process.env.NODE_ENV === 'production';
 
 // Prefer DATABASE_URL if present, else fallback to individual vars
 
 // hello this is new comment
 // Prefer DATABASE_URL if present, else fallback to individual vars
 const isInternalHost = Boolean(
-  (process.env.DATABASE_URL && (process.env.DATABASE_URL.includes('.railway.internal') || process.env.DATABASE_URL.includes('localhost') || process.env.DATABASE_URL.includes('127.0.0.1'))) ||
-  (process.env.DB_HOST && (process.env.DB_HOST.includes('.railway.internal') || process.env.DB_HOST.includes('localhost') || process.env.DB_HOST.includes('127.0.0.1')))
+  (process.env.DATABASE_URL &&
+    (process.env.DATABASE_URL.includes('.railway.internal') ||
+      process.env.DATABASE_URL.includes('localhost') ||
+      process.env.DATABASE_URL.includes('127.0.0.1'))) ||
+  (process.env.DB_HOST &&
+    (process.env.DB_HOST.includes('.railway.internal') ||
+      process.env.DB_HOST.includes('localhost') ||
+      process.env.DB_HOST.includes('127.0.0.1')))
 );
 
-const poolConfig = (process.env.DATABASE_URL && process.env.DATABASE_URL.trim().length > 0)
-  ? {
-    connectionString: process.env.DATABASE_URL,
-    ssl: (isProduction && !isInternalHost)
-      ? { rejectUnauthorized: false }
-      : false,
-    // Connection limits & timeouts
-    max: 30,                          // max clients in pool (was 15 — too low under load)
-    idleTimeoutMillis: 20000,         // release idle clients after 20s
-    connectionTimeoutMillis: 5000,    // fail fast if pool is exhausted
-    statement_timeout: 60000,         // kill any query running > 60s
-    query_timeout: 60000,             // node-postgres client-side query timeout
-  }
-  : {
-    host: process.env.DB_HOST || "localhost",
-    port: process.env.DB_PORT ? Number(process.env.DB_PORT) : 5432,
-    user: process.env.DB_USER,
-    password: process.env.DB_PASSWORD,
-    database: process.env.DB_NAME,
-    // ─── Connection pool limits ───────────────────────────────────────────────
-    max: 30,                          // max clients (was 15 — too low under load)
-    idleTimeoutMillis: 20000,         // release idle clients after 20s
-    connectionTimeoutMillis: 5000,    // fail fast if pool is exhausted
-    // ─── Server-side timeouts (sent to Postgres on every new connection) ──────
-    statement_timeout: 60000,         // kill any query running > 60s
-    query_timeout: 60000,             // node-postgres client-side query timeout
-    ssl: false,
-  };
+const poolConfig =
+  process.env.DATABASE_URL && process.env.DATABASE_URL.trim().length > 0
+    ? {
+        connectionString: process.env.DATABASE_URL,
+        ssl: isProduction && !isInternalHost ? { rejectUnauthorized: false } : false,
+        // Connection limits & timeouts
+        max: 30, // max clients in pool (was 15 — too low under load)
+        idleTimeoutMillis: 20000, // release idle clients after 20s
+        connectionTimeoutMillis: 5000, // fail fast if pool is exhausted
+        statement_timeout: 60000, // kill any query running > 60s
+        query_timeout: 60000, // node-postgres client-side query timeout
+      }
+    : {
+        host: process.env.DB_HOST || 'localhost',
+        port: process.env.DB_PORT ? Number(process.env.DB_PORT) : 5432,
+        user: process.env.DB_USER,
+        password: process.env.DB_PASSWORD,
+        database: process.env.DB_NAME,
+        // ─── Connection pool limits ───────────────────────────────────────────────
+        max: 30, // max clients (was 15 — too low under load)
+        idleTimeoutMillis: 20000, // release idle clients after 20s
+        connectionTimeoutMillis: 5000, // fail fast if pool is exhausted
+        // ─── Server-side timeouts (sent to Postgres on every new connection) ──────
+        statement_timeout: 60000, // kill any query running > 60s
+        query_timeout: 60000, // node-postgres client-side query timeout
+        ssl: false,
+      };
 
 const pool = new Pool(poolConfig);
 
@@ -56,20 +61,25 @@ let _dbConnected = false;
 
 async function checkDbConnection() {
   try {
-    const res = await pool.query("SELECT current_database(), current_user");
+    const res = await pool.query('SELECT current_database(), current_user');
     if (!_dbConnected) {
-      console.log("✅ PostgreSQL connected");
-      console.log("📦 Database:", res.rows[0].current_database);
-      console.log("👤 DB User:", res.rows[0].current_user);
+      console.log('✅ PostgreSQL connected');
+      console.log('📦 Database:', res.rows[0].current_database);
+      console.log('👤 DB User:', res.rows[0].current_user);
       _dbConnected = true;
 
       // Drop foreign key constraints on blocks table and ensure password_reset_tokens table exists
-      pool.query(`
+      pool
+        .query(
+          `
         ALTER TABLE blocks DROP CONSTRAINT IF EXISTS blocks_blocked_id_fkey;
         ALTER TABLE blocks DROP CONSTRAINT IF EXISTS blocks_blocker_id_fkey;
         ALTER TABLE users ADD COLUMN IF NOT EXISTS dob DATE;
         ALTER TABLE users DROP CONSTRAINT IF EXISTS mobile_format;
         ALTER TABLE users ADD CONSTRAINT mobile_format CHECK (mobile_number IS NULL OR mobile_number ~ '^[0-9]{7,15}$');
+        ALTER TABLE jobs ADD COLUMN IF NOT EXISTS closed_at TIMESTAMPTZ;
+        CREATE INDEX IF NOT EXISTS idx_jobs_org_closed ON jobs(org_id, closed_at DESC) WHERE status = 'CLOSED';
+        CREATE INDEX IF NOT EXISTS idx_jobs_recruiter_closed ON jobs(recruiter_id, closed_at DESC) WHERE status = 'CLOSED';
         CREATE OR REPLACE VIEW active_users AS 
         SELECT * FROM users 
         WHERE (is_deleted IS FALSE OR is_deleted IS NULL) 
@@ -113,6 +123,7 @@ async function checkDbConnection() {
 
         INSERT INTO feature_flags (flag_key, is_enabled)
         VALUES 
+          ('saved_jobs', TRUE),
           ('enableTeamsModule', TRUE),
           ('enableTeams', TRUE),
           ('teams', TRUE),
@@ -126,24 +137,28 @@ async function checkDbConnection() {
           ('enableOrgNotifications', TRUE),
           ('orgNotifications', TRUE)
         ON CONFLICT (flag_key) DO NOTHING;
-      `).catch(err => console.warn("Database schema update notice:", err.message));
+      `
+        )
+        .catch((err) => console.warn('Database schema update notice:', err.message));
     }
     return true;
   } catch (err) {
-    console.warn("⚠️  PostgreSQL not yet reachable — will retry in 30s");
-    console.warn(`   Host: ${process.env.DB_HOST || "localhost"}:${process.env.DB_PORT || 5432}`);
+    console.warn('⚠️  PostgreSQL not yet reachable — will retry in 30s');
+    console.warn(`   Host: ${process.env.DB_HOST || 'localhost'}:${process.env.DB_PORT || 5432}`);
     console.warn(`   Reason: ${err.message}`);
     _dbConnected = false;
     return false;
   }
 }
 
-// Initial check + periodic retry every 30 seconds
+// Initial check + periodic retry every 30 seconds (skip in test environment)
 let healthCheckInterval;
-(async () => {
-  await checkDbConnection();
-  healthCheckInterval = setInterval(checkDbConnection, 30_000);
-})();
+if (process.env.NODE_ENV !== 'test') {
+  (async () => {
+    await checkDbConnection();
+    healthCheckInterval = setInterval(checkDbConnection, 30_000);
+  })();
+}
 
 pool.stopHealthCheck = () => {
   if (healthCheckInterval) clearInterval(healthCheckInterval);
@@ -153,10 +168,10 @@ pool.stopHealthCheck = () => {
  * Pool error handling
  * Prevent crash on transient errors
  */
-pool.on("error", (err) => {
-  console.error("🔥 Unexpected PostgreSQL error on idle client", err);
+pool.on('error', (err) => {
+  console.error('🔥 Unexpected PostgreSQL error on idle client', err);
   // Do NOT exit process. attempts to reconnect/recover.
-  // process.exit(1); 
+  // process.exit(1);
 });
 
 /**
