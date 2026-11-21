@@ -20,6 +20,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -31,6 +33,36 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Prettier and ESLint for changed files
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        shell: bash
+        run: |
+          if ! git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null; then
+            BASE_SHA=$(git rev-parse HEAD^)
+          fi
+
+          changed_files="$RUNNER_TEMP/cocpit-changed-files"
+          git diff --name-only --diff-filter=ACMR -z "$BASE_SHA" HEAD -- \
+            '*.js' '*.jsx' '*.ts' '*.tsx' '*.mjs' '*.cjs' \
+            '*.json' '*.css' '*.md' '*.yml' '*.yaml' > "$changed_files"
+          mapfile -d '' -t files < "$changed_files"
+
+          if ((${#files[@]})); then
+            npx prettier --check -- "${files[@]}"
+          fi
+
+          lint_files=()
+          for file in "${files[@]}"; do
+            case "$file" in
+              *.js|*.jsx|*.ts|*.tsx|*.mjs|*.cjs) lint_files+=("$file") ;;
+            esac
+          done
+
+          if ((${#lint_files[@]})); then
+            npx eslint -- "${lint_files[@]}"
+          fi
+
       - name: Syntax Check
         run: |
           node -c src/server.js
@@ -41,8 +73,8 @@ jobs:
       - name: Run Unit Tests
         env:
           NODE_ENV: test
-          JWT_ACCESS_SECRET: "test-access-secret"
-          JWT_REFRESH_SECRET: "test-refresh-secret"
+          JWT_ACCESS_SECRET: 'test-access-secret'
+          JWT_REFRESH_SECRET: 'test-refresh-secret'
         run: npm test -- --passWithNoTests --forceExit
 
   container:
